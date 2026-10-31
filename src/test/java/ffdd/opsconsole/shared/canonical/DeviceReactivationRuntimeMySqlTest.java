@@ -1,5 +1,6 @@
 package ffdd.opsconsole.shared.canonical;
 
+import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -77,7 +78,7 @@ class DeviceReactivationRuntimeMySqlTest {
                         .thenAnswer(i -> ((java.util.function.Supplier<?>) i.getArgument(4)).get());
                 var outbox = mock(EventOutboxService.class);
                 var service = new AppCanonicalBoundaryService(mapper, null, idempotency, outbox, null, null,
-                        mock(AuditLogService.class), null, null, null, null, null, null);
+                        mock(AuditLogService.class), null, null, null, null, null, null, mock(TestCloudActivationAdmission.class));
                 var proxy = new ProxyFactory(service);
                 proxy.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(source), new AnnotationTransactionAttributeSource()));
                 var actual = (AppCanonicalBoundaryService) proxy.getProxy();

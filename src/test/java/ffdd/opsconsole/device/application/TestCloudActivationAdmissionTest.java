@@ -34,4 +34,38 @@ class TestCloudActivationAdmissionTest {
         env.setProperty(TestCloudExecutorService.PREFIX+"deployment-scope","PRODUCTION");
         admission.requireCapacity(directory.resolve("missing"));
     }
+    @Test void aWholeBatchMustFitBeforeAnyNewDeviceIsAdmitted() throws Exception {
+        when(mapper.activeResourceExecutors()).thenReturn(5);
+        Path file=snapshot(1000,1015,true,6);
+        assertThatThrownBy(()->admission.requireCapacity(file,2)).hasMessage("TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE");
+    }
+    @Test void zeroGrowthKeepsExistingResourcesEvenWithoutAnAdmissionSnapshot() {
+        admission.requireCapacity(directory.resolve("missing"),0);
+        verifyNoInteractions(mapper);
+    }
+    @Test void replacementUsesTheActualCountedSourceAndNeverSubtractsItTwice() throws Exception {
+        when(mapper.activeResourceExecutors()).thenReturn(6);
+        Path file=snapshot(1000,1015,true,6);
+        when(mapper.resourceExecutorCount(11)).thenReturn(1);
+        admission.requireReplacementCapacity(directory.resolve("missing"),11,1);
+        // An activated phone or a source without activated_at was never in the global executor count.
+        when(mapper.resourceExecutorCount(12)).thenReturn(0);
+        assertThatThrownBy(()->admission.requireReplacementCapacity(file,12,1)).hasMessage("TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE");
+    }
+    @Test void quantityValidationAndOverflowCannotTurnNewExecutorsIntoFreeCapacity() throws Exception {
+        Path file=snapshot(1000,1015,true,Integer.MAX_VALUE);
+        when(mapper.activeResourceExecutors()).thenReturn(Integer.MAX_VALUE);
+        assertThatThrownBy(()->admission.requireCapacity(file,1)).hasMessage("TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE");
+        assertThatThrownBy(()->admission.requireCapacity(file,-1)).hasMessage("TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE");
+    }
+    @Test void activationWithNoCanonicalGrowthDoesNotRequireASnapshotOrGlobalCount() {
+        when(mapper.activationResourceDelta(11)).thenReturn(0);
+        admission.requireActivationCapacity(directory.resolve("missing"),11);
+        verify(mapper,never()).activeResourceExecutors();
+    }
+    @Test void activationThatAddsAPhysicalResourceStillRequiresTheReservedCapacity() throws Exception {
+        when(mapper.activationResourceDelta(11)).thenReturn(1); when(mapper.activeResourceExecutors()).thenReturn(6);
+        Path file=snapshot(1000,1015,true,6);
+        assertThatThrownBy(()->admission.requireActivationCapacity(file,11)).hasMessage("TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE");
+    }
 }

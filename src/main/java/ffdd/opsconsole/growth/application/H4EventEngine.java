@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -28,6 +29,8 @@ public class H4EventEngine {
     private final TreasuryCoverageFacade coverage;
     private final AdminIdempotencyService idempotency;
     private final ffdd.opsconsole.shared.audit.AuditLogService audit;
+    @lombok.NonNull
+    private final TestCloudActivationAdmission testCloudAdmission;
 
     public boolean managed(String code){return policies.find(code,false)!=null;}
     public boolean enabled(String code){var row=policies.find(code,false);return row==null||number(row.get("enabled")).intValue()==1&&newParticipationOpen(row,false);}
@@ -215,6 +218,7 @@ public class H4EventEngine {
         return (ApiResult)idempotency.executeRetained("H4_EVENT:"+id+":"+code,key,code,ApiResult.class,()->award(id,code));
     }
     private ApiResult<Map<String,Object>> award(Long id,String code){
+        testCloudAdmission.lock();
         user(id,true);var rule=policies.find(code,true);if(rule==null||rule.get("activated_at")==null)throw new BizException(409,"EVENT_NOT_OPEN");
         var r=policies.rules(rule);var progress=progress(id,rule,r);
         if(!Boolean.TRUE.equals(progress.get("eligible")))throw new BizException(409,"EVENT_NOT_CLAIMABLE");

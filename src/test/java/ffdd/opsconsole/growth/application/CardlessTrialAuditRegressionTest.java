@@ -25,7 +25,7 @@ class CardlessTrialAuditRegressionTest {
                 .thenAnswer(call -> ((java.util.function.Supplier) call.getArgument(4)).get());
         var service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(paymentAttribution(), mapper, null, idempotency, null, null, null, null, null,
                 new org.springframework.mock.env.MockEnvironment().withProperty("spring.profiles.active", "prod"),
-                java.time.Clock.systemUTC()));
+                java.time.Clock.systemUTC(), org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
         ApiResult<?> result = service.charge(7L, "legacy-charge");
         assertThat(result.getMessage()).isEqualTo("TRIAL_EXPLICIT_PURCHASE_REQUIRED");
         verify(mapper, never()).settleWallet(anyLong(), any(), any(), any());

@@ -646,11 +646,12 @@ class PromotionLifecycleMySqlTest {
             new ffdd.opsconsole.device.infrastructure.MybatisDeviceCatalogRepository(h.session.getMapper(ffdd.opsconsole.device.mapper.DeviceCatalogMapper.class),new ObjectMapper()),
             new ffdd.opsconsole.growth.application.GrowthRhythmFacadeAdapter(h.config,ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.disabledForDirectConstruction()));
         var eligibility=h.proxy(new ffdd.opsconsole.shared.canonical.AppCanonicalBoundaryService(canonical,null,null,null,null,null,null,null,guard,
-            new ffdd.opsconsole.commerce.application.CommerceAcceptanceRun(h.run),release,new ffdd.opsconsole.shared.canonical.StorefrontPurchaseGatePolicy(),env));
+            new ffdd.opsconsole.commerce.application.CommerceAcceptanceRun(h.run),release,new ffdd.opsconsole.shared.canonical.StorefrontPurchaseGatePolicy(),env,
+            org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
         var beans=new org.springframework.beans.factory.support.StaticListableBeanFactory();beans.addBean("purchaseEligibility",eligibility);
         quotes=h.proxy(new PromotionQuoteService(h.db,h.validator,h.resolver,evaluator,h.config,vouchers,beans.getBeanProvider(ffdd.opsconsole.shared.canonical.AppCanonicalBoundaryService.class)));
         orders=h.proxy(new PromotionOrderService(h.db,quotes,evaluator,h.resolver,h.audit,outbox));
-        rewards=h.proxy(new PromotionRewardService(h.db,orders,earnings,ledger,h.audit,outbox));
+        rewards=h.proxy(new PromotionRewardService(h.db,orders,earnings,ledger,h.audit,outbox, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
         var product=h.db.requiredRow("""
             SELECT p.product_no FROM nx_product p JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
             WHERE p.is_deleted=0 AND p.status='ACTIVE' AND p.store_visible=1 AND p.price_usdt>0 AND p.stock>=20

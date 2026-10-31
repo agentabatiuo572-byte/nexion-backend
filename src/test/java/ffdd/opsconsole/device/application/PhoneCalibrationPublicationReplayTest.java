@@ -84,7 +84,7 @@ class PhoneCalibrationPublicationReplayTest {
                 mock(DeviceCatalogRepository.class), config, mock(TreasuryLedgerPostingFacade.class),
                 mock(E4OrderRefundSettlementFacade.class), coverage, audit, idempotency, events,
                 mock(E2TaskPriceHistoryService.class), clock, OpsReadTimeSeedPolicy.disabledForDirectConstruction(),
-                mock(AuditObjectLockMapper.class), mock(ObjectStorageService.class));
+                mock(AuditObjectLockMapper.class), mock(ObjectStorageService.class), mock(TestCloudActivationAdmission.class));
     }
 
     private AuditReplayCommand command(long effectiveAt) {

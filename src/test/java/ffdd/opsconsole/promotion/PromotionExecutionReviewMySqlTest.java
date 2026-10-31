@@ -1,5 +1,7 @@
 package ffdd.opsconsole.promotion;
 
+import static org.mockito.Mockito.mock;
+import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import ffdd.opsconsole.promotion.application.*;
 import ffdd.opsconsole.commerce.application.AppOrderCommandService;
 import ffdd.opsconsole.commerce.mapper.AppOrderCommandMapper;
@@ -53,8 +55,8 @@ class PromotionExecutionReviewMySqlTest {
         var vouchers=(AppGrowthLifecyclePublisher)ReflectionTestUtils.getField(life.quotes,"vouchers");
         var rhythm=new GrowthRhythmFacadeAdapter(h.config,OpsReadTimeSeedPolicy.disabledForDirectConstruction());
         var release=new StorefrontProductReleasePolicy(new MybatisDeviceCatalogRepository(h.session.getMapper(DeviceCatalogMapper.class),new ObjectMapper()),rhythm);
-        var create=h.proxy(new AppCanonicalBoundaryService(life.canonical,null,h.idempotency,outbox,vouchers,rhythm,h.audit,null,guard,null,release,new StorefrontPurchaseGatePolicy(),env,life.orders));
-        var pay=h.proxy(ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(h.session.getMapper(AppOrderCommandMapper.class),h.idempotency,h.audit,guard,null,null,null,null,30,life.orders,h.paymentAttribution())));
+        var create=h.proxy(new AppCanonicalBoundaryService(life.canonical,null,h.idempotency,outbox,vouchers,rhythm,h.audit,null,guard,null,release,new StorefrontPurchaseGatePolicy(),env,life.orders, mock(TestCloudActivationAdmission.class)));
+        var pay=h.proxy(ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(h.session.getMapper(AppOrderCommandMapper.class),h.idempotency,h.audit,guard,null,null,null,null,30,life.orders,h.paymentAttribution(), org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class))));
         var contract=h.contract(life.buy,life.coinSpec(),firstPolicy(common,false));contract.put("template","FIRST_PURCHASE");
         var audience=copy(map(contract.get("buyerAudience")));audience.put("purchaseHistory","NEVER_PAID");contract.put("buyerAudience",audience);
         String first=h.publish(contract);var another=copy(contract);another.put("name",h.run+" second voucher activity");String second=h.publish(another);long buyer=life.user();
@@ -200,7 +202,7 @@ class PromotionExecutionReviewMySqlTest {
             var request=values("expectedRevision",oldRevision,"reason","隔离事务等待后校验原奖励版本，不能核账过时状态","evidenceRefs",List.of(h.evidence));
             var snapshot=new CountDownLatch(1);var db=org.mockito.Mockito.spy(h.db);
             org.mockito.Mockito.doAnswer(call->{var result=call.callRealMethod();snapshot.countDown();return result;}).when(db).requiredRow("SELECT order_no FROM nx_promotion_reward WHERE obligation_id=?",reward);
-            var admin=new PromotionAdminService(db,h.validator,h.resolver,h.policies,h.natives,new PromotionEvaluationService(h.db),life.quotes,life.rewards,life.orders,h.idempotency,h.audit,h.a2,null,org.mockito.Mockito.mock(PromotionBannerService.class),org.mockito.Mockito.mock(PromotionAccountSampleService.class));
+            var admin=new PromotionAdminService(db,h.validator,h.resolver,h.policies,h.natives,new PromotionEvaluationService(h.db),life.quotes,life.rewards,life.orders,h.idempotency,h.audit,h.a2,null,org.mockito.Mockito.mock(PromotionBannerService.class),org.mockito.Mockito.mock(PromotionAccountSampleService.class),org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
             var executor=Executors.newSingleThreadExecutor();var pending=new AtomicReference<Future<Map<String,Object>>>();ExecutionException failure;
             try{
                 life.tx.executeWithoutResult(tx->{h.db.user(buyer,true);pending.set(executor.submit(()->{h.authenticate(h.checker);return admin.command("reconcileReward",reward,command,request,()->admin.rewardAction(reward,"reconcile",request,command));}));

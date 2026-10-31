@@ -68,7 +68,7 @@ class H4ReminderDeliveryMySqlTest {
         events=mock(AppGrowthEngagementMapper.class);
         for(String locale:List.of("en","zh","vi"))
             when(events.eventState(7L,locale)).thenReturn(List.of(Map.of("eventCode",CODE,"title","title-"+locale,"subtitle","body-"+locale)));
-        var raw=new H4EventEngine(db,policies,commerce,events,null,null,null,mock(AdminIdempotencyService.class),mock(AuditLogService.class));
+        var raw=new H4EventEngine(db,policies,commerce,events,null,null,null,mock(AdminIdempotencyService.class),mock(AuditLogService.class), org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
         var proxy=new ProxyFactory(raw);
         proxy.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(ds),new AnnotationTransactionAttributeSource()));
         engine=(H4EventEngine)proxy.getProxy();

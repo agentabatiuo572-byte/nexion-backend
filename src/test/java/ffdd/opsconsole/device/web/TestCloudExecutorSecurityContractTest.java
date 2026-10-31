@@ -36,7 +36,7 @@ class TestCloudExecutorSecurityContractTest {
         @Bean AuditLogService audit() { return mock(AuditLogService.class); }
         @Bean TestCloudExecutorService service(Environment environment,AuditLogService audit) {
             return spy(new TestCloudExecutorService(mock(AppTaskAssignmentMapper.class),mock(TestCloudExecutorMapper.class),
-                    mock(AppTaskAssignmentService.class),audit,Clock.systemUTC(),environment,mock(ffdd.opsconsole.device.application.TestCloudRequests.class)));
+                    mock(AppTaskAssignmentService.class),audit,Clock.systemUTC(),environment,TestCloudRequestTestSupport.passthrough()));
         }
     }
     @BeforeEach void start() {

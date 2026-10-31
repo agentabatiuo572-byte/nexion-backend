@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import ffdd.opsconsole.promotion.application.PromotionPublicService;
 import ffdd.opsconsole.promotion.application.PromotionPolicyResolver;
 import ffdd.opsconsole.promotion.mapper.PromotionMapper;
@@ -31,6 +32,8 @@ public class H4EventCommerceService {
     private final EventDeviceGiftService gifts;
     private final ffdd.opsconsole.platform.facade.PlatformConfigFacade config;
     private final PromotionPolicyResolver promotionPolicies;
+    @lombok.NonNull
+    private final TestCloudActivationAdmission testCloudAdmission;
 
     public boolean reinvestParticipationOpen(boolean lock){
         var value=lock?config.activeValueForUpdate("G.staking.app_visible"):config.activeValue("G.staking.app_visible");
@@ -171,6 +174,7 @@ public class H4EventCommerceService {
     @Transactional(propagation = Propagation.MANDATORY, rollbackFor = Exception.class)
     public Map<String, Object> award(Long userId, String eventCode, Map<String, Object> rules,
                                      LocalDateTime startsAt, LocalDateTime endsAt, String claimKey) {
+        testCloudAdmission.lock();
         LocalDateTime now = utcNow();
         require(startsAt != null && endsAt != null && !now.isBefore(startsAt) && now.isBefore(endsAt), "H4_EVENT_NOT_ACTIVE");
         Map<String, Object> user = db.user(userId, true);
@@ -189,6 +193,7 @@ public class H4EventCommerceService {
     /** Caller has locked and verified the preserved qualification, claim receipt and event budget. */
     @Transactional(propagation = Propagation.MANDATORY, rollbackFor = Exception.class)
     public Map<String, Object> awardQualifiedReferral(Long userId, String eventCode, Map<String, Object> rules) {
+        testCloudAdmission.lock();
         return gifts.award(userId, "H4:" + eventCode + ":ONCE",
                 required(rules.get("giftProductNo"), "giftProductNo"), Math.toIntExact(number(rules.get("giftQuantity"))));
     }

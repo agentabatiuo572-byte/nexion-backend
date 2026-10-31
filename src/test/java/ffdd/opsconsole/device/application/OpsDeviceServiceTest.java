@@ -146,7 +146,7 @@ class OpsDeviceServiceTest {
                 clock,
                 seedPolicy,
                 lockMapper,
-                storageService, null, phonePolicies);
+                storageService, null, phonePolicies, mock(TestCloudActivationAdmission.class));
     }
 
     private OpsDeviceService serviceWithDownloadPublicationResult(String result) {
@@ -164,7 +164,7 @@ class OpsDeviceServiceTest {
                 clock,
                 ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
                 lockMapper,
-                storageService, null, phonePolicies) {
+                storageService, null, phonePolicies, mock(TestCloudActivationAdmission.class)) {
             @Override
             protected String verifyComputeDownloadPublication(String paramKey, String value) {
                 return result;
@@ -383,6 +383,24 @@ class OpsDeviceServiceTest {
 
         configFacade.values.put("device.max_active_slots", "8");
         assertThat(service.overview().getData()).containsEntry("maxDevicesPerUser", 6);
+    }
+
+    @Test
+    void e5ActivationWithZeroCanonicalResourceDeltaSurvivesUnavailableCapacity() {
+        deviceRepository.device=device("INVENTORY",0,null);
+        var requests=mock(ffdd.opsconsole.device.mapper.TestCloudRequestMapper.class);
+        when(requests.activationResourceDelta(1L)).thenReturn(0);
+        var admission=org.mockito.Mockito.spy(new TestCloudActivationAdmission(requests,TestCloudExecutorServiceTest.environment(),clock));
+        org.mockito.Mockito.doNothing().when(admission).lock();
+        // A missing or full snapshot rejects any positive allocation; zero canonical growth must survive it.
+        org.mockito.Mockito.doThrow(new ffdd.opsconsole.shared.exception.BizException(503,"TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE"))
+                .when(admission).requireCapacity();
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"testCloudAdmission",admission);
+        assertThat(service.activateE5Device(1L,false,"e5-zero-resource",
+                new DeviceE5ActionRequest("activate without physical resource growth","superadmin")).getCode()).isZero();
+        assertThat(deviceRepository.device.status()).isEqualTo("OFFLINE");
+        verify(requests).activationResourceDelta(1L);
+        verify(requests,never()).activeResourceExecutors();
     }
 
     @Test
@@ -5049,7 +5067,7 @@ class OpsDeviceServiceTest {
         var mergedService = new OpsDeviceService(capture, deviceRepository, catalogRepository, configFacade,
                 ledgerPostingFacade, settlement, coverageFacade, auditLogService, idempotencyService,
                 outboxService, taskPriceHistoryService, clock, OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
-                lockMapper, storageService, promotions);
+                lockMapper, storageService, promotions, mock(TestCloudActivationAdmission.class));
         var request = new DeviceOrderActionRequest("WALLET", "customer refund approved", "superadmin");
 
         assertThat(mergedService.refundOrder("OD-1", "merged-refund", request).getCode()).isZero();

@@ -63,7 +63,7 @@ class GenesisRaffleMySqlIntegrationTest {
                 .thenAnswer(call->tx.execute(s->((Supplier<?>)call.getArgument(4)).get()));
         repository=new PausingRepository(new H4EventSqlConfiguration().h4EventRawMapper(ds));
         service=new GenesisRaffleService(repository,json,Clock.fixed(Instant.parse("2026-10-25T12:00:00Z"),ZoneOffset.UTC),
-                idempotency,earnings,ledger,coverage,mock(EventDeviceGiftService.class),mock(AuditLogService.class),mock(A2RuntimePolicy.class));
+                idempotency,earnings,ledger,coverage,mock(EventDeviceGiftService.class),mock(AuditLogService.class),mock(A2RuntimePolicy.class), org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
     }
     void accountingSucceeds(){
         doAnswer(call->{jdbc.update("INSERT INTO raffle_test_ledger(receipt,user_id,amount) VALUES(?,?,?)",call.getArgument(0),call.getArgument(1),call.getArgument(5));return null;})

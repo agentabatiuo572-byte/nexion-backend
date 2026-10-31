@@ -24,7 +24,7 @@ class H4EventCommerceServiceTest {
     private final Clock clock = Clock.fixed(Instant.parse("2026-10-25T12:00:00Z"), ZoneOffset.ofHours(8));
     private final GenesisRaffleService raffle = mock(GenesisRaffleService.class);
     private final ffdd.opsconsole.platform.facade.PlatformConfigFacade config=mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class);
-    private final H4EventCommerceService service = new H4EventCommerceService(db, promotions, clock, raffle, new EventDeviceGiftService(db),config,null);
+    private final H4EventCommerceService service = new H4EventCommerceService(db, promotions, clock, raffle, new EventDeviceGiftService(db, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)),config,null, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
     private static final long USER = 7L;
     private static final LocalDateTime START = LocalDateTime.of(2026, 10, 1, 0, 0);
     private static final LocalDateTime END = LocalDateTime.of(2026, 11, 1, 0, 0);

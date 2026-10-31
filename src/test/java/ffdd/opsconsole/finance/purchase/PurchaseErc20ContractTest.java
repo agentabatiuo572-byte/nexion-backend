@@ -20,7 +20,7 @@ class PurchaseErc20ContractTest {
     final CregisGatewayRouter router=mock(CregisGatewayRouter.class);
     final CregisGateway gateway=mock(CregisGateway.class);
     final PurchasePaymentService service=new PurchasePaymentService(db,policy,null,null,null,null,null,config,router,
-            mock(BscDepositProof.class),null,mock(PlatformTransactionManager.class),new ObjectMapper(),null,null);
+            mock(BscDepositProof.class),null,mock(PlatformTransactionManager.class),new ObjectMapper(),null,null, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
 
     void ready() {
         config.setMode(CregisProperties.Mode.PROVIDER);config.setProjectId(99);

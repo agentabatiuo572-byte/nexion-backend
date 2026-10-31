@@ -1,5 +1,6 @@
 package ffdd.opsconsole.promotion.application;
 
+import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.promotion.mapper.PromotionMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -24,6 +25,8 @@ public class PromotionRewardService {
     private final TreasuryLedgerPostingFacade ledger;
     private final AuditLogService audit;
     private final EventOutboxService outbox;
+    @lombok.NonNull
+    private final TestCloudActivationAdmission testCloudAdmission;
 
     public List<String> pending(int limit){
         return db.list("""
@@ -63,6 +66,7 @@ public class PromotionRewardService {
     }
     @Transactional(rollbackFor=Exception.class)
     public Map<String,Object> issue(String obligationId,String commandId){
+        testCloudAdmission.lock();
         Map<String,Object> reward=lock(obligationId);
         if("ISSUED".equals(reward.get("status")))return view(reward,false,true);
         require(Set.of("PENDING","READY","RETRYABLE_FAILED").contains(text(reward.get("status"))),"PROMOTION_REWARD_NOT_RETRYABLE");
@@ -75,6 +79,7 @@ public class PromotionRewardService {
         Map<String,Object> reserved=reservation(reward),snapshot=parse(reward.get("snapshot_json"));
         require(hash(snapshot).equals(reward.get("snapshot_hash"))&&"COMMITTED".equals(reserved.get("status")),"PROMOTION_REWARD_SNAPSHOT_INVALID");
         Map<String,Object> spec=map(map(snapshot.get("award")).get("reward"));String asset=text(spec.get("type"));
+        if("DEVICE".equals(asset)) testCloudAdmission.requireCapacity(Math.toIntExact(number(spec.get("quantity"))));
         String attempt=id("PA"),posting="PROMOTION-ISSUE-"+obligationId,entry=null;
         changed(db.write("INSERT INTO nx_promotion_reward_attempt(attempt_id,obligation_id,command_id,action,status,evidence_json,started_at) VALUES(?,?,?,'ISSUE','PROCESSING',JSON_OBJECT(),NOW(6))",attempt,obligationId,commandId));
         changed(db.write("UPDATE nx_promotion_reward SET status='PROCESSING',last_command_id=?,revision=revision+1,updated_at=NOW(6) WHERE obligation_id=?",commandId,obligationId));

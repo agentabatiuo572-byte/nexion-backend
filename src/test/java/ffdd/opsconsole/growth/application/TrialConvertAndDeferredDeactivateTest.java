@@ -50,7 +50,7 @@ class TrialConvertAndDeferredDeactivateTest {
     private final AppTrialLifecycleService service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(capture,
             mapper, earningsRelease, idempotency, coverage,
             mock(AuditLogService.class), mock(EventOutboxService.class), productReleasePolicy, canonicalStateMapper, productionEnvironment(),
-            TEST_CLOCK));
+            TEST_CLOCK, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
 
     private static MockEnvironment productionEnvironment() {
         MockEnvironment environment = new MockEnvironment();

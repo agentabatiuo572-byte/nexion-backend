@@ -36,7 +36,7 @@ class AppShareEventServiceTest {
             mapper, mock(VoucherGrantFacade.class), mock(GrowthRhythmFacade.class),
             mock(TreasuryCoverageFacade.class), idempotency, audit,
             outbox, null, sandbox, factConsumer, mock(StreakPerkBusinessAvailabilityFacade.class),
-            java.util.Optional.empty(), null);
+            java.util.Optional.empty(), null, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
 
     @BeforeEach
     void setUp() {

@@ -27,8 +27,6 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.core.env.Environment;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.annotation.Isolation;
 
 /** Real BGE inference on declared TEST texts. No commercial workload or production attestation is implied. */
 @Service
@@ -115,6 +113,11 @@ public class TestCloudExecutorService {
             if (bytes.length != 32 || !Base64.getUrlEncoder().withoutPadding().encodeToString(bytes).equals(encoded)
                     || !expected.matches("[a-f0-9]{64}")
                     || !MessageDigest.isEqual(digest(bytes),HexFormat.of().parseHex(expected))) throw new IllegalArgumentException();
+            return requests.outside(()->requests.db(()->authenticatedIdentity(executorId)));
+        } catch (IllegalArgumentException invalid) { throw error(401,"TEST_CLOUD_AUTH_INVALID"); }
+    }
+
+    private Identity authenticatedIdentity(String executorId) {
             Identity identity;
             if(executorId==null || executorId.isBlank() || configured().executorId().equals(executorId)) identity=configured();
             else {
@@ -135,7 +138,6 @@ public class TestCloudExecutorService {
                 }
             }
             requireCurrent(identity); return identity;
-        } catch (IllegalArgumentException invalid) { throw error(401,"TEST_CLOUD_AUTH_INVALID"); }
     }
 
     private Identity configured() {
@@ -150,6 +152,12 @@ public class TestCloudExecutorService {
     }
 
     public void requireCurrent(Identity identity) {
+        if(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()) {
+            requireCurrentLocked(identity); return;
+        }
+        requests.outside(()->requests.db(()->{ requireCurrentLocked(identity); return null; }));
+    }
+    private void requireCurrentLocked(Identity identity) {
         requireEnabled();
         try {
             if(!property("credential-sha256").matches("[a-f0-9]{64}")) throw new IllegalArgumentException();
@@ -217,8 +225,10 @@ public class TestCloudExecutorService {
         return ApiResult.ok(result);
     }
 
-    @Transactional(readOnly=true)
     public ApiResult<Map<String,Object>> instances(Identity i,long afterDeviceId,int requestedLimit) {
+        return requests.outside(()->requests.db(()->instancesLocked(i,afterDeviceId,requestedLimit)));
+    }
+    private ApiResult<Map<String,Object>> instancesLocked(Identity i,long afterDeviceId,int requestedLimit) {
         requireCurrent(i);
         if(!fleetIdentity().equals(i) || !fleetEnabled() || afterDeviceId<0) throw error(403,"TEST_CLOUD_FLEET_REQUIRED");
         int limit=Math.max(1,Math.min(100,requestedLimit));
@@ -312,8 +322,10 @@ public class TestCloudExecutorService {
         return ApiResult.ok(result);
     }
 
-    @Transactional(rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> manifest(Identity identity,String taskNo,String nextKey) {
+        return requests.outside(()->requests.db(()->manifestLocked(identity,taskNo,nextKey)));
+    }
+    private ApiResult<Map<String,Object>> manifestLocked(Identity identity,String taskNo,String nextKey) {
         requireCurrent(identity); key(nextKey); lockBinding(identity,false);
         AssignmentRow task=task(identity,safe(taskNo,96));
         Execution e=mapper.lock(taskNo); requireManifest(identity,e);
@@ -331,8 +343,10 @@ public class TestCloudExecutorService {
         return ApiResult.ok(result);
     }
 
-    @Transactional(rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> heartbeat(Identity identity,String taskNo,String claimToken) {
+        return requests.outside(()->requests.db(()->heartbeatLockedRequest(identity,taskNo,claimToken)));
+    }
+    private ApiResult<Map<String,Object>> heartbeatLockedRequest(Identity identity,String taskNo,String claimToken) {
         requireCurrent(identity); lockBinding(identity,false);
         AssignmentRow active=assignments.lockActiveAssignment(identity.ownerId(),identity.deviceId(),"PRODUCTION");
         lockBinding(identity,true,active!=null);
@@ -594,8 +608,10 @@ public class TestCloudExecutorService {
             throw error(409,"TEST_CLOUD_ACTIVATION_CHANGED");
     }
 
-    @Transactional(rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> receipt(Identity identity,String taskNo) {
+        return requests.outside(()->requests.db(()->receiptLocked(identity,taskNo)));
+    }
+    private ApiResult<Map<String,Object>> receiptLocked(Identity identity,String taskNo) {
         requireCurrent(identity);
         if(fleet(identity)) {
             Execution e=mapper.lock(safe(taskNo,96)); requireManifest(identity,e);
@@ -619,8 +635,11 @@ public class TestCloudExecutorService {
 
     /** No mutation or retry follows from a negative receipt. Each incident requires its own archived,
      * trusted exhaustive two-request adjudication to authorize the worker's durable one-use budget. */
-    @Transactional(rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> rollbackReview(Identity identity,String taskNo,String completeKey,
+            String originalNextKey,RollbackReviewRequest request) {
+        return requests.outside(()->requests.db(()->rollbackReviewLocked(identity,taskNo,completeKey,originalNextKey,request)));
+    }
+    private ApiResult<Map<String,Object>> rollbackReviewLocked(Identity identity,String taskNo,String completeKey,
             String originalNextKey,RollbackReviewRequest request) {
         requireCurrent(identity);
         RollbackScope scope=REVIEWED_ROLLBACK_REQUESTS.get(taskNo);
@@ -863,8 +882,11 @@ public class TestCloudExecutorService {
     }
 
     @Scheduled(fixedDelayString="${nexion.compute-task.test-cloud.cleanup-ms:30000}")
-    @Transactional
     public void expireHeartbeat() {
+        if(!"TEST".equals(property("deployment-scope")) || !Set.of(environment.getActiveProfiles()).equals(Set.of("dev"))) return;
+        requests.outside(()->requests.db(()->{ expireHeartbeatLocked(); return null; }));
+    }
+    private void expireHeartbeatLocked() {
         // Keep the non-secret binding after revocation so only this executor's stale marker is retired.
         if(!"TEST".equals(property("deployment-scope")) || !Set.of(environment.getActiveProfiles()).equals(Set.of("dev"))) return;
         try {

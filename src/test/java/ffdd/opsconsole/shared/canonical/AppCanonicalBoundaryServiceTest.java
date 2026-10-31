@@ -1,5 +1,6 @@
 package ffdd.opsconsole.shared.canonical;
 
+import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -79,7 +80,7 @@ class AppCanonicalBoundaryServiceTest {
             new AppCanonicalBoundaryService(
                     mapper, publisher, idempotency, outbox, growthLifecyclePublisher, growthRhythmFacade, audit,
                     commerceSandboxMapper, fundsSandboxProfileGuard, new CommerceAcceptanceRun("test-run-0001"),
-                    productReleasePolicy, new StorefrontPurchaseGatePolicy(), environment);
+                    productReleasePolicy, new StorefrontPurchaseGatePolicy(), environment, mock(TestCloudActivationAdmission.class));
 
     AppCanonicalBoundaryServiceTest() {
         when(environment.getActiveProfiles()).thenReturn(new String[0]);
@@ -338,7 +339,7 @@ class AppCanonicalBoundaryServiceTest {
         var promotions=mock(ffdd.opsconsole.promotion.application.PromotionOrderService.class);
         var promoted=new AppCanonicalBoundaryService(mapper,publisher,idempotency,outbox,growthLifecyclePublisher,growthRhythmFacade,audit,
                 commerceSandboxMapper,fundsSandboxProfileGuard,new CommerceAcceptanceRun("test-run-0001"),productReleasePolicy,
-                new StorefrontPurchaseGatePolicy(),environment,promotions);
+                new StorefrontPurchaseGatePolicy(),environment,promotions, mock(TestCloudActivationAdmission.class));
         var product=new CanonicalStateMapper.ProductStock(8L,"BOX-8",new BigDecimal("1500"),4,null);
         when(mapper.findPurchasableProduct(8L,null)).thenReturn(product);when(mapper.lockProduct(8L,null)).thenReturn(product);
         when(mapper.deviceSlotCap()).thenReturn(3);

@@ -1,5 +1,6 @@
 package ffdd.opsconsole.shared.canonical;
 
+import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -141,7 +142,7 @@ class DeviceCommandEventMySqlIntegrationTest {
                 mock(AppGrowthLifecyclePublisher.class), mock(GrowthRhythmFacade.class), audit,
                 mock(CommerceAcceptanceSandboxMapper.class), mock(FundsSandboxProfileGuard.class),
                 new CommerceAcceptanceRun("device-command-test-0001"), mock(StorefrontProductReleasePolicy.class),
-                new StorefrontPurchaseGatePolicy(), environment);
+                new StorefrontPurchaseGatePolicy(), environment, mock(TestCloudActivationAdmission.class));
         ProxyFactory proxy = new ProxyFactory(target);
         proxy.setProxyTargetClass(true);
         proxy.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(dataSource),

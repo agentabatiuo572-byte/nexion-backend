@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
 import ffdd.opsconsole.finance.purchase.VerifiedPurchasePayment;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
@@ -66,8 +67,8 @@ public class AppTrialLifecycleService {
             StorefrontProductReleasePolicy productReleasePolicy,
             CanonicalStateMapper canonicalStateMapper,
             Environment environment,
-            Clock clock) {
-        this(null,paymentAttribution,mapper,earningsReleaseService,idempotency,coverageFacade,audit,outbox,productReleasePolicy,canonicalStateMapper,environment,clock);
+            Clock clock, TestCloudActivationAdmission testCloudAdmission) {
+        this(null,paymentAttribution,mapper,earningsReleaseService,idempotency,coverageFacade,audit,outbox,productReleasePolicy,canonicalStateMapper,environment,clock,testCloudAdmission);
     }
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private static final String TRIAL_KILLSWITCH_KEY = "killswitch.trial";
@@ -98,6 +99,8 @@ public class AppTrialLifecycleService {
     private final CanonicalStateMapper canonicalStateMapper;
     private final Environment environment;
     private final Clock clock;
+    @lombok.NonNull
+    private final TestCloudActivationAdmission testCloudAdmission;
 
     @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> state(Long userId) {
@@ -314,6 +317,7 @@ public class AppTrialLifecycleService {
         if (paymentAuthorization==null) return ApiResult.fail(503,"PAYMENT_PASSWORD_UNAVAILABLE");
         return paymentAuthorization.execute(userId,"trial-convert",idempotencyKey,request,authorization,
                 () -> {
+                    testCloudAdmission.lock();
                     requireUser(userId);
                     return once("TRIAL_CONVERT:PRODUCTION",userId,idempotencyKey,request,
                             () -> convertOnce(userId,normalized,expectedAmountUsdt,confirmedQuote));
@@ -323,6 +327,7 @@ public class AppTrialLifecycleService {
     @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY,rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> settleVerifiedExternal(Long owner,String product,BigDecimal expected,String version) {
         if (!VerifiedPurchasePayment.active()) throw new BizException(403,"PURCHASE_PAYMENT_SCOPE_REQUIRED");
+        testCloudAdmission.lock();
         requireUser(owner); return convertOnce(owner,product,expected,version);
     }
     @Transactional(readOnly=true)
@@ -397,6 +402,7 @@ public class AppTrialLifecycleService {
         if (confirmedQuote != null && !confirmedQuote.equals(quote.version())) {
             return ApiResult.fail(409, "TRIAL_QUOTE_CHANGED");
         }
+        testCloudAdmission.requireCapacity(1);
         requireCoverage(quote.remainderUsdt(), quote.rewardNex());
         var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, product.productNo(),
                 LocalDateTime.ofInstant(clock.instant(), java.time.ZoneOffset.UTC));

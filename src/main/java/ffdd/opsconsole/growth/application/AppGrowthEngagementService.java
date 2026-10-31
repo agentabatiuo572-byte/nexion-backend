@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -105,6 +106,7 @@ public class AppGrowthEngagementService {
     private final Environment environment;
     private final Clock clock;
     private final H4EventEngine eventEngine;
+    private final TestCloudActivationAdmission testCloudAdmission;
 
     /** Backward-compatible local construction; production Spring injection uses the business-zone clock. */
     public AppGrowthEngagementService(
@@ -120,11 +122,11 @@ public class AppGrowthEngagementService {
             QuestCompletionFactConsumer questFactConsumer,
             StreakPerkBusinessAvailabilityFacade streakPerkAvailability,
             Optional<AppGrowthVoucherSandboxService> voucherSandboxService,
-            Environment environment) {
+            Environment environment, TestCloudActivationAdmission testCloudAdmission) {
         this(mapper, voucherGrantFacade, growthRhythmFacade, coverageFacade, idempotencyService,
                 auditLogService, outboxService, earningsReleaseService, sandboxService, questFactConsumer,
                 streakPerkAvailability, voucherSandboxService, environment,
-                Clock.system(DateTimeFormatConfig.BUSINESS_ZONE));
+                Clock.system(DateTimeFormatConfig.BUSINESS_ZONE), testCloudAdmission);
     }
 
     /** Legacy direct construction; Spring uses the complete constructor below. */
@@ -142,8 +144,8 @@ public class AppGrowthEngagementService {
             StreakPerkBusinessAvailabilityFacade streakPerkAvailability,
             Optional<AppGrowthVoucherSandboxService> voucherSandboxService,
             Environment environment,
-            Clock clock) {
-        this(mapper, voucherGrantFacade, growthRhythmFacade, coverageFacade, idempotencyService, auditLogService, outboxService, earningsReleaseService, sandboxService, questFactConsumer, streakPerkAvailability, voucherSandboxService, environment, clock, null);
+            Clock clock, TestCloudActivationAdmission testCloudAdmission) {
+        this(mapper, voucherGrantFacade, growthRhythmFacade, coverageFacade, idempotencyService, auditLogService, outboxService, earningsReleaseService, sandboxService, questFactConsumer, streakPerkAvailability, voucherSandboxService, environment, clock, null, testCloudAdmission);
     }
 
     /** Legacy direct construction; production also supplies the event engine. */
@@ -162,10 +164,10 @@ public class AppGrowthEngagementService {
             Optional<AppGrowthVoucherSandboxService> voucherSandboxService,
             Environment environment,
             Clock clock,
-            WeeklyQuestSnapshotService weeklySnapshots) {
+            WeeklyQuestSnapshotService weeklySnapshots, TestCloudActivationAdmission testCloudAdmission) {
         this(mapper, voucherGrantFacade, growthRhythmFacade, coverageFacade, idempotencyService,
                 auditLogService, outboxService, earningsReleaseService, sandboxService, questFactConsumer,
-                streakPerkAvailability, voucherSandboxService, environment, clock, weeklySnapshots, null);
+                streakPerkAvailability, voucherSandboxService, environment, clock, weeklySnapshots, null, testCloudAdmission);
     }
 
     @Autowired
@@ -185,7 +187,7 @@ public class AppGrowthEngagementService {
             Environment environment,
             Clock clock,
             WeeklyQuestSnapshotService weeklySnapshots,
-            H4EventEngine eventEngine) {
+            H4EventEngine eventEngine, TestCloudActivationAdmission testCloudAdmission) {
         this.mapper = mapper;
         this.voucherGrantFacade = voucherGrantFacade;
         this.growthRhythmFacade = growthRhythmFacade;
@@ -202,6 +204,7 @@ public class AppGrowthEngagementService {
         this.clock = clock;
         this.weeklySnapshots = weeklySnapshots;
         this.eventEngine = eventEngine;
+        this.testCloudAdmission = java.util.Objects.requireNonNull(testCloudAdmission);
     }
 
     public ApiResult<Map<String, Object>> questState(Long userId) {
@@ -759,6 +762,7 @@ public class AppGrowthEngagementService {
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> claimEvent(Long userId, String eventCode, String idempotencyKey) {
+        testCloudAdmission.lock();
         requireCanonicalEngagementRuntime();
         requireUser(userId);
         String code = reference(eventCode, "EVENT_CODE_REQUIRED");

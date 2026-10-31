@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
@@ -38,6 +39,8 @@ public class GenesisRaffleService {
     private final EventDeviceGiftService devices;
     private final AuditLogService audit;
     private final A2RuntimePolicy a2;
+    @lombok.NonNull
+    private final TestCloudActivationAdmission testCloudAdmission;
     private final SecureRandom random = new SecureRandom();
     // A position-backed ticket remains valid only while its originating entitlement survives.
     static final String VALID_TICKET = """
@@ -239,6 +242,7 @@ public class GenesisRaffleService {
     }
     @Transactional(rollbackFor=Exception.class)
     public void pay(String drawId,String prizeId,int index){
+        testCloudAdmission.lock();
         var draw=db.row("SELECT status FROM nx_genesis_raffle_draw WHERE draw_id=? FOR UPDATE",drawId);
         if(draw==null||!"PROCESSING".equals(draw.get("status")))return;
         var result=db.row("SELECT * FROM nx_genesis_raffle_result WHERE draw_id=? AND prize_id=? AND award_index=? FOR UPDATE",drawId,prizeId,index);

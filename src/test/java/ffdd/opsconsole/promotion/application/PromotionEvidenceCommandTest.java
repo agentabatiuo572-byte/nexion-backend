@@ -26,7 +26,7 @@ class PromotionEvidenceCommandTest {
     private final ObjectStorageService storage=mock(ObjectStorageService.class);
     private final AdminIdempotencyService idempotency=mock(AdminIdempotencyService.class);
     private final PromotionAdminService admin=new PromotionAdminService(db,new PromotionContractValidator(new ObjectMapper()),null,null,null,null,null,
-            null,null,idempotency,mock(AuditLogService.class),mock(A2RuntimePolicy.class),null,new PromotionBannerService(db,storage),null);
+            null,null,idempotency,mock(AuditLogService.class),mock(A2RuntimePolicy.class),null,new PromotionBannerService(db,storage),null,org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
 
     @AfterEach void clearAuthentication(){SecurityContextHolder.clearContext();}
 
@@ -85,7 +85,7 @@ class PromotionEvidenceCommandTest {
         var issue=values("attempt_id","PA-issue","command_id","PC-issue","status","ISSUED","started_at",time,"finished_at",time,
                 "evidence_json",json(values("ledgerBizNo","PROMOTION-ISSUE-PO-1","earningsEntryNo","ER-1")));
         when(db.list(startsWith("SELECT * FROM nx_promotion_reward_attempt"),eq("PO-1"))).thenReturn(List.of(review,issue));
-        var result=new PromotionRewardService(db,null,null,null,null,null).get(null,"PO-1",true);
+        var result=new PromotionRewardService(db,null,null,null,null,null, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)).get(null,"PO-1",true);
         var attempts=maps(result.get("attempts"));
         assertEquals(List.of(ASSET),attempts.get(0).get("evidenceRefs"));
         assertEquals(List.of(),attempts.get(1).get("evidenceRefs"));

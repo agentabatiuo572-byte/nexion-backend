@@ -33,6 +33,9 @@ LEGACY_NEXT_RECOVERY_DEVICES = {1208, 1210}
 RECOVERY_PHASES = frozenset({"COMPLETE_NOT_SENT", "COMPLETE_INTENT", "UNKNOWN_COMPLETE", "CLAIMED", "REJECTED_COMPLETE",
                              "REJECTED_RETRY_INTENT", "ROLLBACK_RETRY_INTENT", "STABILITY_RETRY_INTENT", "DURABLE_RETRY_INTENT",
                              "DURABLE_TERMINATE_INTENT", "TERMINAL_CONFIRMED"})
+HEARTBEAT_PHASES = frozenset({"IDLE", "NEXT_NOT_SENT", "CLAIMED", "COMPLETE_INTENT", "REJECTED_RETRY_INTENT",
+                              "ROLLBACK_RETRY_INTENT", "STABILITY_RETRY_INTENT", "DURABLE_RETRY_INTENT"})
+
 IDENTITY = ("ownerId", "deviceId", "instanceNo", "taskConfigId", "executorId", "model", "modelDigest")
 STOP = threading.Event()
 # Only these four fixed TEST requests, from two separately adjudicated incidents, are in scope.
@@ -738,6 +741,8 @@ class Worker:
 
     def mutate(self, operation, path, body, key, state=None, validator=None, recovery=None):
         self.require_current()
+        if operation == "HEARTBEAT" and self.journal.state()["phase"] not in HEARTBEAT_PHASES:
+            raise NotSent("HEARTBEAT_PENDING_READ_ONLY")
         if operation == "NEXT" and self.draining():
             raise NotSent("DRAIN_NEW_CLAIMS_BLOCKED")
         if operation in ("NEXT", "COMPLETE", "TERMINATE") and self.stopping():
@@ -749,6 +754,8 @@ class Worker:
             call = self.journal.intent(operation, key, (state or {}).get("taskNo"), body, state)
         try:
             self.require_current()
+            if operation == "HEARTBEAT" and self.journal.state()["phase"] not in HEARTBEAT_PHASES:
+                raise NotSent("HEARTBEAT_PENDING_READ_ONLY")
             if operation == "NEXT" and self.draining():
                 raise NotSent("DRAIN_NEW_CLAIMS_BLOCKED")
             if operation in ("NEXT", "COMPLETE", "TERMINATE") and self.stopping():
@@ -811,8 +818,12 @@ class Worker:
         def run():
             while not self.heartbeat_stop.wait(10):
                 try:
-                    if not fatal and self.journal.state()["phase"] in ("IDLE", "NEXT_NOT_SENT") and not self.eligible():
-                        continue
+                    phase = self.journal.state()["phase"]
+                    if not fatal:
+                        if phase not in HEARTBEAT_PHASES:
+                            continue  # Uncertain/terminal tasks only perform authoritative reads.
+                        if phase in ("IDLE", "NEXT_NOT_SENT") and not self.eligible():
+                            continue
                     self.heartbeat(idle_only=fatal)
                 except Exception as error:
                     if fatal:
@@ -1194,6 +1205,24 @@ class Worker:
         print("COMPUTATION_CONFIRMED", flush=True)
         return "CONFIRMED"
 
+    def single_pending(self):
+        state = self.journal.state()
+        protocol = (state.get("requestProtocol") == 1 or state.get("completionProtocol") == 1
+                    or any(state.get(key) is True for key in ("nextRetry", "durableRetry", "stabilityRetry", "terminationAttempt")))
+        return (protocol and self.can_reconcile() and state.get("binding") == self.config.binding
+                and self.config.binding["deviceId"] not in (1152, 1380)
+                and not state.get("rollbackRetry") and not state.get("rejectedRetry"))
+
+    def pending_alarm(self, error):
+        state = self.journal.state()
+        operation = "TERMINATE" if state.get("terminationAttempt") else "COMPLETE" if state.get("taskNo") else "NEXT"
+        key = "BGE-COMPLETE-" + sha256(state["taskNo"].encode()) if state.get("taskNo") else state["nextKey"]
+        print(json_bytes({"event": "SINGLE_PENDING_RECONCILIATION", "operation": operation,
+                          "taskNo": state.get("taskNo"), "deviceId": self.config.binding["deviceId"],
+                          "executorId": self.config.binding["executorId"], "phase": state["phase"],
+                          "requestKeyHash": sha256(key.encode())[:16], "requestHash": sha256(json_bytes(state.get("completeBody", {})))[:16],
+                          "exceptionClass": type(error).__name__, "retryAfterSeconds": self.config.interval}).decode(), flush=True)
+
     def run(self, once=False, heartbeat_only=False):
         require(not (once and heartbeat_only), "WORKER_MODE_INVALID")
         if heartbeat_only:
@@ -1201,10 +1230,6 @@ class Worker:
             require(current["phase"] == "IDLE" and current.get("binding") == self.config.binding,
                     "HEARTBEAT_ONLY_CONFIRMED_IDLE_REQUIRED")
         try:
-            if not heartbeat_only:
-                recovered = self.recover()
-                if once and recovered:
-                    return 0
             if heartbeat_only:
                 if self.stop.is_set():
                     return 0
@@ -1213,30 +1238,45 @@ class Worker:
                 if self.heartbeat_error:
                     raise self.heartbeat_error
                 return 0
-            while not self.stop.is_set():
+            while True:
                 try:
-                    eligible = self.eligible()
+                    # Reconcile before eligibility/NEXT on every turn; a pending task never starts a new key.
+                    recovered = self.recover()
+                    if once and recovered:
+                        return 0
+                    if self.stopping():
+                        return 0
+                    try:
+                        eligible = self.eligible()
+                    except Halt as error:
+                        if not isinstance(error, NotSent) and str(error) != "HTTP_OUTCOME_UNKNOWN":
+                            raise
+                        print("SINGLE_ELIGIBILITY_UNCONFIRMED", flush=True)
+                        eligible = False
+                    if not eligible:
+                        if once:
+                            return 2
+                        self.stop.wait(self.config.interval)
+                    else:
+                        current = self.journal.state()
+                        if self.heartbeat_thread is None and current["phase"] == "IDLE" and current.get("binding") == self.config.binding:
+                            self.start_heartbeat()
+                        outcome = self.one()
+                        if self.heartbeat_thread is None and outcome == "IDLE":
+                            self.start_heartbeat()
+                        if once:
+                            return 0 if outcome == "CONFIRMED" else 2
+                        if outcome not in ("CONFIRMED", "ALREADY_COMPLETED"):
+                            self.stop.wait(self.config.interval)
                 except Halt as error:
-                    if not isinstance(error, NotSent) and str(error) != "HTTP_OUTCOME_UNKNOWN":
+                    self.require_current()  # Replaced/revoked runners cannot linger or submit after a new generation.
+                    if once or not self.single_pending():
                         raise
-                    print("SINGLE_ELIGIBILITY_UNCONFIRMED", flush=True)
-                    eligible = False
-                if not eligible:
-                    if once:
-                        return 2
-                    self.stop.wait(self.config.interval)
-                    continue
-                current = self.journal.state()
-                if self.heartbeat_thread is None and current["phase"] == "IDLE" and current.get("binding") == self.config.binding:
-                    self.start_heartbeat()
-                outcome = self.one()
-                if self.heartbeat_thread is None and outcome == "IDLE":
-                    self.start_heartbeat()
-                if once:
-                    return 0 if outcome == "CONFIRMED" else 2
-                if outcome not in ("CONFIRMED", "ALREADY_COMPLETED"):
-                    self.stop.wait(self.config.interval)
-            return 0
+                    self.pending_alarm(error)
+                    if not self.stopping():
+                        self.stop.wait(self.config.interval)
+                if self.stopping():
+                    return 0
         finally:
             self.heartbeat_stop.set()
             if self.heartbeat_thread:

@@ -19,7 +19,7 @@ class H4EventSeasonalVoucherTest {
     final LocalDateTime start=LocalDateTime.of(2026,10,24,0,0),end=start.plusDays(7);
     final Map<String,Object> rules=values("voucherId","BF20");
     final ffdd.opsconsole.promotion.application.PromotionPolicyResolver resolver=mock(ffdd.opsconsole.promotion.application.PromotionPolicyResolver.class);
-    final H4EventCommerceService service=new H4EventCommerceService(db,promotions,clock,null,null,null,resolver);
+    final H4EventCommerceService service=new H4EventCommerceService(db,promotions,clock,null,null,null,resolver, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
     Map<String,Object> definition(){
         return values("voucher_id","BF20","status","active","voucher_type","percent","percent_value",20,
             "min_purchase_usd",0,"max_discount_usd",0,"audience","all","all_skus",1,"store_claimable",1,
@@ -84,7 +84,7 @@ class H4EventSeasonalVoucherTest {
     }
     @Test void detailUsesVoucherEligibilityInsteadOfOptionalProEligibility(){
         var repository=mock(H4EventRuleRepository.class);var policies=mock(H4EventRuleService.class);var events=mock(AppGrowthEngagementMapper.class);
-        var commerce=mock(H4EventCommerceService.class);var engine=new H4EventEngine(repository,policies,commerce,events,null,null,null,null,null);
+        var commerce=mock(H4EventCommerceService.class);var engine=new H4EventEngine(repository,policies,commerce,events,null,null,null,null,null, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
         var now=LocalDateTime.now(ZoneOffset.UTC);
         var row=values("event_code",CODE,"kind","seasonal","enabled",1,"starts_at",now.minusDays(1),"ends_at",now.plusDays(1),"activated_at",now.minusDays(1));
         var source=values("eventCode",CODE,"userStatus","AVAILABLE");

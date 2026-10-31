@@ -50,7 +50,7 @@ class PromotionAccountSampleServiceTest {
     @Test void aCraftedSimulationSampleIsRecheckedAgainstTheC1VisibleScope(){
         auth("growth_promotion_simulate","user_c1_read");
         when(users.profile(29L)).thenReturn(ApiResult.fail(404,"USER_NOT_FOUND"));
-        var admin=new PromotionAdminService(null,null,null,null,null,null,null,null,null,null,null,null,null,null,samples);
+        var admin=new PromotionAdminService(null,null,null,null,null,null,null,null,null,null,null,null,null,null,samples,org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
         assertEquals(403,assertThrows(BizException.class,()->admin.simulate("activity",values("sampleAccountId","29"))).getCode());
         verify(users).profile(29L);
     }
@@ -67,7 +67,7 @@ class PromotionAccountSampleServiceTest {
         when(users.profile(29L)).thenReturn(ApiResult.ok(buyer));when(users.profile(30L)).thenReturn(ApiResult.fail(404,"USER_NOT_FOUND"));
         var db=mock(ffdd.opsconsole.promotion.mapper.PromotionMapper.class);
         when(db.activity("activity",false)).thenReturn(values());when(db.user(29L,false)).thenReturn(values("sponsor_user_id",30L));
-        var admin=new PromotionAdminService(db,mock(PromotionContractValidator.class),null,null,null,null,null,null,null,null,null,null,null,null,samples);
+        var admin=new PromotionAdminService(db,mock(PromotionContractValidator.class),null,null,null,null,null,null,null,null,null,null,null,null,samples,org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
         var audience=values("registrationAge",values("minDays",null,"maxDays",null),"lastValidPurchaseAge",values("minDays",null,"maxDays",null),"sponsor","ANY");
         var draft=values("template","DIRECT_REFERRAL","buyerAudience",audience,"inviterAudience",audience,"budgets",List.of(),"rules",List.of());
         assertEquals(403,assertThrows(BizException.class,()->admin.simulate("activity",values("sampleAccountId","29","draft",draft))).getCode());

@@ -132,7 +132,7 @@ class PromotionDevicePowerTest {
         when(db.deviceSlotCap()).thenReturn(10L);when(db.occupiedDeviceSlots(anyLong())).thenReturn(0L);
         doReturn(values("id",1)).when(db).requiredRow(anyString(),any());
         doAnswer(invocation->{writes.add(invocation.getArguments());return 1;}).when(db).write(anyString(),any(Object[].class));
-        var service=new PromotionRewardService(db,null,null,null,null,null);
+        var service=new PromotionRewardService(db,null,null,null,null,null, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
         var rights=values("productNo","box-s1","activationMode","AUTO","effectiveOn","ISSUED","durationDays",null);
         var profile=values("policyId","rights","version",1,"resolvedDeviceRights",rights);
         var snapshot=values("policies",values("rights:1",profile),"products",values("box-s1",values("product",product(type),"sku",sku(power))));

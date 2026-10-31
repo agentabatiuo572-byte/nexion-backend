@@ -1,10 +1,12 @@
 package ffdd.opsconsole.device.mapper;
 
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import ffdd.opsconsole.device.infrastructure.TestCloudRequestEntity;
 import java.time.LocalDateTime;
 import org.apache.ibatis.annotations.*;
 
 @Mapper
-public interface TestCloudRequestMapper {
+public interface TestCloudRequestMapper extends BaseMapper<TestCloudRequestEntity> {
     @Select("""
         SELECT id,trace_id traceId,detail_json detailJson,created_at createdAt FROM nx_audit_log
          WHERE service_name='nexion-backend' AND action='TEST_CLOUD_STABILITY_RECOVERY_APPROVED'
@@ -45,13 +47,20 @@ public interface TestCloudRequestMapper {
     int markStabilityAttempt(@Param("executor") String executor,@Param("keyHash") String keyHash);
     @Select("SELECT id FROM nx_test_cloud_resource_guard WHERE id=1 FOR UPDATE")
     int lockResourceGuard();
-    @Select("""
-        SELECT COUNT(*) FROM nx_user_device WHERE is_deleted=0 AND source_environment='PRODUCTION' AND run_id=''
-          AND UPPER(ownership_status)='OWNED' AND UPPER(device_type) NOT IN ('PHONE','MOBILE')
-          AND activated_at IS NOT NULL AND deactivated_at IS NULL
-          AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE') FOR UPDATE
-        """)
+    String RESOURCE_EXECUTOR_KIND="""
+          is_deleted=0 AND source_environment='PRODUCTION' AND run_id=''
+          AND UPPER(device_type) NOT IN ('PHONE','MOBILE')
+        """;
+    String RESOURCE_EXECUTOR_BASE=RESOURCE_EXECUTOR_KIND+" AND UPPER(ownership_status)='OWNED' AND activated_at IS NOT NULL";
+    String RESOURCE_EXECUTOR_CURRENT="deactivated_at IS NULL AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')";
+    @Select("SELECT COUNT(*) FROM nx_user_device WHERE "+RESOURCE_EXECUTOR_BASE+" AND "+RESOURCE_EXECUTOR_CURRENT+" FOR UPDATE")
     int activeResourceExecutors();
+    @Select("SELECT COUNT(*) FROM nx_user_device WHERE id=#{deviceId} AND "+RESOURCE_EXECUTOR_BASE+" AND "+RESOURCE_EXECUTOR_CURRENT+" FOR UPDATE")
+    int resourceExecutorCount(@Param("deviceId") long deviceId);
+    @Select("SELECT CASE WHEN "+RESOURCE_EXECUTOR_BASE+" AND NOT COALESCE(("+RESOURCE_EXECUTOR_CURRENT+"),0) THEN 1 ELSE 0 END FROM nx_user_device WHERE id=#{deviceId} FOR UPDATE")
+    int restoreResourceDelta(@Param("deviceId") long deviceId);
+    @Select("SELECT CASE WHEN "+RESOURCE_EXECUTOR_KIND+" AND NOT COALESCE(("+RESOURCE_EXECUTOR_BASE+" AND "+RESOURCE_EXECUTOR_CURRENT+"),0) THEN 1 ELSE 0 END FROM nx_user_device WHERE id=#{deviceId} FOR UPDATE")
+    int activationResourceDelta(@Param("deviceId") long deviceId);
     String COLUMNS="executor_id executorId,operation,key_hash keyHash,body_hash bodyHash,owner_id ownerId,device_id deviceId,"
             +"instance_no instanceNo,task_config_id taskConfigId,task_no taskNo,state,generation,recovery_token recoveryToken,"
             +"recovery_used recoveryUsed,proof_timestamp proofTimestamp,proof_validated proofValidated,reviewed_termination reviewedTermination,response_json responseJson,updated_at updatedAt";
@@ -74,7 +83,7 @@ public interface TestCloudRequestMapper {
         VALUES(#{r.executorId},#{r.operation},#{r.keyHash},#{r.bodyHash},#{r.ownerId},#{r.deviceId},#{r.instanceNo},
           #{r.taskConfigId},#{r.taskNo},'PROCESSING',1,0,#{r.proofTimestamp},#{r.updatedAt})
         """)
-    int insert(@Param("r") Request request);
+    int insertIntent(@Param("r") Request request);
     @Update("""
         UPDATE nx_test_cloud_request SET state='COMMITTED',task_no=#{taskNo},response_json=#{response},updated_at=#{now}
         WHERE executor_id=#{r.executorId} AND operation=#{r.operation} AND key_hash=#{r.keyHash}

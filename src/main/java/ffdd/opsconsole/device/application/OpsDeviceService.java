@@ -237,7 +237,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private final ObjectStorageService storageService;
     private final PromotionOrderService promotions;
     private final PhoneReplacementPolicyPublicationService phonePolicies;
-    @Autowired private TestCloudActivationAdmission testCloudAdmission;
+    @lombok.NonNull
+    private final TestCloudActivationAdmission testCloudAdmission;
 
     public OpsDeviceService(SupportPaymentAttributionFacade paymentAttribution,
             DeviceOpsRepository deviceRepository, DeviceCatalogRepository catalogRepository,
@@ -247,10 +248,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             EventOutboxService outboxService, E2TaskPriceHistoryService taskPriceHistoryService,
             Clock clock, OpsReadTimeSeedPolicy readTimeSeedPolicy,
             ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper, ObjectStorageService storageService,
-            PromotionOrderService promotions) {
+            PromotionOrderService promotions, TestCloudActivationAdmission testCloudAdmission) {
         this(paymentAttribution, deviceRepository, catalogRepository, configFacade, ledgerPostingFacade, refundSettlementFacade,
                 coverageFacade, auditLogService, idempotencyService, outboxService, taskPriceHistoryService,
-                clock, readTimeSeedPolicy, lockMapper, storageService, promotions, null);
+                clock, readTimeSeedPolicy, lockMapper, storageService, promotions, null, testCloudAdmission);
     }
 
     public OpsDeviceService(SupportPaymentAttributionFacade paymentAttribution,
@@ -260,10 +261,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             AuditLogService auditLogService, AdminIdempotencyService idempotencyService,
             EventOutboxService outboxService, E2TaskPriceHistoryService taskPriceHistoryService,
             Clock clock, OpsReadTimeSeedPolicy readTimeSeedPolicy,
-            ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper, ObjectStorageService storageService) {
+            ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper, ObjectStorageService storageService,
+            TestCloudActivationAdmission testCloudAdmission) {
         this(paymentAttribution, deviceRepository, catalogRepository, configFacade, ledgerPostingFacade, refundSettlementFacade,
                 coverageFacade, auditLogService, idempotencyService, outboxService, taskPriceHistoryService,
-                clock, readTimeSeedPolicy, lockMapper, storageService, null);
+                clock, readTimeSeedPolicy, lockMapper, storageService, null, testCloudAdmission);
     }
 
     public ApiResult<Map<String, Object>> overview() {
@@ -2655,7 +2657,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return result;
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<DeviceOpsView> restoreDevice(Long deviceId, String idempotencyKey, DeviceRestoreRequest request) {
+        testCloudAdmission.lock();
         ApiResult<DeviceOpsView> guard = requireDeviceCommand(deviceId, idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -2673,6 +2677,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
                     OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
+        testCloudAdmission.requireRestoreCapacity(deviceId);
         DeviceOpsView restored = deviceRepository.restoreDevice(deviceId, LocalDateTime.now(clock)).orElse(device);
         audit("E3B_DEVICE_RESTORE", "DEVICE", String.valueOf(deviceId), request.operator(), Map.of(
                 "fromStatus", device.status(),
@@ -2877,6 +2882,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<DeviceOpsView> activateE5Device(
             Long deviceId, boolean force, String idempotencyKey, DeviceE5ActionRequest request) {
+        testCloudAdmission.lock();
         ApiResult<DeviceOpsView> guard = requireE5DeviceCommand(deviceId, idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -2892,7 +2898,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     && lockMapper.countActiveByTarget("E", "device", String.valueOf(deviceId)) > 0) {
                 return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
             }
-            if (testCloudAdmission != null) testCloudAdmission.lock();
             DeviceOpsView before = deviceRepository.findDevice(deviceId).orElse(null);
             if (before == null) {
                 return ApiResult.fail(404, "DEVICE_NOT_FOUND");
@@ -2917,7 +2922,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (deviceRepository.countOccupiedSlotsForE5Activation(before.userId()) >= slotCap) {
                 return ApiResult.fail(409, "MAX_DEVICES_PER_USER_EXCEEDED");
             }
-            if (testCloudAdmission != null) testCloudAdmission.requireCapacity();
+            testCloudAdmission.requireActivationCapacity(deviceId);
             DeviceOpsView updated = deviceRepository.activateDevice(deviceId, LocalDateTime.now(clock)).orElse(null);
             if (updated == null) {
                 return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
