@@ -423,7 +423,7 @@ public class BehaviorAnalyticsService {
         sortActivity(rows, sort);
         require(!rows.isEmpty(), "L6_EXPORT_EMPTY");
         Map<String, BehaviorAnalyticsMapper.CatalogRow> catalog = new LinkedHashMap<>();
-        mapper.listCatalog().forEach(row -> catalog.put(row.route(), row));
+        mapper.listHistoricalCatalog().forEach(row -> catalog.put(row.route(), row));
         StringBuilder csv = new StringBuilder("route,title_zh,page_level,pv,uv,clicks,avg_dwell_ms,bounce_rate\n");
         for (BehaviorAnalyticsMapper.ActivityRow row : rows) {
             BehaviorAnalyticsMapper.CatalogRow page = catalog.get(row.route());
