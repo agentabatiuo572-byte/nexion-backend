@@ -94,6 +94,7 @@ class AppVietQrIntentServiceTest {
     }
     @Test void rechargePrincipalRejectsFractionsAndReadsTheConfiguredIntegerMinimum(){
         when(mapper.findIntentByCreateKey(41L,"below-configured-min")).thenReturn(null);
+        when(mapper.findIntentByCreateKey(41L,"fraction-topup")).thenReturn(null);
         assertThatThrownBy(()->service.createHosted(41L,"fraction-topup",new BigDecimal("10.01"))).hasMessage("VIETQR_AMOUNT_SCALE_INVALID");
         when(mapper.hdPayTopupMinimumPrincipal()).thenReturn(new BigDecimal("25"));
         assertThatThrownBy(()->service.createHosted(41L,"below-configured-min",new BigDecimal("24"))).hasMessage("VIETQR_AMOUNT_OUT_OF_RANGE");
@@ -540,6 +541,40 @@ class AppVietQrIntentServiceTest {
         assertThatThrownBy(() -> service.createHosted(41L, "hosted-replay", new BigDecimal("26")))
                 .hasMessageContaining("IDEMPOTENCY");
         verify(mapper, never()).listActiveBankAccountsForUpdate();
+    }
+
+    @Test
+    void historicalFractionalCreateReplaysOnlyItsOwnedOriginalKeyAndFrozenSnapshot() {
+        for (boolean hosted : List.of(false,true)) {
+            String key=hosted?"old-fraction-hosted":"old-fraction-manual";
+            var row=new java.util.LinkedHashMap<>(intentRow("VQR-OLD-FRACTION",key,sha256("37.12"),"AWAITING_PAYMENT",3L));
+            row.put("paymentRail",hosted?"HDPAY":"MANUAL");row.put("requestedUsdt",new BigDecimal("37.12"));row.put("payableVnd",new BigDecimal("979596"));
+            when(mapper.findIntentByCreateKey(41L,key)).thenReturn(row);
+            when(mapper.hdPayTopupMinimumPrincipal()).thenReturn(new BigDecimal("100"));
+            var result=hosted?service.createHosted(41L,key,new BigDecimal("37.12")):service.create(41L,key,new BigDecimal("37.12"));
+            assertThat(result.getData()).containsEntry("intentNo","VQR-OLD-FRACTION").containsEntry("usdtAmount",new BigDecimal("37.12"))
+                    .containsEntry("vndAmount",new BigDecimal("979596")).containsEntry("fxRate",new BigDecimal("26390")).containsEntry("version",3L);
+        }
+        verify(mapper,never()).findVietQrConfig();verify(mapper,never()).findFxQuoteConfig();
+        verify(mapper,never()).insertIntent(anyString(),anyLong(),anyString(),anyString(),any(),any(),any(),anyLong(),any(),anyString(),any(),anyString());
+    }
+
+    @Test
+    void historicalFractionalReplayRejectsAmountOrRailChangesBeforeReconciliation() {
+        var row=new java.util.LinkedHashMap<>(intentRow("VQR-OLD-FRACTION","old-fraction-conflict",sha256("37.12"),"AWAITING_PAYMENT",3L));
+        row.put("paymentRail","HDPAY");row.put("requestedUsdt",new BigDecimal("37.12"));
+        when(mapper.findIntentByCreateKey(41L,"old-fraction-conflict")).thenReturn(row);
+        assertThatThrownBy(()->service.createHosted(41L,"old-fraction-conflict",new BigDecimal("37.13"))).hasMessage("IDEMPOTENCY_REQUEST_CONFLICT");
+        assertThatThrownBy(()->service.create(41L,"old-fraction-conflict",new BigDecimal("37.12"))).hasMessage("VIETQR_PAYMENT_RAIL_CONFLICT");
+        verify(mapper,never()).ensureInFlightReconciliation(anyString());
+    }
+
+    @Test
+    void fractionalPrincipalWithoutOriginalKeyCannotCreateAnotherIntent() {
+        when(mapper.findIntentByCreateKey(41L,"new-fraction-no-original")).thenReturn(null);
+        assertThatThrownBy(()->service.createHosted(41L,"new-fraction-no-original",new BigDecimal("37.12"))).hasMessage("VIETQR_AMOUNT_SCALE_INVALID");
+        verify(mapper,never()).findVietQrConfig();
+        verify(mapper,never()).insertIntent(anyString(),anyLong(),anyString(),anyString(),any(),any(),any(),anyLong(),any(),anyString(),any(),anyString());
     }
 
     @Test

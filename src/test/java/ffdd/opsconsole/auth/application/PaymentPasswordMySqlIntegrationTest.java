@@ -142,6 +142,8 @@ class PaymentPasswordMySqlIntegrationTest {
     @Test void aBusinessExceptionRollsBackMoneyButKeepsPinAttemptAndTerminalRejection() {
         setup();
         ApiResult<?> rejection=service.execute(user,"trade-in","purchase-fails","source:1",pin("018290","attempt-business-failure"),() -> {
+            assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isTrue();
+            assertThat(jdbc.queryForObject("SELECT @@transaction_isolation",String.class)).isEqualTo("READ-COMMITTED");
             jdbc.update("UPDATE pin_test_effect SET balance=balance-10,effects=effects+1 WHERE user_id=?",user);
             throw new BizException(409,"TRADEIN_QUOTE_CHANGED");
         });
@@ -172,6 +174,21 @@ class PaymentPasswordMySqlIntegrationTest {
             assertThat(jdbc.queryForObject("SELECT effects FROM pin_test_effect WHERE user_id=?",Integer.class,user)).isEqualTo(1);
         } finally { release.countDown(); executor.shutdownNow(); }
     }
+    @Test void checkedCallbackFailureRollsBackReadCommittedBusinessAndCannotWriteSuccessReceipt() {
+        setup();
+        assertThatThrownBy(() -> service.execute(user,"capacity-keep","purchase-checked-failure","product:one",pin("018290","attempt-checked-failure"),() -> {
+            assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isTrue();
+            assertThat(jdbc.queryForObject("SELECT @@transaction_isolation",String.class)).isEqualTo("READ-COMMITTED");
+            jdbc.update("UPDATE pin_test_effect SET balance=balance-10,effects=effects+1 WHERE user_id=?",user);
+            PaymentPasswordMySqlIntegrationTest.<RuntimeException>throwChecked(new Exception("checked callback failure"));
+            return ApiResult.ok(Map.of("orderNo","unreachable"));
+        })).hasRootCauseMessage("checked callback failure");
+        assertThat(jdbc.queryForMap("SELECT balance,effects FROM pin_test_effect WHERE user_id=?",user)).containsEntry("balance",100L).containsEntry("effects",0);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_payment_command WHERE user_id=? AND command_key='purchase-checked-failure' AND (status='SUCCEEDED' OR response_json IS NOT NULL)",Integer.class,user)).isZero();
+        assertThat(mapper.attempt(user,"attempt-checked-failure")).isNotNull();
+    }
+    @SuppressWarnings("unchecked")
+    private static <E extends Throwable> void throwChecked(Throwable failure) throws E { throw (E)failure; }
     @Test void setupIsAtomicAndSecretsNeverReachDurableBusinessSummary() throws Exception {
         setup();
         assertThat(service.setup(user,"other-setup",new AppPaymentPasswordService.Setup("394827","394827")).getMessage()).isEqualTo("PAYMENT_PASSWORD_ALREADY_CONFIGURED");

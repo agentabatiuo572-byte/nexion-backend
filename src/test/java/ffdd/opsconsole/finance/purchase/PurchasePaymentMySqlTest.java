@@ -130,7 +130,7 @@ class PurchasePaymentMySqlTest {
         verifyNoInteractions(gateway);assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_purchase_payment_intent",Integer.class)).isZero();
     }
     @Test void feePublicationCannotCommitBetweenTheCheckedVersionAndIntentCommit() throws Exception {
-        var q=quote("HDPAY_BANK");CountDownLatch beforeInsert=new CountDownLatch(1),releaseInsert=new CountDownLatch(1),editStarted=new CountDownLatch(1);
+        var q=quote("HDPAY_BANK");CountDownLatch beforeInsert=new CountDownLatch(1),releaseInsert=new CountDownLatch(1);
         PurchasePaymentMapper wrapped=mock(PurchasePaymentMapper.class,org.mockito.AdditionalAnswers.delegatesTo(db));
         doAnswer(invocation->{
             String sql=invocation.getArgument(0);Object[] args=(Object[])invocation.getRawArguments()[1];
@@ -142,9 +142,14 @@ class PurchasePaymentMySqlTest {
         try{
             var create=workers.submit(()->service.create(7,"concurrent-fee-initiation",text(q.get("paymentQuoteId"))));
             assertThat(beforeInsert.await(5,TimeUnit.SECONDS)).isTrue();
-            var edit=workers.submit(()->{editStarted.countDown();return policy.update("concurrent-fee-edit",values("expectedVersion",1,"reason","Publish new fees while purchase starts", "channels",List.of(values("paymentMethod","HDPAY_BANK","channelFeeRatePct","5.00","channelFeeFixed","1.00","networkConfirmFeeUsdt","0.00","minTopupPrincipal","10"))));});
-            assertThat(editStarted.await(5,TimeUnit.SECONDS)).isTrue();Thread.sleep(100);assertThat(edit.isDone()).isFalse();
-            releaseInsert.countDown();var intent=create.get(10,TimeUnit.SECONDS);assertThat(edit.get(10,TimeUnit.SECONDS)).containsEntry("version",2L);
+            var edit=workers.submit(()->new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(source)).execute(status->{
+                jdbc.execute("SET SESSION innodb_lock_wait_timeout=1");
+                return policy.update("concurrent-fee-edit",values("expectedVersion",1,"reason","Publish new fees while purchase starts", "channels",List.of(values("paymentMethod","HDPAY_BANK","channelFeeRatePct","5.00","channelFeeFixed","1.00","networkConfirmFeeUsdt","0.00","minTopupPrincipal","10"))));
+            }));
+            assertThatThrownBy(()->edit.get(5,TimeUnit.SECONDS)).hasStackTraceContaining("Lock wait timeout exceeded");
+            assertThat(jdbc.queryForObject("SELECT version FROM nx_purchase_payment_policy",Long.class)).isEqualTo(1L);
+            releaseInsert.countDown();var intent=create.get(10,TimeUnit.SECONDS);
+            assertThat(policy.update("concurrent-fee-edit",values("expectedVersion",1,"reason","Publish fees after the intent commits", "channels",List.of(values("paymentMethod","HDPAY_BANK","channelFeeRatePct","5.00","channelFeeFixed","1.00","networkConfirmFeeUsdt","0.00","minTopupPrincipal","10"))))).containsEntry("version",2L);
             assertThat(intent.get("feePolicyVersion")).isEqualTo(1);assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_purchase_payment_intent",Integer.class)).isEqualTo(1);
         }finally{releaseInsert.countDown();workers.shutdownNow();}
     }
