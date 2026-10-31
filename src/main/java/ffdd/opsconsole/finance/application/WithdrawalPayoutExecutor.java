@@ -2,6 +2,7 @@ package ffdd.opsconsole.finance.application;
 
 import ffdd.opsconsole.finance.cregis.CregisConstants;
 import ffdd.opsconsole.finance.cregis.CregisGateway;
+import ffdd.opsconsole.finance.cregis.CregisNetwork;
 import ffdd.opsconsole.finance.cregis.CregisGatewayException;
 import ffdd.opsconsole.finance.cregis.CregisGatewayRouter;
 import ffdd.opsconsole.finance.cregis.CregisProperties;
@@ -64,7 +65,7 @@ public class WithdrawalPayoutExecutor {
         if (mode == CregisProperties.Mode.PROVIDER && !payouts.enabled()) return;
         LocalDateTime now = LocalDateTime.now();
         for (var candidate : mapper.claimable(now, 50)) {
-            if(mode==CregisProperties.Mode.PROVIDER && "USDT-BEP20".equals(candidate.chain())) {
+            if(mode==CregisProperties.Mode.PROVIDER && java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(candidate.chain())) {
                 WithdrawalPayoutMapper.PayoutRow claimed;
                 try { claimed=dispatchGuard.begin(candidate,now); }
                 catch(RuntimeException unavailable) { continue; } // No HTTP request starts on a failed admission.
@@ -81,7 +82,7 @@ public class WithdrawalPayoutExecutor {
     private void reconcileProvider(WithdrawalPayoutMapper.PayoutRow row) {
         try {
             CregisGateway.PayoutOrder payout = router.provider().queryPayout(new CregisGateway.PayoutQuery(
-                    row.providerCid(), row.providerIdempotencyKey(), row.targetAddress(), row.netReceive()));
+                    row.providerCid(), row.providerIdempotencyKey(), row.targetAddress(), row.netReceive(), CregisNetwork.fromNetwork(row.chain().substring(5)).currency()));
             if ("TX_ORPHANED".equals(row.status())) {
                 if (!finalizer.recoverProviderSubmission(row,payout.cid())) return;
                 row = mapper.payout(row.withdrawalNo());
@@ -93,7 +94,7 @@ public class WithdrawalPayoutExecutor {
             if (code == 0 || code == 1 || code == 5 || code == 6) {
                 finalizer.providerProgress(row, row.providerCid(), eventNo, payloadHash, code, payout.txid());
                 if (code == 6 && payout.txid() != null) {
-                    var proof = chain.verifyPayout(payout.txid(),row.targetAddress(),row.netReceive());
+                    var proof = chain.verifyPayout(CregisNetwork.fromNetwork(row.chain().substring(5)),payout.txid(),row.targetAddress(),row.netReceive());
                     if (proof.isPresent() && proof.get().confirmations() >= payouts.requiredConfirmations())
                         finalizer.confirmProviderChain(row,payout.txid(),proof.get(),payouts.requiredConfirmations());
                 }
@@ -110,7 +111,7 @@ public class WithdrawalPayoutExecutor {
     }
 
     private void dispatch(WithdrawalPayoutMapper.PayoutRow row,boolean providerIntentPersisted) {
-        if (!"USDT-BEP20".equals(row.chain())) {
+        if (!java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(row.chain())) {
             finalizer.retry(row, "CREGIS_CHAIN_UNSUPPORTED");
             return;
         }
@@ -130,7 +131,7 @@ public class WithdrawalPayoutExecutor {
                     ? router.isolatedLocalSandbox() : router.provider();
             // Provider intent has already committed under the shared gate; never claim it a second time.
             CregisGateway.PayoutSubmission submission = gateway.createPayout(new CregisGateway.PayoutRequest(
-                    CregisConstants.USDT_BEP20_CURRENCY,
+                    CregisNetwork.fromNetwork(row.chain().substring(5)).currency(),
                     row.targetAddress(),
                     row.netReceive(),
                     row.providerIdempotencyKey(),

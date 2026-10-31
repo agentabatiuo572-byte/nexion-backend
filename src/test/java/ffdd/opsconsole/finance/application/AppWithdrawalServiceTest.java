@@ -497,6 +497,7 @@ class AppWithdrawalServiceTest {
         environment.setProperty("nexion.finance.cregis.mode","PROVIDER");
         assertThat(service.policy(7L).getData()).containsEntry("enabledNetworks",java.util.List.of());
         when(providerPayout.enabled()).thenReturn(true);
+        when(providerPayout.enabled(ffdd.opsconsole.finance.cregis.CregisNetwork.BEP20)).thenReturn(true);
         assertThat(service.policy(7L).getData()).containsEntry("enabledNetworks",java.util.List.of("USDT-BEP20"));
         when(providerPayout.enabled()).thenReturn(false);
         assertThat(service.submit(7L,new BigDecimal("100"),"USDT-BEP20","0x"+"a".repeat(40),"closed-provider").getMessage())

@@ -37,6 +37,8 @@ class WithdrawalPayoutDispatchGuardMySqlTest {
         data=new DriverManagerDataSource(url.replace("/cregis_exception_test","/"+SCHEMA),user,password);jdbc=new JdbcTemplate(data);
         jdbc.execute("CREATE TABLE nx_cregis_provision_gate(id INT PRIMARY KEY,state VARCHAR(16),assign_enabled INT,credit_enabled INT,payout_enabled INT,version BIGINT,switch_reason VARCHAR(255),updated_at DATETIME) ENGINE=InnoDB");
         jdbc.execute("INSERT INTO nx_cregis_provision_gate VALUES(1,'IDLE',1,1,1,0,NULL,NOW())");
+        jdbc.execute("CREATE TABLE nx_config_item(config_key VARCHAR(128) PRIMARY KEY,config_value VARCHAR(32),is_deleted INT,status INT) ENGINE=InnoDB");
+        jdbc.execute("INSERT INTO nx_config_item VALUES('withdrawal.bep20.enabled','true',0,1),('withdrawal.erc20.enabled','false',0,1)");
         jdbc.execute("CREATE TABLE nx_user(id BIGINT PRIMARY KEY,status VARCHAR(24),sandbox INT,is_deleted INT) ENGINE=InnoDB");jdbc.execute("INSERT INTO nx_user VALUES(7,'ACTIVE',0,0)");
         jdbc.execute("CREATE TABLE nx_withdrawal_order(id BIGINT PRIMARY KEY,withdrawal_no VARCHAR(96) UNIQUE,user_id BIGINT,chain VARCHAR(32),target_address VARCHAR(64),amount DECIMAL(18,6),d2_net_receive DECIMAL(18,6),d2_nex_burned DECIMAL(18,6),status VARCHAR(32),d5_payout_due_at DATETIME,d5_provider_cid BIGINT,d5_provider_idempotency_key VARCHAR(96),d5_payout_source VARCHAR(24),chain_broadcast_attempts INT,c2_frozen_by_user_status INT,c2_previous_status VARCHAR(32),completed_at DATETIME,is_deleted INT,d5_payout_lease_until DATETIME,chain_submitted_at DATETIME,next_broadcast_at DATETIME,last_broadcast_error VARCHAR(255),failure_reason VARCHAR(255),failed_at DATETIME,chain_tx_hash VARCHAR(66),created_at DATETIME,updated_at DATETIME) ENGINE=InnoDB");
         jdbc.execute("INSERT INTO nx_withdrawal_order(id,withdrawal_no,user_id,chain,target_address,amount,d2_net_receive,d2_nex_burned,status,chain_broadcast_attempts,c2_frozen_by_user_status,is_deleted) VALUES(1,'WD-guard',7,'USDT-BEP20','0x"+"a".repeat(40)+"',10,1,0,'REVIEW_PASSED',0,0,0)");
@@ -44,7 +46,7 @@ class WithdrawalPayoutDispatchGuardMySqlTest {
         config.addMapper(WithdrawalPayoutMapper.class);config.addMapper(CregisDepositMapper.class);
         var session=new SqlSessionTemplate(new SqlSessionFactoryBuilder().build(config));mapper=session.getMapper(WithdrawalPayoutMapper.class);deposits=session.getMapper(CregisDepositMapper.class);
         tx=new TransactionTemplate(new DataSourceTransactionManager(data));tx.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
-        when(control.enabled()).thenReturn(true);
+        when(control.enabled()).thenReturn(true);when(control.enabled(any())).thenReturn(true);
     }
     @AfterEach void cleanup(){if(owned)admin.execute("DROP DATABASE "+SCHEMA);}
     @Test void committedStopWinsTheGateAndLeavesNoClaimOrIntent()throws Exception {
@@ -79,6 +81,7 @@ class WithdrawalPayoutDispatchGuardMySqlTest {
     }
     @Test void intentConflictRollsBackTheProcessingClaim(){
         var failing=mock(WithdrawalPayoutMapper.class);
+        when(failing.lockNetworkPayoutEnabled(anyString())).thenReturn("true");
         when(failing.lockCashCustomer(7L)).thenAnswer(call->mapper.lockCashCustomer(7L));
         when(failing.claimNewPayout("WD-guard",now,now.plusMinutes(2))).thenAnswer(call->mapper.claimNewPayout("WD-guard",now,now.plusMinutes(2)));
         var guard=new WithdrawalPayoutDispatchGuard(failing,deposits,control);

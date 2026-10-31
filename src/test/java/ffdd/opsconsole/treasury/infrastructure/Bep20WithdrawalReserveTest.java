@@ -39,6 +39,14 @@ class Bep20WithdrawalReserveTest {
         repository.reverseBep20WithdrawalReserve("WD1",amount,now.plusSeconds(1));
         verify(mapper,times(1)).insertBep20ReserveReversal(any(),any(),any(),any(),any());
     }
+    @Test void erc20UsesTheSameGrossReserveReversalAndCannotReturnAnUnknownBroadcast() {
+        failedWithOriginal();
+        when(mapper.lockReserveWithdrawal("WD1")).thenReturn(new TreasuryLedgerMapper.ReserveWithdrawal(7L,"USDT-ERC20",amount,"FAILED",null,"provider"));
+        repository.reverseBep20WithdrawalReserve("WD1",amount,now);
+        verify(mapper).insertBep20ReserveReversal(any(),any(),eq(amount),any(),any());
+        when(mapper.lockReserveWithdrawal("WD1")).thenReturn(new TreasuryLedgerMapper.ReserveWithdrawal(7L,"USDT-ERC20",amount,"TX_ORPHANED",null,"provider"));
+        assertThatThrownBy(()->repository.reverseBep20WithdrawalReserve("WD1",amount,now)).hasMessage("BEP20_RESERVE_RETURN_STATE_INVALID");
+    }
     @Test void missingOriginalOutFailsClosed() {
         failedWithOriginal();when(mapper.lockReserveEntries("RSV-WD-WD1","WD-WD1")).thenReturn(List.of());
         assertThatThrownBy(()->repository.reverseBep20WithdrawalReserve("WD1",amount,now)).isInstanceOf(IllegalStateException.class);

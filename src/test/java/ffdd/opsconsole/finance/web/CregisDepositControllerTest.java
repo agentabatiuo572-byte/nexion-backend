@@ -38,7 +38,7 @@ class CregisDepositControllerTest {
         when(auth.getDetails()).thenReturn(Map.of("subjectType", "USER"));
         when(auth.getPrincipal()).thenReturn("2503");
         controller.address("BEP20", auth);
-        verify(service).address(2503L);
+        verify(service).address(ffdd.opsconsole.finance.cregis.CregisNetwork.BEP20,2503L);
         verifyNoMoreInteractions(service);
     }
 }

@@ -1,6 +1,7 @@
 package ffdd.opsconsole.finance.application;
 
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper;
+import ffdd.opsconsole.finance.cregis.CregisNetwork;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.Attribution;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.PayoutAddressRow;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WalletRow;
@@ -135,6 +136,7 @@ public class AppWithdrawalService {
                 "cooldownDays", rhythm.withdrawCooldownDays(),
                 "complianceHoldEnabled", rhythm.complianceHoldEnabled(),
                 "enabledNetworks", policy.enabledNetworks(), "providerPayout", providerPayout.capability(),
+                "networkCapabilities", providerPayout.networkCapabilities(),
                 "currentPhase", rhythm.currentPhase(),
                 "currentMonth", rhythm.currentMonth(), "withdrawalEnabled", withdrawalEnabled,
                 "gateSource", "J1", "source", "D5+H1"));
@@ -775,9 +777,10 @@ public class AppWithdrawalService {
         }
         boolean payoutAllowed = cryptoPayoutAllowed();
         List<String> enabled = payoutAllowed
-                ? CHAINS.stream().sorted().filter(chain -> !providerMode() || "USDT-BEP20".equals(chain))
+                ? CHAINS.stream().sorted().filter(chain -> !providerMode() || ("USDT-BEP20".equals(chain) || "USDT-ERC20".equals(chain))
+                        && providerPayout.enabled(CregisNetwork.fromNetwork(chain.substring(5))))
                     .filter(this::networkEnabled).toList() : List.of();
-        if (enabled.isEmpty() && payoutAllowed) throw new BizException(503, "D5_NETWORK_CONFIG_UNAVAILABLE");
+
         String versionMaterial = version + "|" + fees + "|" + nexOffsetRate.stripTrailingZeros().toPlainString()
                 + "|" + smallAmountThresholdUsd.stripTrailingZeros().toPlainString()
                 + "|" + payoutSlaHours + "|" + enabled;

@@ -57,30 +57,43 @@ public class PurchasePaymentService {
         if(row==null||!"ACTIVE".equals(row.get("status"))||number(row.get("sandbox"))!=0)
             throw new BizException(403,"PURCHASE_PAYMENT_USER_UNAVAILABLE");
     }
+    private static boolean cregis(Object method){return Set.of("CREGIS_USDT_BSC","CREGIS_USDT_ERC20").contains(method);}
+    private static CregisNetwork network(Object method){
+        return switch(text(method)){
+            case "CREGIS_USDT_BSC" -> CregisNetwork.BEP20;
+            case "CREGIS_USDT_ERC20" -> CregisNetwork.ERC20;
+            default -> throw new BizException(422,"PURCHASE_PAYMENT_METHOD_INVALID");
+        };
+    }
+    private static String method(CregisNetwork network){return network==CregisNetwork.BEP20?"CREGIS_USDT_BSC":"CREGIS_USDT_ERC20";}
     private void ready(String method){
         if("HDPAY_BANK".equals(method)){
             if(!hd.ready())throw new BizException(503,"HDPAY_CONFIGURATION_INCOMPLETE");
             HdPayServerIp.requirePublicIpv4(hd.getServerIp());
-        }else if("CREGIS_USDT_BSC".equals(method)){
-            if(cr.getMode()!=CregisProperties.Mode.PROVIDER||!cr.isDepositEnabled()||!cr.isDepositCreditEnabled()||cr.getProjectId()<=0||cr.getDepositConfirmations()<15)
+        }else if(cregis(method)){
+            var network=network(method);
+            if(cr.getMode()!=CregisProperties.Mode.PROVIDER||!cr.isDepositEnabled()||!cr.isDepositCreditEnabled()||cr.getProjectId()<=0||cr.confirmations(network)<15||!cr.networkConfigured(network)||!cr.depositNetworkEnabled(network))
                 throw new BizException(503,"CREGIS_DIRECT_PAYMENT_UNAVAILABLE");
-            cregisGate(true,false);
+            if(crGateway.provider().projectCoins().stream().noneMatch(coin->coin.addressEnabled()
+                    &&network.chainId().equals(coin.chainId())&&network.tokenId().equalsIgnoreCase(coin.tokenId())))
+                throw new BizException(503,"CREGIS_DIRECT_PAYMENT_ASSET_UNAVAILABLE");
+            cregisGate(network,true,false);
         }else throw new BizException(422,"PURCHASE_PAYMENT_METHOD_INVALID");
     }
-    private void cregisGate(boolean assignment,boolean lock){
-        if(!cr.isDepositCreditEnabled())throw new BizException(409,"CREGIS_DIRECT_PAYMENT_PAUSED");
+    private void cregisGate(CregisNetwork network,boolean assignment,boolean lock){
+        if(!cr.isDepositCreditEnabled()||!cr.depositNetworkEnabled(network))throw new BizException(409,"CREGIS_DIRECT_PAYMENT_PAUSED");
         var gate=db.one("SELECT state,CAST(assign_enabled AS UNSIGNED) assign_enabled,CAST(credit_enabled AS UNSIGNED) credit_enabled FROM nx_cregis_provision_gate WHERE id=1"+(lock?" FOR UPDATE":""));
         if(gate==null||!"IDLE".equals(gate.get("state"))||number(gate.get("credit_enabled"))!=1||assignment&&number(gate.get("assign_enabled"))!=1)
             throw new BizException(409,"CREGIS_DIRECT_PAYMENT_PAUSED");
     }
-    private Map<String,Object> dedicatedAddress(){
-        var candidate=db.one("SELECT id,address FROM nx_cregis_deposit_address WHERE project_id=? AND chain_id=? AND state='UNASSIGNED' AND user_id IS NULL AND purpose='WALLET_TOPUP' ORDER BY id LIMIT 1",cr.getProjectId(),CregisConstants.BSC_CHAIN_ID);
+    private Map<String,Object> dedicatedAddress(CregisNetwork network){
+        var candidate=db.one("SELECT id,address FROM nx_cregis_deposit_address WHERE project_id=? AND chain_id=? AND state='UNASSIGNED' AND user_id IS NULL AND purpose='WALLET_TOPUP' ORDER BY id LIMIT 1",cr.getProjectId(),network.chainId());
         if(candidate==null)throw new BizException(503,"CREGIS_DIRECT_ADDRESS_POOL_UNAVAILABLE");
         String address=text(candidate.get("address"));
-        if(!crGateway.provider().addressBelongs(CregisConstants.BSC_CHAIN_ID,address)
-                ||!crGateway.provider().zeroAddressBalance(CregisConstants.USDT_BEP20_CURRENCY,address)||!chain.zeroUsdtBalance(address))
+        if(!crGateway.provider().addressBelongs(network.chainId(),address)
+                ||!crGateway.provider().zeroAddressBalance(network.currency(),address)||!chain.zeroUsdtBalance(network,address))
             throw new BizException(409,"CREGIS_DIRECT_ADDRESS_REQUIRES_REVIEW");
-        var head=chain.head();if(!head.hash().equalsIgnoreCase(chain.blockHash(head.number())))throw new BizException(503,"CREGIS_DIRECT_ALLOCATION_ANCHOR_INVALID");
+        var head=chain.head(network);if(!head.hash().equalsIgnoreCase(chain.blockHash(network,head.number())))throw new BizException(503,"CREGIS_DIRECT_ALLOCATION_ANCHOR_INVALID");
         candidate.put("allocationBlock",head.number());candidate.put("allocationHash",head.hash());candidate.put("proofExpiresAt",Instant.now().plusSeconds(5));
         return candidate;
     }
@@ -105,7 +118,7 @@ public class PurchasePaymentService {
             BigDecimal fee=subtotal.multiply(rate).divide(new BigDecimal("100")).add(fixed).setScale(2,RoundingMode.HALF_UP);
             BigDecimal total=subtotal.add(fee).add(network).setScale(2,RoundingMode.HALF_UP);
             String id=id("PPQ-");Instant expires=Instant.now().plusSeconds(900);
-            var quote=values("paymentQuoteId",id,"kind",kind,"paymentMethod",method,"network","HDPAY_BANK".equals(method)?"VND_BANK":"BSC",
+            var quote=values("paymentQuoteId",id,"kind",kind,"paymentMethod",method,"network","HDPAY_BANK".equals(method)?"VND_BANK":network(method)==CregisNetwork.BEP20?"BSC":"ERC20",
                     "subtotalUsdt",subtotal.toPlainString(),"businessAmountUsdt",pricing.get("businessAmountUsdt"),
                     "roundingAdjustmentUsdt",subtotal.subtract(new BigDecimal(text(pricing.get("businessAmountUsdt")))).setScale(6,RoundingMode.UNNECESSARY).toPlainString(),"channelFeeRatePct",rate.toPlainString(),"channelFeeFixed",fixed.toPlainString(),
                     "channelFeeUsdt",fee.toPlainString(),"networkConfirmFeeUsdt",network.toPlainString(),"totalUsdt",total.toPlainString(),
@@ -162,12 +175,13 @@ public class PurchasePaymentService {
         if(originalQuote==null)throw new BizException(404,"PURCHASE_PAYMENT_QUOTE_NOT_FOUND");
         var existing=db.one("SELECT * FROM nx_purchase_payment_intent WHERE user_id=? AND kind=? AND command_key=?",owner,originalQuote.get("kind"),key);
         if(existing!=null){if(!quoteId.equals(existing.get("quote_id")))throw new BizException(409,"IDEMPOTENCY_KEY_CONFLICT");return get(owner,text(existing.get("intent_no")));}
-        boolean bsc="CREGIS_USDT_BSC".equals(originalQuote.get("payment_method"));
+        boolean bsc=cregis(originalQuote.get("payment_method"));
+        CregisNetwork network=bsc?network(originalQuote.get("payment_method")):null;
         ready(text(originalQuote.get("payment_method")));
-        Map<String,Object> candidate=bsc?dedicatedAddress():null;
+        Map<String,Object> candidate=bsc?dedicatedAddress(network):null;
         // HDPay commits the immutable intent before create; BSC atomically dedicates an existing proven pool address.
         var reservation=tx(()->{
-            if(bsc)cregisGate(true,true);
+            if(bsc)cregisGate(network,true,true);
             user(owner,true);var quote=db.one("SELECT * FROM nx_purchase_payment_quote WHERE quote_id=? AND user_id=? FOR UPDATE",quoteId,owner);
             if(quote==null)throw new BizException(404,"PURCHASE_PAYMENT_QUOTE_NOT_FOUND");
             var prior=db.one("SELECT * FROM nx_purchase_payment_intent WHERE user_id=? AND kind=? AND command_key=?",owner,quote.get("kind"),key);
@@ -187,7 +201,7 @@ public class PurchasePaymentService {
             db.write("INSERT INTO nx_purchase_payment_intent(intent_no,quote_id,user_id,kind,payment_method,command_key,payload_json,quote_json,pricing_hash,status,expires_at,provider_project) VALUES(?,?,?,?,?,?,?,?,?,'CREATING',?,?)",
                     no,quoteId,owner,quote.get("kind"),quote.get("payment_method"),key,quote.get("payload_json"),quote.get("quote_json"),quote.get("pricing_hash"),quote.get("expires_at"),cr.getProjectId());
             if(bsc){
-                var locked=db.one("SELECT id,address FROM nx_cregis_deposit_address WHERE id=? AND project_id=? AND chain_id=? AND state='UNASSIGNED' AND user_id IS NULL AND purpose='WALLET_TOPUP' FOR UPDATE",candidate.get("id"),cr.getProjectId(),CregisConstants.BSC_CHAIN_ID);
+                var locked=db.one("SELECT id,address FROM nx_cregis_deposit_address WHERE id=? AND project_id=? AND chain_id=? AND state='UNASSIGNED' AND user_id IS NULL AND purpose='WALLET_TOPUP' FOR UPDATE",candidate.get("id"),cr.getProjectId(),network.chainId());
                 if(locked==null||!candidate.get("address").equals(locked.get("address"))||!((Instant)candidate.get("proofExpiresAt")).isAfter(Instant.now()))
                     throw new BizException(409,"CREGIS_DIRECT_ADDRESS_ALLOCATION_RETRY");
                 if(db.write("UPDATE nx_cregis_deposit_address SET state='DIRECT_PURCHASE',purpose='PURCHASE_DIRECT',purchase_intent_no=?,allocation_block=?,allocation_hash=?,updated_at=NOW(6) WHERE id=? AND state='UNASSIGNED' AND user_id IS NULL",no,candidate.get("allocationBlock"),candidate.get("allocationHash"),candidate.get("id"))!=1)
@@ -225,26 +239,30 @@ public class PurchasePaymentService {
         refresh(row);return true;
     }
     /** Callback ownership is resolved against the dedicated intent address, never the topup pool. */
-    public boolean observeBscCallback(Map<String,Object> callback){
-        var row=db.one("SELECT * FROM nx_purchase_payment_intent WHERE address=LOWER(?) AND payment_method='CREGIS_USDT_BSC' AND provider_project=?",callback.get("address"),cr.getProjectId());
+    public boolean observeBscCallback(Map<String,Object> callback){return observeCregisCallback(callback);}
+    public boolean observeCregisCallback(Map<String,Object> callback){
+        var network=CregisNetwork.fromAsset(text(callback.get("chain_id")),text(callback.get("token_id")));
+        var row=db.one("SELECT * FROM nx_purchase_payment_intent WHERE address=LOWER(?) AND payment_method=? AND provider_project=?",callback.get("address"),method(network),cr.getProjectId());
         if(row==null)return false;refresh(row);return true;
     }
-    public boolean ownsBscAddress(String address){
-        return db.one("SELECT intent_no FROM nx_purchase_payment_intent WHERE address=LOWER(?) AND payment_method='CREGIS_USDT_BSC' AND provider_project=?",address,cr.getProjectId())!=null;
+    public boolean ownsBscAddress(String address){return ownsCregisAddress(CregisNetwork.BEP20,address);}
+    public boolean ownsCregisAddress(CregisNetwork network,String address){
+        return db.one("SELECT intent_no FROM nx_purchase_payment_intent WHERE address=LOWER(?) AND payment_method=? AND provider_project=?",address,method(network),cr.getProjectId())!=null;
     }
-    /** Nullable means this is not a purchase address; full reconciliation then uses the existing topup path. */
-    public Boolean materializeBscProviderRow(CregisGateway.DepositRow incoming){
-        var intent=db.one("SELECT * FROM nx_purchase_payment_intent WHERE address=LOWER(?) AND payment_method='CREGIS_USDT_BSC' AND provider_project=?",incoming.address(),cr.getProjectId());
+    public Boolean materializeBscProviderRow(CregisGateway.DepositRow incoming){return materializeCregisProviderRow(incoming);}
+    /** The provider asset selects the intent rail; the same hex address on another chain is a different owner. */
+    public Boolean materializeCregisProviderRow(CregisGateway.DepositRow incoming){
+        var network=CregisNetwork.fromAsset(incoming.chainId(),incoming.tokenId());
+        var intent=db.one("SELECT * FROM nx_purchase_payment_intent WHERE address=LOWER(?) AND payment_method=? AND provider_project=?",incoming.address(),method(network),cr.getProjectId());
         if(intent==null)return null;if(incoming.status()!=1)return incoming.status()!=0;
-        if(!CregisConstants.BSC_CHAIN_ID.equals(incoming.chainId())||!CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(incoming.tokenId()))return false;
-        var matching=chain.scan(incoming.blockHeight(),incoming.blockHeight(),List.of(incoming.address())).stream()
+        var matching=chain.scan(network,incoming.blockHeight(),incoming.blockHeight(),List.of(incoming.address())).stream()
                 .filter(log->log.txid().equalsIgnoreCase(incoming.txid())&&log.amount().compareTo(incoming.amount())==0).toList();
         if(matching.size()!=1)return false;
-        var log=matching.get(0);var proof=chain.verifyExact(log.txid(),log.logIndex(),incoming.address(),incoming.amount(),incoming.blockHeight());
+        var log=matching.get(0);var proof=chain.verifyExact(network,log.txid(),log.logIndex(),incoming.address(),incoming.amount(),incoming.blockHeight());
         if(proof==null)return false;
-        var fresh=crGateway.provider().depositsByTxid(incoming.txid()).stream().filter(row->row.cid()==incoming.cid()&&row.status()==1
+        var fresh=crGateway.provider().depositsByTxid(network,incoming.txid()).stream().filter(row->row.cid()==incoming.cid()&&row.status()==1
                 &&row.address().equalsIgnoreCase(incoming.address())&&row.amount().compareTo(incoming.amount())==0
-                &&CregisConstants.BSC_CHAIN_ID.equals(row.chainId())&&CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(row.tokenId())).toList();
+                &&network.chainId().equals(row.chainId())&&network.tokenId().equalsIgnoreCase(row.tokenId())).toList();
         if(fresh.size()!=1)return false;
         recordBscArrival(intent,log,proof);refresh(db.one(SELECT,intent.get("intent_no")));return true;
     }
@@ -254,7 +272,7 @@ public class PurchasePaymentService {
     }
     private void refresh(Map<String,Object> row){
         if(row.get("receipt_json")!=null){
-            if("CREGIS_USDT_BSC".equals(row.get("payment_method")))try{auditCanonical(row);observeBsc(row);}catch(RuntimeException unavailable){}
+            if(cregis(row.get("payment_method")))try{auditCanonical(row);observeBsc(row);}catch(RuntimeException unavailable){}
             return;
         }
         try{if("HDPAY_BANK".equals(row.get("payment_method")))observeHd(row);else observeBsc(row);}
@@ -278,39 +296,42 @@ public class PurchasePaymentService {
         }
     }
     private void observeBsc(Map<String,Object> row){
+        var network=network(row.get("payment_method"));
         String address=text(row.get("address"));if(address.isBlank()||cr.getMode()!=CregisProperties.Mode.PROVIDER||number(row.get("provider_project"))!=cr.getProjectId())return;
-        long from=number(row.get("scan_block")),head=chain.head().number()-Math.max(15,cr.getDepositConfirmations())+1;
+        long from=number(row.get("scan_block")),head=chain.head(network).number()-Math.max(15,cr.confirmations(network))+1;
         if(head<from)return;long to=Math.min(head,from+Math.min(399,cr.getChainScanBlocks()-1));
-        for(var incoming:chain.scan(from,to,List.of(address))){
-            var proof=chain.verifyExact(incoming.txid(),incoming.logIndex(),address,incoming.amount(),incoming.blockNumber());if(proof==null)return;
-            var trades=crGateway.provider().depositsByTxid(incoming.txid()).stream().filter(t->t.status()==1&&CregisConstants.BSC_CHAIN_ID.equals(t.chainId())
-                    &&CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(t.tokenId())&&address.equalsIgnoreCase(t.address())&&incoming.amount().compareTo(t.amount())==0).toList();
+        for(var incoming:chain.scan(network,from,to,List.of(address))){
+            var proof=chain.verifyExact(network,incoming.txid(),incoming.logIndex(),address,incoming.amount(),incoming.blockNumber());if(proof==null)return;
+            var trades=crGateway.provider().depositsByTxid(network,incoming.txid()).stream().filter(t->t.status()==1&&network.chainId().equals(t.chainId())
+                    &&network.tokenId().equalsIgnoreCase(t.tokenId())&&address.equalsIgnoreCase(t.address())&&incoming.amount().compareTo(t.amount())==0).toList();
             if(trades.size()!=1)return;
             recordBscArrival(row,incoming,proof);
         }
         db.write("UPDATE nx_purchase_payment_intent SET scan_block=GREATEST(scan_block,?),updated_at=NOW(6) WHERE intent_no=?",to+1,row.get("intent_no"));
     }
     private void recordBscArrival(Map<String,Object> intent,BscDepositProof.Observation incoming,BscDepositProof.TransferProof proof){
+        var network=network(intent.get("payment_method"));
         String no=text(intent.get("intent_no"));
         tx(()->{
             var locked=db.one(SELECT+" FOR UPDATE",no);
-            var allocation=db.one("SELECT allocation_block,allocation_hash FROM nx_cregis_deposit_address WHERE purchase_intent_no=? AND purpose='PURCHASE_DIRECT' AND state='DIRECT_PURCHASE'",no);
-            if(allocation==null||!text(allocation.get("allocation_hash")).equalsIgnoreCase(chain.blockHash(number(allocation.get("allocation_block")))))
+            var allocation=db.one("SELECT allocation_block,allocation_hash FROM nx_cregis_deposit_address WHERE purchase_intent_no=? AND chain_id=? AND purpose='PURCHASE_DIRECT' AND state='DIRECT_PURCHASE'",no,network.chainId());
+            if(allocation==null||!text(allocation.get("allocation_hash")).equalsIgnoreCase(chain.blockHash(network,number(allocation.get("allocation_block")))))
                 throw new BizException(409,"CREGIS_DIRECT_ALLOCATION_ANCHOR_INVALID");
-            int inserted=db.write("INSERT IGNORE INTO nx_purchase_payment_arrival(intent_no,provider_project,txid,log_index,amount,block_number,block_hash,confirmations,from_address,status) VALUES(?,?,?,?,?,?,?,?,?,'CONFIRMED')",no,cr.getProjectId(),incoming.txid(),incoming.logIndex(),incoming.amount(),proof.blockNumber(),proof.blockHash(),proof.confirmations(),proof.fromAddress());
+            int inserted=db.write("INSERT IGNORE INTO nx_purchase_payment_arrival(intent_no,provider_project,chain_id,txid,log_index,amount,block_number,block_hash,confirmations,from_address,status) VALUES(?,?,?,?,?,?,?,?,?,?,'CONFIRMED')",no,cr.getProjectId(),network.chainId(),incoming.txid(),incoming.logIndex(),incoming.amount(),proof.blockNumber(),proof.blockHash(),proof.confirmations(),proof.fromAddress());
             if(inserted==1){
                 BigDecimal expected=new BigDecimal(text(parse(locked.get("quote_json")).get("totalUsdt")));
                 String reason=incoming.blockNumber()<=number(allocation.get("allocation_block"))?"PAYMENT_BEFORE_ALLOCATION":incoming.amount().compareTo(expected)!=0?"PAYMENT_AMOUNT_MISMATCH":instant(locked.get("expires_at")).isBefore(Instant.now())?"PAYMENT_LATE_REVIEW":"";
                 if(locked.get("confirmed_at")!=null)reason="PAYMENT_MULTIPLE_ARRIVALS";
-                if(!reason.isBlank())db.write("UPDATE nx_purchase_payment_arrival SET status='MANUAL_REVIEW' WHERE provider_project=? AND txid=? AND log_index=?",cr.getProjectId(),incoming.txid(),incoming.logIndex());
+                if(!reason.isBlank())db.write("UPDATE nx_purchase_payment_arrival SET status='MANUAL_REVIEW' WHERE provider_project=? AND chain_id=? AND txid=? AND log_index=?",cr.getProjectId(),network.chainId(),incoming.txid(),incoming.logIndex());
                 confirm(no,incoming.txid()+":"+incoming.logIndex(),reason);
             }return null;
         });
     }
     private void auditCanonical(Map<String,Object> intent){
+        var network=network(intent.get("payment_method"));
         if("PAYMENT_REORG_REVIEW".equals(intent.get("reason")))return;
         for(var arrival:db.rows("SELECT * FROM nx_purchase_payment_arrival WHERE intent_no=?",intent.get("intent_no"))){
-            var proof=chain.inspectCanonical(text(arrival.get("txid")),(int)number(arrival.get("log_index")),text(intent.get("address")),
+            var proof=chain.inspectCanonical(network,text(arrival.get("txid")),(int)number(arrival.get("log_index")),text(intent.get("address")),
                     new BigDecimal(text(arrival.get("amount"))),number(arrival.get("block_number")),text(arrival.get("block_hash")),
                     arrival.get("from_address")==null?null:text(arrival.get("from_address")));
             if(proof==null)continue;
@@ -337,7 +358,7 @@ public class PurchasePaymentService {
         if(before==null||!verifyFunds(before))return;
         boolean joined=org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive();
         try{tx(()->{
-            if("CREGIS_USDT_BSC".equals(before.get("payment_method")))cregisGate(false,true);
+            if(cregis(before.get("payment_method")))cregisGate(network(before.get("payment_method")),false,true);
             var intent=db.one(SELECT+" FOR UPDATE",no);
             if(intent==null||intent.get("receipt_json")!=null||intent.get("confirmed_at")==null)return null;
             if(Set.of("PAYMENT_AMOUNT_MISMATCH","PAYMENT_LATE_REVIEW","PAYMENT_MULTIPLE_ARRIVALS","PAYMENT_BEFORE_ALLOCATION").contains(text(intent.get("reason"))))return null;
@@ -379,13 +400,14 @@ public class PurchasePaymentService {
                         &&text(intent.get("provider_reference")).equals(fresh.providerOrderId())&&"BANKQR".equalsIgnoreCase(fresh.payType())
                         &&fresh.transAmt()!=null&&new BigDecimal(text(parse(intent.get("quote_json")).get("amountVnd"))).compareTo(fresh.transAmt())==0;
             }
-            var arrivals=db.rows("SELECT * FROM nx_purchase_payment_arrival WHERE intent_no=?",intent.get("intent_no"));
+            var network=network(intent.get("payment_method"));
+            var arrivals=db.rows("SELECT * FROM nx_purchase_payment_arrival WHERE intent_no=? AND chain_id=?",intent.get("intent_no"),network.chainId());
             if(arrivals.size()!=1||number(intent.get("provider_project"))!=cr.getProjectId())return false;
             var incoming=arrivals.get(0);String txid=text(incoming.get("txid"));BigDecimal amount=new BigDecimal(text(incoming.get("amount")));
-            var proof=chain.verifyExact(txid,(int)number(incoming.get("log_index")),text(intent.get("address")),amount,number(incoming.get("block_number")));
+            var proof=chain.verifyExact(network,txid,(int)number(incoming.get("log_index")),text(intent.get("address")),amount,number(incoming.get("block_number")));
             if(proof==null||!proof.blockHash().equalsIgnoreCase(text(incoming.get("block_hash"))))return false;
-            var trades=crGateway.provider().depositsByTxid(txid).stream().filter(t->t.status()==1&&CregisConstants.BSC_CHAIN_ID.equals(t.chainId())
-                    &&CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(t.tokenId())&&text(intent.get("address")).equalsIgnoreCase(t.address())&&amount.compareTo(t.amount())==0).toList();
+            var trades=crGateway.provider().depositsByTxid(network,txid).stream().filter(t->t.status()==1&&network.chainId().equals(t.chainId())
+                    &&network.tokenId().equalsIgnoreCase(t.tokenId())&&text(intent.get("address")).equalsIgnoreCase(t.address())&&amount.compareTo(t.amount())==0).toList();
             return trades.size()==1&&amount.compareTo(new BigDecimal(text(parse(intent.get("quote_json")).get("totalUsdt"))))==0;
         }catch(RuntimeException unavailable){return false;}
     }
@@ -401,7 +423,7 @@ public class PurchasePaymentService {
     }
     @Scheduled(fixedDelayString="${nexion.finance.purchase-payment-observe-ms:30000}")
     public void scheduled(){
-        for(var row:db.rows("SELECT * FROM nx_purchase_payment_intent WHERE status<>'DELIVERED' OR payment_method='CREGIS_USDT_BSC' ORDER BY COALESCE(observed_at,created_at) LIMIT 50")){
+        for(var row:db.rows("SELECT * FROM nx_purchase_payment_intent WHERE status<>'DELIVERED' OR payment_method IN ('CREGIS_USDT_BSC','CREGIS_USDT_ERC20') ORDER BY COALESCE(observed_at,created_at) LIMIT 50")){
             try{refresh(row);}catch(RuntimeException unavailable){/* One unavailable rail cannot stop others. */}
             finally{db.write("UPDATE nx_purchase_payment_intent SET observed_at=NOW(6) WHERE intent_no=?",row.get("intent_no"));}
         }
@@ -419,7 +441,7 @@ public class PurchasePaymentService {
         PurchasePaymentPolicyService.reason(request);String actor=AdminActorResolver.resolve("admin");
         return commands.executeRetained("D1:PURCHASE_REVALIDATE:"+actor,key,hash(values("intentNo",no,"request",request)),Map.class,()->{
             var snapshot=db.one(SELECT,no);
-            if(snapshot!=null&&"CREGIS_USDT_BSC".equals(snapshot.get("payment_method")))cregisGate(false,true);
+            if(snapshot!=null&&cregis(snapshot.get("payment_method")))cregisGate(network(snapshot.get("payment_method")),false,true);
             var row=db.one(SELECT+" FOR UPDATE",no);if(row==null)throw new BizException(404,"PURCHASE_PAYMENT_INTENT_NOT_FOUND");
             if(number(row.get("version"))!=number(request.get("expectedVersion")))throw new BizException(409,"PURCHASE_PAYMENT_REVALIDATE_VERSION_CONFLICT");
             refresh(row);deliver(no,true);var result=detail(no);

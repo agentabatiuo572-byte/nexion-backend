@@ -10,6 +10,10 @@ final class DepositPolicyFixture {
         when(policy.current()).thenReturn(baseline);
         when(policy.snapshot(anyLong(),anyString())).thenReturn(baseline);
         when(policy.discover(anyLong(),anyString())).thenReturn(baseline);
+        when(policy.snapshot(eq(CregisNetwork.ERC20),anyLong(),anyString())).thenReturn(baseline);
+        when(policy.discover(eq(CregisNetwork.ERC20),anyLong(),anyString())).thenReturn(baseline);
+        when(policy.snapshot(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),anyLong(),anyString())).thenReturn(baseline);
+        when(policy.discover(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),anyLong(),anyString())).thenReturn(baseline);
         return policy;
     }
 }

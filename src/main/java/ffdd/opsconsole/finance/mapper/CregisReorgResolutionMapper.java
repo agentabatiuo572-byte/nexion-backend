@@ -13,7 +13,7 @@ public interface CregisReorgResolutionMapper extends BaseMapper<Object> {
         + "r.outstanding_debt outstandingDebt,r.status,r.version,e.txid,e.log_index logIndex,e.address,"
         + "e.gross_amount grossAmount,e.block_number blockNumber,e.block_hash blockHash,e.ledger_id ledgerId,"
         + "e.origin_log_index originalLogIndex,e.transfer_from_address transferFrom,"
-        + "e.status eventStatus,u.status userStatus,u.c2_freeze_source freezeSource,u.c2_freeze_source_ref freezeRef "
+        + "e.chain_id chainId,e.status eventStatus,u.status userStatus,u.c2_freeze_source freezeSource,u.c2_freeze_source_ref freezeRef "
         + "FROM nx_cregis_reorg_resolution r JOIN nx_cregis_deposit_event e ON e.id=r.event_id JOIN nx_user u ON u.id=r.user_id";
     @Select(ROW+" WHERE r.project_id=#{projectId} AND (#{before}=0 OR r.incident_id<#{before}) ORDER BY r.incident_id DESC LIMIT #{limit}")
     List<Map<String,Object>> incidents(@Param("projectId") long projectId,@Param("before") long before,@Param("limit") int limit);

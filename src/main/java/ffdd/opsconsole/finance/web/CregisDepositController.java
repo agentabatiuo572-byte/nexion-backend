@@ -1,6 +1,7 @@
 package ffdd.opsconsole.finance.web;
 
 import ffdd.opsconsole.finance.cregis.CregisDepositService;
+import ffdd.opsconsole.finance.cregis.CregisNetwork;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.util.List;
@@ -22,8 +23,10 @@ public class CregisDepositController {
 
     @GetMapping("/address")
     public ApiResult<Map<String, Object>> address(@RequestParam String network, Authentication auth) {
-        if (!"BEP20".equalsIgnoreCase(network)) return ApiResult.fail(422, "DEPOSIT_NETWORK_UNAVAILABLE");
-        return ApiResult.ok(service.address(user(auth)));
+        CregisNetwork selected;
+        try { selected=CregisNetwork.fromNetwork(network); }
+        catch(IllegalArgumentException unsupported) { return ApiResult.fail(422,"DEPOSIT_NETWORK_UNAVAILABLE"); }
+        return ApiResult.ok(service.address(selected,user(auth)));
     }
 
     @GetMapping

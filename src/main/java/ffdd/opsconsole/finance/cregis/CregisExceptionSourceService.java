@@ -16,9 +16,10 @@ import org.springframework.transaction.annotation.Transactional;
 public class CregisExceptionSourceService {
     private final CregisExceptionSourceMapper db;
     private final CregisDepositMapper deposits;
-    public record Source(long projectId,long cid,String txid,int logIndex,String address,BigDecimal grossAmount) {
+    public record Source(long projectId,long cid,String txid,int logIndex,String address,BigDecimal grossAmount,CregisNetwork network) {
+        public Source(long projectId,long cid,String txid,int logIndex,String address,BigDecimal grossAmount) { this(projectId,cid,txid,logIndex,address,grossAmount,CregisNetwork.BEP20); }
         public Source {
-            if(projectId<=0 || cid<=0 || logIndex<0 || txid==null || !txid.matches("(?i)(0x)?[0-9a-f]{64}")
+            if(network==null || projectId<=0 || cid<=0 || logIndex<0 || txid==null || !txid.matches("(?i)(0x)?[0-9a-f]{64}")
                     || address==null || !address.matches("(?i)0x[0-9a-f]{40}") || CregisAmount.normalizePositive(grossAmount)==null
                     || grossAmount.stripTrailingZeros().scale()>6 || grossAmount.compareTo(new BigDecimal("999999999999.999999"))>0)
                 throw new BizException(422,"CREGIS_EXCEPTION_SOURCE_INVALID");
@@ -70,7 +71,7 @@ public class CregisExceptionSourceService {
     /** Re-mining changes a block-global index; both identities remain financially consumed. */
     @Transactional(propagation=Propagation.MANDATORY,rollbackFor=Exception.class)
     public void relocateCredited(Source original,Source canonical,String reference) {
-        if(reference==null || reference.isBlank() || reference.length()>96 || original.projectId()!=canonical.projectId()
+        if(reference==null || reference.isBlank() || reference.length()>96 || original.network()!=canonical.network() || original.projectId()!=canonical.projectId()
                 || original.cid()!=canonical.cid() || !original.txid().equals(canonical.txid())
                 || !original.address().equals(canonical.address()) || original.grossAmount().compareTo(canonical.grossAmount())!=0) throw conflict();
         // The caller owns the project gate. The ledger-backed event authenticates legacy source rows too.

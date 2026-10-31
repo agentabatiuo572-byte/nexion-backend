@@ -27,11 +27,11 @@ class CregisExceptionRefundDispatchMySqlTest {
         data=new SingleConnectionDataSource(url,System.getenv("CREGIS_EXCEPTION_MYSQL_USER"),System.getenv("CREGIS_EXCEPTION_MYSQL_PASSWORD"),true);jdbc=new JdbcTemplate(data);
         jdbc.execute("CREATE DATABASE "+SCHEMA);schemaOwned=true;jdbc.execute("USE "+SCHEMA);
         jdbc.execute("CREATE TABLE nx_cregis_exception_refund(id BIGINT PRIMARY KEY,case_no VARCHAR(64),project_id BIGINT,txid VARCHAR(66),log_index INT,deposit_cid BIGINT,deposit_address VARCHAR(42),gross_amount DECIMAL(18,6),fee_amount DECIMAL(18,6),net_amount DECIMAL(18,6),state VARCHAR(32),maker_id BIGINT,checker_id BIGINT,ownership_receipt VARCHAR(128),ownership_reference VARCHAR(64),source_evidence_hash CHAR(64),return_address VARCHAR(42)) ENGINE=InnoDB");
-        jdbc.execute("CREATE TABLE nx_cregis_exception_source(project_id BIGINT,txid VARCHAR(66),log_index INT,cid BIGINT,address VARCHAR(42),gross_amount DECIMAL(18,6),state VARCHAR(24),operation_kind VARCHAR(16),operation_ref VARCHAR(96)) ENGINE=InnoDB");
+        jdbc.execute("CREATE TABLE nx_cregis_exception_source(chain_id VARCHAR(16) NOT NULL DEFAULT '2510',project_id BIGINT,txid VARCHAR(66),log_index INT,cid BIGINT,address VARCHAR(42),gross_amount DECIMAL(18,6),state VARCHAR(24),operation_kind VARCHAR(16),operation_ref VARCHAR(96)) ENGINE=InnoDB");
         jdbc.execute("CREATE TABLE nx_cregis_ownership_challenge(challenge_id VARCHAR(128),project_id BIGINT,action VARCHAR(32),target_user_id BIGINT,consumed_ref VARCHAR(96),evidence_hash CHAR(64),consumed_signature VARCHAR(132),signer VARCHAR(42),consumed_at DATETIME,expires_at DATETIME) ENGINE=InnoDB");
-        jdbc.execute("CREATE TABLE nx_cregis_chain_observation(project_id BIGINT,txid VARCHAR(66),log_index INT,status VARCHAR(32)) ENGINE=InnoDB");
-        jdbc.execute("CREATE TABLE nx_cregis_deposit_address(project_id BIGINT,address VARCHAR(42),state VARCHAR(24)) ENGINE=InnoDB");
-        jdbc.execute("CREATE TABLE nx_cregis_deposit_delivery(accepted INT,processed_at DATETIME,cid BIGINT,txid VARCHAR(66),address VARCHAR(42),gross_amount DECIMAL(18,6),signature_valid INT,timestamp_valid INT,ip_valid INT) ENGINE=InnoDB");
+        jdbc.execute("CREATE TABLE nx_cregis_chain_observation(chain_id VARCHAR(16) NOT NULL DEFAULT '2510',project_id BIGINT,txid VARCHAR(66),log_index INT,status VARCHAR(32)) ENGINE=InnoDB");
+        jdbc.execute("CREATE TABLE nx_cregis_deposit_address(chain_id VARCHAR(16) NOT NULL DEFAULT '2510',project_id BIGINT,address VARCHAR(42),state VARCHAR(24)) ENGINE=InnoDB");
+        jdbc.execute("CREATE TABLE nx_cregis_deposit_delivery(chain_id VARCHAR(16) NOT NULL DEFAULT '2510',accepted INT,processed_at DATETIME,cid BIGINT,txid VARCHAR(66),address VARCHAR(42),gross_amount DECIMAL(18,6),signature_valid INT,timestamp_valid INT,ip_valid INT) ENGINE=InnoDB");
         jdbc.execute("CREATE TABLE nx_cregis_risk_alert(project_id BIGINT,severity VARCHAR(4),resolved_at DATETIME,kind VARCHAR(32),alert_key VARCHAR(128)) ENGINE=InnoDB");
         var configuration=new org.apache.ibatis.session.Configuration(new org.apache.ibatis.mapping.Environment("refund-isolated-schema",new SpringManagedTransactionFactory(),data));configuration.addMapper(CregisExceptionRefundMapper.class);
         mapper=new SqlSessionTemplate(new SqlSessionFactoryBuilder().build(configuration)).getMapper(CregisExceptionRefundMapper.class);
@@ -41,11 +41,11 @@ class CregisExceptionRefundDispatchMySqlTest {
     void seed(long id,long cid,String tx,String address){
         String no="CR-RF-"+id;
         jdbc.update("INSERT INTO nx_cregis_exception_refund VALUES(?,?,?, ?,3,?,?,5,1,4,'APPROVED',7,8,?,?,?,?)",id,no,project,tx,cid,address,"challenge-"+id,no,"e".repeat(64),address);
-        jdbc.update("INSERT INTO nx_cregis_exception_source VALUES(?,?,3,?,?,5,'RESERVED','REFUND',?)",project,tx,cid,address,no);
+        jdbc.update("INSERT INTO nx_cregis_exception_source(project_id,txid,log_index,cid,address,gross_amount,state,operation_kind,operation_ref) VALUES(?,?,3,?,?,5,'RESERVED','REFUND',?)",project,tx,cid,address,no);
         jdbc.update("INSERT INTO nx_cregis_ownership_challenge VALUES(?,?,'REFUND_ORIGIN',NULL,?,?,?,?,NOW(),DATE_ADD(NOW(),INTERVAL 1 MINUTE))","challenge-"+id,project,no,"e".repeat(64),"0x"+"1".repeat(130),address);
-        jdbc.update("INSERT INTO nx_cregis_chain_observation VALUES(?,?,3,'UNATTRIBUTED_HOLD')",project,tx);
-        jdbc.update("INSERT INTO nx_cregis_deposit_address VALUES(?,?,'UNATTRIBUTED_HOLD')",project,address);
-        jdbc.update("INSERT INTO nx_cregis_deposit_delivery VALUES(1,NULL,?,?,?,5,1,1,1)",cid,tx,address);
+        jdbc.update("INSERT INTO nx_cregis_chain_observation(project_id,txid,log_index,status) VALUES(?,?,3,'UNATTRIBUTED_HOLD')",project,tx);
+        jdbc.update("INSERT INTO nx_cregis_deposit_address(project_id,address,state) VALUES(?,?,'UNATTRIBUTED_HOLD')",project,address);
+        jdbc.update("INSERT INTO nx_cregis_deposit_delivery(accepted,processed_at,cid,txid,address,gross_amount,signature_valid,timestamp_valid,ip_valid) VALUES(1,NULL,?,?,?,5,1,1,1)",cid,tx,address);
         jdbc.update("INSERT INTO nx_cregis_risk_alert VALUES(?,'P0',NULL,'PROVIDER_ORPHAN',?)",project,"orphan-cid-"+cid);
     }
     @Test void twoValidApprovalsCanProgressSequentiallyButUnknownFirstBlocksSecond(){

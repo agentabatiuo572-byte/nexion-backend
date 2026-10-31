@@ -54,9 +54,9 @@ class CregisCreditedCallbackMySqlTest {
         jdbc.execute("CREATE TABLE nx_cregis_deposit_policy_snapshot(project_id BIGINT,chain_id VARCHAR(16),token_id VARCHAR(64),txid VARCHAR(66),policy_version BIGINT,required_confirmations INT,PRIMARY KEY(project_id,chain_id,token_id,txid)) ENGINE=InnoDB");
         jdbc.execute("CREATE TABLE nx_cregis_deposit_address(user_id BIGINT,project_id BIGINT,chain_id VARCHAR(16),address VARCHAR(64),state VARCHAR(24),allocation_block BIGINT,allocation_hash VARCHAR(66)) ENGINE=InnoDB");
         jdbc.update("INSERT INTO nx_cregis_deposit_address VALUES(42,88,?,?, 'READY',100,?)",CregisConstants.BSC_CHAIN_ID,ADDRESS,BLOCK);
-        jdbc.execute("CREATE TABLE nx_cregis_deposit_delivery(id BIGINT AUTO_INCREMENT PRIMARY KEY,payload_sha256 CHAR(64),raw_json TEXT,cid BIGINT,txid VARCHAR(66),address VARCHAR(64),gross_amount DECIMAL(18,6),accepted INT,reason VARCHAR(64),source_ip VARCHAR(45),signature_valid INT,timestamp_valid INT,ip_valid INT,last_error VARCHAR(64),processed_at DATETIME) ENGINE=InnoDB");
-        jdbc.execute("CREATE TABLE nx_cregis_deposit_event(id BIGINT AUTO_INCREMENT PRIMARY KEY,user_id BIGINT,project_id BIGINT,cid BIGINT,txid VARCHAR(66),log_index INT,address VARCHAR(64),gross_amount DECIMAL(18,6),net_amount DECIMAL(18,6),block_number BIGINT,block_hash VARCHAR(66),confirmations INT,status VARCHAR(32),ledger_id BIGINT,UNIQUE KEY(project_id,cid),UNIQUE KEY(project_id,txid,log_index)) ENGINE=InnoDB");
-        jdbc.update("INSERT INTO nx_cregis_deposit_event VALUES(12,42,88,77,?,0,?,1,1,101,?,15,'CREDITED',11)",TXID,ADDRESS,BLOCK);
+        jdbc.execute("CREATE TABLE nx_cregis_deposit_delivery(chain_id VARCHAR(16) NOT NULL DEFAULT '2510',id BIGINT AUTO_INCREMENT PRIMARY KEY,payload_sha256 CHAR(64),raw_json TEXT,cid BIGINT,txid VARCHAR(66),address VARCHAR(64),gross_amount DECIMAL(18,6),accepted INT,reason VARCHAR(64),source_ip VARCHAR(45),signature_valid INT,timestamp_valid INT,ip_valid INT,last_error VARCHAR(64),processed_at DATETIME) ENGINE=InnoDB");
+        jdbc.execute("CREATE TABLE nx_cregis_deposit_event(chain_id VARCHAR(16) NOT NULL DEFAULT '2510',id BIGINT AUTO_INCREMENT PRIMARY KEY,user_id BIGINT,project_id BIGINT,cid BIGINT,txid VARCHAR(66),log_index INT,address VARCHAR(64),gross_amount DECIMAL(18,6),net_amount DECIMAL(18,6),block_number BIGINT,block_hash VARCHAR(66),confirmations INT,status VARCHAR(32),ledger_id BIGINT,UNIQUE KEY(project_id,cid),UNIQUE KEY(project_id,chain_id,txid,log_index)) ENGINE=InnoDB");
+        jdbc.update("INSERT INTO nx_cregis_deposit_event(id,user_id,project_id,cid,txid,log_index,address,gross_amount,net_amount,block_number,block_hash,confirmations,status,ledger_id) VALUES(12,42,88,77,?,0,?,1,1,101,?,15,'CREDITED',11)",TXID,ADDRESS,BLOCK);
         jdbc.execute("CREATE TABLE nx_user_wallet(user_id BIGINT PRIMARY KEY,usdt_available DECIMAL(18,6),cregis_risk_held DECIMAL(18,6),version BIGINT,is_deleted INT) ENGINE=InnoDB");
         jdbc.execute("INSERT INTO nx_user_wallet VALUES(42,1,0,1,0)");
         jdbc.execute("CREATE TABLE nx_wallet_ledger(id BIGINT PRIMARY KEY,biz_no VARCHAR(64),amount DECIMAL(18,6),direction VARCHAR(8)) ENGINE=InnoDB");
@@ -65,7 +65,7 @@ class CregisCreditedCallbackMySqlTest {
         jdbc.execute("INSERT INTO nx_deposit_order VALUES(1,'CR-77',11,1)");
         jdbc.execute("CREATE TABLE nx_treasury_reserve_ledger(id BIGINT PRIMARY KEY,reserve_no VARCHAR(64),amount_usd DECIMAL(18,6)) ENGINE=InnoDB");
         jdbc.execute("INSERT INTO nx_treasury_reserve_ledger VALUES(1,'CR-77',1)");
-        jdbc.execute("CREATE TABLE nx_cregis_chain_observation(project_id BIGINT,txid VARCHAR(66),log_index INT,address VARCHAR(64),raw_amount VARCHAR(80),block_number BIGINT,status VARCHAR(32)) ENGINE=InnoDB");
+        jdbc.execute("CREATE TABLE nx_cregis_chain_observation(chain_id VARCHAR(16) NOT NULL DEFAULT '2510',project_id BIGINT,txid VARCHAR(66),log_index INT,address VARCHAR(64),raw_amount VARCHAR(80),block_number BIGINT,status VARCHAR(32)) ENGINE=InnoDB");
         jdbc.execute("CREATE TABLE nx_withdrawal_order(asset VARCHAR(16),is_deleted INT,status VARCHAR(32),amount DECIMAL(18,6)) ENGINE=InnoDB");
         jdbc.execute("CREATE TABLE nx_cregis_risk_alert(project_id BIGINT,alert_key VARCHAR(128),severity VARCHAR(8),kind VARCHAR(48),evidence TEXT,resolved_at DATETIME) ENGINE=InnoDB");
         var conf=new org.apache.ibatis.session.Configuration(new org.apache.ibatis.mapping.Environment("fixture",new SpringManagedTransactionFactory(),ds));
@@ -75,8 +75,8 @@ class CregisCreditedCallbackMySqlTest {
         config=new CregisProperties();config.setMode(CregisProperties.Mode.PROVIDER);config.setProjectId(88);config.setApiKey(KEY);config.setDepositCreditEnabled(true);config.setCallbackSourceIps("127.0.0.1");
         var proxy=new ProxyFactory(new CregisDepositPolicyService(session.getMapper(CregisDepositPolicyMapper.class),null,config));proxy.setProxyTargetClass(true);proxy.addAdvice(new TransactionInterceptor(manager,new AnnotationTransactionAttributeSource()));policy=(CregisDepositPolicyService)proxy.getProxy();
         gateway=mock(CregisGateway.class);router=mock(CregisGatewayRouter.class);when(router.provider()).thenReturn(gateway);chain=mock(BscDepositProof.class);
-        when(gateway.depositsByTxid(TXID)).thenReturn(List.of(new CregisGateway.DepositTrade(77,CregisConstants.BSC_CHAIN_ID,CregisConstants.USDT_BEP20_TOKEN_ID,ADDRESS,BigDecimal.ONE,TXID,1)));
-        when(chain.verify(TXID,ADDRESS,BigDecimal.ONE,101)).thenReturn(Optional.of(new BscDepositProof.Proof(0,101,BLOCK,15)));when(chain.blockHash(100)).thenReturn(BLOCK);
+        when(gateway.depositsByTxid(CregisNetwork.BEP20,TXID)).thenReturn(List.of(new CregisGateway.DepositTrade(77,CregisConstants.BSC_CHAIN_ID,CregisConstants.USDT_BEP20_TOKEN_ID,ADDRESS,BigDecimal.ONE,TXID,1)));
+        when(chain.verify(CregisNetwork.BEP20,TXID,ADDRESS,BigDecimal.ONE,101)).thenReturn(Optional.of(new BscDepositProof.Proof(0,101,BLOCK,15)));when(chain.blockHash(CregisNetwork.BEP20,100)).thenReturn(BLOCK);
         var json=new ObjectMapper();
         service=new CregisDepositService(config,router,chain,new CregisSigner(),json,session.getMapper(CregisDepositMapper.class),manager,null,null,new SupportPaymentAttributionService(null,null,null,ds,json),null,null,null, policy);
     }
@@ -105,8 +105,8 @@ class CregisCreditedCallbackMySqlTest {
         jdbc.execute("UPDATE nx_wallet_ledger SET amount=9 WHERE id=11");
         jdbc.execute("UPDATE nx_deposit_order SET amount=9 WHERE id=1");
         jdbc.execute("UPDATE nx_treasury_reserve_ledger SET amount_usd=9 WHERE id=1");
-        when(gateway.depositsByTxid(TXID)).thenReturn(List.of(new CregisGateway.DepositTrade(77,CregisConstants.BSC_CHAIN_ID,CregisConstants.USDT_BEP20_TOKEN_ID,ADDRESS,BigDecimal.TEN,TXID,1)));
-        when(chain.verify(TXID,ADDRESS,BigDecimal.TEN.stripTrailingZeros(),101)).thenReturn(Optional.of(new BscDepositProof.Proof(0,101,BLOCK,15)));
+        when(gateway.depositsByTxid(CregisNetwork.BEP20,TXID)).thenReturn(List.of(new CregisGateway.DepositTrade(77,CregisConstants.BSC_CHAIN_ID,CregisConstants.USDT_BEP20_TOKEN_ID,ADDRESS,BigDecimal.TEN,TXID,1)));
+        when(chain.verify(CregisNetwork.BEP20,TXID,ADDRESS,BigDecimal.TEN.stripTrailingZeros(),101)).thenReturn(Optional.of(new BscDepositProof.Proof(0,101,BLOCK,15)));
         String raw=callback("1","10");
         assertThat(service.receive(raw)).isEqualTo("success");
         jdbc.execute("INSERT INTO nx_cregis_deposit_policy VALUES(1,1,0,15,'fixture-a2','fixture publication')");

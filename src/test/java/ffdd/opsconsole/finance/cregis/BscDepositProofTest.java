@@ -26,6 +26,9 @@ class BscDepositProofTest {
     private CregisProperties properties;
     private boolean logsRpcError;
     private final AtomicReference<String> scanTo = new AtomicReference<>();
+    private CregisNetwork network=CregisNetwork.BEP20;
+    private String rpcChainId="0x38";
+    private String tokenOverride;
     private String head = "0x72";
     private String received = "1000000000000000000";
     private String balance = "0x0";
@@ -122,6 +125,28 @@ class BscDepositProofTest {
         assertThatThrownBy(proof::head).hasMessage("CREGIS_BSC_PROOF_UNAVAILABLE");
     }
 
+    @Test void ethereumUsesSixDecimalsAndIndependentMainnetIdentity() throws Exception {
+        network=CregisNetwork.ERC20;rpcChainId="0x1";decimals="0x6";received="1000001";
+        var proof=local();
+        assertThat(proof.verify(network,TX,TO,new BigDecimal("1.000001"),100)).isPresent();
+        assertThat(proof.scan(network,100,100,java.util.List.of(TO))).singleElement()
+            .extracting(BscDepositProof.Observation::amount).isEqualTo(new BigDecimal("1.000001"));
+        assertThat(proof.zeroUsdtBalance(network,TO)).isTrue();
+        rpcChainId="0x38";
+        assertThatThrownBy(()->proof.verify(network,TX,TO,new BigDecimal("1.000001"),100)).hasMessage("CREGIS_BSC_PROOF_INVALID");
+        assertThatThrownBy(()->proof.scan(network,100,100,java.util.List.of(TO))).hasMessage("CREGIS_BSC_PROOF_INVALID");
+        assertThatThrownBy(()->proof.zeroUsdtBalance(network,TO)).hasMessage("CREGIS_BSC_PROOF_INVALID");
+        rpcChainId="0x1";decimals="0x12";
+        assertThatThrownBy(()->proof.verify(network,TX,TO,new BigDecimal("1.000001"),100)).hasMessage("CREGIS_BSC_PROOF_INVALID");
+        decimals="0x6";tokenOverride=CregisNetwork.BEP20.tokenId();
+        assertThatThrownBy(()->proof.verify(network,TX,TO,new BigDecimal("1.000001"),100)).hasMessage("CREGIS_BSC_PROOF_INVALID");
+    }
+    @Test void ethereumNeverFallsBackToBscEndpoint() throws Exception {
+        var proof=local();properties.setEthereumRpcUrl("");methods.clear();
+        assertThatThrownBy(()->proof.head(CregisNetwork.ERC20)).hasMessage("CREGIS_BSC_PROOF_INVALID");
+        assertThat(methods).isEmpty();
+    }
+
     private BscDepositProof local() throws Exception {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> {
@@ -136,7 +161,7 @@ class BscDepositProofTest {
             methods.add(method);
             if ("eth_getLogs".equals(method)) scanTo.set(request.path("params").get(0).path("toBlock").asText());
             String result = switch (method) {
-                case "eth_chainId" -> "\"0x38\"";
+                case "eth_chainId" -> "\""+rpcChainId+"\"";
                 case "eth_blockNumber" -> "\"" + head + "\"";
                 case "eth_getBalance" -> "\"0x1\"";
                 case "eth_getBlockByNumber" -> "{\"hash\":\"" + canonicalHash + "\",\"number\":\""
@@ -160,13 +185,14 @@ class BscDepositProofTest {
         server.start();
         properties = new CregisProperties();
         properties.setBscRpcUrl("http://127.0.0.1:" + server.getAddress().getPort());
+        properties.setEthereumRpcUrl("http://127.0.0.1:" + server.getAddress().getPort());
         properties.setDepositConfirmations(15);
         return new BscDepositProof(properties, json, HttpClient.newHttpClient(), true);
     }
 
     private String log() {
         String value = new BigInteger(received).toString(16);
-        return "{\"address\":\"" + CregisConstants.USDT_BEP20_TOKEN_ID
+        return "{\"address\":\"" + (tokenOverride==null?network.tokenId():tokenOverride)
                 + "\",\"topics\":[\"" + TOPIC + "\",\"0x" + "0".repeat(64)
                 + "\",\"0x" + "0".repeat(24) + TO.substring(2) + "\"],\"data\":\"0x"
                 + "0".repeat(64 - value.length()) + value

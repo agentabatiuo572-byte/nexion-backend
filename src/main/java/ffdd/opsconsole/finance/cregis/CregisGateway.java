@@ -21,10 +21,20 @@ public interface CregisGateway {
     /** A read-only second provider observation for a single incoming transaction. */
     List<DepositTrade> depositsByTxid(String txid);
 
+    default List<DepositTrade> depositsByTxid(CregisNetwork network, String txid) {
+        if (network == CregisNetwork.BEP20) return depositsByTxid(txid);
+        throw new CregisGatewayException(CregisGatewayException.Kind.CONFIGURATION, "CREGIS_NETWORK_UNSUPPORTED");
+    }
+
     /** One provider page for a closed block-time window (epoch seconds, inclusive). */
     default DepositPage depositPage(long startSecond, long endSecond, int page, int size) {
         throw new CregisGatewayException(CregisGatewayException.Kind.CONFIGURATION,
                 "CREGIS_TRADE_PAGE_UNSUPPORTED");
+    }
+
+    default DepositPage depositPage(CregisNetwork network, long startSecond, long endSecond, int page, int size) {
+        if (network == CregisNetwork.BEP20) return depositPage(startSecond, endSecond, page, size);
+        throw new CregisGatewayException(CregisGatewayException.Kind.CONFIGURATION, "CREGIS_NETWORK_UNSUPPORTED");
     }
 
     PayoutSubmission createPayout(PayoutRequest request);
@@ -75,7 +85,11 @@ public interface CregisGateway {
 
     record PayoutSubmission(long cid, String thirdPartyId) { }
 
-    record PayoutQuery(long cid, String thirdPartyId, String address, BigDecimal amount) { }
+    record PayoutQuery(long cid, String thirdPartyId, String address, BigDecimal amount, String currency) {
+        public PayoutQuery(long cid, String thirdPartyId, String address, BigDecimal amount) {
+            this(cid, thirdPartyId, address, amount, CregisConstants.USDT_BEP20_CURRENCY);
+        }
+    }
 
     record PayoutOrder(
             long cid,

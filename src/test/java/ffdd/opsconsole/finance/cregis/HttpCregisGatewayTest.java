@@ -373,7 +373,48 @@ class HttpCregisGatewayTest {
         properties.setApiKey(KEY);
         properties.setConnectTimeoutMs(500);
         properties.setReadTimeoutMs(readTimeoutMs);
+        properties.setErc20PayoutEnabled(true);
         return properties;
+    }
+
+    @Test void erc20PayoutUsesEthereumAssetAndQueriesCannotAcceptTheSameBscSnapshot() throws Exception {
+        var captured = new AtomicReference<com.fasterxml.jackson.databind.JsonNode>();
+        var response = new AtomicReference<>(queryResponse("42", "6", "0x"+"a".repeat(64)));
+        server = start(Map.of(
+                "/api/v1/payout", exchange -> {
+                    captured.set(objectMapper.readTree(exchange.getRequestBody()));
+                    respond(exchange,200,"{\"code\":\"00000\",\"data\":{\"cid\":9001}}");
+                },
+                "/api/v1/payout/query", exchange -> respond(exchange,200,response.get())));
+        var old = query(9001);
+        var ethereum = new CregisGateway.PayoutQuery(old.cid(),old.thirdPartyId(),old.address(),old.amount(),CregisNetwork.ERC20.currency());
+        gateway(500).createPayout(new CregisGateway.PayoutRequest(CregisNetwork.ERC20.currency(),old.address(),old.amount(),old.thirdPartyId(),
+                "https://example.invalid/provider/cregis/payout","ERC20 test"));
+        assertThat(captured.get().path("currency").asText()).isEqualTo(CregisNetwork.ERC20.currency());
+        assertThatThrownBy(()->gateway(500).queryPayout(ethereum)).hasMessage("CREGIS_RESPONSE_INVALID");
+        response.set(response.get().replace("2510","60").replace(CregisConstants.USDT_BEP20_TOKEN_ID,CregisNetwork.ERC20.tokenId()).replace("USDT-BEP20","USDT-ERC20"));
+        assertThat(gateway(500).queryPayout(ethereum).currency()).isEqualTo(CregisNetwork.ERC20.currency());
+        assertThatThrownBy(()->gateway(500).queryPayout(old)).hasMessage("CREGIS_RESPONSE_INVALID");
+    }
+
+    @Test void ethereumAddressAndTradeRequestsNeverUseBscIdentifiers() throws Exception {
+        var captured = new AtomicReference<com.fasterxml.jackson.databind.JsonNode>();
+        server = start(Map.of(
+                "/api/v1/address/create", exchange -> {
+                    captured.set(objectMapper.readTree(exchange.getRequestBody()));
+                    respond(exchange,200,"{\"code\":\"00000\",\"data\":{\"address\":\"0x1111111111111111111111111111111111111111\"}}");
+                },
+                "/api/v1/trade/page", exchange -> {
+                    captured.set(objectMapper.readTree(exchange.getRequestBody()));
+                    respond(exchange,200,"{\"code\":\"00000\",\"data\":{\"total\":0,\"rows\":[]}}");
+                }));
+        assertThat(gateway(500).createAddress("60","erc","https://example.invalid/provider/cregis/deposit","erc-request").chainId()).isEqualTo("60");
+        assertThat(captured.get().path("chain_id").asText()).isEqualTo("60");
+        gateway(500).depositsByTxid(CregisNetwork.ERC20,"0x"+"a".repeat(64));
+        assertThat(captured.get().path("chain_id").asText()).isEqualTo("60");
+        assertThat(captured.get().path("token_id").asText()).isEqualTo(CregisNetwork.ERC20.tokenId());
+        assertThatThrownBy(()->gateway(500).createAddress("1","bad","https://example.invalid/provider/cregis/deposit","bad"))
+                .hasMessage("CREGIS_REQUEST_INVALID");
     }
 
     private HttpServer start(String path, ExchangeHandler handler) throws IOException {

@@ -94,7 +94,7 @@ public final class HttpCregisGateway implements CregisGateway {
 
     @Override
     public Address createAddress(String chainId, String alias, String callbackUrl, String requestId) {
-        requireBsc(chainId);
+        requireNetwork(chainId);
         requireText(requestId, 128);
         requireOptionalText(alias, 40);
         requireProviderCallback(callbackUrl, "/deposit");
@@ -124,10 +124,10 @@ public final class HttpCregisGateway implements CregisGateway {
 
     @Override
     public boolean zeroAddressBalance(String currency, String address) {
-        if (!CregisConstants.USDT_BEP20_CURRENCY.equalsIgnoreCase(currency)
-                || address == null || !EVM_ADDRESS.matcher(address).matches()) throw requestInvalid();
+        CregisNetwork network = payoutNetwork(currency);
+        if (address == null || !EVM_ADDRESS.matcher(address).matches()) throw requestInvalid();
         JsonNode data = postRead("/api/v1/sub_address_balance", Map.of(
-                "currency", CregisConstants.USDT_BEP20_CURRENCY,
+                "currency", network.currency(),
                 "address", address, "page_num", 1, "page_size", 10));
         JsonNode rows = data.get("rows"), total = data.get("total");
         if (rows == null || !rows.isArray() || total == null || !total.canConvertToLong()
@@ -151,11 +151,17 @@ public final class HttpCregisGateway implements CregisGateway {
 
     @Override
     public List<DepositTrade> depositsByTxid(String txid) {
+        return depositsByTxid(CregisNetwork.BEP20, txid);
+    }
+
+    @Override
+    public List<DepositTrade> depositsByTxid(CregisNetwork network, String txid) {
+        if (network == null) throw requestInvalid();
         if (txid == null || !BSC_TXID.matcher(txid).matches()) throw requestInvalid();
         JsonNode data = postRead("/api/v1/trade/page", Map.of(
                 "tx_id", txid, "trade_type", 1, "business_type", 3,
-                "chain_id", CregisConstants.BSC_CHAIN_ID,
-                "token_id", CregisConstants.USDT_BEP20_TOKEN_ID,
+                "chain_id", network.chainId(),
+                "token_id", network.tokenId(),
                 "page_num", 1, "page_size", 100));
         JsonNode rows = data.get("rows");
         JsonNode total = data.get("total");
@@ -174,8 +180,8 @@ public final class HttpCregisGateway implements CregisGateway {
             if (pid == null || !pid.canConvertToLong() || pid.longValue() != properties.getProjectId()
                     || cid == null || !cid.canConvertToLong() || cid.longValue() <= 0
                     || status == null || !status.canConvertToInt()
-                    || !CregisConstants.BSC_CHAIN_ID.equals(chainId)
-                    || !CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(tokenId)
+                    || !network.chainId().equals(chainId)
+                    || !network.tokenId().equalsIgnoreCase(tokenId)
                     || !EVM_ADDRESS.matcher(address).matches()
                     || !hash.equalsIgnoreCase(txid)) throw invalidResponse();
             trades.add(new DepositTrade(cid.longValue(), chainId, tokenId,
@@ -187,13 +193,19 @@ public final class HttpCregisGateway implements CregisGateway {
 
     @Override
     public DepositPage depositPage(long startSecond, long endSecond, int page, int size) {
+        return depositPage(CregisNetwork.BEP20, startSecond, endSecond, page, size);
+    }
+
+    @Override
+    public DepositPage depositPage(CregisNetwork network, long startSecond, long endSecond, int page, int size) {
+        if (network == null) throw requestInvalid();
         if (startSecond <= 0 || endSecond < startSecond || endSecond >= clock.instant().getEpochSecond()
                 || page < 1 || size < 1 || size > 100) throw requestInvalid();
         JsonNode data = postRead("/api/v1/trade/page", Map.of(
                 "blocktime_start", startSecond, "blocktime_end", endSecond,
                 "trade_type", 1, "business_type", 3,
-                "chain_id", CregisConstants.BSC_CHAIN_ID,
-                "token_id", CregisConstants.USDT_BEP20_TOKEN_ID,
+                "chain_id", network.chainId(),
+                "token_id", network.tokenId(),
                 "page_num", page, "page_size", size));
         JsonNode total = data.get("total"), rows = data.get("rows");
         if (total == null || !total.isIntegralNumber() || !total.canConvertToLong()
@@ -214,8 +226,8 @@ public final class HttpCregisGateway implements CregisGateway {
                     || cid == null || !cid.isIntegralNumber() || !cid.canConvertToLong() || cid.longValue() <= 0
                     || status == null || !status.isIntegralNumber() || !status.canConvertToInt()
                     || status.intValue() < 0 || status.intValue() > 2
-                    || !CregisConstants.BSC_CHAIN_ID.equals(chainId)
-                    || !CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(tokenId)
+                    || !network.chainId().equals(chainId)
+                    || !network.tokenId().equalsIgnoreCase(tokenId)
                     || !EVM_ADDRESS.matcher(address).matches() || !BSC_TXID.matcher(txid).matches()
                     || height == null || !height.asText().matches("[0-9]{1,16}")
                     || time == null || !time.isIntegralNumber() || time.longValue() < startSecond
@@ -250,6 +262,7 @@ public final class HttpCregisGateway implements CregisGateway {
     @Override
     public PayoutOrder queryPayout(PayoutQuery expected) {
         BigDecimal expectedAmount = expected == null ? null : CregisAmount.normalizePositive(expected.amount());
+        CregisNetwork network = expected == null ? null : payoutNetwork(expected.currency());
         if (expected == null || expected.cid() <= 0
                 || !StringUtils.hasText(expected.thirdPartyId()) || expected.thirdPartyId().trim().length() > 128
                 || !StringUtils.hasText(expected.address())
@@ -271,10 +284,10 @@ public final class HttpCregisGateway implements CregisGateway {
         String thirdPartyId = requiredText(data, "third_party_id");
         BigDecimal amount = positiveAmount(data.get("amount"));
         JsonNode statusNode = data.get("status");
-        if (!CregisConstants.BSC_CHAIN_ID.equals(chainId)
-                || !CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(tokenId)
-                || !("USDT-BEP20".equalsIgnoreCase(providerCurrency)
-                    || CregisConstants.USDT_BEP20_CURRENCY.equalsIgnoreCase(providerCurrency))
+        if (!network.chainId().equals(chainId)
+                || !network.tokenId().equalsIgnoreCase(tokenId)
+                || !(network.policyTokenId().equalsIgnoreCase(providerCurrency)
+                    || network.currency().equalsIgnoreCase(providerCurrency))
                 || !EVM_ADDRESS.matcher(address).matches()
                 || pidNode == null || !pidNode.isIntegralNumber() || !pidNode.canConvertToLong()
                 || pidNode.longValue() != properties.getProjectId()
@@ -293,13 +306,13 @@ public final class HttpCregisGateway implements CregisGateway {
                 || (status == PayoutStatus.SUCCEEDED && txid == null)) {
             throw invalidResponse();
         }
-        return new PayoutOrder(cid, CregisConstants.USDT_BEP20_CURRENCY, chainId, tokenId,
+        return new PayoutOrder(cid, network.currency(), chainId, tokenId,
                 address.toLowerCase(Locale.ROOT), amount, thirdPartyId,
                 status, txid);
     }
 
     private boolean addressCheck(String path, String chainId, String address) {
-        requireBsc(chainId);
+        requireNetwork(chainId);
         if (!StringUtils.hasText(address) || !EVM_ADDRESS.matcher(address.trim()).matches()) throw requestInvalid();
         JsonNode data = postRead(path, Map.of("chain_id", chainId, "address", address.trim()));
         JsonNode result = data.get("result");
@@ -345,7 +358,8 @@ public final class HttpCregisGateway implements CregisGateway {
 
     @Override public PayoutSubmission createAutoForwardPayout(PayoutRequest request) {
         requireAutoForward();
-        if(request==null||!CregisFundsPreparationService.COUNTERPARTY.equalsIgnoreCase(request.address())
+        if(request==null||!CregisConstants.USDT_BEP20_CURRENCY.equalsIgnoreCase(request.currency())
+                ||!CregisFundsPreparationService.COUNTERPARTY.equalsIgnoreCase(request.address())
                 ||request.thirdPartyId()==null||!request.thirdPartyId().matches("CA-P-[1-9][0-9]{0,18}-[1-9][0-9]{0,18}"))throw requestInvalid();
         PayoutRequest normalized=normalizePayout(request);
         JsonNode data=postWrite("/api/v2/payout",Map.of("currency",normalized.currency(),
@@ -515,8 +529,9 @@ public final class HttpCregisGateway implements CregisGateway {
     }
 
     private PayoutRequest normalizePayout(PayoutRequest request) {
-        if (request == null || !CregisConstants.USDT_BEP20_CURRENCY.equalsIgnoreCase(request.currency())
-                || !StringUtils.hasText(request.address()) || !EVM_ADDRESS.matcher(request.address().trim()).matches()) {
+        CregisNetwork network = request == null ? null : payoutNetwork(request.currency());
+        if (network == CregisNetwork.ERC20 && !properties.isErc20PayoutEnabled()) throw configurationInvalid();
+        if (request == null || !StringUtils.hasText(request.address()) || !EVM_ADDRESS.matcher(request.address().trim()).matches()) {
             throw requestInvalid();
         }
         BigDecimal amount = CregisAmount.normalizePositive(request.amount());
@@ -524,7 +539,7 @@ public final class HttpCregisGateway implements CregisGateway {
         requireText(request.thirdPartyId(), 128);
         requireProviderCallback(request.callbackUrl(), "/payout");
         requireOptionalText(request.remark(), 255);
-        return new PayoutRequest(CregisConstants.USDT_BEP20_CURRENCY,
+        return new PayoutRequest(network.currency(),
                 request.address().trim().toLowerCase(Locale.ROOT), amount.stripTrailingZeros(),
                 request.thirdPartyId().trim(), request.callbackUrl().trim(),
                 request.remark() == null ? "" : request.remark().trim());
@@ -555,8 +570,15 @@ public final class HttpCregisGateway implements CregisGateway {
         return node.textValue().isBlank() ? null : node.textValue();
     }
 
-    private void requireBsc(String chainId) {
-        if (!CregisConstants.BSC_CHAIN_ID.equals(chainId)) throw requestInvalid();
+    private void requireNetwork(String chainId) {
+        try { CregisNetwork.fromChainId(chainId); }
+        catch (IllegalArgumentException invalid) { throw requestInvalid(); }
+    }
+
+    private CregisNetwork payoutNetwork(String currency) {
+        for (var network : CregisNetwork.values())
+            if (network.currency().equalsIgnoreCase(currency)) return network;
+        throw requestInvalid();
     }
 
     private void requireHttps(String value) {

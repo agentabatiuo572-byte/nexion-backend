@@ -39,16 +39,16 @@ class CregisDepositServiceTest {
     @ParameterizedTest @ValueSource(strings={"9.5","10.5"})
     void newNonintegerRechargeArrivalsAreRetainedWithoutRoundingOrWalletCredit(String raw){
         var db=mock(CregisDepositMapper.class);riskReady(db);var policies=DepositPolicyFixture.policy();
-        when(policies.integerPrincipalRequired(88,TXID)).thenReturn(true);
-        when(db.lockEvent(88,77)).thenReturn(List.of());when(db.lockActiveUser(42)).thenReturn(42L);
+        when(policies.integerPrincipalRequired(CregisNetwork.BEP20,88,TXID)).thenReturn(true);
+        when(db.lockEvent(CregisNetwork.BEP20,88,77)).thenReturn(List.of());when(db.lockActiveUser(42)).thenReturn(42L);
         when(db.lockProvisionGate()).thenReturn(Map.of("state","IDLE","creditEnabled",1));
         String expected=new BigDecimal(raw).compareTo(BigDecimal.TEN)<0?"DUST_HOLD":"REVIEW_HOLD";
-        when(db.insertEvent(eq(42L),eq(88L),eq(77L),eq(TXID),eq(0),eq(ADDRESS),eq(new BigDecimal(raw)),eq(BigDecimal.ZERO),eq(BigDecimal.ZERO),eq(101L),eq(BLOCK),eq(15),eq(expected))).thenReturn(1);
+        when(db.insertEvent(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),eq(42L),eq(88L),eq(77L),eq(TXID),eq(0),eq(ADDRESS),eq(new BigDecimal(raw)),eq(BigDecimal.ZERO),eq(BigDecimal.ZERO),eq(101L),eq(BLOCK),eq(15),eq(expected))).thenReturn(1);
         var service=new CregisDepositService(properties(),mock(CregisGatewayRouter.class),mock(BscDepositProof.class),new CregisSigner(),new ObjectMapper(),db,
                 mock(PlatformTransactionManager.class),mock(TreasuryLedgerRepository.class),mock(FinanceWithdrawalControlFacade.class),capture,
                 mock(CregisPayoutControl.class),mock(CregisExceptionSourceService.class),mock(CregisReorgResolutionService.class),policies);
-        boolean held=org.springframework.test.util.ReflectionTestUtils.invokeMethod(service,"settle",0L,42L,77L,TXID,ADDRESS,new BigDecimal(raw),new BscDepositProof.Proof(0,101,BLOCK,15));
-        assertThat(held).isTrue();verify(db).insertEvent(eq(42L),eq(88L),eq(77L),eq(TXID),eq(0),eq(ADDRESS),eq(new BigDecimal(raw)),eq(BigDecimal.ZERO),eq(BigDecimal.ZERO),eq(101L),eq(BLOCK),eq(15),eq(expected));
+        boolean held=org.springframework.test.util.ReflectionTestUtils.invokeMethod(service,"settle",CregisNetwork.BEP20,0L,42L,77L,TXID,ADDRESS,new BigDecimal(raw),new BscDepositProof.Proof(0,101,BLOCK,15));
+        assertThat(held).isTrue();verify(db).insertEvent(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),eq(42L),eq(88L),eq(77L),eq(TXID),eq(0),eq(ADDRESS),eq(new BigDecimal(raw)),eq(BigDecimal.ZERO),eq(BigDecimal.ZERO),eq(101L),eq(BLOCK),eq(15),eq(expected));
         verify(db,never()).creditWallet(any(),anyLong(),anyLong());verifyNoInteractions(capture);service.closePoolWorkers();
     }
     private final SupportPaymentAttributionFacade capture = paymentAttribution();
@@ -68,7 +68,7 @@ class CregisDepositServiceTest {
                 BigDecimal.TEN, 101, BLOCK, 0, 15, 100, BLOCK, Instant.now().minusSeconds(6));
         assertThatThrownBy(() -> service.creditReviewedHold(77, proof))
                 .hasMessage("CREGIS_REVIEW_PROOF_EXPIRED");
-        verify(db, never()).lockEvent(88, 77);
+        verify(db, never()).lockEvent(CregisNetwork.BEP20,88, 77);
     }
 
     @ParameterizedTest
@@ -84,28 +84,28 @@ class CregisDepositServiceTest {
         PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
         when(manager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         when(router.provider()).thenReturn(gateway);
-        when(gateway.depositsByTxid(TXID)).thenReturn(List.of(new CregisGateway.DepositTrade(
+        when(gateway.depositsByTxid(CregisNetwork.BEP20,TXID)).thenReturn(List.of(new CregisGateway.DepositTrade(
                 77, CregisConstants.BSC_CHAIN_ID, CregisConstants.USDT_BEP20_TOKEN_ID,
                 ADDRESS, BigDecimal.TEN, TXID, 1)));
-        when(chain.verify(eq(TXID), eq(ADDRESS), any(BigDecimal.class), eq(101L)))
+        when(chain.verify(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),eq(TXID), eq(ADDRESS), any(BigDecimal.class), eq(101L)))
                 .thenReturn(Optional.of(new BscDepositProof.Proof(0, 101, BLOCK, 15)));
         when(db.addressOwner(88, CregisConstants.BSC_CHAIN_ID, ADDRESS))
                 .thenReturn(List.of(Map.of("userId", 42L, "allocationBlock", 100L,
                         "allocationHash", BLOCK)));
-        when(chain.blockHash(100)).thenReturn(BLOCK);
-        when(db.lockEvent(88, 77)).thenReturn(List.of());
+        when(chain.blockHash(CregisNetwork.BEP20,100)).thenReturn(BLOCK);
+        when(db.lockEvent(CregisNetwork.BEP20,88, 77)).thenReturn(List.of());
         when(db.lockProvisionGate()).thenReturn(Map.of("state", "IDLE", "assignEnabled", 1, "creditEnabled", 1));
         when(db.lockActiveUser(42)).thenReturn(42L);
-        when(db.insertEvent(eq(42L), eq(88L), eq(77L), eq(TXID), eq(0), eq(ADDRESS),
+        when(db.insertEvent(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),eq(42L), eq(88L), eq(77L), eq(TXID), eq(0), eq(ADDRESS),
                 argThat(n -> n.compareTo(BigDecimal.TEN) == 0), eq(BigDecimal.ONE), eq(new BigDecimal("9")),
                 eq(101L), eq(BLOCK), eq(15), eq("CREDITED"))).thenReturn(1);
         when(db.lockWallet(42)).thenReturn(Map.of("usdtAvailable", new BigDecimal("5"), "version", 7L));
         when(db.creditWallet(new BigDecimal("9"), 42, 7)).thenReturn(1);
 
         when(db.ledgerId("CR-77")).thenReturn(11L);
-        when(db.eventId(88, 77)).thenReturn(12L);
+        when(db.eventId(CregisNetwork.BEP20,88, 77)).thenReturn(12L);
         when(db.linkLedger(11, 12)).thenReturn(1);
-        when(db.insertDepositOrder(42, "CR-77", TXID, 0, new BigDecimal("9"), 15, 11)).thenReturn(1);
+        when(db.insertDepositOrder(CregisNetwork.BEP20,42, "CR-77", TXID, 0, new BigDecimal("9"), 15, 11)).thenReturn(1);
 
         CregisDepositService service = DepositPolicyFixture.withPolicy(new CregisDepositService(props, router, chain,
                 new CregisSigner(), new ObjectMapper(), db, manager, treasury,
@@ -132,18 +132,18 @@ class CregisDepositServiceTest {
         var captureOrder = org.mockito.Mockito.inOrder(db, capture);
         captureOrder.verify(db).lockActiveUser(42L);
         captureOrder.verify(capture).prepare(42L, Source.DEPOSIT_ORDER, "CR-77", "88");
-        captureOrder.verify(db).insertEvent(eq(42L), eq(88L), eq(77L), eq(TXID), eq(0), eq(ADDRESS),
+        captureOrder.verify(db).insertEvent(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),eq(42L), eq(88L), eq(77L), eq(TXID), eq(0), eq(ADDRESS),
                 argThat(n -> n.compareTo(BigDecimal.TEN) == 0), eq(BigDecimal.ONE), eq(new BigDecimal("9")),
                 eq(101L), eq(BLOCK), eq(15), eq("CREDITED"));
         captureOrder.verify(db).lockWallet(42L);
         captureOrder.verify(capture).beforeCash(any(Prepared.class));
         captureOrder.verify(db).creditWallet(new BigDecimal("9"),42L,7L);
         captureOrder.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString());
-        captureOrder.verify(db).insertDepositOrder(42, "CR-77", TXID, 0, new BigDecimal("9"), 15, 11);
+        captureOrder.verify(db).insertDepositOrder(CregisNetwork.BEP20,42, "CR-77", TXID, 0, new BigDecimal("9"), 15, 11);
         captureOrder.verify(capture).record(any(Prepared.class));
         verify(capture).record(any(Prepared.class));
         verify(db).creditWallet(new BigDecimal("9"), 42, 7);
-        verify(db).insertDepositOrder(42, "CR-77", TXID, 0, new BigDecimal("9"), 15, 11);
+        verify(db).insertDepositOrder(CregisNetwork.BEP20,42, "CR-77", TXID, 0, new BigDecimal("9"), 15, 11);
         verify(treasury).recordTopupReserve("CR-77", new BigDecimal("9"), "CREGIS:77");
         verify(db).finishDelivery(1, "CREDITED");
     }
@@ -155,21 +155,21 @@ class CregisDepositServiceTest {
         var router=mock(CregisGatewayRouter.class);var gateway=mock(CregisGateway.class);var chain=mock(BscDepositProof.class);
         var treasury=mock(TreasuryLedgerRepository.class);var manager=mock(PlatformTransactionManager.class);
         when(manager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());when(router.provider()).thenReturn(gateway);
-        when(gateway.depositsByTxid(TXID)).thenReturn(List.of(new CregisGateway.DepositTrade(77,CregisConstants.BSC_CHAIN_ID,CregisConstants.USDT_BEP20_TOKEN_ID,ADDRESS,BigDecimal.ONE,TXID,1)));
-        when(chain.verify(eq(TXID),eq(ADDRESS),any(BigDecimal.class),eq(101L))).thenReturn(Optional.of(new BscDepositProof.Proof(0,101,BLOCK,15)));
+        when(gateway.depositsByTxid(CregisNetwork.BEP20,TXID)).thenReturn(List.of(new CregisGateway.DepositTrade(77,CregisConstants.BSC_CHAIN_ID,CregisConstants.USDT_BEP20_TOKEN_ID,ADDRESS,BigDecimal.ONE,TXID,1)));
+        when(chain.verify(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),eq(TXID),eq(ADDRESS),any(BigDecimal.class),eq(101L))).thenReturn(Optional.of(new BscDepositProof.Proof(0,101,BLOCK,15)));
         when(db.addressOwner(88,CregisConstants.BSC_CHAIN_ID,ADDRESS)).thenReturn(List.of(Map.of("userId",42L,"allocationBlock",100L,"allocationHash",BLOCK)));
-        when(chain.blockHash(100)).thenReturn(BLOCK);when(db.lockEvent(88,77)).thenReturn(List.of());
+        when(chain.blockHash(CregisNetwork.BEP20,100)).thenReturn(BLOCK);when(db.lockEvent(CregisNetwork.BEP20,88,77)).thenReturn(List.of());
         when(db.lockProvisionGate()).thenReturn(Map.of("state","IDLE","assignEnabled",1,"creditEnabled",1));when(db.lockActiveUser(42)).thenReturn(42L);
-        when(db.insertEvent(eq(42L),eq(88L),eq(77L),eq(TXID),eq(0),eq(ADDRESS),eq(BigDecimal.ONE),eq(BigDecimal.ZERO),eq(BigDecimal.ONE),eq(101L),eq(BLOCK),eq(15),eq("CREDITED"))).thenReturn(1);
+        when(db.insertEvent(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),eq(42L),eq(88L),eq(77L),eq(TXID),eq(0),eq(ADDRESS),eq(BigDecimal.ONE),eq(BigDecimal.ZERO),eq(BigDecimal.ONE),eq(101L),eq(BLOCK),eq(15),eq("CREDITED"))).thenReturn(1);
         when(db.lockWallet(42)).thenReturn(Map.of("usdtAvailable",BigDecimal.ZERO,"version",7L));when(db.creditWallet(BigDecimal.ONE,42,7)).thenReturn(1);
-        when(db.ledgerId("CR-77")).thenReturn(11L);when(db.eventId(88,77)).thenReturn(12L);when(db.linkLedger(11,12)).thenReturn(1);
-        when(db.insertDepositOrder(42,"CR-77",TXID,0,BigDecimal.ONE,15,11)).thenReturn(1);
+        when(db.ledgerId("CR-77")).thenReturn(11L);when(db.eventId(CregisNetwork.BEP20,88,77)).thenReturn(12L);when(db.linkLedger(11,12)).thenReturn(1);
+        when(db.insertDepositOrder(CregisNetwork.BEP20,42,"CR-77",TXID,0,BigDecimal.ONE,15,11)).thenReturn(1);
         var policy=mock(CregisDepositPolicyService.class);var frozen=new CregisDepositPolicy(1,BigDecimal.ONE,BigDecimal.ZERO,required);
-        when(policy.snapshot(anyLong(),anyString())).thenReturn(frozen);when(policy.discover(anyLong(),anyString())).thenReturn(frozen);
+        when(policy.snapshot(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),anyLong(),anyString())).thenReturn(frozen);when(policy.discover(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),anyLong(),anyString())).thenReturn(frozen);
         var service=new CregisDepositService(props,router,chain,new CregisSigner(),new ObjectMapper(),db,manager,treasury,mock(FinanceWithdrawalControlFacade.class),capture,mock(CregisPayoutControl.class),mock(CregisExceptionSourceService.class),mock(CregisReorgResolutionService.class), policy);
         String raw=signedCallback("1","1");assertThat(service.receive(raw)).isEqualTo("success");when(db.pendingDeliveries()).thenReturn(List.of(Map.of("id",1L,"rawJson",raw)));
         service.reconcile();
-        if(required==15) {verify(db).creditWallet(BigDecimal.ONE,42,7);verify(treasury).recordTopupReserve("CR-77",BigDecimal.ONE,"CREGIS:77");verify(db).insertDepositOrder(42,"CR-77",TXID,0,BigDecimal.ONE,15,11);}
+        if(required==15) {verify(db).creditWallet(BigDecimal.ONE,42,7);verify(treasury).recordTopupReserve("CR-77",BigDecimal.ONE,"CREGIS:77");verify(db).insertDepositOrder(CregisNetwork.BEP20,42,"CR-77",TXID,0,BigDecimal.ONE,15,11);}
         else {verify(db,never()).creditWallet(any(),anyLong(),anyLong());verifyNoInteractions(treasury);}
     }
 
@@ -197,12 +197,12 @@ class CregisDepositServiceTest {
         var manager = mock(PlatformTransactionManager.class);
         when(manager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         when(router.provider()).thenReturn(provider);
-        when(provider.depositsByTxid(TXID)).thenReturn(List.of(new CregisGateway.DepositTrade(
+        when(provider.depositsByTxid(CregisNetwork.BEP20,TXID)).thenReturn(List.of(new CregisGateway.DepositTrade(
                 77, CregisConstants.BSC_CHAIN_ID, CregisConstants.USDT_BEP20_TOKEN_ID,
                 ADDRESS, BigDecimal.TEN, TXID, 1)));
-        when(chain.verify(eq(TXID), eq(ADDRESS), any(BigDecimal.class), eq(101L)))
+        when(chain.verify(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),eq(TXID), eq(ADDRESS), any(BigDecimal.class), eq(101L)))
                 .thenReturn(Optional.of(new BscDepositProof.Proof(0, 101, BLOCK, 15)));
-        when(chain.blockHash(100)).thenReturn(BLOCK);
+        when(chain.blockHash(CregisNetwork.BEP20,100)).thenReturn(BLOCK);
         when(db.addressOwner(88, CregisConstants.BSC_CHAIN_ID, ADDRESS)).thenReturn(List.of(Map.of(
                 "userId", 42L, "allocationBlock", 100L, "allocationHash", BLOCK)));
         String first = signedCallback();
@@ -231,20 +231,20 @@ class CregisDepositServiceTest {
                 ? List.of(Map.of("id", 1L, "rawJson", first), Map.of("id", 2L, "rawJson", second))
                 : List.of(Map.of("id", 1L, "rawJson", first)));
         var event = new java.util.concurrent.atomic.AtomicReference<Map<String, Object>>();
-        when(db.lockEvent(88, 77)).thenAnswer(ignored -> event.get() == null ? List.of() : List.of(event.get()));
-        when(db.insertEvent(anyLong(), anyLong(), anyLong(), any(), anyInt(), any(), any(), any(), any(),
+        when(db.lockEvent(CregisNetwork.BEP20,88, 77)).thenAnswer(ignored -> event.get() == null ? List.of() : List.of(event.get()));
+        when(db.insertEvent(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),anyLong(), anyLong(), anyLong(), any(), anyInt(), any(), any(), any(), any(),
                 anyLong(), any(), anyInt(), any())).thenAnswer(invocation -> {
                     event.set(Map.of("userId", 42L, "txid", TXID, "address", ADDRESS,
-                            "logIndex", 0, "grossAmount", BigDecimal.TEN, "status", invocation.getArgument(12)));
+                            "logIndex", 0, "grossAmount", BigDecimal.TEN, "status", invocation.getArgument(13)));
                     return 1;
                 });
         when(db.lockActiveUser(42L)).thenReturn(42L);
         when(db.lockWallet(42L)).thenReturn(Map.of("usdtAvailable", BigDecimal.ZERO, "version", 1L));
         when(db.creditWallet(new BigDecimal("9"), 42L, 1L)).thenReturn(1);
         when(db.ledgerId("CR-77")).thenReturn(11L);
-        when(db.eventId(88L, 77L)).thenReturn(12L);
+        when(db.eventId(CregisNetwork.BEP20,88L, 77L)).thenReturn(12L);
         when(db.linkLedger(11L, 12L)).thenReturn(1);
-        when(db.insertDepositOrder(42L, "CR-77", TXID, 0, new BigDecimal("9"), 15, 11L)).thenReturn(1);
+        when(db.insertDepositOrder(CregisNetwork.BEP20,42L, "CR-77", TXID, 0, new BigDecimal("9"), 15, 11L)).thenReturn(1);
         var service = DepositPolicyFixture.withPolicy(new CregisDepositService(properties(), router, chain, new CregisSigner(), json, db,
                 manager, treasury, mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class), DepositPolicyFixture.policy()));
 
@@ -254,7 +254,7 @@ class CregisDepositServiceTest {
             assertThat(event.get()).containsEntry("status", "CREDITED");
             verify(db).creditWallet(new BigDecimal("9"), 42L, 1L);
             verify(capture).insertLedger(any(Prepared.class), eq(new BigDecimal("9")), eq(new BigDecimal("9")), any());
-            verify(db).insertDepositOrder(42L, "CR-77", TXID, 0, new BigDecimal("9"), 15, 11L);
+            verify(db).insertDepositOrder(CregisNetwork.BEP20,42L, "CR-77", TXID, 0, new BigDecimal("9"), 15, 11L);
             verify(treasury).recordTopupReserve("CR-77", new BigDecimal("9"), "CREGIS:77");
         } else {
             assertThat(event.get()).containsEntry("status", "REVIEW_HOLD");
@@ -293,29 +293,29 @@ class CregisDepositServiceTest {
         when(db.pendingAcceptedDeliveryCount(anyLong())).thenReturn(1);
         when(db.pendingAcceptedDeliveryEvidence(1L)).thenReturn(List.of(Map.of("rawJson", second)));
         when(db.pendingAcceptedDeliveryEvidence(2L)).thenReturn(List.of(Map.of("rawJson", first)));
-        when(provider.depositsByTxid(TXID)).thenReturn(List.of(new CregisGateway.DepositTrade(
+        when(provider.depositsByTxid(CregisNetwork.BEP20,TXID)).thenReturn(List.of(new CregisGateway.DepositTrade(
                 77, CregisConstants.BSC_CHAIN_ID, CregisConstants.USDT_BEP20_TOKEN_ID, ADDRESS, BigDecimal.TEN, TXID, 1)));
-        when(provider.depositsByTxid(secondTx)).thenReturn(List.of(new CregisGateway.DepositTrade(
+        when(provider.depositsByTxid(CregisNetwork.BEP20,secondTx)).thenReturn(List.of(new CregisGateway.DepositTrade(
                 78, CregisConstants.BSC_CHAIN_ID, CregisConstants.USDT_BEP20_TOKEN_ID, secondAddress, new BigDecimal("20"), secondTx, 1)));
-        when(chain.verify(eq(TXID), eq(ADDRESS), any(BigDecimal.class), eq(101L)))
+        when(chain.verify(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),eq(TXID), eq(ADDRESS), any(BigDecimal.class), eq(101L)))
                 .thenReturn(Optional.of(new BscDepositProof.Proof(0, 101, BLOCK, 15)));
-        when(chain.verify(eq(secondTx), eq(secondAddress), any(BigDecimal.class), eq(102L)))
+        when(chain.verify(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),eq(secondTx), eq(secondAddress), any(BigDecimal.class), eq(102L)))
                 .thenReturn(Optional.of(new BscDepositProof.Proof(0, 102, "0x" + "d".repeat(64), 15)));
-        when(chain.blockHash(100)).thenReturn(BLOCK);
+        when(chain.blockHash(CregisNetwork.BEP20,100)).thenReturn(BLOCK);
         when(db.addressOwner(eq(88L), eq(CregisConstants.BSC_CHAIN_ID), any())).thenAnswer(invocation -> List.of(Map.of(
                 "userId", ADDRESS.equals(invocation.getArgument(2)) ? 42L : secondUser,
                 "allocationBlock", 100L, "allocationHash", BLOCK)));
         var events = new java.util.HashMap<Long, Map<String, Object>>();
-        when(db.lockEvent(eq(88L), anyLong())).thenAnswer(invocation -> {
-            var event = events.get(invocation.<Long>getArgument(1));
+        when(db.lockEvent(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),eq(88L), anyLong())).thenAnswer(invocation -> {
+            var event = events.get(invocation.<Long>getArgument(2));
             return event == null ? List.of() : List.of(event);
         });
-        when(db.insertEvent(anyLong(), anyLong(), anyLong(), any(), anyInt(), any(), any(), any(), any(),
+        when(db.insertEvent(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),anyLong(), anyLong(), anyLong(), any(), anyInt(), any(), any(), any(), any(),
                 anyLong(), any(), anyInt(), any())).thenAnswer(invocation -> {
-                    events.put(invocation.getArgument(2), Map.of("userId", invocation.getArgument(0),
-                            "txid", invocation.getArgument(3), "address", invocation.getArgument(5),
-                            "logIndex", invocation.getArgument(4), "grossAmount", invocation.getArgument(6),
-                            "status", invocation.getArgument(12)));
+                    events.put(invocation.getArgument(3), Map.of("userId", invocation.getArgument(1),
+                            "txid", invocation.getArgument(4), "address", invocation.getArgument(6),
+                            "logIndex", invocation.getArgument(5), "grossAmount", invocation.getArgument(7),
+                            "status", invocation.getArgument(13)));
                     return 1;
                 });
         var balances = new java.util.HashMap<Long, BigDecimal>();
@@ -333,10 +333,10 @@ class CregisDepositServiceTest {
         });
         when(db.ledgerId("CR-77")).thenReturn(11L);
         when(db.ledgerId("CR-78")).thenReturn(21L);
-        when(db.eventId(88L, 77L)).thenReturn(12L);
-        when(db.eventId(88L, 78L)).thenReturn(22L);
+        when(db.eventId(CregisNetwork.BEP20,88L, 77L)).thenReturn(12L);
+        when(db.eventId(CregisNetwork.BEP20,88L, 78L)).thenReturn(22L);
         when(db.linkLedger(anyLong(), anyLong())).thenReturn(1);
-        when(db.insertDepositOrder(anyLong(), any(), any(), anyInt(), any(), anyInt(), anyLong())).thenReturn(1);
+        when(db.insertDepositOrder(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),anyLong(), any(), any(), anyInt(), any(), anyInt(), anyLong())).thenReturn(1);
         var service = DepositPolicyFixture.withPolicy(new CregisDepositService(properties(), router, chain, new CregisSigner(), json, db,
                 manager, treasury, mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class), DepositPolicyFixture.policy()));
 
@@ -352,8 +352,8 @@ class CregisDepositServiceTest {
         verify(capture).insertLedger(any(Prepared.class), eq(new BigDecimal("9")), eq(new BigDecimal("9")), any());
         verify(capture).insertLedger(any(Prepared.class), eq(new BigDecimal("19")),
                 eq(new BigDecimal(differentUsers ? "19" : "28")), any());
-        verify(db).insertDepositOrder(42L, "CR-77", TXID, 0, new BigDecimal("9"), 15, 11L);
-        verify(db).insertDepositOrder(secondUser, "CR-78", secondTx, 0, new BigDecimal("19"), 15, 21L);
+        verify(db).insertDepositOrder(CregisNetwork.BEP20,42L, "CR-77", TXID, 0, new BigDecimal("9"), 15, 11L);
+        verify(db).insertDepositOrder(CregisNetwork.BEP20,secondUser, "CR-78", secondTx, 0, new BigDecimal("19"), 15, 21L);
         verify(treasury).recordTopupReserve("CR-77", new BigDecimal("9"), "CREGIS:77");
         verify(treasury).recordTopupReserve("CR-78", new BigDecimal("19"), "CREGIS:78");
     }
@@ -380,19 +380,19 @@ class CregisDepositServiceTest {
         when(db.lockProvisionGate()).thenReturn(Map.of("state", "BLOCKED", "creditEnabled", 0));
         when(db.addressOwner(88, CregisConstants.BSC_CHAIN_ID, ADDRESS)).thenReturn(List.of(Map.of(
                 "userId", 42L, "allocationBlock", 100L, "allocationHash", BLOCK)));
-        when(db.insertEvent(eq(42L), eq(88L), eq(77L), eq(TXID), eq(0), eq(ADDRESS),
+        when(db.insertEvent(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),eq(42L), eq(88L), eq(77L), eq(TXID), eq(0), eq(ADDRESS),
                 argThat(n -> n.compareTo(BigDecimal.TEN) == 0), eq(BigDecimal.ZERO), eq(BigDecimal.ZERO),
                 eq(101L), eq(BLOCK), eq(15), eq("REVIEW_HOLD"))).thenReturn(1);
         CregisGatewayRouter router = mock(CregisGatewayRouter.class);
         CregisGateway provider = mock(CregisGateway.class);
         when(router.provider()).thenReturn(provider);
-        when(provider.depositsByTxid(TXID)).thenReturn(List.of(new CregisGateway.DepositTrade(
+        when(provider.depositsByTxid(CregisNetwork.BEP20,TXID)).thenReturn(List.of(new CregisGateway.DepositTrade(
                 77, CregisConstants.BSC_CHAIN_ID, CregisConstants.USDT_BEP20_TOKEN_ID,
                 ADDRESS, BigDecimal.TEN, TXID, 1)));
         BscDepositProof chain = mock(BscDepositProof.class);
-        when(chain.verify(eq(TXID), eq(ADDRESS), argThat(n -> n.compareTo(BigDecimal.TEN) == 0), eq(101L)))
+        when(chain.verify(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),eq(TXID), eq(ADDRESS), argThat(n -> n.compareTo(BigDecimal.TEN) == 0), eq(101L)))
                 .thenReturn(Optional.of(new BscDepositProof.Proof(0, 101, BLOCK, 15)));
-        when(chain.blockHash(100)).thenReturn(BLOCK);
+        when(chain.blockHash(CregisNetwork.BEP20,100)).thenReturn(BLOCK);
         PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
         when(manager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         CregisDepositService service = DepositPolicyFixture.withPolicy(new CregisDepositService(props, router, chain,
@@ -474,7 +474,7 @@ class CregisDepositServiceTest {
         enabled.setDepositEnabled(true);
         enabled.setDepositCreditEnabled(false);
         when(db.provisionGate()).thenReturn(Map.of("state", "IDLE", "assignEnabled", 1));
-        when(db.poolPolicy()).thenReturn(Map.of("enabled",1,"target",1000,"lowWatermark",300,"batchSize",50,"concurrency",2,"version",0L));
+        when(db.poolPolicy(CregisNetwork.BEP20)).thenReturn(Map.of("enabled",1,"target",1000,"lowWatermark",300,"batchSize",50,"concurrency",2,"version",0L));
         when(db.addressPool(88, CregisConstants.BSC_CHAIN_ID)).thenReturn(Map.of(
                 "total", 3L, "unassigned", 2L, "assigned", 1L, "verifying", 0L, "unknown", 0L));
         CregisDepositService provider = DepositPolicyFixture.withPolicy(new CregisDepositService(enabled,
@@ -612,7 +612,7 @@ class CregisDepositServiceTest {
         assertThat(service.address(42)).containsEntry("enabled", false)
                 .containsEntry("creditEnabled", false)
                 .containsEntry("reason", "CREGIS_DEPOSIT_PAUSED");
-        verify(chain, never()).head();
+        verify(chain, never()).head(CregisNetwork.BEP20);
         verify(router, never()).provider();
         verify(db, never()).allocatedAddressCount(anyLong(), any());
     }
@@ -632,10 +632,10 @@ class CregisDepositServiceTest {
         PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
         when(manager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         when(db.availableAddressCount(88, CregisConstants.BSC_CHAIN_ID)).thenReturn(1);
-        when(chain.head()).thenReturn(new BscDepositProof.Head(120, BLOCK));
-        when(chain.blockHash(120)).thenReturn(BLOCK);
-        when(db.cursor()).thenReturn(107L);
-        when(db.lockCursor()).thenReturn(107L);
+        when(chain.head(CregisNetwork.BEP20)).thenReturn(new BscDepositProof.Head(120, BLOCK));
+        when(chain.blockHash(CregisNetwork.BEP20,120)).thenReturn(BLOCK);
+        when(db.cursor(CregisNetwork.BEP20)).thenReturn(107L);
+        when(db.lockCursor(CregisNetwork.BEP20)).thenReturn(107L);
         when(db.lockProvisionGate()).thenReturn(Map.of("state", "IDLE", "assignEnabled", 1, "creditEnabled", 1));
         Map<String, Object> currentGate = "MISSING".equals(finalState) ? null
                 : Map.of("state", finalState, "assignEnabled", finalAssignEnabled, "creditEnabled", finalCreditEnabled);
@@ -647,7 +647,7 @@ class CregisDepositServiceTest {
         when(router.provider()).thenReturn(provider);
         when(provider.addressBelongs(CregisConstants.BSC_CHAIN_ID, ADDRESS)).thenReturn(true);
         when(provider.zeroAddressBalance(CregisConstants.USDT_BEP20_CURRENCY, ADDRESS)).thenReturn(true);
-        when(chain.zeroUsdtBalance(ADDRESS)).thenReturn(true);
+        when(chain.zeroUsdtBalance(CregisNetwork.BEP20,ADDRESS)).thenReturn(true);
         when(db.assignPoolAddress(1, 42, 120, BLOCK)).thenReturn(1);
         CregisDepositService service = DepositPolicyFixture.withPolicy(new CregisDepositService(props, router, chain,
                 new CregisSigner(), new ObjectMapper(), db, manager,
@@ -668,7 +668,7 @@ class CregisDepositServiceTest {
         riskReady(db);
         PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
         when(manager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
-        when(db.lockEvent(88, 77)).thenReturn(List.of(Map.of(
+        when(db.lockEvent(CregisNetwork.BEP20,88, 77)).thenReturn(List.of(Map.of(
                 "id", 12L, "userId", 42L, "status", "CREDITED", "netAmount", new BigDecimal("9"))));
         when(db.markCreditedIncident(12, "PROVIDER_CONFLICT_HOLD")).thenReturn(1);
         when(db.lockWallet(42)).thenReturn(Map.of("usdtAvailable", new BigDecimal("5"), "version", 7L));
@@ -802,7 +802,7 @@ class CregisDepositServiceTest {
     void reviewedHoldCapturesBeforeReleasingSuccessAndPropagatesCaptureFailure(boolean failCapture) {
         CregisDepositMapper db = mock(CregisDepositMapper.class);
         riskReady(db);
-        when(db.lockEvent(88, 77)).thenReturn(List.of(Map.ofEntries(
+        when(db.lockEvent(CregisNetwork.BEP20,88, 77)).thenReturn(List.of(Map.ofEntries(
                 Map.entry("id", 12L), Map.entry("userId", 42L), Map.entry("status", "REVIEW_HOLD"),
                 Map.entry("txid", TXID), Map.entry("address", ADDRESS), Map.entry("grossAmount", BigDecimal.TEN),
                 Map.entry("blockNumber", 101L), Map.entry("blockHash", BLOCK), Map.entry("logIndex", 0))));
@@ -815,7 +815,7 @@ class CregisDepositServiceTest {
 
         when(db.ledgerId("CR-77")).thenReturn(11L);
         when(db.linkLedger(11L, 12L)).thenReturn(1);
-        when(db.insertDepositOrder(42L, "CR-77", TXID, 0, new BigDecimal("9"), 15, 11L)).thenReturn(1);
+        when(db.insertDepositOrder(CregisNetwork.BEP20,42L, "CR-77", TXID, 0, new BigDecimal("9"), 15, 11L)).thenReturn(1);
         var service = DepositPolicyFixture.withPolicy(new CregisDepositService(properties(), mock(CregisGatewayRouter.class),
                 mock(BscDepositProof.class), new CregisSigner(), new ObjectMapper(), db,
                 mock(PlatformTransactionManager.class), mock(TreasuryLedgerRepository.class),
@@ -836,7 +836,7 @@ class CregisDepositServiceTest {
         sequence.verify(capture).beforeCash(any(Prepared.class));
         sequence.verify(db).creditWallet(new BigDecimal("9"),42L,7L);
         sequence.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString());
-        sequence.verify(db).insertDepositOrder(42L, "CR-77", TXID, 0, new BigDecimal("9"), 15, 11L);
+        sequence.verify(db).insertDepositOrder(CregisNetwork.BEP20,42L, "CR-77", TXID, 0, new BigDecimal("9"), 15, 11L);
         sequence.verify(capture).record(any(Prepared.class));
     }
 
