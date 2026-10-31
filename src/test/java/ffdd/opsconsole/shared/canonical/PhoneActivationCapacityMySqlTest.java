@@ -107,9 +107,10 @@ class PhoneActivationCapacityMySqlTest {
             jdbc.execute(baseline.substring(start, baseline.indexOf(';', start) + 1));
         }
         jdbc.execute("ALTER TABLE nx_trial_claim ADD COLUMN settled_at DATETIME(6) NULL");
+        jdbc.execute("ALTER TABLE nx_trial_claim ADD COLUMN closed_at DATETIME(6) NULL");
         // Production delivery allocates IDs too; keep the explicit phone fixture at 11 separate.
         jdbc.execute("ALTER TABLE nx_user_device AUTO_INCREMENT=1000");
-        jdbc.execute("CREATE TABLE nx_admin_device_sku(sku_id VARCHAR(64),power_text VARCHAR(40),datacenter VARCHAR(60),is_deleted INT DEFAULT 0,gpu VARCHAR(64),purchase_gate_json JSON,purchase_gate_generation BIGINT DEFAULT 1)");
+        jdbc.execute("CREATE TABLE nx_admin_device_sku(sku_id VARCHAR(64),power_text VARCHAR(40),datacenter VARCHAR(60),is_deleted INT DEFAULT 0,gpu VARCHAR(64),purchase_gate_json JSON,purchase_gate_generation BIGINT DEFAULT 1,updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP)");
         jdbc.update("INSERT INTO nx_admin_device_sku(sku_id,power_text,datacenter,is_deleted) VALUES('capacity-box','120 W','fixture DC',0)");
         jdbc.execute("CREATE TABLE nx_compute_task(user_id BIGINT,user_device_id BIGINT,status VARCHAR(32),"
                 + "source_environment VARCHAR(16) DEFAULT 'PRODUCTION',is_deleted INT DEFAULT 0)");
