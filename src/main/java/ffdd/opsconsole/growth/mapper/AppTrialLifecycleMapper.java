@@ -386,11 +386,11 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
 
     @Insert("""
             INSERT INTO nx_user_device
-              (user_id,source_order_no,product_id,product_code,product_tier,device_id,instance_no,name,
+              (user_id,source_order_no,product_id,product_code,product_tier,instance_no,name,
                device_type,generation,base_power_w,price_usdt_snapshot,ownership_status,source_channel,
                status,hashrate,daily_usdt,daily_nex,purchased_at,activated_at,created_at,updated_at,is_deleted,
                gpu_model,vram_total_gb,dc_location)
-            SELECT #{userId},#{sourceOrderNo},p.id,p.product_no,#{productTier},NULL,#{instanceNo},#{deviceName},
+            SELECT #{userId},#{sourceOrderNo},p.id,p.product_no,#{productTier},#{instanceNo},#{deviceName},
                #{deviceType},1,CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)),
                #{priceUsdt},'OWNED','TRIAL','ACTIVE',0,p.estimated_daily_usdt,p.daily_nex,NOW(),NOW(),NOW(),NOW(),0,
                p.gpu_model,p.vram_total_gb,s.datacenter

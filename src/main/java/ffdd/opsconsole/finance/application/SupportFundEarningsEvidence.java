@@ -34,7 +34,12 @@ public class SupportFundEarningsEvidence {
     public record Verified(Stamp stamp,String coveredPhase,List<Checkpoint> checkpoints) {
         public Verified {checkpoints=List.copyOf(checkpoints);}
     }
+    /** Package-only evidence from an already verified compound trial payment and independent E4 history. */
+    record TrialRecovery(JsonNode source,JsonNode authority,JsonNode reward,ffdd.opsconsole.finance.facade.SupportPaymentFacts.Fact refund) { }
     public Verified verify(Map<String,Object> operation,JsonNode originalSource,JsonNode originalProof,List<Event> events,Inputs input) {
+        return verify(operation,originalSource,originalProof,events,input,null);
+    }
+    Verified verify(Map<String,Object> operation,JsonNode originalSource,JsonNode originalProof,List<Event> events,Inputs input,TrialRecovery trial) {
         JsonNode source=ffdd.opsconsole.common.domain.LegacyUvtProof.current(originalSource);
         JsonNode proof=ffdd.opsconsole.common.domain.LegacyUvtProof.current(originalProof);
         require("SUPPORT_EARNINGS".equals(operation.get("businessType")) &&"PRODUCTION".equals(operation.get("sourceEnvironment")));
@@ -88,7 +93,8 @@ public class SupportFundEarningsEvidence {
                 var recovery=source.path("recovery");var actual=one(input.recoveries(),"recoveryNo",key);
                 require(equal(recovery,actual) &&no.equals(text(recovery.path("entryNo"))) &&number(recovery.path("userId"))==customer
                     &&asset.equals(text(recovery.path("asset"))) &&"PRODUCTION".equals(text(recovery.path("sourceEnvironment")))
-                    &&"PROMOTION_REWARD".equals(text(recovery.path("sourceType"))) &&equal(recovery.path("sourceType"),current.get("sourceType"))
+                    &&("PROMOTION_REWARD".equals(text(recovery.path("sourceType"))) ||trialRecovery(trial,recovery,current))
+                    &&equal(recovery.path("sourceType"),current.get("sourceType"))
                     &&equal(recovery.path("sourceRef"),current.get("sourceRef")) &&"TRACKED_CONSERVATIVE".equals(text(recovery.path("evidenceStatus")))
                     &&equal(recovery.path("debitBaseline"),current.get("debitBaseline")));
                 BigDecimal recovered=decimal(recovery.path("recovered")),requested=decimal(recovery.path("requested"));
@@ -136,6 +142,40 @@ public class SupportFundEarningsEvidence {
                 phase.equals("RELEASE")?ZeroPhase.RELEASE:ZeroPhase.RECOVERY_NO_CASH));
         }else require(!proof.path("cashTrace").isEmpty());
         return new Verified(stamp,(phase.equals("RECOVER")?key:no)+":"+phase,checkpoints);
+    }
+    private boolean trialRecovery(TrialRecovery trial,JsonNode recovery,Map<String,Object> current) {
+        if(trial==null)return false;
+        var source=trial.source();var reward=trial.reward();var refund=trial.refund();
+        var detail=codec.readCurrentProof(text(trial.authority().path("detail")));
+        String claim=text(source.path("trialSource").path("claimNo")),order=text(source.path("orderNo"));
+        String type=text(reward.path("sourceType")),asset=text(reward.path("currency"));
+        require("FULL_TERM_ON_CONVERSION".equals(text(detail.path("settlementPolicy")))
+            &&"H2_TRIAL_CONVERTED".equals(text(trial.authority().path("action")))
+            &&"TRIAL_CLAIM".equals(text(trial.authority().path("resourceType")))
+            &&claim.equals(text(trial.authority().path("resourceId"))) &&claim.equals(text(trial.authority().path("bizNo")))
+            &&"USER".equals(text(trial.authority().path("actorType"))) &&"SUCCESS".equals(text(trial.authority().path("result")))
+            &&number(trial.authority().path("validDigest"))==1 &&auditIdentity(trial.authority().path("actorId"))==number(reward.path("customerId"))
+            &&auditIdentity(trial.authority().path("customerId"))==number(reward.path("customerId"))
+            &&order.equals(text(detail.path("orderNo"))) &&"PRODUCTION".equals(text(detail.path("sourceEnvironment")))
+            &&decimal(detail.path("amountUsdt")).compareTo(decimal(source.path("amount")))==0
+            &&detail.path("serverCanonical").isBoolean() &&detail.path("serverCanonical").booleanValue()
+            &&detail.path("runId").isTextual() &&detail.path("runId").textValue().isEmpty()
+            &&"UVEL_USDT_WALLET".equals(text(detail.path("paymentRail"))));
+        require(refund.source()==ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source.ORDER_REFUND
+            &&refund.kind()==ffdd.opsconsole.finance.facade.SupportPaymentFacts.Kind.DEVICE_PURCHASE_REFUND
+            &&refund.customerId()==number(reward.path("customerId")) &&order.equals(refund.orderNo())
+            &&text(source.path("factId")).equals(refund.originalFactId()) &&"USDT".equals(refund.currency())
+            &&decimal(source.path("amount")).compareTo(refund.amount())==0 &&refund.ledgerId()>0);
+        require(("H2_TRIAL_REMAINDER".equals(type) &&"USDT".equals(asset) &&(claim+":REMAINDER").equals(text(reward.path("sourceRef"))))
+            ||("H2_TRIAL_BONUS".equals(type) &&"UVT".equals(asset) &&(claim+":NEX").equals(text(reward.path("sourceRef")))));
+        require(equal(reward.path("entryNo"),current.get("entryNo")) &&equal(reward.path("customerId"),current.get("userId"))
+            &&equal(reward.path("sourceType"),current.get("sourceType")) &&equal(reward.path("sourceRef"),current.get("sourceRef"))
+            &&asset.equals(current.get("asset")) &&equal(reward.path("amount"),current.get("amount"))
+            &&equal(reward.path("sourceWalletId"),current.get("sourceWalletId")) &&equal(reward.path("debitBaseline"),current.get("debitBaseline"))
+            &&decimal(recovery.path("requested")).compareTo(decimal(reward.path("amount")))==0
+            &&"E4_ORDER_REFUND".equals(text(recovery.path("actor")))
+            &&("Trial early-conversion reward reversed with order refund "+order).equals(text(recovery.path("reason"))));
+        return true;
     }
     /** Reverse source enumeration includes no-cash releases/recoveries and the exact cumulative recovery tail. */
     public void verifyCoverage(Set<Long> component,Inputs input,Set<String> coveredPhases) {
@@ -222,6 +262,13 @@ public class SupportFundEarningsEvidence {
     private static BigDecimal decimal(JsonNode value) {require(value.isNumber());return decimal(value.numberValue());}
     private static long number(Object value) {try{return decimal(value).longValueExact();}catch(ArithmeticException ex){throw new IllegalArgumentException("Invalid source identifier",ex);}}
     private static long number(JsonNode value) {require(value.isNumber());return number(value.numberValue());}
+    // The hot/archive audit UNION represents these identity columns as either integers or decimal ID strings.
+    private static long auditIdentity(JsonNode value) {
+        if(value.isTextual() &&value.textValue().matches("[1-9][0-9]{0,18}")) {
+            try{return Long.parseLong(value.textValue());}catch(NumberFormatException ex){throw new IllegalArgumentException("Invalid audit identity",ex);}
+        }
+        long id=number(value);require(id>0);return id;
+    }
     private static int flag(Object value) {require(value!=null);return SupportPaymentFactService.flag(Map.of("flag",value),"flag");}
     private static int jsonFlag(JsonNode value) {if(value.isBoolean())return value.booleanValue()?1:0;require(value.isNumber());return flag(value.numberValue());}
     private static LocalDateTime time(Object value) {if(value instanceof Timestamp at)return at.toLocalDateTime();require(value instanceof LocalDateTime);return (LocalDateTime)value;}

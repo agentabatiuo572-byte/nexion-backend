@@ -98,6 +98,11 @@ public interface SupportFundReadMapper {
         +"source_wallet_id sourceWalletId,released_at releasedAt,release_source releaseSource FROM nx_earnings_release_entry WHERE user_id IN "
         +IDS+" ORDER BY id</script>") @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
     List<Map<String,Object>> earnings(@Param("ids") List<Long> ids);
+    @Select("<script>SELECT id orderId,user_id customerId,order_no orderNo,order_type orderType,"
+        +"payment_status paymentStatus,order_status orderStatus,is_deleted isDeleted FROM nx_order"
+        +" WHERE user_id IN "+IDS+" AND order_type='TRIAL_CONVERT' ORDER BY id</script>")
+    @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
+    List<Map<String,Object>> trialRefundOrders(@Param("ids") List<Long> ids);
     @Select("<script>"+EarningsReleaseMapper.FUND_ENTRY+" WHERE user_id IN "+IDS+" ORDER BY user_id,id</script>")
     @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
     List<Map<String,Object>> earningsSources(@Param("ids") List<Long> ids);

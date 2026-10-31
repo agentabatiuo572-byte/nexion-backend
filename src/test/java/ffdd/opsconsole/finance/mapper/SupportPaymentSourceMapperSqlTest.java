@@ -18,7 +18,12 @@ class SupportPaymentSourceMapperSqlTest {
         var refund=bound("historyRefundOrigins",p);
         assertThat(refund).contains("E4_ORDER_REFUNDED","nx_order_state_history","h.to_state='refunded'","a.actorType='ADMIN'",
             "'$.refundChannel'","='WALLET'","'$.idempotencyKey'","l.amount=o.amount_usdt","l.status='SUCCESS'",
-            "l.direction='IN'","l.asset='USDT'","l.is_deleted=0","COUNT(DISTINCT a.id)","o.user_id IN");
+            "l.direction='IN'","l.asset='USDT'","l.is_deleted=0","COUNT(DISTINCT a.id,h.id)","o.user_id IN",
+            "CHAR_LENGTH(l.remark)<255","LOCATE(' | ',h.operator)=0","LOCATE(' | ',h.idempotency_key)=0",
+            "key_hash_v2=","SHA2(h.idempotency_key,256)","THEN BINARY h.operator=BINARY a.actorUsername",
+            "BINARY h.reason=BINARY JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.reason'))",
+            "BINARY h.idempotency_key=BINARY JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.idempotencyKey'))",
+            "BINARY l.remark=BINARY LEFT", "ELSE (h.created_at=l.created_at AND a.auditAt=l.created_at)");
         assertThat(refund).doesNotContain("PSP_NOT_AVAILABLE"," LIMIT ","FOR UPDATE","FOR SHARE","${");
     }
     private final Configuration configuration=new Configuration();

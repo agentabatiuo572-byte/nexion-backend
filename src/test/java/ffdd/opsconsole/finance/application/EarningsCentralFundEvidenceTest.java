@@ -23,6 +23,8 @@ import java.util.function.Supplier;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /** Actual central service and adapter; only SQL storage and the transactional Binder boundary are doubles. */
 class EarningsCentralFundEvidenceTest {
@@ -94,7 +96,7 @@ class EarningsCentralFundEvidenceTest {
     void recoveryStorage(BigDecimal debited) {
         when(mapper.lockRecoveryUser(7L,0)).thenReturn(7L);
         when(mapper.lockRecoveryWallet(7L,0)).thenAnswer(i->new EarningsReleaseMapper.RecoveryWallet(70L,(BigDecimal)wallet.get("usdtAvailable"),(BigDecimal)wallet.get("nexAvailable"),debited,debited));
-        when(mapper.lockRecoveryEntry(anyString())).thenAnswer(i->new EarningsReleaseMapper.RecoveryEntry((String)entry.get("entryNo"),7L,"PROMOTION_REWARD","reward-7",(String)entry.get("asset"),n("20"),(String)entry.get("bucket"),"ACTIVE","PRODUCTION",0,(BigDecimal)entry.get("recoveredAmount"),(BigDecimal)entry.get("debitBaseline"),70L));
+        when(mapper.lockRecoveryEntry(anyString())).thenAnswer(i->new EarningsReleaseMapper.RecoveryEntry((String)entry.get("entryNo"),7L,(String)entry.get("sourceType"),(String)entry.get("sourceRef"),(String)entry.get("asset"),n("20"),(String)entry.get("bucket"),"ACTIVE","PRODUCTION",0,(BigDecimal)entry.get("recoveredAmount"),(BigDecimal)entry.get("debitBaseline"),70L));
         when(mapper.otherSourceRecoveriesSinceCredit(anyLong(),anyLong(),anyString(),anyString(),anyString(),any(),any())).thenReturn(List.of());
         when(mapper.debitRecoveredReward(eq(7L),anyString(),any(),eq(0))).thenAnswer(i->{credit("USDT".equals(i.getArgument(1))?"usdtAvailable":"nexAvailable",i.<BigDecimal>getArgument(2).negate());return 1;});
         when(mapper.addRecoveredAmount(anyString(),any(),any())).thenAnswer(i->{entry.put("recoveredAmount",((BigDecimal)entry.get("recoveredAmount")).add(i.getArgument(2)));return 1;});
@@ -108,6 +110,57 @@ class EarningsCentralFundEvidenceTest {
     }
     EarningsReleaseService.RewardRecoveryReceipt recover(String no,String asset,String amount) {
         return service.recoverReward(new EarningsReleaseService.RewardRecoveryRequest(7L,no,"PROMOTION_REWARD","reward-7",asset,"PRODUCTION",n(amount),"original reward correction","treasury"),"recover-idem");
+    }
+
+    private SupportFundEarningsEvidence.TrialRecovery h2Recovery() throws Exception {
+        String no=service.credit(7L,"USER:7","H2_TRIAL_REMAINDER","trial:REMAINDER","USDT",n("20"),"withdrawable","h2-credit");
+        recoveryStorage(n("0"));
+        service.recoverReward(new EarningsReleaseService.RewardRecoveryRequest(7L,no,"H2_TRIAL_REMAINDER","trial:REMAINDER","USDT","PRODUCTION",n("20"),
+                "Trial early-conversion reward reversed with order refund order","E4_ORDER_REFUND"),"h2-recover");
+        var reward=json.valueToTree(Map.of("entryNo",no,"customerId",7L,"sourceType","H2_TRIAL_REMAINDER","sourceRef","trial:REMAINDER",
+                "currency","USDT","amount",n("20"),"sourceWalletId",70L,"debitBaseline",n("0")));
+        var source=json.valueToTree(Map.of("orderNo","order","factId","PURCHASE:order","amount",BigDecimal.TEN,"trialSource",Map.of("claimNo","trial")));
+        var detail=new LinkedHashMap<String,Object>(Map.of("settlementPolicy","FULL_TERM_ON_CONVERSION","orderNo","order","amountUsdt",BigDecimal.TEN,
+                "sourceEnvironment","PRODUCTION","serverCanonical",true,"runId","","paymentRail","UVEL_USDT_WALLET"));
+        var audit=new LinkedHashMap<String,Object>(Map.of("action","H2_TRIAL_CONVERTED","resourceType","TRIAL_CLAIM","resourceId","trial","bizNo","trial",
+                "actorType","USER","result","SUCCESS","validDigest",1,"actorId",7L,"customerId",7L));
+        audit.put("detail",json.writeValueAsString(detail));
+        var refund=new ffdd.opsconsole.finance.facade.SupportPaymentFacts.Fact("ORDER_REFUND:90",ffdd.opsconsole.finance.facade.SupportPaymentFacts.Kind.DEVICE_PURCHASE_REFUND,
+                ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source.ORDER_REFUND,List.of("nx_wallet_ledger:90"),7,90,"E4-REFUND-order","order","TRIAL_CONVERT",
+                "PURCHASE:order","USDT",BigDecimal.TEN,at,"nx_wallet_ledger.created_at",0,null,at,at,"1",ffdd.opsconsole.finance.facade.SupportPaymentFacts.Status.READY);
+        return new SupportFundEarningsEvidence.TrialRecovery(source,json.valueToTree(audit),reward,refund);
+    }
+    private SupportFundEarningsEvidence.Verified verifyH2(SupportFundEarningsEvidence.TrialRecovery authority) throws Exception {
+        var r=receipts.get(1);return evidence.verify(operation(1),json.readTree(r.sourceSnapshotJson()),json.readTree(r.sourceProofJson()),events(1),inputs(),authority);
+    }
+    @Test void h2RecoveryRequiresTheVerifiedCompoundFullTermAndE4Identity() throws Exception {
+        var authority=h2Recovery();assertThrows(IllegalArgumentException.class,()->verifyReceipt(1));
+        assertEquals(recoveries.get(0).get("recoveryNo")+":RECOVER",verifyH2(authority).coveredPhase());
+    }
+    @ParameterizedTest @ValueSource(strings={"entryNo","customerId","sourceType","sourceRef","currency","amount","sourceWalletId","debitBaseline"})
+    void h2RecoveryRejectsAnyWrongCompoundRewardIdentity(String field) throws Exception {
+        var authority=h2Recovery();var reward=(ObjectNode)authority.reward();var value=reward.get(field);
+        reward.set(field,value.isNumber()?json.valueToTree(value.decimalValue().add(BigDecimal.ONE)):json.valueToTree(value.asText()+"-wrong"));
+        assertThrows(IllegalArgumentException.class,()->verifyH2(authority));
+    }
+    @ParameterizedTest @ValueSource(strings={"settlementPolicy","orderNo","paymentRail","amountUsdt"})
+    void h2RecoveryRejectsWrongFrozenAuditPolicyOrderRailOrAmount(String field) throws Exception {
+        var authority=h2Recovery();var audit=(ObjectNode)authority.authority();var detail=(ObjectNode)json.readTree(audit.path("detail").asText());
+        detail.put(field,"wrong");audit.put("detail",json.writeValueAsString(detail));assertThrows(IllegalArgumentException.class,()->verifyH2(authority));
+    }
+    @ParameterizedTest @ValueSource(strings={"actor","reason","sourceType","sourceRef","asset","requested"})
+    void changedRecoveryCannotBorrowAnUnrelatedCompoundAuthorization(String field) throws Exception {
+        var authority=h2Recovery();var receipt=receipts.get(1);var source=(ObjectNode)json.readTree(receipt.sourceSnapshotJson());
+        Object bad=field.equals("requested")?n("21"):"wrong";recoveries.get(0).put(field,bad);
+        ((ObjectNode)source.path("recovery")).set(field,json.valueToTree(bad));
+        assertThrows(IllegalArgumentException.class,()->evidence.verify(operation(1),source,json.readTree(receipt.sourceProofJson()),events(1),inputs(),authority));
+    }
+    @Test void h2FrozenHotArchiveAuditRetainsCanonicalNumericStringIdentities() throws Exception {
+        var authority=h2Recovery();var audit=(ObjectNode)authority.authority();audit.put("actorId","7");audit.put("customerId","7");
+        assertNotNull(verifyH2(authority));
+        for(Object wrong:List.of(true,"01","7.0","9223372036854775808",new BigDecimal("7.5"))) {
+            audit.set("actorId",json.valueToTree(wrong));assertThrows(IllegalArgumentException.class,()->verifyH2(authority));
+        }
     }
 
     @Test void independentActualCreditBindsOneRawAndAuthenticSource()throws Exception {

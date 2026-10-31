@@ -43,7 +43,7 @@ public final class SupportPaymentSourceSql {
         """;
     static final String HISTORY_REFUND_ORIGINS="""
         <script>SELECT o.user_id customerId,o.order_no orderNo,o.amount_usdt amount,l.id ledgerId,l.created_at ledgerAt,
-          (SELECT COUNT(DISTINCT a.id) FROM
+          (SELECT COUNT(DISTINCT a.id,h.id) FROM
         """+HISTORY_AUDITS+"""
           a JOIN nx_order_state_history h ON h.to_state='refunded'
             AND h.from_state IN ('paid','provisioning','provisioning_failed','activated')
@@ -59,7 +59,23 @@ public final class SupportPaymentSourceSql {
             AND JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.refundChannel'))='WALLET'
             AND JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.amount')) REGEXP '^[0-9]{1,12}([.][0-9]{1,6})?$'
             AND CAST(JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.amount')) AS DECIMAL(18,6))=o.amount_usdt
-            AND h.created_at=l.created_at AND a.auditAt=l.created_at
+            AND (CASE WHEN LOCATE('key_hash',LOWER(COALESCE(l.remark,'')))>0
+                       OR LOWER(COALESCE(l.remark,'')) LIKE 'e4 order refund | key%'
+                 THEN BINARY h.operator=BINARY a.actorUsername
+                   AND BINARY h.reason=BINARY JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.reason'))
+                   AND BINARY h.idempotency_key=BINARY JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.idempotencyKey'))
+                   AND BINARY l.remark=BINARY LEFT(CONCAT('E4 order refund | key_hash_v2=',SHA2(h.idempotency_key,256),
+                        ' | orderNo=',o.order_no,' | operator=',h.operator,' | reason=',h.reason,' | key=',h.idempotency_key),255)
+                 ELSE (h.created_at=l.created_at AND a.auditAt=l.created_at)
+                   OR (BINARY h.operator=BINARY a.actorUsername
+                     AND BINARY h.reason=BINARY JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.reason'))
+                     AND BINARY h.idempotency_key=BINARY JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.idempotencyKey'))
+                     AND CHAR_LENGTH(l.remark)&lt;255
+                     AND CHAR_LENGTH(CONCAT('E4 order refund | orderNo=',o.order_no,' | operator=',h.operator,
+                          ' | reason=',h.reason,' | key=',h.idempotency_key))&lt;255
+                     AND LOCATE(' | ',h.operator)=0 AND LOCATE(' | ',h.idempotency_key)=0
+                     AND BINARY l.remark=BINARY CONCAT('E4 order refund | orderNo=',o.order_no,' | operator=',h.operator,
+                          ' | reason=',h.reason,' | key=',h.idempotency_key)) END)
             AND l.user_id=o.user_id AND l.biz_type='ORDER_REFUND' AND l.status='SUCCESS'
             AND l.direction='IN' AND l.asset='USDT' AND l.is_deleted=0 AND l.amount=o.amount_usdt) proofCount
         FROM nx_order o LEFT JOIN nx_wallet_ledger l ON l.biz_no=CONCAT('E4-REFUND-',o.order_no) AND l.biz_type='ORDER_REFUND'

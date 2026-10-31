@@ -27,7 +27,7 @@ class E4OrderRefundSettlementFacadeAdapterTest {
     private final SupportPaymentAttributionFacade capture = paymentAttribution();
     private static final String ORDER_NO = "ORD-8EB83D7802F0458DA6CD797F2D99A746";
     private static final String APPROVAL_KEY = "a2-approve-WO-261006182354500-171-1791311030910-1-2a2a5d84";
-    private static final String REMARK_PREFIX = "E4 order refund | orderNo=" + ORDER_NO
+    private static final String REMARK_PREFIX = "E4 order refund | key_hash_v2=cb85bb828fa72d1f5cafc8c78d8fde9034fdc5c58df0fd77a302bb426761961c | orderNo=" + ORDER_NO
             + " | operator=suadmin | reason=";
     private static final String REMARK_SUFFIX = " | key=" + APPROVAL_KEY;
     private final E4OrderRefundMapper mapper = mock(E4OrderRefundMapper.class);
@@ -102,6 +102,7 @@ class E4OrderRefundSettlementFacadeAdapterTest {
                 .as("nx_wallet_ledger.remark VARCHAR(255) character limit")
                 .isLessThanOrEqualTo(255);
         assertThat(actualRemark).isEqualTo(expectedRemark);
+        assertThat(actualRemark).startsWith("E4 order refund | key_hash_v2=cb85bb828fa72d1f5cafc8c78d8fde9034fdc5c58df0fd77a302bb426761961c | orderNo=");
         assertThat(result.channel()).isEqualTo("WALLET");
         assertThat(result.ledgerBizNo()).isEqualTo("E4-REFUND-" + ORDER_NO);
         assertThat(result.billNo()).isEqualTo("E4-BILL-" + ORDER_NO);
@@ -122,16 +123,16 @@ class E4OrderRefundSettlementFacadeAdapterTest {
                 + "执行一次后核验退款和Main直推64.95 USDT及523.790322 UVT追回，不走外部通道。";
         String shortUnicodeReason = "批准钱包退款🚀并保留完整审批理由";
         return Stream.of(
-                Arguments.of("actual legal approval: 274 characters", actualReason,
-                        REMARK_PREFIX + actualReason + " | key=" + APPROVAL_KEY.substring(0, 39)),
-                Arguments.of("exact 255 BMP characters unchanged", "界".repeat(99),
-                        REMARK_PREFIX + "界".repeat(99) + REMARK_SUFFIX),
-                Arguments.of("exact 255 supplementary characters unchanged", "🚀".repeat(99),
-                        REMARK_PREFIX + "🚀".repeat(99) + REMARK_SUFFIX),
-                Arguments.of("supplementary character at cutoff remains intact", "界".repeat(163) + "🚀" + "尾".repeat(36),
-                        REMARK_PREFIX + "界".repeat(163) + "🚀"),
+                Arguments.of("actual legal approval preserves the full fixed key hash", actualReason,
+                        REMARK_PREFIX + actualReason.substring(0,85)),
+                Arguments.of("exact 255 BMP characters unchanged", "界".repeat(20),
+                        REMARK_PREFIX + "界".repeat(20) + REMARK_SUFFIX),
+                Arguments.of("exact 255 supplementary characters unchanged", "🚀".repeat(20),
+                        REMARK_PREFIX + "🚀".repeat(20) + REMARK_SUFFIX),
+                Arguments.of("supplementary character at cutoff remains intact", "界".repeat(84) + "🚀" + "尾".repeat(115),
+                        REMARK_PREFIX + "界".repeat(84) + "🚀"),
                 Arguments.of("maximum 200 visible characters remains legal", "r".repeat(200),
-                        REMARK_PREFIX + "r".repeat(164)),
+                        REMARK_PREFIX + "r".repeat(85)),
                 Arguments.of("short Unicode summary unchanged", shortUnicodeReason,
                         REMARK_PREFIX + shortUnicodeReason + REMARK_SUFFIX));
     }
