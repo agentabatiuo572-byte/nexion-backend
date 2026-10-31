@@ -94,7 +94,8 @@ public class NativePushService {
         boolean allowed = route != null && switch (n.type()) {
             case "DEVICE_EXPIRY" -> route.equals("/pages/me/trial") || route.matches("/pages/earn/device-detail\\?id=[0-9]{1,18}");
             case "DEVICE_ALERT" -> route.matches("/pages/earn/device-detail\\?id=[0-9]{1,18}");
-            case "FUNDS_RESULT" -> route.equals("/pages/me/wallet-bills");
+            case "FUNDS_RESULT" -> route.equals("/pages/me/wallet-bills")
+                || route.matches("/pages/me/wallet-withdraw-tracking\\?id=WD-[A-Z0-9]{1,93}");
             case "ACCOUNT_SECURITY" -> route.equals("/pages/me/security");
             case "SUPPORT_REPLY" -> route.matches("/pages/support/chat\\?cid=[A-Za-z0-9_-]{1,96}");
             default -> false;
@@ -111,6 +112,9 @@ public class NativePushService {
             throw new BizException(404, "PUSH_TARGET_NOT_FOUND");
         if (path.startsWith("/pages/support/chat?cid=")
                 && mapper.ownedConversation(path.substring(path.indexOf('=') + 1), user) == 0)
+            throw new BizException(404, "PUSH_TARGET_NOT_FOUND");
+        if (path.startsWith("/pages/me/wallet-withdraw-tracking?id=")
+                && mapper.ownedWithdrawal(path.substring(path.indexOf('=') + 1), user) == 0)
             throw new BizException(404, "PUSH_TARGET_NOT_FOUND");
         return target;
     }

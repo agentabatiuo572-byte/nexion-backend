@@ -61,6 +61,7 @@ public interface NativePushMapper {
         JOIN nx_user u ON u.id=n.user_id AND u.is_deleted=0 AND u.status='ACTIVE' AND u.sandbox=#{sandbox}
         LEFT JOIN nx_user_preference p ON p.user_id=n.user_id AND p.is_deleted=0
         WHERE n.id>#{low} AND n.id<=#{high} AND n.is_deleted=0
+          AND n.biz_no NOT LIKE 'STATION1:%'
           AND (n.biz_no LIKE 'NATIVE1:%' OR EXISTS(SELECT 1 FROM nx_business_notification_fact f WHERE f.notification_biz_no=n.biz_no AND f.user_id=n.user_id))
           AND n.type IN ('DEVICE_EXPIRY','DEVICE_ALERT','FUNDS_RESULT','ACCOUNT_SECURITY','SUPPORT_REPLY')
           AND (n.created_at>=i.bound_at OR (n.type='ACCOUNT_SECURITY' AND LOWER(n.priority)='critical'))
@@ -128,6 +129,7 @@ public interface NativePushMapper {
     @Select("""
         SELECT n.id,n.type,n.cta_href,u.language FROM nx_notification n JOIN nx_user u ON u.id=n.user_id
         WHERE n.id=#{id} AND n.user_id=#{user} AND n.is_deleted=0
+          AND n.biz_no NOT LIKE 'STATION1:%'
           AND (n.biz_no LIKE 'NATIVE1:%' OR EXISTS(SELECT 1 FROM nx_business_notification_fact f WHERE f.notification_biz_no=n.biz_no AND f.user_id=n.user_id))
           AND n.type IN ('DEVICE_EXPIRY','DEVICE_ALERT','FUNDS_RESULT','ACCOUNT_SECURITY','SUPPORT_REPLY')
         """)
@@ -136,6 +138,7 @@ public interface NativePushMapper {
     @Select("""
         SELECT COUNT(*) FROM nx_notification n LEFT JOIN nx_user_preference p ON p.user_id=n.user_id AND p.is_deleted=0
         WHERE n.id=#{id} AND n.user_id=#{user} AND n.is_deleted=0
+          AND n.biz_no NOT LIKE 'STATION1:%'
           AND n.created_at>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 8 HOUR),INTERVAL 24 HOUR)
           AND (LOWER(n.priority)='critical' OR COALESCE(p.notify_system,1)=1)
         """)
@@ -152,6 +155,9 @@ public interface NativePushMapper {
 
     @Select("SELECT COUNT(*) FROM nx_user_device WHERE id=#{id} AND user_id=#{user} AND is_deleted=0 AND source_environment='PRODUCTION' AND run_id=''")
     int ownedDevice(@Param("id") long id, @Param("user") long user);
+
+    @Select("SELECT COUNT(*) FROM nx_withdrawal_order WHERE withdrawal_no=#{number} AND user_id=#{user} AND is_deleted=0")
+    int ownedWithdrawal(@Param("number") String number, @Param("user") long user);
 
     @Select("SELECT COUNT(*) FROM nx_conversation WHERE conversation_no=#{number} AND user_id=#{user} AND is_deleted=0")
     int ownedConversation(@Param("number") String number, @Param("user") long user);

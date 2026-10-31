@@ -25,12 +25,14 @@ public class BusinessNotificationService {
     @Transactional(rollbackFor=Exception.class,isolation=Isolation.READ_COMMITTED)
     public void scan() {
         if (mapper.lockControl()==null) throw new IllegalStateException("BUSINESS_NOTIFICATION_MIGRATION_REQUIRED");
+        repairWithdrawals(null);
         mapper.seedDevices();
         // UPDATE JOIN would still retain source device/runtime locks at READ_COMMITTED.
         // The control row serializes state-only writes; alert reads recheck current business facts.
         mapper.recoveredDeviceIds().forEach(mapper::resetRecoveredDevice);
         mapper.abnormalDevices().forEach(device->mapper.startAbnormalDevice(device.deviceId(),device.userId()));
         mapper.facts().forEach(this::emit);
+        mapper.withdrawalFacts(null,false).forEach(this::emit);
         mapper.trialDeadlines().forEach(this::emit);
         for (var fact : mapper.deviceAlerts()) {
             emit(fact);
@@ -38,12 +40,33 @@ public class BusinessNotificationService {
         }
     }
 
+    /** Account-scoped station recovery; it never inserts an outbox event or a native delivery. */
+    @Transactional(rollbackFor=Exception.class,isolation=Isolation.READ_COMMITTED)
+    public void collectWithdrawalAttention(Long userId) {
+        if(userId==null || userId<=0) throw new IllegalArgumentException("NOTIFICATION_RECIPIENT_INVALID");
+        if(mapper.control()==null) throw new IllegalStateException("BUSINESS_NOTIFICATION_MIGRATION_REQUIRED");
+        repairWithdrawals(userId);
+        mapper.withdrawalFacts(userId,true).forEach(fact->emit(fact,true));
+        mapper.withdrawalStateFacts(userId).forEach(fact->emit(fact,true));
+    }
+
+    private void repairWithdrawals(Long userId) {
+        for(var repair:mapper.withdrawalRepairs(userId)) {
+            mapper.repairWithdrawalNotification(repair);
+            mapper.repairWithdrawalActionRoute(repair);
+        }
+    }
+
     void emit(BusinessNotificationFact fact) {
+        emit(fact,false);
+    }
+
+    private void emit(BusinessNotificationFact fact,boolean stationOnly) {
         if (fact.userId()==null || fact.userId()<=0) throw new IllegalArgumentException("NOTIFICATION_RECIPIENT_INVALID");
         Text text = text(fact.messageKey());
         String existing = "deposit".equals(fact.messageKey()) ? mapper.existingTopup(fact.factKey(),fact.userId()) : null;
         if("payment_method".equals(fact.messageKey())) existing=mapper.existingPaymentMethod(fact.factKey(),fact.userId());
-        String bizNo = existing==null ? bizNo(fact.factKey()) : existing;
+        String bizNo = existing==null ? (stationOnly ? "STATION1:"+bizNo(fact.factKey()).substring(8) : bizNo(fact.factKey())) : existing;
         if (mapper.receipt(fact.factKey(),bizNo,fact.userId())==0) return;
         mapper.notify(fact,bizNo,text.zh(),text.en(),text.vi());
     }
@@ -62,8 +85,14 @@ public class BusinessNotificationService {
     }
     private static final Map<String,Text> TEXT=Map.ofEntries(
         Map.entry("deposit",new Text("充值已到账，请查看钱包记录。","Your deposit has been credited. View your wallet history.","Tiền nạp đã được ghi có. Vui lòng xem lịch sử ví.")),
-        Map.entry("withdrawal_completed",new Text("提现已完成，请查看钱包记录。","Your withdrawal is complete. View your wallet history.","Rút tiền đã hoàn tất. Vui lòng xem lịch sử ví.")),
-        Map.entry("withdrawal_returned",new Text("提现未完成，资金已退回，请查看钱包记录。","Your withdrawal was not completed and funds were returned. View your wallet history.","Rút tiền chưa hoàn tất và tiền đã được hoàn lại. Vui lòng xem lịch sử ví.")),
+        Map.entry("withdrawal_completed",new Text("提现已完成，请查看该笔提现详情。","Your withdrawal is complete. View this withdrawal's details.","Rút tiền đã hoàn tất. Xem chi tiết giao dịch rút tiền này.")),
+        Map.entry("withdrawal_returned",new Text("提现未完成，资金已退回，请查看该笔提现详情。","Your withdrawal was not completed and funds were returned. View this withdrawal's details.","Rút tiền chưa hoàn tất và tiền đã được hoàn lại. Xem chi tiết giao dịch này.")),
+        Map.entry("withdrawal_failed",new Text("提现失败，请查看该笔提现的状态、原因与处理指引。","Your withdrawal failed. View its status, reason and next steps.","Rút tiền không thành công. Xem trạng thái, lý do và hướng dẫn xử lý.")),
+        Map.entry("withdrawal_rejected",new Text("提现审核未通过，请查看该笔提现详情。","Your withdrawal review was not approved. View this withdrawal's details.","Yêu cầu rút tiền không được duyệt. Xem chi tiết giao dịch này.")),
+        Map.entry("withdrawal_frozen",new Text("提现已冻结，请查看该笔提现的状态与处理指引。","Your withdrawal was frozen. View its status and next steps.","Yêu cầu rút tiền đã bị đóng băng. Xem trạng thái và hướng dẫn xử lý.")),
+        Map.entry("withdrawal_delayed",new Text("提现处理已延后，请查看该笔提现详情。","Your withdrawal processing was delayed. View this withdrawal's details.","Việc xử lý rút tiền đã bị hoãn. Xem chi tiết giao dịch này.")),
+        Map.entry("withdrawal_review_required",new Text("提现需要复核，请查看该笔提现的状态与处理指引。","Your withdrawal requires review. View its status and next steps.","Yêu cầu rút tiền cần được xem xét. Xem trạng thái và hướng dẫn xử lý.")),
+        Map.entry("withdrawal_state",new Text("提现状态提醒：该笔提现失败或需要关注，请查看原单状态、原因与处理指引。","Withdrawal status reminder: this withdrawal failed or needs attention. View its current details and next steps.","Nhắc trạng thái rút tiền: giao dịch thất bại hoặc cần chú ý. Xem chi tiết hiện tại và hướng dẫn xử lý.")),
         Map.entry("refund",new Text("订单退款已完成，请查看钱包记录。","Your order refund is complete. View your wallet history.","Hoàn tiền đơn hàng đã hoàn tất. Vui lòng xem lịch sử ví.")),
         Map.entry("password",new Text("您的登录密码已更新。如非本人操作，请及时检查账号安全。","Your sign-in password was updated. Review account security if this was not you.","Mật khẩu đăng nhập đã được cập nhật. Kiểm tra bảo mật nếu không phải bạn thực hiện.")),
         Map.entry("payment_method",new Text("您的收付款信息已变更。如非本人操作，请及时检查账号安全。","Your payment details changed. Review account security if this was not you.","Thông tin thanh toán đã thay đổi. Kiểm tra bảo mật nếu không phải bạn thực hiện.")),

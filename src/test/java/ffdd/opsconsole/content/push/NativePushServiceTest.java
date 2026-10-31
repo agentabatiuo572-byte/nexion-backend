@@ -106,6 +106,18 @@ class NativePushServiceTest {
         assertThatThrownBy(() -> NativePushService.route(new Notification(1,"DEVICE_ALERT","/pages/earn/device-detail?id=1&url=x","en"))).hasMessage("PUSH_ROUTE_UNAVAILABLE");
         assertThat(NativePushService.route(new Notification(1,"DEVICE_EXPIRY","/pages/me/trial","en")).route()).isEqualTo("/pages/me/trial");
     }
+    @Test void withdrawalPushResolvesOnlyTheExactOwnedOrder() {
+        when(sessions.requireSession(auth)).thenReturn(session(7,"chain"));
+        String route="/pages/me/wallet-withdraw-tracking?id=WD-ABC123";
+        when(mapper.ownedNotification(44,7)).thenReturn(new Notification(44,"FUNDS_RESULT",route,"en"));
+        assertThatThrownBy(()->service.resolve(auth,44)).hasMessage("PUSH_TARGET_NOT_FOUND");
+        when(mapper.ownedWithdrawal("WD-ABC123",7)).thenReturn(1);
+        assertThat(service.resolve(auth,44).route()).isEqualTo(route);
+        for(String invalid:java.util.List.of("/pages/me/wallet-withdraw-tracking",route+"&url=x",
+                "/pages/me/wallet-withdraw-tracking?id=WD-abc","/pages/me/wallet-withdraw-tracking?id=other"))
+            assertThatThrownBy(()->NativePushService.route(new Notification(44,"FUNDS_RESULT",invalid,"en")))
+                .hasMessage("PUSH_ROUTE_UNAVAILABLE");
+    }
     @Test void openedReceiptRequiresCurrentBindingAndNeverClaimsDeviceDelivery() {
         when(sessions.requireCurrent(auth,ID,false)).thenReturn(session(7,"chain"));
         when(mapper.ownedNotification(44,7)).thenReturn(new Notification(44,"FUNDS_RESULT","/pages/me/wallet-bills","en"));

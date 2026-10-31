@@ -22,7 +22,8 @@ class AppNotificationServiceTest {
     private final NotificationCampaignRepository repository = mock(NotificationCampaignRepository.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final NovaSocialRuntimeRepository novaRuntime = mock(NovaSocialRuntimeRepository.class);
-    private final AppNotificationService service = new AppNotificationService(repository, outbox, novaRuntime);
+    private final org.springframework.beans.factory.ObjectProvider<ffdd.opsconsole.content.businessnotification.BusinessNotificationService> businessNotifications = mock(org.springframework.beans.factory.ObjectProvider.class);
+    private final AppNotificationService service = new AppNotificationService(repository, outbox, novaRuntime,businessNotifications);
 
     @Test
     void pageIsServerCanonicalAndAppliesRetentionBeforeReading() {
@@ -34,6 +35,20 @@ class AppNotificationServiceTest {
         assertThat(result.getCode()).isZero();
         verify(repository).applyRetentionForUser(7L);
         verify(repository).pageUserNotifications(7L, null, "high", 20);
+    }
+
+    @Test
+    void pageCollectsAttentionOnlyForTheAuthenticatedUserAfterInputValidation() {
+        var collector=mock(ffdd.opsconsole.content.businessnotification.BusinessNotificationService.class);
+        org.mockito.Mockito.doAnswer(call->{
+            ((java.util.function.Consumer<ffdd.opsconsole.content.businessnotification.BusinessNotificationService>)call.getArgument(0)).accept(collector);
+            return null;
+        }).when(businessNotifications).ifAvailable(org.mockito.ArgumentMatchers.any());
+        service.page(null,null,null,20);
+        service.page(7L,"invalid",null,20);
+        verify(collector,never()).collectWithdrawalAttention(org.mockito.ArgumentMatchers.any());
+        service.page(7L,null,null,20);
+        verify(collector).collectWithdrawalAttention(7L);
     }
 
     @Test

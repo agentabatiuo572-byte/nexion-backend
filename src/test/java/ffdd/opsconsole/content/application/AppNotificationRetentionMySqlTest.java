@@ -59,7 +59,7 @@ class AppNotificationRetentionMySqlTest {
                         return value;
                     });
                 var proxy=new org.springframework.aop.framework.ProxyFactory(new AppNotificationService(repository,
-                    mock(EventOutboxService.class),mock(NovaSocialRuntimeRepository.class)));
+                    mock(EventOutboxService.class),mock(NovaSocialRuntimeRepository.class),mock(org.springframework.beans.factory.ObjectProvider.class)));
                 proxy.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(
                     new org.springframework.jdbc.datasource.DataSourceTransactionManager(ds),
                     new org.springframework.transaction.annotation.AnnotationTransactionAttributeSource()));
@@ -78,7 +78,7 @@ class AppNotificationRetentionMySqlTest {
                     writerCfg.setEnvironment(new org.apache.ibatis.mapping.Environment("business-writer",managed,ds));
                     try(var writer=new MybatisSqlSessionFactoryBuilder().build(writerCfg).openSession(c)) {
                         assertThat(writer.getMapper(BusinessNotificationMapper.class).notify(
-                            new BusinessNotificationFact("SUPPORT:999",1L,"SUPPORT_REPLY","support","/pages/support/chat?cid=test"),
+                            new BusinessNotificationFact("SUPPORT:999",1L,"SUPPORT_REPLY","support","/pages/support/chat?cid=test",null),
                             "NATIVE1:concurrent-support","zh","en","vi")).isEqualTo(1);
                     }
                 } finally {
