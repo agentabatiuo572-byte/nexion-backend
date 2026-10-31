@@ -1498,16 +1498,15 @@ class OpsFinanceServiceTest {
         assertThat(result.getData().get("channels").toString())
                 .contains("1 USDT 固定手续费")
                 .contains("$10")
-                .contains("国际卡")
-                .contains("$30")
-                .contains("$5000");
+                .contains("银行卡支付")
+                .doesNotContain("国际卡");
         assertThat(result.getData().get("cardParams").toString())
                 .contains("同卡 24 小时失败次数上限")
                 .contains("5");
     }
 
     @Test
-    void topupOverviewUsesTheFiveProductionRailsAndExposesOnlyRealCaps() {
+    void topupOverviewRetiresCardAndPreservesTheBankCardAndUsdtRails() {
         ApiResult<Map<String, Object>> result = service.topupOverview();
 
         @SuppressWarnings("unchecked")
@@ -1515,18 +1514,23 @@ class OpsFinanceServiceTest {
                 (List<ffdd.opsconsole.finance.domain.DepositChannelView>) result.getData().get("channels");
 
         assertThat(channels).extracting(ffdd.opsconsole.finance.domain.DepositChannelView::code)
-                .containsExactly("trc20", "bep20", "erc20", "vietqr", "card");
-        assertThat(channels).filteredOn(channel -> "card".equals(channel.code())).singleElement().satisfies(channel -> {
-            assertThat(channel.minAmountValue()).isEqualByComparingTo("30");
-            assertThat(channel.maxAmountValue()).isEqualByComparingTo("5000");
-        });
+                .containsExactly("trc20", "bep20", "erc20", "vietqr");
         assertThat(channels).filteredOn(channel -> "vietqr".equals(channel.code())).singleElement().satisfies(channel ->
                 assertThat(channel.maxAmountValue()).isNull());
     }
 
     @Test
-    void topupOverviewFailsClosedWhenCardCapValueOrUnitIsMalformed() {
-        configFacade.values.put("finance.topup.channel.card.max_amount", "five-thousand");
+    void retiredCardCannotBeReenabledThroughTheAdminCommand() {
+        var result = service.updateTopupChannelEnabled("card", "retired-card-enable",
+                new TopupCommandRequest(null, true, "historical rail", "superadmin"));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("CARD_TOPUP_CHANNEL_RETIRED");
+        assertThat(configFacade.values).doesNotContainKey("finance.topup.channel.card.enabled");
+    }
+
+    @Test
+    void topupOverviewFailsClosedWhenActiveUsdtFeeValueOrUnitIsMalformed() {
+        configFacade.values.put("finance.topup.channel.bep20.fee", "not-a-number");
 
         ApiResult<Map<String, Object>> invalidValue = service.topupOverview();
 
@@ -1534,8 +1538,8 @@ class OpsFinanceServiceTest {
         assertThat(invalidValue.getMessage()).isEqualTo("D1_TOPUP_CONFIG_INVALID");
         assertThat(invalidValue.getData()).isNull();
 
-        configFacade.values.put("finance.topup.channel.card.max_amount", "5000");
-        configFacade.values.put("finance.topup.channel.card.max_amount_unit", "VND");
+        configFacade.values.put("finance.topup.channel.bep20.fee", "1");
+        configFacade.values.put("finance.topup.channel.bep20.fee_unit", "VND");
 
         ApiResult<Map<String, Object>> invalidUnit = service.topupOverview();
 
@@ -1546,21 +1550,21 @@ class OpsFinanceServiceTest {
 
     @Test
     void topupOverviewFailsClosedWhenStoredValuesExceedTheWritableBounds() {
-        configFacade.values.put("finance.topup.channel.card.fee", "999");
+        configFacade.values.put("finance.topup.channel.bep20.fee", "999");
         assertThat(service.topupOverview()).satisfies(result -> {
             assertThat(result.getCode()).isEqualTo(503);
             assertThat(result.getMessage()).isEqualTo("D1_TOPUP_CONFIG_INVALID");
         });
 
-        configFacade.values.put("finance.topup.channel.card.fee", "3.5");
-        configFacade.values.put("finance.topup.channel.card.min_amount", "100001");
+        configFacade.values.put("finance.topup.channel.bep20.fee", "1");
+        configFacade.values.put("finance.topup.channel.bep20.min_amount", "100001");
         assertThat(service.topupOverview()).satisfies(result -> {
             assertThat(result.getCode()).isEqualTo(503);
             assertThat(result.getMessage()).isEqualTo("D1_TOPUP_CONFIG_INVALID");
         });
 
-        configFacade.values.put("finance.topup.channel.card.min_amount", "30");
-        configFacade.values.put("finance.topup.channel.card.max_amount", "100001");
+        configFacade.values.put("finance.topup.channel.bep20.min_amount", "10");
+        configFacade.values.put("finance.topup.channel.bep20.fee", "101");
         assertThat(service.topupOverview()).satisfies(result -> {
             assertThat(result.getCode()).isEqualTo(503);
             assertThat(result.getMessage()).isEqualTo("D1_TOPUP_CONFIG_INVALID");

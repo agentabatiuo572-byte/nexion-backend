@@ -347,7 +347,7 @@ public class BehaviorAnalyticsService {
                 "L6_ACCEPTANCE_HASH_INVALID");
         String normalizedRoute = text(route).isEmpty() ? null : normalizeRoute(route);
         require(text(route).isEmpty() || !normalizedRoute.isEmpty(), "L6_ROUTE_NOT_TRACKED");
-        require(normalizedRoute == null || mapper.findTrackedPage(normalizedRoute) != null, "L6_ROUTE_NOT_TRACKED");
+        require(normalizedRoute == null || mapper.findHistoricalPage(normalizedRoute) != null, "L6_ROUTE_NOT_TRACKED");
         require(from != null && to != null && !from.isAfter(to) && !to.isAfter(from.plusDays(31)),
                 "L6_ACCEPTANCE_TIME_WINDOW_INVALID");
         BehaviorAnalyticsSandboxMapper.SandboxSummary summary = sandboxMapper.summary(acceptanceRunId,
@@ -382,7 +382,7 @@ public class BehaviorAnalyticsService {
         String normalizedDepth = normalizeDepth(depth);
         require(!"L1".equals(normalizedDepth) && !"L2".equals(normalizedDepth), "L6_AGGREGATE_NODE_NO_COORDINATES");
         String normalizedRoute = normalizeRoute(route);
-        BehaviorAnalyticsMapper.CatalogRow page = mapper.findTrackedPage(normalizedRoute);
+        BehaviorAnalyticsMapper.CatalogRow page = mapper.findHistoricalPage(normalizedRoute);
         require(page != null, "L6_ROUTE_NOT_TRACKED");
         Query query = query(window, device, locale);
         List<BehaviorAnalyticsMapper.ClickPointRow> points = mapper.clickPoints(

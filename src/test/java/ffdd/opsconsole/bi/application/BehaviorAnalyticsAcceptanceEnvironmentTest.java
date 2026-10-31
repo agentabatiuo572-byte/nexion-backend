@@ -104,7 +104,7 @@ class BehaviorAnalyticsAcceptanceEnvironmentTest {
         LocalDateTime from = LocalDateTime.of(2026, 8, 12, 10, 0);
         LocalDateTime to = from.plusMinutes(30);
         LocalDateTime ingestedAt = LocalDateTime.of(2026, 8, 12, 14, 0);
-        when(mapper.findTrackedPage("/pages/index/index"))
+        when(mapper.findHistoricalPage("/pages/index/index"))
                 .thenReturn(new BehaviorAnalyticsMapper.CatalogRow("/pages/index/index", "首页", 1,
                         "/pages/index/index", "/pages/index/index", true));
         when(sandboxMapper.summary("run-l6-1", actorHash, sessionHash, "/pages/index/index", from, to))

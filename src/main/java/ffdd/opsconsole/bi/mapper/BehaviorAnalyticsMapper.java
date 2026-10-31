@@ -29,6 +29,9 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
             """)
     CatalogRow findTrackedPage(@Param("route") String route);
 
+    @Select("SELECT route,title_zh AS titleZh,page_level AS pageLevel,parent_l1 AS parentL1,parent_l2 AS parentL2,tracked FROM nx_behavior_page_catalog WHERE route=#{route} AND is_deleted=0 LIMIT 1")
+    CatalogRow findHistoricalPage(@Param("route") String route);
+
     @Select("SELECT sandbox FROM nx_user WHERE id=#{userId} AND is_deleted=0 LIMIT 1")
     Boolean isSandboxUser(@Param("userId") Long userId);
 
@@ -45,7 +48,7 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
             SELECT route, title_zh AS titleZh, page_level AS pageLevel,
                    parent_l1 AS parentL1, parent_l2 AS parentL2, tracked
               FROM nx_behavior_page_catalog
-             WHERE is_deleted=0
+             WHERE tracked=1 AND is_deleted=0
              ORDER BY page_level, route
             """)
     List<CatalogRow> listCatalog();
@@ -129,7 +132,7 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
                    ) THEN 1 ELSE 0 END) / COUNT(*), 4) AS bounceRate,
                    COUNT(DISTINCT p.route) AS pageCount
               FROM nx_behavior_event_fact p
-              JOIN nx_behavior_page_catalog pc ON pc.route=p.route AND pc.tracked=1 AND pc.is_deleted=0
+              JOIN nx_behavior_page_catalog pc ON pc.route=p.route AND pc.is_deleted=0
               LEFT JOIN (
                 SELECT
                        <choose>
@@ -139,7 +142,7 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
                        </choose> AS route,
                        COUNT(*) clicks
                   FROM nx_behavior_event_fact ce
-                  JOIN nx_behavior_page_catalog cc ON cc.route=ce.route AND cc.tracked=1 AND cc.is_deleted=0
+                  JOIN nx_behavior_page_catalog cc ON cc.route=ce.route AND cc.is_deleted=0
                  WHERE ce.event_name='app.element_clicked' AND ce.source_environment='PRODUCTION'
                    AND ce.occurred_at BETWEEN #{startAt} AND #{endAt}
                  <if test="deviceType != null">AND ce.device_type=#{deviceType}</if>
