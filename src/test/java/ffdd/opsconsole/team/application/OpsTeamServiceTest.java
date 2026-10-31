@@ -79,6 +79,7 @@ class OpsTeamServiceTest {
             mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class));
     private final LeadershipPoolService leadershipPoolService = mock(LeadershipPoolService.class);
     private final F5CommissionService f5CommissionService = mock(F5CommissionService.class);
+    private final VRankBootstrapService rankBootstrap = mock(VRankBootstrapService.class);
     private final OpsTeamService service = new OpsTeamService(
             configFacade,
             coverageFacade,
@@ -94,7 +95,16 @@ class OpsTeamServiceTest {
             eventOutboxService,
             leadershipPoolService,
             f5CommissionService,
-            idempotencyService, null, null, mock(VRankSkuFulfillmentService.class), null);
+            idempotencyService, null, null, mock(VRankSkuFulfillmentService.class), null, rankBootstrap);
+
+    @Test
+    void bootstrapReplayUsesTheConstructorInjectedService() {
+        var params = Map.<String, Object>of("ranks", List.of());
+        var context = new AuditReplayContext("checker", "approved initialization", "owned-bootstrap-replay");
+        when(rankBootstrap.initialize(params, context)).thenReturn(Map.of("initialized", true));
+        assertThat(service.replay(new AuditReplayCommand("F", "f_vrank_bootstrap", params), context).getCode()).isZero();
+        verify(rankBootstrap).initialize(params, context);
+    }
 
     @Test
     void inactiveV9CannotBeEditedAfterV8Configuration() {
@@ -320,7 +330,7 @@ class OpsTeamServiceTest {
                 mock(EventOutboxService.class),
                 mock(LeadershipPoolService.class),
                 mock(F5CommissionService.class),
-                idempotencyService, null, null, mock(VRankSkuFulfillmentService.class), null);
+                idempotencyService, null, null, mock(VRankSkuFulfillmentService.class), null, mock(VRankBootstrapService.class));
 
         ApiResult<Map<String, Object>> rates = realOnlyService.rates();
         ApiResult<Map<String, Object>> pool = realOnlyService.leadershipPool();
@@ -2908,7 +2918,7 @@ class OpsTeamServiceTest {
                 eventOutboxService,
                 leadershipPoolService,
                 f5CommissionService,
-                idempotencyService, null, null, mock(VRankSkuFulfillmentService.class), null);
+                idempotencyService, null, null, mock(VRankSkuFulfillmentService.class), null, mock(VRankBootstrapService.class));
         commissionRepository.memberVRanks.put(7106L, "V1");
 
         ApiResult<Map<String, Object>> result = lockedService.overrideVRank(7106L, "idem-7106",

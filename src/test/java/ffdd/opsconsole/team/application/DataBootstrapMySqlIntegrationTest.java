@@ -14,6 +14,7 @@ import ffdd.opsconsole.team.dto.VRankBootstrapRequest;
 import ffdd.opsconsole.team.infrastructure.MybatisTeamCommissionRepository;
 import ffdd.opsconsole.team.mapper.AppTeamInsightsMapper;
 import ffdd.opsconsole.team.mapper.TeamCommissionMapper;
+import ffdd.opsconsole.team.mapper.VRankBootstrapMapper;
 import ffdd.opsconsole.team.web.AppVRankController;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -67,6 +68,7 @@ class DataBootstrapMySqlIntegrationTest {
         cfg.setMapUnderscoreToCamelCase(true);
         cfg.addMapper(ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper.class);
         cfg.addMapper(TeamCommissionMapper.class);cfg.addMapper(AppTeamInsightsMapper.class);
+        cfg.addMapper(VRankBootstrapMapper.class);
         cfg.addMapper(AppWalletBillsMapper.class);cfg.addMapper(NexMarketMapper.class);
         cfg.addMapper(ffdd.opsconsole.content.mapper.SupportLeaderboardPublicationMapper.class);
         sessions=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(cfg));
@@ -232,7 +234,7 @@ class DataBootstrapMySqlIntegrationTest {
 
     @Test void approvedBootstrapReturnsNineActualRanksAndExistingConfigurationCannotBeOverwritten() throws Exception {
         var audit=mock(AuditLogService.class);
-        var service=new VRankBootstrapService(jdbc,audit);
+        var service=new VRankBootstrapService(sessions.getMapper(VRankBootstrapMapper.class),audit);
         var context=new AuditReplayContext("checker","approved first configuration","vrank-initialize");
         var params=params();
         assertThatThrownBy(()->service.initialize(params,context)).hasMessage("A2_CONFIRMATION_REQUIRED");
@@ -251,13 +253,51 @@ class DataBootstrapMySqlIntegrationTest {
 
     @Test void requiredAuditFailureRollsBackAllNineRanksAndAllowsApprovedRetry() {
         var audit=mock(AuditLogService.class);doThrow(new IllegalStateException("audit unavailable")).when(audit).recordRequired(any());
-        var service=new VRankBootstrapService(jdbc,audit);
+        var service=new VRankBootstrapService(sessions.getMapper(VRankBootstrapMapper.class),audit);
         A2ReplayContext.enterReplay("owned-test-operation");
         assertThatThrownBy(()->transaction.execute(status->service.initialize(params(),new AuditReplayContext("checker","reason","key")))).hasMessage("audit unavailable");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_v_rank_config",Integer.class)).isZero();
         org.mockito.Mockito.reset(audit);
         transaction.execute(status->service.initialize(params(),new AuditReplayContext("checker","reason","key")));
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_v_rank_config",Integer.class)).isEqualTo(9);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints={0,1})
+    void partialOrSoftDeletedRankAndRewardRowsStillBlockInitialization(int deleted) {
+        var audit=mock(AuditLogService.class);
+        var service=new VRankBootstrapService(sessions.getMapper(VRankBootstrapMapper.class),audit);
+        var context=new AuditReplayContext("checker","approved bootstrap","blocked-existing-rows");
+        A2ReplayContext.enterReplay("owned-existing-row-check");
+        jdbc.update("INSERT INTO nx_v_rank_config(rank_code,title_cn,title_en,is_deleted) VALUES('V0','fixture','fixture',?)",deleted);
+        var ranks=jdbc.queryForList("SELECT * FROM nx_v_rank_config");
+        assertThatThrownBy(()->transaction.execute(s->service.initialize(params(),context)))
+                .hasMessage("VRANK_BOOTSTRAP_REQUIRES_EMPTY_CONFIGURATION");
+        assertThat(jdbc.queryForList("SELECT * FROM nx_v_rank_config")).isEqualTo(ranks);
+        jdbc.update("DELETE FROM nx_v_rank_config");
+        jdbc.update("INSERT INTO nx_v_rank_reward_rule(reward_id,rank_code,reward_type,is_deleted) VALUES('fixture-existing','V0','custom',?)",deleted);
+        var rewards=jdbc.queryForList("SELECT * FROM nx_v_rank_reward_rule");
+        assertThatThrownBy(()->transaction.execute(s->service.initialize(params(),context)))
+                .hasMessage("VRANK_BOOTSTRAP_REQUIRES_EMPTY_CONFIGURATION");
+        assertThat(jdbc.queryForList("SELECT * FROM nx_v_rank_reward_rule")).isEqualTo(rewards);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_v_rank_config",Integer.class)).isZero();
+        verifyNoInteractions(audit);
+    }
+
+    @Test void missingBootstrapMutexStillFailsWithoutCreatingRanks() {
+        var audit=mock(AuditLogService.class);
+        var service=new VRankBootstrapService(sessions.getMapper(VRankBootstrapMapper.class),audit);
+        A2ReplayContext.enterReplay("owned-missing-mutex-check");
+        jdbc.update("DELETE FROM nx_admin_operation_mutex WHERE lock_key='F1_VRANK_BOOTSTRAP'");
+        try {
+            assertThatThrownBy(()->transaction.execute(s->service.initialize(params(),
+                    new AuditReplayContext("checker","approved bootstrap","missing-mutex"))))
+                    .hasMessage("VRANK_BOOTSTRAP_SCHEMA_REQUIRED");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_v_rank_config",Integer.class)).isZero();
+            verifyNoInteractions(audit);
+        } finally {
+            jdbc.update("INSERT INTO nx_admin_operation_mutex(lock_key) VALUES('F1_VRANK_BOOTSTRAP')");
+        }
     }
 
     @Test @SuppressWarnings("unchecked")
@@ -268,7 +308,7 @@ class DataBootstrapMySqlIntegrationTest {
         ranks.get(2).put("teamComputePoints",4_294_967_297L);
         var bootstrapAudit=mock(AuditLogService.class);
         A2ReplayContext.enterReplay("owned-f1-maintenance-bootstrap");
-        transaction.execute(status->new VRankBootstrapService(jdbc,bootstrapAudit).initialize(params,
+        transaction.execute(status->new VRankBootstrapService(sessions.getMapper(VRankBootstrapMapper.class),bootstrapAudit).initialize(params,
                 new AuditReplayContext("checker","approved explicit fixture","bootstrap-maintenance")));
         A2ReplayContext.exitReplay();
 
@@ -297,7 +337,7 @@ class DataBootstrapMySqlIntegrationTest {
                 mock(ffdd.opsconsole.team.domain.TeamFulfillmentQueueRepository.class),repository,
                 mock(ffdd.opsconsole.shared.security.AdminPermissionCache.class),mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class),
                 mock(VRankPromotionEngine.class),mock(VRankRewardDispatcher.class),mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class),
-                mock(LeadershipPoolService.class),mock(F5CommissionService.class),idempotency,null,null,mock(VRankSkuFulfillmentService.class),null);
+                mock(LeadershipPoolService.class),mock(F5CommissionService.class),idempotency,null,null,mock(VRankSkuFulfillmentService.class),null,null);
         var before=f1Row(service,"V2");
         assertThat(before).containsEntry("selfBuy",9_007_199_254_740_991L).containsEntry("teamGv",4_294_967_297L)
                 .containsEntry("legRank","NONE").containsEntry("legCount",0);

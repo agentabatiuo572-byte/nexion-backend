@@ -589,7 +589,7 @@ class OpsAuditCenterServiceTest {
                 mock(ffdd.opsconsole.team.application.VRankRewardDispatcher.class), outbox,
                 mock(ffdd.opsconsole.team.application.LeadershipPoolService.class),
                 mock(ffdd.opsconsole.team.application.F5CommissionService.class), idempotencyService, null, null,
-                mock(ffdd.opsconsole.team.application.VRankSkuFulfillmentService.class), null);
+                mock(ffdd.opsconsole.team.application.VRankSkuFulfillmentService.class), null, null);
         var dispatcher = new AuditReplayDispatcher(List.of(team));
         doAnswer(invocation -> dispatcher.dispatch(invocation.getArgument(0), invocation.getArgument(1)))
                 .when(replayDispatcher).dispatch(any(), any());
@@ -1304,7 +1304,7 @@ class OpsAuditCenterServiceTest {
         when(replayBusinessPermissionGuard.validateProposal(any())).thenAnswer(i->guard.validateProposal(i.getArgument(0)));
         when(replayBusinessPermissionGuard.validateApproval(any())).thenAnswer(i->guard.validateApproval(i.getArgument(0)));
         var team=new ffdd.opsconsole.team.application.OpsTeamService(config,coverage,null,null,
-                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.disabledForDirectConstruction(),null,null,null,lockMapper,null,null,null,null,null,idempotencyService,provider,null,null,null);
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.disabledForDirectConstruction(),null,null,null,lockMapper,null,null,null,null,null,idempotencyService,provider,null,null,null,null);
         var dispatcher=new AuditReplayDispatcher(List.of(team));
         doAnswer(i->dispatcher.dispatch(i.getArgument(0),i.getArgument(1))).when(replayDispatcher).dispatch(any(),any());
         var command=new AuditReplayCommand("F","f_seven_layer_activation",Map.of("action","ACTIVATE","expectedSevenLayerRevision",0,"expectedPolicyVersion",4));
