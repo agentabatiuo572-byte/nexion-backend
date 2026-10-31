@@ -15,6 +15,15 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 /** Real MySQL, isolated schema; exercises the annotated SQL and projection together. */
 @EnabledIfEnvironmentVariable(named="NEXION_BUSINESS_NOTIFICATION_IT",matches="true")
 class BusinessNotificationMySqlTest {
+    @Test void committedPurchaseResultsQueueExactlyOneOwnedStationAndPushIdentityEach() throws Exception {
+        inSchema(c->{
+            sql(c,"INSERT INTO nx_purchase_payment_result(notification_key,intent_no,outcome,user_id,order_no) VALUES('INTENT:paid','paid','DELIVERED',2,'ORDER-1'),('ORDER:ORDER-2','timeout','PAYMENT_TIMEOUT',2,'ORDER-2'),('INTENT:review','review','MANUAL_REVIEW',2,'ORDER-3')");
+            scan(c);scan(c);
+            assertThat(scalar(c,"SELECT COUNT(*) FROM nx_notification WHERE user_id=2 AND type='FUNDS_RESULT' AND push_status='QUEUED'")).isEqualTo(3);
+            assertThat(scalar(c,"SELECT COUNT(*) FROM nx_business_notification_fact WHERE fact_key LIKE 'PURCHASE:%'")).isEqualTo(3);
+            assertThat(scalar(c,"SELECT COUNT(*) FROM nx_notification WHERE cta_href='/pages/store/order-detail?id=ORDER-1'")).isEqualTo(1);
+        });
+    }
     @Test void actualOutboxEnvelopeJsonNullUserDoesNotHideTargetUserSecurityFacts() throws Exception {
         inSchema(c->{
             var json=new com.fasterxml.jackson.databind.ObjectMapper();
@@ -446,6 +455,7 @@ class BusinessNotificationMySqlTest {
         sql(c,"INSERT INTO nx_user_preference VALUES(2,0,0,0,0,0,0,0)");
         sql(c,"CREATE TABLE nx_event_outbox(id BIGINT PRIMARY KEY,event_id VARCHAR(64),aggregate_id VARCHAR(128),event_type VARCHAR(96),payload JSON,created_at DATETIME,is_deleted INT,aggregate_type VARCHAR(32) DEFAULT 'WITHDRAWAL')");
         sql(c,"CREATE TABLE nx_withdrawal_order(withdrawal_no VARCHAR(96) PRIMARY KEY,user_id BIGINT,is_deleted INT,status VARCHAR(32) DEFAULT 'REVIEW_PENDING',failed_at DATETIME,updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,created_at DATETIME DEFAULT CURRENT_TIMESTAMP,d2_k3_risk_route VARCHAR(32) DEFAULT 'pass')");
+        sql(c,"CREATE TABLE nx_purchase_payment_result(notification_key VARCHAR(128),intent_no VARCHAR(48),outcome VARCHAR(24),user_id BIGINT,order_no VARCHAR(64),created_at DATETIME DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(notification_key,outcome))");
         sql(c,"CREATE TABLE nx_order(order_no VARCHAR(96) PRIMARY KEY,user_id BIGINT,is_deleted INT)");
         sql(c,"CREATE TABLE nx_deposit_order(id BIGINT PRIMARY KEY,user_id BIGINT,status VARCHAR(32),ledger_id BIGINT,credited_at DATETIME,chain_name VARCHAR(32),is_deleted INT)");
         sql(c,"CREATE TABLE nx_audit_log(id BIGINT PRIMARY KEY,user_id BIGINT,action VARCHAR(96),resource_type VARCHAR(64),resource_id VARCHAR(128),result VARCHAR(32),detail_json JSON,created_at DATETIME,is_deleted INT)");
@@ -470,7 +480,7 @@ class BusinessNotificationMySqlTest {
         return DriverManager.getConnection("jdbc:mysql://"+System.getenv("NEXION_ISOLATED_MYSQL_ENDPOINT")+"/"+db+"?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC","root",System.getenv().getOrDefault("NEXION_ISOLATED_MYSQL_PASSWORD",""));
     }
     private static void inSchema(Check check) throws Exception {
-        String schema="business_notification_it_"+UUID.randomUUID().toString().replace("-","");
+        String schema="outstanding_pay_notice_"+UUID.randomUUID().toString().replace("-","");
         try(Connection admin=connect("")) {
             sql(admin,"CREATE DATABASE "+schema);
             try(Connection c=connect(schema)){seed(c);check.run(c);}finally{sql(admin,"DROP DATABASE "+schema);}

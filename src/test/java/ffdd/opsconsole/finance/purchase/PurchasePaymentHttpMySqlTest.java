@@ -69,7 +69,7 @@ import org.springframework.transaction.interceptor.TransactionInterceptor;
 
 /** Real loopback Tomcat + production SecurityConfig/JWT/session/PIN/payment/order services and real MySQL.
  * The vendor gateway is synthetic and never contacts an external financial system. */
-@EnabledIfEnvironmentVariable(named="PAYMENT_PIN_TEST_DB_URL",matches="jdbc:mysql://127\\.0\\.0\\.1:33348/payment_pin_backend_test.*")
+@EnabledIfEnvironmentVariable(named="PAYMENT_PIN_TEST_DB_URL",matches="jdbc:mysql://127\\.0\\.0\\.1:3334[38]/(payment_pin_backend_test|outstanding_pay_test).*")
 class PurchasePaymentHttpMySqlTest {
     static Fixture fixture;
     static ServletWebServerApplicationContext server;
@@ -212,7 +212,7 @@ class PurchasePaymentHttpMySqlTest {
     }
 
     static class Fixture implements AutoCloseable {
-        final String schema="purchase_http_it_"+UUID.randomUUID().toString().replace("-","");
+        final String schema="outstanding_pay_http_"+UUID.randomUUID().toString().replace("-","");
         DataSource source;JdbcTemplate jdbc,admin;SqlSessionTemplate session;DataSourceTransactionManager tx;AuthSessionMapper authSessions;
         final ObjectMapper json=JSON;final SyntheticHdPay provider=new SyntheticHdPay();final HdPayProperties hd=new HdPayProperties();
         final CregisGateway bscProvider=mock(CregisGateway.class);final BscDepositProof bscChain=mock(BscDepositProof.class);
@@ -221,8 +221,8 @@ class PurchasePaymentHttpMySqlTest {
         AppOrderCommandService orders;PurchasePaymentService payments;PurchasePaymentPolicyService policy;JwtTokenProvider jwt;
         void install() throws Exception {
             String original=System.getenv("PAYMENT_PIN_TEST_DB_URL"),username=System.getenv("PAYMENT_PIN_TEST_DB_USERNAME"),password=System.getenv("PAYMENT_PIN_TEST_DB_PASSWORD");
-            admin=new JdbcTemplate(new DriverManagerDataSource(original,username,password));assertThat(admin.queryForObject("SELECT @@port",Integer.class)).isEqualTo(33348);admin.execute("CREATE DATABASE "+schema);
-            String url=original.replace("/payment_pin_backend_test","/"+schema);
+            admin=new JdbcTemplate(new DriverManagerDataSource(original,username,password));assertThat(admin.queryForObject("SELECT @@port",Integer.class)).isIn(33343,33348);admin.execute("CREATE DATABASE "+schema);
+            String url=original.replaceFirst("/(?:payment_pin_backend_test|outstanding_pay_test)","/"+schema);
             source=new DriverManagerDataSource(url,username,password);jdbc=new JdbcTemplate(source);tx=new DataSourceTransactionManager(source);
             String base=Files.readString(Path.of("scripts/schema.sql")).replaceFirst("CREATE DATABASE[^;]+;","").replaceFirst("USE nexion;","");
             sql(base,"base-schema");
@@ -255,8 +255,8 @@ class PurchasePaymentHttpMySqlTest {
         }
         void migrate(String file) throws Exception {sql(Files.readString(Path.of("scripts/migrations",file)),file);}
         void sql(String sql,String phase) throws Exception {
-            if(!schema.matches("purchase_http_it_[0-9a-f]{32}")||!"purchase_http_it_".equals(System.getenv("HTTP_SETUP_DB_ALLOWED_SCHEMA_PREFIX")))throw new IllegalStateException("Owned HTTP schema setup is required");
-            var command=new ProcessBuilder("D:/software/MySQL/MySQL Server 8.0/bin/mysql.exe","--host=127.0.0.1","--port=33348","--user="+System.getenv("HTTP_SETUP_DB_USERNAME"),"--database="+schema,"--default-character-set=utf8mb4");
+            if(!schema.matches("outstanding_pay_http_[0-9a-f]{32}")||!"outstanding_pay_http_".equals(System.getenv("HTTP_SETUP_DB_ALLOWED_SCHEMA_PREFIX")))throw new IllegalStateException("Owned HTTP schema setup is required");
+            var command=new ProcessBuilder("D:/software/MySQL/MySQL Server 8.0/bin/mysql.exe","--no-defaults","--host=127.0.0.1","--port="+java.net.URI.create(System.getenv("PAYMENT_PIN_TEST_DB_URL").substring(5)).getPort(),"--user="+System.getenv("HTTP_SETUP_DB_USERNAME"),"--database="+schema,"--default-character-set=utf8mb4");
             command.environment().put("MYSQL_PWD",System.getenv("HTTP_SETUP_DB_PASSWORD"));command.redirectOutput(ProcessBuilder.Redirect.DISCARD);
             // Local admin is confined to this initializer connection; runtime stays the restricted pin_test user.
             Process process=command.start();process.getOutputStream().write(("SET SESSION sql_log_bin=0;\n"+sql).getBytes(StandardCharsets.UTF_8));process.getOutputStream().close();String error=new String(process.getErrorStream().readAllBytes(),StandardCharsets.UTF_8);
@@ -268,7 +268,7 @@ class PurchasePaymentHttpMySqlTest {
             var config=new MybatisConfiguration(new Environment("purchase-http",new SpringManagedTransactionFactory(),source));config.setMapUnderscoreToCamelCase(true);config.setLocalCacheScope(LocalCacheScope.STATEMENT);
             var global=new GlobalConfig();global.setDbConfig(new GlobalConfig.DbConfig());global.setMetaObjectHandler(new MybatisMetaObjectHandler(Clock.systemUTC()));GlobalConfigUtils.setGlobalConfig(config,global);
             for(Class<?> type:List.of(PurchasePaymentMapper.class,AppOrderCommandMapper.class,PaymentPasswordMapper.class,AdminIdempotencyRecordMapper.class,
-                    PlatformConfigItemMapper.class,AuditLogMapper.class,AdminMapper.class,EventOutboxMapper.class,AuthSessionMapper.class,UserOpsMapper.class,AdminAccountStateMapper.class,VietnamPaymentMapper.class,CregisDepositPolicyMapper.class))config.addMapper(type);
+                    PlatformConfigItemMapper.class,AuditLogMapper.class,AdminMapper.class,EventOutboxMapper.class,AuthSessionMapper.class,UserOpsMapper.class,AdminAccountStateMapper.class,VietnamPaymentMapper.class,CregisDepositPolicyMapper.class,ffdd.opsconsole.content.businessnotification.mapper.BusinessNotificationMapper.class))config.addMapper(type);
             session=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(config));
             var sessionProxy=new ProxyFactory(session.getMapper(AuthSessionMapper.class));sessionProxy.setInterfaces(AuthSessionMapper.class);
             sessionProxy.addAdvice(new TransactionInterceptor(tx,new AnnotationTransactionAttributeSource()));authSessions=(AuthSessionMapper)sessionProxy.getProxy();
@@ -326,7 +326,7 @@ class PurchasePaymentHttpMySqlTest {
                     .thenReturn(new BscDepositProof.TransferProof(1,105,block,16,"0x"+"4".repeat(40),bscAddress,amount,true));
             when(bscProvider.depositsByTxid(CregisNetwork.BEP20,txid)).thenReturn(List.of(new CregisGateway.DepositTrade(44,"2510",CregisConstants.USDT_BEP20_TOKEN_ID,bscAddress,amount,txid,1)));
         }
-        public void close(){if(schema.matches("purchase_http_it_[0-9a-f]{32}"))admin.execute("DROP DATABASE "+schema);}
+        public void close(){if(schema.matches("outstanding_pay_http_[0-9a-f]{32}"))admin.execute("DROP DATABASE "+schema);}
     }
 
     @TestConfiguration(proxyBeanMethods=false)

@@ -156,6 +156,9 @@ public interface NativePushMapper {
     @Select("SELECT COUNT(*) FROM nx_user_device WHERE id=#{id} AND user_id=#{user} AND is_deleted=0 AND source_environment='PRODUCTION' AND run_id=''")
     int ownedDevice(@Param("id") long id, @Param("user") long user);
 
+    @Select("SELECT COUNT(*) FROM nx_order WHERE order_no=#{number} AND user_id=#{user} AND is_deleted=0")
+    int ownedOrder(@Param("number") String number,@Param("user") long user);
+
     @Select("SELECT COUNT(*) FROM nx_withdrawal_order WHERE withdrawal_no=#{number} AND user_id=#{user} AND is_deleted=0")
     int ownedWithdrawal(@Param("number") String number, @Param("user") long user);
 

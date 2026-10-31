@@ -15,8 +15,12 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface AppOrderCommandMapper extends BaseMapper<Object> {
-    @Select("SELECT COUNT(*) FROM nx_purchase_payment_intent WHERE kind='ORDER_PAY' AND JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.orderNo'))=#{orderNo} AND status NOT IN ('DELIVERED','EXPIRED')")
+    @Select("SELECT COUNT(*) FROM nx_purchase_payment_intent p JOIN nx_order o ON o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) WHERE p.kind='ORDER_PAY' AND o.order_no=#{orderNo} AND p.status NOT IN ('DELIVERED','EXPIRED')")
     int countActiveDirectPaymentIntent(@Param("orderNo") String orderNo);
+    @Select("SELECT COUNT(*) FROM nx_purchase_payment_intent p JOIN nx_order o ON o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) WHERE p.kind='ORDER_PAY' AND o.order_no=#{orderNo}")
+    int countDirectPaymentIntents(@Param("orderNo") String orderNo);
+    @Update("UPDATE nx_order SET paid_at=#{paidAt} WHERE order_no=#{orderNo} AND payment_status='PAID'")
+    int recordVerifiedPaidAt(@Param("orderNo") String orderNo,@Param("paidAt") java.time.LocalDateTime paidAt);
     /** The pending order is already included once; do not add its quantity again at payment. */
     @Select("SELECT (" + CanonicalStateMapper.ACTIVE_DEVICE_COUNT
             + " AND COALESCE(u.sandbox,0)=0 FOR SHARE) + ("
@@ -268,6 +272,8 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                AND (o.created_at <= TIMESTAMPADD(MINUTE, -#{ttlMinutes}, NOW(6))
                     OR EXISTS (SELECT 1 FROM nx_promotion_order_receipt pr
                                 WHERE pr.order_no=o.order_no AND pr.pay_by<=NOW(6)))
+               AND NOT EXISTS (SELECT 1 FROM nx_purchase_payment_intent p
+                 WHERE p.kind='ORDER_PAY' AND JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo'))=o.order_no)
                AND NOT EXISTS (
                  SELECT 1
                    FROM nx_vietqr_intent i

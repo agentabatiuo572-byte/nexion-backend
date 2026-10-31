@@ -27,7 +27,7 @@ class BusinessNotificationServiceTest {
         verify(mapper).notify(eq(fact),eq("HDPAY:order"),anyString(),anyString(),anyString());
     }
     @Test void everySupportedMessageHasThreeSafeShortTexts() {
-        for(var key:new String[]{"deposit","withdrawal_completed","withdrawal_returned","withdrawal_failed",
+        for(var key:new String[]{"purchase_delivered","purchase_timeout","purchase_review","deposit","withdrawal_completed","withdrawal_returned","withdrawal_failed",
             "withdrawal_rejected","withdrawal_frozen","withdrawal_delayed","withdrawal_review_required","withdrawal_state","refund","password", "payment_method",
             "security","new_signin","support","device_alert","trial_24h","trial_1h","trial_end","retention_24h","retention_1h","retention_end"}) {
             var text=BusinessNotificationService.text(key);

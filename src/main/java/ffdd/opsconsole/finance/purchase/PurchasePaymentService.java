@@ -49,6 +49,10 @@ public class PurchasePaymentService {
     @lombok.NonNull
     private final TestCloudActivationAdmission testCloudAdmission;
     private static final Set<String> KINDS=Set.of("ORDER_PAY","TRIAL_CONVERT","TRADE_IN","CAPACITY_REPLACE","CAPACITY_KEEP");
+    private Clock clock=Clock.systemUTC();
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    void clock(Clock clock){this.clock=clock;}
+    private Instant now(){return clock.instant();}
     private static final String SELECT="SELECT * FROM nx_purchase_payment_intent WHERE intent_no=?";
 
     private <T> T tx(java.util.function.Supplier<T> work){
@@ -97,7 +101,7 @@ public class PurchasePaymentService {
                 ||!crGateway.provider().zeroAddressBalance(network.currency(),address)||!chain.zeroUsdtBalance(network,address))
             throw new BizException(409,"CREGIS_DIRECT_ADDRESS_REQUIRES_REVIEW");
         var head=chain.head(network);if(!head.hash().equalsIgnoreCase(chain.blockHash(network,head.number())))throw new BizException(503,"CREGIS_DIRECT_ALLOCATION_ANCHOR_INVALID");
-        candidate.put("allocationBlock",head.number());candidate.put("allocationHash",head.hash());candidate.put("proofExpiresAt",Instant.now().plusSeconds(5));
+        candidate.put("allocationBlock",head.number());candidate.put("allocationHash",head.hash());candidate.put("proofExpiresAt",now().plusSeconds(5));
         return candidate;
     }
     public Map<String,Object> quote(long owner,Map<String,Object> input){
@@ -109,8 +113,9 @@ public class PurchasePaymentService {
             throw new BizException(422,"EXTERNAL_PAYMENT_CREDENTIAL_FORBIDDEN");
         ready(method);
         return tx(()->{
-            user(owner,true);Instant pricingAt=Instant.now();var pricing=pricing(owner,kind,payload,pricingAt);
-            if(!db.rows("SELECT intent_no FROM nx_purchase_payment_intent WHERE user_id=? AND kind=? AND status IN ('CREATING','SUBMIT_UNKNOWN','AWAITING_PAYMENT','FUNDS_CONFIRMED','MANUAL_REVIEW') AND payload_json=CAST(? AS JSON)",owner,kind,json(payload)).isEmpty())
+            user(owner,true);Instant pricingAt=now();var pricing=pricing(owner,kind,payload,pricingAt);
+            if("ORDER_PAY".equals(kind))payload.put("orderNo",pricing.get("orderNo"));
+            if(!activeIntents(owner,kind,json(payload),"").isEmpty())
                 throw new BizException(409,"PURCHASE_PAYMENT_EXISTING_INTENT_REQUIRED");
             BigDecimal subtotal=money(pricing.get("subtotalUsdt"));
             if(subtotal.signum()<=0)throw new BizException(409,"ZERO_PAYMENT_REQUIRES_WALLET");
@@ -120,12 +125,14 @@ public class PurchasePaymentService {
             BigDecimal rate=money(channel.get("channelFeeRatePct")),fixed=money(channel.get("channelFeeFixed")),network=money(channel.get("networkConfirmFeeUsdt"));
             BigDecimal fee=subtotal.multiply(rate).divide(new BigDecimal("100")).add(fixed).setScale(2,RoundingMode.HALF_UP);
             BigDecimal total=subtotal.add(fee).add(network).setScale(2,RoundingMode.HALF_UP);
-            String id=id("PPQ-");Instant expires=Instant.now().plusSeconds(900);
+            String id=id("PPQ-");Instant deadline=deadline(kind,payload,pricingAt);
+            if(!deadline.isAfter(now()))throw new BizException(409,"ORDER_PAYMENT_EXPIRED");
+            Instant expires=pricingAt.plusSeconds(900);if(expires.isAfter(deadline))expires=deadline;
             var quote=values("paymentQuoteId",id,"kind",kind,"paymentMethod",method,"network","HDPAY_BANK".equals(method)?"VND_BANK":network(method)==CregisNetwork.BEP20?"BSC":"ERC20",
                     "subtotalUsdt",subtotal.toPlainString(),"businessAmountUsdt",pricing.get("businessAmountUsdt"),
                     "roundingAdjustmentUsdt",subtotal.subtract(new BigDecimal(text(pricing.get("businessAmountUsdt")))).setScale(6,RoundingMode.UNNECESSARY).toPlainString(),"channelFeeRatePct",rate.toPlainString(),"channelFeeFixed",fixed.toPlainString(),
                     "channelFeeUsdt",fee.toPlainString(),"networkConfirmFeeUsdt",network.toPlainString(),"totalUsdt",total.toPlainString(),
-                    "feePolicyVersion",current.get("version"),"paymentFeesConfigured",true,"pricingAsOf",pricingAt.toString(),"expiresAt",expires.toString(),"currency","HDPAY_BANK".equals(method)?"VND":"USDT");
+                    "feePolicyVersion",current.get("version"),"paymentFeesConfigured",true,"pricingAsOf",pricingAt.toString(),"expiresAt",expires.toString(),"deadlineAt",deadline.toString(),"confirmationGraceEndsAt",graceEnd(method,deadline).toString(),"currency","HDPAY_BANK".equals(method)?"VND":"USDT");
             if("HDPAY_BANK".equals(method)){
                 var config=fx.findFxQuoteConfig();if(config==null)throw new BizException(503,"FX_QUOTE_UNAVAILABLE");
                 BigDecimal quoted=VietnamPaymentPolicy.quoteRate(new BigDecimal(text(config.get("baseRateVndPerUsdt"))),new BigDecimal(text(config.get("buySpreadPct"))));
@@ -137,6 +144,39 @@ public class PurchasePaymentService {
                     id,owner,kind,method,json(payload),json(quote),hash(pricing),timestamp(expires));
             return quote;
         });
+    }
+    private List<Map<String,Object>> activeIntents(Object owner,Object kind,String payload,String excluding){
+        // Resolve legacy aliases with the actual order column's collation, not JSON/string equality.
+        return db.rows("SELECT p.intent_no FROM nx_purchase_payment_intent p WHERE p.user_id=? AND p.kind=? AND p.intent_no<>? AND p.status NOT IN ('DELIVERED','EXPIRED') AND ((p.kind='ORDER_PAY' AND EXISTS(SELECT 1 FROM nx_order o WHERE o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) AND o.order_no=?)) OR (p.kind<>'ORDER_PAY' AND p.payload_json=CAST(? AS JSON)))",owner,kind,excluding,text(parse(payload).get("orderNo")),payload);
+    }
+    private Instant deadline(String kind,Map<String,Object> payload,Instant pricingAt){
+        if(!"ORDER_PAY".equals(kind))return pricingAt.plusSeconds(1800);
+        return orderDeadline(db.one("SELECT created_at,order_no FROM nx_order WHERE order_no=?",text(payload.get("orderNo"))));
+    }
+    private Instant orderDeadline(Map<String,Object> order){
+        Instant deadline=instant(order.get("created_at")).plusSeconds(1800);
+        var promotion=db.one("SELECT pay_by FROM nx_promotion_order_receipt WHERE order_no=?",order.get("order_no"));
+        return promotion!=null&&instant(promotion.get("pay_by")).isBefore(deadline)?instant(promotion.get("pay_by")):deadline;
+    }
+    private Instant quoteDeadline(Map<String,Object> quote){
+        var snapshot=parse(quote.get("quote_json"));
+        return snapshot.get("deadlineAt")==null?deadline(text(quote.get("kind")),parse(quote.get("payload_json")),Instant.parse(text(snapshot.get("pricingAsOf")))):Instant.parse(text(snapshot.get("deadlineAt")));
+    }
+    static Instant graceEnd(Object method,Instant deadline){return deadline.plusSeconds("CREGIS_USDT_BSC".equals(method)?180:300);}
+    private Instant deadline(Map<String,Object> row){return instant(row.get("expires_at"));}
+    private Instant paymentDeadline(Map<String,Object> row){
+        Instant deadline=deadline(row);
+        return row.get("provider_expires_at")!=null&&instant(row.get("provider_expires_at")).isBefore(deadline)?instant(row.get("provider_expires_at")):deadline;
+    }
+    static String arrivalReason(Instant deadline,Instant graceEndsAt,Instant paidAt,Instant observedAt){
+        if(!observedAt.isBefore(graceEndsAt))return "PAYMENT_LATE_REVIEW";
+        if(paidAt==null)return observedAt.isBefore(deadline)?"":"PAYMENT_TIME_UNVERIFIED";
+        return paidAt.isBefore(deadline)&&!paidAt.isAfter(observedAt)?"":"PAYMENT_LATE_REVIEW";
+    }
+    private void outcome(Map<String,Object> row,String status){
+        String orderNo=row.get("receipt_json")==null?text(parse(row.get("payload_json")).get("orderNo")):text(parse(row.get("receipt_json")).get("orderNo"));
+        String key="PAYMENT_TIMEOUT".equals(status)&&!orderNo.isBlank()?"ORDER:"+orderNo:"INTENT:"+text(row.get("intent_no"));
+        db.write("INSERT IGNORE INTO nx_purchase_payment_result(notification_key,intent_no,outcome,user_id,order_no) VALUES(?,?,?,?,?)",key,row.get("intent_no"),status,row.get("user_id"),orderNo);
     }
     private Map<String,Object> pricing(long owner,String kind,Map<String,Object> payload,Instant pricingAt){
         switch(kind){
@@ -190,7 +230,8 @@ public class PurchasePaymentService {
             var prior=db.one("SELECT * FROM nx_purchase_payment_intent WHERE user_id=? AND kind=? AND command_key=?",owner,quote.get("kind"),key);
             if(prior!=null){if(!quoteId.equals(prior.get("quote_id")))throw new BizException(409,"IDEMPOTENCY_KEY_CONFLICT");return values("intent",prior,"winner",false);}
             if(db.one("SELECT intent_no FROM nx_purchase_payment_intent WHERE quote_id=?",quoteId)!=null)throw new BizException(409,"PURCHASE_PAYMENT_QUOTE_ALREADY_USED");
-            if(!instant(quote.get("expires_at")).isAfter(Instant.now()))throw new BizException(409,"PURCHASE_PAYMENT_QUOTE_EXPIRED");
+            if(!deadline(text(quote.get("kind")),parse(quote.get("payload_json")),Instant.parse(text(parse(quote.get("quote_json")).get("pricingAsOf")))).isAfter(now()))throw new BizException(409,"ORDER_PAYMENT_EXPIRED");
+            if(!instant(quote.get("expires_at")).isAfter(now()))throw new BizException(409,"PURCHASE_PAYMENT_QUOTE_EXPIRED");
             if(!Boolean.TRUE.equals(parse(quote.get("quote_json")).get("paymentFeesConfigured")))throw new BizException(503,"PURCHASE_PAYMENT_FEES_NOT_CONFIGURED");
             // Share the policy mutex with D1 publication until this intent commits its immutable fee snapshot.
             var feeVersion=db.one("SELECT version FROM nx_purchase_payment_policy WHERE id=1 FOR SHARE");
@@ -198,14 +239,15 @@ public class PurchasePaymentService {
                 throw new BizException(409,"PURCHASE_PAYMENT_FEE_POLICY_CHANGED");
             if(!hash(pricing(owner,text(quote.get("kind")),parse(quote.get("payload_json")),Instant.parse(text(parse(quote.get("quote_json")).get("pricingAsOf"))))).equals(quote.get("pricing_hash")))throw new BizException(409,"PURCHASE_PAYMENT_PRICING_CHANGED");
             ready(text(quote.get("payment_method")));
-            if(!db.rows("SELECT intent_no FROM nx_purchase_payment_intent WHERE user_id=? AND kind=? AND status IN ('CREATING','SUBMIT_UNKNOWN','AWAITING_PAYMENT','FUNDS_CONFIRMED','MANUAL_REVIEW') AND payload_json=CAST(? AS JSON)",owner,quote.get("kind"),quote.get("payload_json")).isEmpty())
+            if(!activeIntents(owner,quote.get("kind"),text(quote.get("payload_json")),"").isEmpty())
                 throw new BizException(409,"PURCHASE_PAYMENT_EXISTING_INTENT_REQUIRED");
+            if(!quoteDeadline(quote).isAfter(now()))throw new BizException(409,"ORDER_PAYMENT_EXPIRED");
             String no=id("PPI-");
             db.write("INSERT INTO nx_purchase_payment_intent(intent_no,quote_id,user_id,kind,payment_method,command_key,payload_json,quote_json,pricing_hash,status,expires_at,provider_project) VALUES(?,?,?,?,?,?,?,?,?,'CREATING',?,?)",
-                    no,quoteId,owner,quote.get("kind"),quote.get("payment_method"),key,quote.get("payload_json"),quote.get("quote_json"),quote.get("pricing_hash"),quote.get("expires_at"),cr.getProjectId());
+                    no,quoteId,owner,quote.get("kind"),quote.get("payment_method"),key,quote.get("payload_json"),quote.get("quote_json"),quote.get("pricing_hash"),timestamp(quoteDeadline(quote)),cr.getProjectId());
             if(bsc){
                 var locked=db.one("SELECT id,address FROM nx_cregis_deposit_address WHERE id=? AND project_id=? AND chain_id=? AND state='UNASSIGNED' AND user_id IS NULL AND purpose='WALLET_TOPUP' FOR UPDATE",candidate.get("id"),cr.getProjectId(),network.chainId());
-                if(locked==null||!candidate.get("address").equals(locked.get("address"))||!((Instant)candidate.get("proofExpiresAt")).isAfter(Instant.now()))
+                if(locked==null||!candidate.get("address").equals(locked.get("address"))||!((Instant)candidate.get("proofExpiresAt")).isAfter(now()))
                     throw new BizException(409,"CREGIS_DIRECT_ADDRESS_ALLOCATION_RETRY");
                 if(db.write("UPDATE nx_cregis_deposit_address SET state='DIRECT_PURCHASE',purpose='PURCHASE_DIRECT',purchase_intent_no=?,allocation_block=?,allocation_hash=?,updated_at=NOW(6) WHERE id=? AND state='UNASSIGNED' AND user_id IS NULL",no,candidate.get("allocationBlock"),candidate.get("allocationHash"),candidate.get("id"))!=1)
                     throw new BizException(409,"CREGIS_DIRECT_ADDRESS_ALLOCATION_RETRY");
@@ -219,6 +261,10 @@ public class PurchasePaymentService {
     }
     private void submit(Map<String,Object> intent){
         String no=text(intent.get("intent_no"));String method=text(intent.get("payment_method"));
+        if(!deadline(intent).isAfter(now())){
+            db.write("UPDATE nx_purchase_payment_intent SET status='AWAITING_PAYMENT',reason='PAYMENT_NOT_SUBMITTED',version=version+1,updated_at=NOW(6) WHERE intent_no=? AND status='CREATING'",no);
+            return;
+        }
         // A crash anywhere after this CAS is an unknown submission; never create another identity.
         if(db.write("UPDATE nx_purchase_payment_intent SET status='SUBMIT_UNKNOWN',version=version+1,updated_at=NOW(6) WHERE intent_no=? AND status='CREATING'",no)!=1)return;
         try{
@@ -275,28 +321,68 @@ public class PurchasePaymentService {
     }
     private void refresh(Map<String,Object> row){
         if(row.get("receipt_json")!=null){
-            if(cregis(row.get("payment_method")))try{auditCanonical(row);observeBsc(row);}catch(RuntimeException unavailable){}
+            try{if(cregis(row.get("payment_method"))){auditCanonical(row);observeBsc(row);}else observeHd(row);}catch(RuntimeException unavailable){}
             return;
         }
-        try{if("HDPAY_BANK".equals(row.get("payment_method")))observeHd(row);else observeBsc(row);}
-        catch(RuntimeException unavailable){/* Preserve the durable original identity and retry observation only. */}
+        try{
+            boolean observed="PAYMENT_NOT_SUBMITTED".equals(row.get("reason"));
+            if(!observed){if("HDPAY_BANK".equals(row.get("payment_method")))observed=observeHd(row);else{observeBsc(row);observed=true;}}
+            if(!observed)reconciliationUnknown(row);
+        }catch(RuntimeException unavailable){reconciliationUnknown(row);}
+
         var current=db.one(SELECT,row.get("intent_no"));
         if(current.get("confirmed_at")!=null&&Set.of("FUNDS_CONFIRMED","MANUAL_REVIEW").contains(text(current.get("status"))))deliver(text(row.get("intent_no")),false);
-        else if(current.get("confirmed_at")==null&&instant(current.get("expires_at")).isBefore(Instant.now()))
-            db.write("UPDATE nx_purchase_payment_intent SET status='EXPIRED',version=version+1,updated_at=NOW(6) WHERE intent_no=? AND status='AWAITING_PAYMENT'",row.get("intent_no"));
+        else if(current.get("confirmed_at")==null&&!now().isBefore(graceEnd(current.get("payment_method"),deadline(current))))expire(current);
     }
-    private void observeHd(Map<String,Object> row){
-        if(!hd.ready())return;String no=text(row.get("intent_no"));var observed=hdGateway.queryPayOrder(no);
-        if(observed==null||!no.equals(observed.merchantOrderId())||observed.providerOrderId()==null||!"BANKQR".equalsIgnoreCase(observed.payType()))return;
-        var quote=parse(row.get("quote_json"));
-        if(observed.orderStatus()==3){
-            if(row.get("confirmed_at")!=null)return;
-            String reason=observed.transAmt()==null||new BigDecimal(text(quote.get("amountVnd"))).compareTo(observed.transAmt())!=0?"PAYMENT_AMOUNT_MISMATCH":
-                    instant(row.get("expires_at")).isBefore(Instant.now())?"PAYMENT_LATE_REVIEW":"";
-            confirm(no,observed.providerOrderId(),reason);
-        }else if(observed.orderStatus()==1&&hd.isTrustedPaymentPage(observed.appLink())){
-            db.write("UPDATE nx_purchase_payment_intent SET status='AWAITING_PAYMENT',payment_url=?,provider_reference=?,version=version+1,updated_at=NOW(6) WHERE intent_no=? AND status IN ('CREATING','SUBMIT_UNKNOWN','AWAITING_PAYMENT')",observed.appLink(),observed.providerOrderId(),no);
-        }
+    private void reconciliationUnknown(Map<String,Object> row){
+        // Ending a commerce order never declares unresolved provider funds settled.
+        db.write("UPDATE nx_purchase_payment_intent SET reconciliation_status='QUERY_UNKNOWN',updated_at=NOW(6) WHERE intent_no=? AND confirmed_at IS NULL AND receipt_json IS NULL",row.get("intent_no"));
+    }
+    private void expire(Map<String,Object> snapshot){
+        tx(()->{
+            var row=db.one(SELECT+" FOR UPDATE",snapshot.get("intent_no"));
+            if(row==null||"PAYMENT_TIMEOUT".equals(row.get("reason"))||row.get("confirmed_at")!=null||row.get("receipt_json")!=null||"MANUAL_REVIEW".equals(row.get("status")))return null;
+            db.one("SELECT id FROM nx_user WHERE id=? FOR UPDATE",row.get("user_id"));
+            Instant cutoff=deadline(row);
+            if("ORDER_PAY".equals(row.get("kind"))){
+                // The user mutex makes this a current business-state check without reversing promotion -> order locks.
+                var order=db.one("SELECT order_no,created_at,payment_status,order_status FROM nx_order WHERE order_no=? AND user_id=?",parse(row.get("payload_json")).get("orderNo"),row.get("user_id"));
+                if(order==null)throw new BizException(409,"PURCHASE_PAYMENT_TIMEOUT_ORDER_CONFLICT");
+                if(!"PENDING".equals(order.get("payment_status"))||!"PENDING_PAYMENT".equals(order.get("order_status")))return null;
+                cutoff=orderDeadline(order);
+            }
+            if(now().isBefore(graceEnd(row.get("payment_method"),cutoff)))return null;
+            // A failed attempt can have been replaced before the order deadline. Never cancel its successor.
+            var active=activeIntents(row.get("user_id"),row.get("kind"),text(row.get("payload_json")),text(row.get("intent_no")));
+            if(!active.isEmpty())return null;
+            db.write("UPDATE nx_purchase_payment_intent SET status='EXPIRED',reason='PAYMENT_TIMEOUT',expires_at=?,version=version+1,updated_at=NOW(6) WHERE intent_no=?",timestamp(cutoff),row.get("intent_no"));
+            if("ORDER_PAY".equals(row.get("kind"))&&!orders.expireDirectPaymentOrder(number(row.get("user_id")),text(parse(row.get("payload_json")).get("orderNo"))))throw new BizException(409,"PURCHASE_PAYMENT_TIMEOUT_ORDER_CONFLICT");
+            outcome(row,"PAYMENT_TIMEOUT");return null;
+        });
+    }
+    private boolean observeHd(Map<String,Object> row){
+        if(!hd.ready())return false;String no=text(row.get("intent_no"));var observed=hdGateway.queryPayOrder(no);
+        if(observed==null||!no.equals(observed.merchantOrderId())||observed.providerOrderId()==null||!"BANKQR".equalsIgnoreCase(observed.payType()))return false;
+        Instant observedAt=now();
+        return tx(()->{
+            var locked=db.one(SELECT+" FOR UPDATE",no);
+            db.write("UPDATE nx_purchase_payment_intent SET reconciliation_status=? WHERE intent_no=? AND confirmed_at IS NULL AND receipt_json IS NULL",observed.orderStatus()==5?"PROVIDER_FAILED":"OBSERVED_PENDING",no);
+            if(observed.expirationTime()!=null){
+                db.write("UPDATE nx_purchase_payment_intent SET provider_expires_at=? WHERE intent_no=?",timestamp(observed.expirationTime()),no);
+                locked.put("provider_expires_at",timestamp(observed.expirationTime()));
+            }
+            if(observed.orderStatus()==4){confirm(no,observed.providerOrderId(),"PAYMENT_REFUNDED_REVIEW",null,observedAt);}
+            else if(observed.orderStatus()==3){
+                if(locked.get("confirmed_at")!=null)return true;
+                String reason=observed.transAmt()==null||new BigDecimal(text(parse(locked.get("quote_json")).get("amountVnd"))).compareTo(observed.transAmt())!=0?"PAYMENT_AMOUNT_MISMATCH":arrivalReason(paymentDeadline(locked),graceEnd(locked.get("payment_method"),deadline(locked)),observed.paidAt(),observedAt);
+                confirm(no,observed.providerOrderId(),reason,observed.paidAt(),observedAt);
+            }else if(observed.orderStatus()==5){
+                db.write("UPDATE nx_purchase_payment_intent SET status='EXPIRED',reason='PAYMENT_FAILED',provider_reference=?,version=version+1,updated_at=NOW(6) WHERE intent_no=? AND confirmed_at IS NULL AND receipt_json IS NULL AND status IN ('CREATING','SUBMIT_UNKNOWN','AWAITING_PAYMENT')",observed.providerOrderId(),no);
+            }else if(observed.orderStatus()==1&&hd.isTrustedPaymentPage(observed.appLink())){
+                db.write("UPDATE nx_purchase_payment_intent SET status='AWAITING_PAYMENT',payment_url=?,provider_reference=?,version=version+1,updated_at=NOW(6) WHERE intent_no=? AND status IN ('CREATING','SUBMIT_UNKNOWN','AWAITING_PAYMENT')",observed.appLink(),observed.providerOrderId(),no);
+            }
+            return true;
+        });
     }
     private void observeBsc(Map<String,Object> row){
         var network=network(row.get("payment_method"));
@@ -322,11 +408,12 @@ public class PurchasePaymentService {
                 throw new BizException(409,"CREGIS_DIRECT_ALLOCATION_ANCHOR_INVALID");
             int inserted=db.write("INSERT IGNORE INTO nx_purchase_payment_arrival(intent_no,provider_project,chain_id,txid,log_index,amount,block_number,block_hash,confirmations,from_address,status) VALUES(?,?,?,?,?,?,?,?,?,?,'CONFIRMED')",no,cr.getProjectId(),network.chainId(),incoming.txid(),incoming.logIndex(),incoming.amount(),proof.blockNumber(),proof.blockHash(),proof.confirmations(),proof.fromAddress());
             if(inserted==1){
+                Instant paidAt=chain.blockTime(network,proof.blockNumber(),proof.blockHash()),observedAt=now();
                 BigDecimal expected=new BigDecimal(text(parse(locked.get("quote_json")).get("totalUsdt")));
-                String reason=incoming.blockNumber()<=number(allocation.get("allocation_block"))?"PAYMENT_BEFORE_ALLOCATION":incoming.amount().compareTo(expected)!=0?"PAYMENT_AMOUNT_MISMATCH":instant(locked.get("expires_at")).isBefore(Instant.now())?"PAYMENT_LATE_REVIEW":"";
+                String reason=incoming.blockNumber()<=number(allocation.get("allocation_block"))?"PAYMENT_BEFORE_ALLOCATION":incoming.amount().compareTo(expected)!=0?"PAYMENT_AMOUNT_MISMATCH":arrivalReason(paymentDeadline(locked),graceEnd(locked.get("payment_method"),deadline(locked)),paidAt,observedAt);
                 if(locked.get("confirmed_at")!=null)reason="PAYMENT_MULTIPLE_ARRIVALS";
                 if(!reason.isBlank())db.write("UPDATE nx_purchase_payment_arrival SET status='MANUAL_REVIEW' WHERE provider_project=? AND chain_id=? AND txid=? AND log_index=?",cr.getProjectId(),network.chainId(),incoming.txid(),incoming.logIndex());
-                confirm(no,incoming.txid()+":"+incoming.logIndex(),reason);
+                confirm(no,incoming.txid()+":"+incoming.logIndex(),reason,paidAt,observedAt);
             }return null;
         });
     }
@@ -347,14 +434,16 @@ public class PurchasePaymentService {
             tx(()->{
                 db.write("UPDATE nx_purchase_payment_intent SET status='MANUAL_REVIEW',reason='PAYMENT_REORG_REVIEW',version=version+1,updated_at=NOW(6) WHERE intent_no=? AND receipt_json IS NOT NULL",intent.get("intent_no"));
                 db.write("UPDATE nx_purchase_payment_arrival SET status='MANUAL_REVIEW' WHERE id=?",arrival.get("id"));
+                outcome(intent,"MANUAL_REVIEW");
                 audit.recordRequiredForTrustedActor(AuditLogWriteRequest.builder().action("PURCHASE_PAYMENT_REORG_REVIEW").resourceType("PURCHASE_PAYMENT_INTENT")
                         .resourceId(text(intent.get("intent_no"))).userId(number(intent.get("user_id"))).actorType("SYSTEM").actorUsername("system:purchase-payment")
                         .result("MANUAL_REVIEW").riskLevel("HIGH").detail(values("txid",arrival.get("txid"),"logIndex",arrival.get("log_index"),"checkedHead",proof.checkedHead())).build());return null;
             });
         }
     }
-    private void confirm(String no,String reference,String reason){
-        db.write("UPDATE nx_purchase_payment_intent SET provider_reference=COALESCE(provider_reference,?),confirmed_at=COALESCE(confirmed_at,NOW(6)),status=?,reason=?,version=version+1,updated_at=NOW(6) WHERE intent_no=? AND (receipt_json IS NULL OR ?<>'')",reference,reason.isBlank()?"FUNDS_CONFIRMED":"MANUAL_REVIEW",reason,no,reason);
+    private void confirm(String no,String reference,String reason,Instant paidAt,Instant observedAt){
+        db.write("UPDATE nx_purchase_payment_intent SET provider_reference=COALESCE(provider_reference,?),reconciliation_status=?,paid_at=COALESCE(paid_at,?),confirmed_at=COALESCE(confirmed_at,?),status=?,reason=?,version=version+1,updated_at=NOW(6) WHERE intent_no=? AND (receipt_json IS NULL OR ?<>'')",reference,reason.isBlank()?"CONFIRMED":"REVIEW",paidAt==null?null:timestamp(paidAt),timestamp(observedAt),reason.isBlank()?"FUNDS_CONFIRMED":"MANUAL_REVIEW",reason,no,reason);
+        if(!reason.isBlank())outcome(db.one(SELECT,no),"MANUAL_REVIEW");
     }
     private void deliver(String no,boolean explicit){
         var before=db.one(SELECT,no);
@@ -365,12 +454,12 @@ public class PurchasePaymentService {
             if(cregis(before.get("payment_method")))cregisGate(network(before.get("payment_method")),false,true);
             var intent=db.one(SELECT+" FOR UPDATE",no);
             if(intent==null||intent.get("receipt_json")!=null||intent.get("confirmed_at")==null)return null;
-            if(Set.of("PAYMENT_AMOUNT_MISMATCH","PAYMENT_LATE_REVIEW","PAYMENT_MULTIPLE_ARRIVALS","PAYMENT_BEFORE_ALLOCATION").contains(text(intent.get("reason"))))return null;
+            if(Set.of("PAYMENT_AMOUNT_MISMATCH","PAYMENT_LATE_REVIEW","PAYMENT_MULTIPLE_ARRIVALS","PAYMENT_BEFORE_ALLOCATION","PAYMENT_TIME_UNVERIFIED","PAYMENT_REFUNDED_REVIEW").contains(text(intent.get("reason"))))return null;
             if(!explicit&&"MANUAL_REVIEW".equals(intent.get("status")))return null;
             long owner=number(intent.get("user_id"));user(owner,true);
             String kind=text(intent.get("kind"));var payload=parse(intent.get("payload_json"));var quote=parse(intent.get("quote_json"));
             if(!hash(pricing(owner,kind,payload,Instant.parse(text(quote.get("pricingAsOf"))))).equals(intent.get("pricing_hash")))throw new BizException(409,"PURCHASE_PAYMENT_PRICING_CHANGED");
-            var result=VerifiedPurchasePayment.settle(owner,text(intent.get("payment_method")),no,money(quote.get("subtotalUsdt")),Instant.parse(text(quote.get("pricingAsOf"))),()->fulfil(owner,kind,payload,no));
+            var result=VerifiedPurchasePayment.settle(owner,text(intent.get("payment_method")),no,money(quote.get("subtotalUsdt")),Instant.parse(text(quote.get("pricingAsOf"))),intent.get("paid_at")==null?instant(intent.get("confirmed_at")):instant(intent.get("paid_at")),()->fulfil(owner,kind,payload,no));
             Object receipt=require(result);
             Map<String,Object> canonical=jsonMapper.convertValue(receipt,new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>(){});
             canonical.put("walletDebitUsdt","0.00");canonical.put("amountUsdt",quote.get("businessAmountUsdt"));
@@ -384,6 +473,7 @@ public class PurchasePaymentService {
                     no,orderNo,owner,intent.get("payment_method"),intent.get("provider_reference"),quote.get("businessAmountUsdt"),json(values("intentNo",no,"quoteId",intent.get("quote_id"),"paymentMethod",intent.get("payment_method"))))!=1)
                 throw new BizException(409,"PURCHASE_PAYMENT_RECORD_CONFLICT");
             if(db.write("UPDATE nx_purchase_payment_intent SET status='DELIVERED',reason='',receipt_json=?,version=version+1,updated_at=NOW(6) WHERE intent_no=? AND status IN ('FUNDS_CONFIRMED','MANUAL_REVIEW')",json(canonical),no)!=1)throw new BizException(409,"PURCHASE_PAYMENT_DELIVERY_CONFLICT");
+            outcome(db.one(SELECT,no),"DELIVERED");
             audit.recordRequiredForTrustedActor(AuditLogWriteRequest.builder().action("PURCHASE_PAYMENT_DELIVERED").resourceType("PURCHASE_PAYMENT_INTENT")
                     .resourceId(no).bizNo(no).userId(owner).actorType("SYSTEM").actorUsername("system:purchase-payment")
                     .result("SUCCESS").riskLevel("HIGH").detail(values("paymentMethod",intent.get("payment_method"),"quote",quote,"providerReference",intent.get("provider_reference"))).build());
@@ -392,7 +482,7 @@ public class PurchasePaymentService {
             if(joined)throw failure;
             String code=failure.getMessage();if(code==null||!code.matches("[A-Z0-9_:]{1,128}"))code="PURCHASE_PAYMENT_DELIVERY_BLOCKED";
             String reason=code;
-            tx(()->{db.write("UPDATE nx_purchase_payment_intent SET status='MANUAL_REVIEW',reason=?,version=version+1,updated_at=NOW(6) WHERE intent_no=? AND confirmed_at IS NOT NULL AND status<>'DELIVERED'",reason,no);return null;});
+            tx(()->{int changed=db.write("UPDATE nx_purchase_payment_intent SET status='MANUAL_REVIEW',reconciliation_status='REVIEW',reason=?,version=version+1,updated_at=NOW(6) WHERE intent_no=? AND confirmed_at IS NOT NULL AND status<>'DELIVERED'",reason,no);if(changed==1)outcome(db.one(SELECT,no),"MANUAL_REVIEW");return null;});
         }
     }
     private boolean verifyFunds(Map<String,Object> intent){
@@ -427,7 +517,13 @@ public class PurchasePaymentService {
     }
     @Scheduled(fixedDelayString="${nexion.finance.purchase-payment-observe-ms:30000}")
     public void scheduled(){
-        for(var row:db.rows("SELECT * FROM nx_purchase_payment_intent WHERE status<>'DELIVERED' OR payment_method IN ('CREGIS_USDT_BSC','CREGIS_USDT_ERC20') ORDER BY COALESCE(observed_at,created_at) LIMIT 50")){
+        // Live confirmations have their own batch; historical review must not consume the grace window.
+        observeBatch(db.rows("SELECT * FROM nx_purchase_payment_intent WHERE status IN ('CREATING','SUBMIT_UNKNOWN','AWAITING_PAYMENT','FUNDS_CONFIRMED') ORDER BY COALESCE(observed_at,created_at),intent_no LIMIT 50"));
+        // Closed and delivered originals still reconcile unknown funds, late arrivals and bank refunds.
+        observeBatch(db.rows("SELECT * FROM nx_purchase_payment_intent WHERE status NOT IN ('CREATING','SUBMIT_UNKNOWN','AWAITING_PAYMENT','FUNDS_CONFIRMED') ORDER BY COALESCE(observed_at,created_at),intent_no LIMIT 10"));
+    }
+    private void observeBatch(List<Map<String,Object>> rows){
+        for(var row:rows){
             try{refresh(row);}catch(RuntimeException unavailable){/* One unavailable rail cannot stop others. */}
             finally{db.write("UPDATE nx_purchase_payment_intent SET observed_at=NOW(6) WHERE intent_no=?",row.get("intent_no"));}
         }
@@ -457,11 +553,14 @@ public class PurchasePaymentService {
     }
     private Map<String,Object> view(Map<String,Object> row,boolean admin){
         var result=parse(row.get("quote_json"));result.putAll(values("intentNo",row.get("intent_no"),"commandKey",row.get("command_key"),"status",row.get("status"),
-                "reason",row.get("reason"),"version",row.get("version")));
-        if(row.get("payment_url")!=null&&"AWAITING_PAYMENT".equals(row.get("status")))result.put("paymentUrl",row.get("payment_url"));
-        if(row.get("address")!=null)result.put("address",row.get("address"));
+                "reason",row.get("reason"),"version",row.get("version"),"expiresAt",deadline(row).toString(),"deadlineAt",deadline(row).toString(),"confirmationGraceEndsAt",graceEnd(row.get("payment_method"),deadline(row)).toString()));
+        if(row.get("provider_expires_at")!=null)result.put("expirationTime",instant(row.get("provider_expires_at")).toString());
+        if(row.get("payment_url")!=null&&"AWAITING_PAYMENT".equals(row.get("status"))&&now().isBefore(paymentDeadline(row)))result.put("paymentUrl",row.get("payment_url"));
+        if(row.get("address")!=null&&(admin||now().isBefore(paymentDeadline(row))))result.put("address",row.get("address"));
+        result.put("paymentAllowed","AWAITING_PAYMENT".equals(row.get("status"))&&now().isBefore(paymentDeadline(row)));
         result.put("fulfilmentStatus",row.get("receipt_json")==null?"NOT_DELIVERED":"DELIVERED");
         if(row.get("receipt_json")!=null)result.put("receipt",parse(row.get("receipt_json")));
+        result.put("reconciliationStatus",row.get("reconciliation_status"));
         if(admin)result.putAll(values("userId",text(row.get("user_id")),"request",parse(row.get("payload_json")),"providerReference",row.get("provider_reference"),
                 "providerActualFeeUsdt",row.get("provider_actual_fee_usdt")==null?null:new BigDecimal(text(row.get("provider_actual_fee_usdt"))).toPlainString(),
                 "createdAt",row.get("created_at")==null?null:instant(row.get("created_at")).toString(),"updatedAt",row.get("updated_at")==null?null:instant(row.get("updated_at")).toString()));

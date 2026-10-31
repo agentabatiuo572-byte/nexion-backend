@@ -84,6 +84,9 @@ public class BusinessNotificationService {
         return text;
     }
     private static final Map<String,Text> TEXT=Map.ofEntries(
+        Map.entry("purchase_delivered",new Text("付款成功，设备已开通，请查看订单。","Payment received and your device is ready. View your order.","Đã nhận thanh toán và thiết bị đã sẵn sàng. Xem đơn hàng.")),
+        Map.entry("purchase_timeout",new Text("付款超时，订单已取消。如已付款，请勿重复付款。","Payment timed out and your order was cancelled. If you already paid, do not pay again.","Thanh toán hết hạn, đơn hàng đã hủy. Nếu đã thanh toán, vui lòng không thanh toán lại.")),
+        Map.entry("purchase_review",new Text("付款状态已更新，请查看订单处理进度。","Your payment status changed. View your order progress.","Trạng thái thanh toán đã thay đổi. Xem tiến độ đơn hàng.")),
         Map.entry("deposit",new Text("充值已到账，请查看钱包记录。","Your deposit has been credited. View your wallet history.","Tiền nạp đã được ghi có. Vui lòng xem lịch sử ví.")),
         Map.entry("withdrawal_completed",new Text("提现已完成，请查看该笔提现详情。","Your withdrawal is complete. View this withdrawal's details.","Rút tiền đã hoàn tất. Xem chi tiết giao dịch rút tiền này.")),
         Map.entry("withdrawal_returned",new Text("提现未完成，资金已退回，请查看该笔提现详情。","Your withdrawal was not completed and funds were returned. View this withdrawal's details.","Rút tiền chưa hoàn tất và tiền đã được hoàn lại. Xem chi tiết giao dịch này.")),

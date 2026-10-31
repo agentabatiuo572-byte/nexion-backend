@@ -224,6 +224,13 @@ public final class BscDepositProof {
         return hash(block.path("hash").asText());
     }
 
+    /** Canonical block timestamp is payment evidence; local query time is not. */
+    public java.time.Instant blockTime(CregisNetwork network,long number,String expectedHash) {
+        JsonNode block=call(network,"eth_getBlockByNumber","[\""+hex(number)+"\",false]");
+        if(!block.isObject()||hexLong(block.path("number").asText())!=number||!hash(block.path("hash").asText()).equalsIgnoreCase(expectedHash))throw invalid();
+        return java.time.Instant.ofEpochSecond(hexLong(block.path("timestamp").asText()));
+    }
+
     public boolean zeroUsdtBalance(CregisNetwork network,String address) {
         if (address == null || !address.matches("(?i)0x[0-9a-f]{40}")) throw invalid();
         validateNetwork(network);

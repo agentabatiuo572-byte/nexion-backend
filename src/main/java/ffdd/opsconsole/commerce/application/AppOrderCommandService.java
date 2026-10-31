@@ -252,7 +252,7 @@ public class AppOrderCommandService {
                 || !"WAITING_PAYMENT".equalsIgnoreCase(order.activationStatus())) {
             return ApiResult.fail(409, "ORDER_NOT_PAYABLE");
         }
-        if (mapper.countExpiredPayableOrder(orderNo, userId, pendingOrderTtlMinutes) > 0) {
+        if (!external && mapper.countExpiredPayableOrder(orderNo, userId, pendingOrderTtlMinutes) > 0) {
             return ApiResult.fail(409, "ORDER_PAYMENT_EXPIRED");
         }
         if (promotions != null) promotions.beforePay(userId, orderNo);
@@ -367,6 +367,10 @@ public class AppOrderCommandService {
         }
         if (mapper.markDevelopmentOrderActivated(orderNo, userId, paymentNo) != 1) {
             throw new BizException(409, "ORDER_STATE_CONFLICT");
+        }
+        if (external && mapper.recordVerifiedPaidAt(orderNo, java.time.LocalDateTime.ofInstant(
+                VerifiedPurchasePayment.paidInstant(), java.time.ZoneId.of("Asia/Shanghai"))) != 1) {
+            throw new BizException(409,"ORDER_PAYMENT_TIME_CONFLICT");
         }
         if (!external && mapper.insertDevelopmentPayment(orderNo, userId, paymentNo, order.amountUsdt()) != 1) {
             throw new BizException(409, "PAYMENT_RECORD_CONFLICT");
@@ -606,17 +610,30 @@ public class AppOrderCommandService {
     }
 
     /** Scheduler entrypoint. Each invocation owns a transaction and rechecks all payment/state fences. */
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public boolean expirePendingOrder(Long userId, String orderNo) {
+        return expirePendingOrder(userId,orderNo,pendingOrderTtlMinutes,false);
+    }
+
+    /** Called in the transaction that locks and expires the original direct intent. */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY, rollbackFor = Exception.class)
+    public boolean expireDirectPaymentOrder(Long userId,String orderNo) {
+        return expirePendingOrder(userId,orderNo,30,true);
+    }
+
+    private boolean expirePendingOrder(Long userId,String orderNo,int ttlMinutes,boolean direct) {
         if (userId == null || userId < 1 || !StringUtils.hasText(orderNo)) return false;
         String normalized = orderNo.trim();
         if (promotions != null) promotions.lockOrderParticipants(normalized);
+        mapper.lockUser(userId);
         AppOrderCommandMapper.OrderRow order = mapper.lockOrder(normalized);
         if (order == null || !userId.equals(order.userId())
                 || !"PENDING_PAYMENT".equalsIgnoreCase(order.orderStatus())
                 || !"PENDING".equalsIgnoreCase(order.paymentStatus())
+                || (!direct && mapper.countDirectPaymentIntents(normalized) > 0)
+                || mapper.countActiveDirectPaymentIntent(normalized) > 0
                 || mapper.countNonCancellableHdPaySessions(normalized) > 0
-                || mapper.countExpiredPayableOrder(normalized, userId, pendingOrderTtlMinutes) == 0) {
+                || mapper.countExpiredPayableOrder(normalized, userId, ttlMinutes) == 0) {
             return false;
         }
         releasePendingReservation(order, userId, normalized, true);

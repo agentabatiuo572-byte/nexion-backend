@@ -317,8 +317,9 @@ class AppOrderCommandServiceTest {
                 .doesNotContain("SUM(tm.volume)", "DATE_FORMAT(NOW()", "UTC_TIMESTAMP()");
     }
 
-    @Test
-    void expiryReturnsStockQuotaAndVoucherBeforeMarkingTheOrderExpired() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans={false,true})
+    void expiryReturnsStockQuotaAndVoucherBeforeMarkingTheOrderExpired(boolean direct) {
         var mapper = commandMapper();
         var guard = mock(FundsSandboxProfileGuard.class);
         var audit = mock(AuditLogService.class);
@@ -341,7 +342,9 @@ class AppOrderCommandServiceTest {
         var service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, mock(AdminIdempotencyService.class), audit,
                 guard, null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
 
-        assertThat(service.expirePendingOrder(7L, "ORD-EXPIRED-1")).isTrue();
+        if(direct)org.springframework.test.util.ReflectionTestUtils.setField(service,"pendingOrderTtlMinutes",90);
+        assertThat(direct?service.expireDirectPaymentOrder(7L,"ORD-EXPIRED-1"):service.expirePendingOrder(7L, "ORD-EXPIRED-1")).isTrue();
+        verify(mapper).countExpiredPayableOrder("ORD-EXPIRED-1",7L,30);
         verify(mapper).returnStock(1L, 1);
         verify(mapper).releaseLifetimeQuota("S1", 1, 7L);
         verify(mapper).restoreVoucher("VGR-19", 7L, "ORD-EXPIRED-1");
@@ -1511,6 +1514,7 @@ class AppOrderCommandServiceTest {
         when(mapper.consumePaymentStock(18L,1)).thenReturn(stockAvailable?1:0);
         when(mapper.markPaymentInventoryConsumed("EXT-ORDER")).thenReturn(1);
         when(mapper.markDevelopmentOrderActivated("EXT-ORDER",7L,"PPI-TEST")).thenReturn(1);
+        when(mapper.recordVerifiedPaidAt(eq("EXT-ORDER"),any())).thenReturn(1);
         when(mapper.insertDevelopmentDevice(eq("EXT-ORDER"),eq(7L),anyString(),eq(0))).thenReturn(1);
         when(mapper.insertDevelopmentOrderHistory(anyString(),anyString(),anyString(),anyString())).thenReturn(1);
         // No wallet row exists. Provider-verified funds still have to obey stock and capacity checks.
