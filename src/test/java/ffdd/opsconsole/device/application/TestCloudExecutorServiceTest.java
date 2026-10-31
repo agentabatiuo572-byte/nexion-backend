@@ -29,7 +29,8 @@ class TestCloudExecutorServiceTest {
     final AppTaskAssignmentService settlement=mock(AppTaskAssignmentService.class);
     final AuditLogService audit=mock(AuditLogService.class);
     final MockEnvironment env=environment();
-    final TestCloudExecutorService service=spy(new TestCloudExecutorService(assignments,mapper,settlement,audit,Clock.fixed(INSTANT,ZoneOffset.UTC),env));
+    final TestCloudRequests requests=mock(TestCloudRequests.class);
+    final TestCloudExecutorService service=spy(new TestCloudExecutorService(assignments,mapper,settlement,audit,Clock.fixed(INSTANT,ZoneOffset.UTC),env,requests));
     Identity identity;
     static MockEnvironment environment() {
         var env=new MockEnvironment(); env.setActiveProfiles("dev"); env.setProperty("server.forward-headers-strategy","none");
@@ -45,6 +46,11 @@ class TestCloudExecutorServiceTest {
     static String inputJson() { return "[\"UVEL TEST: Cloud Share inference acceptance.\",\"This text is a TEST workload, not a customer order.\",\"多语言向量嵌入验收：仅用于TEST环境。\"]"; }
     static Execution execution(String hash,String keyHash,String bodyHash) { return new Execution(TASK,"cloud-unit",7,11,"NEX-UNIT-CLOUD","EM-UNIT","c".repeat(64),CLAIM,inputJson(),TestCloudExecutorService.sha256(inputJson()),"bge-m3:567m",DIGEST,NONCE,hash,null,keyHash,bodyHash,NOW); }
     @BeforeEach void setup() {
+        doAnswer(call->((java.util.function.Supplier<?>)call.getArgument(0)).get()).when(requests).outside(any());
+        doAnswer(call->((java.util.function.Function<ffdd.opsconsole.device.mapper.TestCloudRequestMapper.Request,?>)call.getArgument(8)).apply(null))
+                .when(requests).execute(any(),anyString(),anyString(),anyString(),nullable(String.class),nullable(Long.class),nullable(String.class),nullable(Long.class),any());
+        doAnswer(call->((java.util.function.Supplier<?>)call.getArgument(0)).get()).when(requests).db(any());
+        doAnswer(call->((java.util.function.Supplier<?>)call.getArgument(1)).get()).when(requests).commit(any(),any());
         identity=service.authenticate("Bearer "+TOKEN);
         when(assignments.lockProductionUser(7L)).thenReturn(7L); when(assignments.lockOwnedDevice(7L,11L)).thenReturn(device());
         when(assignments.lockPaidCloudShareDailyNex(7L,11L)).thenReturn(new BigDecimal("3"));
@@ -106,6 +112,28 @@ class TestCloudExecutorServiceTest {
         when(assignments.assignment(7L,TASK,"PRODUCTION")).thenReturn(fleetTask(TASK,KIND,CLIENT));
         when(mapper.execution(TASK)).thenReturn(fleetExecution());
         return service.authenticate("Bearer "+TOKEN,"fleet-12");
+    }
+    @Test void fleetEligibilityUsesCurrentHardwareAuthorityAndRejectsCrossIdentityOrLateRegistrationChanges() {
+        Identity target=fleetIdentity();
+        when(assignments.lockOwnedDevice(7L,12L)).thenReturn(new DeviceRow(12L,"NEX-FLEET-12","DEVICE","S1","S1",
+                "ACTIVE","stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null,false));
+        when(mapper.lockActiveTaskNos(7,12)).thenReturn(List.of(TASK));
+        when(mapper.liveFleetBinding(NOW.minusDays(1),null,7,12,"NEX-FLEET-12",false,false)).thenReturn(1);
+        assertThat(service.eligibility(target).getData()).containsEntry("eligible",true).containsEntry("activeTaskNo",TASK);
+        // Pending deactivation/paid authority failure blocks a new claim even while its old task remains canonical.
+        when(mapper.liveFleetBinding(NOW.minusDays(1),null,7,12,"NEX-FLEET-12",false,false)).thenReturn(null);
+        assertThat(service.eligibility(target).getData()).containsEntry("eligible",false).containsEntry("activeTaskNo",TASK);
+        for(Identity foreign:List.of(
+                new Identity(target.executorId(),8,12,target.instanceNo(),target.taskConfigId(),target.model(),target.modelDigest()),
+                new Identity(target.executorId(),7,13,target.instanceNo(),target.taskConfigId(),target.model(),target.modelDigest()),
+                new Identity(target.executorId(),7,12,"FOREIGN-INSTANCE",target.taskConfigId(),target.model(),target.modelDigest()))) {
+            assertThatThrownBy(()->service.eligibility(foreign)).hasMessage("TEST_CLOUD_AUTH_INVALID");
+        }
+        when(mapper.lockBinding("fleet-12")).thenReturn(new TestCloudExecutorMapper.Binding("fleet-12",8,12,"NEX-FLEET-12","EM-UNIT",target.model(),target.modelDigest()));
+        assertThatThrownBy(()->service.eligibility(target)).hasMessage("TEST_CLOUD_AUTH_INVALID");
+        verify(mapper,never()).register(any(),any()); verify(mapper,never()).heartbeat(anyLong(),any(),any(),any());
+        verify(mapper,never()).insert(any(Execution.class)); verify(assignments,never()).lockPaidCloudShareDailyNex(7L,12L);
+        verifyNoInteractions(settlement,audit);
     }
     @Test void fleetDiscoveryIsBoundedReadOnlyAndDoesNotTrustClientOwnership() {
         fleetIdentity();
@@ -318,12 +346,13 @@ class TestCloudExecutorServiceTest {
                 && LEGACY_REASON.equals(detail.get("reason")) && EVIDENCE.equals(detail.get("evidenceSha256"))));
         verify(settlement,never()).completeForTestCloud(anyString(),any(),any()); verify(service,never()).infer(any());
     }
-    @Test void anExistingManifestIsResumedWithoutLegacyCancellationOrAnotherClaim() {
+    @Test void anExistingDurableManifestIsResumedWithoutLegacyCancellationOrAnotherClaim() {
         Identity target=legacyFleet(true); admitLegacyFleetTask();
         when(mapper.countActive(7,12)).thenReturn(1);
         var active=fleetTask(TASK,KIND,CLIENT);
         when(assignments.lockActiveAssignment(7L,12L,"PRODUCTION")).thenReturn(active);
         when(mapper.lock(TASK)).thenReturn(fleetExecution());
+        when(requests.durableNext(target,TASK)).thenReturn(true);
         assertThat(service.next(target,"fleet-next-existing").getData().get("taskNo")).isEqualTo(TASK);
         verify(mapper,never()).legacyAdmission(7,12,"NEX-FLEET-12",TASK,"EM-UNIT");
         verify(mapper,never()).cancelUnexecuted(anyLong(),anyLong(),anyString(),anyString(),any()); verifyNoInteractions(settlement);
@@ -546,7 +575,7 @@ class TestCloudExecutorServiceTest {
             public Clock withZone(ZoneId zone) { return this; }
             public Instant instant() { return current.get(); }
         };
-        var advancingService=spy(new TestCloudExecutorService(assignments,mapper,settlement,audit,advancing,env));
+        var advancingService=spy(new TestCloudExecutorService(assignments,mapper,settlement,audit,advancing,env,requests));
         doAnswer(call->{ current.set(INSTANT.plusSeconds(121)); return TestCloudBgeArtifactTest.expected(0.25); })
                 .when(advancingService).infer(identity);
         assertThatThrownBy(()->advancingService.complete(identity,TASK,"cloud-complete-unit",request(0.25f)))
@@ -555,7 +584,7 @@ class TestCloudExecutorServiceTest {
     }
     @Test void fractionalSecondHeartbeatIsTruncatedBeforeDatetimeStorageAndCanCompleteNormally() throws Exception {
         Instant fractional=INSTANT.plusMillis(600);
-        var fractionalService=spy(new TestCloudExecutorService(assignments,mapper,settlement,audit,Clock.fixed(fractional,ZoneOffset.UTC),env));
+        var fractionalService=spy(new TestCloudExecutorService(assignments,mapper,settlement,audit,Clock.fixed(fractional,ZoneOffset.UTC),env,requests));
         when(mapper.heartbeat(11,null,"test-cloud:cloud-unit",NOW)).thenReturn(1);
         fractionalService.heartbeat(identity,null,null);
         verify(mapper).ensureRuntime(11,"test-cloud:cloud-unit",NOW);
@@ -569,7 +598,7 @@ class TestCloudExecutorServiceTest {
         verify(settlement).completeForTestCloud(eq(TASK),any(),any());
     }
     @Test void aRoundedFutureHeartbeatIsStillRejectedWithoutRelaxingTheFutureTimeGate() throws Exception {
-        var fractionalService=spy(new TestCloudExecutorService(assignments,mapper,settlement,audit,Clock.fixed(INSTANT.plusMillis(600),ZoneOffset.UTC),env));
+        var fractionalService=spy(new TestCloudExecutorService(assignments,mapper,settlement,audit,Clock.fixed(INSTANT.plusMillis(600),ZoneOffset.UTC),env,requests));
         when(assignments.lockTestWorkerRuntime(7L,11L,"NEX-UNIT-CLOUD"))
                 .thenReturn(new TestWorkerRuntimeRow("ONLINE",TASK,CLIENT,"test-cloud:cloud-unit",NOW.plusSeconds(1),null));
         when(assignments.testWorkerRuntime(7L,11L,"NEX-UNIT-CLOUD"))

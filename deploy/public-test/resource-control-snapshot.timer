@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh UVEL TEST admission capacity before the 15 second expiry
+
+[Timer]
+OnBootSec=1
+OnUnitActiveSec=5
+AccuracySec=1
+Unit=resource-control-snapshot.service
+
+[Install]
+WantedBy=timers.target

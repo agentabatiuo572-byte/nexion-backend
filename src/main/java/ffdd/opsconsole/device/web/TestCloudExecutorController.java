@@ -35,7 +35,8 @@ public class TestCloudExecutorController {
 
     @PostMapping("/next-task")
     public Object next(Authentication auth,@RequestHeader(value="Idempotency-Key",required=false) String key,HttpServletRequest request) {
-        Identity identity=identity(auth); requireKeys(body(request),Set.of()); return service.next(identity,key);
+        Identity identity=identity(auth); requireKeys(body(request),Set.of());
+        return service.next(identity,key,requestHash(request),request.getHeader("X-UVEL-Recovery-Token"),generation(request));
     }
     @PostMapping("/heartbeat")
     public Object heartbeat(Authentication auth,HttpServletRequest request) {
@@ -54,7 +55,20 @@ public class TestCloudExecutorController {
         if(!body.path("proofTimestamp").isIntegralNumber() || !body.path("proofTimestamp").canConvertToLong()) throw invalid();
         return service.complete(identity,taskNo,key,new CompleteRequest(text(body,"specVersion"),text(body,"inputHash"),
                 text(body,"modelDigest"),text(body,"resultArtifactBase64"),text(body,"resultHash"),text(body,"proofNonce"),
-                body.get("proofTimestamp").longValue(),text(body,"claimToken")));
+                body.get("proofTimestamp").longValue(),text(body,"claimToken")),requestHash(request),
+                request.getHeader("X-UVEL-Recovery-Token"),generation(request),positiveHeader(request,"X-UVEL-Legacy-Review-Id"));
+    }
+    @GetMapping("/requests/status")
+    public Object status(Authentication auth,@RequestHeader(value="Idempotency-Key",required=false) String key,
+            @RequestParam String operation,@RequestParam String requestHash,@RequestParam(required=false) String taskNo) {
+        return service.requestStatus(identity(auth),operation,key,requestHash,taskNo);
+    }
+    @PostMapping("/requests/terminate")
+    public Object terminate(Authentication auth,@RequestHeader(value="Idempotency-Key",required=false) String key,HttpServletRequest request) {
+        Identity identity=identity(auth); JsonNode body=body(request); requireKeys(body,Set.of("operation","requestHash","taskNo"));
+        if(!"COMPLETE".equals(text(body,"operation")) || generation(request)==null) throw invalid();
+        return service.terminateRequest(identity,key,text(body,"requestHash"),text(body,"taskNo"),
+                request.getHeader("X-UVEL-Recovery-Token"),generation(request));
     }
     @GetMapping("/tasks/{taskNo}/receipt")
     public Object receipt(Authentication auth,@PathVariable String taskNo) { return service.receipt(identity(auth),taskNo); }
@@ -73,6 +87,13 @@ public class TestCloudExecutorController {
         return service.rollbackReview(identity(auth),taskNo,completeKey,originalNextKey,
                 new RollbackReviewRequest(originalRequestHash,resultHash));
     }
+    @GetMapping("/tasks/{taskNo}/stability-review")
+    public Object stabilityReview(Authentication auth,@PathVariable String taskNo,
+            @RequestHeader(value="Idempotency-Key",required=false) String completeKey,
+            @RequestHeader(value="X-UVEL-Original-Next-Key",required=false) String originalNextKey,
+            @RequestParam String originalRequestHash,@RequestParam String resultHash) {
+        return service.stabilityReview(identity(auth),taskNo,completeKey,originalNextKey,new RollbackReviewRequest(originalRequestHash,resultHash));
+    }
 
     private Identity identity(Authentication auth) {
         if(auth==null || !(auth.getPrincipal() instanceof Identity identity)) throw new BizException(401,"TEST_CLOUD_AUTH_INVALID");
@@ -82,6 +103,7 @@ public class TestCloudExecutorController {
         try {
             byte[] bytes=request.getInputStream().readNBytes(20001);
             if(bytes.length>20000) throw new BizException(413,"TEST_CLOUD_BODY_TOO_LARGE");
+            request.setAttribute("testCloudRequestHash",TestCloudExecutorService.sha256(bytes));
             JsonNode body=json.readerFor(JsonNode.class).with(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
                     .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readValue(bytes);
             if(body==null || !body.isObject()) throw invalid(); return body;
@@ -92,5 +114,15 @@ public class TestCloudExecutorController {
         if(!actual.equals(expected)) throw invalid();
     }
     private String text(JsonNode body,String field) { if(!body.path(field).isTextual()) throw invalid(); return body.get(field).textValue(); }
+    private String requestHash(HttpServletRequest request) { return (String)request.getAttribute("testCloudRequestHash"); }
+    private Long generation(HttpServletRequest request) {
+        return positiveHeader(request,"X-UVEL-Request-Generation");
+    }
+    private Long positiveHeader(HttpServletRequest request,String header) {
+        String value=request.getHeader(header);
+        if(value==null) return null;
+        try { long generation=Long.parseLong(value); if(generation<1) throw invalid(); return generation; }
+        catch(NumberFormatException invalid) { throw invalid(); }
+    }
     private BizException invalid() { return new BizException(400,"TEST_CLOUD_BODY_INVALID"); }
 }

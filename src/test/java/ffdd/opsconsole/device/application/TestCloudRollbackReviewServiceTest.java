@@ -66,7 +66,7 @@ class TestCloudRollbackReviewServiceTest {
         env.setProperty(TestCloudExecutorService.PREFIX+"fleet-enabled","true");
         env.setProperty(TestCloudExecutorService.PREFIX+"fleet-started-at",NOW.minusDays(1).toString());
         service=new TestCloudExecutorService(assignments,mapper,settlement,audit,
-                Clock.fixed(NOW.toInstant(ZoneOffset.ofHours(8)),ZoneOffset.ofHours(8)),env);
+                Clock.fixed(NOW.toInstant(ZoneOffset.ofHours(8)),ZoneOffset.ofHours(8)),env,mock(TestCloudRequests.class));
         identity=new TestCloudExecutorService.Identity("fleet-"+device,OWNER,device,instance,config,"bge-m3:567m",TestCloudExecutorServiceTest.DIGEST);
         when(mapper.binding(identity.executorId())).thenReturn(new Binding(identity.executorId(),OWNER,device,instance,config,identity.model(),identity.modelDigest()));
         when(assignments.lockProductionUser(OWNER)).thenReturn(OWNER);

@@ -71,6 +71,7 @@ public class AppCanonicalBoundaryService {
     private final StorefrontPurchaseGatePolicy purchaseGatePolicy;
     private final Environment environment;
     private final PromotionOrderService promotions;
+    @Autowired private ffdd.opsconsole.device.application.TestCloudActivationAdmission testCloudAdmission;
 
     public AppCanonicalBoundaryService(CanonicalStateMapper mapper, TamperDetectionPublisher tamperPublisher,
             AdminIdempotencyService idempotencyService, EventOutboxService outboxService,
@@ -180,6 +181,7 @@ public class AppCanonicalBoundaryService {
             Long userId, Long deviceId, Long expectedVersion, Integer clientMaxDevices, String idempotencyKey) {
         if (deviceId == null || deviceId <= 0) return ApiResult.fail(422, "DEVICE_ID_REQUIRED");
         if (expectedVersion == null || expectedVersion < 0) return ApiResult.fail(422, "DEVICE_VERSION_REQUIRED");
+        if (testCloudAdmission != null) testCloudAdmission.lock();
         CanonicalStateMapper.UserDeviceCommandRow device = mapper.lockDeviceForUserCommand(deviceId);
         if (device == null) return ApiResult.fail(404, "DEVICE_NOT_FOUND");
         if (!userId.equals(device.userId()) || !"OWNED".equals(normalizeState(device.ownershipStatus(), ""))) {
@@ -217,6 +219,7 @@ public class AppCanonicalBoundaryService {
         if (attribution == null || attribution.accountAgeMonths() == null || !StringUtils.hasText(attribution.cohort())) {
             throw new BizException(409, "USER_EVENT_ATTRIBUTION_UNAVAILABLE");
         }
+        if (testCloudAdmission != null) testCloudAdmission.requireCapacity();
         if (mapper.activateOwnedDeviceCas(userId, deviceId, expectedVersion, cap) != 1) {
             throw new BizException(409, "DEVICE_VERSION_CONFLICT");
         }

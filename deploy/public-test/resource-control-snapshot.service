@@ -1,0 +1,16 @@
+[Unit]
+Description=UVEL TEST reserved resource admission snapshot
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I -B /opt/uvel-task-control/resource-control.py snapshot
+User=root
+UMask=0077
+MemoryMax=128M
+TasksMax=32
+TimeoutStartSec=20
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes

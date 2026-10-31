@@ -340,11 +340,17 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
         jdbc.update("INSERT INTO nx_test_cloud_legacy_admission(device_id,owner_id,instance_no,source_order_no,source_channel,old_task_no,task_config_id,enabled,reason,evidence_sha256,reviewed_at) VALUES(11,7,'NEX-TEST-INSTANCE','ORDER-LOCAL','ORDER','CTA-TEST-ONE','TASK-EM',1,'isolated legacy review',?,?)","a".repeat(64),NOW);
         var config=new MybatisConfiguration(new Environment("legacy-isolated",new SpringManagedTransactionFactory(),source));
         config.setMapUnderscoreToCamelCase(true); config.setLocalCacheScope(LocalCacheScope.STATEMENT); config.addMapper(TestCloudExecutorMapper.class);
-        var fleet=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(config)).getMapper(TestCloudExecutorMapper.class);
+        config.addMapper(ffdd.opsconsole.device.mapper.TestCloudRequestMapper.class);
+        new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(new org.springframework.core.io.FileSystemResource(
+                "scripts/migrations/20261031_test_cloud_request_journal.sql")).execute(source);
+        var cloudSession=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(config));
+        var fleet=cloudSession.getMapper(TestCloudExecutorMapper.class);
         var policy=mock(A2RuntimePolicy.class);when(policy.schemaVersion()).thenReturn("v1");
         var audit=new AuditLogService(controlled(AuditLogMapper.class,session.getMapper(AuditLogMapper.class)),new AuditLogSanitizer(json),
                 new ApplicationNameProperties(),new AuditProperties(),mock(AdminMapper.class),policy);
-        var service=transactional(new TestCloudExecutorService(mapper,fleet,app,audit,businessClock,env));
+        var requests=new TestCloudRequests(cloudSession.getMapper(ffdd.opsconsole.device.mapper.TestCloudRequestMapper.class),
+                new TestCloudDatabaseGate(4),businessClock,new DataSourceTransactionManager(source));
+        var service=transactional(new TestCloudExecutorService(mapper,fleet,app,audit,businessClock,env,requests));
         return new LegacyCloud(service,new TestCloudExecutorService.Identity("fleet-11",7,11,"NEX-TEST-INSTANCE","TASK-EM","bge-m3:567m",TestCloudExecutorServiceTest.DIGEST),fleet);
     }
 

@@ -227,6 +227,20 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
     Execution execution(@Param("taskNo") String taskNo);
     @Select("SELECT " + COLUMNS + " FROM nx_test_cloud_execution WHERE executor_id=#{executor} AND next_key_hash=#{keyHash} FOR UPDATE")
     Execution byNextKey(@Param("executor") String executor, @Param("keyHash") String keyHash);
+    @Select("SELECT " + COLUMNS + " FROM nx_test_cloud_execution WHERE executor_id=#{executor} AND next_key_hash=#{keyHash}")
+    Execution readByNextKey(@Param("executor") String executor, @Param("keyHash") String keyHash);
+    @Select("SELECT "+COLUMNS+" FROM nx_test_cloud_execution WHERE executor_id=#{executor} AND owner_id=#{ownerId} AND device_id=#{deviceId} "
+            +"AND task_no IN (SELECT task_no FROM nx_compute_task WHERE user_id=#{ownerId} AND user_device_id=#{deviceId} "
+            +"AND source_environment='PRODUCTION' AND is_deleted=0 AND status IN ('CLAIMED','RUNNING'))")
+    Execution readActiveExecution(@Param("executor") String executor,@Param("ownerId") long ownerId,@Param("deviceId") long deviceId);
+
+    @Update("""
+        UPDATE nx_compute_task SET status='CANCELLED',last_error='TEST_CLOUD_ROLLED_BACK_PROOF_EXPIRED',updated_at=#{now}
+         WHERE task_no=#{taskNo} AND user_id=#{ownerId} AND user_device_id=#{deviceId}
+           AND source_environment='PRODUCTION' AND is_deleted=0 AND status IN ('CLAIMED','RUNNING')
+           AND completed_at IS NULL AND proof_consumed_at IS NULL
+        """)
+    int cancelRolledBack(@Param("taskNo") String taskNo,@Param("ownerId") long ownerId,@Param("deviceId") long deviceId,@Param("now") LocalDateTime now);
 
     @Select("""
         SELECT (EXISTS(SELECT 1 FROM nx_compute_receipt r WHERE r.task_no=#{taskNo})
