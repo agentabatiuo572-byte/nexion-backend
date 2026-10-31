@@ -16,6 +16,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -224,8 +225,47 @@ class HttpHdPayGatewayTest {
                 .satisfies(ex -> assertThat(((HdPayGatewayException) ex).ambiguous()).isFalse());
     }
 
-    @SuppressWarnings("unchecked")
+    @Test
+    void queryTimeEvidenceRequiresAnExplicitOffsetOnTheDocumentedFields() throws Exception {
+        record Times(String fields, Instant expiration, Instant paid) {}
+        Instant expiration = Instant.parse("2024-05-28T13:01:43Z");
+        Instant paid = Instant.parse("2024-05-28T12:59:43Z");
+        for (Times test : List.of(
+                new Times(",\"expirationTime\":\"2024-05-28T20:01:43+07:00\",\"payTime\":\"2024-05-28T12:59:43Z\"", expiration, paid),
+                new Times(",\"expirationTime\":\"2024-05-28T09:01:43-04:00\",\"payTime\":\"2024-05-28T20:59:43+08:00\"", expiration, paid),
+                new Times(",\"expirationTime\":\"2024-05-28 20:01:43\",\"payTime\":\"2024-08-21 14:43:17\"", null, null),
+                new Times(",\"expirationTime\":\"2024-05-28T20:01:43\",\"payTime\":\"2024-05-28T19:59:43\"", null, null),
+                new Times(",\"expirationTime\":null,\"payTime\":null", null, null),
+                new Times(",\"expirationTime\":1716901303,\"payTime\":{}", null, null),
+                new Times(",\"expirationTime\":\"2024-02-30T20:01:43Z\",\"payTime\":\"invalid\"", null, null),
+                new Times(",\"createTime\":\"2024-05-28T12:59:43Z\",\"paidAt\":\"2024-05-28T12:59:43Z\"", null, null),
+                new Times("", null, null))) {
+            HdPayGateway.PayOrder result = queryGatewayWithPublicResponse("200", test.fields()).queryPayOrder("FIXTURE-Q-01");
+            assertThat(result.expirationTime()).as(test.fields()).isEqualTo(test.expiration());
+            assertThat(result.paidAt()).as(test.fields()).isEqualTo(test.paid());
+            assertThat(result.orderStatus()).isEqualTo(3);
+        }
+    }
+
+    @Test
+    void queryKeepsPaymentAndExpirationEvidenceOnTheirOwnSideOfTheCutoff() throws Exception {
+        Instant cutoff = Instant.parse("2024-05-28T13:00:00Z");
+        for (int second : List.of(-1, 0, 1)) {
+            String time = cutoff.plusSeconds(second).atOffset(java.time.ZoneOffset.ofHours(7)).toString();
+            HdPayGateway.PayOrder result = queryGatewayWithPublicResponse("200",
+                    ",\"expirationTime\":\"" + time + "\",\"payTime\":\"" + time + "\"").queryPayOrder("FIXTURE-Q-01");
+            assertThat(result.expirationTime()).isEqualTo(cutoff.plusSeconds(second));
+            assertThat(result.paidAt()).isEqualTo(cutoff.plusSeconds(second));
+            assertThat(result.paidAt().isBefore(cutoff)).isEqualTo(second < 0);
+        }
+    }
+
     private HttpHdPayGateway queryGatewayWithPublicResponse(String code) throws Exception {
+        return queryGatewayWithPublicResponse(code, "");
+    }
+
+    @SuppressWarnings("unchecked")
+    private HttpHdPayGateway queryGatewayWithPublicResponse(String code, String timeFields) throws Exception {
         HdPayProperties properties = new HdPayProperties();
         properties.setMode(HdPayProperties.Mode.PROVIDER);
         properties.setBaseUrl("https://provider.fixture.example/api/order");
@@ -239,7 +279,7 @@ class HttpHdPayGatewayTest {
         org.mockito.Mockito.when(response.body()).thenReturn(("{\"code\":" + code
                 + ",\"data\":{\"merchantId\":\"100001\",\"merchantOrderId\":\"FIXTURE-Q-01\","
                 + "\"orderId\":\"FIXTURE-P-01\",\"orderStatus\":3,\"transAmt\":131923610,"
-                + "\"payType\":\"BANKQR\",\"appLink\":\"\"}}").getBytes(StandardCharsets.UTF_8));
+                + "\"payType\":\"BANKQR\",\"appLink\":\"\"" + timeFields + "}}").getBytes(StandardCharsets.UTF_8));
         org.mockito.Mockito.when(client.send(org.mockito.ArgumentMatchers.any(HttpRequest.class),
                 org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<byte[]>>any())).thenReturn(response);
         return new HttpHdPayGateway(properties, objectMapper, client);
