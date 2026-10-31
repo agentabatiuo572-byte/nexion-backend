@@ -66,35 +66,47 @@ class TopupCardLifecycleServiceTest {
     }
 
     @Test
-    void admissionUsesServerCanonicalFeeMinimumProviderAndThreeDsPolicy() {
-        var result = service.admit(admission(new BigDecimal("100"), "AUTHENTICATED"));
-
-        assertThat(result.decision()).isEqualTo("ALLOWED");
-        assertThat(result.feeRatePct()).isEqualByComparingTo("3.500000");
-        assertThat(result.feeAmountUsdt()).isEqualByComparingTo("3.500000");
-        verify(audit).recordRequired(any(AuditLogWriteRequest.class));
-        verify(outbox).publish(eq("WALLET"), eq("ord-100"), eq("wallet.topup_initiated"), any());
-
-        assertThatThrownBy(() -> service.admit(admission(new BigDecimal("29.99"), "AUTHENTICATED")))
-                .isInstanceOf(IllegalArgumentException.class).hasMessage("CARD_ADMISSION_BELOW_MIN_AMOUNT");
-        assertThatThrownBy(() -> service.admit(admission(new BigDecimal("5000.01"), "AUTHENTICATED")))
-                .isInstanceOf(IllegalArgumentException.class).hasMessage("CARD_ADMISSION_ABOVE_MAX_AMOUNT");
-        assertThatThrownBy(() -> service.admit(admission(new BigDecimal("50"), "EXEMPTED")))
-                .isInstanceOf(IllegalStateException.class).hasMessage("CARD_3DS_AUTHENTICATION_REQUIRED");
+    void retiredCardRejectsNewAdmissionsEvenWhenTheOldSwitchIsEnabled() {
+        assertThatThrownBy(() -> service.admit(admission(new BigDecimal("100"), "AUTHENTICATED")))
+                .isInstanceOf(IllegalStateException.class).hasMessage("CARD_TOPUP_CHANNEL_RETIRED");
+        verify(mapper, never()).insertAdmissionReceipt(any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any());
+        org.mockito.Mockito.verifyNoInteractions(audit, outbox, treasury, capture);
     }
 
     @Test
-    void admissionAndSettlementBothFailClosedOnActiveRiskLock() {
+    void historicalAdmissionReplaysItsFeeSnapshotAfterRetirement() {
+        String hash = TopupEventHashing.sha256(String.join("|", "adm-100", "ord-100", "42", "Checkout.com",
+                "100.000000", "3.500000", "3.500000", "AUTHENTICATED", "424242", "203.0.113.10", "device-100"));
+        when(mapper.selectAdmissionForUpdate("adm-100", "ord-100")).thenReturn(new TopupAdmissionReceipt(
+                "adm-100", hash, "ord-100", 42L, "Checkout.com", new BigDecimal("100.000000"),
+                new BigDecimal("3.500000"), new BigDecimal("3.500000"), "AUTHENTICATED", "424242",
+                "203.0.113.10", "device-100", "ALLOWED", "RISK_CHECK_PASSED", utcNow(), null, null));
+        assertThat(service.admit(admission(new BigDecimal("100"), "AUTHENTICATED")).replay()).isTrue();
+        assertThatThrownBy(() -> service.admit(admission(new BigDecimal("101"), "AUTHENTICATED")))
+                .hasMessage("ADMISSION_EVENT_CONFLICT");
+        org.mockito.Mockito.verifyNoInteractions(config, audit, outbox, treasury, capture);
+    }
+
+    @Test
+    void historicalSettlementStillFailsClosedOnActiveRiskLock() {
         when(mapper.selectRiskLockForUpdate("BIN", "424242")).thenReturn(activeBinLock());
-
-        var denied = service.admit(admission(new BigDecimal("30"), "EXEMPTED"));
-
-        assertThat(denied.decision()).isEqualTo("DENIED");
-        assertThat(denied.reason()).contains("BIN");
         when(mapper.selectAdmissionForUpdate("adm-100", "ord-100")).thenReturn(authorizedAdmission());
         assertThatThrownBy(() -> service.settle(settlement()))
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("RISK_LOCK_ACTIVE");
         verify(mapper, never()).updateWallet(any(), any(), any(), any());
+    }
+
+    @Test
+    void historicalAdmissionStillValidatesUntrustedFieldShapes() {
+        when(mapper.selectAdmissionForUpdate("adm-100", "ord-100")).thenReturn(authorizedAdmission());
+        assertThatThrownBy(() -> service.admit(new TopupCardAdmissionRequest(
+                "adm-100", "ord-100", 42L, "Checkout.com", new BigDecimal("100"), "AUTHENTICATED",
+                "not-a-bin", "203.0.113.10", "device-100"))).hasMessage("CARD_BIN_INVALID");
+        assertThatThrownBy(() -> service.admit(new TopupCardAdmissionRequest(
+                "adm-100", "ord-100", 42L, "Checkout.com", new BigDecimal("100"), "AUTHENTICATED",
+                "424242", "999.1.1.1", "device-100"))).hasMessage("CARD_CLIENT_IP_INVALID");
+        org.mockito.Mockito.verifyNoInteractions(config, audit, outbox, treasury, capture);
     }
 
     @org.junit.jupiter.params.ParameterizedTest

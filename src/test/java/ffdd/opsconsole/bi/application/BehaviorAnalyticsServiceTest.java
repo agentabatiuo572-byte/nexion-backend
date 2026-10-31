@@ -541,6 +541,20 @@ class BehaviorAnalyticsServiceTest {
     }
 
     @Test
+    void retiredPageRejectsNewEventsButRetainsHistoricalHeat() {
+        String route = "/pages/me/wallet";
+        when(mapper.findHistoricalPage(route)).thenReturn(new BehaviorAnalyticsMapper.CatalogRow(
+                route, "旧钱包", 1, route, route, false));
+        assertThat(service.clickHeat(route, "7d", "ALL", "ALL", "ALL").getData())
+                .containsEntry("route", route).containsEntry("titleZh", "旧钱包");
+        assertThatThrownBy(() -> service.ingest(42L, new BehaviorEventRequest(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "app.page_viewed",
+                "0123456789abcdef0123456789abcdef", route,
+                0L, null, null, null, null, Instant.now().toEpochMilli(), "APP", "en-US")))
+                .isInstanceOf(BizException.class).hasMessageContaining("L6_ROUTE_NOT_TRACKED");
+    }
+
+    @Test
     void invalidQueryValuesFailClosedInsteadOfFallingBack() {
         assertThatThrownBy(() -> service.behavior("forever", "ALL", "ALL", "ALL", "pv"))
                 .isInstanceOf(BizException.class).hasMessageContaining("L6_WINDOW_INVALID");

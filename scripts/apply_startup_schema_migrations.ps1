@@ -378,6 +378,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261031_payment_password_permissions.sql")
   (Join-Path $root "scripts\migrations\20261031_purchase_direct_payments.sql")
   (Join-Path $root "scripts\migrations\20261031_test_cloud_request_journal.sql")
+  (Join-Path $root "scripts\migrations\20260916_l6_withdrawal_method_route.sql")
+  (Join-Path $root "scripts\migrations\20261101_l6_active_route_reconciliation.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

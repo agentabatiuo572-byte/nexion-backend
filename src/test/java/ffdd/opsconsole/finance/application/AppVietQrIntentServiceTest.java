@@ -228,16 +228,16 @@ class AppVietQrIntentServiceTest {
     }
 
     @Test
-    void enabledD1ChannelStillRequiresAnActiveBankAccountBeforeCreatingAnIntent() {
+    void retiredManualCreationIsRejectedEvenWithoutActiveBankAccounts() {
         when(mapper.findIntentByCreateKey(41L, "create-no-active-bank")).thenReturn(null);
         when(mapper.countActiveIntentsForUser(41L)).thenReturn(0L);
         when(mapper.listActiveBankAccountsForUpdate()).thenReturn(List.of());
 
         assertThatThrownBy(() -> service.create(41L, "create-no-active-bank", new BigDecimal("25")))
                 .isInstanceOf(BizException.class)
-                .hasMessage("VIETQR_BANK_RAIL_UNAVAILABLE")
+                .hasMessage("VIETQR_MANUAL_TOPUP_RETIRED")
                 .extracting("code")
-                .isEqualTo(503);
+                .isEqualTo(410);
         verify(mapper, never()).insertIntent(
                 anyString(), anyLong(), anyString(), anyString(), any(), any(), any(), anyLong(),
                 anyLong(), anyString(), any(), anyString());
@@ -268,47 +268,13 @@ class AppVietQrIntentServiceTest {
     }
 
     @Test
-    void createLocksServerQuoteAccountAndRequestHash() {
-        when(mapper.findIntentByCreateKey(41L, "create-1"))
-                .thenReturn(
-                        null,
-                        intentRow(
-                                "VQR-PERSISTED",
-                                "create-1",
-                                sha256("25.00"),
-                                "AWAITING_PAYMENT",
-                                0L));
-        when(mapper.countActiveIntentsForUser(41L)).thenReturn(0L);
-        when(mapper.listActiveBankAccountsForUpdate()).thenReturn(List.of(Map.of(
-                "id", 8L,
-                "bankName", "Vietcombank",
-                "accountHolder", "NEXION VIETNAM",
-                "accountNumberEncrypted", "ciphertext",
-                "dailyCapVnd", new BigDecimal("100000000"),
-                "receivedTodayVnd", BigDecimal.ZERO)));
-        when(mapper.sumActiveReservedVnd(8L)).thenReturn(BigDecimal.ZERO);
-        when(mapper.insertIntent(
-                anyString(), eq(41L), eq("create-1"), anyString(),
-                eq(new BigDecimal("25.00")), eq(new BigDecimal("659750")),
-                eq(new BigDecimal("26390")), eq(7L), eq(8L), anyString(),
-                eq(LocalDateTime.of(2026, 7, 25, 0, 30)), eq("MANUAL")))
-                .thenReturn(1);
-
-        ApiResult<Map<String, Object>> result =
-                service.create(41L, "create-1", new BigDecimal("25"));
-
-        assertThat(result.getData())
-                .containsEntry("usdtAmount", new BigDecimal("25.00"))
-                .containsEntry("fxRate", new BigDecimal("26390"))
-                .containsEntry("vndAmount", new BigDecimal("659750"))
-                .containsEntry("status", "awaiting_payment")
-                .containsEntry("version", 0L)
-                .containsEntry("feeVnd", BigDecimal.ZERO)
-                .containsEntry("feeUsdt", BigDecimal.ZERO);
-        assertThat(result.getData().get("bankAccount"))
-                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
-                .containsEntry("accountNumber", "9704361234567890");
-        verify(mapper).ensureInFlightReconciliation(anyString());
+    void manualNewKeyNeverAllocatesAnAccountOrAnIntent() {
+        when(mapper.findIntentByCreateKey(41L, "retired-new-key")).thenReturn(null);
+        assertThatThrownBy(() -> service.create(41L, "retired-new-key", new BigDecimal("25")))
+                .hasMessage("VIETQR_MANUAL_TOPUP_RETIRED");
+        verify(mapper, never()).findVietQrConfig();
+        verify(mapper, never()).listActiveBankAccountsForUpdate();
+        verify(mapper, never()).ensureInFlightReconciliation(anyString());
     }
 
     @Test
@@ -433,47 +399,14 @@ class AppVietQrIntentServiceTest {
     }
 
     @Test
-    void remainingCapacityStrategySelectsTheAccountWithMostRoom() {
-        when(mapper.findVietQrConfig()).thenReturn(Map.of(
-                "toleranceVnd", new BigDecimal("1000"),
-                "graceMinutes", 10,
-                "perTxLimitUsd", new BigDecimal("5000"),
-                "rotationStrategy", "REMAINING_CAPACITY",
-                "version", 4L));
-        when(mapper.findIntentByCreateKey(41L, "create-cap"))
-                .thenReturn(null, intentRow(
-                        "VQR-CAP", "create-cap", sha256("25.00"), "AWAITING_PAYMENT", 0L));
+    void manualBankPoolCapacityCannotReenableRetiredCreation() {
+        when(mapper.findIntentByCreateKey(41L, "retired-pool")).thenReturn(null);
         when(mapper.listActiveBankAccountsForUpdate()).thenReturn(List.of(
-                accountRow(8L, new BigDecimal("1000000"), new BigDecimal("100000")),
-                accountRow(9L, new BigDecimal("2000000"), BigDecimal.ZERO)));
-        when(mapper.sumActiveReservedVnd(anyLong())).thenReturn(BigDecimal.ZERO);
-        when(mapper.insertIntent(
-                anyString(), eq(41L), eq("create-cap"), anyString(),
-                eq(new BigDecimal("25.00")), eq(new BigDecimal("659750")),
-                eq(new BigDecimal("26390")), eq(7L), eq(9L), anyString(), any(), eq("MANUAL")))
-                .thenReturn(1);
-
-        assertThat(service.create(41L, "create-cap", new BigDecimal("25")).getData())
-                .containsEntry("intentNo", "VQR-CAP");
-    }
-
-    @Test
-    void createReportsSettledDailyCapacityRejectionBeforeWritingAnIntent() {
-        when(mapper.findIntentByCreateKey(41L, "create-daily-cap")).thenReturn(null);
-        when(mapper.countActiveIntentsForUser(41L)).thenReturn(0L);
-        when(mapper.listActiveBankAccountsForUpdate()).thenReturn(List.of(
-                accountRow(94L, new BigDecimal("200000000"), new BigDecimal("131950000"))));
-        when(mapper.sumActiveReservedVnd(94L)).thenReturn(BigDecimal.ZERO);
-
-        assertThatThrownBy(() -> service.create(
-                41L, "create-daily-cap", new BigDecimal("5000")))
-                .isInstanceOf(BizException.class)
-                .hasMessage("VIETQR_DAILY_CAPACITY_EXCEEDED")
-                .extracting("code")
-                .isEqualTo(422);
-        verify(mapper, never()).insertIntent(
-                anyString(), anyLong(), anyString(), anyString(), any(), any(), any(), anyLong(),
-                anyLong(), anyString(), any(), anyString());
+                accountRow(94L, new BigDecimal("200000000"), BigDecimal.ZERO)));
+        assertThatThrownBy(() -> service.create(41L, "retired-pool", new BigDecimal("5000")))
+                .hasMessage("VIETQR_MANUAL_TOPUP_RETIRED");
+        verify(mapper, never()).listActiveBankAccountsForUpdate();
+        verify(mapper, never()).sumActiveReservedVnd(anyLong());
     }
 
     private Map<String, Object> accountRow(

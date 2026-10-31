@@ -138,6 +138,7 @@ public class AppVietQrIntentService {
             return response;
         }
 
+        if (!hosted) throw new BizException(410, "VIETQR_MANUAL_TOPUP_RETIRED");
         amount = depositAmount(amount);
         Map<String, Object> vietQr = required(mapper.findVietQrConfig(), "PAYMENT_CONFIG_UNAVAILABLE");
         BigDecimal max = decimal(vietQr.get("perTxLimitUsd")).setScale(2, RoundingMode.UNNECESSARY);
@@ -158,27 +159,12 @@ public class AppVietQrIntentService {
         }
         LocalDateTime expiresAt = LocalDateTime.now(clock).plusMinutes(lockMinutes);
 
-        Long bankAccountId = null;
-        if (!hosted) {
-            List<Map<String, Object>> accounts = safeList(mapper.listActiveBankAccountsForUpdate());
-            if (accounts.isEmpty()) {
-                throw new BizException(503, "VIETQR_BANK_RAIL_UNAVAILABLE");
-            }
-            Map<String, Object> account = selectAccount(
-                    accounts, payableVnd, text(vietQr.get("rotationStrategy")));
-            if (account == null) {
-                throw new BizException(422, "VIETQR_DAILY_CAPACITY_EXCEEDED");
-            }
-            bankAccountId = longValue(account.get("id"));
-        }
-
         for (int attempt = 0; attempt < 5; attempt++) {
             String intentNo = "VQR-" + compactUuid(20);
             String memoCode = "NX-" + compactUuid(8);
             int inserted = mapper.insertIntent(
                     intentNo, userId, key, requestHash, amount, payableVnd, rate,
-                    longValue(fx.get("version")), bankAccountId, memoCode, expiresAt,
-                    hosted ? "HDPAY" : "MANUAL");
+                    longValue(fx.get("version")), null, memoCode, expiresAt, "HDPAY");
             mapper.ensureInFlightReconciliation(intentNo);
             Map<String, Object> concurrentReplay = mapper.findIntentByCreateKey(userId, key);
             if (concurrentReplay != null) {
@@ -290,39 +276,6 @@ public class AppVietQrIntentService {
             throw new BizException(409, "IDEMPOTENCY_REQUEST_CONFLICT");
         }
         return ApiResult.ok(toView(existing));
-    }
-
-    private Map<String, Object> selectAccount(
-            List<Map<String, Object>> accounts, BigDecimal payableVnd, String rotationStrategy) {
-        List<Map<String, Object>> eligible = new ArrayList<>();
-        for (Map<String, Object> account : accounts) {
-            long id = longValue(account.get("id"));
-            BigDecimal committed = decimal(account.get("receivedTodayVnd"))
-                    .add(decimal(mapper.sumActiveReservedVnd(id)));
-            if (committed.add(payableVnd).compareTo(decimal(account.get("dailyCapVnd"))) <= 0) {
-                Map<String, Object> candidate = new LinkedHashMap<>(account);
-                candidate.put("remainingCapacityVnd",
-                        decimal(account.get("dailyCapVnd")).subtract(committed).subtract(payableVnd));
-                eligible.add(candidate);
-            }
-        }
-        if (eligible.isEmpty()) return null;
-        if ("REMAINING_CAPACITY".equalsIgnoreCase(rotationStrategy)) {
-            Map<String, Object> best = eligible.get(0);
-            for (Map<String, Object> candidate : eligible) {
-                if (decimal(candidate.get("remainingCapacityVnd"))
-                        .compareTo(decimal(best.get("remainingCapacityVnd"))) > 0) {
-                    best = candidate;
-                }
-            }
-            return best;
-        }
-        Long lastAssigned = mapper.findLastAssignedBankAccountId();
-        if (lastAssigned == null) return eligible.get(0);
-        for (Map<String, Object> candidate : eligible) {
-            if (longValue(candidate.get("id")) > lastAssigned) return candidate;
-        }
-        return eligible.get(0);
     }
 
     private boolean hostedRail(Map<String, Object> row) {

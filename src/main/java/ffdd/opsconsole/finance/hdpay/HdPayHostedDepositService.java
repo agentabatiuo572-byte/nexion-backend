@@ -37,7 +37,6 @@ public class HdPayHostedDepositService {
     private final ObjectMapper json;
 
     public ApiResult<Map<String, Object>> paymentConfig() {
-        if (!properties.providerMode()) return legacy.paymentConfig();
         ApiResult<Map<String, Object>> result = legacy.hostedPaymentConfig();
         Map<String, Object> root = copy(result.getData());
         Map<String, Object> vietQr = copy(map(root.get("vietQr")));
@@ -53,7 +52,6 @@ public class HdPayHostedDepositService {
 
     public ApiResult<Map<String, Object>> create(
             Long userId, String idempotencyKey, BigDecimal amount, String clientIp) {
-        if (!properties.providerMode()) return legacy.create(userId, idempotencyKey, amount);
         requireReady();
         ApiResult<Map<String, Object>> canonical = legacy.createHosted(userId, idempotencyKey, amount);
         return submitPrepared(canonical.getData(), clientIp);

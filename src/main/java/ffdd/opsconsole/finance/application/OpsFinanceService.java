@@ -87,8 +87,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             new TopupChannelDef("USDT-TRC20", "trc20", new BigDecimal("1"), "USDT_FIXED", new BigDecimal("10"), null, true),
             new TopupChannelDef("USDT-BEP20", "bep20", new BigDecimal("1"), "USDT_FIXED", new BigDecimal("10"), null, true),
             new TopupChannelDef("USDT-ERC20", "erc20", new BigDecimal("5"), "USDT_FIXED", new BigDecimal("10"), null, true),
-            new TopupChannelDef("银行转账 VietQR", "vietqr", BigDecimal.ZERO, "PERCENT", new BigDecimal("10"), null, true),
-            new TopupChannelDef("国际卡", "card", new BigDecimal("3.5"), "PERCENT", new BigDecimal("30"), new BigDecimal("5000"), true));
+            new TopupChannelDef("银行卡支付", "vietqr", BigDecimal.ZERO, "PERCENT", new BigDecimal("10"), null, true),
+            new TopupChannelDef("国际卡", "card", new BigDecimal("3.5"), "PERCENT", new BigDecimal("30"), new BigDecimal("5000"), false));
     private static final List<TopupCardParamDef> TOPUP_CARD_PARAMS = List.of(
             new TopupCardParamDef("threeDsThreshold", "3DS 强认证金额门槛", new BigDecimal("50"), "USD", BigDecimal.ZERO, new BigDecimal("500"), "达到门槛的银行卡支付必须通过发卡行验证"),
             new TopupCardParamDef("cardRetryLimit", "同卡 24 小时失败次数上限", new BigDecimal("5"), "COUNT", new BigDecimal("3"), new BigDecimal("10"), "达到上限后，系统自动锁定对应 BIN、IP 与设备"),
@@ -217,6 +217,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if ("card".equals(channel.code()) && Boolean.TRUE.equals(request.enabled())) {
+            return ApiResult.fail(409, "CARD_TOPUP_CHANNEL_RETIRED");
         }
         if (request.enabled() == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "ENABLED_REQUIRED");
@@ -1347,8 +1350,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     }
 
     private List<DepositChannelView> topupChannels() {
-        // 五条充值渠道是固定目录;不再按 DB 是否配置过滤,fee/min_amount/enabled 空时落回 seed 默认。
+        // Retired card metadata remains for historical reconciliation, never for new top-ups.
         return TOPUP_CHANNELS.stream()
+                .filter(channel -> !"card".equals(channel.code()))
                 .map(channel -> {
                     BigDecimal feeValue = strictChannelDecimal(channelConfigKey(channel.code(), "fee"), channel.defaultFeeValue());
                     String feeUnit = strictChannelUnit(

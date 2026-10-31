@@ -63,6 +63,19 @@ class HdPayHostedDepositServiceTest {
     }
 
     @Test
+    void missingProviderConfigurationNeverFallsBackToManualBankAccounts() {
+        properties.setMode(HdPayProperties.Mode.DISABLED);
+        when(legacy.hostedPaymentConfig()).thenReturn(ApiResult.ok(Map.of("vietQr", Map.of("enabled", true))));
+        assertThat(((Map<?, ?>) service.paymentConfig().getData().get("vietQr")).get("enabled")).isEqualTo(false);
+        assertThatThrownBy(() -> service.create(7L, "no-fallback", new BigDecimal("25"), "203.0.113.1"))
+                .hasMessage("HDPAY_CONFIGURATION_INCOMPLETE");
+        verify(legacy, never()).paymentConfig();
+        verify(legacy, never()).create(any(), any(), any());
+        verify(legacy, never()).createHosted(any(), any(), any());
+        verifyNoInteractions(gateway, mapper);
+    }
+
+    @Test
     void explicitReasonSurvivesCreateReplayGetAndListWithoutAnotherProviderCall() throws Exception {
         ObjectMapper json = new ObjectMapper();
         AuditLogRecord saved = rejectionAudit();

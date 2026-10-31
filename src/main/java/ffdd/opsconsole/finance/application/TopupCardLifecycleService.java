@@ -69,66 +69,29 @@ public class TopupCardLifecycleService {
 
     @Transactional(rollbackFor = Exception.class)
     public TopupCardAdmissionResult admit(TopupCardAdmissionRequest input) {
-        NormalizedAdmission request = normalizeAdmission(input);
-        String hash = TopupEventHashing.sha256(request.canonical());
-        TopupAdmissionReceipt existing = mapper.selectAdmissionForUpdate(request.eventId(), request.orderNo());
-        if (existing != null) {
-            requireSameHash(hash, existing.requestHash(), "ADMISSION_EVENT_CONFLICT");
-            return admissionResult(existing, true);
+        if (input == null || input.userId() == null || input.userId() < 1) {
+            throw new IllegalArgumentException("CARD_ADMISSION_USER_INVALID");
         }
-
-        String denial = firstRiskLockReason(request);
-        String decision = denial == null ? "ALLOWED" : "DENIED";
-        String reason = denial == null ? "RISK_CHECK_PASSED" : denial;
-        LocalDateTime expiresAt = businessNow().plusMinutes(ADMISSION_MINUTES);
-        if (mapper.insertAdmissionReceipt(
-                request.eventId(), hash, request.orderNo(), request.userId(), request.provider(),
-                request.amount(), request.feeAmount(), request.feeRate(), request.threeDsStatus(), request.cardBin(),
-                request.clientIp(), request.deviceFingerprint(), decision, reason, expiresAt) != 1) {
-            TopupAdmissionReceipt raced = mapper.selectAdmissionForUpdate(request.eventId(), request.orderNo());
-            if (raced == null) {
-                throw new IllegalStateException("ADMISSION_RECEIPT_WRITE_FAILED");
-            }
-            requireSameHash(hash, raced.requestHash(), "ADMISSION_EVENT_CONFLICT");
-            return admissionResult(raced, true);
-        }
-        auditLogService.recordRequired(AuditLogWriteRequest.builder()
-                .action("D1_CARD_TOPUP_ADMISSION_" + decision)
-                .resourceType("CARD_TOPUP_ADMISSION")
-                .resourceId(request.eventId())
-                .bizNo(request.orderNo())
-                .userId(request.userId())
-                .actorType("PAYMENT_GATEWAY")
-                .actorUsername("payment-gateway")
-                .result("ALLOWED".equals(decision) ? "SUCCESS" : "DENIED")
-                .riskLevel("ALLOWED".equals(decision) ? "INFO" : "HIGH")
-                .detail(Map.ofEntries(
-                        Map.entry("orderNo", request.orderNo()),
-                        Map.entry("provider", request.provider()),
-                        Map.entry("amountUsdt", request.amount().toPlainString()),
-                        Map.entry("feeAmountUsdt", request.feeAmount().toPlainString()),
-                        Map.entry("feeRatePct", request.feeRate().toPlainString()),
-                        Map.entry("threeDsStatus", request.threeDsStatus()),
-                        Map.entry("cardBin", request.cardBin()),
-                        Map.entry("clientIp", request.clientIp()),
-                        Map.entry("deviceFingerprint", request.deviceFingerprint()),
-                        Map.entry("reason", reason),
-                        Map.entry("expiresAt", expiresAt.toString())))
-                .build());
-        if ("ALLOWED".equals(decision)) {
-            eventOutboxService.publish("WALLET", request.orderNo(), "wallet.topup_initiated", Map.of(
-                    "transaction_id", request.orderNo(),
-                    "user_id", request.userId(),
-                    "amount", request.amount(),
-                    "currency", "USDT",
-                    "channel", "Card",
-                    "topup_id", request.orderNo(),
-                    "psp", request.provider(),
-                    "three_ds_status", request.threeDsStatus()));
-        }
-        return new TopupCardAdmissionResult(
-                request.eventId(), decision, reason, request.amount(), request.feeAmount(),
-                request.feeRate(), expiresAt, false);
+        String eventId = safeId(input.admissionEventId(), 128, "CARD_ADMISSION_EVENT_INVALID");
+        String orderNo = safeId(input.orderNo(), 96, "CARD_ADMISSION_ORDER_INVALID");
+        TopupAdmissionReceipt existing = mapper.selectAdmissionForUpdate(eventId, orderNo);
+        if (existing == null) throw new IllegalStateException("CARD_TOPUP_CHANNEL_RETIRED");
+        String bin = text(input.cardBin());
+        String ip = text(input.clientIp());
+        String device = text(input.deviceFingerprint());
+        String provider = text(input.provider());
+        String threeDs = text(input.threeDsStatus()).toUpperCase(Locale.ROOT);
+        if (!BIN.matcher(bin).matches()) throw new IllegalArgumentException("CARD_BIN_INVALID");
+        if (!validIp(ip)) throw new IllegalArgumentException("CARD_CLIENT_IP_INVALID");
+        if (!DEVICE.matcher(device).matches()) throw new IllegalArgumentException("CARD_DEVICE_FINGERPRINT_INVALID");
+        if (!PROVIDERS.contains(provider.toUpperCase(Locale.ROOT))) throw new IllegalArgumentException("CARD_PROVIDER_INVALID");
+        if (!Set.of("AUTHENTICATED", "EXEMPTED").contains(threeDs)) throw new IllegalArgumentException("CARD_3DS_STATUS_INVALID");
+        // Replays use the original fee snapshot, even after channel retirement/configuration changes.
+        NormalizedAdmission request = new NormalizedAdmission(eventId, orderNo, input.userId(),
+                provider, positiveMoney(input.amountUsdt(), MAX_TOPUP, "CARD_ADMISSION_AMOUNT_INVALID"),
+                existing.feeAmountUsdt(), existing.feeRatePct(), threeDs, bin, ip.toLowerCase(Locale.ROOT), device);
+        requireSameHash(TopupEventHashing.sha256(request.canonical()), existing.requestHash(), "ADMISSION_EVENT_CONFLICT");
+        return admissionResult(existing, true);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -489,68 +452,6 @@ public class TopupCardLifecycleService {
                 receipt.settlementEventId(), receipt.paymentNo(), receipt.status(),
                 receipt.walletBalanceAfter(), receipt.cumulativeDepositAfter(),
                 receipt.feeBufferBalanceAfter(), replay);
-    }
-
-    private NormalizedAdmission normalizeAdmission(TopupCardAdmissionRequest input) {
-        if (input == null || input.userId() == null || input.userId() < 1) {
-            throw new IllegalArgumentException("CARD_ADMISSION_USER_INVALID");
-        }
-        String eventId = safeId(input.admissionEventId(), 128, "CARD_ADMISSION_EVENT_INVALID");
-        String orderNo = safeId(input.orderNo(), 96, "CARD_ADMISSION_ORDER_INVALID");
-        String bin = text(input.cardBin());
-        String ip = text(input.clientIp());
-        String device = text(input.deviceFingerprint());
-        if (!BIN.matcher(bin).matches()) {
-            throw new IllegalArgumentException("CARD_BIN_INVALID");
-        }
-        if (!validIp(ip)) {
-            throw new IllegalArgumentException("CARD_CLIENT_IP_INVALID");
-        }
-        if (!DEVICE.matcher(device).matches()) {
-            throw new IllegalArgumentException("CARD_DEVICE_FINGERPRINT_INVALID");
-        }
-        String provider = text(input.provider());
-        if (!PROVIDERS.contains(provider.toUpperCase(Locale.ROOT))) {
-            throw new IllegalArgumentException("CARD_PROVIDER_INVALID");
-        }
-        if (!configBoolean("finance.topup.channel.card.enabled", true)) {
-            throw new IllegalStateException("CARD_TOPUP_CHANNEL_DISABLED");
-        }
-        String configuredProvider = configText("finance.topup.psp.primary", "Checkout.com");
-        if (!provider.equals(configuredProvider)) {
-            throw new IllegalStateException("CARD_PROVIDER_ROUTE_CHANGED");
-        }
-        BigDecimal amount = positiveMoney(input.amountUsdt(), MAX_TOPUP, "CARD_ADMISSION_AMOUNT_INVALID");
-        BigDecimal minAmount = configDecimal("finance.topup.channel.card.min_amount", new BigDecimal("30"));
-        BigDecimal maxAmount = configDecimal("finance.topup.channel.card.max_amount", new BigDecimal("5000"));
-        if (minAmount.compareTo(BigDecimal.ZERO) <= 0 || maxAmount.compareTo(minAmount) < 0
-                || maxAmount.compareTo(MAX_TOPUP) > 0) {
-            throw new IllegalStateException("CARD_AMOUNT_CONFIG_INVALID");
-        }
-        if (amount.compareTo(minAmount) < 0) {
-            throw new IllegalArgumentException("CARD_ADMISSION_BELOW_MIN_AMOUNT");
-        }
-        if (amount.compareTo(maxAmount) > 0) {
-            throw new IllegalArgumentException("CARD_ADMISSION_ABOVE_MAX_AMOUNT");
-        }
-        BigDecimal rate = configDecimal("finance.topup.channel.card.fee", new BigDecimal("3.5"));
-        if (rate.compareTo(BigDecimal.ZERO) < 0 || rate.compareTo(MAX_FEE_RATE) > 0) {
-            throw new IllegalStateException("CARD_FEE_CONFIG_INVALID");
-        }
-        rate = rate.setScale(6, RoundingMode.UNNECESSARY);
-        BigDecimal fee = amount.multiply(rate).divide(new BigDecimal("100"), 6, RoundingMode.HALF_UP);
-        String threeDsStatus = text(input.threeDsStatus()).toUpperCase(Locale.ROOT);
-        if (!Set.of("AUTHENTICATED", "EXEMPTED").contains(threeDsStatus)) {
-            throw new IllegalArgumentException("CARD_3DS_STATUS_INVALID");
-        }
-        BigDecimal threeDsThreshold = configDecimal(
-                "finance.topup.card.threeDsThreshold", new BigDecimal("50"));
-        if (amount.compareTo(threeDsThreshold) >= 0 && !"AUTHENTICATED".equals(threeDsStatus)) {
-            throw new IllegalStateException("CARD_3DS_AUTHENTICATION_REQUIRED");
-        }
-        return new NormalizedAdmission(
-                eventId, orderNo, input.userId(), provider, amount, fee, rate, threeDsStatus,
-                bin, ip.toLowerCase(Locale.ROOT), device);
     }
 
     private NormalizedSettlement normalizeSettlement(TopupCardSettlementRequest input) {
