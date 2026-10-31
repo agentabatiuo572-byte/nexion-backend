@@ -58,6 +58,7 @@ import org.springframework.boot.autoconfigure.data.redis.*;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration;
 import org.springframework.boot.builder.SpringApplicationBuilder;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.web.servlet.context.ServletWebServerApplicationContext;
 import org.springframework.context.annotation.*;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -306,7 +307,7 @@ class PurchasePaymentHttpMySqlTest {
         public void close(){if(schema.matches("purchase_http_it_[0-9a-f]{32}"))admin.execute("DROP DATABASE "+schema);}
     }
 
-    @Configuration(proxyBeanMethods=false)
+    @TestConfiguration(proxyBeanMethods=false)
     @EnableAutoConfiguration(exclude={DataSourceAutoConfiguration.class,RedisAutoConfiguration.class,RedisReactiveAutoConfiguration.class,RedisRepositoriesAutoConfiguration.class,UserDetailsServiceAutoConfiguration.class})
     @Import({SecurityConfig.class,GlobalExceptionHandler.class})
     static class Wire {
