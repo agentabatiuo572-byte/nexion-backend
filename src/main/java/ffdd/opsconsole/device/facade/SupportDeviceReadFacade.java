@@ -13,6 +13,8 @@ import java.util.Collections;
 public interface SupportDeviceReadFacade extends DomainFacade {
     Snapshot readCurrent(Collection<Long> customerIds);
     FundEarnings readFundEarnings(Collection<Long> customerIds);
+    /** Current settlement evidence only; the caller retains its owning transaction and user lock. */
+    FundEarnings readFundEarning(long customerId, String receiptNo);
     Map<String,Integer> timePrecisions();
     record FundEarnings(List<Map<String,Object>> receipts,List<Map<String,Object>> tasks,
         List<Map<String,Object>> ledgers,List<Map<String,Object>> earningEvents) {
