@@ -8,19 +8,21 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.finance.cregis.*;
 import ffdd.opsconsole.finance.mapper.PurchasePaymentMapper;
 import java.math.BigDecimal;
+import java.time.*;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.PlatformTransactionManager;
 
 class PurchaseErc20ContractTest {
+    static final Instant NOW=Instant.parse("2026-11-01T00:00:00Z");
     final PurchasePaymentMapper db=mock(PurchasePaymentMapper.class);
     final PurchasePaymentPolicyService policy=mock(PurchasePaymentPolicyService.class);
     final CregisProperties config=new CregisProperties();
     final CregisGatewayRouter router=mock(CregisGatewayRouter.class);
     final CregisGateway gateway=mock(CregisGateway.class);
     final PurchasePaymentService service=new PurchasePaymentService(db,policy,null,null,null,null,null,config,router,
-            mock(BscDepositProof.class),null,mock(PlatformTransactionManager.class),new ObjectMapper(),null,null, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
+            mock(BscDepositProof.class),null,mock(PlatformTransactionManager.class),new ObjectMapper(),null,null, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class),Clock.fixed(NOW,ZoneOffset.UTC));
 
     void ready() {
         config.setMode(CregisProperties.Mode.PROVIDER);config.setProjectId(99);
@@ -29,7 +31,7 @@ class PurchaseErc20ContractTest {
         when(gateway.projectCoins()).thenReturn(List.of(new CregisGateway.Coin(CregisNetwork.ERC20.currency(),"USDT-ERC20","60",CregisNetwork.ERC20.tokenId(),false,true)));
         when(db.one(contains("nx_cregis_provision_gate"),any(Object[].class))).thenReturn(values("state","IDLE","credit_enabled",1,"assign_enabled",1));
         when(db.one(contains("FROM nx_user"),any(Object[].class))).thenReturn(values("id",7,"status","ACTIVE","sandbox",0));
-        when(db.one(contains("FROM nx_order WHERE"),any(Object[].class))).thenReturn(values("created_at",java.time.Instant.now(),"order_no","ORDER-1","amount_usdt","19.995","subtotal_usdt","25","discount_usdt","5.005","payment_status","PENDING","order_status","PENDING_PAYMENT"));
+        when(db.one(contains("FROM nx_order WHERE"),any(Object[].class))).thenReturn(values("created_at",NOW.minusSeconds(60),"order_no","ORDER-1","amount_usdt","19.995","subtotal_usdt","25","discount_usdt","5.005","payment_status","PENDING","order_status","PENDING_PAYMENT"));
         when(db.one(contains("FROM nx_promotion_order_receipt"),any(Object[].class))).thenReturn(null);
         when(policy.current()).thenReturn(values("version",3,"channels",List.of(values("paymentMethod","CREGIS_USDT_ERC20","configured",true,
                 "channelFeeRatePct","2.50","channelFeeFixed","0.10","networkConfirmFeeUsdt","0.35"))));
@@ -41,7 +43,10 @@ class PurchaseErc20ContractTest {
         var quote=quote();
         assertThat(quote).containsEntry("paymentMethod","CREGIS_USDT_ERC20").containsEntry("network","ERC20")
                 .containsEntry("subtotalUsdt","20.00").containsEntry("channelFeeUsdt","0.60")
-                .containsEntry("networkConfirmFeeUsdt","0.35").containsEntry("totalUsdt","20.95").containsEntry("feePolicyVersion",3);
+                .containsEntry("networkConfirmFeeUsdt","0.35").containsEntry("totalUsdt","20.95").containsEntry("feePolicyVersion",3)
+                .containsEntry("pricingAsOf",NOW.toString()).containsEntry("expiresAt",NOW.plusSeconds(900).toString())
+                .containsEntry("deadlineAt",NOW.plusSeconds(1740).toString())
+                .containsEntry("confirmationGraceEndsAt",NOW.plusSeconds(2040).toString());
         verify(db).write(contains("INSERT INTO nx_purchase_payment_quote"),any(Object[].class));
         verify(gateway,never()).createPayout(any());
     }

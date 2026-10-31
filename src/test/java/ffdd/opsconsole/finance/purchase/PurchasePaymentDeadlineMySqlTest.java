@@ -28,7 +28,7 @@ class PurchasePaymentDeadlineMySqlTest {
         when(gateway.createPayOrder(any())).thenReturn(new HdPayGateway.PayPage("https://pay.synthetic.invalid/pay"));
         when(gateway.queryPayOrder(anyString())).thenAnswer(i->new HdPayGateway.PayOrder(i.getArgument(0),"PROVIDER-"+i.getArgument(0),1,new BigDecimal("500000"),"BANKQR","https://pay.synthetic.invalid/pay"));
     }
-    void time(Instant now){ReflectionTestUtils.setField(f.payments,"clock",Clock.fixed(now,ZoneOffset.UTC));}
+    void time(Instant now){doReturn(now).when(f.clock).instant();}
     String order(boolean reserved){
         String no="DEADLINE-"+(++sequence);
         f.jdbc.update("INSERT INTO nx_order(user_id,order_no,product_id,quantity,order_type,item_count,subtotal_usdt,discount_usdt,amount_usdt,payment_status,order_status,activation_status,inventory_reserved,created_at) VALUES(7,?,18,1,'SINGLE',1,25,5.005,19.995,'PENDING','PENDING_PAYMENT','WAITING_PAYMENT',?,?)",no,reserved?1:0,LocalDateTime.ofInstant(START,ZoneId.of("Asia/Shanghai")));

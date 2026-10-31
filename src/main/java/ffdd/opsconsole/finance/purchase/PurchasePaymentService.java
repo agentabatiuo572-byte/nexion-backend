@@ -48,10 +48,8 @@ public class PurchasePaymentService {
     private final AdminIdempotencyService commands;
     @lombok.NonNull
     private final TestCloudActivationAdmission testCloudAdmission;
+    private final Clock clock;
     private static final Set<String> KINDS=Set.of("ORDER_PAY","TRIAL_CONVERT","TRADE_IN","CAPACITY_REPLACE","CAPACITY_KEEP");
-    private Clock clock=Clock.systemUTC();
-    @org.springframework.beans.factory.annotation.Autowired(required=false)
-    void clock(Clock clock){this.clock=clock;}
     private Instant now(){return clock.instant();}
     private static final String SELECT="SELECT * FROM nx_purchase_payment_intent WHERE intent_no=?";
 
