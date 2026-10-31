@@ -179,6 +179,22 @@ public class PromotionOrderService {
     public void lockOrderParticipants(String orderNo){
         List<Long> before=participantsForOrder(orderNo);for(Long id:before)db.user(id,true);
         require(before.equals(participantsForOrder(orderNo)),"PROMOTION_ORDER_PARTICIPANTS_CHANGED");
+        // Match prepareCreate for pay/cancel/expiry/E4/reward paths: accounts,
+        // activity budget/usage, then each purchased or gift product and its SKU.
+        TreeSet<String> activities=new TreeSet<>();
+        for(var reservation:db.reservations(orderNo,false)){
+            String activity=text(reservation.get("activity_id"));if(!activity.isEmpty())activities.add(activity);
+        }
+        for(String activity:activities){db.activity(activity,true);lockCapacity(activity,before);}
+        var products=db.list("""
+            SELECT p.product_no FROM nx_product p WHERE p.id=(SELECT product_id FROM nx_order WHERE order_no=?)
+              OR EXISTS(SELECT 1 FROM nx_order_item i WHERE i.order_no=? AND i.product_id=p.id AND i.is_deleted=0)
+              OR EXISTS(SELECT 1 FROM nx_promotion_reservation r WHERE r.order_no=? AND r.asset='DEVICE'
+                        AND r.product_no=p.product_no AND r.status IN ('RESERVED','COMMITTED'))
+            ORDER BY p.product_no
+            """,orderNo,orderNo,orderNo);
+        TreeSet<String> names=new TreeSet<>();products.forEach(product->names.add(text(product.get("product_no"))));
+        for(String product:names){db.product(product,true);db.one("SELECT * FROM nx_admin_device_sku WHERE sku_id=? AND is_deleted=0 FOR UPDATE",product);}
     }
     @Transactional(propagation=Propagation.MANDATORY,rollbackFor=Exception.class)
     public void beforePay(Long buyerId,String orderNo){
@@ -198,11 +214,6 @@ public class PromotionOrderService {
                 &&number(r.get("beneficiary_id"))==beneficiary).mapToLong(r->number(r.get("amount"))).sum():0;
             if(unreserved&&beneficiary.equals(buyerId))additional+=number(order.get("quantity"));
             require(db.occupiedDeviceSlots(beneficiary)+additional<=db.deviceSlotCap(),"PROMOTION_DEVICE_CAPACITY_UNAVAILABLE");
-        }
-        if(unreserved)for(var gift:giftQuantities(rows).entrySet()){
-            var product=db.product(gift.getKey(),true);
-            require("UNLIMITED".equals(product.get("inventory_mode"))||decimal(product.get("stock")).compareTo(gift.getValue())>=0,
-                "PROMOTION_DEVICE_STOCK_UNAVAILABLE");
         }
         require(evaluator.firstPurchaseStillValid(contract,map(snapshot.get("policies")),buyerId,maps(snapshot.get("awards")),orderNo),"PROMOTION_PAYMENT_ELIGIBILITY_LOST");
     }
