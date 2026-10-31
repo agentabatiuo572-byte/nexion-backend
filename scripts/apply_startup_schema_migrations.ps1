@@ -310,7 +310,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261007_growth_promotions_list_snapshot.sql")
   (Join-Path $root "scripts\migrations\20261012_growth_promotions_snapshot_cleanup.sql")
   (Join-Path $root "scripts\migrations\20261007_growth_promotions_quota_restore.sql")
-  (Join-Path $root "scripts\migrations\20261025_promotion_order_discount.sql")
+  # Its NEX-only CHECK rebuild is replaced by the UVT-compatible forward step below.
   (Join-Path $root "scripts\migrations\20261025_promotion_soft_delete.sql")
   (Join-Path $root "scripts\migrations\20261007_e4_wallet_bill_prerequisite.sql")
   (Join-Path $root "scripts\migrations\20261007_voucher_zero_payment.sql")
@@ -380,6 +380,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261031_test_cloud_request_journal.sql")
   (Join-Path $root "scripts\migrations\20260916_l6_withdrawal_method_route.sql")
   (Join-Path $root "scripts\migrations\20261101_l6_active_route_reconciliation.sql")
+  (Join-Path $root "scripts\migrations\20261101_uvt_legacy_asset_migration.sql")
+  (Join-Path $root "scripts\migrations\20261101_vrank_bootstrap.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

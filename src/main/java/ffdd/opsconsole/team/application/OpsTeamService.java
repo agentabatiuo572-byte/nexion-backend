@@ -70,6 +70,8 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 @Slf4j
 public class OpsTeamService implements AuditReplayable {
+    @org.springframework.beans.factory.annotation.Autowired
+    private VRankBootstrapService rankBootstrap;
     private static final String COMMISSION_COOLING_DAYS_KEY = "commission/cooling-days";
     private static final int DEFAULT_COMMISSION_COOLING_DAYS = 30;
     private static final Set<String> ACTIVE_KEYS = Set.of(
@@ -3765,6 +3767,9 @@ public class OpsTeamService implements AuditReplayable {
         String reason = ctx.reason();
         String idem = ctx.idempotencyKey();
         switch (cmd.op()) {
+            case "f_vrank_bootstrap" -> {
+                return ApiResult.ok(rankBootstrap.initialize(p, ctx));
+            }
             case "f_seven_layer_activation" -> {
                 return ApiResult.ok(directPolicies.getObject().activation(idem,
                         ffdd.opsconsole.team.dto.SevenLayerActivationRequest.from(p),reason));
