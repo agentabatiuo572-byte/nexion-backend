@@ -58,7 +58,7 @@ class PromotionLegacyUvtSnapshotTest {
         when(db.requiredRow(contains("SELECT created_at FROM nx_wallet_ledger"),eq("old-ledger"),eq(7),eq("UVT")))
                 .thenReturn(values("created_at",Instant.parse("2026-10-01T00:00:00Z")));
         String raw=text(row.get("snapshot_json")),digest=text(row.get("snapshot_hash"));
-        var result=new PromotionRewardService(db,null,null,null,null,null).get(7L,"old-reward",false);
+        var result=new PromotionRewardService(db,null,null,null,null,null,mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)).get(7L,"old-reward",false);
         assertEquals("UVT",map(result.get("reward")).get("type"));
         assertEquals(raw,row.get("snapshot_json"));assertEquals(digest,row.get("snapshot_hash"));
         verify(db,never()).requiredRow(contains("SELECT created_at FROM nx_wallet_ledger"),eq("old-ledger"),eq(7),eq("NEX"));
@@ -69,7 +69,7 @@ class PromotionLegacyUvtSnapshotTest {
         row.put("snapshot_json",text(row.get("snapshot_json")).replace("5.000000","9.000000"));
         when(db.requiredRow(startsWith("SELECT * FROM nx_promotion_reward"),eq("old-reward"))).thenReturn(row);
         assertEquals("PROMOTION_REWARD_SNAPSHOT_INVALID",assertThrows(BizException.class,
-                ()->new PromotionRewardService(db,null,null,null,null,null).get(7L,"old-reward",false)).getMessage());
+                ()->new PromotionRewardService(db,null,null,null,null,null,mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)).get(7L,"old-reward",false)).getMessage());
         verify(db,never()).requiredRow(contains("nx_wallet_ledger"),any(),any(),any());
     }
 
@@ -85,7 +85,7 @@ class PromotionLegacyUvtSnapshotTest {
                 .thenReturn(values("created_at",Instant.parse("2026-10-01T00:00:00Z")));
         when(db.write(anyString(),any(Object[].class))).thenReturn(1);
         var audit=mock(ffdd.opsconsole.shared.audit.AuditLogService.class);
-        var result=new PromotionRewardService(db,orders,null,null,audit,null).reconcile("old-reward","reconcile-original");
+        var result=new PromotionRewardService(db,orders,null,null,audit,null,mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)).reconcile("old-reward","reconcile-original");
         assertEquals("ISSUED",result.get("state"));
         verify(db).one(contains("nx_earnings_release_entry"),eq("old-reward"),eq(7),eq("UVT"));
         verify(db,never()).one(contains("nx_earnings_release_entry"),eq("old-reward"),eq(7),eq("NEX"));
