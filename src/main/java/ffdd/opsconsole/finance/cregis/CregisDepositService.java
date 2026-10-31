@@ -375,7 +375,7 @@ public class CregisDepositService {
             pool.put("reserveTarget",policy.target());pool.put("lowWatermark",policy.lowWatermark());
             pool.put("batchSize",policy.batchSize());pool.put("concurrency",policy.concurrency());
             pool.put("lastError",raw.get("lastError"));pool.put("retryAfter",raw.get("retryAfter"));
-            pool.put("available",config.networkConfigured(network));pool.put("limit",0);
+            pool.put("available",config.networkConfigured(network) && config.depositNetworkEnabled(network));pool.put("limit",0);
             pool.put("automatic",policy.enabled() && config.isDepositEnabled() && config.isDepositCreditEnabled() && config.depositNetworkEnabled(network));
             addressPools.put(network.network(),pool);
         }
