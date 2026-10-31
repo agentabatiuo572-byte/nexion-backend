@@ -156,10 +156,10 @@ public interface AppBundleOrderMapper extends BaseMapper<Object>, TrialSlotReser
     @Insert("""
             INSERT INTO nx_order(user_id,order_no,product_id,quantity,order_type,item_count,
               subtotal_usdt,discount_usdt,amount_usdt,payment_status,order_status,activation_status,
-              created_at,updated_at,is_deleted)
+              inventory_reserved,created_at,updated_at,is_deleted)
             VALUES(#{userId},#{orderNo},#{primaryProductId},#{quantity},'BUNDLE',#{itemCount},
               #{subtotalUsdt},#{discountUsdt},#{amountUsdt},'PENDING','PENDING_PAYMENT','WAITING_PAYMENT',
-              NOW(),NOW(),0)
+              0,NOW(),NOW(),0)
             """)
     int insertBundleOrder(@Param("userId") Long userId,
                           @Param("orderNo") String orderNo,

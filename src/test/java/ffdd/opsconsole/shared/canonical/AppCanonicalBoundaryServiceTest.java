@@ -47,6 +47,19 @@ import org.junit.jupiter.api.Test;
 import org.springframework.core.env.Environment;
 
 class AppCanonicalBoundaryServiceTest {
+    @Test
+    void unpaidOrderDoesNotConsumeProductStockOrLifetimeQuota() {
+        when(mapper.lockProduct(8L, null)).thenReturn(
+                new CanonicalStateMapper.ProductStock(8L, "BOX-8", new BigDecimal("1299"), 4, null));
+        when(mapper.userEventAttribution(42L)).thenReturn(
+                new CanonicalStateMapper.UserEventAttribution("P3", 5, "2026-W06"));
+        when(mapper.decrementProductStock(8L, 1)).thenReturn(1);
+        when(mapper.insertOrder(eq(42L), anyString(), eq(8L), eq(1), any(), any(), any())).thenReturn(1);
+        var result = service.createOrder(42L, null, 8L, null, 1, null, "unpaid-no-stock");
+        assertThat(result.getCode()).isZero();
+        verify(mapper, never()).decrementProductStock(anyLong(), anyInt());
+        verify(mapper, never()).consumePurchaseQuota(anyString(), anyInt());
+    }
     private static CanonicalStateMapper.UserLock productionUser() {
         return new CanonicalStateMapper.UserLock(42L, false);
     }
@@ -310,7 +323,7 @@ class AppCanonicalBoundaryServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("amountUsdt", new BigDecimal("0.000000"));
-        verify(mapper).decrementProductStock(8L, 1);
+        verify(mapper, never()).decrementProductStock(8L, 1);
         verify(mapper).insertOrder(eq(42L), anyString(), eq(8L), eq(1),
                 eq(new BigDecimal("1299.000000")), eq(new BigDecimal("1299.000000")),
                 eq(new BigDecimal("0.000000")));
@@ -340,7 +353,7 @@ class AppCanonicalBoundaryServiceTest {
         var result=promoted.createOrder(42L,null,8L,null,1,null,"Q1","discount-order");
         assertThat(result.getCode()).isZero();assertThat(result.getData()).containsEntry("amountUsdt",new BigDecimal("1000.000000"));
         verify(mapper).insertOrder(eq(42L),anyString(),eq(8L),eq(1),eq(new BigDecimal("1500.000000")),eq(new BigDecimal("500.000000")),eq(new BigDecimal("1000.000000")));
-        verify(mapper,times(1)).decrementProductStock(8L,1);
+        verify(mapper,never()).decrementProductStock(8L,1);
         verify(mapper).insertOrderItem(anyString(),eq(8L),eq(1),eq(new BigDecimal("1500.000000")),eq(false),eq(null));
     }
 
@@ -653,7 +666,7 @@ class AppCanonicalBoundaryServiceTest {
     }
 
     @Test
-    void ordinaryOrderConsumesCanonicalLifetimeQuotaBeforeStockAndOrderWrites() {
+    void unpaidOrdinaryOrderLeavesLifetimeQuotaAndStockForPayment() {
         when(mapper.lockProduct(8L, null)).thenReturn(
                 new CanonicalStateMapper.ProductStock(8L, "BOX-8", new BigDecimal("1299"), 4, null));
         when(mapper.purchaseGateJson("BOX-8"))
@@ -669,14 +682,14 @@ class AppCanonicalBoundaryServiceTest {
         var result = service.createOrder(42L, null, 8L, 1, "quota-order-key");
 
         assertThat(result.getCode()).isZero();
-        verify(mapper).consumePurchaseQuota("BOX-8", 1);
-        verify(mapper).decrementProductStock(8L, 1);
+        verify(mapper, never()).consumePurchaseQuota("BOX-8", 1);
+        verify(mapper, never()).decrementProductStock(8L, 1);
         verify(mapper).insertOrder(eq(42L), anyString(), eq(8L), eq(1),
                 any(BigDecimal.class), any(BigDecimal.class), any(BigDecimal.class));
     }
 
     @Test
-    void concurrentCanonicalQuotaCapOneAllowsOnlyOneCheckout() throws Exception {
+    void concurrentUnpaidCheckoutsDoNotConsumeTheSinglePurchaseQuota() throws Exception {
         when(mapper.lockUser(anyLong())).thenAnswer(invocation ->
                 new CanonicalStateMapper.UserLock(invocation.getArgument(0), false));
         when(mapper.lockProduct(8L, null)).thenReturn(
@@ -692,13 +705,7 @@ class AppCanonicalBoundaryServiceTest {
         when(mapper.insertOrder(anyLong(), anyString(), eq(8L), eq(1),
                 any(BigDecimal.class), any(BigDecimal.class), any(BigDecimal.class))).thenReturn(1);
 
-        CountDownLatch casCalls = new CountDownLatch(2);
         AtomicInteger sold = new AtomicInteger();
-        when(mapper.consumePurchaseQuota("BOX-8", 1)).thenAnswer(invocation -> {
-            casCalls.countDown();
-            if (!casCalls.await(3, TimeUnit.SECONDS)) throw new AssertionError("concurrent CAS did not rendezvous");
-            return sold.compareAndSet(0, 1) ? 1 : 0;
-        });
 
         ExecutorService executor = Executors.newFixedThreadPool(2);
         try {
@@ -716,8 +723,10 @@ class AppCanonicalBoundaryServiceTest {
                     soldOut++;
                 }
             }
-            assertThat(successes).isEqualTo(1);
-            assertThat(soldOut).isEqualTo(1);
+            assertThat(successes).isEqualTo(2);
+            assertThat(soldOut).isZero();
+            assertThat(sold.get()).isZero();
+            verify(mapper, never()).consumePurchaseQuota(anyString(), anyInt());
         } finally {
             executor.shutdownNow();
         }
@@ -747,8 +756,8 @@ class AppCanonicalBoundaryServiceTest {
         service.createOrder(42L, null, 8L, 1, "replay-safe-key");
         service.createOrder(42L, null, 8L, 1, "replay-safe-key");
 
-        verify(mapper).consumePurchaseQuota("BOX-8", 1);
-        verify(mapper).decrementProductStock(8L, 1);
+        verify(mapper, never()).consumePurchaseQuota("BOX-8", 1);
+        verify(mapper, never()).decrementProductStock(8L, 1);
         verify(mapper).insertOrder(eq(42L), anyString(), eq(8L), eq(1),
                 any(BigDecimal.class), any(BigDecimal.class), any(BigDecimal.class));
     }
@@ -1208,7 +1217,7 @@ class AppCanonicalBoundaryServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("subtotalUsdt", new BigDecimal("398.000000"));
-        verify(mapper).decrementProductStock(88L, 2);
+        verify(mapper, never()).decrementProductStock(88L, 2);
         verify(mapper).lockActiveDeviceCount(42L, false);
         verify(mapper).lockReservedDeviceOrderCount(42L, false);
     }
