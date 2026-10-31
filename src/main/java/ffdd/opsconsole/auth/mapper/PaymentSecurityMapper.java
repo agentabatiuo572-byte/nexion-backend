@@ -6,8 +6,8 @@ import org.apache.ibatis.annotations.*;
 
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface PaymentSecurityMapper {
-    String FILTER=" FROM nx_payment_security_record WHERE (#{userId} IS NULL OR user_id=#{userId}) AND (#{keyword}='' OR CAST(user_id AS CHAR)=#{keyword} OR record_no=#{keyword} OR EXISTS(SELECT 1 FROM nx_user u WHERE u.id=user_id AND u.is_deleted=0 AND (u.user_no=#{keyword} OR u.nickname LIKE CONCAT('%',#{keyword},'%') OR u.phone=#{keyword}))) AND (#{state}='' OR CASE WHEN state='ACTIVE' AND locked_until &lt;= #{now} THEN 'EXPIRED' ELSE state END=#{state}) AND (#{from} IS NULL OR started_at &gt;= #{from}) AND (#{to} IS NULL OR started_at &lt;= #{to})";
-    @Select("<script>SELECT *"+FILTER+" ORDER BY started_at DESC,record_no LIMIT #{size} OFFSET #{offset}</script>")
+    String FILTER=" FROM nx_payment_security_record r WHERE (#{userId} IS NULL OR r.user_id=#{userId}) AND (#{keyword}='' OR CAST(r.user_id AS CHAR)=#{keyword} OR r.record_no=#{keyword} OR EXISTS(SELECT 1 FROM nx_user u WHERE u.id=r.user_id AND u.is_deleted=0 AND (CONCAT('U',LPAD(u.id,GREATEST(8,LENGTH(CAST(u.id AS CHAR))),'0'))=#{keyword} OR u.nickname LIKE CONCAT('%',#{keyword},'%') OR u.phone=#{keyword}))) AND (#{state}='' OR CASE WHEN r.state='ACTIVE' AND r.locked_until &lt;= #{now} THEN 'EXPIRED' ELSE r.state END=#{state}) AND (#{from} IS NULL OR r.started_at &gt;= #{from}) AND (#{to} IS NULL OR r.started_at &lt;= #{to})";
+    @Select("<script>SELECT r.*"+FILTER+" ORDER BY r.started_at DESC,r.record_no LIMIT #{size} OFFSET #{offset}</script>")
     List<Map<String,Object>> records(@Param("userId") Long userId,@Param("keyword") String keyword,@Param("state") String state,@Param("from") Long from,@Param("to") Long to,@Param("now") long now,@Param("size") int size,@Param("offset") long offset);
     @Select("<script>SELECT COUNT(*)"+FILTER+"</script>")
     long count(@Param("userId") Long userId,@Param("keyword") String keyword,@Param("state") String state,@Param("from") Long from,@Param("to") Long to,@Param("now") long now);
