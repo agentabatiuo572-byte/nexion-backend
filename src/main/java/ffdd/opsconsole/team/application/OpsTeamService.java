@@ -70,8 +70,6 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 @Slf4j
 public class OpsTeamService implements AuditReplayable {
-    @org.springframework.beans.factory.annotation.Autowired
-    private VRankBootstrapService rankBootstrap;
     private static final String COMMISSION_COOLING_DAYS_KEY = "commission/cooling-days";
     private static final int DEFAULT_COMMISSION_COOLING_DAYS = 30;
     private static final Set<String> ACTIVE_KEYS = Set.of(
@@ -241,6 +239,7 @@ public class OpsTeamService implements AuditReplayable {
     private final org.springframework.beans.factory.ObjectProvider<DirectReferralService> directReferrals;
     private final VRankSkuFulfillmentService skuFulfillmentService;
     private final LeaderboardPauseSnapshotService pauseSnapshots;
+    private final VRankBootstrapService rankBootstrap;
 
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> binarySummary = binarySettlementSummary();
