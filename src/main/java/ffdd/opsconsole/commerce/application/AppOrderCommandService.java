@@ -615,6 +615,12 @@ public class AppOrderCommandService {
         return expirePendingOrder(userId,orderNo,pendingOrderTtlMinutes,false);
     }
 
+    /** Locks all ordered participants before a direct-payment caller takes its buyer mutex. */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY, rollbackFor = Exception.class)
+    public void lockDirectPaymentOrderParticipants(String orderNo) {
+        if (promotions != null) promotions.lockOrderParticipants(orderNo);
+    }
+
     /** Called in the transaction that locks and expires the original direct intent. */
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY, rollbackFor = Exception.class)
     public boolean expireDirectPaymentOrder(Long userId,String orderNo) {

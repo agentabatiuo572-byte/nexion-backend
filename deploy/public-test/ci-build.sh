@@ -29,11 +29,12 @@ git rev-parse 'HEAD^{tree}' > artifacts/test-tree.txt
 case "$kind" in
   backend)
     export JAVA_HOME="$JAVA17_HOME" PATH="$JAVA17_HOME/bin:$PATH"
-    export MAVEN_OPTS='-Xms128m -Xmx1536m -XX:MaxMetaspaceSize=384m'
+    # Bound both Maven and its test JVM inside the shared 3 GiB CI budget.
+    export MAVEN_OPTS='-Xms128m -Xmx768m -XX:MaxMetaspaceSize=384m'
     export JAVA_TOOL_OPTIONS='-Djava.io.tmpdir=/home/jenkins/agent/tmp'
     # test is the daily integration branch, so every deployable backend artifact
     # must pass the repository's complete Maven test suite before packaging.
-    mvn -B -ntp -s /opt/nexgrid-ci/maven-settings.xml package
+    mvn -B -ntp -s /opt/nexgrid-ci/maven-settings.xml '-DargLine=-Xms64m -Xmx768m -XX:MaxMetaspaceSize=384m' package
     cp target/nexion-backend-0.0.1-SNAPSHOT.jar artifacts/backend.jar
     ;;
   pc)
