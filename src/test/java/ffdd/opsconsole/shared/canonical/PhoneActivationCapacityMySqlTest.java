@@ -113,6 +113,7 @@ class PhoneActivationCapacityMySqlTest {
         jdbc.update("INSERT INTO nx_admin_device_sku(sku_id,power_text,datacenter,is_deleted) VALUES('capacity-box','120 W','fixture DC',0)");
         jdbc.execute("CREATE TABLE nx_compute_task(user_id BIGINT,user_device_id BIGINT,status VARCHAR(32),"
                 + "source_environment VARCHAR(16) DEFAULT 'PRODUCTION',is_deleted INT DEFAULT 0)");
+        jdbc.execute("CREATE TABLE nx_team_member(user_id BIGINT,member_user_id BIGINT,level INT,is_deleted INT DEFAULT 0) ENGINE=InnoDB");
         // Only the columns read by canonical capacity SQL; no promotion application writes run here.
         jdbc.execute("CREATE TABLE nx_promotion_reservation(reservation_id VARCHAR(64) PRIMARY KEY,"
                 + "beneficiary_id BIGINT,asset VARCHAR(16),status VARCHAR(16),amount DECIMAL(18,6),order_no VARCHAR(96)) ENGINE=InnoDB");
@@ -492,6 +493,23 @@ class PhoneActivationCapacityMySqlTest {
         });
         assertThat(jdbc.queryForObject("SELECT JSON_EXTRACT(purchase_gate_json,'$.quotaSold') FROM nx_admin_device_sku WHERE sku_id='capacity-box'",Integer.class)).isEqualTo(2);
         assertThat(jdbc.queryForObject("SELECT lifetime_quota_gate_generation FROM nx_order_item WHERE order_no=?",Long.class,"ORDER-"+user)).isEqualTo(3L);
+    }
+
+    @Test void paymentGateFactsCannotReuseTheSnapshotFromBeforeTheAccountLock() {
+        long buyer=user(false),child=user(false);
+        jdbc.update("UPDATE nx_user SET v_rank='V1' WHERE id=?",buyer);
+        jdbc.update("INSERT INTO nx_team_member(user_id,member_user_id,level) VALUES(?,?,1)",buyer,child);
+        order(child,1,"SINGLE","PAID","ACTIVATED");
+        jdbc.update("UPDATE nx_order SET compute_points=25 WHERE user_id=?",child);
+        afterOlderSnapshot(buyer,ignored->{
+            jdbc.update("UPDATE nx_user SET v_rank='V2' WHERE id=?",buyer);
+            jdbc.update("UPDATE nx_user SET status='FROZEN' WHERE id=?",child);
+        },ignored->{
+            var facts=paymentMapper.paymentGateFacts(buyer);
+            assertThat(facts.rank()).isEqualTo(2);
+            assertThat(facts.activeDirect()).isZero();
+            assertThat(facts.teamComputePoints()).isEqualByComparingTo(BigDecimal.ZERO);
+        });
     }
 
     @org.junit.jupiter.params.ParameterizedTest

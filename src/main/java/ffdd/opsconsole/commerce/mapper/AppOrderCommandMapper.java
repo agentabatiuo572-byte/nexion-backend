@@ -371,14 +371,14 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
             SELECT CAST(COALESCE(NULLIF(REPLACE(UPPER(u.v_rank),'V',''),''),'0') AS UNSIGNED) AS `rank`,
                    (SELECT COUNT(*) FROM nx_team_member tm JOIN nx_user child ON child.id=tm.member_user_id
                      WHERE tm.user_id=u.id AND tm.level=1 AND tm.is_deleted=0 AND child.sandbox=u.sandbox
-                       AND child.status='ACTIVE' AND child.is_deleted=0) AS activeDirect,
+                       AND child.status='ACTIVE' AND child.is_deleted=0 FOR SHARE) AS activeDirect,
                    (SELECT COALESCE(SUM(o.compute_points),0) FROM nx_team_member tm JOIN nx_user member
                      ON member.id=tm.member_user_id AND member.sandbox=u.sandbox
                      JOIN nx_order o ON o.user_id=tm.member_user_id AND o.is_deleted=0
                       AND o.payment_status IN ('PAID','CONFIRMED','SUCCESS')
                       AND o.order_status NOT IN ('REFUNDED','CHARGEBACK')
-                    WHERE tm.user_id=u.id AND tm.member_user_id<>u.id AND tm.is_deleted=0 AND member.status='ACTIVE' AND member.is_deleted=0) AS teamComputePoints
-              FROM nx_user u WHERE u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0 LIMIT 1
+                    WHERE tm.user_id=u.id AND tm.member_user_id<>u.id AND tm.is_deleted=0 AND member.status='ACTIVE' AND member.is_deleted=0 FOR SHARE) AS teamComputePoints
+              FROM nx_user u WHERE u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0 LIMIT 1 FOR SHARE
             """)
     CanonicalStateMapper.PurchaseFacts paymentGateFacts(@Param("userId") Long userId);
 
