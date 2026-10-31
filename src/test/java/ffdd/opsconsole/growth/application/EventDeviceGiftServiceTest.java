@@ -11,7 +11,8 @@ import static org.mockito.Mockito.*;
 
 class EventDeviceGiftServiceTest {
     private final PromotionMapper db = mock(PromotionMapper.class);
-    private final EventDeviceGiftService service = new EventDeviceGiftService(db);
+    private final ffdd.opsconsole.device.application.TestCloudActivationAdmission admission=mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class);
+    private final EventDeviceGiftService service = new EventDeviceGiftService(db,admission);
     private Map<String,Object> product;
 
     @BeforeEach void setUp() {
@@ -77,5 +78,13 @@ class EventDeviceGiftServiceTest {
             assertThatThrownBy(()->service.award(7L,"real-source","SERVER-A",1)).hasMessageContaining("H4_EVENT_GIFT_PRODUCT_UNAVAILABLE");
         }
         verify(db,never()).write(anyString(),any(Object[].class));
+    }
+    @Test void theFullGiftBatchIsAdmittedBeforeStockOrAnyDeviceWrite() {
+        when(db.user(7L,true)).thenReturn(Map.of("status","ACTIVE","sandbox",0)); when(db.deviceSlotCap()).thenReturn(6L);
+        doThrow(new ffdd.opsconsole.shared.exception.BizException(503,"TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE"))
+                .when(admission).requireCapacity(2);
+        assertThatThrownBy(()->service.award(7L,"real-event-source","SERVER-A",2)).hasMessage("TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE");
+        var order=inOrder(admission,db); order.verify(admission).lock(); order.verify(db).user(7L,true);
+        order.verify(admission).requireCapacity(2); verify(db,never()).write(anyString(),any(Object[].class));
     }
 }

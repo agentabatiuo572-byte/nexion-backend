@@ -91,7 +91,7 @@ class PurchasePaymentMySqlTest {
         when(provider.projectCoins()).thenReturn(List.of(new CregisGateway.Coin(CregisNetwork.BEP20.currency(),"USDT-BEP20","2510",CregisNetwork.BEP20.tokenId(),true,true),
                 new CregisGateway.Coin(CregisNetwork.ERC20.currency(),"USDT-ERC20","60",CregisNetwork.ERC20.tokenId(),true,true)));
         var fx=mock(VietnamPaymentMapper.class);when(fx.findFxQuoteConfig()).thenReturn(Map.of("baseRateVndPerUsdt","25000","buySpreadPct","0","version",1));
-        service=new PurchasePaymentService(db,policy,orders,tradeins,mock(AppTrialLifecycleService.class),hd,gateway,cr,router,chain,fx,new DataSourceTransactionManager(source),new ObjectMapper(),audit,commands);
+        service=new PurchasePaymentService(db,policy,orders,tradeins,mock(AppTrialLifecycleService.class),hd,gateway,cr,router,chain,fx,new DataSourceTransactionManager(source),new ObjectMapper(),audit,commands, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
         when(gateway.createPayOrder(any())).thenReturn(new HdPayGateway.PayPage("https://pay.example/hosted"));
         when(orders.settleVerifiedExternal(eq(7L),eq("ORDER-1"))).thenAnswer(i->{
             VerifiedPurchasePayment.require(7, new BigDecimal("19.995"));

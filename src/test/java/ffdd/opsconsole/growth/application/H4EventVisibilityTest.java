@@ -21,7 +21,7 @@ class H4EventVisibilityTest {
     final H4EventCommerceService commerce=mock(H4EventCommerceService.class);
     final AppGrowthEngagementMapper events=mock(AppGrowthEngagementMapper.class);
     final AdminIdempotencyService idempotency=mock(AdminIdempotencyService.class);
-    final H4EventEngine engine=new H4EventEngine(db,policies,commerce,events,null,null,null,idempotency,mock(AuditLogService.class));
+    final H4EventEngine engine=new H4EventEngine(db,policies,commerce,events,null,null,null,idempotency,mock(AuditLogService.class), org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
     final LocalDateTime now=LocalDateTime.now(ZoneOffset.UTC);
     final Map<String,Object> rule=values("event_code",CODE,"kind","boost","enabled",1,"starts_at",now.minusDays(1),"ends_at",now.plusDays(1),"activated_at",now.minusDays(1),"spent_tickets",0);
     final Map<String,Object> rules=Map.of("action","REINVEST_TICKETS","thresholdUsdt",100,"ticketsPerThreshold",2,"ticketBudget",10);

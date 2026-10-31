@@ -118,7 +118,7 @@ class TrialGraceStateMySqlIntegrationTest {
         environment.setActiveProfiles("dev");
         AppTrialLifecycleService target = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(paymentAttribution(), mapper, earnings,
                 mock(AdminIdempotencyService.class), coverage, audit, outbox,
-                mock(StorefrontProductReleasePolicy.class), mock(CanonicalStateMapper.class), environment, CLOCK));
+                mock(StorefrontProductReleasePolicy.class), mock(CanonicalStateMapper.class), environment, CLOCK, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
         ProxyFactory proxy = new ProxyFactory(target);
         proxy.setProxyTargetClass(true);
         proxy.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(dataSource),

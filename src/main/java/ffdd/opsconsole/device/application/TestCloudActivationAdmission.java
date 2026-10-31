@@ -30,11 +30,16 @@ public class TestCloudActivationAdmission {
             throw new BizException(503,"TEST_CLOUD_RESOURCE_ADMISSION_UNAVAILABLE");
     }
     public void requireCapacity() {
-        requireCapacity(Path.of("/run/uvel-task-control/capacity.json"));
+        requireCapacity(1);
     }
-    void requireCapacity(Path snapshot) {
+    public void requireCapacity(int additional) {
+        requireCapacity(Path.of("/run/uvel-task-control/capacity.json"),additional);
+    }
+    void requireCapacity(Path snapshot,int additional) {
         if(!enabled()) return;
+        if(additional==0) return; // Existing allocations survive a missing or pressured admission snapshot.
         try {
+            if(additional<0) throw new IllegalArgumentException();
             byte[] bytes=Files.readAllBytes(snapshot);
             if(bytes.length>4096) throw new IllegalArgumentException();
             var value=JSON.readTree(bytes); long now=clock.instant().getEpochSecond();
@@ -42,10 +47,31 @@ public class TestCloudActivationAdmission {
             int maximum=value.path("maxActiveExecutors").asInt(-1);
             if(value.path("version").asInt()!=1 || !value.path("allowNewActivations").isBoolean()
                     || !value.path("allowNewActivations").booleanValue() || observed>now || observed<now-30
-                    || expires<=now || expires>observed+30 || maximum<1 || mapper.activeResourceExecutors()>=maximum)
+                    || expires<=now || expires>observed+30 || maximum<1 || (long)mapper.activeResourceExecutors()+additional>maximum)
                 throw new IllegalArgumentException();
         } catch(java.io.IOException | IllegalArgumentException unavailable) {
             throw new BizException(503,"TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE");
         }
+    }
+    void requireCapacity(Path snapshot) { requireCapacity(snapshot,1); }
+    public void requireReplacementCapacity(long sourceDeviceId,int newExecutors) {
+        requireReplacementCapacity(Path.of("/run/uvel-task-control/capacity.json"),sourceDeviceId,newExecutors);
+    }
+    void requireReplacementCapacity(Path snapshot,long sourceDeviceId,int newExecutors) {
+        if(!enabled()) return;
+        if(newExecutors<0) throw new BizException(503,"TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE");
+        requireCapacity(snapshot,Math.max(0,newExecutors-mapper.resourceExecutorCount(sourceDeviceId)));
+    }
+    public void requireRestoreCapacity(long deviceId) {
+        requireRestoreCapacity(Path.of("/run/uvel-task-control/capacity.json"),deviceId);
+    }
+    void requireRestoreCapacity(Path snapshot,long deviceId) {
+        if(enabled()) requireCapacity(snapshot,mapper.restoreResourceDelta(deviceId));
+    }
+    public void requireActivationCapacity(long deviceId) {
+        requireActivationCapacity(Path.of("/run/uvel-task-control/capacity.json"),deviceId);
+    }
+    void requireActivationCapacity(Path snapshot,long deviceId) {
+        if(enabled()) requireCapacity(snapshot,mapper.activationResourceDelta(deviceId));
     }
 }

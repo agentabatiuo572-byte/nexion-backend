@@ -24,7 +24,7 @@ class PromotionDeleteTest {
     final AdminIdempotencyService idempotency=mock(AdminIdempotencyService.class);
     final AuditLogService audit=mock(AuditLogService.class);
     final PromotionAdminService admin=new PromotionAdminService(db,new PromotionContractValidator(new ObjectMapper()),null,null,null,null,null,
-        null,null,idempotency,audit,mock(A2RuntimePolicy.class),null,mock(PromotionBannerService.class),null);
+        null,null,idempotency,audit,mock(A2RuntimePolicy.class),null,mock(PromotionBannerService.class),null,org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
     final Map<String,Object> request=values("expectedRevision",7,"expectedDraftRevision",3,"reason","Delete isolated inactive promotion","evidenceRefs",List.of());
 
     @BeforeEach void setup(){

@@ -1,5 +1,6 @@
 package ffdd.opsconsole.commerce.application;
 
+import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import ffdd.opsconsole.shared.config.HardwareQuotaPeriod;
 import ffdd.opsconsole.finance.purchase.VerifiedPurchasePayment;
 import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
@@ -54,6 +55,7 @@ public class AppOrderCommandService {
     private final EventOutboxService outbox;
     private final PromotionOrderService promotions;
     private final SupportPaymentAttributionFacade paymentAttribution;
+    private final TestCloudActivationAdmission testCloudAdmission;
     private final StorefrontPurchaseGatePolicy purchaseGatePolicy = new StorefrontPurchaseGatePolicy();
     @SuppressWarnings("ArchitectureConfigField") // Explicit constructor parameter carries the @Value binding.
     private final int pendingOrderTtlMinutes;
@@ -71,7 +73,7 @@ public class AppOrderCommandService {
             @Value("${nexion.commerce.pending-order-ttl-minutes:30}") int pendingOrderTtlMinutes,
             PromotionOrderService promotions,
             SupportPaymentAttributionFacade paymentAttribution,
-            ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade paymentAuthorization) {
+            ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade paymentAuthorization, TestCloudActivationAdmission testCloudAdmission) {
         this.mapper = mapper;
         this.idempotency = idempotency;
         this.audit = audit;
@@ -84,15 +86,16 @@ public class AppOrderCommandService {
         this.paymentAttribution = java.util.Objects.requireNonNull(paymentAttribution);
         this.pendingOrderTtlMinutes = Math.max(1, pendingOrderTtlMinutes);
         this.paymentAuthorization=paymentAuthorization;
+        this.testCloudAdmission=java.util.Objects.requireNonNull(testCloudAdmission);
     }
 
     public AppOrderCommandService(AppOrderCommandMapper mapper,AdminIdempotencyService idempotency,
             AuditLogService audit,FundsSandboxProfileGuard sandboxGuard,CommerceAcceptanceSandboxMapper sandboxMapper,
             CommerceAcceptanceSandboxService sandboxService,CommerceAcceptanceRun acceptanceRun,
             EventOutboxService outbox,int pendingOrderTtlMinutes,PromotionOrderService promotions,
-            SupportPaymentAttributionFacade paymentAttribution) {
+            SupportPaymentAttributionFacade paymentAttribution, TestCloudActivationAdmission testCloudAdmission) {
         this(mapper,idempotency,audit,sandboxGuard,sandboxMapper,sandboxService,acceptanceRun,outbox,
-                pendingOrderTtlMinutes,promotions,paymentAttribution,null);
+                pendingOrderTtlMinutes,promotions,paymentAttribution,null,testCloudAdmission);
     }
 
     AppOrderCommandService(
@@ -104,9 +107,9 @@ public class AppOrderCommandService {
             CommerceAcceptanceSandboxService sandboxService,
             CommerceAcceptanceRun acceptanceRun,
             EventOutboxService outbox,
-            SupportPaymentAttributionFacade paymentAttribution) {
+            SupportPaymentAttributionFacade paymentAttribution, TestCloudActivationAdmission testCloudAdmission) {
         this(mapper, idempotency, audit, sandboxGuard, sandboxMapper, sandboxService,
-                acceptanceRun, outbox, 30, null, paymentAttribution);
+                acceptanceRun, outbox, 30, null, paymentAttribution, testCloudAdmission);
     }
 
     AppOrderCommandService(
@@ -117,8 +120,8 @@ public class AppOrderCommandService {
             CommerceAcceptanceSandboxMapper sandboxMapper,
             CommerceAcceptanceSandboxService sandboxService,
             CommerceAcceptanceRun acceptanceRun,
-            SupportPaymentAttributionFacade paymentAttribution) {
-        this(mapper, idempotency, audit, sandboxGuard, sandboxMapper, sandboxService, acceptanceRun, null, paymentAttribution);
+            SupportPaymentAttributionFacade paymentAttribution, TestCloudActivationAdmission testCloudAdmission) {
+        this(mapper, idempotency, audit, sandboxGuard, sandboxMapper, sandboxService, acceptanceRun, null, paymentAttribution, testCloudAdmission);
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
@@ -199,6 +202,7 @@ public class AppOrderCommandService {
     }
 
     private ApiResult<Map<String, Object>> payFromWallet(Long userId, String orderNo) {
+        testCloudAdmission.lock();
         Long owner=mapper.findDevelopmentPayOrderOwner(orderNo);
         if (!userId.equals(owner)) return ApiResult.fail(403, "ORDER_FORBIDDEN");
         if (promotions != null) promotions.lockOrderParticipants(orderNo);
@@ -348,6 +352,7 @@ public class AppOrderCommandService {
             // be reclaimed safely after the wallet balance changes.
             throw new BizException(409, "ORDER_WALLET_INSUFFICIENT");
         }
+        testCloudAdmission.requireCapacity(order.quantity());
         if (consumeInventory) consumePaymentInventory(userId, orderNo, order.quantity());
         BigDecimal balanceAfter = fullyDiscounted || external ? null : wallet.usdtAvailable().subtract(order.amountUsdt());
         if (!fullyDiscounted && !external) {

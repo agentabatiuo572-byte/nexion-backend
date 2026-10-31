@@ -252,7 +252,7 @@ class TrialEarlyPurchaseQuoteTest {
 
     private AppTrialLifecycleService service(Instant at) {
         return ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(capture, mapper, earnings, idempotency, coverage, audit, outbox,
-                releasePolicy, canonicalStateMapper, environment(), Clock.fixed(at, SHANGHAI)));
+                releasePolicy, canonicalStateMapper, environment(), Clock.fixed(at, SHANGHAI), org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
     }
 
     private static MockEnvironment environment() {

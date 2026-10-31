@@ -34,7 +34,7 @@ class AppGrowthProvenanceResponseTest {
             null,
             mock(StreakPerkBusinessAvailabilityFacade.class),
             java.util.Optional.empty(),
-            null);
+            null, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
 
     @Test
     void productionPointsStateCarriesCanonicalEnvironmentFence() {

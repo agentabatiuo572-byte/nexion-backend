@@ -15,7 +15,7 @@ class PromotionBannerDraftTest {
     private final PromotionMapper db = mock(PromotionMapper.class);
     private final PromotionBannerService banners = mock(PromotionBannerService.class);
     private final PromotionAdminService admin = new PromotionAdminService(db,
-            new PromotionContractValidator(new ObjectMapper()), null, null, null, null, null, null, null, null, null, null, null, banners, mock(PromotionAccountSampleService.class));
+            new PromotionContractValidator(new ObjectMapper()), null, null, null, null, null, null, null, null, null, null, null, banners, mock(PromotionAccountSampleService.class),org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
 
     @Test void savedBannerBelongsToDraftAndPatchPreservesOrExplicitlyClearsIt() {
         when(db.activity("PROMO-1", true)).thenReturn(values("status", "DRAFT", "draft_version", 2));

@@ -27,6 +27,29 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class AppOrderCommandServiceTest {
+    @Test void globalBatchCapacityRejectsBeforeCashStockOrDevicesAndLocksBeforeParticipants() {
+        var mapper=commandMapper(); var guard=mock(FundsSandboxProfileGuard.class);
+        var idem=mock(AdminIdempotencyService.class); var promotions=mock(PromotionOrderService.class);
+        var admission=mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true); when(mapper.activeUserEnvironment(7L)).thenReturn(0);
+        when(mapper.findDevelopmentPayOrderOwner("RESOURCE-BATCH")).thenReturn(7L);
+        when(mapper.lockDevelopmentPayOrder("RESOURCE-BATCH")).thenReturn(new AppOrderCommandMapper.DevelopmentPayOrder(
+                "RESOURCE-BATCH",7L,18L,2,"SINGLE",2,BigDecimal.TEN,null,"PENDING","PENDING_PAYMENT","WAITING_PAYMENT",false));
+        when(mapper.lockDevelopmentWallet(7L)).thenReturn(new AppOrderCommandMapper.DevelopmentWallet(BigDecimal.valueOf(100),1L));
+        doAnswer(call->((Supplier<?>)call.getArgument(4)).get()).when(idem).execute(anyString(),anyString(),anyString(),any(),any());
+        doThrow(new BizException(503,"TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE")).when(admission).requireCapacity(2);
+        var service=ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(
+                mapper,idem,mock(AuditLogService.class),guard,null,null,null,null,30,promotions,capture,admission));
+        assertThatThrownBy(()->service.pay(7L,"RESOURCE-BATCH","resource-batch-key")).hasMessage("TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE");
+        var sequence=inOrder(admission,mapper,promotions,capture);
+        sequence.verify(admission).lock(); sequence.verify(mapper).findDevelopmentPayOrderOwner("RESOURCE-BATCH");
+        sequence.verify(promotions).lockOrderParticipants("RESOURCE-BATCH");
+        sequence.verify(capture).prepare(7L,Source.WALLET_ORDER,"RESOURCE-BATCH");
+        sequence.verify(mapper).lockDevelopmentPayOrder("RESOURCE-BATCH"); sequence.verify(admission).requireCapacity(2);
+        verify(mapper,never()).consumePaymentStock(anyLong(),anyInt()); verify(mapper,never()).debitDevelopmentWallet(any(),any(),any());
+        verify(mapper,never()).markDevelopmentOrderActivated(anyString(),any(),anyString());
+        verify(mapper,never()).insertDevelopmentDevice(anyString(),any(),anyString(),anyInt());
+    }
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"replay,true","cancel,true","expire,true","replay,false","cancel,false","expire,false"})
     void deletedOrMissingCatalogueDoesNotBlockPaidReplayOrUnreservedClosure(String operation,boolean rowExists) {
@@ -55,13 +78,16 @@ class AppOrderCommandServiceTest {
             BigDecimal.TEN,"PAY-WALLET-04973791D31EFDD61DB4B2D3A64E7995","PAID","COMPLETED","ACTIVATED"));
         when(mapper.lockDevelopmentWallet(7L)).thenReturn(new AppOrderCommandMapper.DevelopmentWallet(BigDecimal.TEN,1L));
         doAnswer(call->((Supplier<?>)call.getArgument(4)).get()).when(idem).execute(anyString(),anyString(),anyString(),any(),any());
-        var service=ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper,idem,mock(AuditLogService.class),guard,null,null,null,null,30,promotions,capture));
+        var admission=mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class);
+        doThrow(new BizException(503,"TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE")).when(admission).requireCapacity(anyInt());
+        var service=ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper,idem,mock(AuditLogService.class),guard,null,null,null,null,30,promotions,capture,admission));
         if("replay".equals(operation))assertThat(service.pay(7L,"LIFE","replay").getCode()).isZero();
         else if("cancel".equals(operation))assertThat(service.cancel(7L,"LIFE","cancel").getCode()).isZero();
         else assertThat(service.expirePendingOrder(7L,"LIFE")).isTrue();
         verify(mapper,never()).hasNonPayableOrderProduct(anyString());
         verify(mapper,never()).returnStock(anyLong(),anyInt());
         verify(db,never()).product(anyString(),anyBoolean());
+        verify(admission,never()).requireCapacity(anyInt());
     }
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"4,1,OK","5,1,CAPACITY_REPLACEMENT_REQUIRED","4,0,PRODUCT_OUT_OF_STOCK"})
@@ -83,7 +109,7 @@ class AppOrderCommandServiceTest {
         when(mapper.attribution(7L)).thenReturn(Map.of("phase","P1","accountAgeMonths",1,"cohort","2026-W40"));
         when(mapper.insertDevelopmentOrderHistory(anyString(),anyString(),anyString(),anyString())).thenReturn(1);
         doAnswer(call->((Supplier<?>)call.getArgument(4)).get()).when(idempotency).execute(anyString(),anyString(),anyString(),any(),any());
-        var service=ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper,idempotency,mock(AuditLogService.class),guard,null,null,null,capture));
+        var service=ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper,idempotency,mock(AuditLogService.class),guard,null,null,null,capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
         if(!"OK".equals(expected)){
             assertThatThrownBy(()->service.pay(7L,"NEW-0","new-0-key")).hasMessage(expected);
             verify(mapper,never()).debitDevelopmentWallet(anyLong(),any(),anyLong());
@@ -104,7 +130,7 @@ class AppOrderCommandServiceTest {
         when(mapper.lockItems("NEW-0")).thenReturn(List.of(new AppOrderCommandMapper.ItemRow("NEW-0",18L,"cloud-share",1,false,null)));
         when(mapper.cancelOrder("NEW-0",7L)).thenReturn(1);
         doAnswer(call->((Supplier<?>)call.getArgument(4)).get()).when(idempotency).execute(anyString(),anyString(),anyString(),any(),any());
-        assertThat(new AppOrderCommandService(mapper,idempotency,mock(AuditLogService.class),guard,null,null,null,capture).cancel(7L,"NEW-0","cancel-0").getCode()).isZero();
+        assertThat(new AppOrderCommandService(mapper,idempotency,mock(AuditLogService.class),guard,null,null,null,capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)).cancel(7L,"NEW-0","cancel-0").getCode()).isZero();
         verify(mapper,never()).returnStock(anyLong(),anyInt());verify(mapper,never()).releaseLifetimeQuota(anyString(),anyInt(),anyLong());
     }
     private final SupportPaymentAttributionFacade capture = paymentAttribution();
@@ -122,7 +148,7 @@ class AppOrderCommandServiceTest {
         when(mapper.lockOccupiedDeviceSlotCount(7L)).thenReturn(occupied);
         doAnswer(call -> ((Supplier<?>) call.getArgument(4)).get())
                 .when(idempotency).execute(anyString(),anyString(),anyString(),any(),any());
-        assertThatThrownBy(() -> ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper,idempotency,audit,guard,null,null,null,capture))
+        assertThatThrownBy(() -> ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper,idempotency,audit,guard,null,null,null,capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)))
                 .pay(7L,"ORD-SLOTS","capacity-payment"))
                 .isInstanceOf(BizException.class).hasMessage("CAPACITY_REPLACEMENT_REQUIRED");
         verify(mapper,never()).lockDevelopmentWallet(any());
@@ -160,7 +186,7 @@ class AppOrderCommandServiceTest {
         try (var clock = mockStatic(java.time.LocalDateTime.class, CALLS_REAL_METHODS)) {
             clock.when(() -> java.time.LocalDateTime.now(java.time.ZoneOffset.UTC)).thenReturn(now);
             var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
-                    null, null, null, capture)).pay(7L, "ORD-BOUNDARY", "boundary-key");
+                    null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class))).pay(7L, "ORD-BOUNDARY", "boundary-key");
             assertThat(result.getMessage()).isEqualTo("ORDER_MONTHLY_QUOTA_EXHAUSTED");
         }
         verify(mapper).purchaseQuotaFacts(7L, from.plusHours(8), until.plusHours(8));
@@ -184,7 +210,7 @@ class AppOrderCommandServiceTest {
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
         var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
-                null, null, null, capture)).pay(7L, "ORD-QUOTA", "quota-test-key");
+                null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class))).pay(7L, "ORD-QUOTA", "quota-test-key");
         assertThat(result.getMessage()).isEqualTo("ORDER_MONTHLY_QUOTA_EXHAUSTED");
         verify(mapper, never()).debitDevelopmentWallet(any(), any(), any());
         verify(mapper, never()).consumeMonthlyQuota(any(), any(), any(), any());
@@ -209,7 +235,7 @@ class AppOrderCommandServiceTest {
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
         var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
-                null, null, null, capture)).pay(7L, "ORD-F4B-ALL", "f4b-all-key");
+                null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class))).pay(7L, "ORD-F4B-ALL", "f4b-all-key");
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("ORDER_MONTHLY_QUOTA_REQUIREMENTS_NOT_MET");
@@ -240,7 +266,7 @@ class AppOrderCommandServiceTest {
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
         var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
-                null, null, null, capture)).pay(7L, "ORD-F4B-EITHER", "f4b-either-key");
+                null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class))).pay(7L, "ORD-F4B-EITHER", "f4b-either-key");
 
         assertThat(result.getMessage()).isEqualTo("ORDER_MONTHLY_QUOTA_EXHAUSTED");
         verify(mapper).lockMonthlyQuotaUsage(eq(1L), any(), any());
@@ -270,7 +296,7 @@ class AppOrderCommandServiceTest {
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
         var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
-                null, null, null, capture)).pay(7L, "ORD-F4B-CURRENT-MONTH", "f4b-current-month-key");
+                null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class))).pay(7L, "ORD-F4B-CURRENT-MONTH", "f4b-current-month-key");
 
         assertThat(result.getMessage()).isEqualTo("ORDER_MONTHLY_QUOTA_EXHAUSTED");
         verify(mapper).lockMonthlyQuotaUsage(eq(1L), any(), any());
@@ -313,7 +339,7 @@ class AppOrderCommandServiceTest {
         when(mapper.restoreVoucher("VGR-19", 7L, "ORD-EXPIRED-1")).thenReturn(1);
 
         var service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, mock(AdminIdempotencyService.class), audit,
-                guard, null, null, null, capture));
+                guard, null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
 
         assertThat(service.expirePendingOrder(7L, "ORD-EXPIRED-1")).isTrue();
         verify(mapper).returnStock(1L, 1);
@@ -332,7 +358,7 @@ class AppOrderCommandServiceTest {
             when(mapper.countNonCancellableHdPaySessions("ORD-RACE")).thenReturn(unknownPayment ? 1L : 0L);
             when(mapper.countExpiredPayableOrder("ORD-RACE", 7L, 30)).thenReturn(unknownPayment ? 1 : 0);
             var service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, mock(AdminIdempotencyService.class),
-                    mock(AuditLogService.class), mock(FundsSandboxProfileGuard.class), null, null, null, capture));
+                    mock(AuditLogService.class), mock(FundsSandboxProfileGuard.class), null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
             assertThat(service.expirePendingOrder(7L, "ORD-RACE")).isFalse();
             verify(mapper, never()).lockItems(anyString());
             verify(mapper, never()).expireOrder(anyString(), anyLong());
@@ -369,7 +395,7 @@ class AppOrderCommandServiceTest {
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
-        var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, audit, guard, null, null, null, capture))
+        var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, audit, guard, null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)))
                 .pay(7L, "ORD-FREE-1", "fully-discounted-payment");
 
         assertThat(result.getCode()).isZero();
@@ -406,7 +432,7 @@ class AppOrderCommandServiceTest {
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
         var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
-                null, null, null, capture)).pay(7L, "ORD-FREE-NO-VOUCHER", "free-without-voucher");
+                null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class))).pay(7L, "ORD-FREE-NO-VOUCHER", "free-without-voucher");
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("ORDER_VOUCHER_SETTLEMENT_INVALID");
@@ -433,7 +459,7 @@ class AppOrderCommandServiceTest {
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
         var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
-                null, null, null, capture)).pay(7L, "ORD-E1-UNLISTED", "payment-e1-unlisted");
+                null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class))).pay(7L, "ORD-E1-UNLISTED", "payment-e1-unlisted");
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("ORDER_PRODUCT_NOT_PAYABLE");
@@ -464,7 +490,7 @@ class AppOrderCommandServiceTest {
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
         var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
-                null, null, null, capture)).pay(7L, "ORD-EXPIRED-PAY", "payment-expired");
+                null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class))).pay(7L, "ORD-EXPIRED-PAY", "payment-expired");
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("ORDER_PAYMENT_EXPIRED");
@@ -491,7 +517,7 @@ class AppOrderCommandServiceTest {
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
         var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
-                null, null, null, capture)).pay(7L, "ORD-EMERGENCY-STOP", "payment-emergency-stop");
+                null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class))).pay(7L, "ORD-EMERGENCY-STOP", "payment-emergency-stop");
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("COMMERCE_PAYMENT_EMERGENCY_STOPPED");
@@ -537,14 +563,14 @@ class AppOrderCommandServiceTest {
         if (failCapture) {
             org.mockito.Mockito.doThrow(new IllegalStateException("CAPTURE_WRITE_FAILED"))
                     .when(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
-            org.assertj.core.api.Assertions.assertThatThrownBy(() -> ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, audit, guard, null, null, null, outbox, capture))
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, audit, guard, null, null, null, outbox, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)))
                 .pay(7L, "ORD-DEV-1", "development-pay-key"))
                     .isInstanceOf(IllegalStateException.class).hasMessage("CAPTURE_WRITE_FAILED");
         org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
             return;
         }
 
-        var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, audit, guard, null, null, null, outbox, capture))
+        var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, audit, guard, null, null, null, outbox, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)))
                 .pay(7L, "ORD-DEV-1", "development-pay-key");
 
         assertThat(result.getCode()).isZero();
@@ -605,7 +631,7 @@ class AppOrderCommandServiceTest {
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
         var service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
-                null, null, null, capture));
+                null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
 
         assertThatThrownBy(() -> service.pay(7L, "ORD-DEV-LOW", "development-pay-low"))
                 .isInstanceOf(BizException.class)
@@ -636,7 +662,7 @@ class AppOrderCommandServiceTest {
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
         assertThatThrownBy(() -> ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
-                null, null, null, capture)).pay(7L, "ORD-WALLET-CAS", "wallet-cas-key"))
+                null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class))).pay(7L, "ORD-WALLET-CAS", "wallet-cas-key"))
                 .isInstanceOf(BizException.class)
                 .hasMessage("ORDER_WALLET_CONFLICT");
         verify(mapper).debitDevelopmentWallet(7L, new BigDecimal("20.000000"), 4L);
@@ -665,7 +691,7 @@ class AppOrderCommandServiceTest {
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
         var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
-                null, null, null, capture)).pay(7L, "ORD-HDPAY-LEGACY", "wallet-pay-legacy");
+                null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class))).pay(7L, "ORD-HDPAY-LEGACY", "wallet-pay-legacy");
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("HDPAY_COMMERCE_PAYMENT_REVIEW_REQUIRED");
@@ -696,7 +722,7 @@ class AppOrderCommandServiceTest {
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
         var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
-                null, null, null, capture)).pay(7L, "ORD-DEV-PAID", "development-pay-replay");
+                null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class))).pay(7L, "ORD-DEV-PAID", "development-pay-replay");
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("idempotent", true)
@@ -739,7 +765,7 @@ class AppOrderCommandServiceTest {
         when(mapper.releaseLifetimeQuota("S1", 1, 7L)).thenReturn(1);
         when(mapper.cancelOrder("BND-1", 7L)).thenReturn(1);
 
-        var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, audit, guard, null, null, null, capture))
+        var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, audit, guard, null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)))
                 .cancel(7L, "BND-1", "cancel-key-1");
 
         assertThat(result.getCode()).isZero();
@@ -771,7 +797,7 @@ class AppOrderCommandServiceTest {
         when(mapper.returnStock(1L,1)).thenReturn(1);when(mapper.cancelOrder("ORD-CANCEL",7L)).thenReturn(1);
         doAnswer(call -> ((Supplier<?>) call.getArgument(4)).get()).when(idempotency)
                 .executeRetained(anyString(),anyString(),anyString(),any(),any());
-        var result=new AppOrderCommandService(mapper,idempotency,mock(AuditLogService.class),guard,null,null,null,null,30,promotions,capture)
+        var result=new AppOrderCommandService(mapper,idempotency,mock(AuditLogService.class),guard,null,null,null,null,30,promotions,capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class))
                 .cancel(7L,"ORD-CANCEL","cancel-recovery");
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsAllEntriesOf(frozen).containsEntry("orderNo","ORD-CANCEL")
@@ -808,7 +834,7 @@ class AppOrderCommandServiceTest {
             when(mapper.expireOrder("BND-MULTI", 7L)).thenReturn(1);
             when(mapper.countExpiredPayableOrder("BND-MULTI", 7L, 30)).thenReturn(1);
             var service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
-                    null, null, null, null, 30, promotions, capture));
+                    null, null, null, null, 30, promotions, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
 
             if (expired) assertThat(service.expirePendingOrder(7L, "BND-MULTI")).isTrue();
             else assertThat(service.cancel(7L, "BND-MULTI", "multi-cancel").getCode()).isZero();
@@ -847,7 +873,7 @@ class AppOrderCommandServiceTest {
         when(mapper.restoreVoucher("VGR-19", 7L, "ORD-VOUCHER")).thenReturn(1);
 
         var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(
-                mapper, idempotency, mock(AuditLogService.class), guard, null, null, null, capture))
+                mapper, idempotency, mock(AuditLogService.class), guard, null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)))
                 .cancel(7L, "ORD-VOUCHER", "cancel-key-voucher");
 
         assertThat(result.getCode()).isZero();
@@ -870,7 +896,7 @@ class AppOrderCommandServiceTest {
         when(mapper.lockItems("ORD-DIRECT")).thenReturn(List.of(new AppOrderCommandMapper.ItemRow("ORD-DIRECT",1L,"SKU-1",2)));
         when(mapper.cancelOrder("ORD-DIRECT",7L)).thenReturn(1);
 
-        var service = new AppOrderCommandService(mapper,idempotency,audit,guard,null,null,null,capture);
+        var service = new AppOrderCommandService(mapper,idempotency,audit,guard,null,null,null,capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
         assertThatThrownBy(()->service.cancel(7L,"ORD-DIRECT","original-cancel-key"))
                 .isInstanceOfSatisfying(BizException.class,error->assertThat(error.getCode()).isEqualTo(409))
                 .hasMessage("ORDER_EXTERNAL_PAYMENT_IN_PROGRESS");
@@ -896,7 +922,7 @@ class AppOrderCommandServiceTest {
         when(mapper.countNonCancellableHdPaySessions("ORD-HDPAY-PREPARING")).thenReturn(1L);
 
         var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(
-                mapper, idempotency, mock(AuditLogService.class), guard, null, null, null, capture))
+                mapper, idempotency, mock(AuditLogService.class), guard, null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)))
                 .cancel(7L, "ORD-HDPAY-PREPARING", "cancel-key-hdpay-preparing");
 
         assertThat(result.getCode()).isEqualTo(409);
@@ -926,7 +952,7 @@ class AppOrderCommandServiceTest {
                 .thenReturn(new AppOrderCommandMapper.QuotaState(3, 8L));
         when(mapper.cancelOrder("ORD-RESET", 7L)).thenReturn(1);
 
-        var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard, null, null, null, capture))
+        var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard, null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)))
                 .cancel(7L, "ORD-RESET", "cancel-key-reset");
 
         assertThat(result.getCode()).isZero();
@@ -954,7 +980,7 @@ class AppOrderCommandServiceTest {
         when(mapper.lockLifetimeQuotaState("S1")).thenReturn(null);
         when(mapper.cancelOrder("ORD-GATE-DELETED", 7L)).thenReturn(1);
 
-        var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard, null, null, null, capture))
+        var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard, null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)))
                 .cancel(7L, "ORD-GATE-DELETED", "cancel-key-gate-deleted");
 
         assertThat(result.getCode()).isZero();
@@ -977,7 +1003,7 @@ class AppOrderCommandServiceTest {
                 "ORD-CANCELLED", 7L, 1L, 1, "SINGLE", 1, "CANCELLED", "CANCELLED", "WAITING_PAYMENT"));
         when(mapper.countActiveDirectPaymentIntent("ORD-CANCELLED")).thenReturn(1);
 
-        var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard, null, null, null, capture))
+        var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard, null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)))
                 .cancel(7L, "ORD-CANCELLED", "cancel-key-idempotent");
 
         assertThat(result.getData()).containsEntry("serverCanonical", true)
@@ -998,7 +1024,7 @@ class AppOrderCommandServiceTest {
         when(mapper.lockUser(7L)).thenReturn(new CanonicalStateMapper.UserLock(7L, false));
         when(mapper.lockOrder("ORD-PAID")).thenReturn(new AppOrderCommandMapper.OrderRow(
                 "ORD-PAID", 9L, 1L, 1, "SINGLE", 1, "PAID", "PAID", "WAITING_PROVISIONING"));
-        var service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard, null, null, null, capture));
+        var service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard, null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
         assertThat(service.cancel(7L, "ORD-PAID", "cancel-key-2").getMessage()).isEqualTo("ORDER_FORBIDDEN");
         verify(mapper, never()).returnStock(anyLong(), anyInt());
     }
@@ -1019,7 +1045,7 @@ class AppOrderCommandServiceTest {
                 new AppOrderCommandMapper.ItemRow("BND-MISMATCH", 1L, "S1", 1),
                 new AppOrderCommandMapper.ItemRow("BND-MISMATCH", 1L, "S1", 1)));
 
-        var service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard, null, null, null, capture));
+        var service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard, null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
 
         assertThatThrownBy(() -> service.cancel(7L, "BND-MISMATCH", "cancel-key-mismatch"))
                 .hasMessageContaining("ORDER_ITEM_SNAPSHOT_CONFLICT");
@@ -1036,7 +1062,7 @@ class AppOrderCommandServiceTest {
         when(guard.isLocalSandboxEnabled()).thenReturn(false);
         when(guard.isStrictProductionRuntime()).thenReturn(false);
 
-        var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, audit, guard, null, null, null, capture))
+        var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, audit, guard, null, null, null, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)))
                 .cancel(7L, "ORD-PRODUCTION", "mixed-cancel-key");
 
         assertThat(result.getCode()).isEqualTo(503);
@@ -1062,7 +1088,7 @@ class AppOrderCommandServiceTest {
                 .thenAnswer(invocation -> new CommerceAcceptanceSandboxService.CallbackResult(
                         invocation.getArgument(0), "USER_CANCELLED", "cancelled", 1L, "mock", "SANDBOX", BigDecimal.ZERO));
         var service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(commandMapper(), mock(AdminIdempotencyService.class),
-                mock(AuditLogService.class), guard, mapper, sandboxService, run, capture));
+                mock(AuditLogService.class), guard, mapper, sandboxService, run, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
 
         var first = service.cancel(7L, "ORD-A", "same-key");
         service.cancel(7L, "ORD-A", "same-key");
@@ -1101,7 +1127,7 @@ class AppOrderCommandServiceTest {
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
         var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(commandMapper(), idempotency,
-                mock(AuditLogService.class), guard, mapper, mock(CommerceAcceptanceSandboxService.class), run, capture))
+                mock(AuditLogService.class), guard, mapper, mock(CommerceAcceptanceSandboxService.class), run, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)))
                 .cancel(7L, "ORD-CANCELLED", "cancel-key-idempotent");
 
         assertThat(result.getData()).containsEntry("serverCanonical", true)
@@ -1116,7 +1142,7 @@ class AppOrderCommandServiceTest {
         when(guard.isLocalSandboxEnabled()).thenReturn(true);
         when(mapper.isSandboxUser(7L)).thenReturn(true);
         var service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(commandMapper(), mock(AdminIdempotencyService.class),
-                mock(AuditLogService.class), guard, mapper, mock(CommerceAcceptanceSandboxService.class), mock(CommerceAcceptanceRun.class), capture));
+                mock(AuditLogService.class), guard, mapper, mock(CommerceAcceptanceSandboxService.class), mock(CommerceAcceptanceRun.class), capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
 
         assertThat(service.cancel(7L, "ORD-A", "x".repeat(129)).getMessage())
                 .isEqualTo("IDEMPOTENCY_KEY_INVALID");
@@ -1144,7 +1170,7 @@ class AppOrderCommandServiceTest {
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
         var service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(commandMapper(), idempotency,
-                mock(AuditLogService.class), guard, mapper, sandboxService, run, capture));
+                mock(AuditLogService.class), guard, mapper, sandboxService, run, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
         var first = service.pay(7L, "CSO-1", "pay-key");
         var second = service.pay(7L, "CSO-1", "pay-key");
 
@@ -1181,7 +1207,7 @@ class AppOrderCommandServiceTest {
         }).when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
         var service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(commandMapper(), idempotency,
-                mock(AuditLogService.class), guard, mapper, sandboxService, run, capture));
+                mock(AuditLogService.class), guard, mapper, sandboxService, run, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
         var first = service.pay(7L, "CSO-RUN", "same-payment-key");
         var second = service.pay(7L, "CSO-RUN", "same-payment-key");
 
@@ -1206,7 +1232,7 @@ class AppOrderCommandServiceTest {
                 503, "COMMERCE_SANDBOX_RUN_ID_REQUIRED"));
 
         var service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(commandMapper(), idempotency,
-                mock(AuditLogService.class), guard, mapper, sandboxService, run, capture));
+                mock(AuditLogService.class), guard, mapper, sandboxService, run, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
 
         assertThatThrownBy(() -> service.pay(7L, "CSO-RUN", "payment-key"))
                 .hasMessageContaining("COMMERCE_SANDBOX_RUN_ID_REQUIRED");
@@ -1230,7 +1256,7 @@ class AppOrderCommandServiceTest {
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
         var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(commandMapper(), idempotency,
-                mock(AuditLogService.class), guard, mapper, sandboxService, run, capture))
+                mock(AuditLogService.class), guard, mapper, sandboxService, run, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)))
                 .pay(7L, "CSO-LEGACY", "pay-legacy");
 
         assertThat(result.getCode()).isEqualTo(503);
@@ -1285,6 +1311,8 @@ class AppOrderCommandServiceTest {
             context.registerBean(EventOutboxService.class, () -> outbox);
             context.registerBean(PromotionOrderService.class, () -> promotions);
             context.registerBean(SupportPaymentAttributionFacade.class, () -> capture);
+            context.registerBean(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class,
+                    () -> mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
             context.registerBean(ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade.class, () -> new ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade() {
                 @Override public <R> ApiResult<R> execute(Long owner,String kind,String key,Object summary,Authorization authorization,Supplier<ApiResult<R>> action) { return action.get(); }
             });
@@ -1334,7 +1362,7 @@ class AppOrderCommandServiceTest {
         doThrow(new BizException(409, "PROMOTION_FIRST_PURCHASE_ALREADY_USED"))
                 .when(promotions).beforePay(7L, "ORD-PROMO-STALE");
         var service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
-                null, null, null, null, 30, promotions, capture));
+                null, null, null, null, 30, promotions, capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
         assertThatThrownBy(() -> service.pay(7L, "ORD-PROMO-STALE", "stale-promotion-pay"))
                 .isInstanceOf(BizException.class).hasMessage("PROMOTION_FIRST_PURCHASE_ALREADY_USED");
         verify(mapper, never()).debitDevelopmentWallet(anyLong(), any(), anyLong());
@@ -1383,7 +1411,7 @@ class AppOrderCommandServiceTest {
 
         var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(
                 mapper, idempotency, mock(AuditLogService.class), guard,
-                null, null, null, mock(EventOutboxService.class), capture))
+                null, null, null, mock(EventOutboxService.class), capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)))
                 .pay(7L, "BND-WALLET-1", "bundle-wallet-pay-key");
 
         assertThat(result.getCode()).isZero();
@@ -1405,7 +1433,7 @@ class AppOrderCommandServiceTest {
         when(mapper.findDevelopmentPayOrderOwner("ORD-FORBIDDEN")).thenReturn(owner);
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotency).execute(anyString(),anyString(),anyString(),any(),any());
-        var service=ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper,idempotency,audit,guard,null,null,null,capture));
+        var service=ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper,idempotency,audit,guard,null,null,null,capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
 
         var result=service.pay(7L,"ORD-FORBIDDEN","forbidden-owner");
 
@@ -1427,7 +1455,7 @@ class AppOrderCommandServiceTest {
                         null,"PENDING","PENDING_PAYMENT","WAITING_PAYMENT"));
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotency).execute(anyString(),anyString(),anyString(),any(),any());
-        var service=ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper,idempotency,audit,guard,null,null,null,capture));
+        var service=ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper,idempotency,audit,guard,null,null,null,capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
 
         var result=service.pay(7L,"ORD-CHANGED","changed-owner");
 
@@ -1473,7 +1501,7 @@ class AppOrderCommandServiceTest {
     @org.junit.jupiter.params.provider.CsvSource({"HDPAY_BANK,true","HDPAY_BANK,false","CREGIS_USDT_BSC,true","CREGIS_USDT_BSC,false"})
     void verifiedExternalOrderUsesNoPinOrWalletPrincipalAndStillRequiresStock(String method,boolean stockAvailable) {
         var mapper=commandMapper();var guard=mock(FundsSandboxProfileGuard.class);var authorization=mock(ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade.class);
-        var service=new AppOrderCommandService(mapper,mock(AdminIdempotencyService.class),mock(AuditLogService.class),guard,null,null,null,capture);
+        var service=new AppOrderCommandService(mapper,mock(AdminIdempotencyService.class),mock(AuditLogService.class),guard,null,null,null,capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
         org.springframework.test.util.ReflectionTestUtils.setField(service,"paymentAuthorization",authorization);
         when(mapper.activeUserEnvironment(7L)).thenReturn(0);
         when(mapper.findDevelopmentPayOrderOwner("EXT-ORDER")).thenReturn(7L);
@@ -1501,7 +1529,7 @@ class AppOrderCommandServiceTest {
     }
 
     @Test void externalOrderSettlementCannotBeEnteredWithoutVerifiedServerScope() {
-        var mapper=commandMapper();var service=new AppOrderCommandService(mapper,mock(AdminIdempotencyService.class),mock(AuditLogService.class),mock(FundsSandboxProfileGuard.class),null,null,null,capture);
+        var mapper=commandMapper();var service=new AppOrderCommandService(mapper,mock(AdminIdempotencyService.class),mock(AuditLogService.class),mock(FundsSandboxProfileGuard.class),null,null,null,capture, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
         assertThatThrownBy(()->service.settleVerifiedExternal(7L,"EXT-ORDER")).hasMessage("PURCHASE_PAYMENT_SCOPE_REQUIRED");
         verifyNoInteractions(mapper,capture);
     }

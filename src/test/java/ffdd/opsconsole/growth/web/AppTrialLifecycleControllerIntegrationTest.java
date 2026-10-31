@@ -143,7 +143,7 @@ class AppTrialLifecycleControllerIntegrationTest {
                 releasePolicy,
                 mock(CanonicalStateMapper.class),
                 environment,
-                Clock.systemUTC()));
+                Clock.systemUTC(), org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
         return new AppTrialLifecycleController(service);
     }
 

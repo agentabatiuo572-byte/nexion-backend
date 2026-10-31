@@ -284,7 +284,7 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
                 BigDecimal.ZERO, 1, new BigDecimal("100"), BigDecimal.ONE, false, List.of("test")));
         StorefrontProductReleasePolicy release = new StorefrontProductReleasePolicy(catalog, rhythm);
         return fixture.transactional(ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTradeinService(paymentAttribution(mapper), mapper, directIdempotency(), outbox, mock(AuditLogService.class),
-                release, sandbox, fixture.mapper(ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper.class))));
+                release, sandbox, fixture.mapper(ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper.class), org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class))));
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})

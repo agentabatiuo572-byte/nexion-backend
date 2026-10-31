@@ -62,7 +62,7 @@ public class TestCloudRequests {
         validate(operation,key,hash);
         var candidate=new Request(i.executorId(),operation,TestCloudExecutorService.sha256(key),hash,i.ownerId(),i.deviceId(),
                 i.instanceNo(),i.taskConfigId(),taskNo,"PROCESSING",1,null,false,proofTimestamp,false,false,null,now());
-        if(mapper.insert(candidate)==1) {
+        if(mapper.insertIntent(candidate)==1) {
             if("COMPLETE".equals(operation) && mapper.markStabilityAttempt(i.executorId(),candidate.keyHash())>0)
                 return mapper.lock(i.executorId(),operation,candidate.keyHash());
             return candidate;

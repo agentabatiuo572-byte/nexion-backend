@@ -1,5 +1,6 @@
 package ffdd.opsconsole.device.application;
 
+import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
 import ffdd.opsconsole.finance.purchase.VerifiedPurchasePayment;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
@@ -61,8 +62,8 @@ public class AppTradeinService {
             AuditLogService auditLogService,
             StorefrontProductReleasePolicy productReleasePolicy,
             FundsSandboxProfileGuard fundsSandboxProfileGuard,
-            ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper deviceLifecycle) {
-        this(null,paymentAttribution,mapper,idempotencyService,outboxService,auditLogService,productReleasePolicy,fundsSandboxProfileGuard,deviceLifecycle);
+            ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper deviceLifecycle, TestCloudActivationAdmission testCloudAdmission) {
+        this(null,paymentAttribution,mapper,idempotencyService,outboxService,auditLogService,productReleasePolicy,fundsSandboxProfileGuard,deviceLifecycle,testCloudAdmission);
     }
     private static final Pattern LEVEL_GATE = Pattern.compile("^L([2-6])\\+\\s*持有者$");
     private static final Set<String> REQUIRED_CONFIG = Set.of(
@@ -83,6 +84,8 @@ public class AppTradeinService {
     private final StorefrontProductReleasePolicy productReleasePolicy;
     private final FundsSandboxProfileGuard fundsSandboxProfileGuard;
     private final ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper deviceLifecycle;
+    @lombok.NonNull
+    private final TestCloudActivationAdmission testCloudAdmission;
     private final StorefrontPurchaseGatePolicy purchaseGatePolicy = new StorefrontPurchaseGatePolicy();
 
     @Transactional(readOnly = true)
@@ -182,6 +185,7 @@ public class AppTradeinService {
 
     private ApiResult<AppTradeinSubmitResponse> capacityReplaceAuthorized(
             Long userId,String idempotencyKey,AppCapacityReplaceSubmitRequest request) {
+        testCloudAdmission.lock();
         requireProductionTradeinAvailable();
         requireProductionTradeinUser(userId);
         if (request == null || request.sourceDeviceId() == null || request.sourceDeviceId() <= 0) {
@@ -212,6 +216,7 @@ public class AppTradeinService {
 
     private ApiResult<AppCapacityKeepSubmitResponse> capacityKeepAuthorized(
             Long userId,String idempotencyKey,AppCapacityKeepSubmitRequest request) {
+        testCloudAdmission.lock();
         requireProductionTradeinAvailable();
         requireProductionTradeinUser(userId);
         String targetProductNo = requireTargetProductNo(request == null ? null : request.targetProductNo());
@@ -239,6 +244,7 @@ public class AppTradeinService {
 
     private ApiResult<AppTradeinSubmitResponse> submitAuthorized(
             Long userId,String idempotencyKey,AppTradeinSubmitRequest request) {
+        testCloudAdmission.lock();
         requireProductionTradeinAvailable();
         requireProductionTradeinUser(userId);
         requireRequest(request == null ? null : request.sourceDeviceId(),
@@ -257,6 +263,7 @@ public class AppTradeinService {
     public ApiResult<?> settleVerifiedExternal(Long owner,String kind,String key,AppTradeinSubmitRequest tradein,
             AppCapacityReplaceSubmitRequest replace,AppCapacityKeepSubmitRequest keep) {
         if (!VerifiedPurchasePayment.active()) throw new BizException(403,"PURCHASE_PAYMENT_SCOPE_REQUIRED");
+        testCloudAdmission.lock();
         requireProductionTradeinAvailable(); requireProductionTradeinUser(owner);
         if (mapper.lockActiveUser(owner)==null) throw new BizException(404,"TRADEIN_USER_NOT_FOUND");
         return switch(kind) {
@@ -294,6 +301,7 @@ public class AppTradeinService {
         if (attribution == null || attribution.accountAgeMonths() == null || !StringUtils.hasText(attribution.cohort())) {
             throw new BizException(409, "TRADEIN_EVENT_ATTRIBUTION_UNAVAILABLE");
         }
+        testCloudAdmission.requireReplacementCapacity(evaluation.source().id(),evaluation.source().activated()?1:0);
         reservePurchaseQuotaAtSettlement(userId, evaluation.target().productNo());
         var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, evaluation.target().productNo(),
                 java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
@@ -452,6 +460,7 @@ public class AppTradeinService {
         if (target == null || !finiteTarget(target) || target.stock() == null || target.stock() < 1) {
             throw new BizException(409, "TRADEIN_TARGET_NOT_ACTIVE");
         }
+        testCloudAdmission.requireReplacementCapacity(source.id(),1);
         reservePurchaseQuotaAtSettlement(userId, target.productNo());
         var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, target.productNo(),
                 java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
@@ -561,6 +570,7 @@ public class AppTradeinService {
         if (money(target.priceUsdt()).compareTo(quote.targetPriceUsdt()) != 0) {
             throw new BizException(409, "CAPACITY_KEEP_QUOTE_CHANGED");
         }
+        testCloudAdmission.requireCapacity(1);
         reservePurchaseQuotaAtSettlement(userId, target.productNo());
         var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, target.productNo(),
                 java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));

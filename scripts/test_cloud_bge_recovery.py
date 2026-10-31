@@ -810,5 +810,207 @@ class NextRollbackRecoveryTests(unittest.TestCase):
         self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 1)
 
 
+class SinglePendingRunTests(unittest.TestCase):
+    setUp = DurableRecoveryTests.setUp
+    tearDown = DurableRecoveryTests.tearDown
+    unknown_next = DurableRecoveryTests.unknown_next
+    unknown_complete = DurableRecoveryTests.unknown_complete
+
+    def test_actual_single_run_lost_complete_keeps_reconciling_then_advances_only_after_positive_receipt(self):
+        self.backend.complete_error = w.Halt("HTTP_OUTCOME_UNKNOWN")
+        waits = []
+        def progress(timeout):
+            if timeout == self.cfg.interval:
+                waits.append(timeout)
+                if self.worker.stop.is_set():
+                    return True
+                self.assertEqual(self.journal.state()["phase"], "UNKNOWN_COMPLETE")
+                self.assertEqual(sum(path.endswith("/next-task") for _, path, _ in self.backend.calls), 1)
+                self.assertEqual(sum(path.endswith("/complete") for _, path, _ in self.backend.calls), 1)
+                if len(waits) == 1:
+                    self.backend.remote_state = "UNKNOWN"
+                elif len(waits) == 2:
+                    self.backend.remote_state = "COMMITTED"  # A positive status alone cannot create a receipt.
+                else:
+                    self.backend.found = True
+            return self.worker.stop.is_set()
+        self.worker.stop.wait = progress
+        request = self.backend.request
+        def next_after_receipt(method, path, body=None, key=None, **headers):
+            if path.endswith("/next-task") and self.backend.complete_body is not None:
+                self.assertEqual(self.journal.state()["phase"], "NEXT_INTENT")
+                self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 1)
+                self.assertTrue(self.backend.found)
+                self.backend.idle = True
+                self.worker.stop.set()
+            return request(method, path, body, key, **headers)
+        self.backend.request = next_after_receipt
+        output = StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(self.worker.run(), 0)
+        self.assertEqual(waits, [60, 60, 60, 60])  # Three pending polls plus final empty queue backoff.
+        self.assertEqual(sum(path.endswith("/complete") for _, path, _ in self.backend.calls), 1)
+        self.assertEqual(sum(path.endswith("/next-task") for _, path, _ in self.backend.calls), 2)
+        self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 1)
+        self.assertIn('"event":"SINGLE_PENDING_RECONCILIATION"', output.getvalue())
+
+    def test_actual_single_run_lost_next_waits_for_original_committed_binding_without_another_next(self):
+        self.backend.next_error = w.Halt("HTTP_OUTCOME_UNKNOWN")
+        self.backend.remote_state = "UNKNOWN"
+        waits = []
+        original_key = []
+        def progress(timeout):
+            if timeout == self.cfg.interval:
+                waits.append(timeout)
+                self.assertEqual(self.journal.state()["phase"], "UNKNOWN_NEXT")
+                original_key.append(self.journal.state()["nextKey"])
+                if len(waits) == 2:
+                    self.backend.remote_state = "COMMITTED"
+            return self.worker.stop.is_set()
+        self.worker.stop.wait = progress
+        request = self.backend.request
+        def complete_and_stop(method, path, body=None, key=None, **headers):
+            response = request(method, path, body, key, **headers)
+            if path.endswith("/complete"):
+                self.worker.stop.set()
+            return response
+        self.backend.request = complete_and_stop
+        self.assertEqual(self.worker.run(), 0)
+        self.assertEqual(waits, [60, 60])
+        self.assertEqual(len(set(original_key)), 1)
+        self.assertEqual(sum(path.endswith("/next-task") for _, path, _ in self.backend.calls), 1)
+        self.assertEqual(sum(path.endswith("/complete") for _, path, _ in self.backend.calls), 1)
+        self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM next_retries").fetchone()[0], 0)
+        self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 1)
+
+    def test_unknown_not_found_processing_and_read_failure_only_repeat_reads_and_alarm_until_stop(self):
+        original = self.unknown_complete()
+        self.backend.remote_state = "UNKNOWN"
+        waits = []
+        def progress(timeout):
+            self.assertEqual(timeout, self.cfg.interval)
+            waits.append(timeout)
+            if len(waits) == 1:
+                self.backend.remote_state = "NOT_FOUND"
+            elif len(waits) == 2:
+                self.backend.remote_state = "PROCESSING"
+            elif len(waits) == 3:
+                self.backend.status_error = w.Halt("PRIVATE_ERROR_BODY_MUST_NOT_LOG")
+            else:
+                self.worker.stop.set()
+            return self.worker.stop.is_set()
+        self.worker.stop.wait = progress
+        output = StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(self.worker.run(), 0)
+        self.assertEqual(waits, [60, 60, 60, 60])
+        self.assertEqual(self.journal.state(), original)
+        self.assertEqual(len(self.backend.calls), 8)
+        self.assertTrue(all(method == "GET" for method, _, _ in self.backend.calls))
+        self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM durable_retries").fetchone()[0], 0)
+        self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM next_retries").fetchone()[0], 0)
+        logs = [w.strict_json(line.encode()) for line in output.getvalue().splitlines() if line.startswith("{")]
+        alarms = [line for line in logs if line.get("event") == "SINGLE_PENDING_RECONCILIATION"]
+        self.assertEqual(len(alarms), 4)
+        for alarm in alarms:
+            self.assertEqual(alarm["operation"], "COMPLETE")
+            self.assertEqual(alarm["taskNo"], original["taskNo"])
+            self.assertEqual(alarm["deviceId"], self.cfg.binding["deviceId"])
+            self.assertEqual(alarm["retryAfterSeconds"], 60)
+            self.assertEqual(alarm["exceptionClass"], "Halt")
+        for secret in (original["nextKey"], original["completeBody"]["claimToken"], original["completeBody"]["proofNonce"], "PRIVATE_ERROR_BODY_MUST_NOT_LOG"):
+            self.assertNotIn(secret, output.getvalue())
+
+    def test_once_pending_remains_strict_and_positive_receipt_returns_without_wait_or_post(self):
+        original = self.unknown_complete()
+        self.worker.stop.wait = lambda timeout: self.fail("ONCE_MUST_NOT_WAIT")
+        for status in ("UNKNOWN", "NOT_FOUND", "PROCESSING", "COMMITTED"):
+            with self.subTest(status=status):
+                self.backend.remote_state = status
+                with self.assertRaises(w.Halt):
+                    self.worker.run(once=True)
+                self.assertEqual(self.journal.state(), original)
+        self.backend.found = True
+        self.assertEqual(self.worker.run(once=True), 0)
+        self.assertEqual(self.journal.state()["phase"], "IDLE")
+        self.assertTrue(all(method == "GET" for method, _, _ in self.backend.calls))
+
+    def test_protected_legacy_devices_do_not_enter_the_continuous_recovery_loop(self):
+        self.worker.stop.wait = lambda timeout: self.fail("PROTECTED_LEGACY_MUST_NOT_WAIT")
+        for device in (1152, 1380):
+            with self.subTest(device=device):
+                self.cfg.binding["deviceId"] = device
+                original = self.unknown_complete()
+                self.backend.remote_state = "UNKNOWN"
+                with self.assertRaises(w.Halt):
+                    self.worker.run()
+                self.assertEqual(self.journal.state(), original)
+                self.assertFalse(any(method == "POST" for method, _, _ in self.backend.calls))
+
+    def test_real_background_heartbeat_thread_pauses_when_claim_becomes_unknown(self):
+        original = self.unknown_complete()
+        self.journal.set({**original, "phase": "CLAIMED"})
+        background = w.Worker(self.cfg, self.backend, self.ollama, self.journal, threading.Event())
+        waits = []
+        def advance(timeout):
+            waits.append(timeout)
+            self.journal.set(original)
+            return len(waits) == 2
+        background.heartbeat_stop.wait = advance
+        background.start_heartbeat()
+        background.heartbeat_thread.join(2)
+        self.assertFalse(background.heartbeat_thread.is_alive())
+        self.assertEqual(waits, [10, 10])
+        self.assertEqual(sum(path.endswith("/heartbeat") for _, path, _ in self.backend.calls), 1)
+        self.assertEqual(self.journal.state(), original)
+
+    def test_background_heartbeat_rechecks_pending_phase_after_slow_model_tag_read(self):
+        original = self.unknown_complete()
+        self.journal.set({**original, "phase": "CLAIMED"})
+        background = w.Worker(self.cfg, self.backend, self.ollama, self.journal, threading.Event())
+        request = self.ollama.request
+        reads = 0
+        def tags(method, path, body=None, key=None):
+            nonlocal reads
+            result = request(method, path, body, key)
+            if path == "/api/tags":
+                reads += 1
+                if reads == 2:
+                    self.journal.set(original)
+            return result
+        self.ollama.request = tags
+        waits = []
+        background.heartbeat_stop.wait = lambda timeout: waits.append(timeout) or len(waits) == 2
+        background.start_heartbeat()
+        background.heartbeat_thread.join(2)
+        self.assertFalse(background.heartbeat_thread.is_alive())
+        self.assertEqual(reads, 2)
+        self.assertEqual(sum(path.endswith("/heartbeat") for _, path, _ in self.backend.calls), 1)
+        self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM calls WHERE operation='HEARTBEAT'").fetchone()[0], 1)
+        self.assertEqual(self.journal.state(), original)
+
+    def test_fenced_single_runner_exits_instead_of_polling_a_new_generation(self):
+        original = self.unknown_complete()
+        w.Worker(self.cfg, self.backend, self.ollama, self.journal, threading.Event())
+        self.worker.stop.wait = lambda timeout: self.fail("FENCED_RUNNER_MUST_NOT_POLL")
+        with self.assertRaisesRegex(w.Halt, "WORKER_GENERATION_FENCED"):
+            self.worker.run()
+        self.assertEqual(self.backend.calls, [])
+        self.assertEqual(self.journal.state(), original)
+
+    def test_historical_spent_recovery_flags_keep_strict_single_exit(self):
+        self.worker.stop.wait = lambda timeout: self.fail("OLD_BUDGET_MUST_NOT_POLL")
+        for flag in ("rollbackRetry", "rejectedRetry"):
+            with self.subTest(flag=flag):
+                original = self.unknown_complete()
+                original[flag] = True
+                self.journal.set(original)
+                self.backend.remote_state = "UNKNOWN"
+                with self.assertRaises(w.Halt):
+                    self.worker.run()
+                self.assertEqual(self.journal.state(), original)
+                self.assertFalse(any(method == "POST" for method, _, _ in self.backend.calls))
+
+
 if __name__ == "__main__":
     unittest.main()

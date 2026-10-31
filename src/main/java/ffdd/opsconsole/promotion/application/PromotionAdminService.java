@@ -33,6 +33,8 @@ public class PromotionAdminService {
     private final ffdd.opsconsole.platform.application.OpsOptionsService options;
     private final PromotionBannerService banners;
     private final PromotionAccountSampleService accountSamples;
+    @lombok.NonNull
+    private final ffdd.opsconsole.device.application.TestCloudActivationAdmission testCloudAdmission;
 
     public static long actor(){
         var auth=SecurityContextHolder.getContext().getAuthentication();
@@ -379,6 +381,7 @@ public class PromotionAdminService {
         }
     }
     public Map<String,Object> rewardAction(String id,String action,Map<String,Object> request,String command){
+        if("retry".equals(action)) testCloudAdmission.lock();
         validator.validate(Set.of("cancel","reverse").contains(action)?"ReverseInput":"resolve".equals(action)?"ResolveInput":"Action",request);
         var initial=db.requiredRow("SELECT order_no FROM nx_promotion_reward WHERE obligation_id=?",id);orders.lockOrderParticipants(text(initial.get("order_no")));db.order(text(initial.get("order_no")),true);
         // A normal RR read would retain the pre-wait snapshot after another issuer commits.

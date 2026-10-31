@@ -50,8 +50,9 @@ class AppTradeinServiceTest {
     private final FundsSandboxProfileGuard sandboxGuard = mock(FundsSandboxProfileGuard.class);
     private final ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper deviceLifecycle =
             mock(ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper.class);
+    private final TestCloudActivationAdmission admission=mock(TestCloudActivationAdmission.class);
     private final AppTradeinService service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTradeinService(capture,
-            mapper, idempotency, outbox, audit, releasePolicy, sandboxGuard, deviceLifecycle));
+            mapper, idempotency, outbox, audit, releasePolicy, sandboxGuard, deviceLifecycle,admission));
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -89,6 +90,23 @@ class AppTradeinServiceTest {
                 .thenReturn(StorefrontProductReleasePolicy.Decision.open(null));
         when(releasePolicy.evaluate(anyString(), nullable(String.class)))
                 .thenReturn(StorefrontProductReleasePolicy.Decision.open(null));
+    }
+
+    @Test
+    void replacementCapacityRefusalPrecedesRetirementInventoryAndMoney() {
+        when(mapper.walletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000.00"));
+        when(mapper.lockWalletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000.00"));
+        org.mockito.Mockito.doThrow(new BizException(503,"TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE"))
+                .when(admission).requireReplacementCapacity(11L,1);
+        assertThatThrownBy(()->service.capacityReplace(7L,"resource-replacement",
+                new AppCapacityReplaceSubmitRequest(11L,"stellarbox-pro-v2",new BigDecimal("1500.000000"))))
+                .hasMessage("TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE");
+        var sequence=inOrder(admission,mapper); sequence.verify(admission).lock(); sequence.verify(mapper).lockActiveUser(7L);
+        sequence.verify(admission).requireReplacementCapacity(11L,1);
+        verify(deviceLifecycle,never()).deactivateOwnedDeviceCas(any(),any(),any());
+        verify(mapper,never()).moveSourceDeviceToInventory(any(),any());
+        verify(mapper,never()).debitWalletUsdt(any(),any());
+        verify(mapper,never()).decrementTargetStock(any()); verify(mapper,never()).insertTargetDevice(any());
     }
 
     @Test

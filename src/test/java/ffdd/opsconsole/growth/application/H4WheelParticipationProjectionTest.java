@@ -22,7 +22,7 @@ class H4WheelParticipationProjectionTest {
     private final H4EventCommerceService commerce = mock(H4EventCommerceService.class);
     private final AppGrowthEngagementMapper events = mock(AppGrowthEngagementMapper.class);
     private final H4EventEngine engine = new H4EventEngine(db, policies, commerce, events,
-            null, null, null, null, null);
+            null, null, null, null, null, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
 
     @BeforeEach
     void missingRowsAreNullAsInTheRealRepository() {

@@ -3,6 +3,26 @@ set -euo pipefail
 bash /opt/nexgrid-ci/ci-network-check.sh
 kind=${1:?kind required}
 test "$(git rev-parse HEAD)" = "$(git rev-parse refs/remotes/origin/test)"
+# CI's hard cap is already reserved; every entry, including Jenkins UI builds,
+# must also preserve at least 20% of real host memory before heavy work starts.
+LC_ALL=C /usr/bin/awk '
+  $1 == "MemTotal:" {
+    totals++; total=$2
+    if (NF != 3 || $2 !~ /^[0-9]+$/ || $3 != "kB") invalid=1
+  }
+  $1 == "MemAvailable:" {
+    available_fields++; available=$2
+    if (NF != 3 || $2 !~ /^[0-9]+$/ || $3 != "kB") invalid=1
+  }
+  END {
+    if (invalid || totals != 1 || available_fields != 1 || total <= 0 || available > total) {
+      print "CI_HOST_MEMORY_INVALID" > "/dev/stderr"; exit 78
+    }
+    if (available * 5 < total) {
+      print "CI_HOST_MEMORY_RESERVE_REQUIRED" > "/dev/stderr"; exit 78
+    }
+  }
+' /proc/meminfo
 mkdir -p artifacts
 git rev-parse HEAD > artifacts/test-sha.txt
 git rev-parse 'HEAD^{tree}' > artifacts/test-tree.txt

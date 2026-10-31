@@ -33,6 +33,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 @EnabledIfEnvironmentVariable(named="NEXION_TEST_DB_PASSWORD",matches=".+")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class TestCloudCompleteTransactionMySqlTest {
+    @org.junit.jupiter.api.io.TempDir java.nio.file.Path admissionDirectory;
     static final String KEY="cloud-complete-mysql";
     Connection admin;
     String schema;
@@ -230,9 +231,12 @@ class TestCloudCompleteTransactionMySqlTest {
     @Test void globalActivationMutexCountsCurrentCommittedDevicesIncludingPendingDisable() throws Exception {
         jdbc.update("INSERT INTO nx_user_device VALUES(1,0,'PRODUCTION','','OWNED','DEVICE',NULL,NULL,'INVENTORY',0)");
         jdbc.update("INSERT INTO nx_user_device VALUES(2,0,'PRODUCTION','','OWNED','DEVICE',NULL,NULL,'INVENTORY',0)");
-        var entered=new CountDownLatch(1); var release=new CountDownLatch(1);
+        var entered=new CountDownLatch(1); var release=new CountDownLatch(1); var secondStarted=new CountDownLatch(1);
+        var admission=new TestCloudActivationAdmission(journal,TestCloudExecutorServiceTest.environment(),
+                java.time.Clock.fixed(TestCloudExecutorServiceTest.INSTANT,java.time.ZoneOffset.UTC));
+        var snapshot=admissionSnapshot(1);
         var first=workers.submit(()->requests.db(()->{
-            assertThat(journal.lockResourceGuard()).isEqualTo(1); assertThat(journal.activeResourceExecutors()).isZero();
+            admission.lock(); admission.requireCapacity(snapshot,1);
             jdbc.update("UPDATE nx_user_device SET activated_at=CURRENT_TIMESTAMP,status='ACTIVE',pending_deactivate=1 WHERE id=1");
             entered.countDown();
             try { assertThat(release.await(10,TimeUnit.SECONDS)).isTrue(); } catch(InterruptedException failed) { throw new RuntimeException(failed); }
@@ -241,11 +245,69 @@ class TestCloudCompleteTransactionMySqlTest {
         try {
             assertThat(entered.await(5,TimeUnit.SECONDS)).isTrue();
             var second=workers.submit(()->requests.db(()->{
-                assertThat(journal.lockResourceGuard()).isEqualTo(1); return journal.activeResourceExecutors();
+                secondStarted.countDown();
+                admission.lock();
+                assertThatThrownBy(()->admission.requireCapacity(snapshot,1)).hasMessage("TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE");
+                return journal.activeResourceExecutors();
             }));
+            assertThat(secondStarted.await(5,TimeUnit.SECONDS)).isTrue();
+            assertThatThrownBy(()->second.get(200,TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
             release.countDown(); assertThat(first.get(10,TimeUnit.SECONDS)).isTrue();
             assertThat(second.get(10,TimeUnit.SECONDS)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT status FROM nx_user_device WHERE id=2",String.class)).isEqualTo("INVENTORY");
         } finally { release.countDown(); }
+    }
+
+    java.nio.file.Path admissionSnapshot(int maximum) throws Exception {
+        var file=admissionDirectory.resolve("capacity.json"); long now=TestCloudExecutorServiceTest.INSTANT.getEpochSecond();
+        java.nio.file.Files.writeString(file,"{\"version\":1,\"observedAtEpochSeconds\":"+now+",\"expiresAtEpochSeconds\":"+(now+15)
+                +",\"allowNewActivations\":true,\"maxActiveExecutors\":"+maximum+"}");
+        return file;
+    }
+
+    @Test void wholeBatchRefusalAndZeroGrowthRetainExistingResources() throws Exception {
+        jdbc.update("INSERT INTO nx_user_device VALUES(1,0,'PRODUCTION','','OWNED','DEVICE',CURRENT_TIMESTAMP,NULL,'ACTIVE',1)");
+        var admission=new TestCloudActivationAdmission(journal,TestCloudExecutorServiceTest.environment(),
+                java.time.Clock.fixed(TestCloudExecutorServiceTest.INSTANT,java.time.ZoneOffset.UTC));
+        var snapshot=admissionSnapshot(2); var writes=new AtomicInteger();
+        assertThatThrownBy(()->requests.db(()->{
+            admission.lock(); admission.requireCapacity(snapshot,2);
+            writes.incrementAndGet(); jdbc.update("INSERT INTO nx_user_device VALUES(2,0,'PRODUCTION','','OWNED','DEVICE',CURRENT_TIMESTAMP,NULL,'ACTIVE',0)");
+            return null;
+        })).hasMessage("TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE");
+        assertThat(writes).hasValue(0); assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user_device",Integer.class)).isEqualTo(1);
+        requests.db(()->{ admission.lock(); admission.requireCapacity(admissionDirectory.resolve("missing"),0); return null; });
+        assertThat(journal.activeResourceExecutors()).isEqualTo(1);
+    }
+
+    @Test void phoneReplacementAndRestoreUseTheSameCanonicalCountPredicate() throws Exception {
+        jdbc.update("INSERT INTO nx_user_device VALUES(1,0,'PRODUCTION','','OWNED','MOBILE',CURRENT_TIMESTAMP,NULL,'ACTIVE',0)");
+        jdbc.update("INSERT INTO nx_user_device VALUES(2,0,'PRODUCTION','','OWNED','DEVICE',CURRENT_TIMESTAMP,NULL,'ACTIVE',1)");
+        jdbc.update("INSERT INTO nx_user_device VALUES(3,0,'PRODUCTION','','OWNED','DEVICE',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'DEACTIVATED',0)");
+        jdbc.update("INSERT INTO nx_user_device VALUES(4,0,'PRODUCTION','','OWNED','DEVICE',NULL,NULL,'INVENTORY',0)");
+        jdbc.update("INSERT INTO nx_user_device VALUES(5,0,'PRODUCTION','','OWNED','DEVICE',CURRENT_TIMESTAMP,NULL,NULL,1)");
+        jdbc.update("INSERT INTO nx_user_device VALUES(6,0,'PRODUCTION','','RECYCLED','DEVICE',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'RECYCLED',0)");
+        jdbc.update("INSERT INTO nx_user_device VALUES(7,0,'SANDBOX','','OWNED','DEVICE',NULL,NULL,'INVENTORY',0)");
+        jdbc.update("INSERT INTO nx_user_device VALUES(8,0,'PRODUCTION','test-run','OWNED','DEVICE',NULL,NULL,'INVENTORY',0)");
+        var admission=new TestCloudActivationAdmission(journal,TestCloudExecutorServiceTest.environment(),
+                java.time.Clock.fixed(TestCloudExecutorServiceTest.INSTANT,java.time.ZoneOffset.UTC));
+        var snapshot=admissionSnapshot(1);
+        requests.db(()->{
+            admission.lock(); assertThat(journal.activeResourceExecutors()).isEqualTo(1);
+            assertThat(journal.resourceExecutorCount(1)).isZero(); assertThat(journal.resourceExecutorCount(2)).isEqualTo(1);
+            assertThatThrownBy(()->admission.requireReplacementCapacity(snapshot,1,1)).hasMessage("TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE");
+            admission.requireReplacementCapacity(admissionDirectory.resolve("missing"),2,1);
+            assertThat(journal.restoreResourceDelta(2)).isZero(); assertThat(journal.restoreResourceDelta(3)).isEqualTo(1);
+            assertThat(journal.restoreResourceDelta(4)).isZero(); assertThat(journal.restoreResourceDelta(5)).isEqualTo(1);
+            assertThat(journal.restoreResourceDelta(6)).isZero();
+            assertThat(journal.activationResourceDelta(1)).isZero(); assertThat(journal.activationResourceDelta(2)).isZero();
+            assertThat(journal.activationResourceDelta(4)).isEqualTo(1); assertThat(journal.activationResourceDelta(6)).isEqualTo(1);
+            assertThat(journal.activationResourceDelta(7)).isZero(); assertThat(journal.activationResourceDelta(8)).isZero();
+            for(long excluded:List.of(1L,7L,8L)) admission.requireActivationCapacity(admissionDirectory.resolve("missing"),excluded);
+            assertThatThrownBy(()->admission.requireActivationCapacity(snapshot,4)).hasMessage("TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE");
+            assertThatThrownBy(()->admission.requireRestoreCapacity(snapshot,3)).hasMessage("TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE");
+            return null;
+        });
     }
 
     @Test void expiredValidatedRollbackHasOneDurableNonFinancialTermination() throws Exception {

@@ -9,6 +9,21 @@ import org.apache.ibatis.mapping.SqlCommandType;
 import org.junit.jupiter.api.Test;
 
 class TestCloudExecutorMapperTest {
+    @Test void requestEntityHasARealPrimaryKeyAndItsScopedInsertDoesNotReplaceBaseMapperCrud() {
+        var configuration=new MybatisConfiguration();
+        configuration.addMapper(TestCloudRequestMapper.class);
+        new MybatisSqlSessionFactoryBuilder().build(configuration);
+        String namespace=TestCloudRequestMapper.class.getName()+".";
+        var entity=new ffdd.opsconsole.device.infrastructure.TestCloudRequestEntity();
+        entity.setExecutorId("cloud-mapper-unit"); entity.setOperation("NEXT");
+        String genericInsert=configuration.getMappedStatement(namespace+"insert").getBoundSql(entity).getSql();
+        assertThat(genericInsert).contains("INSERT INTO nx_test_cloud_request", "executor_id", "operation").doesNotContain("IGNORE");
+        assertThat(configuration.getMappedStatement(namespace+"selectById").getBoundSql(1L).getSql())
+                .contains("FROM nx_test_cloud_request", "WHERE id=");
+        var intent=configuration.getMappedStatement(namespace+"insertIntent").getBoundSql(Map.of());
+        assertThat(intent.getSql()).contains("INSERT IGNORE INTO nx_test_cloud_request", "'PROCESSING'", "generation");
+        assertThat(intent.getParameterMappings()).allSatisfy(parameter->assertThat(parameter.getProperty()).startsWith("r."));
+    }
     @Test void completionPrechecksUseOrdinarySelectsAndFinalChecksRetainTheSameScopedLockingSql() {
         var configuration=configuration();
         configuration.addMapper(AppTaskAssignmentMapper.class);

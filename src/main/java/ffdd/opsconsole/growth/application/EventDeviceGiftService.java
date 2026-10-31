@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import ffdd.opsconsole.promotion.application.PromotionNativeContractResolver;
 import ffdd.opsconsole.promotion.mapper.PromotionMapper;
 import java.util.ArrayList;
@@ -16,6 +17,8 @@ import static ffdd.opsconsole.promotion.domain.PromotionValues.*;
 @RequiredArgsConstructor
 public class EventDeviceGiftService {
     private final PromotionMapper db;
+    @lombok.NonNull
+    private final TestCloudActivationAdmission testCloudAdmission;
 
     /** Validate the combined quantity for one product before opening a draw; no stock is reserved. */
     @Transactional(propagation = Propagation.MANDATORY, rollbackFor = Exception.class)
@@ -35,6 +38,7 @@ public class EventDeviceGiftService {
 
     @Transactional(propagation = Propagation.MANDATORY, rollbackFor = Exception.class)
     public Map<String, Object> award(Long userId, String sourceId, String productNo, int quantity) {
+        testCloudAdmission.lock();
         require(sourceId != null && !sourceId.isBlank(), "H4_EVENT_GIFT_SOURCE_REQUIRED");
         Map<String, Object> user = db.user(userId, true);
         require("ACTIVE".equals(user.get("status")) && number(user.get("sandbox")) == 0, "H4_EVENT_ACCOUNT_UNAVAILABLE");
@@ -43,6 +47,7 @@ public class EventDeviceGiftService {
         Map<String, Object> product = db.product(productNo, true);
         Map<String, Object> sku = db.requiredRow("SELECT * FROM nx_admin_device_sku WHERE sku_id=? AND is_deleted=0 FOR UPDATE", productNo);
         require(PromotionNativeContractResolver.giftFailure(product, sku) == null, "H4_EVENT_GIFT_PRODUCT_UNAVAILABLE");
+        testCloudAdmission.requireCapacity(quantity);
         require(db.write("UPDATE nx_product SET stock=stock-?,updated_at=NOW(6) WHERE id=? AND inventory_mode='FINITE' AND stock>=? AND is_deleted=0",
                 quantity, product.get("id"), quantity) == 1, "H4_EVENT_GIFT_STOCK_UNAVAILABLE");
         String receipt = "EVG-" + sha256(sourceId + ":" + userId).substring(0, 48);

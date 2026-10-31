@@ -1,5 +1,6 @@
 package ffdd.opsconsole.shared.canonical;
 
+import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import ffdd.opsconsole.shared.canonical.mapper.AppBundleOrderMapper;
@@ -162,7 +163,7 @@ class PhoneActivationCapacityMySqlTest {
                 mock(ffdd.opsconsole.commerce.mapper.CommerceAcceptanceSandboxMapper.class),
                 mock(ffdd.opsconsole.finance.application.FundsSandboxProfileGuard.class),
                 new ffdd.opsconsole.commerce.application.CommerceAcceptanceRun("inventory-capacity-test"),
-                mock(StorefrontProductReleasePolicy.class), new StorefrontPurchaseGatePolicy(), environment);
+                mock(StorefrontProductReleasePolicy.class), new StorefrontPurchaseGatePolicy(), environment, mock(TestCloudActivationAdmission.class));
         deviceRepository = new MybatisDeviceOpsRepository(session.getMapper(DeviceOpsMapper.class), mock(OpsReadTimeSeedPolicy.class), mapper);
         var manager = new DataSourceTransactionManager(dataSource);
         var proxy = new ProxyFactory(new PhoneActivationCapacityService(mapper));

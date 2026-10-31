@@ -1,5 +1,6 @@
 package ffdd.opsconsole.shared.canonical;
 
+import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -38,7 +39,7 @@ class DeferredDeactivateCommandTest {
                 mock(EventOutboxService.class), mock(AppGrowthLifecyclePublisher.class), mock(GrowthRhythmFacade.class),
                 mock(AuditLogService.class), mock(CommerceAcceptanceSandboxMapper.class),
                 mock(FundsSandboxProfileGuard.class), new CommerceAcceptanceRun("test-run"),
-                mock(StorefrontProductReleasePolicy.class), new StorefrontPurchaseGatePolicy(), environment);
+                mock(StorefrontProductReleasePolicy.class), new StorefrontPurchaseGatePolicy(), environment, mock(TestCloudActivationAdmission.class));
         ApiResult<Map<String, Object>> result = service.deactivateAfterTask(7L, 9L, 4L, "defer-1");
 
         assertThat(result.getCode()).isZero();
@@ -66,7 +67,7 @@ class DeferredDeactivateCommandTest {
                 mock(EventOutboxService.class), mock(AppGrowthLifecyclePublisher.class), mock(GrowthRhythmFacade.class),
                 mock(AuditLogService.class), mock(CommerceAcceptanceSandboxMapper.class),
                 mock(FundsSandboxProfileGuard.class), new CommerceAcceptanceRun("test-run"),
-                mock(StorefrontProductReleasePolicy.class), new StorefrontPurchaseGatePolicy(), environment);
+                mock(StorefrontProductReleasePolicy.class), new StorefrontPurchaseGatePolicy(), environment, mock(TestCloudActivationAdmission.class));
         ApiResult<Map<String, Object>> result = service.deactivateAfterTask(7L, 9L, 4L, "defer-now");
 
         assertThat(result.getData()).containsEntry("status", "DEACTIVATED");

@@ -82,7 +82,7 @@ class H4EventRulesTest {
         var rule=values("event_code","evt-weekend-double-nex","enabled",1,"starts_at",now.minusDays(1),"ends_at",now.plusDays(1),"spent_nex",9);
         when(policies.find("evt-weekend-double-nex",true)).thenReturn(rule);
         when(policies.rules(rule)).thenReturn(Map.of("timeZone","UTC","weekdays",List.of(1,2,3,4,5,6,7),"multiplier",2,"budgetNex",10));
-        var engine=new H4EventEngine(db,policies,null,null,null,null,null,null,null);
+        var engine=new H4EventEngine(db,policies,null,null,null,null,null,null,null, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
         assertThat(engine.checkInReward(1L,now.toLocalDate(),3)).isEqualTo(3);
         verifyNoInteractions(db);
     }

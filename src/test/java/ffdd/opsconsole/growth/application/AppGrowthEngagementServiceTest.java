@@ -75,7 +75,7 @@ class AppGrowthEngagementServiceTest {
 
     private final AppGrowthEngagementService service =
             new AppGrowthEngagementService(mapper, voucher, rhythm, coverage, idempotency, audit, outbox, null, null, null, availability,
-                    java.util.Optional.empty(), null);
+                    java.util.Optional.empty(), null, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
 
     @BeforeEach
     void setUp() {
@@ -115,7 +115,7 @@ class AppGrowthEngagementServiceTest {
     private AppGrowthEngagementService serviceWithWeekly(WeeklyQuestSnapshotService snapshots) {
         return new AppGrowthEngagementService(mapper, voucher, rhythm, coverage, idempotency, audit, outbox,
                 null, null, null, availability, java.util.Optional.empty(), null,
-                Clock.system(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE), snapshots);
+                Clock.system(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE), snapshots, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
     }
 
     private ffdd.opsconsole.growth.mapper.WeeklyQuestSnapshotMapper.Header weeklyHeader() {
@@ -200,7 +200,7 @@ class AppGrowthEngagementServiceTest {
         when(sandbox.enabled()).thenReturn(true);
         AppGrowthEngagementService isolated = new AppGrowthEngagementService(
                 mapper, voucher, rhythm, coverage, idempotency, audit, outbox, null, sandbox, null, availability,
-                java.util.Optional.empty(), null);
+                java.util.Optional.empty(), null, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
 
         assertThatThrownBy(() -> isolated.eventState(42L))
                 .hasMessageContaining("GROWTH_SANDBOX_SCOPE_UNAVAILABLE");
@@ -213,7 +213,7 @@ class AppGrowthEngagementServiceTest {
         when(sandbox.unknownProfile()).thenReturn(true);
         AppGrowthEngagementService isolated = new AppGrowthEngagementService(
                 mapper, voucher, rhythm, coverage, idempotency, audit, outbox, null, sandbox, null, availability,
-                java.util.Optional.empty(), null);
+                java.util.Optional.empty(), null, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
 
         assertThatThrownBy(() -> isolated.checkIn(42L, "unknown-runtime-key"))
                 .hasMessageContaining("WHEEL_RUNTIME_PROFILE_UNSUPPORTED");
@@ -847,7 +847,7 @@ class AppGrowthEngagementServiceTest {
         EarningsReleaseService earningsRelease = mock(EarningsReleaseService.class);
         AppGrowthEngagementService developmentService = new AppGrowthEngagementService(
                 mapper, voucher, rhythm, coverage, idempotency, audit, outbox, earningsRelease,
-                null, null, availability, java.util.Optional.empty(), environment);
+                null, null, availability, java.util.Optional.empty(), environment, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
         LocalDate today = LocalDate.now(H5_BUSINESS_ZONE);
         when(mapper.lockActiveSandboxUser(42L)).thenReturn(42L);
         when(mapper.dailyMissionId()).thenReturn(2L);
@@ -1253,7 +1253,7 @@ class AppGrowthEngagementServiceTest {
 
     private AppGrowthEngagementService serviceAt(Clock clock) {
         return new AppGrowthEngagementService(mapper, voucher, rhythm, coverage, idempotency, audit, outbox,
-                null, null, null, availability, java.util.Optional.empty(), null, clock);
+                null, null, null, availability, java.util.Optional.empty(), null, clock, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
     }
     private DayOneSnapshot dayOneSnapshot(
             String status, int requiredTaskCount, LocalDateTime enteredAt, LocalDateTime eligibleUntil,

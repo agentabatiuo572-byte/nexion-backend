@@ -57,7 +57,7 @@ class AppTrialLifecycleServiceTest {
     private final MockEnvironment environment = productionEnvironment();
     private final AppTrialLifecycleService service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(capture,
             mapper, earningsRelease, idempotency, coverage, audit, outbox, productReleasePolicy, canonicalStateMapper, environment,
-            Clock.system(ZoneId.of("Asia/Shanghai"))));
+            Clock.system(ZoneId.of("Asia/Shanghai")), org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -114,7 +114,7 @@ class AppTrialLifecycleServiceTest {
         Instant deadline = extended.expiresAt().atZone(ZoneId.of("Asia/Shanghai")).toInstant();
         var atDeadline = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(paymentAttribution(), mapper, earningsRelease, idempotency, coverage,
                 audit, outbox, productReleasePolicy, canonicalStateMapper, environment,
-                Clock.fixed(deadline, ZoneId.of("UTC"))));
+                Clock.fixed(deadline, ZoneId.of("UTC")), org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
         assertThat(atDeadline.convert(7L, "stellarbox-s1", new BigDecimal("1249"), "deadline").getMessage())
                 .isEqualTo("TRIAL_NOT_CONVERTIBLE");
         verify(mapper, never()).lockConversionProduct(anyString());
@@ -122,7 +122,7 @@ class AppTrialLifecycleServiceTest {
         when(mapper.lockConversionProduct("stellarbox-s1")).thenReturn(null);
         var beforeDeadline = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(paymentAttribution(), mapper, earningsRelease, idempotency, coverage,
                 audit, outbox, productReleasePolicy, canonicalStateMapper, environment,
-                Clock.fixed(deadline.minusNanos(1), ZoneId.of("UTC"))));
+                Clock.fixed(deadline.minusNanos(1), ZoneId.of("UTC")), org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
         assertThat(beforeDeadline.convert(7L, "stellarbox-s1", new BigDecimal("1249"), "before-deadline").getMessage())
                 .isEqualTo("TRIAL_PRODUCT_NOT_AVAILABLE");
         verify(mapper).lockConversionProduct("stellarbox-s1");
@@ -565,7 +565,7 @@ class AppTrialLifecycleServiceTest {
     void quotaDayUsesAsiaShanghaiEvenWhenInjectedClockHasAnotherZone() {
         Clock clock = Clock.fixed(Instant.parse("2026-08-20T16:30:00Z"), ZoneId.of("Pacific/Honolulu"));
         AppTrialLifecycleService shanghaiService = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(paymentAttribution(),
-                mapper, earningsRelease, idempotency, coverage, audit, outbox, productReleasePolicy, canonicalStateMapper, environment, clock));
+                mapper, earningsRelease, idempotency, coverage, audit, outbox, productReleasePolicy, canonicalStateMapper, environment, clock, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
 
         ApiResult<Map<String, Object>> result = shanghaiService.state(7L);
 
@@ -578,7 +578,7 @@ class AppTrialLifecycleServiceTest {
     void adminQuotaSnapshotUsesCanonicalBusinessDateWithoutUserOrWrites() {
         Clock clock = Clock.fixed(Instant.parse("2026-08-20T16:30:00Z"), ZoneId.of("Pacific/Honolulu"));
         AppTrialLifecycleService shanghaiService = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(paymentAttribution(),
-                mapper, earningsRelease, idempotency, coverage, audit, outbox, productReleasePolicy, canonicalStateMapper, environment, clock));
+                mapper, earningsRelease, idempotency, coverage, audit, outbox, productReleasePolicy, canonicalStateMapper, environment, clock, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
         when(mapper.trialQuotaRemaining(LocalDate.of(2026, 8, 21))).thenReturn(46, 0);
 
         assertThat(shanghaiService.dailyQuota()).isEqualTo(
@@ -636,7 +636,7 @@ class AppTrialLifecycleServiceTest {
         when(mapper.insertTrial(anyLong(), anyString(), anyString(), isNull(), anyString(), anyInt(),
                 any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
         var crossingService = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(paymentAttribution(), mapper, earningsRelease, idempotency, coverage,
-                audit, outbox, productReleasePolicy, canonicalStateMapper, environment, crossing));
+                audit, outbox, productReleasePolicy, canonicalStateMapper, environment, crossing, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
         assertThat(crossingService.start(7L, null, "ignored", "midnight-start").getCode()).isZero();
         verify(mapper).ensureTrialQuotaDay(LocalDate.of(2026, 8, 20), 47);
         verify(mapper).consumeTrialQuota(LocalDate.of(2026, 8, 20));
@@ -651,7 +651,7 @@ class AppTrialLifecycleServiceTest {
             forbidden.setActiveProfiles(profiles);
             AppTrialLifecycleService denied = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(paymentAttribution(),
                     isolatedMapper, earningsRelease, idempotency, coverage, audit, outbox, productReleasePolicy, canonicalStateMapper, forbidden,
-                    Clock.systemUTC()));
+                    Clock.systemUTC(), org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
 
             ApiResult<Map<String, Object>> result = denied.state(7L);
 
@@ -1036,15 +1036,18 @@ class AppTrialLifecycleServiceTest {
         when(mapper.insertPurchasedDevice(eq(7L), anyString(), eq(9L), eq("stellarbox-s1"), eq("Entry"), eq("DEVICE"), anyString(), eq("Trial"), any())).thenReturn(1);
         when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
         when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
+        var admission=mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class);
         var fixedService = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(capture, mapper, earningsRelease, idempotency, coverage, audit, outbox,
-                productReleasePolicy, canonicalStateMapper, environment, fixed));
+                productReleasePolicy, canonicalStateMapper, environment, fixed,admission));
         var result = fixedService.convert(7L, "stellarbox-s1", new BigDecimal("1239.00"), "direct-reward-conversion");
         assertThat(result.getCode()).isZero();
         verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class), eq(new BigDecimal("1239.000000")),
                 eq(new BigDecimal("761.000000")), eq("H2 conversion via UVEL USDT wallet"));
         verify(mapper,never()).insertLedger(anyLong(),anyString(),eq("TRIAL_CHARGE"),anyString(),anyString(),any(),any(),anyString());
-        var sequence=org.mockito.Mockito.inOrder(capture,mapper);
+        var sequence=org.mockito.Mockito.inOrder(admission,capture,mapper);
+        sequence.verify(admission).lock(); sequence.verify(mapper).lockActiveUser(7L);
         sequence.verify(capture).prepare(7L,Source.TRIAL_CONVERT,"USER:7");
+        sequence.verify(admission).requireCapacity(1);
         sequence.verify(mapper).lockWallet(7L);
         sequence.verify(capture).beforeCash(any(Prepared.class));
         sequence.verify(mapper).settleWallet(eq(7L),any(),eq(BigDecimal.ZERO),eq(BigDecimal.ZERO));
@@ -1154,7 +1157,7 @@ class AppTrialLifecycleServiceTest {
         when(mapper.markRedeemed(eq(1L),eq(0L),eq(77L),any(),any(),any(),any(),any(),any(), any(),anyString())).thenReturn(1);
         when(earningsRelease.creditRewardInFundOperation(eq(7L),eq("H2_TRIAL_REMAINDER"),eq("TRIAL-ZERO:REMAINDER"),eq("USDT"),any(),anyString())).thenReturn("ER-USDT");
         when(earningsRelease.creditRewardInFundOperation(eq(7L),eq("H2_TRIAL_BONUS"),eq("TRIAL-ZERO:NEX"),eq("UVT"),any(),anyString())).thenReturn("ER-NEX");
-        var target=ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(capture,mapper,earningsRelease,idempotency,coverage,audit,outbox,productReleasePolicy,canonicalStateMapper,environment,fixed));
+        var target=ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(capture,mapper,earningsRelease,idempotency,coverage,audit,outbox,productReleasePolicy,canonicalStateMapper,environment,fixed, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
         assertThat(target.convert(7L,"stellarbox-s1",BigDecimal.ZERO,"zero-rewards").getCode()).isZero();
         var order=org.mockito.Mockito.inOrder(mapper,capture,earningsRelease,audit);
         order.verify(mapper).lockWallet(7L);order.verify(capture).beforeCash(any(Prepared.class));
@@ -1228,7 +1231,7 @@ class AppTrialLifecycleServiceTest {
         when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
         when(mapper.markRedeemed(eq(1L),eq(0L),eq(77L),any(),any(),any(),any(),any(),any(),any(),anyString())).thenReturn(1);
         return new AppTrialLifecycleService(capture,mapper,earningsRelease,idempotency,coverage,audit,outbox,productReleasePolicy,canonicalStateMapper,environment,
-                Clock.fixed(pricing.plusSeconds(86400),ZoneId.of("Asia/Shanghai")));
+                Clock.fixed(pricing.plusSeconds(86400),ZoneId.of("Asia/Shanghai")), org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
     }
 
     @org.junit.jupiter.params.ParameterizedTest

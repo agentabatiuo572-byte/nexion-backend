@@ -69,7 +69,7 @@ class H4EventRulesMySqlIntegrationTest {
             jdbc.update("INSERT INTO h4_test_credit VALUES(?,?,?)",call.getArgument(5),call.getArgument(0),call.getArgument(4));return call.getArgument(5);
         });
         accountingSucceeds();
-        engine=new H4EventEngine(db,policies,commerce,mock(AppGrowthEngagementMapper.class),earnings,ledger,coverage,mock(AdminIdempotencyService.class),audit);
+        engine=new H4EventEngine(db,policies,commerce,mock(AppGrowthEngagementMapper.class),earnings,ledger,coverage,mock(AdminIdempotencyService.class),audit, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
         tx=new TransactionTemplate(new DataSourceTransactionManager(ds));
         tx.setIsolationLevel(org.springframework.transaction.TransactionDefinition.ISOLATION_READ_COMMITTED);
     }

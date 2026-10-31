@@ -32,7 +32,7 @@ class TestCloudRequestsTest {
     final TestCloudExecutorService.Identity identity=new TestCloudExecutorService.Identity("cloud-unit",7,11,"NEX-UNIT-CLOUD","EM-UNIT","bge-m3:567m",TestCloudExecutorServiceTest.DIGEST);
     static final String HASH="a".repeat(64),KEY="complete-durable-unit";
     @BeforeEach void setup() {
-        when(mapper.insert(any())).thenAnswer(call->stored.compareAndSet(null,call.getArgument(0))?1:0);
+        when(mapper.insertIntent(any())).thenAnswer(call->stored.compareAndSet(null,call.getArgument(0))?1:0);
         when(mapper.lock(anyString(),anyString(),anyString())).thenAnswer(call->stored.get());
         when(mapper.read(anyString(),anyString(),anyString())).thenAnswer(call->stored.get());
         when(mapper.commit(any(),any(),anyString(),any())).thenReturn(1);

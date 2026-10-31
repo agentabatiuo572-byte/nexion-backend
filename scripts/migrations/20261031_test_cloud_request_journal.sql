@@ -1,5 +1,6 @@
 -- TEST request authority: additive only; historical unknown requests are deliberately not backfilled.
 CREATE TABLE IF NOT EXISTS nx_test_cloud_request (
+  id BIGINT NOT NULL AUTO_INCREMENT,
   executor_id VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   operation VARCHAR(8) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   key_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
@@ -16,7 +17,8 @@ CREATE TABLE IF NOT EXISTS nx_test_cloud_request (
   reviewed_termination TINYINT(1) NOT NULL DEFAULT 0,
   response_json JSON NULL,
   updated_at DATETIME(6) NOT NULL,
-  PRIMARY KEY (executor_id,operation,key_hash),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_test_cloud_request_identity (executor_id,operation,key_hash),
   KEY idx_test_cloud_request_task (task_no),
   CONSTRAINT chk_test_cloud_request_operation CHECK (operation IN ('NEXT','COMPLETE')),
   CONSTRAINT chk_test_cloud_request_state CHECK (state IN ('PROCESSING','COMMITTED','ROLLED_BACK','UNKNOWN')),

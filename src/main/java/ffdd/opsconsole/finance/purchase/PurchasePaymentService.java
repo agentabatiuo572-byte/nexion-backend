@@ -1,5 +1,6 @@
 package ffdd.opsconsole.finance.purchase;
 
+import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.commerce.application.AppOrderCommandService;
 import ffdd.opsconsole.device.application.AppTradeinService;
@@ -45,6 +46,8 @@ public class PurchasePaymentService {
     private final ObjectMapper jsonMapper;
     private final AuditLogService audit;
     private final AdminIdempotencyService commands;
+    @lombok.NonNull
+    private final TestCloudActivationAdmission testCloudAdmission;
     private static final Set<String> KINDS=Set.of("ORDER_PAY","TRIAL_CONVERT","TRADE_IN","CAPACITY_REPLACE","CAPACITY_KEEP");
     private static final String SELECT="SELECT * FROM nx_purchase_payment_intent WHERE intent_no=?";
 
@@ -358,6 +361,7 @@ public class PurchasePaymentService {
         if(before==null||!verifyFunds(before))return;
         boolean joined=org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive();
         try{tx(()->{
+            testCloudAdmission.lock();
             if(cregis(before.get("payment_method")))cregisGate(network(before.get("payment_method")),false,true);
             var intent=db.one(SELECT+" FOR UPDATE",no);
             if(intent==null||intent.get("receipt_json")!=null||intent.get("confirmed_at")==null)return null;
@@ -440,6 +444,7 @@ public class PurchasePaymentService {
     public Map<String,Object> revalidate(String no,String key,Map<String,Object> request){
         PurchasePaymentPolicyService.reason(request);String actor=AdminActorResolver.resolve("admin");
         return commands.executeRetained("D1:PURCHASE_REVALIDATE:"+actor,key,hash(values("intentNo",no,"request",request)),Map.class,()->{
+            testCloudAdmission.lock();
             var snapshot=db.one(SELECT,no);
             if(snapshot!=null&&cregis(snapshot.get("payment_method")))cregisGate(network(snapshot.get("payment_method")),false,true);
             var row=db.one(SELECT+" FOR UPDATE",no);if(row==null)throw new BizException(404,"PURCHASE_PAYMENT_INTENT_NOT_FOUND");
