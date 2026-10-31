@@ -41,7 +41,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@EnabledIfEnvironmentVariable(named="PAYMENT_PIN_TEST_DB_URL",matches="jdbc:mysql://127\\.0\\.0\\.1:33348/payment_pin_backend_test.*")
+@EnabledIfEnvironmentVariable(named="PAYMENT_PIN_TEST_DB_URL",matches="jdbc:mysql://127\\.0\\.0\\.1:33348/(payment_pin_backend_test.*|purchase_http_it_c5_list_20261031(?:\\?.*)?)")
 class PaymentPasswordMySqlIntegrationTest {
     static DataSource source;
     static JdbcTemplate jdbc;
@@ -52,12 +52,16 @@ class PaymentPasswordMySqlIntegrationTest {
     MutableClock clock;
     UserOtpDeliveryService delivery;
     long user;
+    final List<Long> extraUsers=new ArrayList<>();
 
     @BeforeAll static void installMinimalSchema() throws Exception {
         DriverManagerDataSource db=new DriverManagerDataSource(System.getenv("PAYMENT_PIN_TEST_DB_URL"),
                 System.getenv("PAYMENT_PIN_TEST_DB_USERNAME"),System.getenv("PAYMENT_PIN_TEST_DB_PASSWORD"));
         source=db; jdbc=new JdbcTemplate(db);
-        jdbc.execute("CREATE TABLE IF NOT EXISTS nx_user(id BIGINT PRIMARY KEY,user_no VARCHAR(64),nickname VARCHAR(64),country_code VARCHAR(8),phone VARCHAR(32),status VARCHAR(24),is_deleted TINYINT DEFAULT 0)");
+        String schema=Files.readString(Path.of("scripts/schema.sql"));
+        int usersStart=schema.indexOf("CREATE TABLE IF NOT EXISTS nx_user (");
+        jdbc.execute(schema.substring(usersStart,schema.indexOf(';',usersStart)+1));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='nx_user' AND column_name='user_no'",Long.class)).isZero();
         jdbc.execute("CREATE TABLE IF NOT EXISTS nx_admin_idempotency_record(id BIGINT AUTO_INCREMENT PRIMARY KEY,scope VARCHAR(128),idempotency_key VARCHAR(128),request_hash CHAR(64),status VARCHAR(24),response_json MEDIUMTEXT,is_deleted TINYINT DEFAULT 0)");
         jdbc.execute("CREATE TABLE IF NOT EXISTS pin_test_effect(user_id BIGINT PRIMARY KEY,balance BIGINT NOT NULL DEFAULT 100,effects INT NOT NULL DEFAULT 0)");
         try(Connection c=db.getConnection();Statement statement=c.createStatement()) {
@@ -77,7 +81,7 @@ class PaymentPasswordMySqlIntegrationTest {
     @BeforeEach void fixture() {
         jdbc.update("UPDATE nx_payment_password_policy SET max_attempts=5,window_minutes=15,lock_minutes=15,version=0,updated_at=NULL,updated_by=NULL WHERE id=1");
         user=USERS.incrementAndGet(); clock=new MutableClock();
-        jdbc.update("INSERT INTO nx_user(id,country_code,phone,status) VALUES(?, '+86', ?, 'ACTIVE')",user,"13"+user);
+        insertUser(user,"PIN integration","13"+user);
         jdbc.update("INSERT INTO pin_test_effect(user_id) VALUES(?)",user);
         delivery=mock(UserOtpDeliveryService.class);
         when(delivery.available("+86")).thenReturn(true);
@@ -96,7 +100,17 @@ class PaymentPasswordMySqlIntegrationTest {
         jdbc.update("DELETE FROM nx_user WHERE id=?",user);
         jdbc.update("DELETE FROM nx_payment_security_audit WHERE user_id=0");
         jdbc.update("DELETE FROM nx_payment_security_admin_command WHERE user_id=0");
+        for(long extra:extraUsers) {
+            jdbc.update("DELETE FROM nx_payment_security_record WHERE user_id=?",extra);
+            jdbc.update("DELETE FROM nx_user WHERE id=?",extra);
+        }
         SecurityContextHolder.clearContext();
+    }
+    private void insertUser(long id,String nickname,String phone) {
+        jdbc.update("INSERT INTO nx_user(id,country_code,phone,client_ip,password_hash,nickname,referral_code,status) VALUES(?,'+86',?,'127.0.0.1','isolated-fixture',?,?,'ACTIVE')",id,phone,nickname,"PIN-"+id);
+    }
+    private void listRecord(String id,long owner,long started,Long until,String state,String type) {
+        jdbc.update("INSERT INTO nx_payment_security_record(record_no,user_id,reason,started_at,locked_until,failed_attempts,window_minutes,state,type) VALUES(?,?,'isolated list fixture',?,?,5,15,?,?)",id,owner,started,until,state,type);
     }
     void setup() { assertThat(service.setup(user,"setup-"+user,new AppPaymentPasswordService.Setup("018290","018290")).getCode()).isZero(); }
     Authorization pin(String value,String attempt) { return new Authorization(value,1L,attempt); }
@@ -290,6 +304,67 @@ class PaymentPasswordMySqlIntegrationTest {
         setup();
         for(int i=0;i<5;i++) pay("admin-lock-"+user,pin("999998","admin-attempt-"+i));
         return String.valueOf(securityMapper.latest(user).get("record_no"));
+    }
+    @Test void defaultActiveListUsesActualUserSchemaThroughTheServlet() throws Exception {
+        String record=lockForAdmin();var admin=admin(mock(ffdd.opsconsole.shared.audit.AuditLogService.class));
+        MockMvc http=MockMvcBuilders.standaloneSetup(new ffdd.opsconsole.auth.web.OpsPaymentSecurityController(admin))
+                .setMessageConverters(new org.springframework.http.converter.json.MappingJackson2HttpMessageConverter(
+                        new ObjectMapper().findAndRegisterModules().disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS))).build();
+        http.perform(get("/api/admin/users/security/payment-password-records").param("keyword","").param("state","ACTIVE")
+                .param("from","").param("to","").param("pageNum","1").param("pageSize","10"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(0)).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.records.length()").value(1)).andExpect(jsonPath("$.data.records[0].id").value(record))
+                .andExpect(jsonPath("$.data.records[0].userId").value(String.valueOf(user)))
+                .andExpect(jsonPath("$.data.records[0].state").value("ACTIVE"))
+                .andExpect(jsonPath("$.data.records[0].startedAt").isString());
+    }
+    @Test void listSearchUsesDerivedUserNumbersAndCorrelatesEachOwner() {
+        String record=lockForAdmin();long other=USERS.incrementAndGet();extraUsers.add(other);
+        insertUser(other,"Other customer","188"+other);
+        listRecord("PIN-OTHER-"+other,other,clock.millis(),clock.millis()+900000,"ACTIVE","PAYMENT_PASSWORD_LOCK");
+        jdbc.update("UPDATE nx_user SET nickname='Listed Customer' WHERE id=?",user);
+        for(String keyword:List.of(String.valueOf(user),"U"+user,"Listed","13"+user,record)) {
+            assertThat(securityMapper.records(null,keyword,"ACTIVE",null,null,clock.millis(),10,0))
+                    .extracting(row->row.get("record_no")).containsExactly(record);
+            assertThat(securityMapper.count(null,keyword,"ACTIVE",null,null,clock.millis())).isEqualTo(1);
+        }
+        for(String keyword:List.of("Other customer","188"+other,"unmatched")) {
+            assertThat(securityMapper.records(user,keyword,"",null,null,clock.millis(),10,0)).isEmpty();
+            assertThat(securityMapper.count(user,keyword,"",null,null,clock.millis())).isZero();
+        }
+        extraUsers.add(42L);insertUser(42L,"Padded customer","18800000042");
+        listRecord("PIN-PADDED-42",42L,clock.millis(),clock.millis()+900000,"ACTIVE","PAYMENT_PASSWORD_LOCK");
+        assertThat(securityMapper.records(null,"U00000042","ACTIVE",null,null,clock.millis(),10,0))
+                .extracting(row->row.get("user_id")).containsExactly(42L);
+        assertThat(securityMapper.count(null,"U00000042","ACTIVE",null,null,clock.millis())).isEqualTo(1);
+    }
+    @Test void listStateAndCountKeepExpiredReleasedAndUntimedExceptionsDistinct() {
+        listRecord("PIN-ACTIVE",user,clock.millis()-4,clock.millis()+900000,"ACTIVE","PAYMENT_PASSWORD_LOCK");
+        listRecord("PIN-EXPIRED",user,clock.millis()-3,clock.millis()-1,"ACTIVE","PAYMENT_PASSWORD_LOCK");
+        listRecord("PIN-RELEASED",user,clock.millis()-2,null,"RELEASED","PAYMENT_PASSWORD_LOCK");
+        listRecord("PIN-EXCEPTION",user,clock.millis()-1,null,"ACTIVE","PAYMENT_PASSWORD_EXCEPTION");
+        var admin=admin(mock(ffdd.opsconsole.shared.audit.AuditLogService.class));
+        for(var filter:Map.of("ACTIVE",2L,"EXPIRED",1L,"RELEASED",1L,"ALL",4L).entrySet()) {
+            var page=admin.list(user,false,"",filter.getKey(),"","",1,10);
+            assertThat(page).containsEntry("total",filter.getValue());
+            assertThat((List<?>)page.get("records")).hasSize(filter.getValue().intValue());
+        }
+    }
+    @Test void listDateBoundsAndPaginationMatchCountsWithoutLosingBoundaryRows() {
+        long start=ffdd.opsconsole.shared.config.BusinessCalendar.legacy().startOf(LocalDate.parse("2026-10-30")).toEpochMilli();
+        long end=ffdd.opsconsole.shared.config.BusinessCalendar.legacy().startOf(LocalDate.parse("2026-10-31")).toEpochMilli()-1;
+        for(int i=0;i<12;i++) listRecord(String.format("PIN-PAGE-%02d",i),user,i==11?end:start+i*60000,null,"RELEASED","PAYMENT_PASSWORD_LOCK");
+        listRecord("PIN-BEFORE",user,start-1,null,"RELEASED","PAYMENT_PASSWORD_LOCK");
+        listRecord("PIN-AFTER",user,end+1,null,"RELEASED","PAYMENT_PASSWORD_LOCK");
+        var admin=admin(mock(ffdd.opsconsole.shared.audit.AuditLogService.class));
+        var first=admin.list(user,false,"","ALL","2026-10-30","2026-10-30",1,10);
+        var second=admin.list(user,false,"","ALL","2026-10-30","2026-10-30",2,10);
+        assertThat(first).containsEntry("total",12L);assertThat(second).containsEntry("total",12L);
+        @SuppressWarnings("unchecked") var firstRows=(List<Map<String,Object>>)first.get("records");
+        @SuppressWarnings("unchecked") var secondRows=(List<Map<String,Object>>)second.get("records");
+        assertThat(firstRows).hasSize(10);assertThat(secondRows).hasSize(2);
+        List<String> ids=new ArrayList<>();firstRows.forEach(row->ids.add(String.valueOf(row.get("id"))));secondRows.forEach(row->ids.add(String.valueOf(row.get("id"))));
+        assertThat(ids).doesNotHaveDuplicates().contains("PIN-PAGE-00","PIN-PAGE-11").doesNotContain("PIN-BEFORE","PIN-AFTER");
     }
     @Test void adminReleaseIsAtomicCasAuditedAndIdempotentWithoutChangingThePin() {
         String record=lockForAdmin();
