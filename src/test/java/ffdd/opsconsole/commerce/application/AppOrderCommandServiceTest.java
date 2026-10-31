@@ -855,6 +855,32 @@ class AppOrderCommandServiceTest {
     }
 
     @Test
+    void directPurchaseIntentPreventsCancellationWithoutReleasingAnything() {
+        var mapper = commandMapper();
+        var idempotency = mock(AdminIdempotencyService.class);
+        var audit = mock(AuditLogService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+        when(mapper.lockUser(7L)).thenReturn(new CanonicalStateMapper.UserLock(7L, false));
+        when(mapper.lockOrder("ORD-DIRECT")).thenReturn(new AppOrderCommandMapper.OrderRow(
+                "ORD-DIRECT",7L,1L,2,"SINGLE",2,"PENDING","PENDING_PAYMENT","WAITING_PAYMENT",false));
+        when(mapper.countActiveDirectPaymentIntent("ORD-DIRECT")).thenReturn(1);
+        when(mapper.lockItems("ORD-DIRECT")).thenReturn(List.of(new AppOrderCommandMapper.ItemRow("ORD-DIRECT",1L,"SKU-1",2)));
+        when(mapper.cancelOrder("ORD-DIRECT",7L)).thenReturn(1);
+
+        var service = new AppOrderCommandService(mapper,idempotency,audit,guard,null,null,null,capture);
+        assertThatThrownBy(()->service.cancel(7L,"ORD-DIRECT","original-cancel-key"))
+                .isInstanceOfSatisfying(BizException.class,error->assertThat(error.getCode()).isEqualTo(409))
+                .hasMessage("ORDER_EXTERNAL_PAYMENT_IN_PROGRESS");
+        verify(mapper,never()).lockItems(anyString());
+        verify(mapper,never()).cancelOrder(anyString(),anyLong());
+        verify(mapper,never()).returnStock(anyLong(),anyInt());
+        verifyNoInteractions(audit);
+    }
+
+    @Test
     void activeCommercePaymentIntentMakesOrderNonCancellableBeforeProviderRowExists() {
         var mapper = commandMapper();
         var idempotency = mock(AdminIdempotencyService.class);
@@ -949,6 +975,7 @@ class AppOrderCommandServiceTest {
         when(mapper.lockUser(7L)).thenReturn(new CanonicalStateMapper.UserLock(7L, false));
         when(mapper.lockOrder("ORD-CANCELLED")).thenReturn(new AppOrderCommandMapper.OrderRow(
                 "ORD-CANCELLED", 7L, 1L, 1, "SINGLE", 1, "CANCELLED", "CANCELLED", "WAITING_PAYMENT"));
+        when(mapper.countActiveDirectPaymentIntent("ORD-CANCELLED")).thenReturn(1);
 
         var result = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard, null, null, null, capture))
                 .cancel(7L, "ORD-CANCELLED", "cancel-key-idempotent");

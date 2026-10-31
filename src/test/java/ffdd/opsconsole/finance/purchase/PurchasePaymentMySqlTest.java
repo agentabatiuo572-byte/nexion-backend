@@ -118,7 +118,8 @@ class PurchasePaymentMySqlTest {
         var q=quote("HDPAY_BANK");assertThat(q).containsEntry("subtotalUsdt","20.00").containsEntry("businessAmountUsdt","19.995000").containsEntry("roundingAdjustmentUsdt","0.005000")
                 .containsEntry("channelFeeUsdt","0.60").containsEntry("totalUsdt","20.60").containsEntry("amountVnd","515000");
         var b=quote("CREGIS_USDT_BSC");assertThat(b).containsEntry("networkConfirmFeeUsdt","0.35").containsEntry("totalUsdt","20.95");
-        verifyNoInteractions(gateway,provider,orders);assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_purchase_payment_intent",Integer.class)).isZero();
+        verifyNoInteractions(gateway,orders);verify(provider).projectCoins();verifyNoMoreInteractions(provider);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_purchase_payment_intent",Integer.class)).isZero();
     }
     @Test void aLegacyUninitiatedQuoteCannotTreatMissingConfigurationAsAFreeFeePolicy(){
         var q=quote("HDPAY_BANK");
@@ -305,10 +306,10 @@ class PurchasePaymentMySqlTest {
             verifyNoInteractions(topupDb,topupPolicies);
             assertThat(jdbc.queryForObject("SELECT state FROM nx_cregis_provision_gate",String.class)).isEqualTo("IDLE");
             // Only corroborated chain reorg evidence changes an already-delivered financial record.
-            when(chain.inspectCanonical(eq(txid),eq(1),eq(address),argThat(value->value!=null&&value.compareTo(amount)==0),eq(105L),eq(block),any()))
+            when(chain.inspectCanonical(eq(CregisNetwork.BEP20),eq(txid),eq(1),eq(address),argThat(value->value!=null&&value.compareTo(amount)==0),eq(105L),eq(block),any()))
                     .thenThrow(new IllegalStateException("TEST_RPC_UNAVAILABLE"));
             assertThat(service.get(7,text(pending.get("intentNo")))).containsEntry("status","DELIVERED");
-            when(chain.inspectCanonical(eq(txid),eq(1),eq(address),argThat(value->value!=null&&value.compareTo(amount)==0),eq(105L),eq(block),any()))
+            when(chain.inspectCanonical(eq(CregisNetwork.BEP20),eq(txid),eq(1),eq(address),argThat(value->value!=null&&value.compareTo(amount)==0),eq(105L),eq(block),any()))
                     .thenReturn(new BscDepositProof.ReorgProof(true,null,130,"0x"+"f".repeat(64)));
             assertThat(service.get(7,text(pending.get("intentNo")))).containsEntry("status","MANUAL_REVIEW")
                     .containsEntry("fulfilmentStatus","DELIVERED").containsEntry("reason","PAYMENT_REORG_REVIEW");

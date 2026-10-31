@@ -138,7 +138,7 @@ public class PurchasePaymentService {
     private Map<String,Object> pricing(long owner,String kind,Map<String,Object> payload,Instant pricingAt){
         switch(kind){
             case "ORDER_PAY":{
-                var order=db.one("SELECT * FROM nx_order WHERE order_no=? AND user_id=? AND is_deleted=0",text(payload.get("orderNo")),owner);
+                var order=db.one("SELECT * FROM nx_order WHERE order_no=? AND user_id=? AND is_deleted=0 FOR UPDATE",text(payload.get("orderNo")),owner);
                 if(order==null)throw new BizException(404,"ORDER_NOT_FOUND");
                 if(!"PENDING".equals(order.get("payment_status"))||!"PENDING_PAYMENT".equals(order.get("order_status")))throw new BizException(409,"ORDER_NOT_PAYABLE");
                 return values("businessAmountUsdt",new BigDecimal(text(order.get("amount_usdt"))).toPlainString(),"subtotalUsdt",money(order.get("amount_usdt")).toPlainString(),"orderNo",order.get("order_no"),
