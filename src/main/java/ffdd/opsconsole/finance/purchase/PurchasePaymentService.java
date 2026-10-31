@@ -378,7 +378,8 @@ public class PurchasePaymentService {
             if(observed.orderStatus()==4){confirm(no,observed.providerOrderId(),"PAYMENT_REFUNDED_REVIEW",null,observedAt);}
             else if(observed.orderStatus()==3){
                 if(locked.get("confirmed_at")!=null)return true;
-                String reason=observed.transAmt()==null||new BigDecimal(text(parse(locked.get("quote_json")).get("amountVnd"))).compareTo(observed.transAmt())!=0?"PAYMENT_AMOUNT_MISMATCH":arrivalReason(paymentDeadline(locked),graceEnd(locked.get("payment_method"),deadline(locked)),observed.paidAt(),observedAt);
+                String reason=observed.paidAt()!=null&&observed.paidAt().isBefore(instant(locked.get("created_at")))?"PAYMENT_BEFORE_ALLOCATION":
+                        observed.transAmt()==null||new BigDecimal(text(parse(locked.get("quote_json")).get("amountVnd"))).compareTo(observed.transAmt())!=0?"PAYMENT_AMOUNT_MISMATCH":arrivalReason(paymentDeadline(locked),graceEnd(locked.get("payment_method"),deadline(locked)),observed.paidAt(),observedAt);
                 confirm(no,observed.providerOrderId(),reason,observed.paidAt(),observedAt);
             }else if(observed.orderStatus()==5){
                 db.write("UPDATE nx_purchase_payment_intent SET status='EXPIRED',reason='PAYMENT_FAILED',provider_reference=?,version=version+1,updated_at=NOW(6) WHERE intent_no=? AND confirmed_at IS NULL AND receipt_json IS NULL AND status IN ('CREATING','SUBMIT_UNKNOWN','AWAITING_PAYMENT')",observed.providerOrderId(),no);

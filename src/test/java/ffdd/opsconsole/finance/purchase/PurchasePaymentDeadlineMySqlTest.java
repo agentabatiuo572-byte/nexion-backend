@@ -35,7 +35,13 @@ class PurchasePaymentDeadlineMySqlTest {
         f.jdbc.update("INSERT INTO nx_order_item(order_no,product_id,product_no,product_name,quantity,unit_price_usdt,line_amount_usdt,sort_order) VALUES(?,18,'HTTP-SKU','Synthetic GPU',1,25,19.995,0)",no);
         return no;
     }
-    Map<String,Object> start(String no){var q=f.payments.quote(7,Map.of("kind","ORDER_PAY","paymentMethod","HDPAY_BANK","payload",Map.of("orderNo",no)));return f.payments.create(7,"pay-"+no,q.get("paymentQuoteId").toString());}
+    Map<String,Object> start(String no){
+        var q=f.payments.quote(7,Map.of("kind","ORDER_PAY","paymentMethod","HDPAY_BANK","payload",Map.of("orderNo",no)));
+        var intent=f.payments.create(7,"pay-"+no,q.get("paymentQuoteId").toString());
+        // This fixture's whole timeline runs on a fixed past clock; creation must precede its provider proof too.
+        f.jdbc.update("UPDATE nx_purchase_payment_intent SET created_at=? WHERE intent_no=?",java.sql.Timestamp.from(f.clock.instant()),intent.get("intentNo"));
+        return intent;
+    }
     String status(String no){return f.jdbc.queryForObject("SELECT order_status FROM nx_order WHERE order_no=?",String.class,no);}
     void scan(){new TransactionTemplate(f.tx).execute(status->{new BusinessNotificationService(f.mapper(BusinessNotificationMapper.class)).scan();return null;});}
     @Test void automaticExpiryCannotCloseAnActivePaymentAndTimeoutRestoresOnlyRealReservation(){

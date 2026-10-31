@@ -31,7 +31,7 @@ import org.springframework.jdbc.datasource.*;
 import org.springframework.jdbc.datasource.init.ScriptUtils;
 
 /** Disposable database; provider and domain delivery are isolated fakes, real MySQL/mapper/transactions. */
-@EnabledIfEnvironmentVariable(named="PAYMENT_PIN_TEST_DB_URL",matches="jdbc:mysql://127\\.0\\.0\\.1:3334[38]/(payment_pin_backend_test|outstanding_pay_test).*")
+@EnabledIfEnvironmentVariable(named="PAYMENT_PIN_TEST_DB_URL",matches="jdbc:mysql://127\\.0\\.0\\.1:(?:3334[38]/(payment_pin_backend_test|outstanding_pay_test).*|43307/task_stability_test(?:\\?.*)?)")
 class PurchasePaymentMySqlTest {
     static DriverManagerDataSource source;
     static JdbcTemplate jdbc,admin;
@@ -54,8 +54,14 @@ class PurchasePaymentMySqlTest {
         schema="outstanding_pay_unit_"+UUID.randomUUID().toString().replace("-","");
         String base=System.getenv("PAYMENT_PIN_TEST_DB_URL"),username=System.getenv("PAYMENT_PIN_TEST_DB_USERNAME"),password=System.getenv("PAYMENT_PIN_TEST_DB_PASSWORD");
         admin=new JdbcTemplate(new DriverManagerDataSource(base,username,password));
+        boolean taskScratch=base.startsWith("jdbc:mysql://127.0.0.1:43307/");
+        if(taskScratch){
+            var target=admin.queryForMap("SELECT @@port server_port,@@datadir server_datadir");
+            assertThat(((Number)target.get("server_port")).intValue()).isEqualTo(43307);
+            assertThat(Path.of(target.get("server_datadir").toString()).normalize()).isEqualTo(Path.of("/var/lib/mysql").normalize());
+        }
         admin.execute("CREATE DATABASE "+schema+" CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci");
-        source=new DriverManagerDataSource(base.replaceFirst("/(?:payment_pin_backend_test|outstanding_pay_test)","/"+schema),username,password);jdbc=new JdbcTemplate(source);
+        source=new DriverManagerDataSource(base.replaceFirst(taskScratch?"/task_stability_test":"/(?:payment_pin_backend_test|outstanding_pay_test)","/"+schema),username,password);jdbc=new JdbcTemplate(source);
         jdbc.execute("CREATE TABLE nx_user(id BIGINT PRIMARY KEY,status VARCHAR(24),sandbox TINYINT,is_deleted TINYINT DEFAULT 0)");
         jdbc.execute("CREATE TABLE nx_order(order_no VARCHAR(96) COLLATE utf8mb4_general_ci PRIMARY KEY,user_id BIGINT,amount_usdt DECIMAL(24,6),subtotal_usdt DECIMAL(24,6),discount_usdt DECIMAL(24,6),payment_no VARCHAR(96),payment_status VARCHAR(24),order_status VARCHAR(24),is_deleted TINYINT DEFAULT 0,updated_at DATETIME(6),created_at DATETIME(6) DEFAULT CURRENT_TIMESTAMP(6))");
         jdbc.execute("CREATE TABLE nx_promotion_order_receipt(order_no VARCHAR(96) PRIMARY KEY,pay_by DATETIME(6))");
@@ -64,6 +70,8 @@ class PurchasePaymentMySqlTest {
         jdbc.execute("CREATE TABLE nx_cregis_deposit_address(id BIGINT PRIMARY KEY,address VARCHAR(64),project_id BIGINT,chain_id VARCHAR(16),state VARCHAR(24),user_id BIGINT,allocation_block BIGINT,allocation_hash VARCHAR(66),updated_at DATETIME(6))");
         jdbc.execute("CREATE TABLE nx_cregis_provision_gate(id INT PRIMARY KEY,state VARCHAR(24),assign_enabled TINYINT,credit_enabled TINYINT,payout_enabled TINYINT,version BIGINT,switch_reason VARCHAR(128))");
         jdbc.execute("CREATE TABLE purchase_test_effect(order_no VARCHAR(96) PRIMARY KEY,deliveries INT)");
+        jdbc.execute("CREATE TABLE nx_user_wallet(user_id BIGINT PRIMARY KEY,usdt_available DECIMAL(24,6),nex_available DECIMAL(24,6))");
+        jdbc.execute("CREATE TABLE nx_user_device(instance_no VARCHAR(96) PRIMARY KEY,user_id BIGINT,source_order_no VARCHAR(96))");
         try(Connection c=source.getConnection()){
             var resource=new org.springframework.core.io.FileSystemResource("scripts/migrations/20261031_purchase_direct_payments.sql");
             ScriptUtils.executeSqlScript(c,resource);ScriptUtils.executeSqlScript(c,resource);
@@ -77,10 +85,11 @@ class PurchasePaymentMySqlTest {
     }
     @AfterAll static void removeOwnedDatabase(){if(schema!=null&&schema.matches("outstanding_pay_unit_[0-9a-f]{32}"))admin.execute("DROP DATABASE "+schema);}
     @BeforeEach void fixture(){
-        for(String table:List.of("nx_purchase_payment_result","nx_purchase_payment_arrival","nx_purchase_payment_intent","nx_purchase_payment_quote","purchase_test_effect","nx_payment_record","nx_order_item","nx_order","nx_user","nx_cregis_deposit_address","nx_cregis_provision_gate"))jdbc.update("DELETE FROM "+table);
+        for(String table:List.of("nx_purchase_payment_result","nx_purchase_payment_arrival","nx_purchase_payment_intent","nx_purchase_payment_quote","purchase_test_effect","nx_payment_record","nx_user_wallet","nx_user_device","nx_order_item","nx_order","nx_user","nx_cregis_deposit_address","nx_cregis_provision_gate"))jdbc.update("DELETE FROM "+table);
         jdbc.update("INSERT INTO nx_cregis_provision_gate VALUES(1,'IDLE',1,1,1,0,'')");
         jdbc.update("UPDATE nx_purchase_payment_policy SET version=1,policy_json=? WHERE id=1",json(List.of(values("paymentMethod","HDPAY_BANK","configured",true,"channelFeeRatePct","0.00","channelFeeFixed","0.00","networkConfirmFeeUsdt","0.00","minTopupPrincipal","10"),values("paymentMethod","CREGIS_USDT_BSC","configured",true,"channelFeeRatePct","0.00","channelFeeFixed","0.00","networkConfirmFeeUsdt","0.00","minTopupPrincipal","10"))));
         jdbc.update("INSERT INTO nx_user VALUES(7,'ACTIVE',0,0)");
+        jdbc.update("INSERT INTO nx_user_wallet VALUES(7,100,50)");
         jdbc.update("INSERT INTO nx_order(order_no,user_id,amount_usdt,subtotal_usdt,discount_usdt,payment_status,order_status) VALUES('ORDER-1',7,19.995,25,5.005,'PENDING','PENDING_PAYMENT')");
         jdbc.update("INSERT INTO nx_order_item VALUES(1,'ORDER-1',18,'SKU-18',1,25,0)");
         orders=mock(AppOrderCommandService.class);tradeins=mock(AppTradeinService.class);gateway=mock(HdPayGateway.class);router=mock(CregisGatewayRouter.class);provider=mock(CregisGateway.class);chain=mock(BscDepositProof.class);audit=mock(AuditLogService.class);
@@ -100,6 +109,7 @@ class PurchasePaymentMySqlTest {
         when(orders.settleVerifiedExternal(eq(7L),eq("ORDER-1"))).thenAnswer(i->{
             VerifiedPurchasePayment.require(7, new BigDecimal("19.995"));
             jdbc.update("INSERT INTO purchase_test_effect VALUES('ORDER-1',1)");
+            jdbc.update("INSERT INTO nx_user_device VALUES('DIRECT-ORDER-1',7,'ORDER-1')");
             jdbc.update("UPDATE nx_order SET payment_status='PAID',order_status='COMPLETED' WHERE order_no='ORDER-1'");
             return ApiResult.ok(Map.of("orderNo","ORDER-1","paymentStatus","PAID","canonicalStatus","activated"));
         });
@@ -107,6 +117,118 @@ class PurchasePaymentMySqlTest {
     Map<String,Object> quote(String method){return service.quote(7,Map.of("kind","ORDER_PAY","paymentMethod",method,"payload",Map.of("orderNo","ORDER-1")));}
     java.time.Instant orderDeadline(){return instant(db.one("SELECT created_at FROM nx_order WHERE order_no='ORDER-1'").get("created_at")).plusSeconds(1800);}
     void time(java.time.Instant at){doReturn(at).when(clock).instant();}
+    @Test void expiryAndAnotherPaymentSerializeBuyerSevenAndBeneficiaryThreeWithoutDuplicateEffects() throws Exception {
+        assertThat(jdbc.queryForObject("SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_user'",String.class))
+                .isEqualToIgnoringCase("InnoDB");
+        var origin=instant(db.one("SELECT created_at FROM nx_order WHERE order_no='ORDER-1'").get("created_at"));
+        time(origin.plusSeconds(60));var firstQuote=quote("HDPAY_BANK");
+        String expiring=text(service.create(7,"race-expiry",text(firstQuote.get("paymentQuoteId"))).get("intentNo"));
+        jdbc.update("UPDATE nx_purchase_payment_intent SET created_at=? WHERE intent_no=?",timestamp(origin.plusSeconds(60)),expiring);
+        jdbc.update("INSERT INTO nx_user VALUES(3,'ACTIVE',0,0)");
+        jdbc.update("INSERT INTO nx_order(order_no,user_id,amount_usdt,subtotal_usdt,discount_usdt,payment_status,order_status,created_at) VALUES('ORDER-2',7,19.995,25,5.005,'PENDING','PENDING_PAYMENT',?)",timestamp(origin.plusSeconds(600)));
+        jdbc.update("INSERT INTO nx_order_item VALUES(2,'ORDER-2',18,'SKU-18',1,25,0)");
+        time(origin.plusSeconds(600));var secondQuote=service.quote(7,values("kind","ORDER_PAY","paymentMethod","HDPAY_BANK","payload",values("orderNo","ORDER-2")));
+        String paying=text(service.create(7,"race-payment",text(secondQuote.get("paymentQuoteId"))).get("intentNo"));
+        jdbc.update("UPDATE nx_purchase_payment_intent SET created_at=?,paid_at=?,confirmed_at=?,provider_reference='RACE-PROVIDER',status='FUNDS_CONFIRMED',reason='' WHERE intent_no=?",
+                timestamp(origin.plusSeconds(600)),timestamp(origin.plusSeconds(2000)),timestamp(origin.plusSeconds(2100)),paying);
+        when(gateway.queryPayOrder(paying)).thenReturn(new HdPayGateway.PayOrder(paying,"RACE-PROVIDER",3,new BigDecimal(text(secondQuote.get("amountVnd"))),"BANKQR",null));
+        time(origin.plusSeconds(2100));
+        // Production participant discovery/order, with JDBC-backed mapper doubles in this private schema.
+        jdbc.execute("CREATE TABLE purchase_test_participant(order_no VARCHAR(96),beneficiary_id BIGINT)");
+        jdbc.update("INSERT INTO purchase_test_participant VALUES('ORDER-1',3),('ORDER-2',3)");
+        var expiryReachedThree=new CountDownLatch(1);var paymentHasThree=new CountDownLatch(1);
+        var expiryAttemptsThree=new CountDownLatch(1);var paymentBeforeSeven=new CountDownLatch(1);var releasePayment=new CountDownLatch(1);
+        var role=new ThreadLocal<String>();
+        var promotionDb=mock(ffdd.opsconsole.promotion.mapper.PromotionMapper.class,CALLS_REAL_METHODS);
+        doAnswer(call->jdbc.queryForMap("SELECT * FROM nx_order WHERE order_no=?",call.getArgument(0,String.class)))
+                .when(promotionDb).order(anyString(),anyBoolean());
+        doAnswer(call->jdbc.queryForList("SELECT beneficiary_id,'' activity_id FROM purchase_test_participant WHERE order_no=?",call.getArgument(0,String.class)))
+                .when(promotionDb).reservations(anyString(),anyBoolean());
+        doReturn(List.of()).when(promotionDb).list(anyString(),any(Object[].class));
+        doAnswer(call->{
+            long id=((Number)call.getArgument(0)).longValue();boolean lock=call.getArgument(1);
+            if(lock&&id==3&&"EXPIRE".equals(role.get())){
+                expiryReachedThree.countDown();assertThat(paymentHasThree.await(5,TimeUnit.SECONDS)).isTrue();expiryAttemptsThree.countDown();
+            }
+            if(lock&&id==7&&"PAY".equals(role.get())){
+                assertThat(expiryAttemptsThree.await(5,TimeUnit.SECONDS)).isTrue();paymentBeforeSeven.countDown();
+                assertThat(releasePayment.await(5,TimeUnit.SECONDS)).isTrue();
+            }
+            var user=jdbc.queryForMap("SELECT * FROM nx_user WHERE id=?"+(lock?" FOR UPDATE":""),id);
+            if(lock&&id==3&&"PAY".equals(role.get()))paymentHasThree.countDown();return user;
+        }).when(promotionDb).user(anyLong(),anyBoolean());
+        var participants=new ffdd.opsconsole.promotion.application.PromotionOrderService(promotionDb,null,null,null,null,null);
+        var orderedCommands=mock(AppOrderCommandService.class,CALLS_REAL_METHODS);
+        org.springframework.test.util.ReflectionTestUtils.setField(orderedCommands,"promotions",participants);
+        doAnswer(call->jdbc.update("UPDATE nx_order SET payment_status='EXPIRED',order_status='EXPIRED' WHERE order_no='ORDER-1' AND payment_status='PENDING'")==1)
+                .when(orderedCommands).expireDirectPaymentOrder(7L,"ORDER-1");
+        doAnswer(call->{
+            VerifiedPurchasePayment.require(7,new BigDecimal("19.995"));
+            jdbc.update("UPDATE nx_order SET payment_status='PAID',order_status='COMPLETED' WHERE order_no='ORDER-2'");
+            jdbc.update("INSERT INTO purchase_test_effect VALUES('ORDER-2',1)");jdbc.update("INSERT INTO nx_user_device VALUES('DIRECT-ORDER-2',7,'ORDER-2')");
+            return ApiResult.ok(Map.of("orderNo","ORDER-2","paymentStatus","PAID","canonicalStatus","activated"));
+        }).when(orderedCommands).settleVerifiedExternal(7L,"ORDER-2");
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"orders",orderedCommands);
+        var transaction=new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(source));
+        transaction.setIsolationLevel(Connection.TRANSACTION_READ_COMMITTED);
+        var workers=Executors.newFixedThreadPool(2);
+        try{
+            var expiry=workers.submit(()->{role.set("EXPIRE");try{return transaction.execute(status->{
+                jdbc.execute("SET SESSION innodb_lock_wait_timeout=5");
+                org.springframework.test.util.ReflectionTestUtils.invokeMethod(service,"expire",values("intent_no",expiring));return true;
+            });}finally{role.remove();}});
+            assertThat(expiryReachedThree.await(5,TimeUnit.SECONDS)).isTrue();
+            var payment=workers.submit(()->{role.set("PAY");try{return transaction.execute(status->{
+                jdbc.execute("SET SESSION innodb_lock_wait_timeout=5");
+                org.springframework.test.util.ReflectionTestUtils.invokeMethod(service,"deliver",paying,false);return true;
+            });}finally{role.remove();}});
+            assertThat(paymentBeforeSeven.await(5,TimeUnit.SECONDS)).isTrue();
+            assertThatThrownBy(()->expiry.get(200,TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
+            releasePayment.countDown();assertThat(payment.get(10,TimeUnit.SECONDS)).isTrue();assertThat(expiry.get(10,TimeUnit.SECONDS)).isTrue();
+        }finally{releasePayment.countDown();workers.shutdownNow();assertThat(workers.awaitTermination(10,TimeUnit.SECONDS)).isTrue();}
+        org.springframework.test.util.ReflectionTestUtils.invokeMethod(service,"expire",values("intent_no",expiring));service.get(7,paying);
+        assertThat(service.detail(expiring)).containsEntry("status","EXPIRED").containsEntry("reason","PAYMENT_TIMEOUT");
+        assertThat(service.detail(paying)).containsEntry("status","DELIVERED");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_purchase_payment_result WHERE outcome='PAYMENT_TIMEOUT'",Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_purchase_payment_result WHERE outcome='DELIVERED'",Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_payment_record",Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user_device",Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT usdt_available FROM nx_user_wallet WHERE user_id=7",BigDecimal.class)).isEqualByComparingTo("100");
+        assertThat(jdbc.queryForObject("SELECT nex_available FROM nx_user_wallet WHERE user_id=7",BigDecimal.class)).isEqualByComparingTo("50");
+        verify(orderedCommands,times(1)).expireDirectPaymentOrder(7L,"ORDER-1");verify(orderedCommands,times(1)).settleVerifiedExternal(7L,"ORDER-2");
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"-1,false","-1,true","0,false","0,true","1,false","1,true"})
+    void bankPaymentMustNotPrecedeItsOriginalIntentAndLegitimateBoundariesDeliverOnce(long offset,boolean grace){
+        var quote=quote("HDPAY_BANK");String no=text(service.create(7,"created-boundary",text(quote.get("paymentQuoteId"))).get("intentNo"));
+        var created=instant(db.one("SELECT created_at FROM nx_purchase_payment_intent WHERE intent_no=?",no).get("created_at"));
+        var paid=created.plusSeconds(offset);var deadline=orderDeadline();
+        assertThat(created.plusSeconds(10)).isBefore(deadline);
+        when(gateway.queryPayOrder(no)).thenReturn(new HdPayGateway.PayOrder(no,"PAID-CREATED-BOUNDARY",3,
+                new BigDecimal(text(quote.get("amountVnd"))),"BANKQR",null,deadline,paid));
+        time(grace?deadline.plusSeconds(60):created.plusSeconds(10));
+        String expected=offset<0?"MANUAL_REVIEW":"DELIVERED";
+        assertThat(service.get(7,no)).containsEntry("status",expected);
+        assertThat(instant(db.one("SELECT paid_at FROM nx_purchase_payment_intent WHERE intent_no=?",no).get("paid_at"))).isEqualTo(paid);
+        service.get(7,no);service.revalidate(no,"review-created-boundary",values("expectedVersion",service.detail(no).get("version"),"reason","Verify the original provider payment time"));service.get(7,no);
+        if(offset<0){
+            assertThat(service.detail(no)).containsEntry("status","MANUAL_REVIEW").containsEntry("reason","PAYMENT_BEFORE_ALLOCATION");
+            assertThat(jdbc.queryForObject("SELECT payment_status FROM nx_order",String.class)).isEqualTo("PENDING");
+            assertThat(jdbc.queryForObject("SELECT order_status FROM nx_order",String.class)).isEqualTo("PENDING_PAYMENT");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM purchase_test_effect",Integer.class)).isZero();
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user_device",Integer.class)).isZero();
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_payment_record",Integer.class)).isZero();
+            verify(orders,never()).settleVerifiedExternal(anyLong(),anyString());
+        }else{
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM purchase_test_effect",Integer.class)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user_device",Integer.class)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_payment_record",Integer.class)).isEqualTo(1);
+            verify(orders,times(1)).settleVerifiedExternal(7L,"ORDER-1");
+        }
+        assertThat(jdbc.queryForObject("SELECT usdt_available FROM nx_user_wallet WHERE user_id=7",BigDecimal.class)).isEqualByComparingTo("100");
+        assertThat(jdbc.queryForObject("SELECT nex_available FROM nx_user_wallet WHERE user_id=7",BigDecimal.class)).isEqualByComparingTo("50");
+        assertThat(instant(db.one("SELECT paid_at FROM nx_purchase_payment_intent WHERE intent_no=?",no).get("paid_at"))).isEqualTo(paid);
+    }
     @Test void delayedQuoteAndIntentUseTheOriginalOrderDeadlineAndNoNewPaymentAtCutoff(){
         var deadline=orderDeadline();time(deadline.minusSeconds(60));
         var quote=quote("HDPAY_BANK");assertThat(quote).containsEntry("deadlineAt",deadline.toString()).containsEntry("expiresAt",deadline.toString()).containsEntry("confirmationGraceEndsAt",deadline.plusSeconds(300).toString());

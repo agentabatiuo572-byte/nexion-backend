@@ -19,6 +19,57 @@ SPEC.loader.exec_module(control)
 
 
 class ResourceControlTests(unittest.TestCase):
+    def test_builds_enabled_config_accepts_only_booleans_and_defaults_enabled(self):
+        config = {"version": 1, "scope": "TEST", "buildBudgetBytes": 100, "maxActiveExecutors": 1,
+                  "commitments": [{"name": "backend", "kind": "backend", "bytes": 100,
+                                   "control": {"type": "systemd"}},
+                                  {"name": "model", "kind": "model", "bytes": 100,
+                                   "control": {"type": "docker"}}],
+                  "buildControl": {"type": "docker"},
+                  "buildRequests": {component: 100 for component in control.COMPONENTS},
+                  "workerServices": [{"name": "uvel-cloud-bge-worker.service",
+                                      "journalRoots": ["/var/lib/uvel-cloud-bge-worker"]}]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "budget.json"
+            with patch.object(control, "CONFIG", path), patch.object(control, "trusted"), \
+                    patch.object(control.Path, "is_absolute", return_value=True):
+                for value in (None, 0, 1, "false", "true", [], {}):
+                    with self.subTest(value=value):
+                        path.write_text(json.dumps({**config, "buildsEnabled": value}))
+                        with self.assertRaisesRegex(control.Rejected, "BUILDS_ENABLED_INVALID"):
+                            control.load_config()
+                for extra in ({}, {"buildsEnabled": True}, {"buildsEnabled": False}):
+                    with self.subTest(extra=extra):
+                        path.write_text(json.dumps({**config, **extra}))
+                        self.assertEqual(control.load_config().get("buildsEnabled", True),
+                                         extra.get("buildsEnabled", True))
+
+    def test_disabled_builds_leave_reservations_untouched_and_activation_capacity_open(self):
+        config = {"buildsEnabled": False, "buildBudgetBytes": 200, "maxActiveExecutors": 7,
+                  "commitments": [{"bytes": 600}], "buildRequests": {"backend": 100}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "build-reservations.json"
+            original = b'{"backend-2":{"component":"backend","number":2,"bytes":50}}'
+            path.write_bytes(original)
+            with patch.object(control, "STATE", root), patch.object(control, "JOBS", root / "jobs"), \
+                    patch.object(control, "locked", return_value=nullcontext()), patch.object(control, "verify_limits"), \
+                    patch.object(control, "memory", return_value=(1000, 1000)), \
+                    patch.object(control, "reservations", return_value=json.loads(original)) as reservations, \
+                    patch.object(control, "atomic") as write, patch.object(control, "snapshot") as snapshot:
+                with self.assertRaisesRegex(control.Rejected, "HEAVY_BUILDS_DISABLED_BY_BUDGET"):
+                    control.admit_build(config, "backend", 3)
+                reservations.assert_not_called()
+                write.assert_not_called()
+                snapshot.assert_not_called()
+            self.assertEqual(path.read_bytes(), original)
+        capacity = control.capacity(config, 1000, 1000, 0, 123)
+        self.assertTrue(capacity["allowNewActivations"])
+        self.assertFalse(capacity["allowHeavyBuilds"])
+        self.assertTrue(control.capacity({**config, "buildsEnabled": True}, 1000, 1000, 0, 123)["allowHeavyBuilds"])
+        self.assertTrue(control.capacity({key: value for key, value in config.items() if key != "buildsEnabled"},
+                                         1000, 1000, 0, 123)["allowHeavyBuilds"])
+
     def test_resume_health_requires_trusted_country_and_rejects_foreign_redirect(self):
         original_opener = control.urllib.request.build_opener
         for redirect in (False, True):

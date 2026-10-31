@@ -83,6 +83,7 @@ def load_config():
     trusted(CONFIG)
     value = json.loads(CONFIG.read_bytes())
     require(value.get("version") == 1 and value.get("scope") == "TEST", "TEST_BUDGET_REQUIRED")
+    require(type(value.get("buildsEnabled", True)) is bool, "BUILDS_ENABLED_INVALID")
     require(type(value.get("buildBudgetBytes")) is int and value["buildBudgetBytes"] > 0
             and type(value.get("maxActiveExecutors")) is int and value["maxActiveExecutors"] > 0,
             "BUDGET_INVALID")
@@ -159,11 +160,13 @@ def verify_limits(config):
 def capacity(config, physical, available, builds, now):
     reserve = (physical + 4) // 5
     committed = sum(entry["bytes"] for entry in config["commitments"]) + config["buildBudgetBytes"]
+    allowed = committed <= physical - reserve and available - builds >= reserve
     return {"version": 1, "observedAtEpochSeconds": now, "expiresAtEpochSeconds": now + 15,
             "maxActiveExecutors": config["maxActiveExecutors"], "physicalMemoryBytes": physical,
             "availableMemoryBytes": available, "reserveBytes": reserve, "committedBytes": committed,
             "outstandingBuildBytes": builds,
-            "allowNewActivations": committed <= physical - reserve and available - builds >= reserve}
+            "allowNewActivations": allowed,
+            "allowHeavyBuilds": allowed and config.get("buildsEnabled", True) is True}
 
 
 def build_completed(component, number):
@@ -209,12 +212,14 @@ def snapshot(config):
         result["draining"] = drain_pending()
         if result["draining"]:
             result["allowNewActivations"] = False
+        result["allowHeavyBuilds"] = result["allowHeavyBuilds"] and result["allowNewActivations"]
         atomic(RUNTIME / "capacity.json", result, 0o644)
     return result
 
 
 def admit_build(config, component, number):
     require(number > 0, "BUILD_NUMBER_REQUIRED")
+    require(config.get("buildsEnabled", True) is True, "HEAVY_BUILDS_DISABLED_BY_BUDGET")
     with locked():
         require(not drain_pending(), "RELEASE_DRAIN_ACTIVE")
         entries = reservations()

@@ -54,14 +54,30 @@ global maxActiveExecutors seven. Existing activated instances remain untouched;
 historical activated fixtures above the global bound close only new activation.
 The example is intentionally rejected because it has fewer models than executors.
 
-The candidate envelope is `7*1.5 + 2.5 backend + 3.25 MySQL + 3 CI + 5 other =
-24.25 GiB`, below 80% of the measured approximately 30.974 GiB host by approximately
-0.529 GiB. These are **conditional trial budgets**, not verified peak requirements.
-The backend 2.5 GiB cap requires a measured suitable heap/native budget, MySQL
-3.25 GiB requires actual buffer-pool/other-memory validation, and the 5 GiB other
-envelope must cover measured essential-service/kernel peaks. The 3 GiB CI cap must
-pass the existing full build with Maven/test forks and agent overhead. Real
-MemAvailable must independently remain above the 20% reserve.
+The revised runtime envelope is `7*1.5 + 4 backend + 3.5 MySQL + 1 idle CI +
+5.5 other = 24.5 GiB`, below 80% of the measured approximately 30.974 GiB host.
+The backend uses a 3 GiB heap within its 4 GiB service cap. The previous
+2 GiB/Xmx1280m backend repeatedly exhausted its heap; that budget did not pass.
+These revised limits still require the continuous workload acceptance.
+Real MemAvailable must independently remain above the 20% reserve.
+
+Runtime config sets `buildsEnabled: false`. The optional field defaults to true
+for compatibility and accepts only JSON booleans. False rejects heavy-build
+admission before reading or writing reservations. It does not disable activation
+or execution by itself. The CI entry also requires an inherited cgroup allowance
+of at least 3 GiB, so a direct Jenkins trigger cannot start a heavy build in the
+1 GiB idle envelope. Maven and its test fork each use at most a 768 MiB heap.
+
+Heavy builds require an operator-coordinated maintenance budget. First drain
+workers and verify their complete stopped journal inventory, then stop only the
+three confirmed idle fleet runners 4–6 while preserving their containers and
+configuration. Four remaining model runners, backend4, MySQL3.5, CI3 and other5.5
+reserve 22 GiB. A separately reserved 1.75 GiB may cover an isolated test database
+and test JVM, for 23.75 GiB total. New activation is bounded to four during this
+window; all previously activated devices remain paused only for the release.
+After build/test processes terminate, lower idle CI to 1 GiB before restarting
+the three runners, restore seven-runner capacity and disable heavy builds before
+resuming workers. Never use this maintenance budget as a six-slot runtime claim.
 
 The eighth model container, `uvel-cloud-bge-model-fleet-7`, may be omitted from
 runtime commitments only after root proves no current lease/inference, gracefully
