@@ -3,6 +3,44 @@ set -euo pipefail
 bash /opt/nexgrid-ci/ci-network-check.sh
 kind=${1:?kind required}
 test "$(git rev-parse HEAD)" = "$(git rev-parse refs/remotes/origin/test)"
+# Idle CI has only 1 GiB; official drain must reserve 3 GiB before any build.
+# Check every visible cgroup v2 ancestor, not just an unlimited child.
+if ! LC_ALL=C /usr/bin/awk '
+  function canonical(path) {
+    return path ~ /^\// && path !~ /\\/ && path !~ /\/\// &&
+           (path == "/" || path !~ /\/$/) && path !~ /(^|\/)\.\.?($|\/)/
+  }
+  FILENAME == ARGV[1] {
+    if (substr($0, 1, 3) == "0::") { groups++; group=substr($0, 4) }
+    next
+  }
+  {
+    for (i=7; i<=NF; i++) {
+      if ($i == "-" && $(i+1) == "cgroup2" && $5 == "/sys/fs/cgroup") {
+        mounts++; root=$4; mount=$5
+      }
+    }
+  }
+  END {
+    if (groups != 1 || mounts != 1 || !canonical(group) || !canonical(root)) exit 1
+    if (root == "/") relative=group
+    else if (group == root) relative="/"
+    else if (index(group, root "/") == 1) relative=substr(group, length(root)+1)
+    else exit 1
+    current=mount (relative == "/" ? "" : relative)
+    while (1) {
+      file=current "/memory.max"
+      first=(getline limit < file); extra=(getline unexpected < file); close(file)
+      if (first != 1 || extra != 0 || (limit != "max" &&
+          (limit !~ /^[0-9]+$/ || limit+0 < 3221225472))) exit 1
+      if (current == mount) break
+      sub(/\/[^/]+$/, "", current)
+    }
+  }
+' /proc/self/cgroup /proc/self/mountinfo; then
+  echo 'CI_CGROUP_CAPACITY_INSUFFICIENT' >&2
+  exit 78
+fi
 # CI's hard cap is already reserved; every entry, including Jenkins UI builds,
 # must also preserve at least 20% of real host memory before heavy work starts.
 LC_ALL=C /usr/bin/awk '
