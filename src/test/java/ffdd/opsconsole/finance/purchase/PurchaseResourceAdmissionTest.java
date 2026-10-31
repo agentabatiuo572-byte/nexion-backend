@@ -32,7 +32,7 @@ class PurchaseResourceAdmissionTest {
         when(gateway.queryPayOrder("PAID-INTENT")).thenReturn(new HdPayGateway.PayOrder("PAID-INTENT","PROVIDER-1",3,new BigDecimal("250000"),"BANKQR",null));
         doThrow(new BizException(503,"TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE")).when(admission).lock();
         var service=new PurchasePaymentService(db,null,null,null,null,null,gateway,null,null,null,null,
-                new DataSourceTransactionManager(source),new ObjectMapper(),null,null,admission);
+                new DataSourceTransactionManager(source),new ObjectMapper(),null,null,admission,java.time.Clock.systemUTC());
         assertThatCode(()->ReflectionTestUtils.invokeMethod(service,"deliver","PAID-INTENT",false)).doesNotThrowAnyException();
         verify(delivery).rollback(); verify(delivery,never()).commit(); verify(review).commit();
         verify(db).write(contains("SET status='MANUAL_REVIEW'"),eq("TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE"),eq("PAID-INTENT"));
@@ -48,7 +48,7 @@ class PurchaseResourceAdmissionTest {
                 .thenAnswer(call->((Supplier<?>)call.getArgument(4)).get());
         doThrow(new BizException(503,"TEST_CLOUD_RESOURCE_ADMISSION_UNAVAILABLE")).when(admission).lock();
         var service=new PurchasePaymentService(db,null,null,null,null,null,null,null,null,null,null,null,
-                new ObjectMapper(),null,commands,admission);
+                new ObjectMapper(),null,commands,admission,java.time.Clock.systemUTC());
         assertThatThrownBy(()->service.revalidate("PAID-INTENT","capacity-revalidate",Map.of("reason","review capacity after reservation","expectedVersion",0)))
                 .hasMessage("TEST_CLOUD_RESOURCE_ADMISSION_UNAVAILABLE");
         verifyNoInteractions(db);

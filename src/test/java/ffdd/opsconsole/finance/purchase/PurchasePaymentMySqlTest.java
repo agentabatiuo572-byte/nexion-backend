@@ -37,6 +37,7 @@ class PurchasePaymentMySqlTest {
     static JdbcTemplate jdbc,admin;
     static String schema;
     static PurchasePaymentMapper db;
+    final java.time.Clock clock=spy(java.time.Clock.systemUTC());
     PurchasePaymentService service;
     PurchasePaymentPolicyService policy;
     AppOrderCommandService orders;
@@ -94,7 +95,7 @@ class PurchasePaymentMySqlTest {
         when(provider.projectCoins()).thenReturn(List.of(new CregisGateway.Coin(CregisNetwork.BEP20.currency(),"USDT-BEP20","2510",CregisNetwork.BEP20.tokenId(),true,true),
                 new CregisGateway.Coin(CregisNetwork.ERC20.currency(),"USDT-ERC20","60",CregisNetwork.ERC20.tokenId(),true,true)));
         var fx=mock(VietnamPaymentMapper.class);when(fx.findFxQuoteConfig()).thenReturn(Map.of("baseRateVndPerUsdt","25000","buySpreadPct","0","version",1));
-        service=new PurchasePaymentService(db,policy,orders,tradeins,mock(AppTrialLifecycleService.class),hd,gateway,cr,router,chain,fx,new DataSourceTransactionManager(source),new ObjectMapper(),audit,commands, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
+        service=new PurchasePaymentService(db,policy,orders,tradeins,mock(AppTrialLifecycleService.class),hd,gateway,cr,router,chain,fx,new DataSourceTransactionManager(source),new ObjectMapper(),audit,commands, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class),clock);
         when(gateway.createPayOrder(any())).thenReturn(new HdPayGateway.PayPage("https://pay.example/hosted"));
         when(orders.settleVerifiedExternal(eq(7L),eq("ORDER-1"))).thenAnswer(i->{
             VerifiedPurchasePayment.require(7, new BigDecimal("19.995"));
@@ -105,7 +106,7 @@ class PurchasePaymentMySqlTest {
     }
     Map<String,Object> quote(String method){return service.quote(7,Map.of("kind","ORDER_PAY","paymentMethod",method,"payload",Map.of("orderNo","ORDER-1")));}
     java.time.Instant orderDeadline(){return instant(db.one("SELECT created_at FROM nx_order WHERE order_no='ORDER-1'").get("created_at")).plusSeconds(1800);}
-    void time(java.time.Instant at){org.springframework.test.util.ReflectionTestUtils.setField(service,"clock",java.time.Clock.fixed(at,java.time.ZoneOffset.UTC));}
+    void time(java.time.Instant at){doReturn(at).when(clock).instant();}
     @Test void delayedQuoteAndIntentUseTheOriginalOrderDeadlineAndNoNewPaymentAtCutoff(){
         var deadline=orderDeadline();time(deadline.minusSeconds(60));
         var quote=quote("HDPAY_BANK");assertThat(quote).containsEntry("deadlineAt",deadline.toString()).containsEntry("expiresAt",deadline.toString()).containsEntry("confirmationGraceEndsAt",deadline.plusSeconds(300).toString());

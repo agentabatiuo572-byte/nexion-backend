@@ -212,6 +212,7 @@ class PurchasePaymentHttpMySqlTest {
     }
 
     static class Fixture implements AutoCloseable {
+        final Clock clock=spy(Clock.systemUTC());
         final String schema="outstanding_pay_http_"+UUID.randomUUID().toString().replace("-","");
         DataSource source;JdbcTemplate jdbc,admin;SqlSessionTemplate session;DataSourceTransactionManager tx;AuthSessionMapper authSessions;
         final ObjectMapper json=JSON;final SyntheticHdPay provider=new SyntheticHdPay();final HdPayProperties hd=new HdPayProperties();
@@ -288,7 +289,7 @@ class PurchasePaymentHttpMySqlTest {
             when(bscProvider.addressBelongs("2510",bscAddress)).thenReturn(true);when(bscProvider.zeroAddressBalance(CregisConstants.USDT_BEP20_CURRENCY,bscAddress)).thenReturn(true);
             when(bscChain.zeroUsdtBalance(CregisNetwork.BEP20,bscAddress)).thenReturn(true);when(bscChain.head(CregisNetwork.BEP20)).thenReturn(new BscDepositProof.Head(100,allocationHash));when(bscChain.blockHash(CregisNetwork.BEP20,100)).thenReturn(allocationHash);
             policy=new PurchasePaymentPolicyService(mapper(PurchasePaymentMapper.class),new CregisDepositPolicyService(mapper(CregisDepositPolicyMapper.class),audit,cr),commands,audit,json);
-            payments=new PurchasePaymentService(mapper(PurchasePaymentMapper.class),policy,orders,mock(AppTradeinService.class),mock(AppTrialLifecycleService.class),hd,provider,cr,router,bscChain,mapper(VietnamPaymentMapper.class),tx,json,audit,commands, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
+            payments=new PurchasePaymentService(mapper(PurchasePaymentMapper.class),policy,orders,mock(AppTradeinService.class),mock(AppTrialLifecycleService.class),hd,provider,cr,router,bscChain,mapper(VietnamPaymentMapper.class),tx,json,audit,commands, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class),clock);
             var properties=new JwtProperties();properties.setSecret("synthetic-http-jwt-signing-material-only-32-bytes");jwt=new JwtTokenProvider(properties);
         }
         void seed(){
