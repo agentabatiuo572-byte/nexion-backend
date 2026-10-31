@@ -70,14 +70,15 @@ class AppBundleOrderServiceTest {
         assertThat(result.getData()).containsEntry("itemCount", 2).containsEntry("quantity", 5)
                 .containsEntry("subtotalUsdt", new BigDecimal("800.000000"))
                 .containsEntry("amountUsdt", new BigDecimal("760.000000"));
-        verify(mapper, never()).decrementStock(anyLong(), anyInt());
+        verify(mapper).decrementStock(1L, 2);
+        verify(mapper).decrementStock(2L, 3);
         verify(mapper).insertBundleOrder(eq(7L), anyString(), eq(2L), eq(2), eq(5),
                 eq(new BigDecimal("800.000000")), eq(new BigDecimal("40.000000")), eq(new BigDecimal("760.000000")));
         verify(mapper).insertBundleItem(anyString(), argThat(row -> "s1".equals(row.productNo())), eq(2), eq(1), eq(false), eq(null));
         when(mapper.deviceSlotCap()).thenReturn(4);
         assertThat(service.create(7L, null, items, 1L, new BigDecimal("760"), null, "bundle-capacity").getMessage())
                 .isEqualTo("CAPACITY_REPLACEMENT_REQUIRED");
-        verify(mapper, never()).decrementStock(anyLong(), anyInt());
+        verify(mapper, times(2)).decrementStock(anyLong(), anyInt());
     }
 
     @Test
@@ -115,7 +116,7 @@ class AppBundleOrderServiceTest {
         var result=service.create(7L,null,List.of(new AppBundleOrderService.BundleItem("s1",2),new AppBundleOrderService.BundleItem("pro",3)),1L,new BigDecimal("660"),"Q1","promoted-bundle");
         assertThat(result.getCode()).isZero();assertThat(result.getData()).containsEntry("amountUsdt",new BigDecimal("660.000000"));
         verify(mapper).insertBundleOrder(eq(7L),anyString(),eq(2L),eq(2),eq(5),eq(new BigDecimal("800.000000")),eq(new BigDecimal("140.000000")),eq(new BigDecimal("660.000000")));
-        verify(mapper,never()).decrementStock(anyLong(),anyInt());
+        verify(mapper).decrementStock(1L,2);verify(mapper).decrementStock(2L,3);
     }
 
     @Test
@@ -424,7 +425,7 @@ class AppBundleOrderServiceTest {
     }
 
     @Test
-    void unpaidProductionBundleLeavesLifetimeQuotaAndStockForPayment() {
+    void productionBundleConsumesEachCanonicalLifetimeQuotaBeforeStockWrites() {
         AppBundleOrderMapper mapper = mock(AppBundleOrderMapper.class);
         AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
@@ -452,9 +453,9 @@ class AppBundleOrderServiceTest {
                 .create(7L, List.of("s1", "pro"), 1L, new BigDecimal("285"), "bundle-quota-key");
 
         assertThat(result.getCode()).isZero();
-        verify(mapper,never()).consumePurchaseQuota("s1", 1);
+        verify(mapper).consumePurchaseQuota("s1", 1);
         verify(mapper).insertBundleItem(anyString(),
-                argThat((AppBundleOrderMapper.ProductRow product) -> "s1".equals(product.productNo())), eq(1), anyInt(), eq(false), eq((Long)null));
+                argThat((AppBundleOrderMapper.ProductRow product) -> "s1".equals(product.productNo())), eq(1), anyInt(), eq(true), eq(1L));
         verify(mapper).insertBundleItem(anyString(),
                 argThat((AppBundleOrderMapper.ProductRow product) -> "pro".equals(product.productNo())), eq(1), anyInt(), eq(false), eq((Long) null));
     }

@@ -513,17 +513,6 @@ class PhoneActivationCapacityMySqlTest {
         });
     }
 
-    @Test void newSingleAndBundleIntentsPersistZeroReservationWithoutTouchingMerchandise() {
-        long user=user(false);
-        var stock=jdbc.queryForMap("SELECT stock,sold_count FROM nx_product WHERE id=2");
-        assertThat(mapper.insertOrder(user,"NEW-SINGLE-"+user,2L,2,new BigDecimal("2"),BigDecimal.ZERO,new BigDecimal("2"))).isEqualTo(1);
-        assertThat(bundle.insertBundleOrder(user,"NEW-BUNDLE-"+user,2L,2,2,new BigDecimal("2"),BigDecimal.ZERO,new BigDecimal("2"))).isEqualTo(1);
-        assertThat(jdbc.queryForObject("SELECT SUM(inventory_reserved) FROM nx_order WHERE user_id=?",Integer.class,user)).isZero();
-        assertThat(mapper.reservedDeviceOrderCount(user)).isZero();
-        assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isZero();
-        assertThat(jdbc.queryForMap("SELECT stock,sold_count FROM nx_product WHERE id=2")).isEqualTo(stock);
-    }
-
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({
             "false,1793373027.100000", "false,1793373027.500000", "false,1793373027.999999",
@@ -585,7 +574,7 @@ class PhoneActivationCapacityMySqlTest {
         }, ignored -> assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(8));
     }
 
-    @Test void legacyReservedShareAndTrialCannotBothOwnTheLastSlot() throws Exception {
+    @Test void trialAndShareCommandsCannotBothReserveTheLastSlot() throws Exception {
         long user=user(false);
         for(int i=0;i<5;i++)device(user);
         var ready=new java.util.concurrent.CountDownLatch(2);

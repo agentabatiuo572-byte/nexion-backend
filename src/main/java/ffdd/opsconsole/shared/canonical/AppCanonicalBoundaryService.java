@@ -923,12 +923,24 @@ public class AppCanonicalBoundaryService {
         }
     }
 
-    private void validateCanonicalPurchaseGate(Long userId, String productNo) {
+    private QuotaReservation reserveCanonicalPurchaseQuota(Long userId, String productNo, int quantity) {
         String rawGate = mapper.purchaseGateJson(productNo);
-        if (!StringUtils.hasText(rawGate)) return;
+        if (!StringUtils.hasText(rawGate)) return QuotaReservation.none();
         if (!purchaseGateAllowed(rawGate, mapper.purchaseFacts(userId))) {
             throw new BizException(409, "PURCHASE_GATE_BLOCKED");
         }
+        boolean quotaReserved = purchaseGatePolicy.hasQuota(rawGate);
+        if (quotaReserved) {
+            if (mapper.consumePurchaseQuota(productNo, quantity) != 1) {
+                throw new BizException(409, "PURCHASE_GATE_SOLD_OUT");
+            }
+            Long gateGeneration = mapper.lockPurchaseGateGeneration(productNo);
+            if (gateGeneration == null || gateGeneration < 1) {
+                throw new BizException(409, "PURCHASE_GATE_RESERVATION_UNAVAILABLE");
+            }
+            return new QuotaReservation(true, gateGeneration);
+        }
+        return QuotaReservation.none();
     }
 
     @Transactional(readOnly = true)
@@ -1424,11 +1436,15 @@ public class AppCanonicalBoundaryService {
             discount = promotionPlan.price("discountUsdt");
         }
         BigDecimal amount = subtotal.subtract(discount).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
-        validateCanonicalPurchaseGate(userId, product.productNo());
+        QuotaReservation quotaReservation = reserveCanonicalPurchaseQuota(userId, product.productNo(), qty);
+        if (mapper.decrementProductStock(product.id(), qty) != 1) {
+            throw new BizException(409, "PRODUCT_STOCK_CONFLICT");
+        }
         if (mapper.insertOrder(userId, orderNo, product.id(), qty, subtotal, discount, amount) != 1) {
             throw new BizException(409, "ORDER_CREATE_CONFLICT");
         }
-        if (mapper.insertOrderItem(orderNo, product.id(), qty, subtotal, false, null) != 1) {
+        if (mapper.insertOrderItem(orderNo, product.id(), qty, subtotal, quotaReservation.reserved(),
+                quotaReservation.gateGeneration()) != 1) {
             throw new BizException(409, "ORDER_ITEM_CREATE_CONFLICT");
         }
         growthLifecyclePublisher.redeemVoucher(
@@ -1621,6 +1637,12 @@ public class AppCanonicalBoundaryService {
             return Math.max(1, Integer.parseInt(configured.trim()));
         } catch (NumberFormatException invalidConfiguration) {
             return 30;
+        }
+    }
+
+    private record QuotaReservation(boolean reserved, Long gateGeneration) {
+        static QuotaReservation none() {
+            return new QuotaReservation(false, null);
         }
     }
 
