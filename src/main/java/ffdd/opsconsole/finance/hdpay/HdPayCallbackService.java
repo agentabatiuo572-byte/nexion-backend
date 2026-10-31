@@ -6,16 +6,20 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class HdPayCallbackService {
+    private final org.springframework.beans.factory.ObjectProvider<ffdd.opsconsole.finance.purchase.PurchasePaymentService> directPurchases;
     static final int PAID_STATUS = 3;
 
     private final HdPayGateway gateway;
     private final HdPayCallbackVerifier verifier;
     private final HdPayCallbackSettlementService settlement;
 
-    public HdPayCallbackService(
-            HdPayGateway gateway,
-            HdPayCallbackVerifier verifier,
-            HdPayCallbackSettlementService settlement) {
+    public HdPayCallbackService(HdPayGateway gateway,HdPayCallbackVerifier verifier,HdPayCallbackSettlementService settlement) {
+        this(gateway,verifier,settlement,null);
+    }
+    @org.springframework.beans.factory.annotation.Autowired
+    public HdPayCallbackService(HdPayGateway gateway,HdPayCallbackVerifier verifier,HdPayCallbackSettlementService settlement,
+            org.springframework.beans.factory.ObjectProvider<ffdd.opsconsole.finance.purchase.PurchasePaymentService> directPurchases) {
+        this.directPurchases=directPurchases;
         this.gateway = gateway;
         this.verifier = verifier;
         this.settlement = settlement;
@@ -23,6 +27,7 @@ public class HdPayCallbackService {
 
     public String accept(JsonNode body) {
         HdPayCallbackVerifier.VerifiedCallback callback = verifier.verify(body);
+        if(directPurchases!=null&&directPurchases.getObject().observeHdCallback(callback))return "success";
         if (callback.orderStatus() != PAID_STATUS) {
             return settlement.observe(callback);
         }

@@ -39,8 +39,26 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @Service
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_ = @org.springframework.beans.factory.annotation.Autowired)
 public class AppUserSecurityService {
+    private final AppPaymentPasswordService paymentPasswords;
+
+    // Compatibility constructor for existing isolated domain tests; runtime uses the full constructor.
+    public AppUserSecurityService(
+            AppUserSecurityMapper securityMapper,
+            AuthSessionMapper sessionMapper,
+            PasswordEncoder passwordEncoder,
+            AuditLogService auditLogService,
+            UserOtpDeliveryService otpDeliveryService,
+            AppUserSecurityVerificationGuard verificationGuard,
+            UserOpsMapper userMapper,
+            ffdd.opsconsole.shared.security.UserSessionRevocationService revocations,
+            AppUserRegistrationService registrationService,
+            AppUserRegistrationMapper registrationMapper,
+            PlatformConfigFacade configFacade,
+            Environment environment) {
+        this(null,securityMapper,sessionMapper,passwordEncoder,auditLogService,otpDeliveryService,verificationGuard,userMapper,revocations,registrationService,registrationMapper,configFacade,environment);
+    }
     private static final int SESSION_IDLE_DAYS = 30;
     private static final int MAX_PASSWORD_LENGTH = 64;
     private static final String SESSION_ID_PATTERN = "[A-Za-z0-9_-]{1,128}";
@@ -101,6 +119,7 @@ public class AppUserSecurityService {
         }
         recordRequired(userId, "USER_PHONE_BOUND", "USER_SECURITY", String.valueOf(userId),
                 Map.of("countryCode", countryCode, "phoneMasked", maskPhone(phone)));
+        if (paymentPasswords!=null) paymentPasswords.recordVerifiedPhone(userId,countryCode,phone);
         return ffdd.opsconsole.shared.api.ApiResult.ok(Map.of("status", "PHONE_BOUND"));
     }
 

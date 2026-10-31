@@ -29,7 +29,6 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class AppVietQrIntentService {
     private static final String VIETQR_CHANNEL_ENABLED_KEY = "finance.topup.channel.vietqr.enabled";
-    private static final BigDecimal MIN_DEPOSIT_USDT = new BigDecimal("10.00");
     private static final BigDecimal ABSOLUTE_MAX_DEPOSIT_USDT = new BigDecimal("10000.00");
     private static final int MAX_ACTIVE_INTENTS = 5;
     private static final int MAX_LIST_LIMIT = 50;
@@ -70,7 +69,7 @@ public class AppVietQrIntentService {
         // exhaustion is a separate business limit and must not masquerade as
         // maintenance, nor overwrite the configured per-transaction maximum.
         vietQr.put("enabled", vietQrChannelState().available() && (hosted || mapper.countActiveBankAccounts() > 0));
-        vietQr.put("minDepositUsdt", MIN_DEPOSIT_USDT);
+        vietQr.put("minDepositUsdt", minimumDepositPrincipal());
         vietQr.put("maxDepositUsdt", configuredMax);
         vietQr.put("todayRemainingDepositUsdt", todayRemainingDepositUsdt);
         vietQr.put("todayRemainingVnd", remainingCapacityVnd);
@@ -140,7 +139,7 @@ public class AppVietQrIntentService {
 
         Map<String, Object> vietQr = required(mapper.findVietQrConfig(), "PAYMENT_CONFIG_UNAVAILABLE");
         BigDecimal max = decimal(vietQr.get("perTxLimitUsd")).setScale(2, RoundingMode.UNNECESSARY);
-        if (amount.compareTo(MIN_DEPOSIT_USDT) < 0 || amount.compareTo(max) > 0) {
+        if (amount.compareTo(minimumDepositPrincipal()) < 0 || amount.compareTo(max) > 0) {
             throw new BizException(422, "VIETQR_AMOUNT_OUT_OF_RANGE");
         }
         if (mapper.countActiveIntentsForUser(userId) >= MAX_ACTIVE_INTENTS) {
@@ -478,7 +477,7 @@ public class AppVietQrIntentService {
         if (value == null) throw new BizException(422, "VIETQR_AMOUNT_REQUIRED");
         if (value.signum() <= 0
                 || value.scale() < -4
-                || value.scale() > 2
+                || value.stripTrailingZeros().scale() > 0
                 || value.precision() > 10
                 || value.compareTo(ABSOLUTE_MAX_DEPOSIT_USDT) > 0) {
             throw new BizException(422, "VIETQR_AMOUNT_SCALE_INVALID");
@@ -488,6 +487,13 @@ public class AppVietQrIntentService {
         } catch (ArithmeticException ex) {
             throw new BizException(422, "VIETQR_AMOUNT_SCALE_INVALID");
         }
+    }
+
+    private BigDecimal minimumDepositPrincipal() {
+        BigDecimal min=mapper.hdPayTopupMinimumPrincipal();
+        if(min==null||min.signum()<=0||min.stripTrailingZeros().scale()>0)
+            throw new BizException(503,"HDPAY_TOPUP_MINIMUM_UNAVAILABLE");
+        return min.setScale(2,RoundingMode.UNNECESSARY);
     }
 
     private String commandKey(String value) {

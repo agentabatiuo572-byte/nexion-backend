@@ -73,7 +73,8 @@ public class AppTrialLifecycleController {
                         request == null ? null : request.productNo(),
                         request == null ? null : request.expectedAmountUsdt(),
                         request == null ? null : request.quoteVersion(),
-                        idempotencyKey);
+                        idempotencyKey,request==null ? null : new ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade.Authorization(
+                                request.paymentPassword(),request.credentialVersion(),request.attemptNo()));
     }
 
     private Long userId(Authentication authentication) {
@@ -98,6 +99,13 @@ public class AppTrialLifecycleController {
     public record CancelRequest(String reason) {
     }
 
-    public record ConvertRequest(String productNo, BigDecimal expectedAmountUsdt, String quoteVersion) {
+    public record ConvertRequest(String productNo, BigDecimal expectedAmountUsdt, String quoteVersion,
+                                 String paymentPassword,Long credentialVersion,String attemptNo) {
+        @com.fasterxml.jackson.annotation.JsonProperty("paymentMethod")
+        public void requireWalletMethod(String method){ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade.requireWalletMethod(method);}
+        public ConvertRequest(String productNo,BigDecimal expectedAmountUsdt,String quoteVersion) {
+            this(productNo,expectedAmountUsdt,quoteVersion,null,null,null);
+        }
+        @Override public String toString() { return "ConvertRequest[REDACTED]"; }
     }
 }

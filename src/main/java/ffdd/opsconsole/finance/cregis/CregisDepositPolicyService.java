@@ -37,6 +37,9 @@ public class CregisDepositPolicyService {
         if (snapshot == null) throw new BizException(503,"CREGIS_DEPOSIT_POLICY_SNAPSHOT_MISSING");
         return effective(snapshot);
     }
+    public boolean integerPrincipalRequired(long projectId,String txid) {
+        return db.integerPrincipalRequired(projectId,normalize(txid));
+    }
     private static String normalize(String txid) {
         if (txid == null || !txid.matches("(?i)(0x)?[0-9a-f]{64}")) throw new BizException(422,"CREGIS_DEPOSIT_POLICY_IDENTITY_INVALID");
         String key=txid.toLowerCase(java.util.Locale.ROOT);

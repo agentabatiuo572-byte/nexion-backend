@@ -8,7 +8,19 @@ public record AppTradeinSubmitRequest(
         String targetProductNo,
         BigDecimal expectedPayableUsdt,
         BigDecimal expectedDiscountUsdt,
-        Long expectedSourceVersion) {
+        Long expectedSourceVersion,
+        String paymentPassword,Long credentialVersion,String attemptNo) {
+    @com.fasterxml.jackson.annotation.JsonProperty("paymentMethod")
+    public void requireWalletMethod(String method){ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade.requireWalletMethod(method);}
+    public AppTradeinSubmitRequest(Long sourceDeviceId,Long targetProductId,String targetProductNo,
+            BigDecimal expectedPayableUsdt,BigDecimal expectedDiscountUsdt,Long expectedSourceVersion) {
+        this(sourceDeviceId,targetProductId,targetProductNo,expectedPayableUsdt,expectedDiscountUsdt,expectedSourceVersion,null,null,null);
+    }
+    @Override public String toString() {
+        return "AppTradeinSubmitRequest[sourceDeviceId="+sourceDeviceId+", targetProductId="+targetProductId
+                +", targetProductNo="+targetProductNo+", expectedPayableUsdt="+expectedPayableUsdt
+                +", expectedDiscountUsdt="+expectedDiscountUsdt+", expectedSourceVersion="+expectedSourceVersion+"]";
+    }
     public AppTradeinSubmitRequest(Long sourceDeviceId, Long targetProductId, String targetProductNo,
                                    BigDecimal expectedPayableUsdt, BigDecimal expectedDiscountUsdt) {
         this(sourceDeviceId, targetProductId, targetProductNo, expectedPayableUsdt, expectedDiscountUsdt, 0L);

@@ -50,8 +50,8 @@ class AppTradeinServiceTest {
     private final FundsSandboxProfileGuard sandboxGuard = mock(FundsSandboxProfileGuard.class);
     private final ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper deviceLifecycle =
             mock(ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper.class);
-    private final AppTradeinService service = new AppTradeinService(capture,
-            mapper, idempotency, outbox, audit, releasePolicy, sandboxGuard, deviceLifecycle);
+    private final AppTradeinService service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTradeinService(capture,
+            mapper, idempotency, outbox, audit, releasePolicy, sandboxGuard, deviceLifecycle));
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -873,6 +873,65 @@ class AppTradeinServiceTest {
                         1L, "PRO", "SKU-NEW", 0, BigDecimal.ZERO, 10, "ALL", 1)));
         when(mapper.lockHardwarePurchaseUsage(eq(1L), any(), any())).thenReturn(List.of(2));
         when(mapper.recordHardwarePurchase(any(), eq(7L), anyString(), any())).thenReturn(1);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"TRADE_IN,HDPAY_BANK","TRADE_IN,CREGIS_USDT_BSC","CAPACITY_REPLACE,HDPAY_BANK","CAPACITY_REPLACE,CREGIS_USDT_BSC","CAPACITY_KEEP,HDPAY_BANK","CAPACITY_KEEP,CREGIS_USDT_BSC"})
+    void verifiedExternalTradeinAndCapacityDeliverWithEmptyWalletWithoutPinOrPrincipalLedger(String kind,String method) {
+        var authorization=mock(ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"paymentAuthorization",authorization);
+        configureExternalDelivery(kind);
+        BigDecimal subtotal=new BigDecimal("TRADE_IN".equals(kind)?"900.00":"1500.00");
+        ApiResult<?> result=ffdd.opsconsole.finance.purchase.VerifiedPurchaseFixture.settle(7L,method,"PPI-TEST",subtotal,
+                java.time.Instant.parse("2026-10-31T00:00:00Z"),()->externalTradein(kind));
+        assertThat(result.getCode()).isZero();
+        if(result.getData() instanceof ffdd.opsconsole.device.dto.AppTradeinSubmitResponse data) {
+            assertThat(data.walletDebitUsdt()).isZero();assertThat(data.orderStatus()).isEqualTo("COMPLETED");
+        } else {
+            var data=(ffdd.opsconsole.device.dto.AppCapacityKeepSubmitResponse)result.getData();
+            assertThat(data.walletDebitUsdt()).isZero();assertThat(data.orderStatus()).isEqualTo("COMPLETED");
+        }
+        verify(mapper).decrementTargetStock(22L);
+        org.mockito.Mockito.verifyNoInteractions(authorization,capture);
+        verify(mapper,never()).debitWalletUsdt(any(),any());
+        verify(mapper,never()).insertWalletLedger(anyString(),any(),any(),any());
+        verify(mapper,never()).insertCapacityKeepWalletLedger(anyString(),any(),any(),any());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"TRADE_IN","CAPACITY_REPLACE","CAPACITY_KEEP"})
+    void verifiedExternalTradeinAndCapacityRejectWrongFundingAmountBeforeAnyDelivery(String kind) {
+        var authorization=mock(ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"paymentAuthorization",authorization);
+        configureExternalDelivery(kind);
+        assertThatThrownBy(()->ffdd.opsconsole.finance.purchase.VerifiedPurchaseFixture.settle(7L,"CREGIS_USDT_BSC","PPI-WRONG",BigDecimal.ONE,
+                java.time.Instant.parse("2026-10-31T00:00:00Z"),()->externalTradein(kind))).hasMessage("PURCHASE_PAYMENT_PRICING_CHANGED");
+        verify(mapper,never()).debitWalletUsdt(any(),any());verify(mapper,never()).decrementTargetStock(any());
+        verify(mapper,never()).insertPaidOrder(any());verify(mapper,never()).insertCapacityKeepOrder(any());
+        org.mockito.Mockito.verifyNoInteractions(authorization,capture);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"TRADE_IN","CAPACITY_REPLACE","CAPACITY_KEEP"})
+    void externalTradeinAndCapacityCannotBeEnteredWithoutVerifiedServerScope(String kind) {
+        assertThatThrownBy(()->externalTradein(kind)).hasMessage("PURCHASE_PAYMENT_SCOPE_REQUIRED");
+        org.mockito.Mockito.verifyNoInteractions(mapper,capture,deviceLifecycle);
+    }
+    private ApiResult<?> externalTradein(String kind) {
+        return service.settleVerifiedExternal(7L,kind,"PPI-TEST",new AppTradeinSubmitRequest(11L,22L),
+                new AppCapacityReplaceSubmitRequest(11L,"stellarbox-pro-v2",new BigDecimal("1500.00")),
+                new AppCapacityKeepSubmitRequest("stellarbox-pro-v2",new BigDecimal("1500.00")));
+    }
+    private void configureExternalDelivery(String kind) {
+        configuredHardwareQuotaHasCapacity();
+        if("CAPACITY_KEEP".equals(kind)) when(mapper.lockActiveDeviceCount(7L)).thenReturn(5);
+        when(mapper.walletBalanceUsdt(7L)).thenReturn(BigDecimal.ZERO);when(mapper.lockWalletBalanceUsdt(7L)).thenReturn(BigDecimal.ZERO);
+        when(mapper.decrementTargetStock(22L)).thenReturn(1);when(mapper.recycleTradeinSourceDevice(7L,11L,"DEV-11",1L)).thenReturn(1);
+        when(mapper.moveSourceDeviceToInventory(7L,11L)).thenReturn(1);when(mapper.insertPaidOrder(any())).thenReturn(1);
+        when(mapper.insertCapacityKeepOrder(any())).thenReturn(1);when(mapper.insertPaidOrderItem(any())).thenReturn(1);
+        when(mapper.insertTargetDevice(any())).thenReturn(1);when(mapper.insertCapacityKeepTargetDevice(any())).thenReturn(1);
+        when(mapper.findDeviceIdByInstanceNo(anyString())).thenReturn(33L);when(mapper.insertTradeinApplication(any())).thenReturn(1);
+        when(mapper.insertTradeinCompatibilityOrder(any())).thenReturn(1);
     }
 
     private AppTradeinMapper.SourceDevice source() {

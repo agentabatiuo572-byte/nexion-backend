@@ -47,10 +47,10 @@ class TrialConvertAndDeferredDeactivateTest {
     private final TreasuryCoverageFacade coverage = mock(TreasuryCoverageFacade.class);
     private final StorefrontProductReleasePolicy productReleasePolicy = mock(StorefrontProductReleasePolicy.class);
     private final CanonicalStateMapper canonicalStateMapper = mock(CanonicalStateMapper.class);
-    private final AppTrialLifecycleService service = new AppTrialLifecycleService(capture,
+    private final AppTrialLifecycleService service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(capture,
             mapper, earningsRelease, idempotency, coverage,
             mock(AuditLogService.class), mock(EventOutboxService.class), productReleasePolicy, canonicalStateMapper, productionEnvironment(),
-            TEST_CLOCK);
+            TEST_CLOCK));
 
     private static MockEnvironment productionEnvironment() {
         MockEnvironment environment = new MockEnvironment();

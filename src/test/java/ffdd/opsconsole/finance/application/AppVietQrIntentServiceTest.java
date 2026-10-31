@@ -42,6 +42,7 @@ class AppVietQrIntentServiceTest {
 
     @BeforeEach
     void setUp() {
+        when(mapper.hdPayTopupMinimumPrincipal()).thenReturn(BigDecimal.TEN);
         environment.setActiveProfiles("prod");
         service = new AppVietQrIntentService(mapper, cipher, CLOCK, environment, config);
         when(config.activeValue("finance.topup.channel.vietqr.enabled")).thenReturn(Optional.of("true"));
@@ -90,6 +91,13 @@ class AppVietQrIntentServiceTest {
                 .extracting("code")
                 .isEqualTo(503);
         verifyNoInteractions(mapper);
+    }
+    @Test void rechargePrincipalRejectsFractionsAndReadsTheConfiguredIntegerMinimum(){
+        when(mapper.findIntentByCreateKey(41L,"below-configured-min")).thenReturn(null);
+        assertThatThrownBy(()->service.createHosted(41L,"fraction-topup",new BigDecimal("10.01"))).hasMessage("VIETQR_AMOUNT_SCALE_INVALID");
+        when(mapper.hdPayTopupMinimumPrincipal()).thenReturn(new BigDecimal("25"));
+        assertThatThrownBy(()->service.createHosted(41L,"below-configured-min",new BigDecimal("24"))).hasMessage("VIETQR_AMOUNT_OUT_OF_RANGE");
+        assertThat(((Map<?,?>)service.hostedPaymentConfig().getData().get("vietQr")).get("minDepositUsdt")).isEqualTo(new BigDecimal("25.00"));
     }
 
     @Test

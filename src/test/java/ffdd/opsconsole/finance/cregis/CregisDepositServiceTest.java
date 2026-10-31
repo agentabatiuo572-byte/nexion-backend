@@ -36,6 +36,21 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 
 class CregisDepositServiceTest {
+    @ParameterizedTest @ValueSource(strings={"9.5","10.5"})
+    void newNonintegerRechargeArrivalsAreRetainedWithoutRoundingOrWalletCredit(String raw){
+        var db=mock(CregisDepositMapper.class);riskReady(db);var policies=DepositPolicyFixture.policy();
+        when(policies.integerPrincipalRequired(88,TXID)).thenReturn(true);
+        when(db.lockEvent(88,77)).thenReturn(List.of());when(db.lockActiveUser(42)).thenReturn(42L);
+        when(db.lockProvisionGate()).thenReturn(Map.of("state","IDLE","creditEnabled",1));
+        String expected=new BigDecimal(raw).compareTo(BigDecimal.TEN)<0?"DUST_HOLD":"REVIEW_HOLD";
+        when(db.insertEvent(eq(42L),eq(88L),eq(77L),eq(TXID),eq(0),eq(ADDRESS),eq(new BigDecimal(raw)),eq(BigDecimal.ZERO),eq(BigDecimal.ZERO),eq(101L),eq(BLOCK),eq(15),eq(expected))).thenReturn(1);
+        var service=new CregisDepositService(properties(),mock(CregisGatewayRouter.class),mock(BscDepositProof.class),new CregisSigner(),new ObjectMapper(),db,
+                mock(PlatformTransactionManager.class),mock(TreasuryLedgerRepository.class),mock(FinanceWithdrawalControlFacade.class),capture,
+                mock(CregisPayoutControl.class),mock(CregisExceptionSourceService.class),mock(CregisReorgResolutionService.class),policies);
+        boolean held=org.springframework.test.util.ReflectionTestUtils.invokeMethod(service,"settle",0L,42L,77L,TXID,ADDRESS,new BigDecimal(raw),new BscDepositProof.Proof(0,101,BLOCK,15));
+        assertThat(held).isTrue();verify(db).insertEvent(eq(42L),eq(88L),eq(77L),eq(TXID),eq(0),eq(ADDRESS),eq(new BigDecimal(raw)),eq(BigDecimal.ZERO),eq(BigDecimal.ZERO),eq(101L),eq(BLOCK),eq(15),eq(expected));
+        verify(db,never()).creditWallet(any(),anyLong(),anyLong());verifyNoInteractions(capture);service.closePoolWorkers();
+    }
     private final SupportPaymentAttributionFacade capture = paymentAttribution();
     private static final String KEY = "0123456789abcdef0123456789abcdef";
     private static final String ADDRESS = "0x1111111111111111111111111111111111111111";

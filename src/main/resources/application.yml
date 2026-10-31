@@ -47,6 +47,12 @@ nexion:
       allow-loopback: ${NEXION_DEVELOPER_WEBHOOK_ALLOW_LOOPBACK:false}
       max-per-account: ${NEXION_DEVELOPER_WEBHOOK_MAX_PER_ACCOUNT:20}
   auth:
+    payment-password:
+      pepper: ${NEXION_PAYMENT_PASSWORD_PEPPER:}
+      pepper-version: ${NEXION_PAYMENT_PASSWORD_PEPPER_VERSION:v1}
+      max-attempts: ${NEXION_PAYMENT_PASSWORD_MAX_ATTEMPTS:5}
+      window-seconds: ${NEXION_PAYMENT_PASSWORD_WINDOW_SECONDS:900}
+      lock-seconds: ${NEXION_PAYMENT_PASSWORD_LOCK_SECONDS:900}
     user-otp:
       # Local-only China fallback: +86 uses 123456 when application-dev.yml enables it.
       # +84 and every other provider route still require ITNIO; production remains fail closed.

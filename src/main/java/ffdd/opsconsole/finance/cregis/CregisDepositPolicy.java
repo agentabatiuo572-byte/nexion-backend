@@ -17,7 +17,7 @@ public record CregisDepositPolicy(long version,
             long version = new BigDecimal(String.valueOf(values.get("expectedVersion"))).longValueExact();
             if (!(values.get("reason") instanceof String)) throw invalid();
             String reason = ((String) values.get("reason")).trim();
-            if (version < 0 || min.signum() <= 0 || fee.signum() < 0 || min.compareTo(fee) <= 0 || confirmations < 15
+            if (version < 0 || min.signum() <= 0 || min.stripTrailingZeros().scale()>0 || fee.signum() < 0 || min.compareTo(fee) <= 0 || confirmations < 15
                     || confirmations > 10000 || reason.length() < 10 || reason.length() > 300) throw invalid();
             return new CregisDepositPolicy(version,min,fee,confirmations);
         } catch (ArithmeticException | NumberFormatException ex) { throw invalid(); }

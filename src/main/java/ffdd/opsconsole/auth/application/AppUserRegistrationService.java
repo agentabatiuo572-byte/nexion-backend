@@ -44,9 +44,30 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.util.StringUtils;
 
 @Service
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_ = @org.springframework.beans.factory.annotation.Autowired)
 @Slf4j
 public class AppUserRegistrationService {
+    private final AppPaymentPasswordService paymentPasswords;
+
+    // Compatibility constructor for existing isolated domain tests; runtime uses the full constructor.
+    public AppUserRegistrationService(
+            AppUserRegistrationMapper mapper,
+            UserOpsMapper userMapper,
+            PasswordEncoder passwordEncoder,
+            UserOtpDeliveryService otpDeliveryService,
+            AppUserAuthService authService,
+            EventOutboxService outboxService,
+            AppUserRegistrationTransactionExecutor transactionExecutor,
+            Environment environment,
+            OpsReferralRewardService referralRewardService,
+            PlatformConfigFacade configFacade,
+            UserLoginGuardMapper loginGuardMapper,
+            CaptchaOtpGate captchaGate,
+            DayOneInstanceFacade dayOneInstanceFacade,
+            ffdd.opsconsole.content.facade.SupportRegistrationFacade supportBindingService,
+            AuthNewAccountCreator accountCreator) {
+        this(null,mapper,userMapper,passwordEncoder,otpDeliveryService,authService,outboxService,transactionExecutor,environment,referralRewardService,configFacade,loginGuardMapper,captchaGate,dayOneInstanceFacade,supportBindingService,accountCreator);
+    }
     private static final String K1_MAX_SIGNUP_PER_IP_24H = "maxSignupPerIp24h";
     private static final Set<String> WEAK_PASSWORDS = Set.of(
             "12345678", "123456789", "1234567890", "password", "password1",
@@ -407,6 +428,7 @@ public class AppUserRegistrationService {
         } catch (DuplicateKeyException exception) {
             throw new BizException(409, "USER_REGISTRATION_IDENTITY_CONFLICT");
         }
+        if (paymentPasswords!=null) paymentPasswords.recordVerifiedPhone(user.getId(),countryCode,phone);
         supportBindingService.register(user.getId(), sponsor == null ? null : sponsor.getId());
         dayOneInstanceFacade.provisionForRegisteredUser(user.getId());
         createTeamGraphProjection(user.getId(), sandbox);

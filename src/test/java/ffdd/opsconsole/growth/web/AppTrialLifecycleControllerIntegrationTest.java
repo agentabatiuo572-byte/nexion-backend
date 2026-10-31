@@ -116,23 +116,24 @@ class AppTrialLifecycleControllerIntegrationTest {
         AppTrialLifecycleService service = mock(AppTrialLifecycleService.class);
         AppTrialLifecycleController controller = new AppTrialLifecycleController(service);
         BigDecimal expectedAmount = new BigDecimal("1277.33");
-        when(service.convert(42L, "stellarbox-s1", expectedAmount, "FULL_TERM_ON_CONVERSION:abc", "convert-key"))
+        var authorization=new ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade.Authorization("018290",1L,"convert-attempt");
+        when(service.convert(42L, "stellarbox-s1", expectedAmount, "FULL_TERM_ON_CONVERSION:abc", "convert-key",authorization))
                 .thenReturn(ApiResult.ok(Map.of("orderNo", "TRC-1")));
 
         ApiResult<Map<String, Object>> result = controller.convert(
                 new AppTrialLifecycleController.ConvertRequest("stellarbox-s1", expectedAmount,
-                        "FULL_TERM_ON_CONVERSION:abc"),
+                        "FULL_TERM_ON_CONVERSION:abc","018290",1L,"convert-attempt"),
                 "convert-key", auth("42", "USER"));
 
         assertThat(result.getCode()).isZero();
-        verify(service).convert(42L, "stellarbox-s1", expectedAmount, "FULL_TERM_ON_CONVERSION:abc", "convert-key");
+        verify(service).convert(42L, "stellarbox-s1", expectedAmount, "FULL_TERM_ON_CONVERSION:abc", "convert-key",authorization);
     }
 
     private AppTrialLifecycleController controller(AppTrialLifecycleMapper mapper,
                                                    MockEnvironment environment) {
         StorefrontProductReleasePolicy releasePolicy = mock(StorefrontProductReleasePolicy.class);
         when(releasePolicy.evaluate(any(), any())).thenReturn(StorefrontProductReleasePolicy.Decision.open(null));
-        AppTrialLifecycleService service = new AppTrialLifecycleService(paymentAttribution(),
+        AppTrialLifecycleService service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(paymentAttribution(),
                 mapper,
                 mock(EarningsReleaseService.class),
                 mock(AdminIdempotencyService.class),
@@ -142,7 +143,7 @@ class AppTrialLifecycleControllerIntegrationTest {
                 releasePolicy,
                 mock(CanonicalStateMapper.class),
                 environment,
-                Clock.systemUTC());
+                Clock.systemUTC()));
         return new AppTrialLifecycleController(service);
     }
 

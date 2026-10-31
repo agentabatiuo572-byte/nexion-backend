@@ -251,8 +251,8 @@ class TrialEarlyPurchaseQuoteTest {
     }
 
     private AppTrialLifecycleService service(Instant at) {
-        return new AppTrialLifecycleService(capture, mapper, earnings, idempotency, coverage, audit, outbox,
-                releasePolicy, canonicalStateMapper, environment(), Clock.fixed(at, SHANGHAI));
+        return ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(capture, mapper, earnings, idempotency, coverage, audit, outbox,
+                releasePolicy, canonicalStateMapper, environment(), Clock.fixed(at, SHANGHAI)));
     }
 
     private static MockEnvironment environment() {

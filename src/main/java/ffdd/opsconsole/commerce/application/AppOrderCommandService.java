@@ -1,6 +1,7 @@
 package ffdd.opsconsole.commerce.application;
 
 import ffdd.opsconsole.shared.config.HardwareQuotaPeriod;
+import ffdd.opsconsole.finance.purchase.VerifiedPurchasePayment;
 import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import ffdd.opsconsole.commerce.mapper.AppOrderCommandMapper;
@@ -36,6 +37,7 @@ import org.springframework.util.StringUtils;
 
 @Service
 public class AppOrderCommandService {
+    private final ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade paymentAuthorization;
     private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 128;
     private static final String MAINTENANCE_KILLSWITCH_KEY = "killswitch.maintenance";
     private static final String MAINTENANCE_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.maintenance";
@@ -65,7 +67,8 @@ public class AppOrderCommandService {
             EventOutboxService outbox,
             @Value("${nexion.commerce.pending-order-ttl-minutes:30}") int pendingOrderTtlMinutes,
             PromotionOrderService promotions,
-            SupportPaymentAttributionFacade paymentAttribution) {
+            SupportPaymentAttributionFacade paymentAttribution,
+            ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade paymentAuthorization) {
         this.mapper = mapper;
         this.idempotency = idempotency;
         this.audit = audit;
@@ -77,6 +80,16 @@ public class AppOrderCommandService {
         this.promotions = promotions;
         this.paymentAttribution = java.util.Objects.requireNonNull(paymentAttribution);
         this.pendingOrderTtlMinutes = Math.max(1, pendingOrderTtlMinutes);
+        this.paymentAuthorization=paymentAuthorization;
+    }
+
+    public AppOrderCommandService(AppOrderCommandMapper mapper,AdminIdempotencyService idempotency,
+            AuditLogService audit,FundsSandboxProfileGuard sandboxGuard,CommerceAcceptanceSandboxMapper sandboxMapper,
+            CommerceAcceptanceSandboxService sandboxService,CommerceAcceptanceRun acceptanceRun,
+            EventOutboxService outbox,int pendingOrderTtlMinutes,PromotionOrderService promotions,
+            SupportPaymentAttributionFacade paymentAttribution) {
+        this(mapper,idempotency,audit,sandboxGuard,sandboxMapper,sandboxService,acceptanceRun,outbox,
+                pendingOrderTtlMinutes,promotions,paymentAttribution,null);
     }
 
     AppOrderCommandService(
@@ -122,8 +135,24 @@ public class AppOrderCommandService {
     }
 
     /** User-confirmed checkout payment. Commerce settles only from the canonical NexGrid wallet. */
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public ApiResult<Map<String, Object>> pay(Long userId, String orderNo, String idempotencyKey) {
+        return pay(userId,orderNo,idempotencyKey,null);
+    }
+
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
+    public ApiResult<Map<String, Object>> pay(Long userId,String orderNo,String idempotencyKey,
+            ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade.Authorization authorization) {
+        if (userId==null || userId<1 || !StringUtils.hasText(orderNo)) return ApiResult.fail(422,"ORDER_PAYMENT_INPUT_INVALID");
+        if (paymentAuthorization==null) return ApiResult.fail(503,"PAYMENT_PASSWORD_UNAVAILABLE");
+        String normalized=orderNo.trim();
+        return paymentAuthorization.execute(userId,"order-pay",idempotencyKey,userId+"|"+normalized,
+                authorization,() -> (sandboxGuard.isStrictDevelopmentRuntime() || sandboxGuard.isStrictProductionRuntime())
+                        && mapper.countCompletedPaidOrder(userId,normalized)==1 ? payFromWallet(userId,normalized) : null,
+                () -> payAuthorized(userId,normalized,idempotencyKey));
+    }
+
+    private ApiResult<Map<String, Object>> payAuthorized(Long userId,String orderNo,String idempotencyKey) {
         if (userId == null || userId < 1 || !StringUtils.hasText(orderNo)) {
             return ApiResult.fail(422, "ORDER_PAYMENT_INPUT_INVALID");
         }
@@ -154,17 +183,27 @@ public class AppOrderCommandService {
                 (Supplier) () -> paySandbox(userId, normalized, runId));
     }
 
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY, rollbackFor = Exception.class)
+    public ApiResult<Map<String,Object>> settleVerifiedExternal(Long userId,String orderNo) {
+        if (!VerifiedPurchasePayment.active()) throw new BizException(403,"PURCHASE_PAYMENT_SCOPE_REQUIRED");
+        if (!Integer.valueOf(0).equals(mapper.activeUserEnvironment(userId))) throw new BizException(403,"COMMERCE_PRODUCTION_USER_REQUIRED");
+        return payFromWallet(userId,orderNo);
+    }
+
     private ApiResult<Map<String, Object>> payFromWallet(Long userId, String orderNo) {
         Long owner=mapper.findDevelopmentPayOrderOwner(orderNo);
         if (!userId.equals(owner)) return ApiResult.fail(403, "ORDER_FORBIDDEN");
         if (promotions != null) promotions.lockOrderParticipants(orderNo);
-        var prepared = paymentAttribution.prepare(userId, Source.WALLET_ORDER, orderNo);
+        var prepared = VerifiedPurchasePayment.active() ? null : paymentAttribution.prepare(userId, Source.WALLET_ORDER, orderNo);
         AppOrderCommandMapper.DevelopmentPayOrder order = mapper.lockDevelopmentPayOrder(orderNo);
         if (order == null || !userId.equals(order.userId())) return ApiResult.fail(403, "ORDER_FORBIDDEN");
         if (order.amountUsdt() == null || order.amountUsdt().signum() < 0
                 || order.quantity() == null || order.quantity() < 1 || order.quantity() > 100) {
             return ApiResult.fail(409, "ORDER_PAYMENT_FACT_INVALID");
         }
+        boolean external = VerifiedPurchasePayment.active();
+        if (external) VerifiedPurchasePayment.require(userId,order.amountUsdt());
+        if (!external && mapper.countActiveDirectPaymentIntent(orderNo)>0) return ApiResult.fail(409,"ORDER_EXTERNAL_PAYMENT_IN_PROGRESS");
         boolean fullyDiscounted = order.amountUsdt().signum() == 0;
         if (fullyDiscounted) {
             List<AppOrderCommandMapper.VoucherGrantRow> usedVouchers =
@@ -175,15 +214,15 @@ public class AppOrderCommandService {
                 return ApiResult.fail(409, "ORDER_VOUCHER_SETTLEMENT_INVALID");
             }
         }
-        String paymentRail = fullyDiscounted ? "VOUCHER" : "UVEL_WALLET";
-        String paymentNo = (fullyDiscounted ? "PAY-VOUCHER-" : "PAY-WALLET-") + sha256(userId + "|" + orderNo)
+        String paymentRail = external ? VerifiedPurchasePayment.method() : fullyDiscounted ? "VOUCHER" : "UVEL_WALLET";
+        String paymentNo = external ? VerifiedPurchasePayment.intentNo() : (fullyDiscounted ? "PAY-VOUCHER-" : "PAY-WALLET-") + sha256(userId + "|" + orderNo)
                 .substring(0, 32).toUpperCase(Locale.ROOT);
         AppOrderCommandMapper.DevelopmentWallet wallet = null;
         if ("PAID".equalsIgnoreCase(order.paymentStatus())
                 && "COMPLETED".equalsIgnoreCase(order.orderStatus())
                 && "ACTIVATED".equalsIgnoreCase(order.activationStatus())) {
             if (!paymentNo.equals(order.paymentNo())) return ApiResult.fail(409, "ORDER_PAYMENT_STATE_CONFLICT");
-            if (!fullyDiscounted) {
+            if (!fullyDiscounted && !external) {
                 wallet = mapper.lockDevelopmentWallet(userId);
                 if (!validWallet(wallet)) return ApiResult.fail(409, "ORDER_WALLET_UNAVAILABLE");
             }
@@ -291,19 +330,19 @@ public class AppOrderCommandService {
         // Keep the cross-flow lock order aligned with trade-in settlement:
         // product/SKU first, wallet second. Otherwise payment and trade-in for
         // the same product and wallet can deadlock each other.
-        if (!fullyDiscounted) {
+        if (!fullyDiscounted && !external) {
             wallet = mapper.lockDevelopmentWallet(userId);
             if (!validWallet(wallet)) return ApiResult.fail(409, "ORDER_WALLET_UNAVAILABLE");
         }
-        if (!fullyDiscounted && wallet.usdtAvailable().compareTo(order.amountUsdt()) < 0) {
+        if (!fullyDiscounted && !external && wallet.usdtAvailable().compareTo(order.amountUsdt()) < 0) {
             // Insufficient balance is recoverable by topping up. Throw so the
             // idempotency record becomes FAILED and the same payment intent can
             // be reclaimed safely after the wallet balance changes.
             throw new BizException(409, "ORDER_WALLET_INSUFFICIENT");
         }
         if (consumeInventory) consumePaymentInventory(userId, orderNo, order.quantity());
-        BigDecimal balanceAfter = fullyDiscounted ? null : wallet.usdtAvailable().subtract(order.amountUsdt());
-        if (!fullyDiscounted) {
+        BigDecimal balanceAfter = fullyDiscounted || external ? null : wallet.usdtAvailable().subtract(order.amountUsdt());
+        if (!fullyDiscounted && !external) {
             paymentAttribution.beforeCash(prepared);
             if (mapper.debitDevelopmentWallet(userId, order.amountUsdt(), wallet.version()) != 1) {
                 throw new BizException(409, "ORDER_WALLET_CONFLICT");
@@ -316,7 +355,7 @@ public class AppOrderCommandService {
         if (mapper.markDevelopmentOrderActivated(orderNo, userId, paymentNo) != 1) {
             throw new BizException(409, "ORDER_STATE_CONFLICT");
         }
-        if (mapper.insertDevelopmentPayment(orderNo, userId, paymentNo, order.amountUsdt()) != 1) {
+        if (!external && mapper.insertDevelopmentPayment(orderNo, userId, paymentNo, order.amountUsdt()) != 1) {
             throw new BizException(409, "PAYMENT_RECORD_CONFLICT");
         }
         for (var tier : monthlyQuotas) {
@@ -366,7 +405,7 @@ public class AppOrderCommandService {
                 .actorType("USER").method("POST").path("/api/orders/" + orderNo + "/pay")
                 .result("SUCCESS").riskLevel("LOW")
                 .detail(auditDetail).build());
-        if (!fullyDiscounted) paymentAttribution.record(prepared);
+        if (!fullyDiscounted && !external) paymentAttribution.record(prepared);
         return developmentPaymentReceipt(order, paymentNo, balanceAfter, paymentRail, false);
     }
 

@@ -373,6 +373,10 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261030_test_cloud_legacy_admission.sql")
   (Join-Path $root "scripts\migrations\20261030_native_push_direct_providers.sql")
   (Join-Path $root "scripts\migrations\20261030_business_notification_session_indexes.sql")
+  (Join-Path $root "scripts\migrations\20261030_payment_password.sql")
+  (Join-Path $root "scripts\migrations\20261031_l6_payment_password_route.sql")
+  (Join-Path $root "scripts\migrations\20261031_payment_password_permissions.sql")
+  (Join-Path $root "scripts\migrations\20261031_purchase_direct_payments.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
