@@ -36,6 +36,19 @@ class PromotionOrderServiceTest {
         service.lockOrderParticipants("O1");
         var order=inOrder(db);order.verify(db).user(3,true);order.verify(db).user(17,true);
     }
+    @Test void everyExistingOrderLifecycleLocksBudgetBeforePurchasedAndGiftSkus(){
+        when(db.order("O1",false)).thenReturn(values("user_id",17L));
+        when(db.reservations("O1",false)).thenReturn(List.of(values("beneficiary_id",3L,"activity_id","A1")));
+        when(db.list(startsWith("SELECT p.product_no FROM nx_product"),any(Object[].class)))
+            .thenReturn(List.of(values("product_no","P2"),values("product_no","P1")));
+        service.lockOrderParticipants("O1");
+        var sequence=inOrder(db);sequence.verify(db).user(3,true);sequence.verify(db).user(17,true);
+        sequence.verify(db).activity("A1",true);
+        sequence.verify(db).list(eq("SELECT * FROM nx_promotion_budget WHERE activity_id=? ORDER BY asset,product_no FOR UPDATE"),eq("A1"));
+        sequence.verify(db).product("P1",true);
+        sequence.verify(db).one("SELECT * FROM nx_admin_device_sku WHERE sku_id=? AND is_deleted=0 FOR UPDATE","P1");
+        sequence.verify(db).product("P2",true);
+    }
     @Test void unknownOrderCannotSkipAccountLocks(){
         when(db.order("bad",false)).thenThrow(new BizException(404,"PROMOTION_RESOURCE_NOT_FOUND"));
         assertThrows(BizException.class,()->service.lockOrderParticipants("bad"));verify(db,never()).user(anyLong(),anyBoolean());

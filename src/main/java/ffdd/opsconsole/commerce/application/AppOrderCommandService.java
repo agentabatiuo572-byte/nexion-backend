@@ -204,6 +204,7 @@ public class AppOrderCommandService {
         if (mapper.countExpiredPayableOrder(orderNo, userId, pendingOrderTtlMinutes) > 0) {
             return ApiResult.fail(409, "ORDER_PAYMENT_EXPIRED");
         }
+        if (promotions != null) promotions.beforePay(userId, orderNo);
         // A pending order preserves its price, never an authority
         // to bypass the current E1 sale state or a platform-wide maintenance stop.
         // Re-read this immediately before the wallet CAS so an old checkout page
@@ -219,7 +220,6 @@ public class AppOrderCommandService {
         if (mapper.hasNonPayableOrderProduct(orderNo)) {
             return ApiResult.fail(409, "ORDER_PRODUCT_NOT_PAYABLE");
         }
-        if (promotions != null) promotions.beforePay(userId, orderNo);
         String orderType = StringUtils.hasText(order.orderType())
                 ? order.orderType().trim().toUpperCase(Locale.ROOT) : "SINGLE";
         List<AppOrderCommandMapper.DevelopmentPaymentItem> paymentItems = List.of();
