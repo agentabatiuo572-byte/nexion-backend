@@ -615,10 +615,49 @@ class OpsTeamServiceTest {
         assertThat(rows)
                 .filteredOn(row -> "V3".equals(row.get("v")))
                 .singleElement()
-                .satisfies(row -> assertThat(row).containsEntry("teamGv", 250000));
+                .satisfies(row -> assertThat(row).containsEntry("teamGv", 250000L));
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("F_TEAM_VRANK_THRESHOLD_CHANGED");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void everyRankExposesAndMaintainsActualDimensionsWithoutIntegerTruncation() {
+        commissionRepository.vRankRows.clear();
+        commissionRepository.vRankRows.add(new LinkedHashMap<>(Map.of(
+                "v", "V2", "selfComputePoints", 9_007_199_254_740_991L, "teamComputePoints", 4_294_967_297L)));
+        var rows = (List<Map<String, Object>>) service.ranks().getData().get("vrankRows");
+        assertThat(rows.get(0)).containsEntry("selfBuy", 9_007_199_254_740_991L)
+                .containsEntry("teamGv", 4_294_967_297L).containsEntry("directRefs", 0)
+                .containsEntry("legCount", 0).containsEntry("legRank", "NONE");
+        service.updateVRankThreshold("V2", "selfBuy", "v2-self",
+                new TeamCommissionConfigUpdateRequest(null, "4294967298", "maintain actual V2 self gate", "superadmin"));
+        assertThat(commissionRepository.vRankRows.get(0)).containsEntry("selfComputePoints", 4_294_967_298L);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"selfBuy,-1", "selfBuy,1.5", "selfBuy,9007199254740992",
+            "teamGv,9007199254740992", "directRefs,1.5", "directRefs,2147483648", "legCount,2147483648"})
+    void thresholdUpdatesRejectTruncationAndUnsafeValues(String field, String value) {
+        assertThatThrownBy(() -> service.updateVRankThreshold("V2", field, "invalid-" + field,
+                new TeamCommissionConfigUpdateRequest(null, value, "invalid gate", "superadmin")))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("non-negative whole number");
+    }
+
+    @Test
+    void branchCanBeMaintainedOneFieldAtATimeAndClearedExplicitly() {
+        service.updateVRankThreshold("V2", "legCount", "count-first",
+                new TeamCommissionConfigUpdateRequest(null, "1", "configure branch count", "superadmin"));
+        service.updateVRankThreshold("V2", "legRank", "rank-second",
+                new TeamCommissionConfigUpdateRequest(null, "V1", "configure branch rank", "superadmin"));
+        service.updateVRankThreshold("V2", "legRank", "clear-rank",
+                new TeamCommissionConfigUpdateRequest(null, "NONE", "clear branch rank", "superadmin"));
+        assertThat(commissionRepository.vRankRows.stream().filter(r -> "V2".equals(r.get("v"))).findFirst().orElseThrow())
+                .containsEntry("legCount", 1).containsEntry("legRank", null);
+        assertThatThrownBy(() -> service.updateVRankThreshold("V2", "legRank", "same-rank",
+                new TeamCommissionConfigUpdateRequest(null, "V2", "invalid branch rank", "superadmin")))
+                .hasMessageContaining("active lower rank or NONE");
     }
 
     @Test
