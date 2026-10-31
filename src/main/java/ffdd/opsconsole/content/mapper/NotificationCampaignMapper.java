@@ -13,6 +13,11 @@ import org.apache.ibatis.annotations.Update;
 import java.util.List;
 
 public interface NotificationCampaignMapper extends BaseMapper<NotificationCampaignEntity> {
+    // App parseNotification applies JavaScript String.trim() to kind and priority.
+    String APP_TEXT_TRIM_CHARACTERS = "[\\x{0009}-\\x{000D}\\x{0020}\\x{00A0}\\x{1680}\\x{2000}-\\x{200A}"
+            + "\\x{2028}\\x{2029}\\x{202F}\\x{205F}\\x{3000}\\x{FEFF}]";
+    String APP_TEXT_TRIM_REGEX = "^" + APP_TEXT_TRIM_CHARACTERS + "+|" + APP_TEXT_TRIM_CHARACTERS + "+$";
+
     @Insert("""
             <script>
             INSERT INTO nx_notification (
@@ -310,6 +315,7 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
             """)
     int recoverStaleSending(@Param("staleBefore") LocalDateTime staleBefore, @Param("now") LocalDateTime now);
 
+    // Display groups follow App src/lib/notification-category.ts, independently of preference buckets.
     @Select("""
             <script>
             SELECT n.id,
@@ -339,6 +345,20 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                )
                <if test='cursorId != null'>AND n.id &lt; #{cursorId}</if>
                <if test='priority != null and priority != ""'>AND LOWER(n.priority) = #{priority}</if>
+               <if test='category != null and category != "all"'>
+                 <bind name="kindTrimPattern" value="@ffdd.opsconsole.content.mapper.NotificationCampaignMapper@APP_TEXT_TRIM_REGEX" />
+                 AND CASE
+                     WHEN CAST(LOWER(REGEXP_REPLACE(n.type, #{kindTrimPattern}, '')) AS BINARY) IN ('wallet','payment_method','withdrawal','order',
+                         'commission','staking','nova_commission','funds_result') THEN 'finance'
+                     WHEN CAST(LOWER(REGEXP_REPLACE(n.type, #{kindTrimPattern}, '')) AS BINARY) IN ('device','dailysummary','nova_dailysummary',
+                         'nova_upgrade','nova_tradein','device_expiry','device_alert') THEN 'device'
+                     WHEN CAST(LOWER(REGEXP_REPLACE(n.type, #{kindTrimPattern}, '')) AS BINARY) IN ('team','nova_team','nova_team_event') THEN 'team'
+                     WHEN CAST(LOWER(REGEXP_REPLACE(n.type, #{kindTrimPattern}, '')) AS BINARY) IN ('marketing','market','nova_market','nova_staking',
+                         'nova_staking_event','nova_market_event','genesis','nova_genesis','reward',
+                         'nova_eventclaim','nova_quest','nova_tasklockmonthly') THEN 'rewards'
+                     ELSE 'system'
+                 END = #{category}
+               </if>
              ORDER BY n.id DESC
              LIMIT #{limit}
             </script>
@@ -347,7 +367,12 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
             @Param("userId") Long userId,
             @Param("cursorId") Long cursorId,
             @Param("priority") String priority,
-            @Param("limit") int limit);
+            @Param("limit") int limit,
+            @Param("category") String category);
+
+    default List<AppNotificationView> selectUserNotifications(Long userId, Long cursorId, String priority, int limit) {
+        return selectUserNotifications(userId, cursorId, priority, limit, null);
+    }
 
     @Select("""
             SELECT COUNT(*)
@@ -487,9 +512,13 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
             @Param("notificationIds") List<Long> notificationIds);
 
     @Update("""
+            <script>
+            <bind name="priorityTrimPattern" value="@ffdd.opsconsole.content.mapper.NotificationCampaignMapper@APP_TEXT_TRIM_REGEX" />
             UPDATE nx_notification
                SET is_deleted = 1, updated_at = NOW()
              WHERE user_id = #{userId} AND is_deleted = 0 AND read_flag = 1
+               AND CAST(LOWER(REGEXP_REPLACE(COALESCE(priority, ''), #{priorityTrimPattern}, '')) AS BINARY) &lt;&gt; 'critical'
+            </script>
             """)
     int clearReadUserNotifications(@Param("userId") Long userId);
 

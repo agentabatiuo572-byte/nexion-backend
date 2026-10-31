@@ -24,6 +24,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class AppNotificationService {
     private static final Set<String> PRIORITIES = Set.of("critical", "high", "normal", "low");
+    private static final Set<String> CATEGORIES = Set.of("all", "finance", "device", "team", "rewards", "system");
     private static final Set<String> ACTIONS = Set.of("cta", "swipe_conversion");
     private final NotificationCampaignRepository repository;
     private final EventOutboxService eventOutboxService;
@@ -32,6 +33,11 @@ public class AppNotificationService {
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<AppNotificationPage> page(Long userId, String cursor, String priority, Integer limit) {
+        return page(userId, cursor, priority, limit, null);
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public ApiResult<AppNotificationPage> page(Long userId, String cursor, String priority, Integer limit, String category) {
         if (userId == null || userId <= 0) {
             return ApiResult.fail(403, "USER_AUTH_REQUIRED");
         }
@@ -43,11 +49,16 @@ public class AppNotificationService {
         if (StringUtils.hasText(priority) && normalizedPriority == null) {
             return ApiResult.fail(400, "NOTIFICATION_PRIORITY_INVALID");
         }
+        String normalizedCategory = category == null ? "all" : category.trim().toLowerCase(Locale.ROOT);
+        if (!CATEGORIES.contains(normalizedCategory)) {
+            return ApiResult.fail(400, "NOTIFICATION_CATEGORY_INVALID");
+        }
         int normalizedLimit = Math.max(1, Math.min(limit == null ? 30 : limit, 100));
         businessNotifications.ifAvailable(service -> service.collectWithdrawalAttention(userId));
         repository.applyRetentionForUser(userId);
         return ApiResult.ok(repository.pageUserNotifications(
-                userId, cursorId, normalizedPriority, normalizedLimit));
+                userId, cursorId, normalizedPriority, normalizedLimit,
+                "all".equals(normalizedCategory) ? null : normalizedCategory));
     }
 
     @Transactional

@@ -10,6 +10,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.domain.NotificationAudienceTarget;
+import ffdd.opsconsole.content.domain.AppNotificationView;
 import ffdd.opsconsole.content.mapper.NotificationCampaignMapper;
 import ffdd.opsconsole.content.mapper.NotificationCapRuleMapper;
 import java.time.LocalDateTime;
@@ -124,6 +125,33 @@ class MybatisNotificationCampaignRepositoryTest {
 
         assertThat(rules.get(0).policy()).contains("最新 40 条", "淘汰最旧记录").doesNotContain("LIFO");
         assertThat(rules.get(1).policy()).contains("最新 25 条", "淘汰最旧记录", "48 小时").doesNotContain("LIFO");
+    }
+
+    @Test
+    void categoryPageUsesOneExtraMatchingRowAndKeepsUnreadAccountWide() {
+        when(campaignMapper.countUnreadForUser(7L)).thenReturn(35L);
+        when(campaignMapper.selectUserNotifications(7L, 10L, "high", 3, "finance"))
+                .thenReturn(List.of(notification(8L), notification(6L), notification(4L)));
+
+        var page = repository.pageUserNotifications(7L, 10L, "high", 2, "finance");
+
+        assertThat(page.items()).extracting(AppNotificationView::id).containsExactly(8L, 6L);
+        assertThat(page.nextCursor()).isEqualTo("6");
+        assertThat(page.unread()).isEqualTo(35L);
+        verify(campaignMapper).selectUserNotifications(7L, 10L, "high", 3, "finance");
+        verify(campaignMapper).countUnreadForUser(7L);
+
+        when(campaignMapper.selectUserNotifications(7L, 6L, null, 3, "finance"))
+                .thenReturn(List.of(notification(4L), notification(2L)));
+        assertThat(repository.pageUserNotifications(7L, 6L, null, 2, "finance").nextCursor()).isNull();
+        when(campaignMapper.selectUserNotifications(7L, 2L, null, 3, "finance"))
+                .thenReturn(List.of());
+        assertThat(repository.pageUserNotifications(7L, 2L, null, 2, "finance").items()).isEmpty();
+        assertThat(repository.pageUserNotifications(7L, 2L, null, 2, "finance").nextCursor()).isNull();
+    }
+
+    private AppNotificationView notification(long id) {
+        return new AppNotificationView(id, "wallet", "high", "title", "body", "", "", now, null);
     }
 
     private NotificationCapRuleEntity cap(String tier, String label, boolean locked) {
