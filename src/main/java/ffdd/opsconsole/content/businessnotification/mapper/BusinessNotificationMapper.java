@@ -31,6 +31,12 @@ public interface BusinessNotificationMapper {
           WHERE e.is_deleted=0 AND e.created_at>=b.baseline_at AND e.event_type IN
             ('wallet.topup_confirmed','order.refunded')
           UNION ALL
+          SELECT CONCAT('PURCHASE:',p.notification_key,':',p.outcome),p.user_id,'FUNDS_RESULT',
+            CASE p.outcome WHEN 'DELIVERED' THEN 'purchase_delivered' WHEN 'PAYMENT_TIMEOUT' THEN 'purchase_timeout' ELSE 'purchase_review' END,
+            CASE WHEN p.order_no<>'' THEN CONCAT('/pages/store/order-detail?id=',p.order_no) ELSE '/pages/store/orders' END
+          FROM nx_purchase_payment_result p JOIN nx_business_notification_control b ON b.id=1
+          WHERE p.created_at>=b.baseline_at
+          UNION ALL
           SELECT CONCAT('DEPOSIT:',d.id),d.user_id,'FUNDS_RESULT','deposit','/pages/me/wallet-bills'
           FROM nx_deposit_order d JOIN nx_business_notification_control b ON b.id=1
           WHERE d.is_deleted=0 AND d.status='CREDITED' AND d.ledger_id IS NOT NULL

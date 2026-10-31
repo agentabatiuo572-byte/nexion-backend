@@ -11,7 +11,13 @@ public interface HdPayGateway {
             int orderStatus,
             BigDecimal transAmt,
             String payType,
-            String appLink) {}
+            String appLink,
+            java.time.Instant expirationTime,
+            java.time.Instant paidAt) {
+        public PayOrder(String merchantOrderId,String providerOrderId,int orderStatus,BigDecimal transAmt,String payType,String appLink){
+            this(merchantOrderId,providerOrderId,orderStatus,transAmt,payType,appLink,null,null);
+        }
+    }
 
     PayPage createPayOrder(CreatePayOrder order);
 

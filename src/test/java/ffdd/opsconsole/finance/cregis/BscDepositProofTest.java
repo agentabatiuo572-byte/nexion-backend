@@ -34,11 +34,20 @@ class BscDepositProofTest {
     private String balance = "0x0";
     private String decimals = "0x" + "0".repeat(62) + "12";
     private String canonicalHash = HASH;
+    private String blockTimestamp="0x6553f100";
     private String logTx = TX;
     private final AtomicReference<String> userAgent = new AtomicReference<>();
     private final AtomicInteger unavailableResponses = new AtomicInteger();
     private final java.util.List<String> methods = new java.util.concurrent.CopyOnWriteArrayList<>();
 
+    @Test void paymentTimeComesFromTheSameCanonicalBlockAndRejectsMissingOrReorgedEvidence() throws Exception {
+        var proof=local();
+        assertThat(proof.blockTime(CregisNetwork.BEP20,100,HASH)).isEqualTo(java.time.Instant.ofEpochSecond(1700000000));
+        canonicalHash="0x"+"d".repeat(64);
+        assertThatThrownBy(()->proof.blockTime(CregisNetwork.BEP20,100,HASH)).hasMessage("CREGIS_BSC_PROOF_INVALID");
+        canonicalHash=HASH;blockTimestamp="";
+        assertThatThrownBy(()->proof.blockTime(CregisNetwork.BEP20,100,HASH)).hasMessage("CREGIS_BSC_PROOF_INVALID");
+    }
     @Test void preparationReadsExactBlockBalancesWithoutAnyTransactionMethod() throws Exception {
         var proof = local();
         balance = "0xde0b6b3a7640000";
@@ -165,7 +174,7 @@ class BscDepositProofTest {
                 case "eth_blockNumber" -> "\"" + head + "\"";
                 case "eth_getBalance" -> "\"0x1\"";
                 case "eth_getBlockByNumber" -> "{\"hash\":\"" + canonicalHash + "\",\"number\":\""
-                        + request.path("params").get(0).asText() + "\"}";
+                        + request.path("params").get(0).asText() + "\",\"timestamp\":\"" + blockTimestamp + "\"}";
                 case "eth_call" -> request.path("params").get(0).path("data").asText()
                         .startsWith("0x70a08231") ? "\"" + balance + "\"" : "\"" + decimals + "\"";
                 case "eth_getTransactionReceipt" -> "{\"status\":\"0x1\",\"transactionHash\":\"" + TX

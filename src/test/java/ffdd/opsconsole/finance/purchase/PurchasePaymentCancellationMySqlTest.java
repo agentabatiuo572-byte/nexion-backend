@@ -17,7 +17,7 @@ import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /** Actual order/create services and MySQL; reuses the owned full-schema fixture, no HTTP server or vendor traffic. */
-@EnabledIfEnvironmentVariable(named="PAYMENT_PIN_TEST_DB_URL",matches="jdbc:mysql://127\\.0\\.0\\.1:33348/payment_pin_backend_test.*")
+@EnabledIfEnvironmentVariable(named="PAYMENT_PIN_TEST_DB_URL",matches="jdbc:mysql://127\\.0\\.0\\.1:3334[38]/(payment_pin_backend_test|outstanding_pay_test).*")
 class PurchasePaymentCancellationMySqlTest {
     static PurchasePaymentHttpMySqlTest.Fixture f;
     static int sequence;
@@ -122,7 +122,7 @@ class PurchasePaymentCancellationMySqlTest {
         assertThat(f.jdbc.queryForObject("SELECT stock FROM nx_product WHERE id=18",Integer.class)).isEqualTo(10);
         f.jdbc.update("UPDATE nx_purchase_payment_intent SET expires_at=? WHERE quote_id=?",java.sql.Timestamp.from(java.time.Instant.now().minusSeconds(60)),quoteId(q));
         f.provider.paid.add(intent.get("intentNo").toString());
-        assertThat(f.payments.get(7,intent.get("intentNo").toString())).containsEntry("status","MANUAL_REVIEW").containsEntry("reason","PAYMENT_LATE_REVIEW");
+        assertThat(f.payments.get(7,intent.get("intentNo").toString())).containsEntry("status","MANUAL_REVIEW").containsEntry("reason","PAYMENT_TIME_UNVERIFIED");
         assertThat(f.jdbc.queryForObject("SELECT COUNT(*) FROM nx_user_device WHERE user_id=7",Integer.class)).isZero();
     }
     @Test void aTemporaryActiveIntentRejectionRollsBackAndReclaimsTheExactOriginalCancelKey(){

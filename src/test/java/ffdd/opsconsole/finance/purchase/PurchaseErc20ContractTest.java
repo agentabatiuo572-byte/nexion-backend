@@ -29,7 +29,8 @@ class PurchaseErc20ContractTest {
         when(gateway.projectCoins()).thenReturn(List.of(new CregisGateway.Coin(CregisNetwork.ERC20.currency(),"USDT-ERC20","60",CregisNetwork.ERC20.tokenId(),false,true)));
         when(db.one(contains("nx_cregis_provision_gate"),any(Object[].class))).thenReturn(values("state","IDLE","credit_enabled",1,"assign_enabled",1));
         when(db.one(contains("FROM nx_user"),any(Object[].class))).thenReturn(values("id",7,"status","ACTIVE","sandbox",0));
-        when(db.one(contains("FROM nx_order WHERE"),any(Object[].class))).thenReturn(values("order_no","ORDER-1","amount_usdt","19.995","subtotal_usdt","25","discount_usdt","5.005","payment_status","PENDING","order_status","PENDING_PAYMENT"));
+        when(db.one(contains("FROM nx_order WHERE"),any(Object[].class))).thenReturn(values("created_at",java.time.Instant.now(),"order_no","ORDER-1","amount_usdt","19.995","subtotal_usdt","25","discount_usdt","5.005","payment_status","PENDING","order_status","PENDING_PAYMENT"));
+        when(db.one(contains("FROM nx_promotion_order_receipt"),any(Object[].class))).thenReturn(null);
         when(policy.current()).thenReturn(values("version",3,"channels",List.of(values("paymentMethod","CREGIS_USDT_ERC20","configured",true,
                 "channelFeeRatePct","2.50","channelFeeFixed","0.10","networkConfirmFeeUsdt","0.35"))));
     }

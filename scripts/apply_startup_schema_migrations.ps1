@@ -382,6 +382,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261101_l6_active_route_reconciliation.sql")
   (Join-Path $root "scripts\migrations\20261101_uvt_legacy_asset_migration.sql")
   (Join-Path $root "scripts\migrations\20261101_vrank_bootstrap.sql")
+  (Join-Path $root "scripts\migrations\20261101_purchase_payment_deadlines.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

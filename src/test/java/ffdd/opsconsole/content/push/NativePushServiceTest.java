@@ -27,6 +27,19 @@ class NativePushServiceTest {
     }
     NativePushService.Registration request() { return new NativePushService.Registration("fcm:"+"x".repeat(150),"FCM","android","granted","1"); }
 
+    @Test void purchasePushResolvesOnlyTheRecipientsOrder(){
+        when(sessions.requireSession(auth)).thenReturn(session(7,"chain"));
+        var notification=new Notification(42L,"FUNDS_RESULT","/pages/store/order-detail?id=ORD-1","en");
+        when(mapper.ownedNotification(42,7)).thenReturn(notification);
+        assertThatThrownBy(()->service.resolve(auth,42)).hasMessage("PUSH_TARGET_NOT_FOUND");
+        when(mapper.ownedOrder("ORD-1",7)).thenReturn(1);
+        assertThat(service.resolve(auth,42).route()).isEqualTo("/pages/store/order-detail?id=ORD-1");
+        assertThatThrownBy(()->NativePushService.route(new Notification(43L,"FUNDS_RESULT","/pages/store/order-detail?id=ORD-1&user=8","en"))).hasMessage("PUSH_ROUTE_UNAVAILABLE");
+        String longOrder="Z".repeat(96),route="/pages/store/order-detail?id="+longOrder;
+        when(mapper.ownedNotification(44,7)).thenReturn(new Notification(44L,"FUNDS_RESULT",route,"en"));
+        assertThatThrownBy(()->service.resolve(auth,44)).hasMessage("PUSH_TARGET_NOT_FOUND");
+        when(mapper.ownedOrder(longOrder,7)).thenReturn(1);assertThat(service.resolve(auth,44).route()).isEqualTo(route);
+    }
     @Test void createsBindingFromAuthenticatedAppSessionAndHashesClientProof() {
         doReturn(session(7,"chain")).when(sessions).requireCurrent(auth,ID,false);
         service.register(auth,ID,TOKEN,request());
