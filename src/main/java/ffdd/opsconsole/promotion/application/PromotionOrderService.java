@@ -194,7 +194,9 @@ public class PromotionOrderService {
             ORDER BY p.product_no
             """,orderNo,orderNo,orderNo);
         TreeSet<String> names=new TreeSet<>();products.forEach(product->names.add(text(product.get("product_no"))));
-        for(String product:names){db.product(product,true);db.one("SELECT * FROM nx_admin_device_sku WHERE sku_id=? AND is_deleted=0 FOR UPDATE",product);}
+        // Lifecycle locks also protect deleted rows; catalogue eligibility belongs only to a new payment.
+        for(String product:names){db.one("SELECT id FROM nx_product WHERE product_no=? FOR UPDATE",product);
+            db.one("SELECT id FROM nx_admin_device_sku WHERE sku_id=? FOR UPDATE",product);}
     }
     @Transactional(propagation=Propagation.MANDATORY,rollbackFor=Exception.class)
     public void beforePay(Long buyerId,String orderNo){

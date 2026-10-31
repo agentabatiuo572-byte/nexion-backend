@@ -28,6 +28,42 @@ import org.mockito.ArgumentCaptor;
 
 class AppOrderCommandServiceTest {
     @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"replay,true","cancel,true","expire,true","replay,false","cancel,false","expire,false"})
+    void deletedOrMissingCatalogueDoesNotBlockPaidReplayOrUnreservedClosure(String operation,boolean rowExists) {
+        var mapper=commandMapper();var guard=mock(FundsSandboxProfileGuard.class);var idem=mock(AdminIdempotencyService.class);
+        var db=mock(ffdd.opsconsole.promotion.mapper.PromotionMapper.class,org.mockito.Mockito.CALLS_REAL_METHODS);
+        var state=new java.util.HashMap<String,Object>();state.put("user_id",7L);state.put("amount_usdt",BigDecimal.TEN);
+        state.put("order_status","PENDING_PAYMENT");state.put("payment_status","PENDING");state.put("inventory_reserved",0);
+        org.mockito.Mockito.doReturn(state).when(db).order("LIFE",false);
+        org.mockito.Mockito.doReturn(Map.of("id",7L,"status","ACTIVE")).when(db).user(7L,true);
+        when(db.list(anyString(),any(Object[].class))).thenReturn(List.of());
+        when(db.list(startsWith("SELECT p.product_no FROM nx_product"),any(Object[].class))).thenReturn(List.of(Map.of("product_no","DELETED")));
+        when(db.one("SELECT id FROM nx_product WHERE product_no=? FOR UPDATE","DELETED"))
+            .thenReturn(rowExists?Map.of("id",18L,"is_deleted",1):null);
+        var promotions=new PromotionOrderService(db,mock(ffdd.opsconsole.promotion.application.PromotionQuoteService.class),
+            mock(ffdd.opsconsole.promotion.application.PromotionEvaluationService.class),mock(ffdd.opsconsole.promotion.application.PromotionPolicyResolver.class),
+            mock(AuditLogService.class),mock(EventOutboxService.class));
+        when(guard.isStrictProductionRuntime()).thenReturn(true);when(mapper.activeUserEnvironment(7L)).thenReturn(0);
+        when(mapper.findDevelopmentPayOrderOwner("LIFE")).thenReturn(7L);
+        when(mapper.lockUser(7L)).thenReturn(new ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper.UserLock(7L,false));
+        when(mapper.lockOrder("LIFE")).thenReturn(new AppOrderCommandMapper.OrderRow("LIFE",7L,18L,1,"SINGLE",1,"PENDING","PENDING_PAYMENT","WAITING_PAYMENT",false));
+        when(mapper.lockItems("LIFE")).thenReturn(List.of(new AppOrderCommandMapper.ItemRow("LIFE",18L,"DELETED",1,false,null)));
+        when(mapper.cancelOrder("LIFE",7L)).thenAnswer(call->{state.put("order_status","CANCELLED");return 1;});
+        when(mapper.expireOrder("LIFE",7L)).thenAnswer(call->{state.put("order_status","EXPIRED");return 1;});
+        when(mapper.countExpiredPayableOrder("LIFE",7L,30)).thenReturn(1);
+        when(mapper.lockDevelopmentPayOrder("LIFE")).thenReturn(new AppOrderCommandMapper.DevelopmentPayOrder("LIFE",7L,18L,1,
+            BigDecimal.TEN,"PAID-ID","PAID","COMPLETED","ACTIVATED"));
+        when(mapper.lockDevelopmentWallet(7L)).thenReturn(new AppOrderCommandMapper.DevelopmentWallet(BigDecimal.TEN,1L));
+        doAnswer(call->((Supplier<?>)call.getArgument(4)).get()).when(idem).execute(anyString(),anyString(),anyString(),any(),any());
+        var service=new AppOrderCommandService(mapper,idem,mock(AuditLogService.class),guard,null,null,null,null,30,promotions,capture);
+        if("replay".equals(operation))assertThat(service.pay(7L,"LIFE","replay").getCode()).isZero();
+        else if("cancel".equals(operation))assertThat(service.cancel(7L,"LIFE","cancel").getCode()).isZero();
+        else assertThat(service.expirePendingOrder(7L,"LIFE")).isTrue();
+        verify(mapper,never()).hasNonPayableOrderProduct(anyString());
+        verify(mapper,never()).returnStock(anyLong(),anyInt());
+        verify(db,never()).product(anyString(),anyBoolean());
+    }
+    @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"4,1,OK","5,1,CAPACITY_REPLACEMENT_REQUIRED","4,0,PRODUCT_OUT_OF_STOCK"})
     void unreservedPaymentAddsEveryUnitAndConsumesStockBeforeCash(long occupied,int stockResult,String expected) {
         var mapper=commandMapper();var guard=mock(FundsSandboxProfileGuard.class);var idempotency=mock(AdminIdempotencyService.class);
