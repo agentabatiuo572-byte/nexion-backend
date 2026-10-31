@@ -856,12 +856,12 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
             INSERT INTO nx_order (
               user_id, order_no, product_id, quantity, order_type, item_count,
               subtotal_usdt, discount_usdt, amount_usdt, compute_points, payment_status,
-              order_status, activation_status, created_at, updated_at, is_deleted
+              order_status, activation_status, inventory_reserved, created_at, updated_at, is_deleted
             ) VALUES (
               #{userId}, #{orderNo}, #{productId}, #{quantity}, 'SINGLE', #{quantity},
               #{subtotalUsdt}, #{discountUsdt}, #{amountUsdt},
               #{quantity} * (SELECT compute_points FROM nx_product WHERE id = #{productId}), 'PENDING',
-              'PENDING_PAYMENT', 'WAITING_PAYMENT', NOW(), NOW(), 0
+              'PENDING_PAYMENT', 'WAITING_PAYMENT', 0, NOW(), NOW(), 0
             )
             """)
     int insertOrder(@Param("userId") Long userId,
