@@ -14,6 +14,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeParseException;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -246,7 +249,9 @@ public final class HttpHdPayGateway implements HdPayGateway {
                     status,
                     rawAmount.decimalValue(),
                     payType,
-                    appLink);
+                    appLink,
+                    absoluteTime(data, "expirationTime"),
+                    absoluteTime(data, "payTime"));
         } catch (java.net.http.HttpTimeoutException ex) {
             throw new HdPayGatewayException("HDPAY_QUERY_TIMEOUT", false, ex);
         } catch (InterruptedException ex) {
@@ -277,6 +282,17 @@ public final class HttpHdPayGateway implements HdPayGateway {
             throw new HdPayGatewayException("HDPAY_QUERY_REJECTED", false);
         }
         return root;
+    }
+
+    // Pay-in examples omit their timezone; only a payload's explicit offset establishes an instant.
+    private Instant absoluteTime(JsonNode node, String field) {
+        JsonNode value = node.get(field);
+        if (value == null || !value.isTextual()) return null;
+        try {
+            return OffsetDateTime.parse(value.textValue()).toInstant();
+        } catch (DateTimeParseException invalid) {
+            return null;
+        }
     }
 
     private String text(JsonNode node, String field) {
