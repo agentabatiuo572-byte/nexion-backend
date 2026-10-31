@@ -38,9 +38,9 @@ public class GeoBlockEnforcementFilter extends OncePerRequestFilter {
     private static final Pattern CONTINUOUS_GET_PATH = Pattern.compile(
             "/api/test/compute-workers/v2/tasks/(?!\\.{1,2}/)[A-Za-z0-9._:-]{1,96}/receipt");
     private static final Pattern CLOUD_POST_PATH = Pattern.compile(
-            "/api/test/cloud-executors/v1/(?:next-task|heartbeat|tasks/(?!\\.{1,2}/)[A-Za-z0-9._:-]{1,96}/(?:complete|heartbeat))");
+            "/api/test/cloud-executors/v1/(?:next-task|heartbeat|requests/terminate|tasks/(?!\\.{1,2}/)[A-Za-z0-9._:-]{1,96}/(?:complete|heartbeat))");
     private static final Pattern CLOUD_GET_PATH = Pattern.compile(
-            "/api/test/cloud-executors/v1/(?:instances|eligibility|tasks/(?!\\.{1,2}/)[A-Za-z0-9._:-]{1,96}/(?:receipt|manifest|rollback-review))");
+            "/api/test/cloud-executors/v1/(?:instances|eligibility|requests/status|tasks/(?!\\.{1,2}/)[A-Za-z0-9._:-]{1,96}/(?:receipt|manifest|rollback-review|stability-review))");
 
     public static boolean isTestCloudRoute(HttpServletRequest request) {
         String path = request.getRequestURI();

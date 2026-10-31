@@ -80,7 +80,7 @@ class Backend:
             return ok({**identity(self.cfg), "eligible": self.eligible, "activeTaskNo": None})
         if path == w.PREFIX + "/heartbeat":
             phase = self.journal.state()["phase"]
-            active = self.task["taskNo"] if phase in ("CLAIMED", "COMPLETE_INTENT", "UNKNOWN_COMPLETE", "REJECTED_RETRY_INTENT", "ROLLBACK_RETRY_INTENT") else None
+            active = self.task["taskNo"] if phase in ("CLAIMED", "COMPLETE_INTENT", "UNKNOWN_COMPLETE", "REJECTED_RETRY_INTENT", "ROLLBACK_RETRY_INTENT", "STABILITY_RETRY_INTENT", "DURABLE_RETRY_INTENT", "DURABLE_TERMINATE_INTENT") else None
             return ok({**self.cfg.binding, "serverCanonical": True, "heartbeatAt": int(time.time() * 1000), "activeTaskNo": active})
         if path.endswith("/complete"):
             self.complete_body = body
@@ -92,6 +92,11 @@ class Backend:
             return ok({**self.task, "resumeAllowed": True, "nextKeyHash": w.sha256(key.encode())})
         if path.endswith("/receipt"):
             return ok(self.receipt())
+        if path.startswith(w.PREFIX + "/requests/status?"):
+            query = w.urllib.parse.parse_qs(w.urllib.parse.urlsplit(path).query)
+            return ok({**identity(self.cfg), "operation": query["operation"][0], "requestKeyHash": w.sha256(key.encode()),
+                       "requestHash": query["requestHash"][0], "state": "NOT_FOUND", "executionGeneration": None,
+                       "taskNo": query.get("taskNo", [None])[0], "response": None})
         raise AssertionError(path)
 
     def receipt(self):
@@ -104,6 +109,8 @@ class Backend:
 class WorkerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.drain_env = patch.dict(w.os.environ, {"UVEL_CLOUD_DRAIN_FILE": str(Path(self.tmp.name) / "drain.json")})
+        self.drain_env.start()
         self.path = Path(self.tmp.name) / "journal.sqlite3"
         self.cfg = config()
         self.journal = w.Journal(self.path)
@@ -116,6 +123,7 @@ class WorkerTests(unittest.TestCase):
     def tearDown(self):
         self.journal.db.close()
         self.tmp.cleanup()
+        self.drain_env.stop()
 
     def interrupted_claim(self, with_hash=True):
         state = {"phase": "NEXT_INTENT", "nextKey": "BGE-NEXT-" + "d" * 32, "binding": self.cfg.binding}
@@ -311,10 +319,13 @@ class WorkerTests(unittest.TestCase):
         state = self.journal.state()
         self.assertEqual(state["phase"], "REJECTED_COMPLETE")
         self.assertEqual(state["rejection"], {"httpStatus": 409, "errorCode": "TEST_CLOUD_HEARTBEAT_STALE"})
+        # These fixtures represent the pre-durable canonical rejection path.
+        state.pop("completeBody")
+        state.pop("completionProtocol")
         if legacy:
             state["phase"] = "UNKNOWN_COMPLETE"
             state.pop("rejection")
-            self.journal.set(state)
+        self.journal.set(state)
         self.backend.complete_error = None
         self.backend.calls.clear()
         self.ollama.calls.clear()
@@ -903,7 +914,7 @@ class WorkerTests(unittest.TestCase):
         self.assertFalse(worker.heartbeat_thread.is_alive())
         self.assertEqual([path for _, path, _ in self.backend.calls], [w.PREFIX + "/heartbeat", w.PREFIX + "/eligibility"])
 
-    def test_sent_unknown_next_blocks_restart_before_network(self):
+    def test_sent_unknown_next_restart_only_queries_original_status(self):
         self.backend.next_error = w.Halt("HTTP_OUTCOME_UNKNOWN")
         with self.assertRaises(w.Halt):
             self.worker.one()
@@ -911,7 +922,9 @@ class WorkerTests(unittest.TestCase):
         before = len(self.backend.calls)
         with self.assertRaises(w.Halt):
             self.worker.run(once=True)
-        self.assertEqual(len(self.backend.calls), before)
+        self.assertEqual(len(self.backend.calls), before + 1)
+        self.assertEqual(self.backend.calls[-1][0], "GET")
+        self.assertIn("/requests/status?operation=NEXT", self.backend.calls[-1][1])
 
     def test_unknown_complete_positive_receipt_confirms_without_retry(self):
         self.backend.complete_error = w.Halt("HTTP_OUTCOME_UNKNOWN")
@@ -926,7 +939,7 @@ class WorkerTests(unittest.TestCase):
         before = len(self.backend.calls)
         with self.assertRaises(w.Halt):
             self.worker.run(once=True)
-        self.assertEqual([method for method, _, _ in self.backend.calls[before:]], ["GET"])
+        self.assertEqual([method for method, _, _ in self.backend.calls[before:]], ["GET", "GET"])
         self.assertEqual(sum(path.endswith("/complete") for _, path, _ in self.backend.calls), 1)
 
     def test_crash_after_complete_intent_can_only_reconcile(self):
@@ -957,10 +970,12 @@ class WorkerTests(unittest.TestCase):
         with self.assertRaises(w.Halt):
             self.worker.one()
         self.assertEqual(self.journal.state()["phase"], "COMPLETE_NOT_SENT")
+        self.backend.found = False
         before = len(self.backend.calls)
         with self.assertRaises(w.Halt):
             self.worker.run(once=True)
-        self.assertEqual(len(self.backend.calls), before)
+        self.assertEqual([method for method, _, _ in self.backend.calls[before:]], ["GET", "GET"])
+        self.assertEqual(sum(path.endswith("/complete") for _, path, _ in self.backend.calls), 1)
 
     def test_model_digest_mismatch_prevents_inference_and_complete(self):
         self.ollama.tag_digest = "2" * 64
@@ -1084,12 +1099,16 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual([path for _, path, _ in self.backend.calls], [w.PREFIX + "/heartbeat"])
         self.assertEqual(self.journal.state(), {"phase": "IDLE", "binding": self.cfg.binding})
         self.backend.calls.clear()
+        self.worker = w.Worker(self.cfg, self.backend, self.ollama, self.journal, threading.Event())
+        self.worker.start_heartbeat = lambda: self.worker.heartbeat()
         self.assertEqual(self.worker.run(once=True), 0)
 
 
 class FleetTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.drain_env = patch.dict(w.os.environ, {"UVEL_CLOUD_DRAIN_FILE": str(Path(self.tmp.name) / "drain.json")})
+        self.drain_env.start()
         self.env = {"UVEL_CLOUD_WORKER_ENABLED": "true", "UVEL_CLOUD_WORKER_SCOPE": "TEST",
                     "UVEL_CLOUD_FLEET_ENABLED": "true", "UVEL_CLOUD_MODEL": "bge-m3:567m",
                     "UVEL_CLOUD_MODEL_DIGEST": "sha256:" + "1" * 64}
@@ -1103,6 +1122,7 @@ class FleetTests(unittest.TestCase):
             entry.worker.journal.db.close()
             os.close(entry.file_lock)
         self.tmp.cleanup()
+        self.drain_env.stop()
 
     def open_journal(self, path):
         return w.Journal(path / "journal.sqlite3"), os.open(path / "worker.lock", os.O_CREAT | os.O_RDWR, 0o600)
@@ -1162,6 +1182,34 @@ class FleetTests(unittest.TestCase):
         self.fleet.tick(proven)
         self.assertEqual([key for _, path, key in backend.calls if path.endswith('/next-task')], ['BGE-NEXT-' + format(92, '032x')])
         self.assertFalse(self.fleet.ready(unknown))
+
+    def test_restore_excluded_legacy_journals_is_read_only_and_does_not_stop_other_instances(self):
+        self.fleet.excluded.add(1380)
+        protected = {}
+        for device in (1152, 1380):
+            cfg = self.fleet.instance_config(self.row(device))
+            path = self.fleet.directory / w.sha256(cfg.binding["executorId"].encode())
+            path.mkdir(mode=0o700)
+            db_path = path / "journal.sqlite3"
+            state = {"phase": "UNKNOWN_NEXT", "binding": cfg.binding, "nextKey": "BGE-NEXT-" + format(device, "032x")}
+            with closing(sqlite3.connect(db_path)) as legacy:
+                legacy.executescript("CREATE TABLE state(id INTEGER PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE calls(id INTEGER PRIMARY KEY,operation TEXT,request_key TEXT,task_no TEXT,request_hash TEXT,outcome TEXT);")
+                legacy.execute("INSERT INTO state VALUES(1,?)", (w.json_bytes(state).decode(),))
+                legacy.execute("INSERT INTO calls VALUES(1,'NEXT',?,NULL,?,'UNKNOWN')", (state["nextKey"], w.sha256(w.json_bytes({}))))
+                legacy.commit()
+            protected[db_path] = w.sha256(db_path.read_bytes())
+        with patch.object(self.fleet, "journal_opener", side_effect=AssertionError("EXCLUDED_JOURNAL_OPENED_WRITABLE")):
+            self.fleet.restore()
+        self.assertEqual(self.fleet.snapshot(), [])
+        for db_path, expected in protected.items():
+            self.assertEqual(w.sha256(db_path.read_bytes()), expected)
+            with closing(sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True)) as legacy:
+                self.assertEqual({row[0] for row in legacy.execute("SELECT name FROM sqlite_master WHERE type='table'")}, {"state", "calls"})
+                self.assertEqual(legacy.execute("SELECT outcome FROM calls").fetchone()[0], "UNKNOWN")
+        self.discover([self.row(), self.row(1380)])
+        self.assertEqual([entry.worker.config.binding["deviceId"] for entry in self.fleet.snapshot()], [92])
+        for db_path, expected in protected.items():
+            self.assertEqual(w.sha256(db_path.read_bytes()), expected)
 
     def test_empty_or_proven_unsent_fleet_request_keeps_idle_retry_interval(self):
         entry, = self.discover([self.row()])
@@ -1816,7 +1864,8 @@ class FleetTests(unittest.TestCase):
             return result
         backend.request = raced
         self.fleet.tick(entry)
-        self.assertEqual(entry.worker.journal.state()["phase"], "IDLE")
+        self.assertEqual(entry.worker.journal.state()["phase"], "CLAIMED")
+        self.assertEqual(entry.worker.journal.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 0)
         self.assertTrue(entry.blocked)
         self.assertTrue(entry.worker.stop.is_set())
         self.assertFalse(any(path.endswith("/complete") for _, path, _ in backend.calls))

@@ -237,6 +237,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private final ObjectStorageService storageService;
     private final PromotionOrderService promotions;
     private final PhoneReplacementPolicyPublicationService phonePolicies;
+    @Autowired private TestCloudActivationAdmission testCloudAdmission;
 
     public OpsDeviceService(SupportPaymentAttributionFacade paymentAttribution,
             DeviceOpsRepository deviceRepository, DeviceCatalogRepository catalogRepository,
@@ -2891,6 +2892,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     && lockMapper.countActiveByTarget("E", "device", String.valueOf(deviceId)) > 0) {
                 return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
             }
+            if (testCloudAdmission != null) testCloudAdmission.lock();
             DeviceOpsView before = deviceRepository.findDevice(deviceId).orElse(null);
             if (before == null) {
                 return ApiResult.fail(404, "DEVICE_NOT_FOUND");
@@ -2915,6 +2917,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (deviceRepository.countOccupiedSlotsForE5Activation(before.userId()) >= slotCap) {
                 return ApiResult.fail(409, "MAX_DEVICES_PER_USER_EXCEEDED");
             }
+            if (testCloudAdmission != null) testCloudAdmission.requireCapacity();
             DeviceOpsView updated = deviceRepository.activateDevice(deviceId, LocalDateTime.now(clock)).orElse(null);
             if (updated == null) {
                 return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
