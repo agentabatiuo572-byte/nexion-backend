@@ -15,6 +15,8 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface AppOrderCommandMapper extends BaseMapper<Object> {
+    @Select("SELECT COUNT(*) FROM nx_purchase_payment_intent WHERE kind='ORDER_PAY' AND JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.orderNo'))=#{orderNo} AND status NOT IN ('DELIVERED','EXPIRED')")
+    int countActiveDirectPaymentIntent(@Param("orderNo") String orderNo);
     /** The pending order is already included once; do not add its quantity again at payment. */
     @Select("SELECT (" + CanonicalStateMapper.ACTIVE_DEVICE_COUNT
             + " AND COALESCE(u.sandbox,0)=0 FOR SHARE) + ("
@@ -26,6 +28,8 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
     @Select("SELECT 6")
     int deviceSlotCap();
 
+    @org.apache.ibatis.annotations.Select("SELECT COUNT(*) FROM nx_order WHERE order_no=#{orderNo} AND user_id=#{userId} AND payment_status='PAID' AND order_status='COMPLETED' AND activation_status='ACTIVATED' AND is_deleted=0")
+    int countCompletedPaidOrder(@org.apache.ibatis.annotations.Param("userId") Long userId,@org.apache.ibatis.annotations.Param("orderNo") String orderNo);
     @Select("""
             SELECT t.id, t.quota_code quotaCode, t.product_no productNo,
                    t.monthly_quota monthlyQuota, t.direct_refs directRefs,

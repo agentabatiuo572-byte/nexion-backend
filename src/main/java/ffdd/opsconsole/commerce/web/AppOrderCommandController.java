@@ -6,6 +6,8 @@ import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestBody;
+import ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade.Authorization;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
@@ -26,9 +28,10 @@ public class AppOrderCommandController {
     @PostMapping({"/api/orders/{orderNo}/pay", "/api/app/orders/{orderNo}/pay"})
     public ApiResult<Map<String, Object>> pay(@PathVariable String orderNo,
                                                @RequestHeader(name = "Idempotency-Key", required = false) String key,
+                                               @RequestBody(required = false) Authorization authorization,
                                                Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED") : service.pay(userId, orderNo, key);
+        return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED") : service.pay(userId, orderNo, key,authorization);
     }
 
     private Long userId(Authentication authentication) {

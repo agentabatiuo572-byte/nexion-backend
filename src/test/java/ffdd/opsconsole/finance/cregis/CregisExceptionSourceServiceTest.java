@@ -35,6 +35,12 @@ class CregisExceptionSourceServiceTest {
         assertThatThrownBy(()->service.reserve(source,"REFUND","RF-one")).hasMessage("CREGIS_EXCEPTION_SOURCE_OCCUPIED");
         verify(db,never()).transition(any(),anyString(),any(),any(),anyLong());
     }
+    @Test void dedicatedPurchaseFundsCannotEnterWalletClaimRefundOrRechargeDisposition(){
+        when(db.directPurchaseAddress(source)).thenReturn(true);
+        for(String kind:List.of("CLAIM","REFUND","AUTO","REVIEW"))
+            assertThatThrownBy(()->service.reserve(source,kind,"attempted-disposition")).hasMessage("CREGIS_DIRECT_PURCHASE_SEPARATE_REVIEW");
+        verify(db,never()).ensure(any());verify(db,never()).transition(any(),anyString(),any(),any(),anyLong());verifyNoInteractions(deposits);
+    }
     @Test void mismatchedCidSameLogCannotBypassMutexAndOnlyOwnerMayRelease(){
         var another=new CregisExceptionSourceService.Source(88,78,source.txid(),2,source.address(),BigDecimal.TEN);
         assertThatThrownBy(()->service.reserve(another,"REFUND","RF-two")).hasMessage("CREGIS_EXCEPTION_SOURCE_OCCUPIED");

@@ -116,9 +116,9 @@ class TrialGraceStateMySqlIntegrationTest {
                 new OutboxProperties(), mock(A4RuntimePolicyService.class));
         MockEnvironment environment = new MockEnvironment();
         environment.setActiveProfiles("dev");
-        AppTrialLifecycleService target = new AppTrialLifecycleService(paymentAttribution(), mapper, earnings,
+        AppTrialLifecycleService target = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(paymentAttribution(), mapper, earnings,
                 mock(AdminIdempotencyService.class), coverage, audit, outbox,
-                mock(StorefrontProductReleasePolicy.class), mock(CanonicalStateMapper.class), environment, CLOCK);
+                mock(StorefrontProductReleasePolicy.class), mock(CanonicalStateMapper.class), environment, CLOCK));
         ProxyFactory proxy = new ProxyFactory(target);
         proxy.setProxyTargetClass(true);
         proxy.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(dataSource),

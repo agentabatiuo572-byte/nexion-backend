@@ -16,7 +16,7 @@ class CregisDepositPolicyTest {
         assertThat(new ObjectMapper().valueToTree(policy).get("feeUsdt").isTextual()).isTrue();
     }
     @Test void rejectsUnsafeThresholdsAndPrecision() {
-        for (var input : java.util.List.of(input("1","1",15),input("1","-1",15),input("1","0",14),input("1.0000001","0",15),input("1","0",10001)))
+        for (var input : java.util.List.of(input("1","1",15),input("1","-1",15),input("1","0",14),input("1.5","0",15),input("1.0000001","0",15),input("1","0",10001)))
             assertThatThrownBy(()->CregisDepositPolicy.parse(input)).hasMessage("CREGIS_DEPOSIT_POLICY_INVALID");
     }
 }

@@ -23,9 +23,9 @@ class CardlessTrialAuditRegressionTest {
         var idempotency = mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyService.class);
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
                 .thenAnswer(call -> ((java.util.function.Supplier) call.getArgument(4)).get());
-        var service = new AppTrialLifecycleService(paymentAttribution(), mapper, null, idempotency, null, null, null, null, null,
+        var service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(paymentAttribution(), mapper, null, idempotency, null, null, null, null, null,
                 new org.springframework.mock.env.MockEnvironment().withProperty("spring.profiles.active", "prod"),
-                java.time.Clock.systemUTC());
+                java.time.Clock.systemUTC()));
         ApiResult<?> result = service.charge(7L, "legacy-charge");
         assertThat(result.getMessage()).isEqualTo("TRIAL_EXPLICIT_PURCHASE_REQUIRED");
         verify(mapper, never()).settleWallet(anyLong(), any(), any(), any());

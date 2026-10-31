@@ -48,8 +48,29 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @Service
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_ = @org.springframework.beans.factory.annotation.Autowired)
 public class AppUserAuthService {
+    private final AppPaymentPasswordService paymentPasswords;
+
+    // Compatibility constructor for existing isolated domain tests; runtime uses the full constructor.
+    public AppUserAuthService(
+            UserOpsMapper userMapper,
+            AuthSessionMapper sessionMapper,
+            UserLoginGuardMapper loginGuardMapper,
+            PasswordEncoder passwordEncoder,
+            JwtTokenProvider tokenProvider,
+            JwtProperties jwtProperties,
+            UserAccountBlocklistVerifier blocklistVerifier,
+            PlatformConfigFacade configFacade,
+            CaptchaOtpGate captchaGate,
+            UserOtpDeliveryService otpDeliveryService,
+            EventOutboxService outboxService,
+            Environment environment,
+            ffdd.opsconsole.content.application.SupportActivityService supportActivity,
+            AppSingleSessionService singleSessions,
+            ffdd.opsconsole.shared.security.UserSessionRevocationService revocations) {
+        this(null,userMapper,sessionMapper,loginGuardMapper,passwordEncoder,tokenProvider,jwtProperties,blocklistVerifier,configFacade,captchaGate,otpDeliveryService,outboxService,environment,supportActivity,singleSessions,revocations);
+    }
     private static final int MAX_FAILURES = 5;
     private static final int WINDOW_MINUTES = 15;
     private static final int IP_ATTEMPTS_PER_MINUTE = 60;
@@ -280,6 +301,7 @@ public class AppUserAuthService {
         }
         loginGuardMapper.clear(loginKey);
         userMapper.clearLoginFailure(user.getId());
+        if (paymentPasswords!=null) paymentPasswords.recordVerifiedPhone(user.getId(),countryCode,phone);
         return issueSession(user, countryCode, phone, clientAddress, context, true);
     }
 
@@ -410,6 +432,7 @@ public class AppUserAuthService {
         }
         loginGuardMapper.clear(loginKey);
         userMapper.clearLoginFailure(user.getId());
+        if (paymentPasswords!=null) paymentPasswords.recordVerifiedPhone(user.getId(),countryCode,phone);
         return issueSession(user, countryCode, phone, clientAddress, context, true);
     }
 
@@ -579,6 +602,7 @@ public class AppUserAuthService {
                 recordFailure(key, userId, guard, now);
                 return ApiResult.fail(422, "USER_TWO_FACTOR_CHALLENGE_INVALID");
             }
+            if (paymentPasswords!=null) paymentPasswords.recordVerifiedPhone(userId,country,user.getPhone());
         }
         loginGuardMapper.clear(key);
         userMapper.clearLoginFailure(userId);

@@ -13,6 +13,8 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface AppVietQrIntentMapper extends BaseMapper<Object> {
+    @Select("SELECT CAST(JSON_UNQUOTE(JSON_EXTRACT(policy_json,REPLACE(JSON_UNQUOTE(JSON_SEARCH(policy_json,'one','HDPAY_BANK',NULL,'$[*].paymentMethod')),'.paymentMethod','.minTopupPrincipal'))) AS DECIMAL(24,0)) FROM nx_purchase_payment_policy WHERE id=1")
+    BigDecimal hdPayTopupMinimumPrincipal();
 
     String INTENT_COLUMNS = """
             i.intent_no AS intentNo, i.user_id AS userId,

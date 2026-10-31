@@ -55,9 +55,9 @@ class AppTrialLifecycleServiceTest {
     private final CanonicalStateMapper canonicalStateMapper = mock(CanonicalStateMapper.class);
     private final EarningsReleaseService earningsRelease = mock(EarningsReleaseService.class);
     private final MockEnvironment environment = productionEnvironment();
-    private final AppTrialLifecycleService service = new AppTrialLifecycleService(capture,
+    private final AppTrialLifecycleService service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(capture,
             mapper, earningsRelease, idempotency, coverage, audit, outbox, productReleasePolicy, canonicalStateMapper, environment,
-            Clock.system(ZoneId.of("Asia/Shanghai")));
+            Clock.system(ZoneId.of("Asia/Shanghai"))));
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -112,17 +112,17 @@ class AppTrialLifecycleServiceTest {
         TrialRow extended = trialWithStatus("EXTENDED", null, 1L);
         when(mapper.lockTrial(7L)).thenReturn(extended);
         Instant deadline = extended.expiresAt().atZone(ZoneId.of("Asia/Shanghai")).toInstant();
-        var atDeadline = new AppTrialLifecycleService(paymentAttribution(), mapper, earningsRelease, idempotency, coverage,
+        var atDeadline = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(paymentAttribution(), mapper, earningsRelease, idempotency, coverage,
                 audit, outbox, productReleasePolicy, canonicalStateMapper, environment,
-                Clock.fixed(deadline, ZoneId.of("UTC")));
+                Clock.fixed(deadline, ZoneId.of("UTC"))));
         assertThat(atDeadline.convert(7L, "stellarbox-s1", new BigDecimal("1249"), "deadline").getMessage())
                 .isEqualTo("TRIAL_NOT_CONVERTIBLE");
         verify(mapper, never()).lockConversionProduct(anyString());
 
         when(mapper.lockConversionProduct("stellarbox-s1")).thenReturn(null);
-        var beforeDeadline = new AppTrialLifecycleService(paymentAttribution(), mapper, earningsRelease, idempotency, coverage,
+        var beforeDeadline = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(paymentAttribution(), mapper, earningsRelease, idempotency, coverage,
                 audit, outbox, productReleasePolicy, canonicalStateMapper, environment,
-                Clock.fixed(deadline.minusNanos(1), ZoneId.of("UTC")));
+                Clock.fixed(deadline.minusNanos(1), ZoneId.of("UTC"))));
         assertThat(beforeDeadline.convert(7L, "stellarbox-s1", new BigDecimal("1249"), "before-deadline").getMessage())
                 .isEqualTo("TRIAL_PRODUCT_NOT_AVAILABLE");
         verify(mapper).lockConversionProduct("stellarbox-s1");
@@ -564,8 +564,8 @@ class AppTrialLifecycleServiceTest {
     @Test
     void quotaDayUsesAsiaShanghaiEvenWhenInjectedClockHasAnotherZone() {
         Clock clock = Clock.fixed(Instant.parse("2026-08-20T16:30:00Z"), ZoneId.of("Pacific/Honolulu"));
-        AppTrialLifecycleService shanghaiService = new AppTrialLifecycleService(paymentAttribution(),
-                mapper, earningsRelease, idempotency, coverage, audit, outbox, productReleasePolicy, canonicalStateMapper, environment, clock);
+        AppTrialLifecycleService shanghaiService = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(paymentAttribution(),
+                mapper, earningsRelease, idempotency, coverage, audit, outbox, productReleasePolicy, canonicalStateMapper, environment, clock));
 
         ApiResult<Map<String, Object>> result = shanghaiService.state(7L);
 
@@ -577,8 +577,8 @@ class AppTrialLifecycleServiceTest {
     @Test
     void adminQuotaSnapshotUsesCanonicalBusinessDateWithoutUserOrWrites() {
         Clock clock = Clock.fixed(Instant.parse("2026-08-20T16:30:00Z"), ZoneId.of("Pacific/Honolulu"));
-        AppTrialLifecycleService shanghaiService = new AppTrialLifecycleService(paymentAttribution(),
-                mapper, earningsRelease, idempotency, coverage, audit, outbox, productReleasePolicy, canonicalStateMapper, environment, clock);
+        AppTrialLifecycleService shanghaiService = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(paymentAttribution(),
+                mapper, earningsRelease, idempotency, coverage, audit, outbox, productReleasePolicy, canonicalStateMapper, environment, clock));
         when(mapper.trialQuotaRemaining(LocalDate.of(2026, 8, 21))).thenReturn(46, 0);
 
         assertThat(shanghaiService.dailyQuota()).isEqualTo(
@@ -635,8 +635,8 @@ class AppTrialLifecycleServiceTest {
         when(crossing.instant()).thenReturn(Instant.parse("2026-08-20T15:59:59Z"), Instant.parse("2026-08-20T16:00:01Z"));
         when(mapper.insertTrial(anyLong(), anyString(), anyString(), isNull(), anyString(), anyInt(),
                 any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
-        var crossingService = new AppTrialLifecycleService(paymentAttribution(), mapper, earningsRelease, idempotency, coverage,
-                audit, outbox, productReleasePolicy, canonicalStateMapper, environment, crossing);
+        var crossingService = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(paymentAttribution(), mapper, earningsRelease, idempotency, coverage,
+                audit, outbox, productReleasePolicy, canonicalStateMapper, environment, crossing));
         assertThat(crossingService.start(7L, null, "ignored", "midnight-start").getCode()).isZero();
         verify(mapper).ensureTrialQuotaDay(LocalDate.of(2026, 8, 20), 47);
         verify(mapper).consumeTrialQuota(LocalDate.of(2026, 8, 20));
@@ -649,9 +649,9 @@ class AppTrialLifecycleServiceTest {
             AppTrialLifecycleMapper isolatedMapper = mock(AppTrialLifecycleMapper.class);
             MockEnvironment forbidden = new MockEnvironment();
             forbidden.setActiveProfiles(profiles);
-            AppTrialLifecycleService denied = new AppTrialLifecycleService(paymentAttribution(),
+            AppTrialLifecycleService denied = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(paymentAttribution(),
                     isolatedMapper, earningsRelease, idempotency, coverage, audit, outbox, productReleasePolicy, canonicalStateMapper, forbidden,
-                    Clock.systemUTC());
+                    Clock.systemUTC()));
 
             ApiResult<Map<String, Object>> result = denied.state(7L);
 
@@ -1036,8 +1036,8 @@ class AppTrialLifecycleServiceTest {
         when(mapper.insertPurchasedDevice(eq(7L), anyString(), eq(9L), eq("stellarbox-s1"), eq("Entry"), eq("DEVICE"), anyString(), eq("Trial"), any())).thenReturn(1);
         when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
         when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
-        var fixedService = new AppTrialLifecycleService(capture, mapper, earningsRelease, idempotency, coverage, audit, outbox,
-                productReleasePolicy, canonicalStateMapper, environment, fixed);
+        var fixedService = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(capture, mapper, earningsRelease, idempotency, coverage, audit, outbox,
+                productReleasePolicy, canonicalStateMapper, environment, fixed));
         var result = fixedService.convert(7L, "stellarbox-s1", new BigDecimal("1239.00"), "direct-reward-conversion");
         assertThat(result.getCode()).isZero();
         verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class), eq(new BigDecimal("1239.000000")),
@@ -1154,7 +1154,7 @@ class AppTrialLifecycleServiceTest {
         when(mapper.markRedeemed(eq(1L),eq(0L),eq(77L),any(),any(),any(),any(),any(),any(), any(),anyString())).thenReturn(1);
         when(earningsRelease.creditRewardInFundOperation(eq(7L),eq("H2_TRIAL_REMAINDER"),eq("TRIAL-ZERO:REMAINDER"),eq("USDT"),any(),anyString())).thenReturn("ER-USDT");
         when(earningsRelease.creditRewardInFundOperation(eq(7L),eq("H2_TRIAL_BONUS"),eq("TRIAL-ZERO:NEX"),eq("UVT"),any(),anyString())).thenReturn("ER-NEX");
-        var target=new AppTrialLifecycleService(capture,mapper,earningsRelease,idempotency,coverage,audit,outbox,productReleasePolicy,canonicalStateMapper,environment,fixed);
+        var target=ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(capture,mapper,earningsRelease,idempotency,coverage,audit,outbox,productReleasePolicy,canonicalStateMapper,environment,fixed));
         assertThat(target.convert(7L,"stellarbox-s1",BigDecimal.ZERO,"zero-rewards").getCode()).isZero();
         var order=org.mockito.Mockito.inOrder(mapper,capture,earningsRelease,audit);
         order.verify(mapper).lockWallet(7L);order.verify(capture).beforeCash(any(Prepared.class));
@@ -1176,6 +1176,59 @@ class AppTrialLifecycleServiceTest {
                 active ? now.plusDays(2) : now.minusDays(1),
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                 BigDecimal.ZERO, cooldownUntil, version);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"HDPAY_BANK","CREGIS_USDT_BSC"})
+    void externalTrialConversionUsesFrozenQuoteAfterClockAdvancesAndKeepsLegitimateRewardsWithoutPrincipalDebit(String method) {
+        Instant pricing=Instant.parse("2026-10-05T00:00:00Z");var target=externalTrialFixture(pricing);
+        var authorization=mock(ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(target,"paymentAuthorization",authorization);
+        var frozen=target.externalPaymentPricing(7L,pricing).getData();
+        var later=target.externalPaymentPricing(7L,pricing.plusSeconds(86400)).getData();
+        BigDecimal amount=new BigDecimal(String.valueOf(frozen.get("amountUsdt"))).setScale(2,java.math.RoundingMode.HALF_UP);
+        assertThat(amount).isNotEqualByComparingTo(new BigDecimal(String.valueOf(later.get("amountUsdt"))));
+        var result=ffdd.opsconsole.finance.purchase.VerifiedPurchaseFixture.settle(7L,method,"PPI-TRIAL",amount,pricing,
+                ()->target.settleVerifiedExternal(7L,"stellarbox-s1",amount,String.valueOf(frozen.get("quoteVersion"))));
+        assertThat(result.getCode()).as(result.getMessage()).isZero();assertThat(result.getData()).containsEntry("paymentRail",method);
+        assertThat((BigDecimal)result.getData().get("amountUsdt")).isEqualByComparingTo(amount);
+        verify(mapper,never()).settleWallet(anyLong(),any(),any(),any());
+        verify(mapper,never()).insertLedger(anyLong(),anyString(),eq("TRIAL_CHARGE"),anyString(),anyString(),any(),any(),anyString());
+        verify(earningsRelease).creditRewardInFundOperation(eq(7L),eq("H2_TRIAL_BONUS"),eq("TRIAL-EXTERNAL:NEX"),eq("UVT"),eq(new BigDecimal("5.000000")),anyString());
+        verify(mapper).insertPurchasedDevice(eq(7L),anyString(),eq(9L),eq("stellarbox-s1"),eq("Entry"),eq("DEVICE"),anyString(),eq("Trial"),any());
+        org.mockito.Mockito.verifyNoInteractions(authorization,capture);
+    }
+
+    @Test void externalTrialConversionRejectsWrongVerifiedAmountAndRequiresTheServerScope() {
+        Instant pricing=Instant.parse("2026-10-05T00:00:00Z");var target=externalTrialFixture(pricing);
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->target.settleVerifiedExternal(7L,"stellarbox-s1",new BigDecimal("1239"),null))
+                .hasMessage("PURCHASE_PAYMENT_SCOPE_REQUIRED");
+        var frozen=target.externalPaymentPricing(7L,pricing).getData();BigDecimal amount=new BigDecimal(String.valueOf(frozen.get("amountUsdt"))).setScale(2,java.math.RoundingMode.HALF_UP);
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->ffdd.opsconsole.finance.purchase.VerifiedPurchaseFixture.settle(7L,"HDPAY_BANK","PPI-TRIAL-WRONG",BigDecimal.ONE,pricing,
+                ()->target.settleVerifiedExternal(7L,"stellarbox-s1",amount,String.valueOf(frozen.get("quoteVersion")))))
+                .hasMessage("PURCHASE_PAYMENT_PRICING_CHANGED");
+        verify(mapper,never()).settleWallet(anyLong(),any(),any(),any());verify(mapper,never()).decrementProductStock(anyLong());
+        verify(earningsRelease,never()).creditRewardInFundOperation(anyLong(),anyString(),anyString(),anyString(),any(),anyString());
+        org.mockito.Mockito.verifyNoInteractions(capture);
+    }
+
+    private AppTrialLifecycleService externalTrialFixture(Instant pricing) {
+        LocalDateTime quotedAt=LocalDateTime.ofInstant(pricing,ZoneId.of("Asia/Shanghai"));
+        when(mapper.policies()).thenReturn(List.of(new PolicyRow("discountRate","15"),new PolicyRow("discountCapUSD","20")));
+        TrialRow row=new TrialRow(1L,7L,"TRIAL-EXTERNAL","ACTIVE",null,null,"Trial",3,new BigDecimal("40"),new BigDecimal("5"),
+                new BigDecimal("50"),new BigDecimal("1299"),"productCode=stellarbox-s1",quotedAt.minusDays(1),quotedAt.plusDays(2),
+                BigDecimal.ZERO,BigDecimal.ZERO,BigDecimal.ZERO,BigDecimal.ZERO,BigDecimal.ZERO,null,0L);
+        when(mapper.trial(7L)).thenReturn(row);when(mapper.lockTrial(7L)).thenReturn(row);
+        when(mapper.lockHardwarePurchaseTiers("stellarbox-s1")).thenReturn(List.of());
+        when(mapper.lockWallet(7L)).thenReturn(new WalletRow(BigDecimal.ZERO,BigDecimal.ZERO));
+        when(mapper.decrementProductStock(9L)).thenReturn(1);
+        when(mapper.insertConversionOrder(eq(7L),anyString(),eq(9L),any(),any(),any())).thenReturn(1);
+        when(mapper.insertConversionOrderItem(anyString(),eq(9L),eq("stellarbox-s1"),anyString(),any())).thenReturn(1);
+        when(mapper.insertPurchasedDevice(eq(7L),anyString(),eq(9L),eq("stellarbox-s1"),eq("Entry"),eq("DEVICE"),anyString(),eq("Trial"),any())).thenReturn(1);
+        when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
+        when(mapper.markRedeemed(eq(1L),eq(0L),eq(77L),any(),any(),any(),any(),any(),any(),any(),anyString())).thenReturn(1);
+        return new AppTrialLifecycleService(capture,mapper,earningsRelease,idempotency,coverage,audit,outbox,productReleasePolicy,canonicalStateMapper,environment,
+                Clock.fixed(pricing.plusSeconds(86400),ZoneId.of("Asia/Shanghai")));
     }
 
     @org.junit.jupiter.params.ParameterizedTest

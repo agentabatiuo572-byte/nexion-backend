@@ -21,7 +21,7 @@ public class AuditLogSanitizer {
     private static final List<String> SENSITIVE_KEY_PARTS = List.of(
             "password", "secret", "token", "signature", "authorization", "credential", "privatekey",
             "private_key", "accesskey", "access_key", "secretkey", "secret_key", "documentobject",
-            "objectkey", "object_key", "rawbody", "raw_body");
+            "objectkey", "object_key", "rawbody", "raw_body", "resetproof", "reset_proof");
 
     private final ObjectMapper objectMapper;
 

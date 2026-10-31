@@ -1,6 +1,7 @@
 package ffdd.opsconsole.growth.application;
 
 import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.finance.purchase.VerifiedPurchasePayment;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
@@ -49,8 +50,25 @@ import org.springframework.util.StringUtils;
 
 /** H2 single source of truth: state, settlement, wallet/D4 and A4 all commit together. */
 @Service
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_ = @org.springframework.beans.factory.annotation.Autowired)
 public class AppTrialLifecycleService {
+    private final ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade paymentAuthorization;
+
+    // Compatibility constructor for existing isolated domain tests; runtime uses the full constructor.
+    public AppTrialLifecycleService(
+            SupportPaymentAttributionFacade paymentAttribution,
+            AppTrialLifecycleMapper mapper,
+            EarningsReleaseService earningsReleaseService,
+            AdminIdempotencyService idempotency,
+            TreasuryCoverageFacade coverageFacade,
+            AuditLogService audit,
+            EventOutboxService outbox,
+            StorefrontProductReleasePolicy productReleasePolicy,
+            CanonicalStateMapper canonicalStateMapper,
+            Environment environment,
+            Clock clock) {
+        this(null,paymentAttribution,mapper,earningsReleaseService,idempotency,coverageFacade,audit,outbox,productReleasePolicy,canonicalStateMapper,environment,clock);
+    }
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private static final String TRIAL_KILLSWITCH_KEY = "killswitch.trial";
     private static final String TRIAL_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.trial";
@@ -271,23 +289,50 @@ public class AppTrialLifecycleService {
     }
 
     /** Converts the reserved trial slot into one authoritative catalogue order. */
-    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public ApiResult<Map<String, Object>> convert(
             Long userId, String productNo, BigDecimal expectedAmountUsdt, String idempotencyKey) {
         return convert(userId, productNo, expectedAmountUsdt, null, idempotencyKey);
     }
 
     /** {@code quoteVersion} is the version the user confirmed; a different server quote needs a new confirmation. */
-    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public ApiResult<Map<String, Object>> convert(
             Long userId, String productNo, BigDecimal expectedAmountUsdt, String quoteVersion, String idempotencyKey) {
-        requireUser(userId);
+        return convert(userId,productNo,expectedAmountUsdt,quoteVersion,idempotencyKey,null);
+    }
+
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
+    public ApiResult<Map<String, Object>> convert(Long userId,String productNo,BigDecimal expectedAmountUsdt,
+            String quoteVersion,String idempotencyKey,
+            ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade.Authorization authorization) {
+        if (userId==null || userId<1) throw new BizException(404,"USER_NOT_FOUND");
         String normalized = productNo == null ? "" : productNo.trim();
         String confirmedQuote = StringUtils.hasText(quoteVersion) ? quoteVersion.trim() : null;
         Map<String, Object> request = linked("productNo", normalized, "expectedAmountUsdt", expectedAmountUsdt);
         if (confirmedQuote != null) request.put("quoteVersion", confirmedQuote);
-        return once("TRIAL_CONVERT:PRODUCTION", userId, idempotencyKey, request,
-                () -> convertOnce(userId, normalized, expectedAmountUsdt, confirmedQuote));
+        if (paymentAuthorization==null) return ApiResult.fail(503,"PAYMENT_PASSWORD_UNAVAILABLE");
+        return paymentAuthorization.execute(userId,"trial-convert",idempotencyKey,request,authorization,
+                () -> {
+                    requireUser(userId);
+                    return once("TRIAL_CONVERT:PRODUCTION",userId,idempotencyKey,request,
+                            () -> convertOnce(userId,normalized,expectedAmountUsdt,confirmedQuote));
+                });
+    }
+
+    @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY,rollbackFor=Exception.class)
+    public ApiResult<Map<String,Object>> settleVerifiedExternal(Long owner,String product,BigDecimal expected,String version) {
+        if (!VerifiedPurchasePayment.active()) throw new BizException(403,"PURCHASE_PAYMENT_SCOPE_REQUIRED");
+        requireUser(owner); return convertOnce(owner,product,expected,version);
+    }
+    @Transactional(readOnly=true)
+    public ApiResult<Map<String,Object>> externalPaymentPricing(Long owner,Instant pricingInstant) {
+        if(owner==null||invalidUser(activeUser(owner,false)))return ApiResult.fail(404,"USER_NOT_FOUND");
+        TrialRow row=mapper.trial(owner);
+        if(row==null||!active(row.status()))return ApiResult.fail(409,"TRIAL_NOT_CONVERTIBLE");
+        var frozen=quoteView(quote(row,policyMap(),LocalDateTime.ofInstant(pricingInstant,BUSINESS_ZONE)),row.priceUsdt());
+        frozen.put("sourceVersion",row.version());frozen.put("claimNo",row.claimNo());
+        return ApiResult.ok(frozen);
     }
 
     private ApiResult<Map<String, Object>> convertOnce(
@@ -299,7 +344,7 @@ public class AppTrialLifecycleService {
         }
         if (confirmedQuote != null && confirmedQuote.length() > 96) return ApiResult.fail(422, "TRIAL_QUOTE_VERSION_INVALID");
         Map<String, String> policy = policyMap();
-        var prepared = paymentAttribution.prepare(userId, Source.TRIAL_CONVERT, "USER:" + userId);
+        var prepared = VerifiedPurchasePayment.active() ? null : paymentAttribution.prepare(userId, Source.TRIAL_CONVERT, "USER:" + userId);
         TrialRow row = mapper.lockTrial(userId);
         if (row == null || !active(row.status())) return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
         String configured = trialProductCode(policy, row);
@@ -334,7 +379,8 @@ public class AppTrialLifecycleService {
         if (subtotal == null || subtotal.signum() <= 0) {
             throw new BizException(409, "TRIAL_PRICE_SNAPSHOT_INVALID");
         }
-        Quote quote = quote(row, policy, now);
+        Quote quote = quote(row, policy, VerifiedPurchasePayment.active()
+                ? LocalDateTime.ofInstant(VerifiedPurchasePayment.pricingInstant(),BUSINESS_ZONE) : now);
         Settlement settlement = quote.accrued();
         BigDecimal promoDiscount = quote.promoDiscountUsdt();
         BigDecimal discount = quote.discountUsdt();
@@ -356,24 +402,25 @@ public class AppTrialLifecycleService {
                 LocalDateTime.ofInstant(clock.instant(), java.time.ZoneOffset.UTC));
         WalletRow wallet = mapper.lockWallet(userId);
         if (wallet == null) return ApiResult.fail(409, "TRIAL_WALLET_UNAVAILABLE");
-        if (wallet.usdt().compareTo(amount) < 0) return ApiResult.fail(409, "TRIAL_WALLET_INSUFFICIENT");
-        paymentAttribution.beforeCash(prepared);
-        if (mapper.settleWallet(userId, amount, BigDecimal.ZERO, BigDecimal.ZERO) != 1) {
+        if (VerifiedPurchasePayment.active()) VerifiedPurchasePayment.require(userId,amount);
+        if (!VerifiedPurchasePayment.active() && wallet.usdt().compareTo(amount) < 0) return ApiResult.fail(409, "TRIAL_WALLET_INSUFFICIENT");
+        if (!VerifiedPurchasePayment.active()) paymentAttribution.beforeCash(prepared);
+        if (!VerifiedPurchasePayment.active() && mapper.settleWallet(userId, amount, BigDecimal.ZERO, BigDecimal.ZERO) != 1) {
             throw new BizException(409, "TRIAL_WALLET_CONFLICT");
         }
         if (quote.remainderUsdt().signum() > 0) {
             String entryNo = earningsReleaseService.creditRewardInFundOperation(userId, "H2_TRIAL_REMAINDER", row.claimNo() + ":REMAINDER",
                     "USDT", quote.remainderUsdt(), "H2:" + row.claimNo() + ":REMAINDER:USDT");
-            paymentAttribution.trialReward(prepared, entryNo);
+            if (!VerifiedPurchasePayment.active()) paymentAttribution.trialReward(prepared, entryNo);
         }
         if (quote.rewardNex().signum() > 0) {
             String entryNo = earningsReleaseService.creditRewardInFundOperation(userId, "H2_TRIAL_BONUS", row.claimNo() + ":NEX",
                     "UVT", quote.rewardNex(), "H2:" + row.claimNo() + ":NEX");
-            paymentAttribution.trialReward(prepared, entryNo);
+            if (!VerifiedPurchasePayment.active()) paymentAttribution.trialReward(prepared, entryNo);
         }
-        BigDecimal usdtAfter = wallet.usdt().subtract(amount).add(quote.remainderUsdt());
+        BigDecimal usdtAfter = wallet.usdt().subtract(VerifiedPurchasePayment.active() ? BigDecimal.ZERO : amount).add(quote.remainderUsdt());
         BigDecimal nexAfter = wallet.nex().add(quote.rewardNex());
-        if (amount.signum() > 0 && paymentAttribution.insertLedger(prepared, amount,
+        if (!VerifiedPurchasePayment.active() && amount.signum() > 0 && paymentAttribution.insertLedger(prepared, amount,
                 wallet.usdt().subtract(amount), "H2 conversion via UVEL USDT wallet") != 1) {
             throw new BizException(409, "TRIAL_CHARGE_LEDGER_CONFLICT");
         }
@@ -399,7 +446,7 @@ public class AppTrialLifecycleService {
             throw new BizException(409, "TRIAL_DEVICE_CREATE_CONFLICT");
         }
         Long deviceId = mapper.deviceIdByInstanceNo(instanceNo);
-        String snapshot = settlement.snapshot("convert", "UVEL_USDT_WALLET", product.productNo())
+        String snapshot = settlement.snapshot("convert", VerifiedPurchasePayment.method(), product.productNo())
                 + ",orderNo=" + orderNo + ",promoDiscountUsdt=" + promoDiscount
                 + ",totalDiscountUsdt=" + discount + ",amountUsdt=" + amount
                 + ",trialDailyUsdt=" + row.dailyUsdt() + ",trialDailyNex=" + row.dailyNex()
@@ -414,7 +461,7 @@ public class AppTrialLifecycleService {
         Attribution attr = requireAttribution(userId);
         Map<String, Object> detail = linked("orderNo", orderNo, "productNo", product.productNo(),
                 "amountUsdt", amount, "discountUsdt", discount, "paymentStatus", "PAID",
-                "orderStatus", "PAID", "paymentRail", "UVEL_USDT_WALLET",
+                "orderStatus", "PAID", "paymentRail", VerifiedPurchasePayment.method(),
                 "deviceId", deviceId, "shadowUsdt", settlement.shadowUsdt(),
                 "shadowNex", settlement.shadowNex(), "offsetUsdt", quote.offsetUsdt(),
                 "remainderUsdt", quote.remainderUsdt(), "discountApplied", promoDiscount,
@@ -429,7 +476,7 @@ public class AppTrialLifecycleService {
         publish("ORDER", orderNo, "checkout.completed", userId, attr,
                 linked("order_id", orderNo, "order_no", orderNo, "order_subtotal_usdt", amount, "amount_usdt", amount));
         record("H2_TRIAL_CONVERTED", row.claimNo(), userId, detail);
-        paymentAttribution.record(prepared);
+        if (!VerifiedPurchasePayment.active()) paymentAttribution.record(prepared);
         return ApiResult.ok(detail);
     }
 

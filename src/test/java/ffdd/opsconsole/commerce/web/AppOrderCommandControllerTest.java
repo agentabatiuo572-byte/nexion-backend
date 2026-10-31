@@ -20,13 +20,14 @@ class AppOrderCommandControllerTest {
         AppOrderCommandController controller = new AppOrderCommandController(service);
         TestingAuthenticationToken authentication = new TestingAuthenticationToken("7", "ignored", List.of());
         authentication.setDetails(Map.of("subjectType", "USER"));
-        when(service.pay(7L, "CSO-1", "payment-key"))
+        var pin=new ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade.Authorization("018290",1L,"attempt-1");
+        when(service.pay(7L, "CSO-1", "payment-key",pin))
                 .thenReturn(ApiResult.ok(Map.of("orderNo", "CSO-1", "paymentStatus", "PAID")));
 
-        ApiResult<Map<String, Object>> result = controller.pay("CSO-1", "payment-key", authentication);
+        ApiResult<Map<String, Object>> result = controller.pay("CSO-1", "payment-key", pin,authentication);
 
         assertThat(result.getCode()).isZero();
-        verify(service).pay(eq(7L), eq("CSO-1"), eq("payment-key"));
+        verify(service).pay(eq(7L), eq("CSO-1"), eq("payment-key"),eq(pin));
     }
 
     @Test
@@ -36,7 +37,7 @@ class AppOrderCommandControllerTest {
         TestingAuthenticationToken authentication = new TestingAuthenticationToken("1", "ignored", List.of());
         authentication.setDetails(Map.of("subjectType", "ADMIN"));
 
-        ApiResult<Map<String, Object>> result = controller.pay("CSO-1", "payment-key", authentication);
+        ApiResult<Map<String, Object>> result = controller.pay("CSO-1", "payment-key", null,authentication);
 
         assertThat(result.getCode()).isEqualTo(403);
         assertThat(result.getMessage()).isEqualTo("USER_SUBJECT_REQUIRED");

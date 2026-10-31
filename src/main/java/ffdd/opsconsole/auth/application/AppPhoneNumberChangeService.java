@@ -22,8 +22,22 @@ import org.springframework.util.StringUtils;
 
 /** Changing the account's login number; unrelated to changing its bound handset. */
 @Service
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_ = @org.springframework.beans.factory.annotation.Autowired)
 public class AppPhoneNumberChangeService {
+    private final AppPaymentPasswordService paymentPasswords;
+
+    // Compatibility constructor for existing isolated domain tests; runtime uses the full constructor.
+    public AppPhoneNumberChangeService(
+            AppPhoneNumberChangeMapper mapper,
+            AppUserSecurityService securityService,
+            AppUserSecurityVerificationGuard verificationGuard,
+            UserOpsMapper users,
+            UserOtpDeliveryService delivery,
+            PlatformConfigFacade config,
+            UserSessionRevocationService revocations,
+            AuditLogService audit) {
+        this(null,mapper,securityService,verificationGuard,users,delivery,config,revocations,audit);
+    }
     private final AppPhoneNumberChangeMapper mapper;
     private final AppUserSecurityService securityService;
     private final AppUserSecurityVerificationGuard verificationGuard;
@@ -151,6 +165,7 @@ public class AppPhoneNumberChangeService {
         if (mapper.complete(userId, changeNo) != 1) {
             throw new IllegalStateException("USER_PHONE_CHANGE_RECEIPT_FAILED");
         }
+        if (paymentPasswords!=null) paymentPasswords.transferVerifiedPhone(userId,country,phone);
         int revoked = revocations.revokeOthers(userId, sessionId);
         record(userId, "USER_PHONE_NUMBER_CHANGED", changeNo, Map.of("revokedOtherSessions", revoked));
         return Map.of("changed", true);

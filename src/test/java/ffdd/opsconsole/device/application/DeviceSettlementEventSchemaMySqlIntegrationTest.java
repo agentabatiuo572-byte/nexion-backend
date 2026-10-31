@@ -283,8 +283,8 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
                 12, 1, "P1", 0, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE,
                 BigDecimal.ZERO, 1, new BigDecimal("100"), BigDecimal.ONE, false, List.of("test")));
         StorefrontProductReleasePolicy release = new StorefrontProductReleasePolicy(catalog, rhythm);
-        return fixture.transactional(new AppTradeinService(paymentAttribution(mapper), mapper, directIdempotency(), outbox, mock(AuditLogService.class),
-                release, sandbox, fixture.mapper(ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper.class)));
+        return fixture.transactional(ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTradeinService(paymentAttribution(mapper), mapper, directIdempotency(), outbox, mock(AuditLogService.class),
+                release, sandbox, fixture.mapper(ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper.class))));
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})

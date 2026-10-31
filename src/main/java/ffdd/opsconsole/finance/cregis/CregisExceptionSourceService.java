@@ -92,6 +92,7 @@ public class CregisExceptionSourceService {
                 ((Number)next.get("version")).longValue())!=1) throw conflict();
     }
     private Map<String,Object> locked(Source s) {
+        if(db.directPurchaseAddress(s))throw new BizException(409,"CREGIS_DIRECT_PURCHASE_SEPARATE_REVIEW");
         db.ensure(s); var row=db.lock(s);
         if(row==null || ((Number)row.get("cid")).longValue()!=s.cid()
                 || !s.address().equalsIgnoreCase((String)row.get("address"))
