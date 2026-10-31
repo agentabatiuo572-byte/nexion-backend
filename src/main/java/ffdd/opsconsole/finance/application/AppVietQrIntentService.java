@@ -124,7 +124,7 @@ public class AppVietQrIntentService {
         requireVietQrChannelEnabled();
         requireUser(userId);
         String key = commandKey(idempotencyKey);
-        BigDecimal amount = depositAmount(requestedAmount);
+        BigDecimal amount = canonicalDepositAmount(requestedAmount);
         String requestHash = sha256(amount.toPlainString());
         if (mapper.lockActiveUserForIntentCreation(userId) == null) {
             throw new BizException(403, "USER_NOT_ACTIVE");
@@ -133,10 +133,12 @@ public class AppVietQrIntentService {
         Map<String, Object> replay = mapper.findIntentByCreateKey(userId, key);
         if (replay != null) {
             requireMatchingRail(replay, hosted);
+            ApiResult<Map<String,Object>> response = replayCreate(replay, requestHash);
             mapper.ensureInFlightReconciliation(text(replay.get("intentNo")));
-            return replayCreate(replay, requestHash);
+            return response;
         }
 
+        amount = depositAmount(amount);
         Map<String, Object> vietQr = required(mapper.findVietQrConfig(), "PAYMENT_CONFIG_UNAVAILABLE");
         BigDecimal max = decimal(vietQr.get("perTxLimitUsd")).setScale(2, RoundingMode.UNNECESSARY);
         if (amount.compareTo(minimumDepositPrincipal()) < 0 || amount.compareTo(max) > 0) {
@@ -474,10 +476,16 @@ public class AppVietQrIntentService {
     }
 
     private BigDecimal depositAmount(BigDecimal value) {
+        BigDecimal amount = canonicalDepositAmount(value);
+        if (amount.stripTrailingZeros().scale() > 0) throw new BizException(422, "VIETQR_AMOUNT_SCALE_INVALID");
+        return amount;
+    }
+
+    private BigDecimal canonicalDepositAmount(BigDecimal value) {
         if (value == null) throw new BizException(422, "VIETQR_AMOUNT_REQUIRED");
         if (value.signum() <= 0
                 || value.scale() < -4
-                || value.stripTrailingZeros().scale() > 0
+                || value.stripTrailingZeros().scale() > 2
                 || value.precision() > 10
                 || value.compareTo(ABSOLUTE_MAX_DEPOSIT_USDT) > 0) {
             throw new BizException(422, "VIETQR_AMOUNT_SCALE_INVALID");
