@@ -210,6 +210,18 @@ class StartupSchemaMigrationContractTest {
     }
 
     @Test
+    void directReferralStartupReplayPreservesCompleteApprovalSnapshots() throws Exception {
+        String original=Files.readString(Path.of("scripts/migrations/20261005_direct_referral_rewards.sql"));
+        String compat=Files.readString(Path.of("scripts/migrations/20261101_direct_referral_bootstrap_compat.sql"));
+        assertThat(compat.substring(compat.indexOf('\n')+1).trim())
+                .isEqualTo(original.replace("MODIFY COLUMN after_value VARCHAR(1024) NOT NULL","MODIFY COLUMN after_value TEXT NOT NULL").trim());
+        String startup=Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+        assertThat(startup).contains("20261101_direct_referral_bootstrap_compat.sql").doesNotContain("20261005_direct_referral_rewards.sql");
+        assertThat(Files.readString(Path.of("scripts/fresh_db/prereqs.txt")))
+                .contains("20261101_direct_referral_bootstrap_compat.sql|fresh_db/ddl-20260722_f3_binary_settlement.sql");
+    }
+
+    @Test
     void paymentCardVersionHasAnUpgradeMigration() throws Exception {
         String migrations = Files.readString(Path.of("scripts/migrations/20260828_cd_finance_canonical.sql"));
         assertThat(migrations).contains("nx_wallet_bank_card", "ADD COLUMN version");

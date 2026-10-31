@@ -196,6 +196,28 @@ class SupportPaymentFundBindingTest {
         assertThat(cash.legs.values()).singleElement().satisfies(rows->assertThat(rows).hasSize(3));
         if(charge.equals("0"))verify(mapper,never()).insertLedger(any(),anyMap());
     }
+    @ParameterizedTest @ValueSource(strings={"currency","amount","digest"})
+    void oldTrialBonusReceiptCanReplayAndProveOriginalConsumeWithoutChangingSignedBytes(String alteration) throws Exception {
+        pending(Source.TRIAL_CONVERT,BigDecimal.TEN);cashAndLedger();reward("UVT","3","withdrawable");
+        var fact=record().orElseThrow();
+        var stored=cash.operations.values().iterator().next();long operationId=((Number)stored.get("id")).longValue();
+        LegacyUvtProofFixture.makeLegacy(stored,List.of(7L),cash.legs.get(operationId),(SupportFundJournalBindingService)cash.fund);
+        var immutable=new LinkedHashMap<>(stored);
+        assertThat(stored.get("orderedEventsJson").toString()).contains("\"NEX\"");
+        var old=service.beforeSource(7,source,key,partition);
+        assertThat(service.readSettled(old)).isPresent();
+        Object evidence=org.springframework.test.util.ReflectionTestUtils.invokeMethod(service,"originalConsumeEvidence",fact);
+        assertThat(String.valueOf(evidence)).isEqualTo("VERIFIED");
+        assertThat(stored).isEqualTo(immutable);
+        verify(cash.mapper,times(1)).insertOperation(anyMap());
+        switch(alteration) {
+            case "currency" -> stored.put("orderedEventsJson",stored.get("orderedEventsJson").toString().replace("\"NEX\"","\"USDT\""));
+            case "amount" -> stored.put("orderedEventsJson",stored.get("orderedEventsJson").toString().replace("\"amount\":3","\"amount\":4"));
+            case "digest" -> stored.put("receiptSha256","0".repeat(64));
+        }
+        assertThatThrownBy(()->service.readSettled(old)).hasMessage("PAYMENT_FUND_STORED_RECEIPT_MISMATCH");
+        verify(cash.mapper,times(1)).insertOperation(anyMap());
+    }
     @Test void oldV1PurchaseWithoutFundConsumeCanRefundWhileFundHistoryRemainsUnknown() throws Exception {
         pending(Source.ORDER_REFUND,new BigDecimal("30"));cashAndLedger();assertThat(record()).isPresent();
         assertThat(operation("sourceProofJson").path("originalFundEvidence").asText()).isEqualTo("UNKNOWN");

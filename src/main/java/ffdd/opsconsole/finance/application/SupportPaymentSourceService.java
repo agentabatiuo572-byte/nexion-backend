@@ -1208,7 +1208,8 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
                 throw failure("PAYMENT_FUND_ORIGINAL_CONSUME_MISMATCH");
             int count=0;
             for(var node:fundRead(text(operation,"orderedEventsJson"))) {
-                Event event=json.treeToValue(node,Event.class);SupportFundAllocation.validate(event);
+                // validateStoredFund above authenticated the original immutable bytes.
+                Event event=json.treeToValue(ffdd.opsconsole.common.domain.LegacyUvtProof.current(node),Event.class);SupportFundAllocation.validate(event);
                 if(consumeId(original.factId()).equals(event.id())) {
                     if(event.action()!=Action.CONSUME || !new Account(original.customerId(),original.currency(),"available").equals(event.from())
                         || event.amount().compareTo(original.amount())!=0)throw failure("PAYMENT_FUND_ORIGINAL_CONSUME_MISMATCH");
