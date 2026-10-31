@@ -34,7 +34,9 @@ public class SupportFundEarningsEvidence {
     public record Verified(Stamp stamp,String coveredPhase,List<Checkpoint> checkpoints) {
         public Verified {checkpoints=List.copyOf(checkpoints);}
     }
-    public Verified verify(Map<String,Object> operation,JsonNode source,JsonNode proof,List<Event> events,Inputs input) {
+    public Verified verify(Map<String,Object> operation,JsonNode originalSource,JsonNode originalProof,List<Event> events,Inputs input) {
+        JsonNode source=ffdd.opsconsole.common.domain.LegacyUvtProof.current(originalSource);
+        JsonNode proof=ffdd.opsconsole.common.domain.LegacyUvtProof.current(originalProof);
         require("SUPPORT_EARNINGS".equals(operation.get("businessType")) &&"PRODUCTION".equals(operation.get("sourceEnvironment")));
         String phase=text(operation.get("phase")),key=text(operation.get("sourceKey"));
         require(text(operation.get("operationKey")).equals("EARNINGS:"+phase+":"+key));
@@ -65,7 +67,7 @@ public class SupportFundEarningsEvidence {
                 require(equal(audit,actualAudit) &&text(actualAudit.get("action")).equals(janus?"K1_EARNINGS_ATTESTATION_RELEASED":"K1_EARNINGS_MANUALLY_RELEASED")
                     &&no.equals(actualAudit.get("resourceId")) &&"EARNINGS_RELEASE_ENTRY".equals(actualAudit.get("resourceType"))
                     &&"SUCCESS".equals(actualAudit.get("result")) &&flag(actualAudit.get("isDeleted"))==0);
-                JsonNode detail=codec.read(text(actualAudit.get("detailJson")));
+                JsonNode detail=codec.readCurrentProof(text(actualAudit.get("detailJson")));
                 require(number(detail.path("userId"))==customer &&text(detail.path("before")).equals(text(before.path("bucket")))
                     &&"withdrawable".equals(text(detail.path("after"))));
                 if(janus) {

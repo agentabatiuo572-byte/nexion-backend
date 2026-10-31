@@ -31,6 +31,8 @@ public class SupportLeaderboardPublicationService {
     @Transactional(propagation = Propagation.REQUIRES_NEW, isolation = Isolation.REPEATABLE_READ, rollbackFor = Exception.class)
     public Publication publish(Snapshot snapshot) {
         validate(snapshot);
+        if ("NEX".equals(snapshot.context().currency()))
+            throw new BizException(422,"SUPPORT_LEADERBOARD_CURRENCY_RETIRED");
         Context c = snapshot.context(); String stream = streamKey(c); String payload = encode(snapshot);
         mapper.ensurePointer(stream);
         Long previousId = mapper.lockPointer(stream);
@@ -65,9 +67,10 @@ public class SupportLeaderboardPublicationService {
         if (expectedVersion != null && !SupportLeaderboard.validVersion(expectedVersion))
             throw new BizException(422,"SUPPORT_LEADERBOARD_INVALID_QUERY");
         Stored stored = mapper.latest(streamKey(current));
+        if (stored == null && "UVT".equals(current.currency())) stored = mapper.latestByIdentity(identity(current));
         if (stored == null) throw new BizException(503,"SUPPORT_LEADERBOARD_PUBLICATION_UNAVAILABLE");
-        if (!streamKey(current).equals(stored.streamKey())) throw unavailable();
         Publication publication = decode(stored);
+        if (!currentStreamKey(current).equals(currentStreamKey(publication.snapshot().context()))) throw unavailable();
         // A verified legacy snapshot needs a fresh source read; it is never a fallback for the new policy.
         if (expectedVersion == null && current.definitionVersion().equals(SupportLeaderboardPolicy.DEFINITION)
                 && Set.of("support-leaderboard-v1","support-leaderboard-v2-deposit-no-refund")
@@ -90,7 +93,7 @@ public class SupportLeaderboardPublicationService {
             Publication p = decode(row); Context c = p.snapshot().context();
             if (p.snapshot().state() != State.COMPLETE || p.publishedAt().isBefore(from) || !p.publishedAt().isBefore(to)
                     || c.board() != current.board() || !Objects.equals(c.rankMonth(),current.rankMonth())
-                    || !Objects.equals(c.rankCurrency(),current.rankCurrency()) || c.scope() != current.scope()
+                    || !ffdd.opsconsole.common.domain.LegacyUvtProof.matches(c.rankCurrency(),current.rankCurrency()) || c.scope() != current.scope()
                     || !c.approvedGroupIds().equals(current.approvedGroupIds())) throw unavailable();
             result.add(p);
         }
@@ -105,7 +108,8 @@ public class SupportLeaderboardPublicationService {
             Context c = snapshot.context();
             if (!streamKey(c).equals(row.streamKey()) || !c.board().name().equals(row.board())
                     || !Objects.equals(text(c.rankMonth()),row.rankMonth()) || !text(c.referenceMonth()).equals(row.referenceMonth())
-                    || !c.currency().equals(row.currency()) || !Objects.equals(c.rankCurrency(),row.rankCurrency())
+                    || !ffdd.opsconsole.common.domain.LegacyUvtProof.matches(c.currency(),row.currency())
+                    || !ffdd.opsconsole.common.domain.LegacyUvtProof.matches(c.rankCurrency(),row.rankCurrency())
                     || !c.scope().name().equals(row.scope()) || !groups(c).equals(row.groupsKey())
                     || !c.definitionVersion().equals(row.definitionVersion()) || !snapshot.sourceVersion().equals(row.sourceVersion())
                     || !snapshot.viewVersion().equals(row.viewVersion()) || !snapshot.comparisonKey().equals(row.comparisonKey())
@@ -165,7 +169,11 @@ public class SupportLeaderboardPublicationService {
             throw new IllegalStateException("Leaderboard publication reads require an active REPEATABLE_READ transaction");
     }
     private static boolean sameViewIdentity(Context a, Context b) {
-        return streamKey(a).equals(streamKey(b)) && a.definitionVersion().equals(b.definitionVersion());
+        return currentStreamKey(a).equals(currentStreamKey(b)) && a.definitionVersion().equals(b.definitionVersion());
+    }
+    static String currentStreamKey(Context c) {
+        return hash(String.join("|","slb-stream-v1",c.board().name(),Objects.toString(c.rankMonth(),""),
+            c.referenceMonth().toString(),ffdd.opsconsole.common.domain.LegacyUvtProof.currency(c.currency()),c.scope().name(),groups(c)));
     }
     public static String streamKey(Context c) {
         return hash(String.join("|","slb-stream-v1",c.board().name(),Objects.toString(c.rankMonth(),""),

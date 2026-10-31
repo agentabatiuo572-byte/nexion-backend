@@ -23,15 +23,17 @@ public class SupportFundDeviceEvidence {
     public record Inputs(FundEarnings sources,List<Map<String,Object>> raw,List<Map<String,Object>> operations,
         List<Map<String,Object>> parties,List<Map<String,Object>> legs,Map<String,Integer> precisions) {}
     public record Verified(Stamp stamp,List<Point> points,String coveredPhase){public Verified{points=List.copyOf(points);}}
-    public Verified verify(Map<String,Object> op,JsonNode source,JsonNode proof,List<Event> events,Inputs input){
+    public Verified verify(Map<String,Object> op,JsonNode originalSource,JsonNode originalProof,List<Event> events,Inputs input){
+        JsonNode source=ffdd.opsconsole.common.domain.LegacyUvtProof.current(originalSource);
+        JsonNode proof=ffdd.opsconsole.common.domain.LegacyUvtProof.current(originalProof);
         require("SUPPORT_DEVICE_EARNING".equals(op.get("businessType"))&&"CREDIT".equals(op.get("phase"))&&"PRODUCTION".equals(op.get("sourceEnvironment"))&&"nx_compute_receipt".equals(op.get("sourceTable")));
         String no=text(op.get("sourceKey"));long id=number(op.get("id"));require(id>0&&key(no).equals(op.get("operationKey"))&&number(one(input.operations(),"operationKey",key(no)).get("id"))==id);
         keys(source,Set.of("schemaVersion","receipt","tasks","ledgers","earningEvents"));keys(proof,Set.of("schemaVersion","walletStages","eventIds"));require("SUPPORT_DEVICE_EARNING_V1".equals(text(source.path("schemaVersion")))&&"SUPPORT_DEVICE_EARNING_V1".equals(text(proof.path("schemaVersion"))));
-        require(equal(codec.read(text(op.get("sourceSnapshotJson"))),source)&&equal(codec.read(text(op.get("sourceProofJson"))),proof));
+        require(equal(codec.readCurrentProof(text(op.get("sourceSnapshotJson"))),source)&&equal(codec.readCurrentProof(text(op.get("sourceProofJson"))),proof));
         var originals=source(input.sources(),no);require(equal(source.path("receipt"),originals.receipt)&&equal(source.path("tasks"),List.of(originals.task))&&equal(source.path("ledgers"),originals.ledgers)&&equal(source.path("earningEvents"),originals.earnings));
         var completed=time(originals.receipt.get("completedAt"));stored(time(originals.task.get("completedAt")),completed,"nx_compute_task.completed_at",input);stored(time(originals.task.get("proofConsumedAt")),completed,"nx_compute_task.proof_consumed_at",input);
         for(var l:originals.ledgers)stored(time(l.get("createdAt")),completed,"nx_wallet_ledger.created_at",input);for(var e:originals.earnings){stored(time(e.get("walletPostedAt")),completed,"nx_earning_event.wallet_posted_at",input);stored(time(e.get("createdAt")),completed,"nx_earning_event.created_at",input);}
-        var expected=originals.events;require(expected.equals(events)&&equal(codec.read(text(op.get("orderedEventsJson"))),json.valueToTree(events))&&equal(proof.path("eventIds"),events.stream().map(Event::id).toList()));
+        var expected=originals.events;require(expected.equals(events)&&equal(codec.readCurrentProof(text(op.get("orderedEventsJson"))),json.valueToTree(events))&&equal(proof.path("eventIds"),events.stream().map(Event::id).toList()));
         long customer=number(originals.receipt.get("customerId"));var parties=input.parties().stream().filter(p->number(p.get("operationId"))==id).toList();require(parties.size()==1&&number(parties.get(0).get("customerId"))==customer);
         var legs=new ArrayList<>(input.legs().stream().filter(l->number(l.get("operationId"))==id).toList());require(legs.size()==(money(originals.receipt.get("rewardNex")).signum()>0?2:1));legs.sort(Comparator.comparingLong(l->number(l.get("revision"))));
         var stages=proof.path("walletStages");require(stages.isArray()&&stages.size()==legs.size()+1);var points=new ArrayList<Point>();String incarnation=null;long prior=-1;
@@ -48,7 +50,7 @@ public class SupportFundDeviceEvidence {
     }
     public void verifyCoverage(Set<Long> component,Inputs input,Set<String> covered){
         var expected=new HashSet<String>();var receipts=new HashSet<String>();var taskNos=new HashSet<String>();var ledgerIds=new HashSet<Long>();var earningIds=new HashSet<Long>();
-        for(var r:input.sources().receipts())if(component.contains(number(r.get("customerId")))){String no=text(r.get("receiptNo"));require(receipts.add(no)&&expected.add(no+":CREDIT"));var original=source(input.sources(),no);require(taskNos.add(text(original.task.get("taskNo"))));for(var l:original.ledgers)require(ledgerIds.add(number(l.get("id"))));for(var e:original.earnings)require(earningIds.add(number(e.get("id"))));var op=one(input.operations(),"operationKey",key(no));verify(op,codec.read(text(op.get("sourceSnapshotJson"))),codec.read(text(op.get("sourceProofJson"))),original.events,input);}
+        for(var r:input.sources().receipts())if(component.contains(number(r.get("customerId")))){String no=text(r.get("receiptNo"));require(receipts.add(no)&&expected.add(no+":CREDIT"));var original=source(input.sources(),no);require(taskNos.add(text(original.task.get("taskNo"))));for(var l:original.ledgers)require(ledgerIds.add(number(l.get("id"))));for(var e:original.earnings)require(earningIds.add(number(e.get("id"))));var op=one(input.operations(),"operationKey",key(no));verify(op,codec.readCurrentProof(text(op.get("sourceSnapshotJson"))),codec.readCurrentProof(text(op.get("sourceProofJson"))),original.events,input);}
         for(var t:input.sources().tasks())if(component.contains(number(t.get("customerId")))&&"COMPLETED".equals(t.get("status")))require(taskNos.contains(text(t.get("taskNo"))));
         for(var l:input.sources().ledgers())if(component.contains(number(l.get("customerId"))))require(ledgerIds.contains(number(l.get("id"))));
         for(var e:input.sources().earningEvents())if(component.contains(number(e.get("customerId"))))require(earningIds.contains(number(e.get("id"))));

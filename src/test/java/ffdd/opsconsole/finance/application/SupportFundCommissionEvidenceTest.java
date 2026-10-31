@@ -56,6 +56,15 @@ class SupportFundCommissionEvidenceTest {
         void coverage(Set<String> covered){helper.verifyCoverage(Set.of(7L),input(),covered);}
     }
     Fixture fixture(String asset,boolean reverse){var f=new Fixture(asset);var before=wallet(1,"10","20");var after=wallet(2,asset.equals("USDT")?"15":"10",asset.equals("UVT")?"25":"20");f.capture("RELEASE",before,after);if(reverse)f.capture("REVERSE",after,wallet(3,"10","20"));return f;}
+    @Test void migratedCommissionReadsOriginalNexSnapshotsAndReceiptsButStillRejectsCurrentLedgerTampering() {
+        var f=fixture("UVT",true);
+        for(var op:f.ops) LegacyUvtProofFixture.makeLegacy(op,List.of(7L),f.legs.stream().filter(l->op.get("id").equals(l.get("operationId"))).toList(),codec);
+        var originals=f.ops.stream().map(HashMap::new).toList();
+        f.verify("RELEASE");f.verify("REVERSE");f.coverage(Set.of("88:RELEASE","88:REVERSE"));
+        assertThat(f.ops).containsExactlyElementsOf(originals);
+        f.ledgers.get(0).put("amount",n("5.000001"));
+        assertThatThrownBy(()->f.verify("RELEASE")).isInstanceOf(RuntimeException.class);
+    }
     @ParameterizedTest @ValueSource(strings={"USDT","UVT"}) void realAdapterOwningReaderBinderAndHelperCloseBothCashPhases(String asset){var f=fixture(asset,true);for(String phase:List.of("RELEASE","REVERSE")){var v=f.verify(phase);assertThat(v.points()).hasSize(1);assertThat(v.coveredPhase()).isEqualTo("88:"+phase);assertThat(v.stamp().fractionalSecondDigits()).isZero();assertThat(f.op(phase).get("receiptSha256")).isNotNull();}f.coverage(Set.of("88:RELEASE","88:REVERSE"));assertThat(f.verify("RELEASE").stamp().succeededAt()).isEqualTo(AT);verify(f.journal,times(2)).insertOperation(anyMap());}
     @ParameterizedTest @ValueSource(strings={"USDT","UVT"}) void laterLegitimateStatusAndUpdatedAtDoNotEraseHistoricalRelease(String asset){var f=fixture(asset,false);f.events.get(0).put("status","REISSUED");f.events.get(0).put("version",7L);f.events.get(0).put("updatedAt",AT.plusDays(1));f.events.get(0).put("unlockAt",AT.plusDays(1));f.verify("RELEASE");f.coverage(Set.of("88:RELEASE"));}
     @ParameterizedTest @ValueSource(strings={"USDT","UVT"}) void consumedOriginalThenLaterActualCashUsesClawbackWithoutHistoryQualification(String asset){var f=fixture(asset,false);f.capture("REVERSE",wallet(7,"30","40"),wallet(8,asset.equals("USDT")?"25":"30",asset.equals("UVT")?"35":"40"));f.verify("REVERSE");f.coverage(Set.of("88:RELEASE","88:REVERSE"));assertThat(codec.read((String)f.op("REVERSE").get("orderedEventsJson")).get(0).path("action").asText()).isEqualTo("CLAWBACK");}

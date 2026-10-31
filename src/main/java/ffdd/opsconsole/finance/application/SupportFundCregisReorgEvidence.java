@@ -18,9 +18,9 @@ final class SupportFundCregisReorgEvidence {
         require(matches.size()==1);var stored=matches.get(0);
         require("SUPPORT_CREGIS_REORG".equals(op.get("businessType")) && "nx_cregis_reorg_operation".equals(op.get("sourceTable"))
                 && no.equals(op.get("sourceKey")) && number(stored,"auditCount")==1
-                && source.equals(codec.read(String.valueOf(stored.get("snapshotJson"))))
-                && proof.equals(codec.read(String.valueOf(stored.get("proofJson"))))
-                && codec.canonical(codec.read(String.valueOf(stored.get("eventsJson")))).equals(codec.canonical(new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(events)))
+                && source.equals(codec.readCurrentProof(String.valueOf(stored.get("snapshotJson"))))
+                && proof.equals(codec.readCurrentProof(String.valueOf(stored.get("proofJson"))))
+                && codec.canonical(codec.readCurrentProof(String.valueOf(stored.get("eventsJson")))).equals(codec.canonical(new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(events)))
                 && "CREGIS_REORG_V1".equals(source.path("schemaVersion").asText()) && "CREGIS_REORG_V1".equals(proof.path("schemaVersion").asText()));
         var row=source.path("row");long user=row.path("userId").longValue(),incident=row.path("id").longValue();
         require(user==number(stored,"userId") && row.path("eventId").longValue()==number(stored,"eventId")

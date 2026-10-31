@@ -35,7 +35,7 @@ public class SupportLeaderboardCache {
         public List<YearMonth> months(Context selected) {
             var months=new TreeSet<YearMonth>();
             for(Entry entry:entries.values()) {Context c=entry.publication().snapshot().context();
-                if(c.rankMonth()!=null && c.board()==selected.board() && c.currency().equals(selected.currency())
+                if(c.rankMonth()!=null && c.board()==selected.board() && ffdd.opsconsole.common.domain.LegacyUvtProof.matches(c.currency(),selected.currency())
                     && c.scope()==selected.scope() && c.approvedGroupIds().equals(selected.approvedGroupIds())
                     && c.definitionVersion().equals(selected.definitionVersion()))months.add(c.rankMonth());}
             return List.copyOf(months.descendingSet());
@@ -51,10 +51,20 @@ public class SupportLeaderboardCache {
             Generation generation=json.readValue(payload,Generation.class);
             for(var entry:generation.entries().entrySet()) {
                 Snapshot s=entry.getValue().publication().snapshot();
-                if(!entry.getKey().equals(SupportLeaderboardPublicationService.streamKey(s.context()))
+                if((!entry.getKey().equals(SupportLeaderboardPublicationService.streamKey(s.context()))
+                        && !entry.getKey().equals(SupportLeaderboardPublicationService.currentStreamKey(s.context())))
                     || !SupportLeaderboardPolicy.DEFINITION.equals(s.context().definitionVersion())
                     || !SupportLeaderboard.validCachedSnapshot(s))throw new IllegalArgumentException("Invalid cached publication");
             }
+            // Verify the original snapshot/version above, then index its current currency
+            // without rewriting the immutable snapshot. Preserve the newest verified stream.
+            Map<String,Entry> current=new HashMap<>();
+            generation.entries().values().forEach(entry->current.merge(
+                SupportLeaderboardPublicationService.currentStreamKey(entry.publication().snapshot().context()),entry,
+                (a,b)->Comparator.comparing((Entry e)->e.publication().snapshot().context().evaluatedAt())
+                    .thenComparing(e->e.publication().publishedAt()).thenComparingLong(e->e.publication().publicationId())
+                    .compare(a,b)>=0?a:b));
+            generation=new Generation(current);
             decoded.set(new Decoded(payload,generation));return generation;
         }catch(java.io.IOException | IllegalArgumentException | NullPointerException ex){throw new BizException(503,"SUPPORT_LEADERBOARD_CACHE_INVALID");}
     }

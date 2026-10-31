@@ -31,7 +31,9 @@ public class SupportFundStakingEvidence {
     private static final Set<String> POSITION_KEYS=new HashSet<>(IMMUTABLE);
     static {POSITION_KEYS.addAll(Set.of("status","claimedAt","earlyWithdrawnAt","updatedAt"));}
     private static final Set<String> WALLET_KEYS=Set.of("id","customerId","incarnation","revision","version","usdtAvailable","nexAvailable","riskHeld","pendingWithdrawal","sandbox","deleted");
-    public Verified verify(Map<String,Object> operation,JsonNode source,JsonNode proof,List<Event> events,Inputs input) {
+    public Verified verify(Map<String,Object> operation,JsonNode originalSource,JsonNode originalProof,List<Event> events,Inputs input) {
+        JsonNode source=ffdd.opsconsole.common.domain.LegacyUvtProof.current(originalSource);
+        JsonNode proof=ffdd.opsconsole.common.domain.LegacyUvtProof.current(originalProof);
         require("SUPPORT_STAKING".equals(operation.get("businessType"))&&"PRODUCTION".equals(operation.get("sourceEnvironment"))&&"nx_staking_position".equals(operation.get("sourceTable")));
         String phase=text(operation.get("phase")),no=text(operation.get("sourceKey"));require(Set.of("OPEN","CLAIM","EARLY").contains(phase));
         require(SupportStakingReadFacade.operationKey(no,phase).equals(operation.get("operationKey")));
@@ -51,15 +53,15 @@ public class SupportFundStakingEvidence {
         String field=switch(phase){case "OPEN"->"createdAt";case "CLAIM"->"claimedAt";default->"earlyWithdrawnAt";};
         LocalDateTime at=time(current.get(field));require(at.equals(time(text(source.path("phaseAt")))));
         Integer precision=input.precisions().get("nx_staking_position."+column);require(precision!=null&&precision>=0&&precision<=6&&at.getNano()%(int)Math.pow(10,9-precision)==0);
-        require(events.equals(SupportStakingReadFacade.events(map(p),phase))&&!events.isEmpty()&&equal(codec.read(text(operation.get("orderedEventsJson"))),json.valueToTree(events)));
-        require(equal(codec.read(text(operation.get("sourceSnapshotJson"))),source)&&equal(codec.read(text(operation.get("sourceProofJson"))),proof)&&equal(proof.path("eventIds"),events.stream().map(Event::id).toList()));
+        require(events.equals(SupportStakingReadFacade.events(map(p),phase))&&!events.isEmpty()&&equal(codec.readCurrentProof(text(operation.get("orderedEventsJson"))),json.valueToTree(events)));
+        require(equal(codec.readCurrentProof(text(operation.get("sourceSnapshotJson"))),source)&&equal(codec.readCurrentProof(text(operation.get("sourceProofJson"))),proof)&&equal(proof.path("eventIds"),events.stream().map(Event::id).toList()));
         require(number(oneOperation(input,text(operation.get("operationKey"))).get("id"))==number(operation.get("id")));
         Point point=cash(operation,proof,events,input,number(current.get("customerId")));
         Set<String> represented=Set.of();
         if(phase.equals("OPEN"))require(source.path("positionBefore").isNull()&&source.path("ledgersBefore").isArray()&&source.path("ledgersBefore").isEmpty()&&proof.path("originalOpenOperationKey").isNull());
         else {
             String openKey=SupportStakingReadFacade.operationKey(no,"OPEN");require(openKey.equals(text(proof.path("originalOpenOperationKey"))));
-            var open=oneOperation(input,openKey);var birth=codec.read(text(open.get("sourceSnapshotJson")));var birthProof=codec.read(text(open.get("sourceProofJson")));
+            var open=oneOperation(input,openKey);var birth=codec.readCurrentProof(text(open.get("sourceSnapshotJson")));var birthProof=codec.readCurrentProof(text(open.get("sourceProofJson")));
             var prior=verify(open,birth,birthProof,SupportStakingReadFacade.events(map(birth.path("position")),"OPEN"),input);
             require(number(open.get("id"))<number(operation.get("id"))&&point.incarnation().equals(prior.points().get(0).incarnation())&&point.revision()>prior.points().get(0).revision());
             var before=source.path("positionBefore");keys(before,POSITION_KEYS);validPosition(map(before));
@@ -88,7 +90,7 @@ public class SupportFundStakingEvidence {
         var parties=input.parties().stream().filter(x->number(x.get("operationId"))==id).map(x->number(x.get("customerId"))).toList();
         var legs=input.legs().stream().filter(x->number(x.get("operationId"))==id).toList();require(legs.size()==1);
         var ordered=codec.decodeReceipt(op,parties,legs);
-        var verified=earnings.verify(op,codec.read(text(op.get("sourceSnapshotJson"))),codec.read(text(op.get("sourceProofJson"))),ordered,input.earnings());
+        var verified=earnings.verify(op,codec.readCurrentProof(text(op.get("sourceSnapshotJson"))),codec.readCurrentProof(text(op.get("sourceProofJson"))),ordered,input.earnings());
         require((no+":CREDIT").equals(verified.coveredPhase())&&verified.checkpoints().isEmpty());
         var leg=legs.get(0);require(principal.incarnation().equals(leg.get("incarnation"))&&number(leg.get("revision"))==principal.revision()+1);
         var raws=input.raw().stream().filter(r->principal.incarnation().equals(r.get("incarnation"))&&number(r.get("revision"))==principal.revision()+1).toList();require(raws.size()==1);
@@ -105,7 +107,7 @@ public class SupportFundStakingEvidence {
                 require(linked.size()==(!repurchase(p)&&"CLAIMED".equals(p.get("status"))&&money(p.get("estimatedInterestUsdt")).signum()>0?1:0));
             }
             List<String> phases=switch(text(p.get("status"))){case "ACTIVE","MATURE_UNCLAIMED"->List.of("OPEN");case "CLAIMED"->List.of("OPEN","CLAIM");case "EARLY_WITHDRAWN"->List.of("OPEN","EARLY");default->throw failure();};
-            for(String phase:phases){require(expected.add(no+":"+phase)&&covered.contains(no+":"+phase));var op=oneOperation(input,SupportStakingReadFacade.operationKey(no,phase));var s=codec.read(text(op.get("sourceSnapshotJson")));verify(op,s,codec.read(text(op.get("sourceProofJson"))),SupportStakingReadFacade.events(map(s.path("position")),phase),input);}
+            for(String phase:phases){require(expected.add(no+":"+phase)&&covered.contains(no+":"+phase));var op=oneOperation(input,SupportStakingReadFacade.operationKey(no,phase));var s=codec.readCurrentProof(text(op.get("sourceSnapshotJson")));verify(op,s,codec.readCurrentProof(text(op.get("sourceProofJson"))),SupportStakingReadFacade.events(map(s.path("position")),phase),input);}
             var ops=input.operations().stream().filter(o->"SUPPORT_STAKING".equals(o.get("businessType"))&&no.equals(o.get("sourceKey"))).toList();require(ops.size()==phases.size()&&ops.stream().allMatch(o->phases.contains(o.get("phase"))));
             if(phases.size()==1)holdings.add(new Holding(new Account(number(p.get("customerId")),"USDT","held:staking-"+no),money(p.get("amountUsdt")),no));
         }

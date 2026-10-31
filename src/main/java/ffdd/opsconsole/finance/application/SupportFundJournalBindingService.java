@@ -184,6 +184,10 @@ public class SupportFundJournalBindingService implements SupportFundJournalFacad
     }
 
     private Map<String,Object> receipt(ReceiptInput input, List<Long> scope) {
+        return receipt(input, scope, true);
+    }
+
+    private Map<String,Object> receipt(ReceiptInput input, List<Long> scope, boolean validateEvents) {
         if (input == null) throw new IllegalArgumentException("Missing formal receipt");
         key(input.operationKey(), 192, false);
         key(input.businessType(), 64, true);
@@ -194,7 +198,7 @@ public class SupportFundJournalBindingService implements SupportFundJournalFacad
         JsonNode events = read(input.orderedEventsJson());
         if (!events.isArray()) throw new IllegalArgumentException("Ordered event array required");
         Set<String> ids = new HashSet<>();
-        for (JsonNode node : events) {
+        if (validateEvents) for (JsonNode node : events) {
             try {
                 if (!node.isObject()) throw new IllegalArgumentException("Event record required");
                 JsonNode action = node.path("action");
@@ -311,6 +315,11 @@ public class SupportFundJournalBindingService implements SupportFundJournalFacad
         } catch (com.fasterxml.jackson.core.JsonProcessingException ex) { throw new IllegalArgumentException("Invalid receipt JSON", ex); }
     }
 
+    // Source validators call this only after decodeReceipt has authenticated the original receipt.
+    JsonNode readCurrentProof(String value) {
+        return ffdd.opsconsole.common.domain.LegacyUvtProof.current(read(value));
+    }
+
     JsonNode canonical(JsonNode node) {
         if (node.isObject()) {
             ObjectNode sorted = json.createObjectNode();
@@ -409,14 +418,24 @@ public class SupportFundJournalBindingService implements SupportFundJournalFacad
             var cached=receiptReads.get(cacheKey);
             if(cached!=null)return cached.events();
         }
-        Map<String,Object> expected = receipt(input, parties);
+        // Authenticate the original JSON/digest before constructing current Account records.
+        // A legacy NEX Account cannot be deserialized under the current UVT-only writer contract.
+        Map<String,Object> expected = receipt(input, parties, false);
         ObjectNode digest = json.valueToTree(expected);
         digest.set("customerIds",json.valueToTree(parties)); digest.set("legs",json.valueToTree(legs));
         expected.put("receiptSha256",sha(canonical(digest).toString()));
         exactReceipt(row,expected);
         var result = new ArrayList<Event>();
+        var ids = new HashSet<String>();
         for (JsonNode node:read(input.orderedEventsJson())) {
-            try { result.add(decodeEvent(node)); }
+            try {
+                Event event = decodeEvent(ffdd.opsconsole.common.domain.LegacyUvtProof.current(node));
+                SupportFundAllocation.validate(event);
+                if (!ids.add(event.id()) || event.from() != null && !parties.contains(event.from().customerId())
+                        || event.to() != null && !parties.contains(event.to().customerId()))
+                    throw new IllegalArgumentException("Event outside scope or duplicate ID");
+                result.add(event);
+            }
             catch(com.fasterxml.jackson.core.JsonProcessingException ex) { throw new IllegalArgumentException("Invalid formal event record",ex); }
         }
         var decoded=List.copyOf(result);

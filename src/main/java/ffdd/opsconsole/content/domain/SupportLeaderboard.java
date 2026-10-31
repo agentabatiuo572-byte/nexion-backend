@@ -278,7 +278,8 @@ public final class SupportLeaderboard {
     private static void requireToken(String token) { if (token == null || token.isBlank() || token.length() > 512) throw invalid(); }
     private static Movement unavailable(Reason reason) { return new Movement(MovementKind.UNAVAILABLE, null, null, null, null, reason); }
     private static Row withMovement(Row r, Movement m) { return new Row(r.agentId(),r.name(),r.avatarUrl(),r.groupName(),r.qualification(),r.rank(),r.isTied(),r.firstPayment(),r.customers(),r.amount(),r.rankMetricCoverage(),m); }
-    private static boolean sameBoardPeriodCurrency(Context a, Context b) { return a.board() == b.board() && Objects.equals(a.rankMonth(),b.rankMonth()) && Objects.equals(a.rankCurrency(),b.rankCurrency()); }
+    private static boolean sameBoardPeriodCurrency(Context a, Context b) { return a.board() == b.board() && Objects.equals(a.rankMonth(),b.rankMonth())
+        && ffdd.opsconsole.common.domain.LegacyUvtProof.matches(b.rankCurrency(),a.rankCurrency()); }
     private static boolean sameScope(Context a, Context b) { return a.scope() == b.scope() && a.approvedGroupIds().equals(b.approvedGroupIds()); }
     private static List<String> comparisonParts(Context c, Set<Long> ids) {
         List<String> parts = new ArrayList<>(Arrays.asList("slb-comparison-v1",c.board().name(),Objects.toString(c.rankMonth(),null),c.rankCurrency(),c.definitionVersion(),c.scope().name()));

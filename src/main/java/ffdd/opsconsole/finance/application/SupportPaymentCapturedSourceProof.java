@@ -66,7 +66,9 @@ final class SupportPaymentCapturedSourceProof {
     }
     private static boolean equalText(JsonNode node,String key,String expected) {
         JsonNode value=node.get(key);
-        return value!=null && (expected==null?value.isNull():value.isTextual() && expected.equals(value.textValue()));
+        return value!=null && (expected==null?value.isNull():value.isTextual()
+            && ("currency".equals(key) ? ffdd.opsconsole.common.domain.LegacyUvtProof.matches(value.textValue(),expected)
+                : expected.equals(value.textValue())));
     }
     private static boolean equalLong(JsonNode node,String key,long expected) {
         JsonNode value=node.get(key);
@@ -111,7 +113,7 @@ final class SupportPaymentCapturedSourceProof {
                 Source.valueOf(requiredText(saved,"source")),List.copyOf(sourceIds),
                 requiredLong(saved,"customerId"),requiredLong(saved,"ledgerId"),requiredText(saved,"sourceBusinessId"),
                 nullableText(saved,"orderNo"),nullableText(saved,"orderType"),nullableText(saved,"originalFactId"),
-                requiredText(saved,"currency"),amount.decimalValue(),requiredTime(saved,"succeededAt"),
+                ffdd.opsconsole.common.domain.LegacyUvtProof.currency(requiredText(saved,"currency")),amount.decimalValue(),requiredTime(saved,"succeededAt"),
                 requiredText(saved,"successTimeField"),(int)precision,nullableTime(saved,"providerPaidAt"),
                 requiredTime(saved,"ledgerRecordedAt"),nullableTime(saved,"sourceConfirmationAt"),
                 nullableText(saved,"sourceVersion"),Status.valueOf(requiredText(saved,"historicalEnvironmentStatus")));
