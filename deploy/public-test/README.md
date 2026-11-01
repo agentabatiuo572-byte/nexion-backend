@@ -26,6 +26,18 @@ GitHub test is approved business source: ordinary mapper, startup and source cha
 do not require a second schema fingerprint approval. Backend CI only compiles/packages
 test with `-Dmaven.test.skip=true`; business acceptance uses E2E and system business flows.
 UniApp type checking and actual frontend/backend compilation remain build checks.
+
+The six-class TEST worker unit uses one shared BGE executor on loopback 11436 and
+the installed modal runtime on loopback 11442. Before enabling the unit, install
+the reviewed worker and exit-observation scripts, preserve the existing journals,
+and provide the root-owned, mode `0600` `compute-modal-worker.credential` through systemd
+`LoadCredential`. It contains only the modal worker token; the separate validator
+token stays in the backend configuration. Keep the unit's existing isolation and
+resource limits. The exit-observation script is an operator-invoked recovery tool,
+not a persistent observer service; it confirms physical exit before releasing an
+uncertain execution. Installing these files alone does not enable dispatch or
+constitute six-class or phone business acceptance.
+
 Frontends use alternate local ports before Nginx cutover. Backend restarts only its
 own service. For a code-only release, a durable journal restores the old release on
 failure. New versioned SQL uses the automatic backup/migration flow below instead;
