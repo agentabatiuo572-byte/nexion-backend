@@ -109,7 +109,7 @@ class TestCloudActivationAdmissionTest {
     }
     @Test void v2ExecutionNeedsFreshAllowedUndrainedHostBudgetAndIncludesOldPhysicalPromises() throws Exception {
         var runtime=mock(ComputeV2Runtime.class);when(runtime.isReady()).thenReturn(true);
-        var guard=v2Admission("11",runtime);when(mapper.activeV1ResourceExecutors(Set.of(11L))).thenReturn(4);
+        var guard=v2Admission("11",runtime);when(mapper.actualV1Executions()).thenReturn(4);
         long available=10L*1024*1024*1024,committed=24L*1024*1024*1024;
         Path file=host(true,false,available,committed);
         assertThat(guard.canStartV2Execution(file,0)).isTrue();assertThat(guard.canStartV2Execution(file,1)).isTrue();

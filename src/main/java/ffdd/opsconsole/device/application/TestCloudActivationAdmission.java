@@ -87,13 +87,34 @@ public class TestCloudActivationAdmission {
         try {
             HostSnapshot host=readSnapshot(snapshot,true);
             if(!host.allowNewActivations() || host.draining() || computeV2Runtime.isPresent()&&!computeV2Runtime.get().isReady()) return false;
-            return (long)activeV1Resources()+occupiedV2Permits+1<=host.maxExecutors();
+            return (long)mapper.actualV1Executions()+occupiedV2Permits+1<=host.maxExecutors();
         } catch(BizException | DataAccessException unavailable) { return false; }
     }
     public void lock() {
         if(!enabled()) return;
         if(!TransactionSynchronizationManager.isActualTransactionActive() || mapper.lockResourceGuard()!=1)
             throw new BizException(503,"TEST_CLOUD_RESOURCE_ADMISSION_UNAVAILABLE");
+    }
+    public void requireNextExecution(TestCloudExecutorService.Identity identity,String keyHash,boolean recovering) {
+        requireNextExecution(Path.of("/run/uvel-task-control/capacity.json"),identity,keyHash,recovering);
+    }
+    void requireNextExecution(Path snapshot,TestCloudExecutorService.Identity identity,String keyHash,boolean recovering) {
+        if(!legacyEnabled()) return;
+        if(!TransactionSynchronizationManager.isActualTransactionActive()) throw unavailable();
+        // reserve() already owns the shared resource guard; preserve guard -> owner -> device ordering.
+        if(mapper.lockExecutionOwner(identity.ownerId())==null
+                || mapper.lockExecutionDevice(identity.ownerId(),identity.deviceId(),identity.instanceNo())==null)
+            throw new BizException(409,"TEST_CLOUD_REQUEST_BINDING_CONFLICT");
+        if(mapper.uncertainDeviceRequests(identity.deviceId())!=0) throw new BizException(409,"TEST_CLOUD_EXECUTION_UNRESOLVED");
+        int manifests=mapper.unclosedManifests(identity.deviceId());
+        if(manifests>0) {
+            if(recovering && manifests==1 && mapper.sameLiveNext(identity.ownerId(),identity.deviceId(),identity.instanceNo(),
+                    identity.executorId(),identity.taskConfigId(),keyHash,java.time.LocalDateTime.now(clock))==1) return;
+            throw new BizException(409,"TEST_CLOUD_EXECUTION_UNRESOLVED");
+        }
+        HostSnapshot host=readSnapshot(snapshot,v2Enabled());
+        if(!host.allowNewActivations() || host.draining() || (long)mapper.actualV1Executions()+v2PhysicalResources()+1>host.maxExecutors())
+            throw unavailable();
     }
     public void requireCapacity() {
         requireCapacity(1);

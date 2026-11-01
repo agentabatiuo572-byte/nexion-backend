@@ -350,7 +350,7 @@ public class TestComputeV2Service {
                 device.model(),device.modelDigest(),task.settings().executionTimeoutSec(),task.texts());
         byte[] bytes=encode(input);String hash=TestCloudExecutorService.sha256(bytes);var wallet=wallet(device.ownerId());
         Instant now=clock.instant();
-        var snapshot=new TaskSnapshot("CV2-NEXT-"+UUID.randomUUID(),task.taskId(),task.name(),task.taskClass(),TestCloudExecutorService.KIND,
+        var snapshot=new TaskSnapshot("CV2-NEXT-"+UUID.randomUUID(),task.taskId(),task.name(),task.taskClass(),task.model(),
                 "UVEL Compute",task.revision(),selected.expectedSeconds(),task.settings().expectedDurationMinSec(),
                 task.settings().expectedDurationMaxSec(),selected.expectedSeconds(),task.settings().executionTimeoutSec(),0,
                 now,null,now.plusSeconds(45),now.plusSeconds(task.settings().executionTimeoutSec()+120L),reward,selected.rawMicros(),

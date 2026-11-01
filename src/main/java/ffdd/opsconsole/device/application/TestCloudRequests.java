@@ -23,11 +23,17 @@ public class TestCloudRequests {
     private final Clock clock;
     private final TransactionTemplate shortTransaction;
     private final TransactionTemplate noTransaction;
+    private final TestCloudActivationAdmission admission;
     private static final ObjectMapper JSON=new ObjectMapper();
     private final ThreadLocal<Boolean> businessStarted=ThreadLocal.withInitial(()->false);
 
     public TestCloudRequests(TestCloudRequestMapper mapper,TestCloudDatabaseGate gate,Clock clock,PlatformTransactionManager manager) {
+        this(mapper,gate,clock,manager,null);
+    }
+    @org.springframework.beans.factory.annotation.Autowired
+    public TestCloudRequests(TestCloudRequestMapper mapper,TestCloudDatabaseGate gate,Clock clock,PlatformTransactionManager manager,TestCloudActivationAdmission admission) {
         this.mapper=mapper; this.gate=gate; this.clock=clock;
+        this.admission=admission;
         shortTransaction=new TransactionTemplate(manager);
         shortTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         shortTransaction.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
@@ -62,6 +68,17 @@ public class TestCloudRequests {
         validate(operation,key,hash);
         var candidate=new Request(i.executorId(),operation,TestCloudExecutorService.sha256(key),hash,i.ownerId(),i.deviceId(),
                 i.instanceNo(),i.taskConfigId(),taskNo,"PROCESSING",1,null,false,proofTimestamp,false,false,null,now());
+        if("NEXT".equals(operation) && admission!=null) {
+            // The intent is the physical reservation until the business transaction commits its manifest.
+            // Never acquire this mutex after locking a request or an owner/device row.
+            admission.lock();
+            Request observed=mapper.read(i.executorId(),operation,candidate.keyHash());
+            if(observed==null) admission.requireNextExecution(i,candidate.keyHash(),false);
+            else {
+                requireBound(i,observed,hash,taskNo);
+                if(canRecover(observed,token,generation)) admission.requireNextExecution(i,candidate.keyHash(),true);
+            }
+        }
         if(mapper.insertIntent(candidate)==1) {
             if("COMPLETE".equals(operation) && mapper.markStabilityAttempt(i.executorId(),candidate.keyHash())>0)
                 return mapper.lock(i.executorId(),operation,candidate.keyHash());
@@ -70,12 +87,14 @@ public class TestCloudRequests {
         var existing=mapper.lock(i.executorId(),operation,candidate.keyHash());
         requireBound(i,existing,hash,taskNo);
         if("COMMITTED".equals(existing.state())) return existing;
-        if("ROLLED_BACK".equals(existing.state()) && !existing.recoveryUsed() && token!=null && existing.recoveryToken()!=null
-                && Objects.equals(existing.recoveryToken(),token) && generation!=null && generation==existing.generation()
-                && mapper.recover(existing,token,now())==1) {
+        if(canRecover(existing,token,generation) && mapper.recover(existing,token,now())==1) {
             return mapper.lock(i.executorId(),operation,candidate.keyHash());
         }
         throw new BizException(409,"TEST_CLOUD_REQUEST_"+existing.state());
+    }
+    private boolean canRecover(Request existing,String token,Long generation) {
+        return "ROLLED_BACK".equals(existing.state()) && !existing.recoveryUsed() && token!=null && existing.recoveryToken()!=null
+                && Objects.equals(existing.recoveryToken(),token) && generation!=null && generation==existing.generation();
     }
     public void authorizeProof(Request ticket) {
         db(()->{
