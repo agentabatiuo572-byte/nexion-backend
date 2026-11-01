@@ -292,6 +292,24 @@ public class TestComputeV2Service {
         });
     }
 
+    @Scheduled(fixedDelay=10000,initialDelay=10000,scheduler="computeV2TaskScheduler")
+    public void recoverExpiredExecutions() {
+        if(!runtime.isReady()) return;
+        for(String runner:runnerContainers.keySet()) {
+            try {
+                var original=runtime.forExecutor(executor(runner));
+                if(original.isEmpty()) continue;
+                var view=original.get();var event=view.event();
+                if(Set.of("STARTING","COMPUTING","VERIFYING").contains(view.status()) && view.leaseExpiresAt()!=null
+                        && !view.leaseExpiresAt().isAfter(clock.instant())
+                        && !runtime.completionPending(event.taskNo(),event.generation()))
+                    runtime.fenceExpired(event.userId(),event.deviceId(),event.generation());
+            } catch(RuntimeException unavailable) {
+                LOG.warn("Compute v2 lease recovery deferred runner={} reason={}",runner,unavailable.getClass().getSimpleName());
+            }
+        }
+    }
+
     @Scheduled(fixedDelayString="${nexion.compute-v2.dispatch-delay-ms:1000}",scheduler="computeV2TaskScheduler")
     public synchronized void issueEnrolled() {
         if(enrolled.isEmpty() || !runtime.isReady()) return;
