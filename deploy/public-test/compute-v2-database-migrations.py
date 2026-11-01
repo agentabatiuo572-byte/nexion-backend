@@ -1,0 +1,1415 @@
+"""Versioned SQL from the exact approved main commit, never repository shell code.
+
+The host broker owns the release lock. Existing history is baselined explicitly,
+not replayed. New forward migrations run once, after a verified full backup with
+the backend stopped. MySQL DDL is NOT transactional: uncertain failures stay held.
+"""
+import argparse
+import gzip
+import hashlib
+import io
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import shlex
+import shutil
+import stat
+import subprocess
+import tarfile
+import time
+import urllib.request
+
+ROOT = Path('/srv/nexgrid/cd/migrations')
+BACKUPS = Path('/srv/nexgrid/backups/auto-migrations')
+ENV_FILE = Path('/srv/nexgrid/secrets/backend.env')
+HOST_CONFIG = Path('/srv/jenkins/release/config.json')
+DB = 'nexion'
+CONTAINER = 'nexgrid-mysql'
+GUARD = Path('/etc/systemd/system/nexgrid-backend.service.d/60-database-migration-hold.conf')
+PERMIT = Path('/run/nexgrid-backend-migration-start')
+GUARD_TEXT = ('[Unit]\nConditionPathExists=|!/srv/nexgrid/cd/migrations/START_BLOCKED\n'
+              'ConditionPathExists=|/run/nexgrid-backend-migration-start\n')
+NAME = re.compile(r'[0-9]{8}_[a-z0-9_]+\.sql')
+SHA = re.compile(r'[0-9a-f]{40}')
+MAX_ARCHIVE = 100 * 1024**2
+MAX_SQL = 8 * 1024**2
+EARNINGS_FILE = '20261007_earnings_source_recovery.sql'
+EARNINGS_SHA256 = 'f443722d71d6a9da77759e55142ddd12e15b71c8af356a5dc9cd73dd03a410e9'
+EARNINGS_TRIGGER = 'nx_wallet_earnings_debit_counter_v1'
+EARNINGS_BODY = ('SET NEW.earnings_usdt_debited=OLD.earnings_usdt_debited+'
+                 'GREATEST(OLD.usdt_available-NEW.usdt_available,0),'
+                 'NEW.earnings_nex_debited=OLD.earnings_nex_debited+'
+                 'GREATEST(OLD.nex_available-NEW.nex_available,0)')
+EARNINGS_CREATE = (f'CREATE TRIGGER IF NOT EXISTS {EARNINGS_TRIGGER}\n'
+                   'BEFORE UPDATE ON nx_user_wallet FOR EACH ROW\n' + EARNINGS_BODY + ';\n').encode()
+CONTEXT_SQL = ("SELECT JSON_OBJECT('version',VERSION(),'database',DATABASE(),"
+               "'principal',CURRENT_USER(),'log_bin',@@GLOBAL.log_bin,"
+               "'trust',@@GLOBAL.log_bin_trust_function_creators,'mode',@@SESSION.sql_mode,"
+               "'charset',@@SESSION.character_set_client,'collation',@@SESSION.collation_connection);")
+TRIGGER_SQL = ("SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT('name',TRIGGER_NAME,"
+               "'table',EVENT_OBJECT_TABLE,'timing',ACTION_TIMING,'event',EVENT_MANIPULATION,"
+               "'body',ACTION_STATEMENT,'definer',DEFINER,'mode',SQL_MODE,"
+               "'charset',CHARACTER_SET_CLIENT,'collation',COLLATION_CONNECTION)),JSON_ARRAY()) "
+               "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND "
+               f"(TRIGGER_NAME='{EARNINGS_TRIGGER}' OR (EVENT_OBJECT_TABLE='nx_user_wallet' "
+               "AND ACTION_TIMING='BEFORE' AND EVENT_MANIPULATION='UPDATE'));")
+
+
+class MigrationError(RuntimeError):
+    pass
+
+
+def require(condition, reason):
+    if not condition:
+        raise MigrationError(reason)
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def trusted(path):
+    for item in (path, *path.parents):
+        st = item.lstat()
+        require(not stat.S_ISLNK(st.st_mode) and st.st_uid == 0 and not st.st_mode & 0o022,
+                'MIGRATION_PATH_UNTRUSTED')
+
+
+def sync(directory):
+    if os.name != 'nt':
+        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def save(path, value):
+    temp = path.with_name(path.name + '.new')
+    require(not temp.is_symlink(), 'MIGRATION_TEMP_UNTRUSTED')
+    with temp.open('wb') as stream:
+        stream.write((json.dumps(value, indent=2, sort_keys=True) + '\n').encode())
+        stream.flush()
+        os.fsync(stream.fileno())
+    temp.chmod(0o600)
+    temp.replace(path)
+    sync(path.parent)
+
+
+def remove_journal():
+    (ROOT / 'active.json').unlink()
+    sync(ROOT)
+
+
+def catalog_from_archive(raw, sha):
+    require(SHA.fullmatch(sha) and len(raw) <= MAX_ARCHIVE, 'MIGRATION_ARCHIVE_REJECTED')
+    scripts, total, count = {}, 0, 0
+    prefix = 'nexion-backend-' + sha
+    with tarfile.open(fileobj=io.BytesIO(raw), mode='r:gz') as archive:
+        for member in archive:
+            count += 1
+            require(count <= 50000, 'MIGRATION_ARCHIVE_ENTRY_LIMIT')
+            path = PurePosixPath(member.name)
+            require(not path.is_absolute() and '..' not in path.parts and '\\' not in member.name,
+                    'MIGRATION_ARCHIVE_PATH_REJECTED')
+            if len(path.parts) != 4 or path.parts[:3] != (prefix, 'scripts', 'migrations'):
+                continue
+            name = path.name
+            if not name.endswith('.sql'):
+                continue
+            require(NAME.fullmatch(name) and not any(x in name for x in ('rollback', '_down_', '_reset_')),
+                    'MIGRATION_FILENAME_REJECTED')
+            require(member.isfile() and not member.issym() and name not in scripts
+                    and 0 < member.size <= MAX_SQL, 'MIGRATION_ENTRY_REJECTED')
+            total += member.size
+            require(total <= 32 * 1024**2, 'MIGRATION_SQL_SIZE_LIMIT')
+            scripts[name] = archive.extractfile(member).read(MAX_SQL + 1)
+    require(scripts, 'MIGRATION_CATALOG_EMPTY')
+    return dict(sorted(scripts.items()))
+
+
+def download_catalog(sha):
+    require(SHA.fullmatch(sha), 'MIGRATION_COMMIT_REJECTED')
+    url = 'https://codeload.github.com/agentabatiuo572-byte/nexion-backend/tar.gz/' + sha
+    with urllib.request.urlopen(url, timeout=45) as response:
+        require(response.status == 200 and response.url == url, 'MIGRATION_DOWNLOAD_REJECTED')
+        raw = response.read(MAX_ARCHIVE + 1)
+    return catalog_from_archive(raw, sha)
+
+
+def pending_scripts(state, scripts):
+    require(state.get('version') == 1 and state.get('database') == DB
+            and isinstance(state.get('scripts'), dict), 'MIGRATION_STATE_REJECTED')
+    for name, previous in state['scripts'].items():
+        require(name in scripts, 'MIGRATION_HISTORY_REMOVED: ' + name)
+        require(previous['sha256'] == digest(scripts[name]),
+                'MIGRATION_HISTORY_CHANGED_ADD_NEW_FILE: ' + name)
+        require(previous['status'] in ('BASELINE_NOT_REPLAYED', 'APPLIED'), 'MIGRATION_STATUS_REJECTED')
+    return [(name, data) for name, data in sorted(scripts.items()) if name not in state['scripts']]
+
+
+def validate_sql(data):
+    text = data.decode('utf-8-sig')
+    require('\0' not in text and text.strip(), 'MIGRATION_SQL_ENCODING_REJECTED')
+    # Database isolation is enforced by server-side grants, not a SQL regex.
+    # The binary, noninteractive mysql client disables source/system/tee commands.
+    # Forbid selecting another DB or redefining access even if a future grant drifts.
+    require(not re.search(r'(?im)^\s*(?:USE\s|(?:CREATE|DROP|ALTER)\s+DATABASE\b|'
+                          r'GRANT\s|REVOKE\s|(?:CREATE|ALTER|DROP)\s+USER\b|SET\s+(?:@@)?GLOBAL\b)', text),
+            'MIGRATION_DATABASE_OR_ACCESS_COMMAND_REJECTED')
+
+
+def command(*args, timeout=90):
+    result = subprocess.run(args, capture_output=True, timeout=timeout)
+    require(result.returncode == 0, 'MIGRATION_COMMAND_FAILED_' + Path(args[0]).name.upper())
+    return result.stdout
+
+
+def credentials():
+    trusted(ENV_FILE)
+    info = ENV_FILE.lstat()
+    require(stat.S_ISREG(info.st_mode) and not info.st_mode & 0o077, 'MIGRATION_SECRET_PERMISSIONS_REJECTED')
+    kv = {}
+    for line in ENV_FILE.read_text().splitlines():
+        if '=' not in line or line.lstrip().startswith('#'):
+            continue
+        key, value = line.split('=', 1)
+        if key in ('NEXION_DB_URL', 'NEXION_DB_USERNAME', 'NEXION_DB_PASSWORD'):
+            kv[key] = shlex.split(value)[0] if value and value[0] in '\"\'' else value
+    require(re.fullmatch(r'jdbc:mysql://(?:127\.0\.0\.1|localhost):3306/nexion(?:\?[^\r\n]*)?',
+                         kv.get('NEXION_DB_URL', '')), 'MIGRATION_DATABASE_ROUTE_REJECTED')
+    require(re.fullmatch(r'[a-zA-Z0-9_]+', kv.get('NEXION_DB_USERNAME', ''))
+            and kv['NEXION_DB_USERNAME'] != 'root' and kv.get('NEXION_DB_PASSWORD'),
+            'MIGRATION_APP_CREDENTIAL_REJECTED')
+    container = json.loads(command('docker', 'inspect', CONTAINER))[0]
+    root = dict(x.split('=', 1) for x in container['Config']['Env'] if '=' in x).get('MYSQL_ROOT_PASSWORD')
+    require(root, 'MIGRATION_BACKUP_CREDENTIAL_MISSING')
+    return kv['NEXION_DB_USERNAME'], kv['NEXION_DB_PASSWORD'], root
+
+
+def mysql_args(user):
+    return ['docker', 'exec', '-i', '-e', 'MYSQL_PWD', CONTAINER, 'mysql', '--user=' + user,
+            '--batch', '--raw', '--skip-column-names', '--binary-mode', '--local-infile=0',
+            '--skip-reconnect', '--default-character-set=utf8mb4', DB]
+
+
+def scoped_account(user, password):
+    result = subprocess.run(mysql_args(user), input=b'SHOW GRANTS FOR CURRENT_USER();',
+                            capture_output=True, timeout=30, env={**os.environ, 'MYSQL_PWD': password})
+    require(result.returncode == 0, 'MIGRATION_GRANT_QUERY_FAILED')
+    grants = result.stdout.decode().splitlines()
+    require(grants and any(' ON `nexion`.* TO ' in row for row in grants), 'MIGRATION_DB_GRANT_MISSING')
+    require(all(re.fullmatch(r'GRANT USAGE ON \*\.\* TO .+', row)
+                or (' ON `nexion`.* TO ' in row and 'WITH GRANT OPTION' not in row)
+                or (user == 'nexion_app' and row == support_show_grant(SUPPORT_EXECUTE_GRANTS[1]))
+                for row in grants), 'MIGRATION_PRIVILEGES_NOT_DATABASE_SCOPED')
+
+
+def probe(user, password, sql, *, as_json=True):
+    """Read-only, fixed caller queries; never print MySQL output or credentials."""
+    result = subprocess.run(mysql_args(user), input=sql.encode(), capture_output=True,
+                            timeout=30, env={**os.environ, 'MYSQL_PWD': password})
+    require(result.returncode == 0, 'MIGRATION_CAPABILITY_QUERY_FAILED')
+    try:
+        text = result.stdout.decode('utf-8').strip()
+        return json.loads(text) if as_json else text.splitlines()
+    except (UnicodeError, ValueError):
+        raise MigrationError('MIGRATION_CAPABILITY_RESPONSE_REJECTED') from None
+
+
+def fixed_trigger_enabled():
+    if not HOST_CONFIG.exists() and not HOST_CONFIG.is_symlink():
+        return False
+    trusted(HOST_CONFIG)
+    require(stat.S_ISREG(HOST_CONFIG.lstat().st_mode), 'MIGRATION_HOST_CONFIG_REJECTED')
+    try:
+        config = json.loads(HOST_CONFIG.read_bytes())
+    except (UnicodeError, ValueError):
+        raise MigrationError('MIGRATION_HOST_CONFIG_REJECTED') from None
+    require(isinstance(config, dict), 'MIGRATION_HOST_CONFIG_REJECTED')
+    value = config.get('allow_fixed_earnings_trigger_install', False)
+    require(type(value) is bool, 'MIGRATION_HOST_CONFIG_REJECTED')
+    return value  # Only a separately approved root-owned host configuration enables writing.
+
+
+def account_definer(principal, user):
+    require(isinstance(principal, str) and principal.count('@') == 1,
+            'MIGRATION_TRIGGER_DEFINER_REJECTED')
+    account, host = principal.split('@')
+    require(account == user and account != 'root' and re.fullmatch(r'[a-zA-Z0-9_]{1,32}', account)
+            and re.fullmatch(r'[a-zA-Z0-9_.%:_-]{1,255}', host),
+            'MIGRATION_TRIGGER_DEFINER_REJECTED')
+    # Account identifiers are quoted, and quotes/backticks/control characters are rejected.
+    return '`' + account + '`@`' + host + '`'
+
+
+def earnings_parts(data):
+    require(digest(data) == EARNINGS_SHA256, 'MIGRATION_FIXED_TRIGGER_FILE_CHANGED')
+    require(data.count(EARNINGS_CREATE) == 1, 'MIGRATION_FIXED_TRIGGER_BLOCK_CHANGED')
+    prefix, suffix = data.split(EARNINGS_CREATE)
+    require(prefix and suffix, 'MIGRATION_FIXED_TRIGGER_BLOCK_CHANGED')
+    return prefix, suffix
+
+
+def grant_privileges(rows, scope):
+    require(isinstance(rows, list) and rows, 'MIGRATION_CAPABILITY_GRANTS_REJECTED')
+    privileges = set()
+    for row in rows:
+        require(isinstance(row, str), 'MIGRATION_CAPABILITY_GRANTS_REJECTED')
+        match = re.fullmatch(r'GRANT ([A-Z_, ]+) ON ' + re.escape(scope) + r' TO .+', row)
+        if match:
+            privileges.update(value.strip() for value in match[1].split(','))
+    return privileges
+
+
+def server_context(user, password):
+    context = probe(user, password, CONTEXT_SQL)
+    require(isinstance(context, dict) and context.get('database') == DB
+            and isinstance(context.get('version'), str)
+            and type(context.get('log_bin')) is int and context['log_bin'] in (0, 1)
+            and type(context.get('trust')) is int and context['trust'] in (0, 1)
+            and all(isinstance(context.get(k), str) and context[k]
+                    for k in ('principal', 'mode', 'charset', 'collation')),
+            'MIGRATION_CAPABILITY_RESPONSE_REJECTED')
+    return context
+
+
+def verify_earnings_trigger(user, password, context, *, required=False):
+    rows = probe(user, password, TRIGGER_SQL)
+    require(isinstance(rows, list), 'MIGRATION_TRIGGER_METADATA_REJECTED')
+    if not rows:
+        require(not required, 'MIGRATION_FIXED_TRIGGER_MISSING')
+        return False
+    require(len(rows) == 1 and isinstance(rows[0], dict), 'MIGRATION_TRIGGER_SHAPE_REJECTED')
+    row = rows[0]
+    require(row.get('name') == EARNINGS_TRIGGER and row.get('table') == 'nx_user_wallet'
+            and row.get('timing') == 'BEFORE' and row.get('event') == 'UPDATE'
+            and isinstance(row.get('body'), str)
+            and re.sub(r'\s', '', row['body']).lower() == re.sub(r'\s', '', EARNINGS_BODY).lower()
+            and row.get('definer') == context['principal']
+            and all(row.get(k) == context[k] for k in ('mode', 'charset', 'collation')),
+            'MIGRATION_TRIGGER_SHAPE_REJECTED')
+    return True
+
+
+def stored_program_text(text, *, backslash_escapes):
+    # Mask quoted tokens and ordinary comments; retain executable comment SQL.
+    # Both escaping modes are checked by the caller, independent of sql_mode.
+    escape = r'\\[\s\S]|' if backslash_escapes else ''
+    quoted = '|'.join(q + '(?:' + escape + q + q + '|[^' + q
+                      + (r'\\' if backslash_escapes else '') + '])*' + q
+                      for q in ("'", '"', '`'))
+    pattern = quoted + r'|--(?=[\x00-\x20\x7f])[^\r\n]*|#[^\r\n]*|/\*.*?\*/'
+
+    def mask(match):
+        value = match[0]
+        if value.startswith('/*!'):
+            executable = re.sub(r'^\d*', '', value[3:-2])
+            return ' ' + stored_program_text(executable, backslash_escapes=backslash_escapes) + ' '
+        return ' '
+
+    return re.sub(pattern, mask, text, flags=re.S)
+
+
+
+# One reviewed H4 program. Other stored programs still use the existing rejection gate.
+H4_FILE = '20261025_h4_event_rules.sql'
+H4_SHA256 = '921d9f1e3567dfbd049da78ba878ab2187f9c6b15ed449a748be3e2118688d5d'
+H4_PREFIX = b"-- H4 executable rules. Existing presentation data is retained; new rules are opt-in.\nCREATE TABLE IF NOT EXISTS nx_growth_event_rule (\n  event_code VARCHAR(64) PRIMARY KEY, kind VARCHAR(32) NOT NULL,\n  revision BIGINT NOT NULL DEFAULT 1, enabled TINYINT NOT NULL DEFAULT 0,\n  starts_at DATETIME(6) NULL, ends_at DATETIME(6) NULL, activated_at DATETIME(6) NULL,disabled_at DATETIME(6) NULL,\n  rules_json JSON NOT NULL,\n  spent_nex DECIMAL(18,6) NOT NULL DEFAULT 0, spent_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,\n  spent_devices INT NOT NULL DEFAULT 0, spent_tickets INT NOT NULL DEFAULT 0,\n  settled_at DATETIME(6) NULL,settlement_hash VARCHAR(64) NULL,\n  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),\n  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\nCREATE TABLE IF NOT EXISTS nx_growth_event_claim (\n  event_code VARCHAR(64) NOT NULL,user_id BIGINT NOT NULL,claim_key VARCHAR(96) NOT NULL,\n  status VARCHAR(24) NOT NULL,reward_json JSON NOT NULL,\n  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),\n  PRIMARY KEY(event_code,user_id,claim_key)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\nCREATE TABLE IF NOT EXISTS nx_growth_event_holding (\n  event_code VARCHAR(64) NOT NULL,user_id BIGINT NOT NULL,eligible_since DATETIME(6) NULL,\n  qualified_at DATETIME(6) NULL,updated_at DATETIME(6) NOT NULL,\n  PRIMARY KEY(event_code,user_id)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\nCREATE TABLE IF NOT EXISTS nx_growth_event_pool_result (\n  event_code VARCHAR(64) NOT NULL,user_id BIGINT NOT NULL,region_name VARCHAR(96) NOT NULL DEFAULT '',\n  volume_usdt DECIMAL(24,6) NOT NULL DEFAULT 0,reward_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,\n  status VARCHAR(24) NOT NULL DEFAULT 'READY',created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),\n  PRIMARY KEY(event_code,user_id)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\nCREATE TABLE IF NOT EXISTS nx_growth_event_region (\n  event_code VARCHAR(64) NOT NULL,user_id BIGINT NOT NULL,region_name VARCHAR(96) NOT NULL,\n  country_iso VARCHAR(2) NOT NULL,joined_at DATETIME(6) NOT NULL,\n  PRIMARY KEY(event_code,user_id)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\nCREATE TABLE IF NOT EXISTS nx_growth_event_reminder (\n  event_code VARCHAR(64) NOT NULL,user_id BIGINT NOT NULL,notified_at DATETIME(6) NULL,\n  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),PRIMARY KEY(event_code,user_id)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\nINSERT IGNORE INTO nx_growth_event_rule(event_code,kind,rules_json) VALUES\n ('evt-pro-upgrade-7d','discount',JSON_OBJECT()),\n ('evt-refer-5-get-pro','referral',JSON_OBJECT()),\n ('evt-weekend-double-nex','boost',JSON_OBJECT()),\n ('evt-regional-pk','regional',JSON_OBJECT()),\n ('evt-spring-spin','wheel',JSON_OBJECT()),\n ('evt-reinvest-bonus','boost',JSON_OBJECT()),\n ('evt-onboarding-7d','onboarding',JSON_OBJECT()),\n ('evt-black-friday','seasonal',JSON_OBJECT()),\n ('evt-nex-holders-share','holding',JSON_OBJECT()),\n ('evt-anniversary-spin','wheel',JSON_OBJECT());\nINSERT IGNORE INTO nx_event_quest(quest_code,quest_name,description,target_type,target_value,reward_type,reward_amount,reward_name,cta_href,status,sort_order) VALUES\n ('evt-pro-upgrade-7d','Pro Flash Upgrade','Upgrade offer and Genesis raffle tickets.','discount',0,'COMPOSITE',0,'Upgrade offer','/pages/store/store',0,10),\n ('evt-refer-5-get-pro','Refer 5 \xc2\xb7 Win a Pro','Invite direct friends within the activity window for a Pro device.','referral',5,'DEVICE',0,'Pro device','',0,20),\n ('evt-weekend-double-nex','Weekend Double NEX','Weekend check-ins receive the configured reward multiplier.','boost',0,'NEX',0,'Check-in bonus','/pages/daily/daily',0,30),\n ('evt-regional-pk','Regional Race','Join your region and compete by valid paid order volume.','regional',0,'USDT',0,'Regional prize pool','',0,40),\n ('evt-spring-spin','Daily Lucky Spin','One free spin per UTC day.','wheel',0,'NEX',0,'Wheel prize pool','',0,50),\n ('evt-reinvest-bonus','Re-invest Bonus Week','Qualifying reinvestments receive additional Genesis raffle tickets.','boost',1,'GENESIS_TICKET',0,'Genesis raffle tickets','/pages/me/wallet-repurchase',0,60),\n ('evt-onboarding-7d','New Pilot \xc2\xb7 7-Day Boost','Reach the configured rank in your first week for NEX and a streak saver.','onboarding',2,'COMPOSITE',0,'NEX and streak saver','',0,70),\n ('evt-black-friday','Black Friday','Seasonal offer with published purchase conditions.','seasonal',0,'COMPOSITE',0,'Seasonal offer','/pages/store/store',0,80),\n ('evt-nex-holders-share','NEX Holders Share','Maintain the required NEX balance continuously to share the USDT pool.','holding',0,'USDT',0,'USDT prize pool','',0,90),\n ('evt-anniversary-spin','Anniversary Mega Spin','View your recorded awards from this activity.','wheel',0,'NEX',0,'Recorded wheel awards','',0,100);\n-- Initial observations begin when an operator enables a campaign. Never backfill a holding period.\n-- This trigger observes every wallet NEX change, including debit/credit in the same second.\n"
+H4_BODY = "BEGIN\n  DECLARE event_enabled TINYINT DEFAULT 0;\n  DECLARE event_activated DATETIME(6) DEFAULT NULL;\n  DECLARE event_start DATETIME(6) DEFAULT NULL;\n  DECLARE event_end DATETIME(6) DEFAULT NULL;\n  DECLARE minimum_nex DECIMAL(18,6) DEFAULT NULL;\n  DECLARE observed TINYINT DEFAULT 0;\n  DECLARE CONTINUE HANDLER FOR NOT FOUND SET observed=0;\n  IF NOT (NEW.nex_available <=> OLD.nex_available)\n     OR NOT (NEW.is_deleted <=> OLD.is_deleted) OR NOT (NEW.sandbox <=> OLD.sandbox) THEN\n    -- Current read of one immutable policy, never a scan/lock of unrelated activity rules.\n    -- Wallet row is already locked by UPDATE; all H4 policy writers acquire wallets first.\n    SELECT enabled,activated_at,starts_at,ends_at,\n           CAST(JSON_UNQUOTE(JSON_EXTRACT(rules_json,'$.minNex')) AS DECIMAL(18,6))\n      INTO event_enabled,event_activated,event_start,event_end,minimum_nex\n      FROM nx_growth_event_rule WHERE event_code='evt-nex-holders-share' FOR SHARE;\n    IF event_activated IS NOT NULL AND event_end>UTC_TIMESTAMP(6) THEN\n      IF NEW.is_deleted=0 AND NEW.sandbox=0 THEN\n        SELECT 1 INTO observed FROM nx_growth_event_holding\n          WHERE event_code='evt-nex-holders-share' AND user_id=NEW.user_id FOR UPDATE;\n        IF event_enabled=1 OR observed=1 THEN\n          INSERT INTO nx_growth_event_holding(event_code,user_id,eligible_since,updated_at)\n          VALUES('evt-nex-holders-share',NEW.user_id,\n            CASE WHEN NEW.nex_available>=minimum_nex THEN GREATEST(event_start,event_activated,UTC_TIMESTAMP(6)) ELSE NULL END,\n            UTC_TIMESTAMP(6))\n          ON DUPLICATE KEY UPDATE eligible_since=\n            CASE WHEN VALUES(eligible_since) IS NULL THEN NULL\n              ELSE COALESCE(eligible_since,VALUES(eligible_since)) END,updated_at=UTC_TIMESTAMP(6);\n        END IF;\n      ELSE\n        UPDATE nx_growth_event_holding SET eligible_since=NULL,updated_at=UTC_TIMESTAMP(6)\n          WHERE event_code='evt-nex-holders-share' AND user_id=NEW.user_id;\n      END IF;\n    END IF;\n  END IF;\nEND"
+H4_TRIGGER = 'nx_wallet_h4_holding_observation'
+H4_DEFINER = 'nexion_app@%'
+H4_METADATA_SQL = (
+    "SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT('name',TRIGGER_NAME,'body',ACTION_STATEMENT,"
+    "'definer',DEFINER,'event',EVENT_MANIPULATION,'timing',ACTION_TIMING,"
+    "'table',EVENT_OBJECT_TABLE,'orientation',ACTION_ORIENTATION)),JSON_ARRAY()) "
+    "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
+    "AND TRIGGER_NAME='nx_wallet_h4_holding_observation';")
+
+def h4_prepare(pending):
+    matches = [data for name, data in pending if name == H4_FILE]
+    if not matches:
+        return False
+    require(len(matches) == 1 and digest(matches[0]) == H4_SHA256,
+            'MIGRATION_H4_FIXED_SOURCE_CHANGED')
+    return True
+
+def h4_enabled():
+    trusted(HOST_CONFIG)
+    config = json.loads(HOST_CONFIG.read_bytes())
+    require(isinstance(config, dict), 'MIGRATION_HOST_CONFIG_REJECTED')
+    value = config.get('allow_fixed_h4_trigger_install', False)
+    require(type(value) is bool, 'MIGRATION_HOST_CONFIG_REJECTED')
+    return value
+
+def h4_verify(root_password, required=False):
+    rows = probe('root', root_password, H4_METADATA_SQL)
+    require(isinstance(rows, list), 'MIGRATION_H4_METADATA_REJECTED')
+    if not rows:
+        require(not required, 'MIGRATION_H4_TRIGGER_MISSING')
+        return False
+    require(len(rows) == 1 and isinstance(rows[0], dict), 'MIGRATION_H4_TRIGGER_SHAPE_CHANGED')
+    row = rows[0]
+    require(row.get('name') == H4_TRIGGER and row.get('definer') == H4_DEFINER
+            and row.get('event') == 'UPDATE' and row.get('timing') == 'AFTER'
+            and row.get('table') == 'nx_user_wallet' and row.get('orientation') == 'ROW'
+            and row.get('body', '').strip() == H4_BODY.strip(),
+            'MIGRATION_H4_TRIGGER_SHAPE_CHANGED')
+    return True
+
+def h4_preflight(user, password, root_password):
+    require(h4_enabled(), 'MIGRATION_H4_PRIVILEGED_INSTALL_NOT_APPROVED_BEFORE_HOLD')
+    app = server_context(user, password)
+    require(user == 'nexion_app' and app['principal'] == H4_DEFINER
+            and app['version'].startswith('8.4.'), 'MIGRATION_H4_APP_CONTEXT_REJECTED')
+    account_definer(app['principal'], user)
+    privileges = grant_privileges(probe(user, password, 'SHOW GRANTS FOR CURRENT_USER();',
+                                       as_json=False), '`nexion`.*')
+    require('ALL PRIVILEGES' in privileges or {'SELECT', 'INSERT', 'UPDATE', 'CREATE', 'TRIGGER'} <= privileges,
+            'MIGRATION_H4_APP_CAPABILITIES_MISSING')
+    root = server_context('root', root_password)
+    require(root['principal'].startswith('root@') and all(root[k] == app[k]
+            for k in ('version', 'mode', 'charset', 'collation', 'log_bin', 'trust')),
+            'MIGRATION_H4_ROOT_CONTEXT_REJECTED')
+    privileges = grant_privileges(probe('root', root_password, 'SHOW GRANTS FOR CURRENT_USER();',
+                                       as_json=False), '*.*')
+    require(('ALL PRIVILEGES' in privileges or {'SUPER', 'TRIGGER'} <= privileges)
+            and 'SET_ANY_DEFINER' in privileges, 'MIGRATION_H4_ROOT_CAPABILITIES_MISSING')
+    h4_verify(root_password)
+    return app
+
+def execute_h4_file(data, folder, user, password, root_password, context, journal):
+    require(digest(data) == H4_SHA256, 'MIGRATION_H4_FIXED_SOURCE_CHANGED')
+    current = h4_preflight(user, password, root_password)
+    require(current == context, 'MIGRATION_H4_CONTEXT_CHANGED')
+    journal['h4_segment'] = 'TABLES_AND_DISABLED_DRAFTS'
+    save(ROOT / 'active.json', journal)
+    execute_sql(H4_FILE + '.prefix', H4_PREFIX, folder, user, password)
+    journal['h4_segment'] = 'FIXED_TRIGGER_INSTALL'
+    save(ROOT / 'active.json', journal)
+    template = ('DELIMITER $$\nCREATE DEFINER=`nexion_app`@`%` TRIGGER IF NOT EXISTS '
+                '`nexion`.`nx_wallet_h4_holding_observation`\n'
+                'AFTER UPDATE ON `nexion`.`nx_user_wallet` FOR EACH ROW\n'
+                + H4_BODY + '$$\nDELIMITER ;\n').encode()
+    if not h4_verify(root_password):
+        with (folder / (H4_FILE + '.trigger.stdout')).open('xb') as out, \
+                (folder / (H4_FILE + '.trigger.stderr')).open('xb') as err:
+            result = subprocess.run(mysql_args('root'),
+                                    input=b'SET SESSION lock_wait_timeout=30; SET SESSION innodb_lock_wait_timeout=30;\n' + template,
+                                    stdout=out, stderr=err, timeout=180,
+                                    env={**os.environ, 'MYSQL_PWD': root_password})
+        require(result.returncode == 0, 'MIGRATION_H4_FIXED_TRIGGER_INSTALL_FAILED')
+    h4_verify(root_password, required=True)
+    journal['h4_trigger'] = {'name': H4_TRIGGER, 'definer': H4_DEFINER,
+                             'source_sha256': H4_SHA256, 'template_sha256': digest(template),
+                             'verified': True}
+    journal.pop('h4_segment', None)
+    save(ROOT / 'active.json', journal)
+
+def migration_preflight(pending, user, password, root_password):
+    """Check the entire pending batch before creating a journal, hold or any DDL."""
+    special = False
+    for name, data in pending:
+        if name == EARNINGS_FILE:
+            earnings_parts(data)
+            special = True
+        else:
+            # Conservative refusal, not a SQL sandbox: grants still enforce isolation.
+            text = data.decode('utf-8-sig')
+            for backslash_escapes in (False, True):
+                scanned = stored_program_text(text, backslash_escapes=backslash_escapes)
+                require(not re.search(r'\bCREATE\b[^;]*\b(?:TRIGGER|FUNCTION)\b', scanned, re.I),
+                        'MIGRATION_UNREVIEWED_STORED_PROGRAM')
+    if not special:
+        return None
+    context = server_context(user, password)
+    account_definer(context['principal'], user)
+    privileges = grant_privileges(probe(user, password, 'SHOW GRANTS FOR CURRENT_USER();',
+                                       as_json=False), '`nexion`.*')
+    require('ALL PRIVILEGES' in privileges
+            or {'ALTER', 'CREATE', 'REFERENCES', 'TRIGGER', 'SELECT', 'UPDATE'} <= privileges,
+            'MIGRATION_TRIGGER_APP_CAPABILITIES_MISSING')
+    verify_earnings_trigger(user, password, context)
+    root_install = bool(context['log_bin'] and not context['trust'])
+    if root_install:
+        require(fixed_trigger_enabled(), 'MIGRATION_TRIGGER_PRIVILEGED_INSTALL_NOT_APPROVED_BEFORE_HOLD')
+        root_context = server_context('root', root_password)
+        require(context['version'].startswith('8.4.') and root_context['version'] == context['version']
+                and root_context['principal'].startswith('root@')
+                and all(root_context[k] == context[k] for k in ('mode', 'charset', 'collation', 'log_bin', 'trust')),
+                'MIGRATION_TRIGGER_ROOT_CONTEXT_REJECTED')
+        root_privileges = grant_privileges(probe('root', root_password, 'SHOW GRANTS FOR CURRENT_USER();',
+                                               as_json=False), '*.*')
+        require(('ALL PRIVILEGES' in root_privileges or {'SUPER', 'TRIGGER'} <= root_privileges)
+                and 'SET_ANY_DEFINER' in root_privileges,
+                'MIGRATION_TRIGGER_ROOT_CAPABILITIES_MISSING')
+    return {**context, 'root_install': root_install}
+
+
+# Reviewed source bytes and CREATE slices. New SQL needs a separate fixed contract;
+# this never permits an arbitrary archive program to run as root.
+SUPPORT_PINS = {'20261011_support_fund_journal.sql': 'bd78b16a586887e02c7125918f950e80a99c33577c39b8e2c1ce825182574ec4',
+ '20261011_support_fund_operations.sql': '3be7938cff645df2f30e45087f0e1a5444da83242f3c1974be484478e0129044',
+ '20261011_support_fund_operation_party.sql': '23de0c28476a826dc33ca863df0da0d540ef1539788e526f86c74167f30b60a2',
+ '20261011_support_fund_schema_reader.sql': 'e953d9df7afb43c1683289153dbcae73c5e28df14d196106df2ec663fd0fc425'}
+SUPPORT_PROGRAMS = {'20261011_support_fund_journal.sql': (('nx_support_wallet_journal_ai_v1',
+                                        'TRIGGER',
+                                        17467,
+                                        1363,
+                                        '41c8d5155e779ae3cc1c533897a77175902baaf8e453f396da4b00dee32d402f'),
+                                       ('nx_support_wallet_journal_bu_v1',
+                                        'TRIGGER',
+                                        20551,
+                                        883,
+                                        '3c80725716fd770ccd7abbf9edf07465998b815d9c684cbc78910d61a2c75ed9'),
+                                       ('nx_support_wallet_journal_au_v1',
+                                        'TRIGGER',
+                                        22629,
+                                        1097,
+                                        '4d005fac299666274ad9344bf93c5bddba2eefb51e59aa1075cb889d57223943')),
+ '20261011_support_fund_operations.sql': (('nx_support_fund_operation_bu_v1',
+                                           'TRIGGER',
+                                           15364,
+                                           191,
+                                           '8f1853de6818af58cfc214699dd59c5d03360724f229c893efefb4ae95b5be75'),
+                                          ('nx_support_fund_operation_bd_v1',
+                                           'TRIGGER',
+                                           16152,
+                                           191,
+                                           'd3f14dd317c3642544a158cecc9a0317950efad187675fd535daf2719b6742f1'),
+                                          ('nx_support_fund_leg_bu_v1',
+                                           'TRIGGER',
+                                           16940,
+                                           189,
+                                           '62d62652b2ae64e04c7b9dc32c80e9bfe5c501a5d0cab6d1d08b54b8bde957d0'),
+                                          ('nx_support_fund_leg_bd_v1',
+                                           'TRIGGER',
+                                           17718,
+                                           189,
+                                           '70ca1afb2b55223ba322b7a5a9cb1db1d34e3042df546f1eb0b105e544378dc3')),
+ '20261011_support_fund_operation_party.sql': (('nx_support_fund_party_bu_v1',
+                                                'TRIGGER',
+                                                5457,
+                                                193,
+                                                '288d82c357d97f7cde2984902e056a5a253ffa0d055ba4f39795d49cd9c23691'),
+                                               ('nx_support_fund_party_bd_v1',
+                                                'TRIGGER',
+                                                5650,
+                                                193,
+                                                '926a6e5794edc9a3307f5bf4ced5e85b542214fc81347907ebd0903721403890')),
+ '20261011_support_fund_schema_reader.sql': (('nx_support_fund_schema_ready_v1',
+                                              'FUNCTION',
+                                              35549,
+                                              32281,
+                                              '7b9f0780c813a3e3e9fa1cf316737f5ac21d93afa5f6c7a9f228aeb3733b37c9'),)}
+
+SUPPORT_APP = 'nexion_app@%'
+SUPPORT_SCHEMA = 'nexion_support_schema@localhost'
+SUPPORT_GRANTEE = "'nexion_support_schema'@'localhost'"
+SUPPORT_TABLES = ('nx_user_wallet', 'nx_support_fund_operation',
+                  'nx_support_fund_operation_leg', 'nx_support_fund_operation_party', 'nx_support_wallet_journal')
+# REFERENCES exposes column/key metadata; TRIGGER exposes trigger bodies.
+# Neither grant lets this locked metadata account select business rows.
+SUPPORT_METADATA_GRANTS = tuple('GRANT REFERENCES, TRIGGER ON `nexion`.`' + table + '` TO ' + SUPPORT_GRANTEE + ';\n'
+                                for table in SUPPORT_TABLES)
+SUPPORT_EXECUTE_GRANTS = (
+    'GRANT EXECUTE ON FUNCTION `nexion`.`nx_support_fund_schema_ready_v1` TO ' + SUPPORT_GRANTEE + ';\n',
+    "GRANT EXECUTE ON FUNCTION `nexion`.`nx_support_fund_schema_ready_v1` TO 'nexion_app'@'%';\n")
+
+def support_require(condition, reason):
+    require(condition, 'MIGRATION_SUPPORT_' + reason)
+
+
+def support_prepare(pending):
+    """Only the four byte-pinned first-install scripts use the fixed program lane."""
+    sources = dict(pending)
+    if not any(name in SUPPORT_PROGRAMS for name in sources):
+        return None
+    support_require(set(SUPPORT_PROGRAMS) <= sources.keys(), 'COMPLETE_FIRST_INSTALL_REQUIRED')
+    for name in SUPPORT_PROGRAMS:
+        validate_sql(sources[name])
+        support_segments(name, sources[name])
+    # Keep unrelated migrations in their original positions. Fix only the known
+    # dependency order, which differs from the alphabetic party/operations names.
+    ordered = iter(SUPPORT_PROGRAMS)
+    return [(next(ordered) if name in SUPPORT_PROGRAMS else name) for name, _ in pending]
+
+
+def support_segments(name, raw):
+    support_require(name in SUPPORT_PINS and digest(raw) == SUPPORT_PINS[name], 'FIXED_SOURCE_CHANGED')
+    result, cursor = [], 0
+    for program, kind, start, length, expected in SUPPORT_PROGRAMS.get(name, ()):
+        support_require(cursor <= start and start + length <= len(raw), 'PROGRAM_OFFSET_REJECTED')
+        if cursor < start:
+            result.append({'data': raw[cursor:start], 'program': '', 'kind': ''})
+        block = raw[start:start + length]
+        support_require(digest(block) == expected, 'PROGRAM_BLOCK_CHANGED')
+        result.append({'data': block, 'program': program, 'kind': kind})
+        cursor = start + length
+    if cursor < len(raw):
+        result.append({'data': raw[cursor:], 'program': '', 'kind': ''})
+    migration_preflight([(name, part['data']) for part in result if not part['program']], None, None, None)
+    return result
+
+
+def support_template(name, program, raw):
+    """Accept exact fixed source only; return one CREATE block, never a whole file."""
+    parts = [part for part in support_segments(name, raw) if part['program'] == program]
+    support_require(len(parts) == 1, 'PROGRAM_NAME_REJECTED')
+    part = parts[0]
+    if part['kind'] == 'FUNCTION':
+        old = b'CREATE DEFINER=CURRENT_USER FUNCTION IF NOT EXISTS '
+        new = b'CREATE DEFINER=`nexion_support_schema`@`localhost` FUNCTION IF NOT EXISTS '
+    else:
+        old = b'CREATE TRIGGER IF NOT EXISTS '
+        new = b'CREATE DEFINER=`nexion_app`@`%` TRIGGER IF NOT EXISTS '
+    support_require(part['data'].count(old) == 1, 'PROGRAM_HEADER_REJECTED')
+    return part['data'].replace(old, new, 1)
+
+
+def support_show_grant(sql):
+    return sql.strip().rstrip(';').replace("'", '`')
+
+
+def support_preflight(user, password, root_password):
+    """Read actual capabilities and first-install state before the existing hold."""
+    app = server_context(user, password)
+    root = server_context('root', root_password)
+    support_require(user == 'nexion_app' and app['principal'] == SUPPORT_APP
+                    and root['principal'] in ('root@localhost', 'root@%')
+                    and app['version'] == root['version'] and app['version'].startswith('8.4.')
+                    and app['log_bin'] == root['log_bin'] == 1
+                    and app['trust'] == root['trust'] == 0
+                    and all(app[key] == root[key] for key in ('mode', 'charset', 'collation')),
+                    'LIVE_CONTEXT_REJECTED')
+    for actor, secret in ((user, password), ('root', root_password)):
+        support_require(probe(actor, secret, 'SELECT @@SESSION.binlog_format;', as_json=False) == ['ROW'],
+                        'LIVE_BINLOG_FORMAT_REJECTED')
+    root_grants = probe('root', root_password, 'SHOW GRANTS FOR CURRENT_USER();', as_json=False)
+    privileges = grant_privileges(root_grants, '*.*')
+    support_require(('ALL PRIVILEGES' in privileges
+                     or {'SUPER', 'TRIGGER', 'REFERENCES', 'CREATE ROUTINE', 'CREATE USER', 'EXECUTE'} <= privileges)
+                    and 'SET_ANY_DEFINER' in privileges
+                    and any('WITH GRANT OPTION' in row for row in root_grants), 'FIXED_CREATOR_CAPABILITIES_MISSING')
+    account = probe('root', root_password,
+        "SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT('user',User,'host',Host,'locked',account_locked)),JSON_ARRAY()) "
+        "FROM mysql.user WHERE User='nexion_support_schema';")
+    support_require(account in ([], [{'user': 'nexion_support_schema', 'host': 'localhost', 'locked': 'Y'}]),
+                    'EXACT_LOCKED_LOCAL_SCHEMA_ACCOUNT_REQUIRED')
+    if account:
+        schema_grants = probe('root', root_password, 'SHOW GRANTS FOR ' + SUPPORT_GRANTEE + ';', as_json=False)
+        support_require(schema_grants == ['GRANT USAGE ON *.* TO `nexion_support_schema`@`localhost`'],
+                        'UNKNOWN_SCHEMA_GRANTS_OR_PARTIAL_INSTALL')
+    inventory = probe('root', root_password,
+        "SELECT JSON_OBJECT('fund_tables',(SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() "
+        "AND TABLE_NAME IN ('nx_support_wallet_journal','nx_support_fund_operation','nx_support_fund_operation_leg','nx_support_fund_operation_party')),"
+        "'wallet_metadata',(SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+        "AND TABLE_NAME='nx_user_wallet' AND COLUMN_NAME IN ('fund_revision','fund_incarnation')),"
+        "'reader',(SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA=DATABASE() AND ROUTINE_NAME='nx_support_fund_schema_ready_v1'),"
+        "'wallet_triggers',(SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE='nx_user_wallet'));")
+    support_require(inventory == {'fund_tables': 0, 'wallet_metadata': 0, 'reader': 0, 'wallet_triggers': 1},
+                    'PARTIAL_OBJECTS_OR_UNKNOWN_TRIGGERS_REQUIRE_INSPECTION')
+    verify_earnings_trigger(user, password, app, required=True)
+    return {**app, 'root_context': root, 'create_schema_account': not account,
+            'app_grants_before': probe(user, password, 'SHOW GRANTS FOR CURRENT_USER();', as_json=False)}
+
+
+class SupportMysqlSession:
+    """One mysql process per original file; GET_LOCK/@variables survive barriers.
+
+    Output is spooled privately; only a random exact barrier is read internally.
+    A lost response is uncertain and raises into the existing persistent hold.
+    """
+    def __init__(self, folder, name, user, password):
+        self.folder, self.name, self.serial = folder, name, 0
+        self.closed = False
+        self.nonce = os.urandom(16).hex()
+        self.output = folder / (name + '.session.stdout')
+        self.out = self.output.open('xb')
+        self.err = (folder / (name + '.session.stderr')).open('xb')
+        if os.name != 'nt':
+            os.fchmod(self.out.fileno(), 0o600)
+            os.fchmod(self.err.fileno(), 0o600)
+        self.process = None
+        try:
+            self.process = subprocess.Popen(mysql_args(user) + ['--unbuffered'], stdin=subprocess.PIPE,
+                stdout=self.out, stderr=self.err, env={**os.environ, 'MYSQL_PWD': password})
+            self.reader = self.output.open('rb')
+            self.buffer = b''
+        except BaseException:
+            if self.process is not None and self.process.poll() is None:
+                self.process.kill()
+                self.process.wait(timeout=30)
+            self.out.close()
+            self.err.close()
+            raise
+
+    def send(self, data, timeout=180):
+        self.serial += 1
+        marker = ('SUPPORT_BARRIER_' + self.nonce + '_' + str(self.serial)).encode()
+        support_require(marker not in data, 'BARRIER_COLLISION')
+        try:
+            self.process.stdin.write(data + b"\nSELECT '" + marker + b"';\n")
+            self.process.stdin.flush()
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                self.buffer += self.reader.read(65536)
+                support_require(len(self.buffer) <= 1024**2, 'SESSION_OUTPUT_LIMIT')
+                lines = self.buffer.split(b'\n')
+                self.buffer = lines.pop()
+                if marker in [line.rstrip(b'\r') for line in lines]:
+                    support_require(self.process.poll() is None, 'SESSION_DIED_AT_BARRIER')
+                    return
+                support_require(self.process.poll() is None, 'SESSION_FAILED_OR_LOST_ACK')
+                time.sleep(0.02)
+            raise MigrationError('MIGRATION_SUPPORT_SESSION_TIMEOUT_UNCERTAIN')
+        except (BrokenPipeError, OSError):
+            raise MigrationError('MIGRATION_SUPPORT_SESSION_IO_UNCERTAIN') from None
+
+    def close(self, *, success):
+        if self.closed:
+            return
+        try:
+            if success:
+                self.process.stdin.close()
+                support_require(self.process.wait(timeout=30) == 0, 'SESSION_EXIT_FAILED')
+            elif self.process.poll() is None:
+                self.process.kill()
+                self.process.wait(timeout=30)
+        finally:
+            if self.process.poll() is None:
+                self.process.kill()
+                self.process.wait(timeout=30)
+            self.closed = True
+            self.reader.close()
+            self.out.close()
+            self.err.close()
+
+
+def support_expected_body(name, part, raw):
+    if part['kind'] == 'FUNCTION':
+        token = b"SET @fund_schema_reader_expected_body='"
+        text = raw[raw.index(token) + len(token):].decode()
+        result, index = [], 0
+        while index < len(text):
+            if text[index] != "'":
+                result.append(text[index]); index += 1
+            elif text[index:index + 2] == "''":
+                result.append("'"); index += 2
+            else:
+                return ''.join(result)
+        raise MigrationError('MIGRATION_SUPPORT_EXPECTED_BODY_LITERAL_REJECTED')
+    text = part['data'].decode()
+    if text.startswith('DELIMITER $$\n'):
+        return text[text.index('\nBEGIN\n') + 1:text.index('END$$') + 3]
+    return text.split('FOR EACH ROW\n', 1)[1].rstrip().removesuffix(';')
+
+
+def support_verify_program(name, part, raw, user, password, context):
+    program = part['program']
+    support_require(any(program == contract[0] for contract in SUPPORT_PROGRAMS[name]), 'PROGRAM_NAME_REJECTED')
+    expected = support_expected_body(name, part, raw)
+    if part['kind'] == 'TRIGGER':
+        rows = probe(user, password,
+            "SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT('name',TRIGGER_NAME,'body',ACTION_STATEMENT,'definer',DEFINER,"
+            "'mode',SQL_MODE,'charset',CHARACTER_SET_CLIENT,'collation',COLLATION_CONNECTION,"
+            "'table',EVENT_OBJECT_TABLE,'timing',ACTION_TIMING,'event',EVENT_MANIPULATION,'orientation',ACTION_ORIENTATION)),JSON_ARRAY()) "
+            "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME='" + program + "';")
+        definer = SUPPORT_APP
+    else:
+        rows = probe(user, password,
+            "SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT('name',ROUTINE_NAME,'body',ROUTINE_DEFINITION,'definer',DEFINER,"
+            "'mode',SQL_MODE,'charset',CHARACTER_SET_CLIENT,'collation',COLLATION_CONNECTION,'type',ROUTINE_TYPE,"
+            "'return',DTD_IDENTIFIER,'deterministic',IS_DETERMINISTIC,'access',SQL_DATA_ACCESS,'security',SECURITY_TYPE,"
+            "'args',(SELECT COUNT(*) FROM information_schema.PARAMETERS WHERE SPECIFIC_SCHEMA=DATABASE() "
+            "AND SPECIFIC_NAME='nx_support_fund_schema_ready_v1' AND ORDINAL_POSITION>0))),JSON_ARRAY()) "
+            "FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA=DATABASE() AND ROUTINE_NAME='nx_support_fund_schema_ready_v1';")
+        definer = SUPPORT_SCHEMA
+    support_require(isinstance(rows, list) and len(rows) == 1 and isinstance(rows[0], dict), 'PROGRAM_POSTCHECK_MISSING')
+    row = rows[0]
+    support_require(row.get('name') == program and row.get('body') == expected and row.get('definer') == definer
+                    and all(row.get(key) == context[key] for key in ('mode', 'charset', 'collation')),
+                    'PROGRAM_POSTCHECK_CHANGED')
+    if part['kind'] == 'FUNCTION':
+        support_require(all(row.get(key) == value for key, value in
+            {'type': 'FUNCTION', 'return': 'tinyint unsigned', 'deterministic': 'NO',
+             'access': 'READS SQL DATA', 'security': 'DEFINER', 'args': 0}.items()), 'FUNCTION_SHAPE_CHANGED')
+    else:
+        header = re.search(r'(BEFORE|AFTER) (INSERT|UPDATE|DELETE) ON (\w+) FOR EACH ROW', part['data'].decode())
+        support_require(header and row.get('timing') == header[1] and row.get('event') == header[2]
+                        and row.get('table') == header[3] and row.get('orientation') == 'ROW', 'TRIGGER_SHAPE_CHANGED')
+
+
+def support_session_settings(context):
+    support_require(re.fullmatch(r'[A-Z0-9_,]+', context['mode']) and context['charset'] == 'utf8mb4'
+                    and re.fullmatch(r'[A-Za-z0-9_]+', context['collation']), 'SESSION_SETTINGS_REJECTED')
+    return ("SET SESSION sql_mode='" + context['mode'] + "'; SET NAMES utf8mb4 COLLATE "
+            + context['collation'] + ';\n').encode()
+
+
+def execute_support_file(name, raw, folder, user, password, root_password, context, journal):
+    """Install fixed programs inside the existing backup/hold/journal lifecycle."""
+    parts = support_segments(name, raw)
+    session = SupportMysqlSession(folder, name, user, password)
+    success = False
+
+    def stage(label):
+        journal['support_segment'] = label
+        save(ROOT / 'active.json', journal)
+        save(folder / 'receipt.json', journal)
+
+    def root_write(label, fixed_sql):
+        current = server_context('root', root_password)
+        support_require(current == context['root_context'], 'ROOT_CONTEXT_CHANGED_BEFORE_WRITE')
+        execute_sql(label, support_session_settings(context) + fixed_sql, folder, 'root', root_password)
+
+    try:
+        if name == next(iter(SUPPORT_PROGRAMS)) and context['create_schema_account']:
+            stage('LOCKED_SCHEMA_ACCOUNT')
+            root_write(name + '.schema-account',
+                       b"CREATE USER 'nexion_support_schema'@'localhost' ACCOUNT LOCK;\n")
+        if name.endswith('fund_schema_reader.sql'):
+            stage('EXACT_METADATA_GRANTS')
+            for index, sql in enumerate(SUPPORT_METADATA_GRANTS):
+                root_write(name + '.metadata-grant-' + str(index), sql.encode())
+        session.send(b'SET SESSION lock_wait_timeout=30; SET SESSION innodb_lock_wait_timeout=30;\n'
+                     + support_session_settings(context))
+        for index, part in enumerate(parts):
+            stage(str(index) + ':' + (part['program'] or 'APP_SOURCE'))
+            if not part['program']:
+                data = part['data']
+                if name.endswith('fund_schema_reader.sql'):
+                    # Exact pinned source; replace only the two definer comparisons,
+                    # never CREATE-body/literal bytes. App cannot see another definer's
+                    # ROUTINE_DEFINITION; root already checks the entire body before
+                    # the suffix, and App still calls the actual reader readiness guard.
+                    support_require(data.count(b'DEFINER=CURRENT_USER()') == 1, 'READER_BINDING_COUNT_CHANGED')
+                    data = data.replace(b'DEFINER=CURRENT_USER()', b"DEFINER='nexion_support_schema@localhost'")
+                    body_check = b' AND BINARY ROUTINE_DEFINITION=BINARY @fund_schema_reader_expected_body'
+                    support_require(data.count(body_check) == 1, 'READER_BODY_CHECK_COUNT_CHANGED')
+                    data = data.replace(body_check, b'')
+                session.send(data)
+            else:
+                root_write(name + '.' + part['program'], support_template(name, part['program'], raw))
+                support_verify_program(name, part, raw, 'root', root_password, context)
+                if part['kind'] == 'FUNCTION':
+                    stage('EXACT_FUNCTION_EXECUTE_GRANTS')
+                    for grant_index, sql in enumerate(SUPPORT_EXECUTE_GRANTS):
+                        root_write(name + '.execute-grant-' + str(grant_index), sql.encode())
+        if name.endswith('fund_schema_reader.sql'):
+            account = probe('root', root_password,
+                "SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT('user',User,'host',Host,'locked',account_locked)),JSON_ARRAY()) "
+                "FROM mysql.user WHERE User='nexion_support_schema';")
+            support_require(account == [{'user': 'nexion_support_schema', 'host': 'localhost', 'locked': 'Y'}],
+                            'SCHEMA_ACCOUNT_POSTCHECK_CHANGED')
+            expected = {'GRANT USAGE ON *.* TO `nexion_support_schema`@`localhost`'}
+            expected.update(support_show_grant(sql) for sql in (*SUPPORT_METADATA_GRANTS, SUPPORT_EXECUTE_GRANTS[0]))
+            support_require(set(probe('root', root_password, 'SHOW GRANTS FOR ' + SUPPORT_GRANTEE + ';', as_json=False)) == expected,
+                            'SCHEMA_GRANTS_POSTCHECK_CHANGED')
+            after = set(probe(user, password, 'SHOW GRANTS FOR CURRENT_USER();', as_json=False))
+            expected_app = set(context['app_grants_before']) | {support_show_grant(SUPPORT_EXECUTE_GRANTS[1])}
+            support_require(after == expected_app, 'APP_EXACT_EXECUTE_POSTCHECK_CHANGED')
+        session.close(success=True)
+        success = True
+    finally:
+        if not success:
+            session.close(success=False)
+
+
+# First install only: reviewed Cregis source and the five immutable-evidence triggers.
+CREGIS_PINS = {
+    '20261022_01_cregis_exception_claim.sql': 'c89572f7288fa2a62e1ffca727d87fdd32644cf3c945ae3410e52224e5872920',
+    '20261022_03_cregis_reorg_resolution.sql': 'f503bf113512c047bf8ed014b5827fb1b99aa7c18e4f5cf5349ee4e8ed486d1c',
+}
+CREGIS_CHUNKS = {
+    '20261022_01_cregis_exception_claim.sql': (2877, 1565, 'a59eb2518a219a3f18bc255e56d5aaea9bbd3dfb838b29e9601755e603827be9'),
+    '20261022_03_cregis_reorg_resolution.sql': (4185, 439, '257a51655aefda34a4abe36c503dca61247b6f4e82797cafdfa46ebeacd0c273'),
+}
+CREGIS_PROGRAMS = {
+    '20261022_01_cregis_exception_claim.sql': (
+        ('nx_cregis_ownership_challenge_bi_v1', 2890, 368, 'e8bd42656388a629eae9d86b9a2080f27cad3e3f7e7ecd0146f876f88e3fe3ff'),
+        ('nx_cregis_ownership_challenge_bu_v1', 3258, 955, 'c32ec266b46188262b1323ebba82efacb502513eadc05ad929fc5be4ba103500'),
+        ('nx_cregis_ownership_challenge_bd_v1', 4213, 217, '33ed2a35a8fc97c9e2bbec8ffd407835b0f7e3ab016e29185dd5187a822d17dc'),
+    ),
+    '20261022_03_cregis_reorg_resolution.sql': (
+        ('nx_cregis_reorg_operation_bu_v1', 4198, 207, '8cda960bbce1d6c7ebc6b87ee2a032e94c8942865716f26c11741b477c18d414'),
+        ('nx_cregis_reorg_operation_bd_v1', 4405, 207, 'a380197a03c08f05604e690ef911851001de86478362f15c8387006c0dbcde75'),
+    ),
+}
+CREGIS_DEFINER = 'nexion_app@%'
+CREGIS_TRIGGER_SQL = (
+    "SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT('name',TRIGGER_NAME,'body',ACTION_STATEMENT,'definer',DEFINER,"
+    "'mode',SQL_MODE,'charset',CHARACTER_SET_CLIENT,'collation',COLLATION_CONNECTION,"
+    "'table',EVENT_OBJECT_TABLE,'timing',ACTION_TIMING,'event',EVENT_MANIPULATION,'orientation',ACTION_ORIENTATION)),JSON_ARRAY()) "
+    "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND ("
+    "EVENT_OBJECT_TABLE IN ('nx_cregis_ownership_challenge','nx_cregis_reorg_operation') OR TRIGGER_NAME IN ("
+    + ','.join("'" + program[0] + "'" for entries in CREGIS_PROGRAMS.values() for program in entries) + '));')
+
+
+def cregis_require(condition, reason):
+    require(condition, 'MIGRATION_CREGIS_' + reason)
+
+
+def cregis_segments(name, raw):
+    cregis_require(name in CREGIS_PINS and digest(raw) == CREGIS_PINS[name], 'FIXED_SOURCE_CHANGED')
+    start, length, checksum = CREGIS_CHUNKS[name]
+    chunk = raw[start:start + length]
+    cregis_require(digest(chunk) == checksum, 'FIXED_CHUNK_CHANGED')
+    blocks = []
+    for program, offset, size, expected in CREGIS_PROGRAMS[name]:
+        block = raw[offset:offset + size]
+        cregis_require(digest(block) == expected, 'FIXED_PROGRAM_CHANGED')
+        blocks.append({'program': program, 'data': block})
+    cregis_require(chunk == b'DELIMITER $$\n' + b''.join(part['data'] for part in blocks) + b'DELIMITER ;\n',
+                   'FIXED_CHUNK_LAYOUT_CHANGED')
+    prefix, suffix = raw[:start], raw[start + length:]
+    # The app process never receives a delimiter spanning a barrier, or any CREATE program.
+    migration_preflight([(name + '.app', data) for data in (prefix, suffix) if data], None, None, None)
+    return [{'program': '', 'data': prefix}, *blocks, {'program': '', 'data': suffix}]
+
+
+def cregis_prepare(pending):
+    sources = dict(pending)
+    if not any(name in CREGIS_PINS for name in sources):
+        return None
+    cregis_require(set(CREGIS_PINS) <= sources.keys(), 'COMPLETE_FIRST_INSTALL_REQUIRED')
+    return {name: cregis_segments(name, sources[name]) for name in CREGIS_PINS}
+
+
+def cregis_preflight(user, password, root_password):
+    app, root = server_context(user, password), server_context('root', root_password)
+    cregis_require(user == 'nexion_app' and app['principal'] == CREGIS_DEFINER
+                   and root['principal'] in ('root@localhost', 'root@%')
+                   and app['version'] == root['version'] and app['version'].startswith('8.4.')
+                   and app['log_bin'] == root['log_bin'] == 1 and app['trust'] == root['trust'] == 0
+                   and all(app[key] == root[key] for key in ('mode', 'charset', 'collation')),
+                   'LIVE_CONTEXT_REJECTED')
+    for actor, secret in ((user, password), ('root', root_password)):
+        cregis_require(probe(actor, secret, 'SELECT @@SESSION.binlog_format;', as_json=False) == ['ROW'],
+                       'LIVE_BINLOG_FORMAT_REJECTED')
+    app_privileges = grant_privileges(probe(user, password, 'SHOW GRANTS FOR CURRENT_USER();', as_json=False), '`nexion`.*')
+    cregis_require('ALL PRIVILEGES' in app_privileges
+                   or {'ALTER', 'CREATE', 'INDEX', 'INSERT', 'SELECT', 'UPDATE', 'REFERENCES', 'TRIGGER'} <= app_privileges,
+                   'APP_CAPABILITIES_MISSING')
+    root_privileges = grant_privileges(probe('root', root_password, 'SHOW GRANTS FOR CURRENT_USER();', as_json=False), '*.*')
+    cregis_require(('ALL PRIVILEGES' in root_privileges or {'SUPER', 'TRIGGER'} <= root_privileges)
+                   and 'SET_ANY_DEFINER' in root_privileges, 'FIXED_CREATOR_CAPABILITIES_MISSING')
+    cregis_require(probe('root', root_password, CREGIS_TRIGGER_SQL) == [],
+                   'EXISTING_OR_PARTIAL_TRIGGERS_REQUIRE_INSPECTION')
+    return {**app, 'root_context': root, 'verified_programs': []}
+
+
+def cregis_template(name, program, raw):
+    parts = [part for part in cregis_segments(name, raw) if part['program'] == program]
+    cregis_require(len(parts) == 1, 'PROGRAM_NAME_REJECTED')
+    block = parts[0]['data']
+    old = b'CREATE TRIGGER IF NOT EXISTS '
+    cregis_require(block.startswith(old) and block.count(old) == 1, 'PROGRAM_HEADER_CHANGED')
+    return b'DELIMITER $$\n' + block.replace(old, b'CREATE DEFINER=`nexion_app`@`%` TRIGGER IF NOT EXISTS ', 1) + b'DELIMITER ;\n'
+
+
+def cregis_verify_triggers(parts, expected_names, root_password, context):
+    rows = probe('root', root_password, CREGIS_TRIGGER_SQL)
+    cregis_require(isinstance(rows, list) and len(rows) == len(expected_names)
+                   and all(isinstance(row, dict) for row in rows)
+                   and {row.get('name') for row in rows} == set(expected_names), 'TRIGGER_INVENTORY_CHANGED')
+    blocks = {part['program']: part['data'] for entries in parts.values() for part in entries if part['program']}
+    for row in rows:
+        text = blocks[row['name']].decode()
+        header = re.search(r'BEFORE (INSERT|UPDATE|DELETE) ON (\w+) FOR EACH ROW\n', text)
+        body = text.split('FOR EACH ROW\n', 1)[1].removesuffix('$$\n')
+        cregis_require(header and row.get('timing') == 'BEFORE' and row.get('event') == header[1]
+                       and row.get('table') == header[2] and row.get('orientation') == 'ROW'
+                       and row.get('body') == body and row.get('definer') == CREGIS_DEFINER
+                       and all(row.get(key) == context[key] for key in ('mode', 'charset', 'collation')),
+                       'TRIGGER_POSTCHECK_CHANGED')
+
+
+def execute_cregis_file(name, raw, folder, user, password, root_password, context, parts, journal):
+    segments = cregis_segments(name, raw)
+    session = SupportMysqlSession(folder, name, user, password)
+    success = False
+    try:
+        session.send(b'SET SESSION lock_wait_timeout=30; SET SESSION innodb_lock_wait_timeout=30;\n'
+                     + support_session_settings(context))
+        for index, part in enumerate(segments):
+            journal['cregis_segment'] = str(index) + ':' + (part['program'] or 'APP_SOURCE')
+            save(ROOT / 'active.json', journal)
+            save(folder / 'receipt.json', journal)
+            if not part['program']:
+                if part['data']:
+                    session.send(part['data'])
+                continue
+            cregis_require(server_context('root', root_password) == context['root_context'], 'ROOT_CONTEXT_CHANGED_BEFORE_WRITE')
+            current = server_context(user, password)
+            cregis_require(all(current[key] == context[key] for key in
+                           ('principal', 'database', 'version', 'mode', 'charset', 'collation', 'log_bin', 'trust')),
+                           'APP_CONTEXT_CHANGED_BEFORE_WRITE')
+            template = cregis_template(name, part['program'], raw)
+            journal['cregis_trigger'] = {'name': part['program'], 'definer': CREGIS_DEFINER,
+                                        'template_sha256': digest(template)}
+            save(ROOT / 'active.json', journal)
+            execute_sql(name + '.' + part['program'], support_session_settings(context) + template,
+                        folder, 'root', root_password)
+            names = [*context['verified_programs'], part['program']]
+            cregis_verify_triggers(parts, names, root_password, context)
+            context['verified_programs'] = names
+            journal['cregis_verified_triggers'] = names
+            save(ROOT / 'active.json', journal)
+            save(folder / 'receipt.json', journal)
+        cregis_verify_triggers(parts, context['verified_programs'], root_password, context)
+        session.close(success=True)
+        success = True
+    finally:
+        if not success:
+            session.close(success=False)
+
+
+# First install only. Exact immutable lifecycle/evidence source, never general stored-program admission.
+COMPUTE_V2_FILE = '20261101_compute_v2_settlement.sql'
+COMPUTE_V2_SHA256 = 'df380554de06a556090fd018a13981716ffca25dcbbaf8c60f453f4f737a783d'
+COMPUTE_V2_PROGRAMS = (
+    ('nx_compute_v2_checkpoint_bu', 5264, 184, '3edf5c11a2113a677f9db7b4e08b888f9db05895bcc386465adb484bb392f5af', 'nx_compute_v2_checkpoint', 'UPDATE'),
+    ('nx_compute_v2_checkpoint_bd', 5448, 184, '920cb1dccd49c0e6c723dc52cd9a0398d63839bac88bb395ef30055d1e2f3636', 'nx_compute_v2_checkpoint', 'DELETE'),
+    ('nx_compute_v2_event_bu', 5632, 174, '846f352c3644fc99577acfecbec229ed9d7e341d7b41e690dca46eb0c392754f', 'nx_compute_v2_event', 'UPDATE'),
+    ('nx_compute_v2_event_bd', 5806, 174, '7a3aad0930bc1868ffe0bef807eeea796c6cc5ad0f40ac3e26e555f9157c8976', 'nx_compute_v2_event', 'DELETE'),
+    ('nx_compute_v2_settlement_bu', 5980, 184, '8122c5ee91829fac4fada25d5f700a5a7c5b7a566b18d61c3c81402af229bc5e', 'nx_compute_v2_settlement', 'UPDATE'),
+    ('nx_compute_v2_settlement_bd', 6164, 184, '3e58d68cb649aeaaeecd06bd253c0a5970e39632e84ea5bde1d3016a16ff63ed', 'nx_compute_v2_settlement', 'DELETE'),
+    ('nx_compute_v2_allocation_bu', 6348, 184, 'bd7cf273b5a3a877145a96e9e56f1e79ee58fe96cab60d3b1d4d4ca9d5193dd2', 'nx_compute_v2_allocation', 'UPDATE'),
+    ('nx_compute_v2_allocation_bd', 6532, 184, '666433716b12a0cadb7b39496292fd0931e0830c1c77dc0f15436b6eab837dd2', 'nx_compute_v2_allocation', 'DELETE'),
+)
+COMPUTE_V2_DEFINER = 'nexion_app@%'
+COMPUTE_V2_BODY = "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='COMPUTE_V2_RECORD_IMMUTABLE'"
+COMPUTE_V2_TABLES = tuple(dict.fromkeys(part[4] for part in COMPUTE_V2_PROGRAMS))
+COMPUTE_V2_TRIGGER_SQL = CREGIS_TRIGGER_SQL[:CREGIS_TRIGGER_SQL.index('AND (')] + 'AND (' + (
+    'EVENT_OBJECT_TABLE IN (' + ','.join("'" + table + "'" for table in COMPUTE_V2_TABLES)
+    + ') OR TRIGGER_NAME IN (' + ','.join("'" + part[0] + "'" for part in COMPUTE_V2_PROGRAMS) + '));')
+COMPUTE_V2_TABLE_SQL = ("SELECT COALESCE(JSON_ARRAYAGG(TABLE_NAME),JSON_ARRAY()) FROM information_schema.TABLES "
+    "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN (" + ','.join("'" + table + "'" for table in COMPUTE_V2_TABLES) + ');')
+COMPUTE_V2_DEPENDENCY_SQL = (
+    "SELECT JSON_OBJECT('tables',(SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN "
+    "('nx_user_wallet','nx_support_wallet_journal','nx_support_fund_operation','nx_support_fund_operation_leg',"
+    "'nx_support_fund_operation_party','nx_compute_task','nx_compute_receipt','nx_wallet_ledger','nx_earning_event')),"
+    "'wallet',(SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_user_wallet' "
+    "AND COLUMN_NAME IN ('fund_incarnation','fund_revision')),'fund_ready',nx_support_fund_schema_ready_v1());")
+
+
+def compute_v2_require(condition, reason):
+    require(condition, 'MIGRATION_COMPUTE_V2_' + reason)
+
+
+def compute_v2_segments(raw):
+    compute_v2_require(digest(raw) == COMPUTE_V2_SHA256, 'FIXED_SOURCE_CHANGED')
+    parts = []
+    for program, offset, length, checksum, table, event in COMPUTE_V2_PROGRAMS:
+        block = raw[offset:offset + length]
+        expected = (f'CREATE TRIGGER IF NOT EXISTS {program} BEFORE {event} ON {table} FOR EACH ROW '
+                    + COMPUTE_V2_BODY + ';\n').encode()
+        compute_v2_require(digest(block) == checksum and block == expected, 'FIXED_PROGRAM_CHANGED')
+        parts.append({'program': program, 'data': block, 'table': table, 'event': event})
+    prefix = raw[:COMPUTE_V2_PROGRAMS[0][1]]
+    compute_v2_require(raw == prefix + b''.join(part['data'] for part in parts), 'FIXED_LAYOUT_CHANGED')
+    migration_preflight([(COMPUTE_V2_FILE + '.app', prefix)], None, None, None)
+    return [{'program': '', 'data': prefix}, *parts]
+
+
+def compute_v2_prepare(pending):
+    matches = [raw for name, raw in pending if name == COMPUTE_V2_FILE]
+    if not matches:
+        return None
+    compute_v2_require(len(matches) == 1, 'DUPLICATE_SOURCE')
+    return compute_v2_segments(matches[0])
+
+
+def compute_v2_enabled():
+    trusted(HOST_CONFIG)
+    config = json.loads(HOST_CONFIG.read_bytes())
+    compute_v2_require(isinstance(config, dict), 'HOST_CONFIG_REJECTED')
+    value = config.get('allow_fixed_compute_v2_trigger_install', False)
+    compute_v2_require(type(value) is bool, 'HOST_CONFIG_REJECTED')
+    return value
+
+
+def compute_v2_verify_triggers(parts, expected_names, root_password, context):
+    rows = probe('root', root_password, COMPUTE_V2_TRIGGER_SQL)
+    compute_v2_require(isinstance(rows, list) and len(rows) == len(expected_names)
+                       and all(isinstance(row, dict) for row in rows)
+                       and {row.get('name') for row in rows} == set(expected_names), 'TRIGGER_INVENTORY_CHANGED')
+    expected = {part['program']: part for part in parts if part['program']}
+    for row in rows:
+        part = expected[row['name']]
+        compute_v2_require(row.get('timing') == 'BEFORE' and row.get('event') == part['event']
+                           and row.get('table') == part['table'] and row.get('orientation') == 'ROW'
+                           and row.get('body') == COMPUTE_V2_BODY and row.get('definer') == COMPUTE_V2_DEFINER
+                           and all(row.get(key) == context[key] for key in ('mode', 'charset', 'collation')),
+                           'TRIGGER_POSTCHECK_CHANGED')
+
+
+def compute_v2_preflight(user, password, root_password, parts):
+    compute_v2_require(compute_v2_enabled(), 'PRIVILEGED_INSTALL_NOT_APPROVED_BEFORE_HOLD')
+    app, root = server_context(user, password), server_context('root', root_password)
+    compute_v2_require(user == 'nexion_app' and app['principal'] == COMPUTE_V2_DEFINER
+                       and root['principal'] in ('root@localhost', 'root@%')
+                       and app['version'] == root['version'] and app['version'].startswith('8.4.')
+                       and app['log_bin'] == root['log_bin'] == 1 and app['trust'] == root['trust'] == 0
+                       and all(app[key] == root[key] for key in ('mode', 'charset', 'collation')),
+                       'LIVE_CONTEXT_REJECTED')
+    support_session_settings(app)
+    for actor, secret in ((user, password), ('root', root_password)):
+        compute_v2_require(probe(actor, secret, 'SELECT @@SESSION.binlog_format;', as_json=False) == ['ROW'],
+                           'LIVE_BINLOG_FORMAT_REJECTED')
+    privileges = grant_privileges(probe(user, password, 'SHOW GRANTS FOR CURRENT_USER();', as_json=False), '`nexion`.*')
+    compute_v2_require('ALL PRIVILEGES' in privileges or {'ALTER', 'CREATE', 'INDEX', 'INSERT', 'SELECT', 'UPDATE', 'REFERENCES', 'TRIGGER'} <= privileges,
+                       'APP_CAPABILITIES_MISSING')
+    privileges = grant_privileges(probe('root', root_password, 'SHOW GRANTS FOR CURRENT_USER();', as_json=False), '*.*')
+    compute_v2_require(('ALL PRIVILEGES' in privileges or {'SUPER', 'TRIGGER'} <= privileges)
+                       and 'SET_ANY_DEFINER' in privileges, 'FIXED_CREATOR_CAPABILITIES_MISSING')
+    compute_v2_require(probe(user, password, COMPUTE_V2_DEPENDENCY_SQL) == {'tables': 9, 'wallet': 2, 'fund_ready': 1},
+                       'EXISTING_FUND_DEPENDENCIES_NOT_READY')
+    compute_v2_require(probe('root', root_password, COMPUTE_V2_TABLE_SQL) == [], 'EXISTING_OR_PARTIAL_TABLES_REQUIRE_INSPECTION')
+    compute_v2_verify_triggers(parts, [], root_password, app)
+    return {**app, 'root_context': root}
+
+
+def compute_v2_template(part):
+    program = next((entry for entry in COMPUTE_V2_PROGRAMS if entry[0] == part['program']), None)
+    compute_v2_require(program is not None and digest(part['data']) == program[3]
+                       and part['table'] == program[4] and part['event'] == program[5], 'PROGRAM_NAME_OR_SOURCE_CHANGED')
+    return (f'CREATE DEFINER=`nexion_app`@`%` TRIGGER IF NOT EXISTS `nexion`.`{program[0]}` '
+            f'BEFORE {program[5]} ON `nexion`.`{program[4]}` FOR EACH ROW ' + COMPUTE_V2_BODY + ';\n').encode()
+
+
+def execute_compute_v2_file(raw, folder, user, password, root_password, context, journal):
+    parts = compute_v2_segments(raw)
+    compute_v2_require(compute_v2_preflight(user, password, root_password, parts) == context, 'CONTEXT_CHANGED_BEFORE_WRITE')
+    journal['compute_v2_segment'] = 'APP_TABLES'
+    save(ROOT / 'active.json', journal)
+    save(folder / 'receipt.json', journal)
+    execute_sql(COMPUTE_V2_FILE + '.app', support_session_settings(context) + parts[0]['data'], folder, user, password)
+    compute_v2_require(sorted(probe('root', root_password, COMPUTE_V2_TABLE_SQL)) == sorted(COMPUTE_V2_TABLES),
+                       'CREATED_TABLE_INVENTORY_CHANGED')
+    names = []
+    for part in parts[1:]:
+        compute_v2_require(server_context('root', root_password) == context['root_context'], 'ROOT_CONTEXT_CHANGED_BEFORE_WRITE')
+        compute_v2_require(server_context(user, password) == {key: value for key, value in context.items() if key != 'root_context'},
+                           'APP_CONTEXT_CHANGED_BEFORE_WRITE')
+        compute_v2_verify_triggers(parts, names, root_password, context)
+        template = compute_v2_template(part)
+        journal['compute_v2_segment'] = part['program']
+        journal['compute_v2_trigger'] = {'name': part['program'], 'definer': COMPUTE_V2_DEFINER,
+                                       'source_sha256': COMPUTE_V2_SHA256, 'template_sha256': digest(template)}
+        save(ROOT / 'active.json', journal)
+        save(folder / 'receipt.json', journal)
+        execute_sql(COMPUTE_V2_FILE + '.' + part['program'], support_session_settings(context) + template, folder, 'root', root_password)
+        names.append(part['program'])
+        compute_v2_verify_triggers(parts, names, root_password, context)
+        journal['compute_v2_verified_triggers'] = list(names)
+        save(ROOT / 'active.json', journal)
+        save(folder / 'receipt.json', journal)
+    compute_v2_verify_triggers(parts, names, root_password, context)
+
+
+def stop_backend():
+    revoke_candidate_start()
+    save(ROOT / 'START_BLOCKED', {'reason': 'DATABASE_MIGRATION_HOLD'})
+    command('systemctl', 'stop', 'nexgrid-backend', timeout=90)
+    require(command('systemctl', 'show', 'nexgrid-backend', '-p', 'ActiveState', '--value').strip()
+            == b'inactive', 'MIGRATION_BACKEND_NOT_STOPPED')
+
+
+def start_previous():
+    revoke_candidate_start()
+    (ROOT / 'START_BLOCKED').unlink(missing_ok=True)
+    sync(ROOT)
+    command('systemctl', 'start', 'nexgrid-backend', timeout=90)
+
+
+def allow_candidate_start():
+    journal = active()
+    if journal:
+        require(journal.get('phase') == 'SQL_APPLIED', 'MIGRATION_CANDIDATE_START_REJECTED')
+        trusted(PERMIT.parent)
+        save(PERMIT, {'reason': 'ONE_CONTROLLED_FORWARD_START'})
+    else:
+        require(not (ROOT / 'START_BLOCKED').exists(), 'MIGRATION_ORPHAN_START_HOLD')
+
+
+def revoke_candidate_start():
+    PERMIT.unlink(missing_ok=True)
+    sync(PERMIT.parent)
+
+
+def verify_backup(path):
+    total, ending = 0, b''
+    with gzip.open(path, 'rb') as stream:
+        for chunk in iter(lambda: stream.read(1024**2), b''):
+            total += len(chunk)
+            ending = (ending + chunk)[-1024:]
+    require(total > 10000 and b'Dump completed on' in ending, 'MIGRATION_BACKUP_INVALID')
+    with path.open('rb') as stream:
+        checksum = hashlib.file_digest(stream, 'sha256').hexdigest()
+    return {'path': str(path), 'sha256': checksum, 'uncompressed_bytes': total}
+
+
+def backup_database(folder, password):
+    require(shutil.disk_usage(BACKUPS).free > 12 * 1024**3, 'MIGRATION_BACKUP_DISK_LOW')
+    args = ['docker', 'exec', '-e', 'MYSQL_PWD', CONTAINER, 'mysqldump', '--user=root',
+            '--single-transaction', '--quick', '--no-tablespaces', '--set-gtid-purged=OFF',
+            '--hex-blob', '--routines', '--events', '--triggers', '--default-character-set=utf8mb4', DB]
+    # Spool directly to a protected file: no SQL/credentials in Jenkins or journal.
+    raw = folder / 'database.sql'
+    with raw.open('xb') as out, (folder / 'backup.stderr').open('xb') as error:
+        result = subprocess.run(args, stdout=out, stderr=error, timeout=240,
+                                env={**os.environ, 'MYSQL_PWD': password})
+        out.flush()
+        os.fsync(out.fileno())
+    require(result.returncode == 0, 'MIGRATION_BACKUP_FAILED_NO_SQL')
+    target = folder / 'database.sql.gz'
+    with raw.open('rb') as source, target.open('xb') as out:
+        with gzip.GzipFile(fileobj=out, mode='wb') as compressed:
+            shutil.copyfileobj(source, compressed, 1024**2)
+        out.flush()
+        os.fsync(out.fileno())
+    proof = verify_backup(target)
+    raw.unlink()  # Exact newly-created uncompressed copy; verified gzip is retained.
+    sync(folder)
+    return proof
+
+
+def execute_sql(name, data, folder, user, password):
+    with (folder / (name + '.stdout')).open('xb') as out, (folder / (name + '.stderr')).open('xb') as err:
+        result = subprocess.run(mysql_args(user),
+                                input=b'SET SESSION lock_wait_timeout=30; SET SESSION innodb_lock_wait_timeout=30;\n' + data,
+                                stdout=out, stderr=err, timeout=180,
+                                env={**os.environ, 'MYSQL_PWD': password})
+    require(result.returncode == 0, 'MIGRATION_SQL_FAILED: ' + name)
+
+
+def fixed_earnings_template(principal, user):
+    definer = account_definer(principal, user)
+    return (f'CREATE DEFINER={definer} TRIGGER IF NOT EXISTS `{DB}`.`{EARNINGS_TRIGGER}`\n'
+            f'BEFORE UPDATE ON `{DB}`.`nx_user_wallet` FOR EACH ROW\n' + EARNINGS_BODY + ';\n').encode()
+
+
+def install_fixed_earnings_trigger(folder, user, password, root_password, context):
+    """The only root SQL write: no archive bytes, filenames or SQL body accepted."""
+    require(context.get('root_install') is True and fixed_trigger_enabled(),
+            'MIGRATION_TRIGGER_PRIVILEGED_INSTALL_NOT_APPROVED')
+    template = fixed_earnings_template(context['principal'], user)
+    app_current = server_context(user, password)
+    require(all(app_current[k] == context[k]
+                for k in ('principal', 'version', 'mode', 'charset', 'collation', 'log_bin', 'trust')),
+            'MIGRATION_TRIGGER_APP_CONTEXT_CHANGED')
+    current = server_context('root', root_password)
+    require(current['principal'].startswith('root@')
+            and all(current[k] == context[k] for k in ('version', 'mode', 'charset', 'collation', 'log_bin', 'trust')),
+            'MIGRATION_TRIGGER_ROOT_CONTEXT_REJECTED')
+    columns = probe(user, password,
+                    "SELECT JSON_ARRAYAGG(JSON_OBJECT('name',COLUMN_NAME,'type',COLUMN_TYPE,"
+                    "'nullable',IS_NULLABLE,'default',COLUMN_DEFAULT)) FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_user_wallet' AND COLUMN_NAME "
+                    "IN ('earnings_usdt_debited','earnings_nex_debited');")
+    require(isinstance(columns, list) and len(columns) == 2 and all(isinstance(c, dict) for c in columns)
+            and {c.get('name') for c in columns} == {'earnings_usdt_debited', 'earnings_nex_debited'}
+            and all(c.get('type') == 'decimal(30,6)' and c.get('nullable') == 'NO'
+                    and isinstance(c.get('default'), str) and re.fullmatch(r'0(?:\.0+)?', c['default'])
+                    for c in columns), 'MIGRATION_TRIGGER_COLUMNS_REJECTED')
+    if not verify_earnings_trigger(user, password, context):
+        with (folder / (EARNINGS_FILE + '.trigger.stdout')).open('xb') as out, \
+                (folder / (EARNINGS_FILE + '.trigger.stderr')).open('xb') as err:
+            result = subprocess.run(mysql_args('root'),
+                                    input=b'SET SESSION lock_wait_timeout=30;\n' + template,
+                                    stdout=out, stderr=err, timeout=180,
+                                    env={**os.environ, 'MYSQL_PWD': root_password})
+        require(result.returncode == 0, 'MIGRATION_FIXED_TRIGGER_INSTALL_FAILED')
+    verify_earnings_trigger(user, password, context, required=True)
+    return digest(template)
+
+
+def execute_earnings_recovery(data, folder, user, password, root_password, context, journal):
+    prefix, suffix = earnings_parts(data)
+
+    def segment(value):
+        journal['segment'] = value
+        save(ROOT / 'active.json', journal)
+        save(folder / 'receipt.json', journal)
+
+    journal['fixed_trigger'] = {'actor': 'ROOT_FIXED_TRIGGER_INSTALL', 'definer': context['principal'],
+                                'template_sha256': digest(fixed_earnings_template(context['principal'], user))}
+    segment('PREFIX')
+    execute_sql(EARNINGS_FILE + '.prefix', prefix, folder, user, password)
+    segment('TRIGGER_INSTALLING')
+    install_fixed_earnings_trigger(folder, user, password, root_password, context)
+    journal['fixed_trigger']['verified'] = True
+    segment('TRIGGER_VERIFIED')
+    segment('SUFFIX')
+    execute_sql(EARNINGS_FILE + '.suffix', suffix, folder, user, password)
+    verify_earnings_trigger(user, password, context, required=True)
+    segment('SUFFIX_VERIFIED')
+
+
+def active():
+    path = ROOT / 'active.json'
+    if not path.exists():
+        return None
+    trusted(path)
+    return json.loads(path.read_text())
+
+
+def apply(sha, *, rollback_check=False):
+    trusted(ROOT)
+    trusted(ROOT / 'state.json')
+    trusted(GUARD)
+    require(GUARD.read_text() == GUARD_TEXT, 'MIGRATION_START_GUARD_CHANGED')
+    previous = active()
+    was_blocked = (ROOT / 'START_BLOCKED').exists()
+    require(not previous or previous.get('phase') == 'SQL_APPLIED', 'MIGRATION_PARTIAL_OR_INTERRUPTED_HOLD')
+    require(not (previous and rollback_check), 'MIGRATION_NEEDS_FORWARD_DEPLOY_NOT_ROLLBACK_CHECK')
+    state = json.loads((ROOT / 'state.json').read_text())
+    scripts = download_catalog(sha)
+    pending = pending_scripts(state, scripts)
+    if not pending:
+        return previous
+    require(not rollback_check, 'MIGRATION_NEEDS_FORWARD_DEPLOY_NOT_ROLLBACK_CHECK')
+    for _, data in pending:
+        validate_sql(data)
+    support_order = support_prepare(pending)
+    cregis_parts = cregis_prepare(pending)
+    h4_pending = h4_prepare(pending)
+    compute_v2_parts = compute_v2_prepare(pending)
+    user, password, root_password = credentials()
+    scoped_account(user, password)
+    h4_context = h4_preflight(user, password, root_password) if h4_pending else None
+    compute_v2_context = compute_v2_preflight(user, password, root_password, compute_v2_parts) if compute_v2_parts else None
+    trigger_context = migration_preflight(
+        [(name, data) for name, data in pending
+         if (not support_order or name not in SUPPORT_PROGRAMS) and (not cregis_parts or name not in CREGIS_PINS) and (not h4_pending or name != H4_FILE)
+         and (not compute_v2_parts or name != COMPUTE_V2_FILE)],
+        user, password, root_password)
+    if cregis_parts:
+        cregis_context = cregis_preflight(user, password, root_password)
+    if support_order:
+        support_context = support_preflight(user, password, root_password)
+        sources = dict(pending)
+        pending = [(name, sources[name]) for name in support_order]
+    trusted(BACKUPS)
+    folder = BACKUPS / (time.strftime('%Y%m%d-%H%M%S', time.gmtime()) + '-' + sha[:12])
+    folder.mkdir(mode=0o700)
+    journal = {'version': 1, 'phase': 'PREPARING', 'sha': sha, 'database': DB,
+               'folder': str(folder), 'pending': [name for name, _ in pending],
+               'completed': [], 'previous_sql_applied': previous}
+    save(folder / 'state-before.json', state)
+    save(ROOT / 'active.json', journal)
+    sql_started = False
+    try:
+        stop_backend()
+        journal['backup'] = backup_database(folder, root_password)
+        journal['phase'] = 'BACKUP_VERIFIED'
+        save(ROOT / 'active.json', journal)
+        save(folder / 'receipt.json', journal)
+        print(json.dumps({'event': 'DB_BACKUP_VERIFIED', 'sha': sha, **journal['backup']}), flush=True)
+        for name, data in pending:
+            with (folder / name).open('xb') as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            journal.pop('segment', None)
+            journal.pop('support_segment', None)
+            journal.pop('cregis_segment', None)
+            journal.pop('compute_v2_segment', None)
+            journal.update(phase='SQL_APPLYING', current=name)
+            save(ROOT / 'active.json', journal)
+            sql_started = True
+            if support_order and name in SUPPORT_PROGRAMS:
+                execute_support_file(name, data, folder, user, password, root_password, support_context, journal)
+            elif cregis_parts and name in CREGIS_PINS:
+                execute_cregis_file(name, data, folder, user, password, root_password, cregis_context, cregis_parts, journal)
+            elif h4_pending and name == H4_FILE:
+                execute_h4_file(data, folder, user, password, root_password, h4_context, journal)
+            elif compute_v2_parts and name == COMPUTE_V2_FILE:
+                execute_compute_v2_file(data, folder, user, password, root_password, compute_v2_context, journal)
+            elif name == EARNINGS_FILE and trigger_context['root_install']:
+                execute_earnings_recovery(data, folder, user, password, root_password, trigger_context, journal)
+            else:
+                execute_sql(name, data, folder, user, password)
+            state['scripts'][name] = {'sha256': digest(data), 'status': 'APPLIED',
+                                      'sha': sha, 'backup': journal['backup']['path']}
+            save(ROOT / 'state.json', state)
+            journal['completed'].append(name)
+            save(ROOT / 'active.json', journal)
+            print(json.dumps({'event': 'DB_MIGRATION_APPLIED', 'file': name, 'sha': sha}), flush=True)
+        journal['phase'] = 'SQL_APPLIED'
+        save(ROOT / 'active.json', journal)
+        save(folder / 'receipt.json', journal)
+        # Leave the backend stopped. The broker starts the new JAR, not old code
+        # whose SQL may be incompatible. Only successful release clears active.
+        return journal
+    except BaseException as error:
+        journal.update(phase='SQL_FAILED' if sql_started else 'BACKUP_FAILED',
+                       error=str(error) if isinstance(error, MigrationError) else type(error).__name__)
+        save(ROOT / 'active.json', journal)
+        save(folder / 'receipt.json', journal)
+        if not sql_started and not previous and not was_blocked:
+            start_previous()
+            remove_journal()
+        elif not sql_started and previous:
+            save(ROOT / 'active.json', previous)
+        raise
+
+
+def complete_release():
+    journal = active()
+    if journal:
+        require(journal.get('phase') == 'SQL_APPLIED', 'MIGRATION_INCOMPLETE_CANNOT_COMMIT')
+        journal['phase'] = 'RELEASE_HEALTHY'
+        save(Path(journal['folder']) / 'receipt.json', journal)
+        (ROOT / 'START_BLOCKED').unlink(missing_ok=True)
+        sync(ROOT)
+        revoke_candidate_start()
+        remove_journal()
+
+
+def baseline(sha, repair_receipt):
+    trusted(ROOT.parent)
+    trusted(repair_receipt)
+    proof = json.loads(repair_receipt.read_text())
+    require(proof.get('phase') == 'APPLIED' and proof.get('sha') == sha, 'MIGRATION_REPAIR_PROOF_REJECTED')
+    backup = repair_receipt.parent / 'nexion.sql.gz'
+    require(verify_backup(backup)['sha256'] == proof['backup_sha256'], 'MIGRATION_REPAIR_BACKUP_CHANGED')
+    scripts = download_catalog(sha)
+    repaired = proof['migration']
+    require(repaired in scripts and digest(scripts[repaired]) == proof['migration_sha256'],
+            'MIGRATION_REPAIR_SCRIPT_CHANGED')
+    state = {'version': 1, 'database': DB, 'baseline_sha': sha,
+             'baseline_note': 'Historical files recorded without replay; not a claim all historical SQL ran.',
+             'scripts': {name: {'sha256': digest(data), 'status': 'BASELINE_NOT_REPLAYED'}
+                         for name, data in scripts.items()}}
+    state['scripts'][repaired].update(status='APPLIED', sha=sha, backup=str(backup))
+    if ROOT.exists():
+        trusted(ROOT / 'state.json')
+        require(json.loads((ROOT / 'state.json').read_text()) == state
+                and not (ROOT / 'active.json').exists() and not (ROOT / 'START_BLOCKED').exists(),
+                'MIGRATION_EXISTING_BASELINE_DIFFERS')
+        print('MIGRATION_BASELINE_ALREADY_VERIFIED', flush=True)
+        return
+    ROOT.mkdir(mode=0o700)
+    save(ROOT / 'state.json', state)
+    BACKUPS.mkdir(mode=0o700, exist_ok=True)
+    trusted(BACKUPS)
+    print('MIGRATION_BASELINE_READY ' + str(len(scripts)), flush=True)
+
+
+def main():
+    require(os.geteuid() == 0 and getattr(__import__('sys'), '_nexgrid_verified_entry', False),
+            'MIGRATION_TRUSTED_ENTRY_REQUIRED')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('action', choices=['baseline'])
+    parser.add_argument('sha')
+    parser.add_argument('repair_receipt', type=Path)
+    args = parser.parse_args()
+    import fcntl
+    with (ROOT.parent / 'lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        require(not (ROOT.parent / 'transaction.json').exists(), 'MIGRATION_RELEASE_BUSY')
+        baseline(args.sha, args.repair_receipt)
