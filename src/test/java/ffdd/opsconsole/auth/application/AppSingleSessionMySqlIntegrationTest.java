@@ -130,8 +130,7 @@ class AppSingleSessionMySqlIntegrationTest {
                         sql.getMapper(ffdd.opsconsole.onboarding.mapper.PhoneInstallationMapper.class),
                         new CurrentAppSessionService(sessions,config,blocklist,users,environment)),
                 mock(ffdd.opsconsole.onboarding.application.PhoneReplacementService.class),
-                mock(ffdd.opsconsole.common.boundary.PhoneActivationCapacityContract.class),
-                mock(ffdd.opsconsole.common.boundary.UserTermsAcceptanceContract.class));
+                mock(ffdd.opsconsole.common.boundary.PhoneActivationCapacityContract.class));
         service=create(sessions,phone);
         var revocationProxy=new ProxyFactory(new UserSessionRevocationService(sessions,phone));
         revocationProxy.setProxyTargetClass(true);

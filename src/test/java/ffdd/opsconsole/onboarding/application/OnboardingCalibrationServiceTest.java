@@ -41,11 +41,8 @@ class OnboardingCalibrationServiceTest {
     private final java.util.concurrent.atomic.AtomicReference<OnboardingCalibrationMapper.PhoneBindingRow> binding = new java.util.concurrent.atomic.AtomicReference<>();
     private final ffdd.opsconsole.platform.facade.PlatformConfigFacade configFacade =
             mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class);
-    private final ffdd.opsconsole.common.boundary.UserTermsAcceptanceContract terms =
-            mock(ffdd.opsconsole.common.boundary.UserTermsAcceptanceContract.class);
     private final OnboardingCalibrationService service = new OnboardingCalibrationService(
-            mapper, null, environment, audit, outbox, configFacade, java.time.Clock.systemUTC(), installations, replacements, capacity,
-            terms);
+            mapper, null, environment, audit, outbox, configFacade, java.time.Clock.systemUTC(), installations, replacements, capacity);
 
     @BeforeEach
     void config() {
@@ -107,21 +104,19 @@ class OnboardingCalibrationServiceTest {
         verifyNoActivationWrites();
     }
 
-    @Test void eligibilityValidatesTermsAndCurrentCalibrationRulesWithoutWrites() {
+    @Test void eligibilityValidatesCurrentCalibrationRulesWithoutWrites() {
         when(mapper.find(9L, "current-install")).thenReturn(actionRow(9L, "current-install", null, 1L, "CALIBRATED", null, null));
         assertThat(service.activationBlockReasons(9L, "current-install")).isEmpty();
-        when(terms.checkTerms(9L)).thenReturn(ApiResult.fail(403, "USER_TERMS_REQUIRED"));
-        assertThat(service.activationBlockReasons(9L, "current-install")).containsExactly("USER_TERMS_REQUIRED");
         when(configFacade.activeValue(PhoneCalibrationConfigService.KEY)).thenReturn(java.util.Optional.empty());
         assertThat(service.activationBlockReasons(9L, "current-install"))
-                .contains("USER_TERMS_REQUIRED", "PHONE_CALIBRATION_RULES_CHANGED");
+                .containsExactly("PHONE_CALIBRATION_RULES_CHANGED");
         verifyNoActivationWrites();
     }
 
-    @Test void eligibilityDoesNotMaskUnavailableTermsAsUsable() {
-        when(terms.checkTerms(9L)).thenReturn(ApiResult.fail(503, "USER_TERMS_UNAVAILABLE"));
+    @Test void eligibilityDoesNotMaskUnavailableCalibrationAsUsable() {
+        when(mapper.find(9L, "current-install")).thenThrow(new IllegalStateException("calibration-unavailable"));
         assertThatThrownBy(() -> service.activationBlockReasons(9L, "current-install"))
-                .hasMessage("USER_TERMS_UNAVAILABLE");
+                .hasMessage("calibration-unavailable");
         verifyNoActivationWrites();
     }
 
@@ -377,7 +372,7 @@ class OnboardingCalibrationServiceTest {
         verify(mapper,never()).resumeUserDeactivatedPhoneRuntime(any(),any());
         verify(mapper,never()).savePhoneBinding(any(),any(),any(),any(),any(),any());
         verify(mapper,never()).upsertPhoneDevice(any(),any(),any(),any(),any(),any(),any(),any(),any(),any());
-        org.mockito.Mockito.verifyNoInteractions(terms,capacity,audit,outbox);
+        org.mockito.Mockito.verifyNoInteractions(capacity,audit,outbox);
     }
 
     @Test

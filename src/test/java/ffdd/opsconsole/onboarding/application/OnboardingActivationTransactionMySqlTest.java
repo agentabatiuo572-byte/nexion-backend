@@ -136,10 +136,9 @@ class OnboardingActivationTransactionMySqlTest {
         var current=proxy(new CurrentAppSessionService(sql.getMapper(AuthSessionMapper.class),config,
                 mock(UserAccountBlocklistVerifier.class),users,environment));
         domain=proxy(new PhoneReplacementService(sql.getMapper(PhoneReplacementMapper.class),Clock.systemUTC(),audit,outbox));
-        var terms=new UserBusinessWriteGateFilter(users);
         phone=proxy(new OnboardingCalibrationService(sql.getMapper(OnboardingCalibrationMapper.class),runtime,environment,audit,outbox,
                 config,Clock.systemUTC(),proxy(new PhoneInstallationService(sql.getMapper(PhoneInstallationMapper.class),current)),domain,
-                proxy(new PhoneActivationCapacityService(sql.getMapper(CanonicalStateMapper.class))),terms));
+                proxy(new PhoneActivationCapacityService(sql.getMapper(CanonicalStateMapper.class)))));
         // These tests only read operation receipts; support ownership is reviewed separately.
         app=proxy(new AppPhoneReplacementService(domain,current,sql.getMapper(OnboardingCalibrationMapper.class),runtime,environment,
                 mock(PhoneReplacementSupportContract.class),phone));

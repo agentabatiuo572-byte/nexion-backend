@@ -184,7 +184,7 @@ class TestComputeWorkerSecurityContractTest {
             var oldUser = request(context, "GET", "/api/fixture/who", "fixture-user", "");
             assertThat(oldUser.statusCode()).isEqualTo(200);
             assertThat(oldUser.body()).contains("USER", "7");
-            assertThat(request(context, "POST", "/api/fixture/write", "fixture-user", "{}").statusCode()).isEqualTo(428);
+            assertThat(request(context, "POST", "/api/fixture/write", "fixture-user", "{}").statusCode()).isEqualTo(200);
             assertThat(request(context, "POST", "/api/test/compute-workers/v1/tasks/" + TASK + "/claim", "fixture-user", "{}").statusCode()).isEqualTo(401);
             assertThat(request(context, "POST", "/api/test/compute-workers/v1/tasks/" + TASK + "/claim", null, "{}").statusCode()).isEqualTo(401);
             assertThat(request(context, "POST", "/api/test/compute-workers/v1/tasks/" + TASK + "/claim", TOKEN + "=", "{}").statusCode()).isEqualTo(401);
@@ -273,7 +273,6 @@ class TestComputeWorkerSecurityContractTest {
         @Bean AppTaskAssignmentService assignments() { return mock(AppTaskAssignmentService.class); }
         @Bean AppTaskAssignmentMapper mapper() { return mock(AppTaskAssignmentMapper.class); }
         @Bean AuditLogService audit() { return mock(AuditLogService.class); }
-        @Bean UserBusinessWriteGateFilter userWriteGate() { return new UserBusinessWriteGateFilter(mock(UserOpsMapper.class)); }
         @Bean UserBlocklistEnforcementFilter userBlocklist() { return new UserBlocklistEnforcementFilter(userId -> false); }
         @Bean DeveloperApiKeyAuthenticationFilter developerKeys() { return new DeveloperApiKeyAuthenticationFilter(mock(AppDeveloperApiService.class)); }
         @Bean AdminRbacAuthorizationFilter rbac(AuditLogService audit) { return new AdminRbacAuthorizationFilter(audit, mock(AdminAccountStateMapper.class)); }

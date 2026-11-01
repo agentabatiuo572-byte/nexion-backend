@@ -63,7 +63,6 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
     private final PhoneInstallationService installations;
     private final PhoneReplacementService replacements;
     private final PhoneActivationCapacityContract capacity;
-    private final ffdd.opsconsole.common.boundary.UserTermsAcceptanceContract terms;
 
     @Override
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
@@ -178,11 +177,6 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
     List<String> activationBlockReasons(Long userId, String installationId) {
         Scope scope = scope(userId);
         List<String> blocks = new java.util.ArrayList<>();
-        var termsBlock = terms.checkTerms(userId);
-        if (termsBlock != null) {
-            if (termsBlock.getCode() >= 500) throw new BizException(termsBlock.getCode(), termsBlock.getMessage());
-            blocks.add(termsBlock.getMessage());
-        }
         CalibrationRow row = scope.sandbox()
                 ? mapper.findScoped(userId, installationId, scope.sourceEnvironment(), scope.runId())
                 : mapper.find(userId, installationId);
@@ -232,8 +226,6 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
                 "PHONE_ACTIVATE", request.idempotencyKey().trim(), request);
         // An original committed result precedes current calibration, policy, binding and grant checks.
         if (command.replay()) return activationReceipt(replacements.receipt(command.operation()));
-        var termsBlock = terms.checkTerms(userId);
-        if (termsBlock != null) throw new BizException(termsBlock.getCode(), termsBlock.getMessage());
         CalibrationRow current = scope.sandbox()
                 ? mapper.findForUpdateScoped(userId, deviceId, scope.sourceEnvironment(), scope.runId())
                 : mapper.findForUpdate(userId, deviceId);

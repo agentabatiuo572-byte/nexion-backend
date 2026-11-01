@@ -31,8 +31,7 @@ class IosModelCalibrationServiceTest {
     private final OnboardingCalibrationService service = new OnboardingCalibrationService(mapper, null, environment,
             mock(ffdd.opsconsole.shared.audit.AuditLogService.class), mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class),
             config, java.time.Clock.systemUTC(), mock(PhoneInstallationService.class), mock(PhoneReplacementService.class),
-            mock(ffdd.opsconsole.common.boundary.PhoneActivationCapacityContract.class),
-            mock(ffdd.opsconsole.common.boundary.UserTermsAcceptanceContract.class));
+            mock(ffdd.opsconsole.common.boundary.PhoneActivationCapacityContract.class));
     /** nx_onboarding_calibration rows of user 9 by device id, in update order. */
     private final Map<String, CalibrationRow> table = new LinkedHashMap<>();
 
