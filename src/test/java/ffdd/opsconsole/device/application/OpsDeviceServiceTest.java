@@ -2498,6 +2498,63 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void computeV2A2CreateAndEditSaveEveryPolicyFieldAndAuditBeforeAfter() {
+        var params=new LinkedHashMap<String,Object>();
+        params.putAll(Map.of("name","Embedding","price",new BigDecimal("0.46"),"unit","/1k","requirement","手机+","status","active","taskClass","EM","model","BGE-M3","minReward",new BigDecimal("0.123456"),"maxReward",new BigDecimal("0.123456")));
+        params.putAll(Map.of("minVram","8GB","killInit","派发中","selectionWeight",3,"expectedDurationMinSec",4,
+                "expectedDurationMaxSec",9,"executionTimeoutSec",90,"runtimeKey","test-bge-m3-v1","validatorKey","test-bge-m3-v1","workloadConfigJson","{\"texts\":[\"first\"]}"));
+        var created=service.replay(new AuditReplayCommand("E","e2_task_create",params),new AuditReplayContext("superadmin","新增真实算力配置","idem-v2-create"));
+        assertThat(created.getCode()).isZero();
+        var first=(DeviceTaskView)created.getData();
+        assertThat(first.minReward()).isEqualByComparingTo("0.123456");
+        assertThat(first.selectionWeight()).isEqualTo(3);
+        assertThat(first.expectedDurationMinSec()).isEqualTo(4);
+        assertThat(first.expectedDurationMaxSec()).isEqualTo(9);
+        assertThat(first.executionTimeoutSec()).isEqualTo(90);
+        assertThat(first.workloadConfigJson()).isEqualTo("{\"texts\":[\"first\"]}");
+        params.put("taskId",first.taskId()); params.put("selectionWeight",4); params.put("workloadConfigJson","{\"texts\":[\"second\"]}");
+        var updated=service.replay(new AuditReplayCommand("E","e2_task_update",params),new AuditReplayContext("superadmin","修改真实算力配置","idem-v2-edit"));
+        assertThat(updated.getCode()).isZero();
+        var second=(DeviceTaskView)updated.getData();
+        assertThat(catalogRepository.findTask(first.taskId()).orElseThrow()).isEqualTo(second);
+        assertThat(second.selectionWeight()).isEqualTo(4);
+        assertThat(second.workloadConfigJson()).isEqualTo("{\"texts\":[\"second\"]}");
+        var audit=ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService,times(2)).recordRequired(audit.capture());
+        assertThat(((Map<?,?>)audit.getAllValues().get(0).getDetail()).get("scheduling")).isEqualTo(first.scheduling());
+        assertThat(((Map<?,?>)audit.getAllValues().get(1).getDetail()).get("beforeScheduling")).isEqualTo(first.scheduling());
+        assertThat(((Map<?,?>)audit.getAllValues().get(1).getDetail()).get("afterScheduling")).isEqualTo(second.scheduling());
+    }
+
+    @Test
+    void computeV2InvalidRewardAndPolicyInputsDoNotPersistOrAudit() {
+        var mapper=new com.fasterxml.jackson.databind.ObjectMapper();
+        var base=mapper.convertValue(taskRequest("Embedding","/1k","手机+"),new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>() {});
+        for (var patch : List.of(Map.of("selectionWeight",0),Map.of("selectionWeight",1000001),
+                Map.of("expectedDurationMinSec",10,"expectedDurationMaxSec",9),Map.of("expectedDurationMaxSec",9,"executionTimeoutSec",8),
+                Map.of("workloadConfigJson","[]"),Map.of("workloadConfigJson","{\"text\":\""+"中".repeat(6000)+"\"}"),
+                Map.of("minReward","0.1234567"),Map.of("maxReward","1000000000000"))) {
+            var values=new LinkedHashMap<>(base); values.putAll(patch);
+            var request=mapper.convertValue(values,DeviceTaskUpsertRequest.class);
+            assertThat(service.createTask("idem-invalid-"+patch.keySet(),request).getCode()).isEqualTo(422);
+        }
+        var values=new LinkedHashMap<>(base); values.put("selectionWeight",1.5);
+        assertThatThrownBy(() -> service.replay(new AuditReplayCommand("E","e2_task_create",values),new AuditReplayContext("superadmin","非法小数权重","idem-invalid-fraction")))
+                .hasMessage("TASK_SCHEDULING_VALUE_INVALID");
+        assertThat(catalogRepository.tasks).isEmpty(); verify(auditLogService,never()).recordRequired(any());
+    }
+
+    @Test void computeV2ScalarRewardEditsAlsoRejectPrecisionLossBeforePersistence() {
+        var original=taskWithClass("TK-IG","IG",12); catalogRepository.tasks.put(original.taskId(),original);
+        for (String amount : new String[]{"0.1234567","1000000000000"}) {
+            var result=service.updateE2TaskPricing("idem-v2-scalar-"+amount,new E2TaskPricingUpdateRequest("IG",null,new BigDecimal(amount),null,null,null,"reject precision loss","superadmin"));
+            assertThat(result.getMessage()).isEqualTo("TASK_REWARD_PRECISION_INVALID");
+        }
+        assertThat(catalogRepository.tasks.get("TK-IG")).isEqualTo(original);
+        verify(auditLogService,never()).recordRequired(any());
+    }
+
+    @Test
     void updateTaskRejectsLifecycleStatusChangesFromTheGeneralEditEndpoint() {
         catalogRepository.task = task("TK-PAUSED", "Embedding", new BigDecimal("0.12"), "paused");
 
@@ -4703,6 +4760,7 @@ class OpsDeviceServiceTest {
                     request.killInit(),
                     now,
                     now);
+            task=task.withScheduling(ffdd.opsconsole.device.domain.TaskSchedulingSettings.defaults(request.taskClass(),request.model()).merge(request));
             tasks.put(taskId, task);
             return task;
         }
@@ -4732,6 +4790,7 @@ class OpsDeviceServiceTest {
                     request.killInit(),
                     current.createdAt(),
                     now);
+            updated=updated.withScheduling(current.scheduling().merge(request));
             tasks.put(taskId, updated);
             task = updated;
             return Optional.of(updated);

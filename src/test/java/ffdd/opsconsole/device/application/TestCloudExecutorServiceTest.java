@@ -725,6 +725,21 @@ class TestCloudExecutorServiceTest {
             assertThat(java.time.Duration.ofNanos(System.nanoTime()-start)).isLessThan(java.time.Duration.ofSeconds(2));
         } finally { release.countDown(); server.stop(0); }
     }
+    @Test void v2ConfiguredDeviceRechecksPaidEntitlementAfterAuthentication() {
+        service.requireComputeV2Paid(identity,false);
+        when(assignments.lockPaidCloudShareDailyNex(7L,11L)).thenReturn(null);
+        assertThatThrownBy(()->service.requireComputeV2Paid(identity,true)).hasMessage("TEST_CLOUD_BINDING_INVALID");
+    }
+    @Test void v2RegisteredFleetMustStillPassCurrentPaidOrderContract() {
+        env.setProperty(PREFIX+"fleet-enabled","true");env.setProperty(PREFIX+"fleet-started-at","2026-10-01T00:00:00");
+        var fleet=new Identity("fleet-12",7,12,"DEV-12","EM-UNIT","bge-m3:567m",DIGEST);
+        when(mapper.binding("fleet-12")).thenReturn(new ffdd.opsconsole.device.mapper.TestCloudExecutorMapper.Binding("fleet-12",7,12,"DEV-12","EM-UNIT","bge-m3:567m",DIGEST));
+        when(assignments.lockOwnedDevice(7L,12L)).thenReturn(new DeviceRow(12L,"DEV-12","SHARE","SHARE","Cloud","ACTIVE","cloud-share",NOW.minusDays(1),NOW.minusHours(1),24,"unit","ONLINE",null,false));
+        when(mapper.computeV2PaidBinding(any(),nullable(LocalDateTime.class),eq(7L),eq(12L),eq("DEV-12"),eq(false),eq(false))).thenReturn(1);
+        service.requireComputeV2Paid(fleet,false);
+        when(mapper.computeV2PaidBinding(any(),nullable(LocalDateTime.class),eq(7L),eq(12L),eq("DEV-12"),eq(false),eq(false))).thenReturn(null);
+        assertThatThrownBy(()->service.requireComputeV2Paid(fleet,false)).hasMessage("TEST_CLOUD_BINDING_INVALID");
+    }
     @Test void modelDigestDriftAfterRealInferenceResponseIsRejected() throws Exception {
         var server=com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1",0),0);
         var tagCalls=new java.util.concurrent.atomic.AtomicInteger();

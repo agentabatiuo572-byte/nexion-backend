@@ -447,8 +447,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               status VARCHAR(32) NOT NULL DEFAULT 'active',
               task_class VARCHAR(64) NOT NULL DEFAULT 'LL',
               model_name VARCHAR(128) NOT NULL DEFAULT '',
-              min_reward DECIMAL(18,5) NOT NULL DEFAULT 0,
-              max_reward DECIMAL(18,5) NOT NULL DEFAULT 0,
+              min_reward DECIMAL(18,6) NOT NULL DEFAULT 0,
+              max_reward DECIMAL(18,6) NOT NULL DEFAULT 0,
               min_vram VARCHAR(64) NOT NULL DEFAULT '',
               kill_init VARCHAR(32) NOT NULL DEFAULT '派发中',
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -460,6 +460,15 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createTaskTable();
+
+    @Select("SELECT COALESCE(MIN(NUMERIC_SCALE),0) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_admin_device_task' AND COLUMN_NAME IN ('min_reward','max_reward')")
+    int taskRewardScale();
+
+    @Select("SELECT COUNT(*) FROM nx_admin_device_task WHERE min_reward>999999999999.999999 OR max_reward>999999999999.999999")
+    int oversizedTaskRewardCount();
+
+    @Update("ALTER TABLE nx_admin_device_task MODIFY COLUMN min_reward DECIMAL(18,6) NOT NULL DEFAULT 0, MODIFY COLUMN max_reward DECIMAL(18,6) NOT NULL DEFAULT 0")
+    void widenTaskRewardScale();
 
     @Select("""
             SELECT
@@ -598,8 +607,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             ALTER TABLE nx_admin_device_task
               ADD COLUMN task_class VARCHAR(64) NOT NULL DEFAULT 'LL' AFTER status,
               ADD COLUMN model_name VARCHAR(128) NOT NULL DEFAULT '' AFTER task_class,
-              ADD COLUMN min_reward DECIMAL(18,5) NOT NULL DEFAULT 0 AFTER model_name,
-              ADD COLUMN max_reward DECIMAL(18,5) NOT NULL DEFAULT 0 AFTER min_reward,
+              ADD COLUMN min_reward DECIMAL(18,6) NOT NULL DEFAULT 0 AFTER model_name,
+              ADD COLUMN max_reward DECIMAL(18,6) NOT NULL DEFAULT 0 AFTER min_reward,
               ADD COLUMN min_vram VARCHAR(64) NOT NULL DEFAULT '' AFTER max_reward,
               ADD COLUMN kill_init VARCHAR(32) NOT NULL DEFAULT '派发中' AFTER min_vram
             """)

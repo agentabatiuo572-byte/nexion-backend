@@ -85,6 +85,20 @@ class AssignmentCandidatesMySqlIntegrationTest {
         try { if(created){assertOwned();jdbc.execute("DROP DATABASE `"+database+"`");} }
         finally {if(connection!=null) connection.close();}
     }
+    @Test void enrolledV2DevicesCannotStarveTheNextLegacyDeviceBeforePagination() throws Exception {
+        migrate();
+        jdbc.execute("ALTER TABLE nx_user_device_runtime ADD heartbeat_at DATETIME,ADD battery_level INT,ADD network_reachable TINYINT");
+        jdbc.execute("SET SESSION cte_max_recursion_depth=7000");
+        jdbc.update("""
+                INSERT INTO nx_user_device(id,user_id,is_deleted,source_environment,run_id,ownership_status,
+                  activated_at,deactivated_at,pending_deactivate,status,vram_total_gb,device_type,dc_location)
+                WITH RECURSIVE devices AS (SELECT 1 n UNION ALL SELECT n+1 FROM devices WHERE n<6001)
+                SELECT n,7,0,'PRODUCTION','','OWNED',NOW(),NULL,0,'ACTIVE',8,'GPU','normal' FROM devices
+                """);
+        var enrolled=java.util.stream.LongStream.rangeClosed(1,6000).boxed().toList();
+        assertThat(mapper.assignmentCandidatesExcluding(0L,100,enrolled).stream().map(AppTaskAssignmentMapper.AssignmentCandidate::deviceId).toList()).containsExactly(6001L);
+        assertThat(mapper.assignmentCandidates(0L,100)).hasSize(100);
+    }
     @Test void allDeviceUserCalibrationPauseAndPaginationBoundariesRemainEquivalent() throws Exception {
         migrate();
         for(int id=1;id<=20;id++) device(id);

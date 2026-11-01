@@ -73,6 +73,7 @@ public class AppCanonicalBoundaryService {
     private final PromotionOrderService promotions;
     @lombok.NonNull
     private final ffdd.opsconsole.device.application.TestCloudActivationAdmission testCloudAdmission;
+    private final ffdd.opsconsole.device.application.ComputeV2DeviceLifecycleService computeV2Lifecycle;
 
     public AppCanonicalBoundaryService(CanonicalStateMapper mapper, TamperDetectionPublisher tamperPublisher,
             AdminIdempotencyService idempotencyService, EventOutboxService outboxService,
@@ -83,7 +84,18 @@ public class AppCanonicalBoundaryService {
             Environment environment, ffdd.opsconsole.device.application.TestCloudActivationAdmission testCloudAdmission) {
         this(mapper, tamperPublisher, idempotencyService, outboxService, growthLifecyclePublisher, growthRhythmFacade,
                 auditLogService, commerceAcceptanceSandboxMapper, fundsSandboxProfileGuard, commerceAcceptanceRun,
-                productReleasePolicy, purchaseGatePolicy, environment, null, testCloudAdmission);
+                productReleasePolicy, purchaseGatePolicy, environment, null, testCloudAdmission,null);
+    }
+    public AppCanonicalBoundaryService(CanonicalStateMapper mapper, TamperDetectionPublisher tamperPublisher,
+            AdminIdempotencyService idempotencyService, EventOutboxService outboxService,
+            AppGrowthLifecyclePublisher growthLifecyclePublisher, GrowthRhythmFacade growthRhythmFacade,
+            AuditLogService auditLogService, CommerceAcceptanceSandboxMapper commerceAcceptanceSandboxMapper,
+            FundsSandboxProfileGuard fundsSandboxProfileGuard, CommerceAcceptanceRun commerceAcceptanceRun,
+            StorefrontProductReleasePolicy productReleasePolicy, StorefrontPurchaseGatePolicy purchaseGatePolicy,
+            Environment environment,PromotionOrderService promotions,ffdd.opsconsole.device.application.TestCloudActivationAdmission testCloudAdmission) {
+        this(mapper,tamperPublisher,idempotencyService,outboxService,growthLifecyclePublisher,growthRhythmFacade,
+                auditLogService,commerceAcceptanceSandboxMapper,fundsSandboxProfileGuard,commerceAcceptanceRun,
+                productReleasePolicy,purchaseGatePolicy,environment,promotions,testCloudAdmission,null);
     }
 
     @PostConstruct
@@ -283,6 +295,8 @@ public class AppCanonicalBoundaryService {
         }
         if (!isSlotOccupyingActiveState(device.status())) return ApiResult.fail(409, "DEVICE_STATE_CONFLICT");
         if (!expectedVersion.equals(device.rowVersion())) return ApiResult.fail(409, "DEVICE_VERSION_CONFLICT");
+        var v2=deferComputeV2Deactivation(userId,device,expectedVersion);
+        if(v2!=null)return v2;
         if (!mapper.hasActiveTask(userId, deviceId)) return deactivateDeviceInternal(userId, deviceId, expectedVersion, idempotencyKey);
         if (device.pendingDeactivate()) return ApiResult.ok(linked("deviceId", device.id(), "instanceNo", device.instanceNo(), "status", "PENDING_DEACTIVATE",
                 "rowVersion", device.rowVersion(), "alreadyPending", true));
@@ -319,6 +333,9 @@ public class AppCanonicalBoundaryService {
         if (!isSlotOccupyingActiveState(status)) return ApiResult.fail(409, "DEVICE_STATE_CONFLICT");
         if (!expectedVersion.equals(device.rowVersion())) return ApiResult.fail(409, "DEVICE_VERSION_CONFLICT");
 
+        var v2=deferComputeV2Deactivation(userId,device,expectedVersion);
+        if(v2!=null)return v2;
+
         CanonicalStateMapper.UserEventAttribution attribution = mapper.userEventAttribution(userId);
         if (attribution == null || attribution.accountAgeMonths() == null || !StringUtils.hasText(attribution.cohort())) {
             throw new BizException(409, "USER_EVENT_ATTRIBUTION_UNAVAILABLE");
@@ -349,6 +366,12 @@ public class AppCanonicalBoundaryService {
                 .detail(linked("idempotencyKey", idempotencyKey == null ? "" : idempotencyKey.trim(), "state", state))
                 .build());
         return ApiResult.ok(state);
+    }
+
+    private ApiResult<Map<String,Object>> deferComputeV2Deactivation(Long user,CanonicalStateMapper.UserDeviceCommandRow device,Long version) {
+        if(computeV2Lifecycle==null || !computeV2Lifecycle.deferDeactivation(user,device.id(),version))return null;
+        return ApiResult.ok(linked("deviceId",device.id(),"instanceNo",device.instanceNo(),"status","PENDING_DEACTIVATE",
+                "rowVersion",device.rowVersion(),"pendingDeactivate",true,"alreadyPending",device.pendingDeactivate()));
     }
 
     private boolean isSlotOccupyingActiveState(String status) {

@@ -1,0 +1,30 @@
+# Reference properties only. TEST's launcher supplies spring.config.additional-location
+# on the command line. Install these private values through SPRING_APPLICATION_JSON
+# in the existing root-owned backend EnvironmentFile; preserve its other JSON keys.
+# Never commit a configured proof secret.
+nexion.compute-v2.enabled=false
+nexion.compute-v2.accepting=true
+nexion.compute-v2.deployment-scope=TEST
+nexion.compute-v2.device-ids=
+nexion.compute-v2.allowed-task-ids=
+nexion.compute-v2.proof-secret=
+nexion.compute-v2.namesrv-addr=127.0.0.1:9876
+nexion.compute-v2.topic=nexion-compute-v2-TEST
+nexion.compute-v2.producer-group=nexion-compute-v2-producer-TEST
+nexion.compute-v2.consumer-group=nexion-compute-v2-checkpoint-TEST
+# User selected efficiency first; existing ASYNC_FLUSH and72h retention are accepted.
+nexion.compute-v2.strict-durability=false
+nexion.compute-v2.managed-capacity=6000
+nexion.compute-v2.execution-capacity=6
+nexion.compute-v2.lease-seconds=45
+nexion.compute-v2.unpersisted-capacity=30000
+nexion.compute-v2.pull-buffer-capacity=1000
+nexion.compute-v2.backlog-stop-seconds=300
+# Full immutable IDs from the already approved seven model containers.
+nexion.compute-v2.runner-1-container-id=
+nexion.compute-v2.runner-2-container-id=
+nexion.compute-v2.runner-3-container-id=
+nexion.compute-v2.runner-4-container-id=
+nexion.compute-v2.runner-5-container-id=
+nexion.compute-v2.runner-6-container-id=
+nexion.compute-v2.validator-container-id=

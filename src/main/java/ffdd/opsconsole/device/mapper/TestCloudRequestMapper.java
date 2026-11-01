@@ -3,6 +3,7 @@ package ffdd.opsconsole.device.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.device.infrastructure.TestCloudRequestEntity;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import org.apache.ibatis.annotations.*;
 
 @Mapper
@@ -61,6 +62,28 @@ public interface TestCloudRequestMapper extends BaseMapper<TestCloudRequestEntit
     int restoreResourceDelta(@Param("deviceId") long deviceId);
     @Select("SELECT CASE WHEN "+RESOURCE_EXECUTOR_KIND+" AND NOT COALESCE(("+RESOURCE_EXECUTOR_BASE+" AND "+RESOURCE_EXECUTOR_CURRENT+"),0) THEN 1 ELSE 0 END FROM nx_user_device WHERE id=#{deviceId} FOR UPDATE")
     int activationResourceDelta(@Param("deviceId") long deviceId);
+    String V1_PHYSICAL_FROM="""
+        FROM nx_user_device d LEFT JOIN (
+          SELECT device_id FROM nx_test_cloud_request WHERE state IN ('PROCESSING','UNKNOWN')
+          UNION
+          SELECT user_device_id device_id FROM nx_compute_task
+           WHERE is_deleted=0 AND source_environment='PRODUCTION' AND status IN ('CLAIMED','RUNNING')
+             AND task_no NOT LIKE 'CV2-%'
+        ) legacy ON legacy.device_id=d.id
+        """;
+    String NOT_LOGICAL_DEVICE="""
+        <if test='logicalDevices != null and !logicalDevices.isEmpty()'>
+          AND d.id NOT IN <foreach collection='logicalDevices' item='logicalDevice' open='(' separator=',' close=')'>#{logicalDevice}</foreach>
+        </if>
+        """;
+    /** Logical slots do not reserve a model; unresolved v1 work still reserves its original physical device. */
+    @Select("<script>SELECT COUNT(*) "+V1_PHYSICAL_FROM+" WHERE "+RESOURCE_EXECUTOR_KIND
+            +" AND (legacy.device_id IS NOT NULL OR ("+RESOURCE_EXECUTOR_BASE+" AND "+RESOURCE_EXECUTOR_CURRENT+NOT_LOGICAL_DEVICE+")) FOR UPDATE</script>")
+    int activeV1ResourceExecutors(@Param("logicalDevices") Collection<Long> logicalDevices);
+    /** Replacement cannot credit a logical slot or an unresolved legacy execution that remains reserved. */
+    @Select("<script>SELECT COUNT(*) "+V1_PHYSICAL_FROM+" WHERE d.id=#{deviceId} AND "+RESOURCE_EXECUTOR_BASE
+            +" AND "+RESOURCE_EXECUTOR_CURRENT+" AND legacy.device_id IS NULL "+NOT_LOGICAL_DEVICE+" FOR UPDATE</script>")
+    int v1ResourceExecutorCount(@Param("deviceId") long deviceId,@Param("logicalDevices") Collection<Long> logicalDevices);
     String COLUMNS="executor_id executorId,operation,key_hash keyHash,body_hash bodyHash,owner_id ownerId,device_id deviceId,"
             +"instance_no instanceNo,task_config_id taskConfigId,task_no taskNo,state,generation,recovery_token recoveryToken,"
             +"recovery_used recoveryUsed,proof_timestamp proofTimestamp,proof_validated proofValidated,reviewed_termination reviewedTermination,response_json responseJson,updated_at updatedAt";

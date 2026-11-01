@@ -4,7 +4,6 @@ import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
-import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -12,7 +11,6 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 @Component
-@RequiredArgsConstructor
 public class TaskAssignmentDispatchScheduler {
     private static final Logger log = LoggerFactory.getLogger(TaskAssignmentDispatchScheduler.class);
     private final AppTaskAssignmentMapper mapper;
@@ -20,17 +18,34 @@ public class TaskAssignmentDispatchScheduler {
     @Value("${nexion.tasks.assignment-dispatch-batch-size:100}")
     private final int batchSize;
     private final AtomicLong afterDeviceId = new AtomicLong();
+    private final List<Long> computeV2Devices;
+
+    public TaskAssignmentDispatchScheduler(AppTaskAssignmentMapper mapper,AppTaskAssignmentService service,int batchSize) {
+        this.mapper=mapper;this.service=service;this.batchSize=batchSize;this.computeV2Devices=List.of();
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public TaskAssignmentDispatchScheduler(AppTaskAssignmentMapper mapper,AppTaskAssignmentService service,
+            @Value("${nexion.tasks.assignment-dispatch-batch-size:100}") int batchSize,
+            org.springframework.core.env.Environment environment) {
+        this.mapper=mapper;this.service=service;this.batchSize=batchSize;
+        computeV2Devices=Boolean.TRUE.equals(environment.getProperty("nexion.compute-v2.enabled",Boolean.class,false))
+                ?java.util.Arrays.stream(environment.getProperty("nexion.compute-v2.device-ids","").split(","))
+                .map(String::trim).filter(value->!value.isEmpty()).map(Long::parseLong).distinct().sorted().toList():List.of();
+        if(computeV2Devices.size()>6000 || computeV2Devices.stream().anyMatch(id->id<=0))
+            throw new IllegalArgumentException("COMPUTE_V2_DEVICE_IDS_INVALID");
+    }
 
     @Scheduled(fixedDelayString = "${nexion.tasks.assignment-dispatch-delay-ms:30000}")
     public synchronized void dispatch() {
         int limit = Math.max(1, Math.min(batchSize, 500));
         long cursor = afterDeviceId.get();
         List<AppTaskAssignmentMapper.AssignmentCandidate> candidates =
-                mapper.assignmentCandidates(cursor, limit);
+                candidates(cursor, limit);
         if ((candidates == null || candidates.isEmpty()) && cursor > 0) {
             cursor = 0;
             afterDeviceId.set(0);
-            candidates = mapper.assignmentCandidates(cursor, limit);
+            candidates = candidates(cursor, limit);
         }
         if (candidates == null || candidates.isEmpty()) return;
         afterDeviceId.set(candidates.stream()
@@ -55,5 +70,10 @@ public class TaskAssignmentDispatchScheduler {
                         candidate.userId(), candidate.deviceId(), failure);
             }
         }
+    }
+
+    private List<AppTaskAssignmentMapper.AssignmentCandidate> candidates(long cursor,int limit) {
+        return computeV2Devices.isEmpty()?mapper.assignmentCandidates(cursor,limit)
+                :mapper.assignmentCandidatesExcluding(cursor,limit,computeV2Devices);
     }
 }
