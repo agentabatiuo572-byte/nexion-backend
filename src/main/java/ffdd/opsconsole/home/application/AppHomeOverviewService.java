@@ -123,6 +123,12 @@ public class AppHomeOverviewService {
                     ? linked("usdt", BigDecimal.ZERO, "nex", BigDecimal.ZERO, "jobCount", 0L)
                     : period(todayEarnings));
             earnings.put("todayVsYesterdayPct", percentageChange(todayEarnings, yesterdaySameTimeEarnings));
+            BigDecimal todayUsdt = todayEarnings == null || todayEarnings.jobCount() == null ? null
+                    : todayEarnings.jobCount() == 0 ? BigDecimal.ZERO : nonNegative(todayEarnings.usdt());
+            BigDecimal yesterdaySameTimeUsdt = yesterdaySameTimeEarnings == null || yesterdaySameTimeEarnings.jobCount() == null ? null
+                    : yesterdaySameTimeEarnings.jobCount() == 0 ? BigDecimal.ZERO : nonNegative(yesterdaySameTimeEarnings.usdt());
+            earnings.put("todayVsYesterdayUsdt", todayUsdt == null || yesterdaySameTimeUsdt == null ? null
+                    : todayUsdt.subtract(yesterdaySameTimeUsdt));
             earnings.put("week", period(summary == null ? null : summary.week()));
             earnings.put("month", period(summary == null ? null : summary.month()));
             earnings.put("all", period(summary == null ? null : summary.all()));
@@ -184,6 +190,7 @@ public class AppHomeOverviewService {
         Map<String, Object> earnings = new LinkedHashMap<>();
         earnings.put("today", period(null));
         earnings.put("todayVsYesterdayPct", null);
+        earnings.put("todayVsYesterdayUsdt", null);
         earnings.put("week", period(null));
         earnings.put("month", period(null));
         earnings.put("all", period(null));
