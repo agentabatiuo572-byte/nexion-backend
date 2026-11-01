@@ -399,6 +399,57 @@ class ComputeV2CiMaintenanceTests(unittest.TestCase):
                 helper.main()
             load.assert_not_called()
 
+    def archive_job(self, state, component):
+        job = state.JOBS / f"nexgrid-{component}-main"
+        build = job / "builds/1"
+        build.mkdir(parents=True)
+        (job / "config.xml").write_text('<flow-definition plugin="workflow-job"><disabled>true</disabled></flow-definition>')
+        (build / "build.xml").write_text("<flow-build><completed>true</completed></flow-build>")
+        return job
+
+    def test_only_three_disabled_archived_main_names_are_read_without_changes(self):
+        with self.fixture() as state:
+            for component in resource.COMPONENTS:
+                self.archive_job(state, component)
+            before = {path: path.read_bytes() for path in state.JOBS.rglob("*.xml")}
+            helper.ci_idle(state, state.containers[helper.CI])
+            self.assertEqual({path: path.read_bytes() for path in before}, before)
+            self.assertEqual(state.events, [])
+
+    def test_enabled_main_non_flow_job_unfinished_old_main_and_unknown_job_are_rejected(self):
+        for failure, reason in (("enabled", "ARCHIVED_MAIN_JOB_MUST_BE_DISABLED"),
+                                ("type", "ARCHIVED_MAIN_JOB_MUST_BE_DISABLED"),
+                                ("unfinished", "WAIT_FOR_TERMINAL_ARCHIVED_BUILDS"),
+                                ("unknown", "UNEXPECTED_JENKINS_JOBS")):
+            with self.subTest(failure=failure), self.fixture() as state:
+                job = self.archive_job(state, "backend")
+                if failure == "enabled": (job / "config.xml").write_text("<flow-definition><disabled>false</disabled></flow-definition>")
+                elif failure == "type": (job / "config.xml").write_text("<project><disabled>true</disabled></project>")
+                elif failure == "unfinished":
+                    (job / "builds/1/build.xml").write_text("<flow-build><completed>false</completed></flow-build>")
+                    newer = job / "builds/2"
+                    newer.mkdir()
+                    (newer / "build.xml").write_text("<flow-build><completed>true</completed></flow-build>")
+                else: (state.JOBS / "nexgrid-other-main").mkdir()
+                with self.assertRaisesRegex(helper.Rejected, reason):
+                    helper.ci_idle(state, state.containers[helper.CI])
+                self.assertEqual(state.events, [])
+
+    def test_archived_config_and_all_build_xml_reject_size_doctype_entity_and_invalid_encoding(self):
+        invalid = (b'<!DOCTYPE flow-definition><flow-definition><disabled>true</disabled></flow-definition>',
+                   b'<!ENTITY forbidden "value"><flow-definition><disabled>true</disabled></flow-definition>',
+                   b"x" * (8 * 1024 * 1024),
+                   '<!DOCTYPE flow-definition><flow-definition/>'.encode("utf-16"),
+                   b"<unclosed>")
+        for target in ("config.xml", "builds/1/build.xml"):
+            for raw in invalid:
+                with self.subTest(target=target, bytes=len(raw)), self.fixture() as state:
+                    job = self.archive_job(state, "backend")
+                    (job / target).write_bytes(raw)
+                    with self.assertRaisesRegex(helper.Rejected, "ARCHIVED_JENKINS_XML_INVALID"):
+                        helper.ci_idle(state, state.containers[helper.CI])
+                    self.assertEqual(state.events, [])
+
     def test_enter_and_restore_cannot_interleave_the_same_receipt_or_drop_the_hold(self):
         for first in ("enter", "restore"):
             with self.subTest(first=first), self.fixture() as state:
