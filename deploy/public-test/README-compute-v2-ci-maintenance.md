@@ -79,6 +79,13 @@ sudo /usr/bin/python3 -I -B /opt/uvel-task-control/resource-control.py admit-bui
 ```
 
 The helper never invents a build number or releases a nonterminal reservation.
+Its Jenkins inventory requires the three `nexgrid-{backend,pc,uniapp}-test` jobs.
+Only the corresponding three archived `-main` names may additionally exist; each
+must be a `flow-definition` with `disabled=true`, and every numeric historical
+build must have `completed=true`. Archive config/build XML is read with the same
+8 MiB bound and rejects DOCTYPE, ENTITY, malformed or non-UTF-8 input. Enabled
+main jobs, unfinished archive builds and unknown job names keep maintenance held.
+The helper only reads these archives; it never enables, triggers or modifies them.
 After all builds and reservations are terminal and the agent is idle, restore:
 
 ```sh

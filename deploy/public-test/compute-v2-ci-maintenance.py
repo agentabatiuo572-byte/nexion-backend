@@ -15,6 +15,7 @@ import sys
 import time
 import urllib.request
 import uuid
+import xml.etree.ElementTree as ET
 
 GIB = 1024 ** 3
 BASELINE_SHA = "1b66c15b0b03c8ee17e9a46219027e9f3030f963beac448bab4bc3573e0f52b8"
@@ -177,9 +178,31 @@ def release_stopped(control):
     require(state.get("ActiveState") == "inactive" and state.get("MainPID") == "0", "RELEASE_SERVICE_MUST_BE_STOPPED")
 
 
+def archived_xml(path):
+    with path.open("rb") as stream:
+        raw = stream.read(8 * 1024 * 1024 + 1)
+    require(len(raw) < 8 * 1024 * 1024, "ARCHIVED_JENKINS_XML_INVALID")
+    try:
+        text = raw.decode("utf-8-sig")
+        require("<!DOCTYPE" not in text.upper() and "<!ENTITY" not in text.upper(), "ARCHIVED_JENKINS_XML_INVALID")
+        return ET.fromstring(text)
+    except (UnicodeError, ET.ParseError):
+        raise Rejected("ARCHIVED_JENKINS_XML_INVALID") from None
+
+
 def ci_idle(control, identity):
     expected = {f"nexgrid-{kind}-test" for kind in control.COMPONENTS}
-    require({path.name for path in control.JOBS.iterdir() if path.is_dir()} == expected, "UNEXPECTED_JENKINS_JOBS")
+    archived = {f"nexgrid-{kind}-main" for kind in control.COMPONENTS}
+    jobs = {path.name for path in control.JOBS.iterdir() if path.is_dir()}
+    require(expected <= jobs <= expected | archived, "UNEXPECTED_JENKINS_JOBS")
+    for job in sorted(jobs & archived):
+        config = archived_xml(control.JOBS / job / "config.xml")
+        require(config.tag == "flow-definition" and config.findtext("disabled", "").strip() == "true",
+                "ARCHIVED_MAIN_JOB_MUST_BE_DISABLED")
+        builds = control.JOBS / job / "builds"
+        numbers = [path for path in builds.iterdir() if path.name.isdigit()]
+        require(numbers and all(archived_xml(path / "build.xml").findtext("completed") == "true" for path in numbers),
+                "WAIT_FOR_TERMINAL_ARCHIVED_BUILDS")
     for job in expected:
         numbers = [int(path.name) for path in (control.JOBS / job / "builds").iterdir() if path.name.isdigit()]
         require(numbers and all(control.build_completed(job.removeprefix("nexgrid-").removesuffix("-test"), number)
