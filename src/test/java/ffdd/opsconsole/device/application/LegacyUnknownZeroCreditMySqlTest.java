@@ -58,8 +58,14 @@ class LegacyUnknownZeroCreditMySqlTest {
         source.setTransactionIsolation("TRANSACTION_READ_COMMITTED");jdbc=new JdbcTemplate(source);
         String schema=Files.readString(Path.of("scripts/schema.sql"));
         for(String table:List.of("nx_user","nx_user_wallet","nx_user_device","nx_user_device_runtime","nx_compute_task",
-                "nx_compute_receipt","nx_earning_event","nx_wallet_ledger","nx_event_outbox","nx_audit_log","nx_audit_log_archive","nx_config_item","nx_compute_dc_ops_state"))
+                "nx_compute_receipt","nx_earning_event","nx_wallet_ledger","nx_event_outbox","nx_audit_log","nx_audit_log_archive","nx_config_item","nx_compute_dc_ops_state",
+                "nx_event_schema_revision","nx_event_schema_registry","nx_event_schema_property"))
             createFrom(schema,table);
+        createFrom(Files.readString(Path.of("scripts/migrations/20260810_ab_pending_closure.sql")),"nx_admin_event_lifecycle");
+        try(Connection migration=source.getConnection()) {
+            org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(migration,
+                    new org.springframework.core.io.FileSystemResource("scripts/migrations/20260831_app_device_command_event_schema.sql"));
+        }
         createFrom(Files.readString(Path.of("scripts/migrations/20261011_support_fund_operations.sql")),"nx_support_fund_operation");
         String requests=Files.readString(Path.of("scripts/migrations/20261031_test_cloud_request_journal.sql"));
         createFrom(requests,"nx_test_cloud_request");createFrom(requests,"nx_test_cloud_resource_guard");
@@ -77,11 +83,16 @@ class LegacyUnknownZeroCreditMySqlTest {
         var config=new Configuration(new Environment("zero-cancel",new SpringManagedTransactionFactory(),ds));
         config.addMapper(LegacyUnknownZeroCreditMapper.class);config.addMapper(AppTaskAssignmentMapper.class);config.addMapper(TestCloudRequestMapper.class);
         config.addMapper(ComputeV2AdmissionMapper.class);
+        config.addMapper(ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.class);
         return new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(config));
     }
     private LegacyUnknownZeroCreditService service(DataSource ds,AuditLogService log) {
         var m=session(ds);return new LegacyUnknownZeroCreditService(m.getMapper(LegacyUnknownZeroCreditMapper.class),verifier(),
                 m.getMapper(AppTaskAssignmentMapper.class),log,outbox,JSON,environment(),CLOCK);
+    }
+    private EventOutboxService actualOutbox() {
+        return new EventOutboxService(session(source).getMapper(ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.class),
+                JSON,new ffdd.opsconsole.shared.outbox.OutboxProperties(),mock(ffdd.opsconsole.platform.application.A4RuntimePolicyService.class));
     }
     @BeforeEach void seed() {
         authenticate();
@@ -101,7 +112,7 @@ class LegacyUnknownZeroCreditMySqlTest {
             jdbc.update("INSERT INTO nx_test_cloud_execution(task_no,executor_id,owner_id,device_id,instance_no,task_config_id,next_key_hash,claim_token,input_json,input_hash,model_tag,model_digest,proof_nonce,created_at) VALUES(?,?,?,?,?,?,?,?,'[]',?,?,?, ?,NOW())",
                     c.taskNo(),c.executorId(),c.ownerId(),c.deviceId(),c.instanceNo(),c.taskConfigId(),c.nextKeyHash(),"f".repeat(64),c.inputHash(),c.modelTag(),c.modelDigest(),"a".repeat(64));
         }
-        audit=mock(AuditLogService.class);outbox=mock(EventOutboxService.class);service=service(source,audit);service.register(proof());
+        audit=mock(AuditLogService.class);outbox=spy(actualOutbox());service=service(source,audit);service.register(proof());
     }
     private static void authenticate() {
         var auth=new UsernamePasswordAuthenticationToken("2","fixture",List.of(new SimpleGrantedAuthority("device_e5_write"),new SimpleGrantedAuthority("platform_a2_operation_approve")));
@@ -165,6 +176,7 @@ class LegacyUnknownZeroCreditMySqlTest {
         assertThat(jdbc.queryForObject("SELECT status FROM nx_user_device WHERE id=1209",String.class)).isEqualTo("ACTIVE");
         assertThat(jdbc.queryForObject("SELECT active_task_no FROM nx_user_device_runtime WHERE user_device_id=1209",String.class)).isEqualTo(LegacyUnknownZeroCreditCases.require(1209).taskNo());
         assertThat(count("nx_test_cloud_zero_credit_resolution")).isZero();
+        assertThat(count("nx_event_outbox")).isZero();
         reset(audit);jdbc.execute("ALTER TABLE nx_test_cloud_zero_credit_resolution ADD CONSTRAINT injected_failure CHECK(device_id<>1208)");
         try { assertThatThrownBy(()->approve(1208)).isInstanceOf(org.springframework.dao.DataAccessException.class); }
         finally { jdbc.execute("ALTER TABLE nx_test_cloud_zero_credit_resolution DROP CHECK injected_failure"); }
@@ -209,11 +221,55 @@ class LegacyUnknownZeroCreditMySqlTest {
             assertThat(count("nx_test_cloud_zero_credit_resolution")).isEqualTo(1);verify(audit,times(1)).recordRequired(any());noCredit();
         } finally {pool.shutdownNow();}
     }
-    @Test void onlyTheOriginalPendingDeactivationIsFinalizedAndZeroAmountDoesNotCreateAReceipt() {
+    @Test void onlyTheOriginalPendingDeactivationIsFinalizedAndZeroAmountDoesNotCreateAReceipt() throws Exception {
         jdbc.update("UPDATE nx_user_device SET pending_deactivate=1 WHERE id=1209");approve(1209);
         assertThat(jdbc.queryForObject("SELECT status FROM nx_user_device WHERE id=1209",String.class)).isEqualTo("DEACTIVATED");
         assertThat(jdbc.queryForObject("SELECT pending_deactivate FROM nx_user_device WHERE id=1209",Integer.class)).isZero();
         verify(outbox).publishUserEvent(eq("USER_DEVICE"),eq(LegacyUnknownZeroCreditCases.require(1209).instanceNo()),eq("device.deactivated"),anyLong(),anyString(),anyInt(),anyString(),any());noCredit();
+        assertThat(count("nx_event_outbox")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT schema_registered FROM nx_event_outbox",Boolean.class)).isTrue();
+        var payload=JSON.readTree(jdbc.queryForObject("SELECT payload FROM nx_event_outbox",String.class));
+        assertThat(payload.path("previous_status").asText()).isEqualTo("ACTIVE");
+        assertThat(payload.path("status").asText()).isEqualTo("DEACTIVATED");
+        assertThat(payload.path("row_version").longValue()).isEqualTo(jdbc.queryForObject("SELECT row_version FROM nx_user_device WHERE id=1209",Long.class));
+        assertThat(payload.path("user_id").longValue()).isEqualTo(LegacyUnknownZeroCreditCases.OWNER);
+        assertThat(payload.has("trigger")).isFalse();
+    }
+    @Test void theActualEventSchemaRejectsTheOriginalUnknownTriggerInsteadOfSilentlyPublishing() {
+        assertThatThrownBy(()->outbox.publishUserEvent("USER_DEVICE",LegacyUnknownZeroCreditCases.require(1209).instanceNo(),
+                "device.deactivated",LegacyUnknownZeroCreditCases.OWNER,"P1",0,"2026-W44",
+                Map.of("deviceId",1209L,"instanceNo",LegacyUnknownZeroCreditCases.require(1209).instanceNo(),
+                        "status","DEACTIVATED","trigger","UNKNOWN_ABANDONED_NO_CREDIT")))
+                .hasMessage("A4_SCHEMA_PROPERTY_NOT_REGISTERED");
+        assertThat(count("nx_event_outbox")).isZero();noCredit();
+    }
+    @Test void aMissingCanonicalOutboxFieldRollsBackTheWholePendingDeactivation() {
+        jdbc.update("UPDATE nx_user_device SET pending_deactivate=1 WHERE id=1209");
+        String original=requests();var real=actualOutbox();
+        doAnswer(call->{
+            Map<String,Object> payload=new LinkedHashMap<>((Map<String,Object>)call.getArgument(7));
+            payload.remove("rowVersion");
+            return real.publishUserEvent(call.getArgument(0),call.getArgument(1),call.getArgument(2),call.getArgument(3),
+                    call.getArgument(4),call.getArgument(5),call.getArgument(6),payload);
+        }).when(outbox).publishUserEvent(anyString(),anyString(),anyString(),anyLong(),anyString(),anyInt(),anyString(),any());
+        assertThatThrownBy(()->approve(1209)).hasMessage("A4_SCHEMA_REQUIRED_PROPERTY_MISSING");
+        assertPendingDeactivationRolledBack();assertThat(requests()).isEqualTo(original);noCredit();
+    }
+    @Test void aMissingActualNewDeviceVersionRollsBackWithoutPublishingOrResolving() {
+        jdbc.update("UPDATE nx_user_device SET pending_deactivate=1 WHERE id=1209");
+        var actual=session(source).getMapper(AppTaskAssignmentMapper.class);
+        var failure=mock(AppTaskAssignmentMapper.class,org.mockito.AdditionalAnswers.delegatesTo(actual));
+        doReturn(null).when(failure).deviceRowVersion(LegacyUnknownZeroCreditCases.OWNER,1209L);
+        service=new LegacyUnknownZeroCreditService(mapper,verifier(),failure,audit,outbox,JSON,environment(),CLOCK);
+        assertThatThrownBy(()->approve(1209)).hasMessage("LEGACY_UNKNOWN_DEVICE_CHANGED");
+        assertPendingDeactivationRolledBack();verify(outbox,never()).publishUserEvent(anyString(),anyString(),anyString(),anyLong(),anyString(),anyInt(),anyString(),any());noCredit();
+    }
+    private void assertPendingDeactivationRolledBack() {
+        assertThat(jdbc.queryForObject("SELECT status FROM nx_user_device WHERE id=1209",String.class)).isEqualTo("ACTIVE");
+        assertThat(jdbc.queryForObject("SELECT pending_deactivate FROM nx_user_device WHERE id=1209",Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT status FROM nx_compute_task WHERE user_device_id=1209",String.class)).isEqualTo("RUNNING");
+        assertThat(jdbc.queryForObject("SELECT active_task_no FROM nx_user_device_runtime WHERE user_device_id=1209",String.class)).isEqualTo(LegacyUnknownZeroCreditCases.require(1209).taskNo());
+        assertThat(count("nx_test_cloud_zero_credit_resolution")).isZero();assertThat(count("nx_event_outbox")).isZero();
     }
     @Test void cancellingDoesNotInventAPauseOrClearARealUserPauseBeforeV2Admission() {
         var sessions=session(source);var actualAssignments=sessions.getMapper(AppTaskAssignmentMapper.class);
