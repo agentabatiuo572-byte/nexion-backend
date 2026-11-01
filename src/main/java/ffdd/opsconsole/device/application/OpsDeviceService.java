@@ -240,6 +240,22 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private final PhoneReplacementPolicyPublicationService phonePolicies;
     @lombok.NonNull
     private final TestCloudActivationAdmission testCloudAdmission;
+    private final LegacyUnknownZeroCreditService legacyUnknownZeroCredit;
+
+    public OpsDeviceService(SupportPaymentAttributionFacade paymentAttribution,
+            DeviceOpsRepository deviceRepository, DeviceCatalogRepository catalogRepository,
+            PlatformConfigFacade configFacade, TreasuryLedgerPostingFacade ledgerPostingFacade,
+            E4OrderRefundSettlementFacade refundSettlementFacade, TreasuryCoverageFacade coverageFacade,
+            AuditLogService auditLogService, AdminIdempotencyService idempotencyService,
+            EventOutboxService outboxService, E2TaskPriceHistoryService taskPriceHistoryService,
+            Clock clock, OpsReadTimeSeedPolicy readTimeSeedPolicy,
+            ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper, ObjectStorageService storageService,
+            PromotionOrderService promotions, PhoneReplacementPolicyPublicationService phonePolicies,
+            TestCloudActivationAdmission testCloudAdmission) {
+        this(paymentAttribution,deviceRepository,catalogRepository,configFacade,ledgerPostingFacade,refundSettlementFacade,
+                coverageFacade,auditLogService,idempotencyService,outboxService,taskPriceHistoryService,clock,
+                readTimeSeedPolicy,lockMapper,storageService,promotions,phonePolicies,testCloudAdmission,null);
+    }
 
     public OpsDeviceService(SupportPaymentAttributionFacade paymentAttribution,
             DeviceOpsRepository deviceRepository, DeviceCatalogRepository catalogRepository,
@@ -4992,6 +5008,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         String reason = ctx.reason();
         String idem = ctx.idempotencyKey();
         switch (cmd.op()) {
+            case "e1_legacy_unknown_zero_credit_cancel" -> {
+                if (legacyUnknownZeroCredit==null) return ApiResult.fail(503,"LEGACY_UNKNOWN_RESOLUTION_UNAVAILABLE");
+                return ApiResult.ok(legacyUnknownZeroCredit.approve(LegacyUnknownZeroCreditService.command(p)));
+            }
             case "e1_bundle_discount" -> {
                 DeviceBundleDiscountUpdateRequest req = new DeviceBundleDiscountUpdateRequest(
                         decimal(p, "twoItemsPct"), decimal(p, "threeItemsPct"),

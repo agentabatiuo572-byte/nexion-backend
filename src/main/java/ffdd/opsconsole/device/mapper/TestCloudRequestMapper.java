@@ -64,7 +64,8 @@ public interface TestCloudRequestMapper extends BaseMapper<TestCloudRequestEntit
     int activationResourceDelta(@Param("deviceId") long deviceId);
     String V1_PHYSICAL_FROM="""
         FROM nx_user_device d LEFT JOIN (
-          SELECT device_id FROM nx_test_cloud_request WHERE state IN ('PROCESSING','UNKNOWN')
+          SELECT r.device_id FROM nx_test_cloud_request r WHERE r.state IN ('PROCESSING','UNKNOWN')
+        """+" AND NOT EXISTS ("+LegacyZeroCreditResolutionSql.RESOLVED_REQUEST+")"+"""
           UNION
           SELECT user_device_id device_id FROM nx_compute_task
            WHERE is_deleted=0 AND source_environment='PRODUCTION' AND status IN ('CLAIMED','RUNNING')

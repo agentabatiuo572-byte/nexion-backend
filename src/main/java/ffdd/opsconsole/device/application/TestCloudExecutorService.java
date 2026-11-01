@@ -254,6 +254,8 @@ public class TestCloudExecutorService {
         requireEnabled(); key(key);
         requests.outside(()->requests.db(()->{
             requireCurrent(identity);
+            if(LegacyUnknownZeroCreditCases.contains(identity.deviceId()))
+                requireNotZeroCreditResolved(LegacyUnknownZeroCreditCases.require(identity.deviceId()).taskNo());
             Execution byKey=mapper.readByNextKey(identity.executorId(),sha256(key));
             Execution active=mapper.readActiveExecution(identity.executorId(),identity.ownerId(),identity.deviceId());
             if(byKey!=null && !requests.durableNext(identity,byKey.taskNo()) || active!=null && !requests.durableNext(identity,active.taskNo()))
@@ -376,6 +378,8 @@ public class TestCloudExecutorService {
     public ApiResult<Map<String,Object>> complete(Identity identity,String taskNo,String key,CompleteRequest request,
             String bodyHash,String recoveryToken,Long generation,Long stabilityReviewId) {
         requireEnabled(); key(key); safe(taskNo,96);
+        if(LegacyUnknownZeroCreditCases.ALL.stream().anyMatch(c->c.taskNo().equals(taskNo)))
+            requests.outside(()->requests.db(()->{requireCurrent(identity);requireNotZeroCreditResolved(taskNo);return null;}));
         if(Set.of(1204L,1209L,1214L,1152L,1380L).contains(identity.deviceId())) {
             requests.outside(()->requests.db(()->{
                 requireCurrent(identity);
@@ -753,11 +757,16 @@ public class TestCloudExecutorService {
     }
 
     private void requireLiveTask(Identity i,Execution e,AssignmentRow task) {
+        if(task!=null) requireNotZeroCreditResolved(task.taskNo());
         if(task==null || i.deviceId()!=task.deviceId() || !i.taskConfigId().equals(task.taskId())
                 || !KIND.equals(task.modelName()) || !CLIENT.equals(task.clientName())
                 || !e.proofNonce().equals(task.completionNonce()) || !Set.of("RUNNING","CLAIMED").contains(task.status())
                 || task.leaseExpiresAt()==null || !task.leaseExpiresAt().isAfter(now())
                 || task.proofExpiresAt()==null || !task.proofExpiresAt().isAfter(now())) throw error(409,"TEST_CLOUD_TASK_INVALID");
+    }
+    private void requireNotZeroCreditResolved(String taskNo) {
+        for(var c:LegacyUnknownZeroCreditCases.ALL) if(c.taskNo().equals(taskNo)
+                && mapper.zeroCreditCaseEvidence(c.caseId())!=0) throw error(409,"TEST_CLOUD_ZERO_CREDIT_RESOLVED");
     }
 
     private AssignmentRow task(Identity i,String taskNo) {

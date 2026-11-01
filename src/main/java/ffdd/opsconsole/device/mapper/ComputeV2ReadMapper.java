@@ -25,6 +25,8 @@ public interface ComputeV2ReadMapper extends BaseMapper<Object> {
               AND t.status&lt;&gt;'COMPLETED' AND t.completed_at IS NULL AND t.task_no NOT LIKE 'CV2-%'
               AND d.source_environment='PRODUCTION' AND d.run_id='' AND d.is_deleted=0 AND UPPER(d.ownership_status)='OWNED'
               AND r.operation='COMPLETE' AND r.state IN ('UNKNOWN','PROCESSING')
+              AND NOT EXISTS (
+            """+LegacyZeroCreditResolutionSql.RESOLVED_REQUEST+")"+"""
               AND NOT EXISTS (SELECT 1 FROM nx_compute_receipt receipt
                               WHERE receipt.task_no=t.task_no AND receipt.source_environment='PRODUCTION' AND receipt.is_deleted=0)
               AND t.user_device_id IN

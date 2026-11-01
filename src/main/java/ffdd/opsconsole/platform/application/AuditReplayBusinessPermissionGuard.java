@@ -106,6 +106,18 @@ public class AuditReplayBusinessPermissionGuard {
     private final ffdd.opsconsole.growth.application.WeeklyRegionPolicyService weeklyRegionPolicies;
     private final PhoneReplacementContract phoneReplacement;
     private final ffdd.opsconsole.finance.cregis.CregisDepositPolicyService depositPolicies;
+    private final ffdd.opsconsole.device.application.LegacyUnknownZeroCreditService legacyUnknownZeroCredit;
+
+    public AuditReplayBusinessPermissionGuard(TrustDisclosureRepository trustDisclosureRepository,
+            AdminOperatorRoleResolver roleResolver, EmergencyControlRepository emergencyControlRepository,
+            org.springframework.beans.factory.ObjectProvider<ffdd.opsconsole.team.application.DirectReferralPolicyService> directPolicies,
+            PlatformConfigFacade configFacade,
+            ffdd.opsconsole.growth.application.WeeklyRegionPolicyService weeklyRegionPolicies,
+            PhoneReplacementContract phoneReplacement,
+            ffdd.opsconsole.finance.cregis.CregisDepositPolicyService depositPolicies) {
+        this(trustDisclosureRepository,roleResolver,emergencyControlRepository,directPolicies,configFacade,
+                weeklyRegionPolicies,phoneReplacement,depositPolicies,null);
+    }
 
     public AuditReplayBusinessPermissionGuard(TrustDisclosureRepository trustDisclosureRepository,
             AdminOperatorRoleResolver roleResolver, EmergencyControlRepository emergencyControlRepository,
@@ -156,6 +168,12 @@ public class AuditReplayBusinessPermissionGuard {
             }
         }
         String operation = command.op().trim().toLowerCase(Locale.ROOT);
+        if (ffdd.opsconsole.device.application.LegacyUnknownZeroCreditCases.OP.equals(operation)) {
+            try {
+                if (!"E".equals(command.domain())) return ApiResult.fail(422,"LEGACY_UNKNOWN_COMMAND_INVALID");
+                var typed=ffdd.opsconsole.device.application.LegacyUnknownZeroCreditService.command(command.params());
+            } catch (RuntimeException invalid) { return ApiResult.fail(422,"LEGACY_UNKNOWN_COMMAND_INVALID"); }
+        }
         String requiredAuthority = requiredAuthority(command, operation);
         if ("h8_referral_settlement_user".equals(operation)
                 && (!"H".equalsIgnoreCase(command.domain())
@@ -172,6 +190,11 @@ public class AuditReplayBusinessPermissionGuard {
                 && !hasAuthority(requiredAuthority)
                 && !scopedMakerMayPropose(command, operation)) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_PERMISSION_DENIED:" + requiredAuthority);
+        }
+        if (ffdd.opsconsole.device.application.LegacyUnknownZeroCreditCases.OP.equals(operation)) {
+            if (legacyUnknownZeroCredit==null) return ApiResult.fail(503,"LEGACY_UNKNOWN_RESOLUTION_UNAVAILABLE");
+            try { legacyUnknownZeroCredit.validateProposal(ffdd.opsconsole.device.application.LegacyUnknownZeroCreditService.command(command.params())); }
+            catch (ffdd.opsconsole.shared.exception.BizException invalid) { return ApiResult.fail(invalid.getCode(),invalid.getMessage()); }
         }
         if ("F".equalsIgnoreCase(command.domain()) && "f4_leaderboard_period_payout".equals(operation)
                 && configFacade.activeValue("team.ui.F.leaderboard.paused")
@@ -262,6 +285,15 @@ public class AuditReplayBusinessPermissionGuard {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_COMMAND_REQUIRED");
         }
         String operation = command.op().trim().toLowerCase(Locale.ROOT);
+        if (ffdd.opsconsole.device.application.LegacyUnknownZeroCreditCases.OP.equals(operation)) {
+            if (!"E".equals(command.domain()) || !hasAuthority("device_e5_write") || !hasAuthority("platform_a2_operation_approve"))
+                return ApiResult.fail(403,"A2_BUSINESS_PERMISSION_DENIED:device_e5_write");
+            try {
+                if (legacyUnknownZeroCredit==null) return ApiResult.fail(503,"LEGACY_UNKNOWN_RESOLUTION_UNAVAILABLE");
+                legacyUnknownZeroCredit.validateApproval(ffdd.opsconsole.device.application.LegacyUnknownZeroCreditService.command(command.params()));
+                return ApiResult.ok();
+            } catch (ffdd.opsconsole.shared.exception.BizException invalid) { return ApiResult.fail(invalid.getCode(),invalid.getMessage()); }
+        }
         if (isJ4Execution(command, operation)) {
             if (!hasAuthority("platform_a2_operation_approve")
                     || !hasAuthority("emergency_j4_playbook_execute")) {
@@ -754,6 +786,7 @@ public class AuditReplayBusinessPermissionGuard {
     private DelegatedProposalDescriptor delegatedEDescriptor(String operation, Map<String, Object> params) {
         String deviceId = positiveIdentifier(params.get("deviceId"));
         return switch (operation) {
+            case "e1_legacy_unknown_zero_credit_cancel" -> legacyUnknownDescriptor(params);
             case "e3_config" -> e3ConfigDescriptor(params);
             case "e5_device_force_activate" -> deviceDescriptor(
                     "强制激活设备", deviceId, "ACTIVATED");
@@ -767,6 +800,16 @@ public class AuditReplayBusinessPermissionGuard {
             case "e6_compute_config_batch" -> computeConfigBatchDescriptor(params);
             default -> null;
         };
+    }
+
+    private DelegatedProposalDescriptor legacyUnknownDescriptor(Map<String,Object> params) {
+        var command=ffdd.opsconsole.device.application.LegacyUnknownZeroCreditService.command(params);
+        var c=ffdd.opsconsole.device.application.LegacyUnknownZeroCreditCases.require(command.deviceId());
+        String proofSha=ffdd.opsconsole.device.application.LegacyUnknownZeroCreditCases.sha(command.proof().observation());
+        return new DelegatedProposalDescriptor("结束未确认任务（不计收益）",String.valueOf(c.deviceId()),
+                c.taskNo()+" / "+c.caseId()+" / 未确认 COMPLETE generation 1",
+                "CANCELLED / ZERO CREDIT / proof "+proofSha+" / epoch "+ffdd.opsconsole.device.application.LegacyUnknownZeroCreditService.proofEpoch(command),
+                "E5","acct",false,new AuditLockTarget("E","legacy_unknown",c.taskNo()));
     }
 
     private DelegatedProposalDescriptor e3ConfigDescriptor(Map<String, Object> params) {
@@ -1192,6 +1235,7 @@ public class AuditReplayBusinessPermissionGuard {
                 default -> null;
             };
             case "E" -> switch (operation) {
+                case "e1_legacy_unknown_zero_credit_cancel" -> "device_e5_write";
                 case "e3_config" -> "device_e3_write";
                 case "e4_order_refund" -> "device_e4_order_refund";
                 case "e4_order_cancel", "e4_order_terminal", "e4_order_state" -> "device_e4_write";

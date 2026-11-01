@@ -740,6 +740,21 @@ class TestCloudExecutorServiceTest {
         when(mapper.computeV2PaidBinding(any(),nullable(LocalDateTime.class),eq(7L),eq(12L),eq("DEV-12"),eq(false),eq(false))).thenReturn(null);
         assertThatThrownBy(()->service.requireComputeV2Paid(fleet,false)).hasMessage("TEST_CLOUD_BINDING_INVALID");
     }
+    @Test void fixedZeroCreditResolutionBlocksOldCompleteAndNextBeforeAnyNewAuthorityOrInference() throws Exception {
+        var c=LegacyUnknownZeroCreditCases.require(1208);
+        var fixed=new Identity(c.executorId(),c.ownerId(),c.deviceId(),c.instanceNo(),c.taskConfigId(),c.modelTag(),c.modelDigest());
+        doNothing().when(service).requireCurrent(fixed);when(mapper.zeroCreditCaseEvidence(c.caseId())).thenReturn(1);
+        assertThatThrownBy(()->service.complete(fixed,c.taskNo(),"BGE-COMPLETE-fixed",request(0.25f),c.requestBodyHash(),null,null))
+                .hasMessage("TEST_CLOUD_ZERO_CREDIT_RESOLVED");
+        assertThatThrownBy(()->service.next(fixed,"BGE-NEXT-fixed")).hasMessage("TEST_CLOUD_ZERO_CREDIT_RESOLVED");
+        verify(requests,never()).execute(any(),anyString(),anyString(),anyString(),nullable(String.class),nullable(Long.class),nullable(String.class),nullable(Long.class),any());
+        verify(service,never()).infer(any());verifyNoInteractions(settlement);
+    }
+    @Test void ordinaryV1CompleteDoesNotReadTheFixedIncidentResolutionTable() throws Exception {
+        doReturn(ApiResult.ok(Map.of())).when(requests).execute(any(),anyString(),anyString(),anyString(),nullable(String.class),nullable(Long.class),nullable(String.class),nullable(Long.class),any());
+        assertThat(service.complete(identity,TASK,"BGE-COMPLETE-normal",request(0.25f)).getCode()).isZero();
+        verify(mapper,never()).zeroCreditCaseEvidence(anyString());
+    }
     @Test void modelDigestDriftAfterRealInferenceResponseIsRejected() throws Exception {
         var server=com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1",0),0);
         var tagCalls=new java.util.concurrent.atomic.AtomicInteger();

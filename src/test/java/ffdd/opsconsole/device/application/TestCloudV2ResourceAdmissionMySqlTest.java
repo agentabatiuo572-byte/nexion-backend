@@ -6,6 +6,7 @@ import static org.mockito.Mockito.*;
 import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
 import ffdd.opsconsole.device.compute.v2.ComputeV2Runtime;
 import ffdd.opsconsole.device.mapper.TestCloudRequestMapper;
+import ffdd.opsconsole.device.mapper.LegacyZeroCreditResourceSchema;
 import java.nio.file.*;
 import java.sql.*;
 import java.time.*;
@@ -47,10 +48,11 @@ class TestCloudV2ResourceAdmissionMySqlTest {
         database="compute_v2_capacity_"+UUID.randomUUID().toString().replace("-","");
         jdbc.execute("CREATE DATABASE "+database+" CHARACTER SET utf8mb4"); jdbc.execute("USE "+database);
         jdbc.execute("CREATE TABLE nx_user_device(id BIGINT PRIMARY KEY,is_deleted INT,source_environment VARCHAR(16),run_id VARCHAR(32),ownership_status VARCHAR(16),device_type VARCHAR(16),activated_at DATETIME,deactivated_at DATETIME,status VARCHAR(16),pending_deactivate INT)");
-        jdbc.execute("CREATE TABLE nx_test_cloud_request(device_id BIGINT,owner_id BIGINT,state VARCHAR(16))");
+        LegacyZeroCreditResourceSchema.requests(jdbc);
+        LegacyZeroCreditResourceSchema.resolutions(jdbc);
         for(int run=0;run<2;run++) ScriptUtils.executeSqlScript(connection,new FileSystemResource("scripts/migrations/20261101_compute_v2_resource_index.sql"));
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='nx_test_cloud_request' AND index_name='idx_state_device_owner'",Integer.class)).isEqualTo(3);
-        jdbc.execute("CREATE TABLE nx_compute_task(task_no VARCHAR(96),user_device_id BIGINT,is_deleted INT,source_environment VARCHAR(16),status VARCHAR(16),KEY idx_active(status,user_device_id))");
+        jdbc.execute("CREATE TABLE nx_compute_task(task_no VARCHAR(96),user_device_id BIGINT,is_deleted INT,source_environment VARCHAR(16),status VARCHAR(16),user_id BIGINT,task_config_id VARCHAR(64),completed_at DATETIME,KEY idx_active(status,user_device_id))");
         jdbc.execute("CREATE TABLE nx_test_cloud_resource_guard(id INT PRIMARY KEY)"); jdbc.execute("INSERT INTO nx_test_cloud_resource_guard VALUES(1)");
         mybatis=new Configuration(new Environment("compute-v2-capacity",new SpringManagedTransactionFactory(),source));mybatis.addMapper(TestCloudRequestMapper.class);
         mapper=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(mybatis)).getMapper(TestCloudRequestMapper.class);
@@ -58,7 +60,7 @@ class TestCloudV2ResourceAdmissionMySqlTest {
         logical=LongStream.rangeClosed(1,6000).boxed().collect(Collectors.toCollection(LinkedHashSet::new));
     }
     @BeforeEach void devices() {
-        for(String table:List.of("nx_user_device","nx_test_cloud_request","nx_compute_task")) jdbc.execute("TRUNCATE TABLE "+table);
+        for(String table:List.of("nx_user_device","nx_test_cloud_request","nx_compute_task","nx_test_cloud_zero_credit_resolution")) jdbc.execute("TRUNCATE TABLE "+table);
         jdbc.execute("INSERT INTO nx_user_device VALUES "+logical.stream().map(id->"("+id+",0,'PRODUCTION','','OWNED','DEVICE',NULL,NULL,'INVENTORY',0)").collect(Collectors.joining(",")));
         var env=TestCloudExecutorServiceTest.environment();env.setProperty("nexion.compute-v2.enabled","true");env.setProperty("nexion.compute-v2.deployment-scope","TEST");
         env.setProperty("nexion.compute-v2.device-ids",logical.stream().map(Object::toString).collect(Collectors.joining(",")));
@@ -88,8 +90,8 @@ class TestCloudV2ResourceAdmissionMySqlTest {
     }
     @Test void oldUnknownAndProcessingRetainFourPromisesEvenWhenEnrolledOrDeactivated() throws Exception {
         jdbc.update("UPDATE nx_user_device SET activated_at=CURRENT_TIMESTAMP,status='ACTIVE'");
-        jdbc.update("INSERT INTO nx_test_cloud_request VALUES(1,7,'UNKNOWN'),(2,7,'UNKNOWN'),(3,7,'PROCESSING'),(4,7,'UNKNOWN'),(5,7,'COMMITTED')");
-        jdbc.update("INSERT INTO nx_compute_task VALUES('CTA-old',1,0,'PRODUCTION','RUNNING'),('CV2-current',6,0,'PRODUCTION','RUNNING')");
+        jdbc.update("INSERT INTO nx_test_cloud_request(device_id,owner_id,state) VALUES(1,7,'UNKNOWN'),(2,7,'UNKNOWN'),(3,7,'PROCESSING'),(4,7,'UNKNOWN'),(5,7,'COMMITTED')");
+        jdbc.update("INSERT INTO nx_compute_task(task_no,user_device_id,is_deleted,source_environment,status) VALUES('CTA-old',1,0,'PRODUCTION','RUNNING'),('CV2-current',6,0,'PRODUCTION','RUNNING')");
         assertThat(mapper.activeV1ResourceExecutors(logical)).isEqualTo(4);
         assertThat(mapper.v1ResourceExecutorCount(1,logical)).isZero();
         assertThat(admission.canStartV2Execution(host(),0)).isTrue();assertThat(admission.canStartV2Execution(host(),1)).isTrue();
@@ -110,14 +112,14 @@ class TestCloudV2ResourceAdmissionMySqlTest {
         when(runtime.activeExecutionCount()).thenReturn(1);
         transactions.execute(status->{admission.lock();admission.requireCapacity(snapshot,1);return null;});
         assertThat(mapper.v1ResourceExecutorCount(7001,logical)).isEqualTo(1);
-        jdbc.update("INSERT INTO nx_test_cloud_request VALUES(7001,7,'UNKNOWN')");
+        jdbc.update("INSERT INTO nx_test_cloud_request(device_id,owner_id,state) VALUES(7001,7,'UNKNOWN')");
         assertThat(mapper.v1ResourceExecutorCount(7001,logical)).isZero();
         assertThat(mapper.activeV1ResourceExecutors(logical)).isEqualTo(4);
     }
     @Test void resourceCounterUsesStateIndexInsteadOfScanningCommittedHistoryPerLogicalDevice() throws Exception {
         jdbc.update("UPDATE nx_user_device SET activated_at=CURRENT_TIMESTAMP,status='ACTIVE'");
-        jdbc.execute("INSERT INTO nx_test_cloud_request VALUES "+IntStream.range(0,24000).mapToObj(n->"("+(n%6000+1)+",7,'COMMITTED')").collect(Collectors.joining(",")));
-        jdbc.update("INSERT INTO nx_test_cloud_request VALUES(1,7,'UNKNOWN'),(2,7,'UNKNOWN'),(3,7,'PROCESSING'),(4,7,'UNKNOWN')");
+        jdbc.execute("INSERT INTO nx_test_cloud_request(device_id,owner_id,state) VALUES "+IntStream.range(0,24000).mapToObj(n->"("+(n%6000+1)+",7,'COMMITTED')").collect(Collectors.joining(",")));
+        jdbc.update("INSERT INTO nx_test_cloud_request(device_id,owner_id,state) VALUES(1,7,'UNKNOWN'),(2,7,'UNKNOWN'),(3,7,'PROCESSING'),(4,7,'UNKNOWN')");
         jdbc.execute("ANALYZE TABLE nx_test_cloud_request");
         assertThat(mapper.activeV1ResourceExecutors(logical)).isEqualTo(4);
         var bound=mybatis.getMappedStatement(TestCloudRequestMapper.class.getName()+".activeV1ResourceExecutors").getBoundSql(Map.of("logicalDevices",logical));
@@ -125,7 +127,7 @@ class TestCloudV2ResourceAdmissionMySqlTest {
         try(var query=connection.prepareStatement("EXPLAIN "+bound.getSql())) {
             for(int i=0;i<bound.getParameterMappings().size();i++) query.setObject(i+1,bound.getAdditionalParameter(bound.getParameterMappings().get(i).getProperty()));
             try(var plan=query.executeQuery()) {
-                while(plan.next()) if("nx_test_cloud_request".equals(plan.getString("table"))) {
+                while(plan.next()) if("r".equals(plan.getString("table"))) {
                     assertThat(plan.getString("key")).isEqualTo("idx_state_device_owner");
                     assertThat(plan.getString("type")).isIn("range","ref");stateRange=true;
                 }
