@@ -19,7 +19,12 @@ import org.springframework.web.bind.annotation.*;
 public class TestComputeV2Controller {
     private final TestComputeV2Service service;
     private final ObjectMapper json;
-    public TestComputeV2Controller(TestComputeV2Service service,ObjectMapper json){this.service=service;this.json=json;}
+    private final ObjectMapper completionJson;
+    public TestComputeV2Controller(TestComputeV2Service service,ObjectMapper json){
+        this.service=service;this.json=json;this.completionJson=json.copy();
+        this.completionJson.getFactory().setStreamReadConstraints(com.fasterxml.jackson.core.StreamReadConstraints.builder()
+                .maxStringLength(TestComputeV2Service.MAX_COMPLETION_BODY_BYTES).build());
+    }
     @PostMapping("/next-task")
     public Object next(Authentication auth,HttpServletRequest request){var b=body(request,Set.of("runner"));return ApiResult.ok(service.next(identity(auth),text(b,"runner")));}
     @PostMapping("/tasks/{taskNo}/heartbeat")
@@ -29,7 +34,8 @@ public class TestComputeV2Controller {
     }
     @PostMapping("/tasks/{taskNo}/complete")
     public Object complete(Authentication auth,@PathVariable String taskNo,HttpServletRequest request){
-        var b=body(request,Set.of("runner","generation","claimToken","proofNonce","inputHash","modelDigest","resultHash","resultArtifactBase64","proofTimestamp"));
+        var b=body(request,Set.of("runner","generation","claimToken","proofNonce","inputHash","modelDigest","resultHash","resultArtifactBase64","proofTimestamp"),
+                TestComputeV2Service.MAX_COMPLETION_BODY_BYTES);
         return ApiResult.ok(service.complete(identity(auth),text(b,"runner"),task(taskNo),new TestComputeV2Service.Complete(
                 number(b,"generation"),text(b,"claimToken"),text(b,"proofNonce"),text(b,"inputHash"),text(b,"modelDigest"),
                 text(b,"resultHash"),text(b,"resultArtifactBase64"),number(b,"proofTimestamp"))));
@@ -54,8 +60,12 @@ public class TestComputeV2Controller {
         if(auth==null || !(auth.getPrincipal() instanceof TestCloudExecutorService.Identity value))throw new BizException(401,"TEST_CLOUD_AUTH_INVALID");return value;
     }
     private JsonNode body(HttpServletRequest request,Set<String> fields){
-        try{byte[] bytes=request.getInputStream().readNBytes(20001);if(bytes.length>20000)throw new BizException(413,"COMPUTE_V2_BODY_TOO_LARGE");
-            JsonNode b=json.readerFor(JsonNode.class).with(JsonParser.Feature.STRICT_DUPLICATE_DETECTION).with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readValue(bytes);
+        return body(request,fields,20000);
+    }
+    private JsonNode body(HttpServletRequest request,Set<String> fields,int limit){
+        try{byte[] bytes=request.getInputStream().readNBytes(limit+1);if(bytes.length>limit)throw new BizException(413,"COMPUTE_V2_BODY_TOO_LARGE");
+            JsonNode b=(limit>20000?completionJson:json).readerFor(JsonNode.class).with(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+                    .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readValue(bytes);
             if(b==null||!b.isObject())throw invalid();Set<String> actual=new HashSet<>();b.fieldNames().forEachRemaining(actual::add);
             if(!actual.equals(fields))throw invalid();return b;
         }catch(java.io.IOException malformed){throw invalid();}

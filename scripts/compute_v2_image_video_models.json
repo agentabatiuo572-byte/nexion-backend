@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "dependencies": {
+    "torch": "2.8.0",
+    "transformers": "4.57.1",
+    "diffusers": "0.35.2",
+    "accelerate": "1.11.0",
+    "safetensors": "0.6.2",
+    "numpy": "2.2.6",
+    "Pillow": "11.3.0",
+    "imageio-ffmpeg": "0.6.0"
+  },
+  "modelId": "nota-ai/bk-sdm-tiny",
+  "revision": "0364108e53b7f7f4d2585e817a0b7a83dc261cfa",
+  "license": "creativeml-openrail-m",
+  "source": "https://huggingface.co/nota-ai/bk-sdm-tiny/tree/0364108e53b7f7f4d2585e817a0b7a83dc261cfa",
+  "files": {
+    "feature_extractor/preprocessor_config.json": "2a1da83b5e1032aaeef397552ddb408dca0d8cd1dc58f61bf6abf38d6f33a0a2",
+    "model_index.json": "c7cc314014486aa2f7f17ab8f90197fe0412c818cdefb9e15601ae58752b5001",
+    "safety_checker/config.json": "a069f3ab23e39f3d608b220d9ae6067a94e43405557e575cf7f98d7e8d2a255c",
+    "safety_checker/model.safetensors": "9d6a233ff6fd5ccb9f76fd99618d73369c52dd3d8222376384d0e601911089e8",
+    "scheduler/scheduler_config.json": "8335df29b53da12e9aeca35b1c2e60d88b23eae4cc5ad3d07efdcd7f003cc343",
+    "text_encoder/config.json": "aa210e6d6abd239a466af57a1dadb62d5ced63295064d295a549e08a6c4a2020",
+    "text_encoder/model.safetensors": "7b3a12df205cb3c74dd4eae4354d93f606ae6b3bc29d5d06fd97921cb9ad8a81",
+    "tokenizer/merges.txt": "9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a",
+    "tokenizer/special_tokens_map.json": "c4864a9376a8401918425bed71fc14fc0e81f9b59ec45c1cf96cccb2df508eac",
+    "tokenizer/tokenizer_config.json": "00439066fcba73de57644cf41e4e3b9f2dbb09d7f3fc2005898ba52399045882",
+    "tokenizer/vocab.json": "e089ad92ba36837a0d31433e555c8f45fe601ab5c221d4f607ded32d9f7a4349",
+    "unet/config.json": "1ff785ca27c8e050e9d695b704e2231fd52a212840c7932397acaa98f566d4ab",
+    "unet/diffusion_pytorch_model.safetensors": "ded7f8745ae51e6e41ac3fdd3354b9ec3cb4b18c2e5b02539635e7b28bafee5f",
+    "vae/config.json": "0e5966d4d52c8077648754ffd2c14ab5e0b26a4bdfa6af1d207c27550fa6d2af",
+    "vae/diffusion_pytorch_model.safetensors": "a2b5134f4dbc140d9c11f11cba3233099e00af40f262f136c691fb7d38d2194c"
+  }
+}

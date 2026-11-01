@@ -86,7 +86,8 @@ public class ComputeV2Runtime {
         ComputeV2Event event = event(Kind.STARTED,userId,deviceId,current.instanceNo(),current.taskNo(),current.generation(),now,started,null,null);
         String reserved = store.execute("start",current.taskNo(),Long.toString(current.generation()),executorId,
                 Long.toString(lease.toEpochMilli()),store.encode(event),Integer.toString(config.getExecutionCapacity()),
-                Long.toString(clock.millis()),Long.toString(config.getBacklogStopSeconds()*1000L),Integer.toString(config.getUnpersistedCapacity()),config.isAccepting() ? "1" : "0");
+                Long.toString(clock.millis()),Long.toString(config.getBacklogStopSeconds()*1000L),Integer.toString(config.getUnpersistedCapacity()),
+                config.isAccepting() ? "1" : "0",store.encode(config.executionResourcePolicy()));
         if (reserved == null || reserved.isEmpty()) return Optional.empty();
         return Optional.of(store.decode(reserved,ComputeV2Event.class));
     }
@@ -195,6 +196,17 @@ public class ComputeV2Runtime {
     public List<RuntimeView> queued(int limit) {
         return queuedTasks(limit).stream().map(task -> store.field("issued-events",task)).filter(Objects::nonNull)
                 .map(value -> store.decode(value,ComputeV2Event.class)).map(event -> view(event.userId(),event.deviceId()).orElseThrow()).toList();
+    }
+    /** Cloud FIFO excludes phone-owned work; phones reserve only their authenticated device's task. */
+    public List<RuntimeView> queuedCloud(int limit) {
+        return store.sorted("queue").stream().map(task -> store.field("issued-events",task)).filter(Objects::nonNull)
+                .map(value -> store.decode(value,ComputeV2Event.class)).filter(event -> !phoneExecution(event.task()))
+                .limit(Math.min(limit,config.getManagedCapacity()))
+                .map(event -> view(event.userId(),event.deviceId()).orElseThrow()).toList();
+    }
+    private static boolean phoneExecution(TaskSnapshot snapshot) {
+        return "EM".equals(snapshot.taskClass()) && "all-MiniLM-L6-v2".equals(snapshot.modelName())
+                && Set.of("PHONE","MOBILE").contains(snapshot.device().deviceType());
     }
     public PendingSummary pendingSummary(long userId) {
         return pendingVerifiedSnapshot(userId).summary();

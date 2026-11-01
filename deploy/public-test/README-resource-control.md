@@ -106,13 +106,26 @@ Remove 11442 from the live fleet endpoint list while retaining all six real task
 lanes. Preserve the current excluded-device set and append 1380 without dropping
 existing exclusions; protected journals are not recovery/replay permission.
 
-`stoppedControls` is optional and accepts only the exact known spare above. Every
-snapshot and build admission checks Docker State.Running is false and its actual
-restart policy is `no` or `unless-stopped`. Missing containers, running state,
+`stoppedControls` is optional. It accepts the old spare-only set above, or the
+complete known set `uvel-cloud-bge-model-fleet-2` through `-7` for the modal
+replacement. Partial replacement sets, duplicates, unknown containers and
+overlap with committed controls are rejected. Every snapshot and build admission
+checks Docker Running false, PID zero and Paused false. The old spare-only set
+retains restart-policy `no` or `unless-stopped`; the complete modal replacement
+set requires `no` for all six containers. Missing containers, running state,
 unsupported policies or inspection failure close new activation/build admission.
 Do not leave compose/boot automation able to start the unbudgeted spare. Record its
 original restart/configuration for rollback; before intentionally restarting it,
 approve a new budget that reserves its complete cap and update the fleet topology.
+
+The explicit modal runtime profile reserves only base validator 1.5 GiB,
+fleet-1 1.5 GiB and `uvel-compute-modal-runtime` 7.5 GiB as model controls. These
+exact hard caps and all six stopped controls permit `maxActiveExecutors=6` logical
+slots while Java/Lua and the child service share the bounded model work pool.
+There is no arbitrary multiplier for other model containers. Total model
+commitment remains 10.5 GiB; the modal cap includes a 6 GiB work pool plus
+1.5 GiB framework overhead. The corresponding two-profile CI exchange and its
+same-ID restore are described in `README-compute-v2-ci-maintenance.md`.
 
 With physical memory `P`, reserve `R=ceil(P/5)`, nonbuild commitments `C`, and the
 CI cap `B`, admission requires `C+B <= P-R`. Every runnable model's full cap is

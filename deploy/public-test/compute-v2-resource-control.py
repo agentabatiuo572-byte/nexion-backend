@@ -23,6 +23,7 @@ JOBS = Path("/var/lib/docker/volumes/nexgrid_jenkins_home/_data/jobs")
 RELEASE_STATE = Path("/srv/nexgrid/cd/state.json")
 COMPONENTS = ("backend", "pc", "uniapp")
 STOPPED_SPARE = "uvel-cloud-bge-model-fleet-7"
+STOPPED_MODAL_FLEET = {f"uvel-cloud-bge-model-fleet-{number}" for number in range(2, 8)}
 V2_SERVICE = "uvel-compute-v2-worker.service"
 V2_ROOT = Path("/var/lib/uvel-compute-v2")
 V2_JOURNALS = {f"runner-{number}.sqlite" for number in range(1, 7)}
@@ -99,8 +100,18 @@ def load_config():
         names.add(entry["name"])
         require(entry["kind"] not in ("backend", "model") or entry.get("control", {}).get("type") in ("systemd", "docker"),
                 "BUSINESS_LIMIT_REQUIRED")
+    stopped = stopped_controls(value)
+    models = {entry["name"]: (entry["bytes"], entry.get("control")) for entry in value["commitments"] if entry["kind"] == "model"}
+    # The modal work pool's own atomic memory/CPU gate multiplexes six logical
+    # permits. This is one explicit replacement for the old six BGE containers,
+    # not a general licence to multiply arbitrary model-container capacity.
+    modal_profile = value["maxActiveExecutors"] == 6 and models == {
+        "uvel-cloud-bge-model": (3 * 1024 ** 3 // 2, {"type": "docker", "name": "uvel-cloud-bge-model"}),
+        "uvel-cloud-bge-model-fleet-1": (3 * 1024 ** 3 // 2, {"type": "docker", "name": "uvel-cloud-bge-model-fleet-1"}),
+        "uvel-compute-modal-runtime": (15 * 1024 ** 3 // 2, {"type": "docker", "name": "uvel-compute-modal-runtime"})
+    } and {entry["name"] for entry in stopped} == STOPPED_MODAL_FLEET
     require(sum(entry["kind"] == "backend" for entry in value["commitments"]) == 1
-            and sum(entry["kind"] == "model" for entry in value["commitments"]) >= value["maxActiveExecutors"],
+            and (len(models) >= value["maxActiveExecutors"] or modal_profile),
             "EXECUTOR_RESERVATION_REQUIRED")
     require(value.get("buildControl", {}).get("type") == "docker", "CI_CONTAINER_LIMIT_REQUIRED")
     require(set(value.get("buildRequests", {})) == set(COMPONENTS)
@@ -114,15 +125,18 @@ def load_config():
         for root in service["journalRoots"]:
             require((root == V2_ROOT.as_posix() if service["name"] == V2_SERVICE else
                      Path(root).is_absolute() and root.startswith("/var/lib/uvel-cloud-bge-")), "JOURNAL_ROOT_INVALID")
-    stopped_controls(value)
     return value
 
 
 def stopped_controls(config):
     controls = config.get("stoppedControls", [])
-    require(isinstance(controls, list) and len(controls) <= 1
-            and all(isinstance(entry, dict) and entry == {"type": "docker", "name": STOPPED_SPARE}
-                    for entry in controls), "STOPPED_CONTROL_INVALID")
+    require(isinstance(controls, list) and len(controls) <= 6
+            and all(isinstance(entry, dict) and entry.get("name") in STOPPED_MODAL_FLEET
+                    and entry == {"type": "docker", "name": entry["name"]} for entry in controls)
+            and len({entry["name"] for entry in controls}) == len(controls)
+            and {entry["name"] for entry in controls} in (set(), {STOPPED_SPARE}, STOPPED_MODAL_FLEET)
+            and {entry["name"] for entry in controls}.isdisjoint(entry["name"] for entry in config["commitments"]),
+            "STOPPED_CONTROL_INVALID")
     return controls
 
 
@@ -152,10 +166,15 @@ def verify_limit(control, size):
 def verify_limits(config):
     for control in stopped_controls(config):
         actual = json.loads(run("docker", "inspect", "--format",
-                                '{"running":{{json .State.Running}},"restart":{{json .HostConfig.RestartPolicy.Name}}}',
+                                '{"running":{{json .State.Running}},"pid":{{json .State.Pid}},'
+                                '"paused":{{json .State.Paused}},"restart":{{json .HostConfig.RestartPolicy.Name}}}',
                                 control["name"]))
-        require(actual.get("running") is False, "STOPPED_CONTAINER_RUNNING")
-        require(actual.get("restart") in ("no", "unless-stopped"), "STOPPED_CONTAINER_RESTART_POLICY_REJECTED")
+        require(actual.get("running") is False and actual.get("pid") == 0 and actual.get("paused") is False,
+                "STOPPED_CONTAINER_RUNNING")
+        # Preserve the old spare-only profile; a modal replacement must disable
+        # automatic restarts for every unbudgeted old fleet container.
+        policies = ("no", "unless-stopped") if len(config.get("stoppedControls", [])) == 1 and control["name"] == STOPPED_SPARE else ("no",)
+        require(actual.get("restart") in policies, "STOPPED_CONTAINER_RESTART_POLICY_REJECTED")
     for entry in config["commitments"]:
         if entry.get("control"):
             verify_limit(entry["control"], entry["bytes"])

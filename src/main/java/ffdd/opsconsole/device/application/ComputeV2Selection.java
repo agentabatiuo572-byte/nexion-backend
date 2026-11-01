@@ -1,5 +1,6 @@
 package ffdd.opsconsole.device.application;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import ffdd.opsconsole.device.domain.TaskSchedulingSettings;
 import java.math.BigDecimal;
 import java.util.List;
@@ -8,7 +9,13 @@ import java.util.random.RandomGenerator;
 /** Draw only once at issuance; all retries use the persisted frozen snapshot. */
 final class ComputeV2Selection {
     record Candidate(String taskId,String name,String taskClass,String model,BigDecimal minReward,
-            BigDecimal maxReward,long revision,TaskSchedulingSettings settings,List<String> texts) { }
+            BigDecimal maxReward,long revision,TaskSchedulingSettings settings,List<String> texts,
+            ComputeV2ModalRegistry.Entry installedRuntime,JsonNode workload) {
+        Candidate(String taskId,String name,String taskClass,String model,BigDecimal minReward,
+                BigDecimal maxReward,long revision,TaskSchedulingSettings settings,List<String> texts) {
+            this(taskId,name,taskClass,model,minReward,maxReward,revision,settings,texts,null,null);
+        }
+    }
     record Selection(Candidate candidate,int expectedSeconds,long rawMicros) { }
 
     static Selection draw(List<Candidate> eligible,RandomGenerator random) {

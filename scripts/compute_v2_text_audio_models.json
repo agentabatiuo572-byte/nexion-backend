@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "dependencies": {
+    "torch": "2.8.0",
+    "transformers": "4.57.1",
+    "peft": "0.17.1",
+    "safetensors": "0.6.2",
+    "numpy": "2.2.6"
+  },
+  "models": {
+    "smollm2-135m-instruct": {
+      "modelId": "HuggingFaceTB/SmolLM2-135M-Instruct",
+      "revision": "12fd25f77366fa6b3b4b768ec3050bf629380bac",
+      "license": "Apache-2.0",
+      "modelCard": "https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct",
+      "parameters": 135000000,
+      "weightBytes": 269060552,
+      "files": {
+        "config.json": "8eb740e8bbe4cff95ea7b4588d17a2432deb16e8075bc5828ff7ba9be94d982a",
+        "generation_config.json": "87b916edaaab66b3899b9d0dd0752727dff6666686da0504d89ae0a6e055a013",
+        "merges.txt": "0b54e8aa4e53d5383e2e4bc635a56b43f9647f7b13832d5d9ecd8f82dac4f510",
+        "model.safetensors": "5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c",
+        "special_tokens_map.json": "2b7379f3ae813529281a5c602bc5a11c1d4e0a99107aaa597fe936c1e813ca52",
+        "tokenizer.json": "9ca9acddb6525a194ec8ac7a87f24fbba7232a9a15ffa1af0c1224fcd888e47c",
+        "tokenizer_config.json": "4ec77d44f62efeb38d7e044a1db318f6a939438425312dfa333b8382dbad98df",
+        "vocab.json": "82b84012e3add4d01d12ba14442026e49b8cbbaead1f79ecf3d919784f82dc79"
+      }
+    },
+    "whisper-tiny": {
+      "modelId": "openai/whisper-tiny",
+      "revision": "169d4a4341b33bc18d8881c4b69c2e104e1cc0af",
+      "license": "Apache-2.0",
+      "modelCard": "https://huggingface.co/openai/whisper-tiny",
+      "parameters": 39000000,
+      "weightBytes": 151061672,
+      "files": {
+        "added_tokens.json": "9715fd2243b6f06a5858b5e32950d2853f73dd5bc201aafcf76f5082a2d8acd1",
+        "config.json": "ffdccec4f3211f4c63310f2b7098f309fe70f3952cedc5e4d11e43f5b2379b98",
+        "generation_config.json": "a5d5325911f16e74001a72fa13d6e208eee51548f994646de1f4b4cc8b35b512",
+        "merges.txt": "2df2990a395e35e8dfbc7511e08c12d56018d8d04691e0133e5d63b21e154dc6",
+        "model.safetensors": "7ebd0e69e78190ffe1438491fa05cc1f5c1aa3a4c4db3bc1723adbb551ea2395",
+        "normalizer.json": "bf1c507dc8724ca9cf9903640dacfb69dae2f00edee4f21ceba106a7392f26dd",
+        "preprocessor_config.json": "9b5cd03a36fbb8a627c64d98a5b5b126ead95a77720723944487311f0110b666",
+        "special_tokens_map.json": "e67ae3a0aaa99abcd9f187138e12db1f65c16a14761c50ef10eef2c174a7a691",
+        "tokenizer.json": "27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566",
+        "tokenizer_config.json": "2a4c4281cf9f51ac6ccc406fdc711a087afe6530f671fa7b80953edc498275ce",
+        "vocab.json": "8f680bba319e01a653d2e8a5dbc17a9157179e0576e6ce74ce0c06356c6e24f9"
+      },
+      "publicAudioFixture": {
+        "source": "https://raw.githubusercontent.com/openai/whisper/86098128c0b4f24f0e2aa2994de830614b474227/tests/jfk.flac",
+        "sourceSha256": "63a4b1e4c1dc655ac70961ffbf518acd249df237e5a0152faae9a4a836949715",
+        "sourceSizeBytes": 1152693,
+        "repositoryLicense": "MIT",
+        "licenseSource": "https://github.com/openai/whisper/blob/86098128c0b4f24f0e2aa2994de830614b474227/LICENSE",
+        "outputRelativePath": "assets/jfk.wav",
+        "conversion": "ffmpeg -i jfk.flac -ar 16000 -ac 1 -c:a pcm_s16le -map_metadata -1 assets/jfk.wav",
+        "note": "The installer must freeze the converted WAV sha256 in workload.audioSha256; never infer it from the FLAC digest."
+      }
+    }
+  },
+  "officialImplementationReferences": [
+    "https://huggingface.co/docs/peft/v0.17.0/en/quicktour",
+    "https://huggingface.co/docs/transformers/v4.57.1/en/model_doc/whisper",
+    "https://github.com/openai/whisper/blob/86098128c0b4f24f0e2aa2994de830614b474227/tests/test_transcribe.py"
+  ]
+}
