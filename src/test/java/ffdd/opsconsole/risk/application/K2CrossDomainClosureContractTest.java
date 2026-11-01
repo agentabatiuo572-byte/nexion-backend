@@ -133,9 +133,9 @@ class K2CrossDomainClosureContractTest {
     @Test
     void k2NeverTruncatesUserNumbersWhenDatabaseIdsExceedEightDigits() {
         String mapper = read("src/main/java/ffdd/opsconsole/risk/mapper/RiskOpsMapper.java");
-        int e3Method = mapper.indexOf("int upsertE3TradeinArbitrageRows");
+        int e3Method = mapper.indexOf("List<RiskArbitrageRowRecord> e3TradeinArbitrageProjection");
         String k2Section = mapper.substring(
-                mapper.lastIndexOf("@Insert", e3Method),
+                mapper.lastIndexOf("@Select", e3Method),
                 mapper.indexOf("long countArbitrageRows"));
 
         assertThat(k2Section).contains(

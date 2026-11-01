@@ -1032,28 +1032,25 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     int retireE3TradeinArbitrageRows();
 
-    @Insert("""
-            INSERT INTO nx_admin_risk_arbitrage_row (
-                row_id,view_key,cluster_id,cell1,cell2,cell3,cell4,cell5,cell6,
-                level_value,actions_csv,is_deleted
-            )
-            SELECT CONCAT('K2-E3-U', a.user_id),
-                   'tradein',
-                   NULL,
+    // A plain MVCC read avoids INSERT...SELECT's source next-key locks under RR.
+    @Select("""
+            SELECT CONCAT('K2-E3-U', a.user_id) AS rowId,
+                   'tradein' AS viewKey,
+                   NULL AS clusterId,
                    CONCAT('U', LPAD(a.user_id,
-                       GREATEST(8, CHAR_LENGTH(CAST(a.user_id AS CHAR))), '0')),
-                   CONCAT(COUNT(DISTINCT a.id), ' 次置换'),
-                   '近 30 天',
-                   CONCAT(COUNT(DISTINCT a.id), ' 次高频下架置换'),
+                       GREATEST(8, CHAR_LENGTH(CAST(a.user_id AS CHAR))), '0')) AS cell1,
+                   CONCAT(COUNT(DISTINCT a.id), ' 次置换') AS cell2,
+                   '近 30 天' AS cell3,
+                   CONCAT(COUNT(DISTINCT a.id), ' 次高频下架置换') AS cell4,
                    CONCAT_WS(' / ',
                        CASE WHEN COUNT(DISTINCT c.id) > 0
                             THEN CONCAT(COUNT(DISTINCT c.id), ' 笔返佣') END,
                        CASE WHEN COUNT(DISTINCT l.id) > 0
-                            THEN CONCAT(COUNT(DISTINCT l.id), ' 笔礼金') END),
-                   NULL,
-                   3,
-                   'flag',
-                   0
+                            THEN CONCAT(COUNT(DISTINCT l.id), ' 笔礼金') END) AS cell5,
+                   NULL AS cell6,
+                   3 AS level,
+                   'flag' AS actionsCsv,
+                   NULL AS disposition,NULL AS version,NULL AS clusterStatus,NULL AS clusterVersion
               FROM nx_tradein_application a
               LEFT JOIN nx_commission_event c
                 ON c.user_id = a.user_id
@@ -1075,6 +1072,15 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
              GROUP BY a.user_id
             HAVING COUNT(DISTINCT a.id) >= 3
                AND (COUNT(DISTINCT c.id) > 0 OR COUNT(DISTINCT l.id) > 0)
+            """)
+    List<RiskArbitrageRowRecord> e3TradeinArbitrageProjection();
+
+    @Insert("""
+            INSERT INTO nx_admin_risk_arbitrage_row (
+                row_id,view_key,cluster_id,cell1,cell2,cell3,cell4,cell5,cell6,
+                level_value,actions_csv,is_deleted
+            ) VALUES (#{row.rowId},#{row.viewKey},#{row.clusterId},#{row.cell1},#{row.cell2},#{row.cell3},
+                      #{row.cell4},#{row.cell5},#{row.cell6},#{row.level},#{row.actionsCsv},0)
             ON DUPLICATE KEY UPDATE
                 view_key = VALUES(view_key),
                 cluster_id = VALUES(cluster_id),
@@ -1089,7 +1095,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                 is_deleted = 0,
                 updated_at = NOW()
             """)
-    int upsertE3TradeinArbitrageRows();
+    int upsertE3TradeinArbitrageRows(@Param("row") RiskArbitrageRowRecord row);
 
     @Update("""
             UPDATE nx_admin_risk_arbitrage_row

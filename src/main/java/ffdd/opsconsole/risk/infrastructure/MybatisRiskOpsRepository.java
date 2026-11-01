@@ -436,7 +436,9 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     @Override
     public void refreshE3TradeinArbitrageProjection() {
         mapper.retireE3TradeinArbitrageRows();
-        mapper.upsertE3TradeinArbitrageRows();
+        for (var row : mapper.e3TradeinArbitrageProjection()) {
+            mapper.upsertE3TradeinArbitrageRows(row);
+        }
     }
 
     @Override

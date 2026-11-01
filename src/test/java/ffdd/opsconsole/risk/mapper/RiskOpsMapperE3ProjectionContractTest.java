@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.lang.reflect.Method;
 import org.apache.ibatis.annotations.Insert;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import org.junit.jupiter.api.Test;
 
@@ -11,8 +12,8 @@ class RiskOpsMapperE3ProjectionContractTest {
 
     @Test
     void projectsFrequentTradeinsWithCommissionOrGiftEvidenceIntoK2() throws Exception {
-        Method method = RiskOpsMapper.class.getMethod("upsertE3TradeinArbitrageRows");
-        String sql = String.join(" ", method.getAnnotation(Insert.class).value())
+        Method method = RiskOpsMapper.class.getMethod("e3TradeinArbitrageProjection");
+        String sql = String.join(" ", method.getAnnotation(Select.class).value())
                 .toLowerCase()
                 .replaceAll("\\s+", " ")
                 .trim();
@@ -27,13 +28,18 @@ class RiskOpsMapperE3ProjectionContractTest {
                 .contains("upper(l.direction) = 'in'")
                 .contains("l.amount > 0")
                 .contains("count(distinct a.id) >= 3")
-                .contains("view_key")
+                .contains("viewkey")
                 .contains("'tradein'")
-                .contains("on duplicate key update")
-                .contains("actions_csv")
+                .contains("actionscsv")
                 .contains("'flag'")
-                .contains("null, 3, 'flag', 0")
-                .doesNotContain("null, 4, 'flag', 0");
+                .contains("null as cell6, 3 as level, 'flag' as actionscsv")
+                .doesNotContain("for update", "for share", "insert into");
+
+        String upsert = String.join(" ", RiskOpsMapper.class.getMethod(
+                        "upsertE3TradeinArbitrageRows", RiskOpsMapper.RiskArbitrageRowRecord.class)
+                .getAnnotation(Insert.class).value()).toLowerCase();
+        assertThat(upsert).contains("values (", "on duplicate key update", "is_deleted = 0")
+                .doesNotContain("select", "nx_wallet_ledger", "disposition", "version");
     }
 
     @Test

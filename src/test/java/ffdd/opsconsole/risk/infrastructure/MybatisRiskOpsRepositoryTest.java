@@ -186,14 +186,14 @@ class MybatisRiskOpsRepositoryTest {
 
     @Test
     void k2E3ProjectionKeepsExactlyFiveBusinessEvidenceCells() throws Exception {
-        var insert = RiskOpsMapper.class.getMethod("upsertE3TradeinArbitrageRows")
-                .getAnnotation(org.apache.ibatis.annotations.Insert.class);
-        String sql = String.join(" ", insert.value()).replaceAll("\\s+", " ");
+        var select = RiskOpsMapper.class.getMethod("e3TradeinArbitrageProjection")
+                .getAnnotation(org.apache.ibatis.annotations.Select.class);
+        String sql = String.join(" ", select.value()).replaceAll("\\s+", " ");
 
         assertThat(sql)
                 .contains("CONCAT_WS(' / '")
-                .contains("NULL, 3, 'flag'")
-                .doesNotContain("NULL, 4, 'flag'")
+                .contains("NULL AS cell6, 3 AS level, 'flag' AS actionsCsv")
+                .doesNotContain("4 AS level")
                 .doesNotContain("'E3 交易事实实时投影'");
     }
 
