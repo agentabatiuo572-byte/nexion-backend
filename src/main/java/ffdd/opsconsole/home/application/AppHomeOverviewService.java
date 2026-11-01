@@ -119,7 +119,9 @@ public class AppHomeOverviewService {
                     weekStart, monthStart, now);
             PeriodRow todayEarnings = summary == null ? null : summary.today();
             PeriodRow yesterdaySameTimeEarnings = summary == null ? null : summary.yesterday();
-            earnings.put("today", period(todayEarnings));
+            earnings.put("today", todayEarnings != null && todayEarnings.jobCount() != null && todayEarnings.jobCount() == 0
+                    ? linked("usdt", BigDecimal.ZERO, "nex", BigDecimal.ZERO, "jobCount", 0L)
+                    : period(todayEarnings));
             earnings.put("todayVsYesterdayPct", percentageChange(todayEarnings, yesterdaySameTimeEarnings));
             earnings.put("week", period(summary == null ? null : summary.week()));
             earnings.put("month", period(summary == null ? null : summary.month()));
