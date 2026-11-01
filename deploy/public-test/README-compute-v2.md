@@ -51,6 +51,10 @@ HTTP deadline; it does not complete a task when a countdown expires.
    Use a generated32-byte hexadecimal proof secret, admitted IDs/config IDs, exact container
    IDs, `lease-seconds=45` and `execution-capacity=6`. Worker credentials use the existing
    systemd credential; the proof/observer secret is never given to the worker.
+   DynamicUser exposes `/var/lib/uvel-compute-v2` as a symlink. The worker opens the
+   actual `/var/lib/private/uvel-compute-v2` StateDirectory to retain its no-symlink
+   directory check. Resource inventory and operator journal references use the original
+   `/var/lib/uvel-compute-v2` alias and verify its exact private target.
 6. Enable the backend protocol after these preconditions, then start the worker with
    `UVEL_COMPUTE_V2_ENABLED=true`. Check queued/compute/verify/complete/settle/next cycles
    through actual API, Redis, SQL and App/H5 pages. Scale the allowlist only after the canary.
