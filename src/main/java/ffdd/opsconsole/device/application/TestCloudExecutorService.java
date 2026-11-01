@@ -846,7 +846,8 @@ public class TestCloudExecutorService {
                 || origin.getRawUserInfo()!=null || origin.getRawQuery()!=null || origin.getRawFragment()!=null
                 || !(origin.getPath().isEmpty() || origin.getPath().equals("/"))) throw error(503,"TEST_CLOUD_MODEL_ORIGIN_INVALID");
         requireModelDigest(origin,i);
-        JsonNode response=http(origin.resolve("/api/embed"),json(Map.of("model",i.model(),"input",texts,"truncate",false)));
+        JsonNode response=http(origin.resolve("/api/embed"),json(Map.of("model",i.model(),"input",texts,"truncate",false,
+                "options",Map.of("num_thread",2,"num_gpu",0))));
         if(!i.model().equals(response.path("model").asText())) throw error(503,"TEST_CLOUD_MODEL_RESPONSE_INVALID");
         JsonNode rows=response.path("embeddings");
         if(!rows.isArray() || rows.size()!=texts.size()) throw error(503,"TEST_CLOUD_MODEL_RESPONSE_INVALID");

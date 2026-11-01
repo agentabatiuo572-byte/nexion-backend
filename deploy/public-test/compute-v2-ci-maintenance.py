@@ -20,13 +20,18 @@ import xml.etree.ElementTree as ET
 GIB = 1024 ** 3
 MAINTENANCE_BYTES = 35 * GIB // 2 + 268435456 + 25165824
 BASELINE_SHA = "1b66c15b0b03c8ee17e9a46219027e9f3030f963beac448bab4bc3573e0f52b8"
-RESOURCE_SHA = "b2c053f53ca95d805f7d413d6d8449254ae1cbe7369115761626a2b56fcf52a9"
+RESOURCE_SHA = "cb756f5f3c47ed887957e1209a44f061b52e6c4541998cddcd107b82ebb6bf4e"
+LEGACY_RECEIPT_RESOURCE_SHA = "b2c053f53ca95d805f7d413d6d8449254ae1cbe7369115761626a2b56fcf52a9"
 RESOURCE = Path("/opt/uvel-task-control/resource-control.py")
 BASELINE = Path("/opt/uvel-task-control/resource-control.pre-compute-v2.py")
 RELEASE = Path("/srv/nexgrid/cd")
 RECEIPT_NAME = "ci-maintenance.json"
 CI = "nexgrid-ci-agent"
 FLEET = {f"uvel-cloud-bge-model-fleet-{number}": 11435 + number for number in range(1, 7)}
+MODEL_PROFILES = {
+    "six-bge": {name: (port, 3 * GIB // 2, "11434/tcp") for name, port in FLEET.items()},
+    "bge-modal": {"uvel-cloud-bge-model-fleet-1": (11436, 3 * GIB // 2, "11434/tcp"),
+                  "uvel-compute-modal-runtime": (11442, 15 * GIB // 2, "11442/tcp")}}
 HOLD_REASON = "COMPUTE_V2_CI_MAINTENANCE"
 INSPECT = ('{"id":{{json .Id}},"name":{{json .Name}},"image":{{json .Image}},'
            '"running":{{json .State.Running}},"paused":{{json .State.Paused}},"pid":{{json .State.Pid}},'
@@ -124,6 +129,14 @@ def atomic_bytes(path, raw, mode):
         temporary.unlink(missing_ok=True)
 
 
+def model_profile(original):
+    names = {entry.get("name") for entry in original.get("commitments", []) if entry.get("kind") == "model"}
+    for name, models in MODEL_PROFILES.items():
+        if names == {"uvel-cloud-bge-model", *models}:
+            return name, models
+    raise Rejected("KNOWN_MODEL_PROFILE_REQUIRED")
+
+
 def maintenance_budget(original):
     require(original.get("scope") == "TEST" and original.get("version") == 1, "TEST_BUDGET_REQUIRED")
     require(original.get("buildBudgetBytes") == GIB and original.get("buildsEnabled") is False
@@ -132,6 +145,7 @@ def maintenance_budget(original):
             and original.get("buildRequests") == {kind: GIB for kind in ("backend", "pc", "uniapp")},
             "KNOWN_IDLE_CI_BUDGET_REQUIRED")
     entries = original.get("commitments", [])
+    _, models = model_profile(original)
     expected = {
         "backend": ("backend", 4 * GIB, {"type": "systemd", "name": "nexgrid-backend.service"}),
         "business-mysql": ("database", 7 * GIB // 2, {"type": "docker", "name": "nexgrid-mysql"}),
@@ -139,7 +153,7 @@ def maintenance_budget(original):
         "compute-v2-worker": ("other", 268435456, {"type": "systemd", "name": "uvel-compute-v2-worker.service"}),
         "compute-v2-observation": ("other", 25165824, {"type": "systemd", "name": "uvel-compute-v2-observation.service"}),
         "uvel-cloud-bge-model": ("model", 3 * GIB // 2, {"type": "docker", "name": "uvel-cloud-bge-model"}),
-        **{name: ("model", 3 * GIB // 2, {"type": "docker", "name": name}) for name in FLEET}}
+        **{name: ("model", spec[1], {"type": "docker", "name": name}) for name, spec in models.items()}}
     require(len(entries) == len(expected) and {entry.get("name") for entry in entries} == set(expected),
             "KNOWN_COMMITMENTS_REQUIRED")
     for entry in entries:
@@ -149,7 +163,7 @@ def maintenance_budget(original):
     updated = copy.deepcopy(original)
     updated.update(buildBudgetBytes=3 * GIB, buildRequests={kind: 3 * GIB for kind in original["buildRequests"]},
                    buildsEnabled=True, maxActiveExecutors=1)
-    updated["commitments"] = [entry for entry in updated["commitments"] if entry["name"] not in FLEET]
+    updated["commitments"] = [entry for entry in updated["commitments"] if entry["name"] not in models]
     require(sum(entry["bytes"] for entry in updated["commitments"]) + updated["buildBudgetBytes"] == MAINTENANCE_BYTES,
             "MAINTENANCE_BUDGET_TOTAL_INVALID")
     return updated
@@ -248,12 +262,19 @@ def inventory_unchanged(control, original, expected=None):
 
 def port_digest(control, port):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), control.NoRedirect())
-    with opener.open(f"http://127.0.0.1:{port}/api/tags", timeout=5) as response:
+    path = "/health" if port == 11442 else "/api/tags"
+    with opener.open(f"http://127.0.0.1:{port}{path}", timeout=5) as response:
         raw = response.read(1024 * 1024 + 1)
     require(len(raw) <= 1024 * 1024, "MODEL_HEALTH_INVALID")
-    models = [model for model in json.loads(raw).get("models", []) if model.get("name") == "bge-m3:567m"]
-    require(len(models) == 1, "MODEL_HEALTH_INVALID")
-    digest = models[0].get("digest", "").removeprefix("sha256:")
+    value = json.loads(raw)
+    if port == 11442:
+        require(value.get("status") == "ready" and isinstance(value.get("modelDigest"), str)
+                and value["modelDigest"].startswith("sha256:"), "MODEL_HEALTH_INVALID")
+        digest = value["modelDigest"].removeprefix("sha256:")
+    else:
+        models = [model for model in value.get("models", []) if model.get("name") == "bge-m3:567m"]
+        require(len(models) == 1, "MODEL_HEALTH_INVALID")
+        digest = models[0].get("digest", "").removeprefix("sha256:")
     require(re.fullmatch(r"[a-f0-9]{64}", digest) is not None, "MODEL_HEALTH_INVALID")
     return digest
 
@@ -274,11 +295,12 @@ def prepare(control, budget_sha):
     ci_idle(control, ci)
     control.verify_limits(original)
     models = []
-    for name, port in FLEET.items():
+    _, profile = model_profile(original)
+    for name, (port, memory, internal_port) in profile.items():
         model = inspect(name)
         require(model["name"] == "/" + name and model["running"] and not model["paused"] and model["pid"] > 0
-                and (model["memory"], model["swap"]) == (3 * GIB // 2, 3 * GIB // 2)
-                and model["ports"] == {"11434/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(port)}]},
+                and (model["memory"], model["swap"]) == (memory, memory)
+                and model["ports"] == {internal_port: [{"HostIp": "127.0.0.1", "HostPort": str(port)}]},
                 "KNOWN_RUNNING_FLEET_REQUIRED")
         models.append({**model, "port": port, "modelDigest": port_digest(control, port)})
     physical, available = control.memory()
@@ -290,22 +312,32 @@ def prepare(control, budget_sha):
 
 
 def public_plan(plan):
+    profile_name, models = model_profile(json.loads(base64.b64decode(plan["originalBudget"], validate=True)))
     return {"action": "plan", "scope": "TEST", "budgetSha256": plan["originalBudgetSha256"],
-            "stopModels": list(FLEET), "retainValidator": "uvel-cloud-bge-model", "ciMemoryBytes": 3 * GIB,
+            "modelProfile": profile_name, "stopModels": list(models), "retainValidator": "uvel-cloud-bge-model", "ciMemoryBytes": 3 * GIB,
             "committedBytes": MAINTENANCE_BYTES, "maxActiveExecutors": 1, "workerRestarted": False}
 
 
 def decoded(receipt):
     plan = receipt["plan"]
-    require(receipt.get("version") == 1 and plan.get("scope") == "TEST" and plan.get("resourceSha256") == RESOURCE_SHA
+    require(receipt.get("version") == 1 and plan.get("scope") == "TEST"
+            and plan.get("resourceSha256") in (RESOURCE_SHA, LEGACY_RECEIPT_RESOURCE_SHA)
             and sha(json.dumps(plan, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()) == receipt.get("receiptSha256"),
             "MAINTENANCE_RECEIPT_INVALID")
     raw = base64.b64decode(plan["originalBudget"], validate=True)
     require(sha(raw) == plan["originalBudgetSha256"], "ORIGINAL_BUDGET_CORRUPT")
     original = json.loads(raw)
     require(maintenance_budget(original) == plan["maintenanceBudget"], "MAINTENANCE_RECEIPT_INVALID")
-    require(len(plan["models"]) == 6 and {model["name"] for model in plan["models"]} == {"/" + name for name in FLEET},
+    profile_name, models = model_profile(original)
+    require(plan["resourceSha256"] == RESOURCE_SHA or profile_name == "six-bge", "MAINTENANCE_RECEIPT_INVALID")
+    require(len(plan["models"]) == len(models) and {model["name"] for model in plan["models"]} == {"/" + name for name in models},
             "MAINTENANCE_RECEIPT_INVALID")
+    for model in plan["models"]:
+        port, memory, internal_port = models[model["name"].removeprefix("/")]
+        require(model.get("port") == port and (model.get("memory"), model.get("swap")) == (memory, memory)
+                and model.get("ports") == {internal_port: [{"HostIp": "127.0.0.1", "HostPort": str(port)}]}
+                and re.fullmatch(r"[a-f0-9]{64}", model.get("modelDigest", "")) is not None,
+                "MAINTENANCE_RECEIPT_INVALID")
     disabled = {**plan["maintenanceBudget"], "buildsEnabled": False}
     return original, raw, disabled
 

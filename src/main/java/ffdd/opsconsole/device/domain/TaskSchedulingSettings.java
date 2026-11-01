@@ -37,9 +37,18 @@ public record TaskSchedulingSettings(int selectionWeight, int expectedDurationMi
 
     public static TaskSchedulingSettings defaults(String taskClass, String model) {
         int seconds = defaultDuration(taskClass);
-        String runtime = "EM".equalsIgnoreCase(taskClass) && "BGE-M3".equalsIgnoreCase(model)
-                ? "test-bge-m3-v1" : "";
-        return new TaskSchedulingSettings(1, seconds, seconds, Math.max(300, seconds), runtime, runtime, "{}");
+        String runtime = switch (taskClass == null ? "" : taskClass.trim().toUpperCase(java.util.Locale.ROOT)) {
+            case "EM" -> "BGE-M3".equalsIgnoreCase(model) ? "test-bge-m3-v1"
+                    : "all-MiniLM-L6-v2".equals(model) ? "phone-minilm-wasm-v1" : "";
+            case "IG" -> "nota-ai/bk-sdm-tiny".equals(model) ? "bk-sdm-tiny-image-v1" : "";
+            case "VG" -> "nota-ai/bk-sdm-tiny".equals(model) ? "bk-sdm-tiny-video-v1" : "";
+            case "LL" -> "HuggingFaceTB/SmolLM2-135M-Instruct".equals(model) ? "ll-smollm2-135m-instruct-v1" : "";
+            case "FT" -> "HuggingFaceTB/SmolLM2-135M-Instruct".equals(model) ? "ft-smollm2-135m-lora-v1" : "";
+            case "SP" -> "openai/whisper-tiny".equals(model) ? "sp-whisper-tiny-v1" : "";
+            default -> "";
+        };
+        int timeout = runtime.isEmpty() || "test-bge-m3-v1".equals(runtime) ? Math.max(300, seconds) : Math.max(3600, seconds);
+        return new TaskSchedulingSettings(1, seconds, seconds, timeout, runtime, runtime, "{}");
     }
 
     public TaskSchedulingSettings merge(DeviceTaskUpsertRequest request) {

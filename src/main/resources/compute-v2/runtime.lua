@@ -1,4 +1,4 @@
--- All values containing money or snapshots remain opaque JSON; Lua never converts them to doubles.
+-- Monetary JSON is never rewritten or used in arithmetic. Resource admission reads only frozen class/model/device fields.
 local p = KEYS[1]
 local op = ARGV[1]
 local function key(s) return p .. s end
@@ -187,8 +187,49 @@ if op == 'start' then
   local blocked = admissionError(ARGV[8],ARGV[9],ARGV[10])
   if blocked then return err(blocked) end
   if redis.call('SCARD',key('permits')) >= tonumber(ARGV[7]) then return '' end
-  local head = redis.call('ZRANGE',key('queue'),0,0)
-  if #head == 0 or head[1] ~= task then return '' end
+  local policy = ARGV[12] and cjson.decode(ARGV[12]) or {}
+  if policy.enabled then
+    local function phone(snapshot)
+      return snapshot.taskClass == 'EM' and snapshot.modelName == 'all-MiniLM-L6-v2'
+          and (snapshot.device.deviceType == 'PHONE' or snapshot.device.deviceType == 'MOBILE')
+    end
+    local function snapshot(id) return cjson.decode(redis.call('HGET',key('snapshots'),id)) end
+    local function cost(value)
+      if phone(value) then return 'phone',0,0 end
+      local configured = policy.costs[value.taskClass]
+      if not configured or configured.modelName ~= value.modelName then return nil end
+      return value.taskClass == 'EM' and 'em' or 'modal',configured.memoryMiB,configured.cpuThreads
+    end
+    local current = snapshot(task)
+    local pool,memory,cpu = cost(current)
+    if not pool then return err('RESOURCE_MODEL_UNCONFIGURED') end
+    local modalMemory,serverCpu,emCount = 0,0,0
+    -- Permits are bounded by executionCapacity (at most six). Failed, fenced or
+    -- expired work still consumes its frozen resources until the existing EXITED event removes it.
+    for _,permit in ipairs(redis.call('SMEMBERS',key('permits'))) do
+      local activeTask = string.match(permit,'(.+):%d+$')
+      local activePool,activeMemory,activeCpu = cost(snapshot(activeTask))
+      if not activePool then return err('RESOURCE_MODEL_UNCONFIGURED') end
+      serverCpu = serverCpu + activeCpu
+      if activePool == 'em' then emCount = emCount + 1
+      elseif activePool == 'modal' then modalMemory = modalMemory + activeMemory end
+    end
+    if pool == 'em' and emCount >= policy.emMaxConcurrent then return '' end
+    if pool ~= 'phone' and serverCpu + cpu > policy.serverCpuThreads then return '' end
+    if pool == 'modal' and modalMemory + memory > policy.modalMemoryMiB then return '' end
+    if pool ~= 'phone' then
+      -- Preserve FIFO among cloud work. Phone owner reservations do not block
+      -- that queue, and they cannot borrow server inference RAM/CPU by changing their label.
+      local cloudHead = nil
+      for _,queued in ipairs(redis.call('ZRANGE',key('queue'),0,-1)) do
+        if not phone(snapshot(queued)) then cloudHead = queued; break end
+      end
+      if cloudHead ~= task then return '' end
+    end
+  else
+    local head = redis.call('ZRANGE',key('queue'),0,0)
+    if #head == 0 or head[1] ~= task then return '' end
+  end
   redis.call('SADD',key('permits'),task .. ':' .. ARGV[3])
   redis.call('HSET',key('executors'),task,ARGV[4])
   redis.call('ZADD',key('leases'),ARGV[5],task)

@@ -76,12 +76,15 @@ def address(url):
     return str(ipaddress.ip_address(parsed.hostname)), parsed.port
 
 
-def credential(path):
+def credential(path, modal=False):
     path = Path(path)
     require(path.is_absolute() and not path.is_symlink(), 'CREDENTIAL_FILE_REQUIRED')
     info = path.stat()
     require(stat.S_ISREG(info.st_mode) and info.st_size <= 64 and info.st_mode & 0o022 == 0, 'CREDENTIAL_FILE_MODE')
     token = path.read_text(encoding='ascii').strip()
+    if modal:
+        require(re.fullmatch(r'[A-Za-z0-9_-]{32,64}', token), 'MODAL_CREDENTIAL_INVALID')
+        return token
     require(re.fullmatch(r'ct1_[A-Za-z0-9_-]{43}', token), 'CREDENTIAL_INVALID')
     value = base64.urlsafe_b64decode(token[4:] + '=')
     require(len(value) == 32 and base64.urlsafe_b64encode(value).decode().rstrip('=') == token[4:], 'CREDENTIAL_INVALID')
@@ -89,25 +92,27 @@ def credential(path):
 
 
 class Http:
-    def __init__(self, endpoint, token=None):
-        self.endpoint, self.token = endpoint, token
+    def __init__(self, endpoint, token=None, api=True, max_bytes=1024 * 1024):
+        self.endpoint, self.token, self.api, self.max_bytes = endpoint, token, api, max_bytes
 
     def call(self, method, path, body=None, headers=None, timeout=10):
         connection = http.client.HTTPConnection(*self.endpoint, timeout=timeout)
         request_headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
         if self.token:
-            request_headers.update(Authorization='Bearer ' + self.token, **{'X-UVEL-Executor-Id': 'fleet'})
+            request_headers['Authorization'] = 'Bearer ' + self.token
+            if self.api:
+                request_headers['X-UVEL-Executor-Id'] = 'fleet'
         request_headers.update(headers or {})
         try:
             connection.request(method, path, body, request_headers)
             response = connection.getresponse()
-            raw = response.read(1024 * 1024 + 1)
-            require(len(raw) <= 1024 * 1024, 'RESPONSE_TOO_LARGE')
+            raw = response.read(self.max_bytes + 1)
+            require(len(raw) <= self.max_bytes, 'RESPONSE_TOO_LARGE')
             if not 200 <= response.status < 300:
-                failure = Rejected if self.token and 400 <= response.status < 500 else HttpFailure
-                raise failure('BACKEND' if self.token else 'MODEL', response.status)
+                failure = Rejected if self.token and self.api and 400 <= response.status < 500 else HttpFailure
+                raise failure('BACKEND' if self.token and self.api else 'MODEL', response.status)
             value = decode(raw)
-            if self.token:
+            if self.token and self.api:
                 require(type(value.get('code')) is int and value['code'] == 0 and isinstance(value.get('data'), dict), 'API_OUTCOME_UNKNOWN')
                 return value['data']
             return value
@@ -153,19 +158,28 @@ class Journal:
 
 
 def manifest(task):
-    require(task.get('protocolVersion') == 2 and re.fullmatch(r'CV2-[0-9A-F]{32}', task.get('taskNo', ''))
+    require(task.get('protocolVersion') in (2, 3) and re.fullmatch(r'CV2-[0-9A-F]{32}', task.get('taskNo', ''))
             and type(task.get('generation')) is int and task['generation'] > 0, 'TASK_BINDING_INVALID')
     for field in ('claimToken', 'proofNonce', 'inputHash'):
         require(re.fullmatch(r'[a-f0-9]{64}', task.get(field, '')), 'TASK_PROOF_INVALID')
-    require(re.fullmatch(r'sha256:[a-f0-9]{64}', task.get('modelDigest', '')) and task.get('model') == 'bge-m3:567m', 'TASK_MODEL_INVALID')
-    require(isinstance(task.get('texts'), list) and len(task['texts']) == 3
-            and all(isinstance(text, str) and 0 < len(text) <= 4000 for text in task['texts']), 'TASK_INPUT_INVALID')
+    require(re.fullmatch(r'sha256:[a-f0-9]{64}', task.get('modelDigest', '')), 'TASK_MODEL_INVALID')
+    if task['protocolVersion'] == 2:
+        require(task.get('model') == 'bge-m3:567m', 'TASK_MODEL_INVALID')
+        require(isinstance(task.get('texts'), list) and len(task['texts']) == 3
+                and all(isinstance(text, str) and 0 < len(text) <= 4000 for text in task['texts']), 'TASK_INPUT_INVALID')
+    else:
+        runtimes = {'IG': 'bk-sdm-tiny-image-v1', 'VG': 'bk-sdm-tiny-video-v1',
+                    'LL': 'll-smollm2-135m-instruct-v1', 'FT': 'ft-smollm2-135m-lora-v1', 'SP': 'sp-whisper-tiny-v1'}
+        require(task.get('executionKind') == 'CLOUD' and task.get('runtimeKey') == runtimes.get(task.get('taskClass')),
+                'TASK_RUNTIME_INVALID')
+        require(isinstance(task.get('workload'), dict) and isinstance(task.get('modelRevision'), str)
+                and type(task.get('seed')) is int, 'TASK_INPUT_INVALID')
     require(type(task.get('executionTimeoutSec')) is int and 1 <= task['executionTimeoutSec'] <= 172800, 'TASK_TIMEOUT_INVALID')
     require(isinstance(task.get('startedAt'), str) and task['startedAt'].endswith('Z'), 'TASK_START_INVALID')
     started = datetime.fromisoformat(task['startedAt'].replace('Z', '+00:00'))
     require(started.tzinfo == timezone.utc, 'TASK_START_INVALID')
     require(all(re.fullmatch(r'[a-f0-9]{64}', task.get(field, '')) for field in ('computeContainerId', 'validatorContainerId'))
-            and task['computeContainerId'] != task['validatorContainerId'], 'TASK_CONTAINER_BINDING_INVALID')
+            and (task['protocolVersion'] == 3 or task['computeContainerId'] != task['validatorContainerId']), 'TASK_CONTAINER_BINDING_INVALID')
     return task
 
 
@@ -195,8 +209,9 @@ def verify_model(model, task):
 
 
 class Runner:
-    def __init__(self, name, backend, model, journal, stop):
+    def __init__(self, name, backend, model, journal, stop, modal=None):
         self.name, self.backend, self.model, self.journal, self.stop = name, backend, model, journal, stop
+        self.modal = modal
         self.operation_lock = threading.RLock()
         state = journal.get()
         if state['phase'] == 'COMPUTE_INTENT':
@@ -253,12 +268,22 @@ class Runner:
         if phase == 'CLAIMED':
             self.journal.set({**state, 'phase': 'COMPUTE_INTENT'})
             try:
-                verify_model(self.model, task)
-                result = self.model.call('POST', '/api/embed', body=encode({'model': task['model'], 'input': task['texts'], 'truncate': False}),
-                                         timeout=task['executionTimeoutSec'])
-                require(result.get('model') == task['model'], 'RESULT_MODEL_INVALID')
-                raw = artifact(result.get('embeddings'))
-                verify_model(self.model, task)
+                if task['protocolVersion'] == 2:
+                    verify_model(self.model, task)
+                    result = self.model.call('POST', '/api/embed', body=encode({'model': task['model'], 'input': task['texts'], 'truncate': False,
+                        'options': {'num_thread': 2, 'num_gpu': 0}}), timeout=task['executionTimeoutSec'])
+                    require(result.get('model') == task['model'], 'RESULT_MODEL_INVALID')
+                    raw = artifact(result.get('embeddings'))
+                    verify_model(self.model, task)
+                else:
+                    require(self.modal is not None, 'MODAL_ENDPOINT_REQUIRED')
+                    bound = {key: task[key] for key in ('taskNo', 'generation', 'inputHash', 'taskClass', 'runtimeKey', 'modelRevision', 'workload', 'seed')}
+                    result = self.modal.call('POST', '/execute', body=encode({'task': bound, 'executionTimeoutSec': task['executionTimeoutSec']}),
+                                             timeout=task['executionTimeoutSec'] + 120)
+                    raw = base64.b64decode(result['bundleBase64'], validate=True)
+                    expected_binding = hashlib.sha256(json.dumps(bound, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+                    require(result.get('resultHash') == hashlib.sha256(raw).hexdigest()
+                            and result.get('taskBindingHash') == expected_binding, 'RESULT_BINDING_INVALID')
             except Exception as failure:
                 recovery = {**state, 'phase': 'RECOVERY_REQUIRED', 'reason': 'INFERENCE_OUTCOME_UNKNOWN'}
                 if isinstance(failure, HttpFailure):
@@ -327,10 +352,17 @@ def main():
     parser.add_argument('--credential-file', required=True)
     parser.add_argument('--backend', default='http://127.0.0.1:8110')
     parser.add_argument('--ollama-urls', required=True)
+    parser.add_argument('--shared-bge', action='store_true')
+    parser.add_argument('--modal-endpoint')
+    parser.add_argument('--modal-credential-file')
     args = parser.parse_args()
     require(os.environ.get('UVEL_COMPUTE_V2_ENABLED') == 'true' and os.environ.get('UVEL_COMPUTE_V2_SCOPE') == 'TEST', 'WORKER_DISABLED')
     endpoints = [address(value) for value in args.ollama_urls.split(',')]
-    require(len(endpoints) == 6 and len(set(endpoints)) == 6, 'SIX_DISTINCT_MODEL_RUNNERS_REQUIRED')
+    if args.shared_bge:
+        require(len(endpoints) == 1 and args.modal_endpoint and args.modal_credential_file, 'SHARED_MODEL_PROFILE_REQUIRED')
+        endpoints *= 6
+    else:
+        require(len(endpoints) == 6 and len(set(endpoints)) == 6, 'SIX_DISTINCT_MODEL_RUNNERS_REQUIRED')
     directory = Path(args.journal_directory)
     require(directory.is_absolute() and not directory.is_symlink(), 'ABSOLUTE_JOURNAL_DIRECTORY_REQUIRED')
     os.umask(0o077)
@@ -343,10 +375,12 @@ def main():
         import fcntl
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     backend = Http(address(args.backend), credential(args.credential_file))
+    modal = Http(address(args.modal_endpoint), credential(args.modal_credential_file, modal=True), api=False,
+                 max_bytes=48 * 1024 * 1024) if args.modal_endpoint else None
     stop = threading.Event()
     for signum in (signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, lambda *_: stop.set())
-    runners = [Runner('runner-' + str(i + 1), backend, Http(endpoint), Journal(directory / ('runner-' + str(i + 1) + '.sqlite')), stop)
+    runners = [Runner('runner-' + str(i + 1), backend, Http(endpoint), Journal(directory / ('runner-' + str(i + 1) + '.sqlite')), stop, modal)
                for i, endpoint in enumerate(endpoints)]
     threads = [threading.Thread(target=runner.run, name=runner.name) for runner in runners]
     threads.append(threading.Thread(target=heartbeat, args=(runners, stop), name='compute-v2-heartbeat'))

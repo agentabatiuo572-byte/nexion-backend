@@ -42,7 +42,8 @@ def root_config(path):
     worker.require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_mode & 0o077 == 0
                    and info.st_size <= 32768, 'ROOT_CONFIG_OWNER_ONLY_REQUIRED')
     value = worker.decode(path.read_bytes())
-    worker.require(isinstance(value, dict) and set(value) == {'backend', 'proofSecret', 'workerBearer', 'runners', 'validator'},
+    fields = {'backend', 'proofSecret', 'workerBearer', 'runners', 'validator'}
+    worker.require(isinstance(value, dict) and set(value) in (fields, fields | {'modal'}),
                    'ROOT_CONFIG_FIELDS_INVALID')
     worker.address(value['backend'])
     worker.require(re.fullmatch(r'[a-f0-9]{64}', value.get('proofSecret', '')) is not None
@@ -52,6 +53,8 @@ def root_config(path):
         worker.require(re.fullmatch(r'runner-[1-6]', runner) is not None, 'ROOT_RUNNER_ALLOWLIST_INVALID')
         allowlist(item)
     allowlist(value['validator'])
+    if 'modal' in value:
+        allowlist(value['modal'])
     return value
 
 
@@ -125,6 +128,9 @@ def observe(config, journal_path, artifact_path, client=None, inspector=docker_i
     runner, task = journal(journal_path)
     worker.require(runner in config['runners'], 'RUNNER_NOT_ALLOWLISTED')
     compute, validator = config['runners'][runner], config['validator']
+    if task['protocolVersion'] == 3:
+        worker.require('modal' in config, 'MODAL_CONTAINER_ALLOWLIST_REQUIRED')
+        compute = validator = config['modal']
     allowlist(compute)
     allowlist(validator)
     client = client or worker.Http(worker.address(config['backend']), config['workerBearer'])
