@@ -31,7 +31,7 @@ public class LegacyUnknownQuiescenceVerifier {
     private final Environment environment;
     private final Clock clock;
     private final Supplier<String> bootId;
-    private final String backendInstanceId;
+    private final UUID backendInstanceId;
     private final JsonMapper json = JsonMapper.builder().addModule(new JavaTimeModule())
             .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
             .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, DeserializationFeature.FAIL_ON_TRAILING_TOKENS,
@@ -48,9 +48,9 @@ public class LegacyUnknownQuiescenceVerifier {
     }
     public LegacyUnknownQuiescenceVerifier(Environment environment, Clock clock, Supplier<String> bootId,
             String backendInstanceId) {
-        this.environment=environment; this.clock=clock; this.bootId=bootId; this.backendInstanceId=backendInstanceId;
+        this.environment=environment; this.clock=clock; this.bootId=bootId; this.backendInstanceId=UUID.fromString(backendInstanceId);
     }
-    public String backendInstanceId() { return backendInstanceId; }
+    public String backendInstanceId() { return backendInstanceId.toString(); }
     public Observation verify(LegacyUnknownZeroCreditProof proof) {
         if (!"TEST".equals(environment.getProperty("nexion.compute-v2.deployment-scope")) || proof==null
                 || proof.observation()==null || proof.observation().length()>65536
@@ -68,7 +68,7 @@ public class LegacyUnknownQuiescenceVerifier {
             Observation o=json.treeToValue(tree,Observation.class);
             if (o.version()!=1 || !"LEGACY_UNKNOWN_ZERO_CREDIT".equals(o.purpose()) || !"TEST".equals(o.scope())
                     || !LegacyUnknownZeroCreditCases.MANIFEST_SHA.equals(o.caseSetSha256())
-                    || !backendInstanceId.equals(o.backendInstanceId()) || !bootId.get().equals(o.bootId())
+                    || !backendInstanceId().equals(o.backendInstanceId()) || !bootId.get().equals(o.bootId())
                     || o.capturedAt()==null || o.observedAt()==null || o.expiresAt()==null
                     || o.capturedAt().isAfter(o.observedAt()) || o.observedAt().isAfter(clock.instant().plusSeconds(300))
                     || !o.expiresAt().isAfter(clock.instant()) || !o.expiresAt().isAfter(o.observedAt())
