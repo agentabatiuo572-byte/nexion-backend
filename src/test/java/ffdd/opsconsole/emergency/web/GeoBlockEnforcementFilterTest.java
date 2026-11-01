@@ -31,7 +31,9 @@ class GeoBlockEnforcementFilterTest {
 
     @ParameterizedTest
     @CsvSource({"POST,/api/test/compute-workers/v2/next-task", "POST,/api/test/compute-workers/v2/tasks/CTA-ONE/complete",
-            "POST,/api/test/compute-workers/v2/tasks/CTA-ONE/release", "GET,/api/test/compute-workers/v2/tasks/CTA-ONE/receipt"})
+            "POST,/api/test/compute-workers/v2/tasks/CTA-ONE/release", "GET,/api/test/compute-workers/v2/tasks/CTA-ONE/receipt",
+            "POST,/api/test/cloud-executors/v2/legacy-unknown-quiescence",
+            "GET,/api/test/cloud-executors/v2/legacy-unknown-quiescence/info"})
     void continuousExactMachineRoutesRequireTheUnforwardedLoopbackSocketEvenWhenGeoIsDisabled(String method, String path) throws Exception {
         properties.setEnabled(false);
         MockHttpServletRequest request = new MockHttpServletRequest(method, path);
@@ -91,6 +93,10 @@ class GeoBlockEnforcementFilterTest {
         "POST,/api/test/compute-workers/v2/tasks/CTA-TEST-ONE/claim",
         "POST,/api/test/compute-workers-extra/v1/tasks/CTA-TEST-ONE/claim",
         "POST,/api/test/compute-workers/v1/other",
+        "GET,/api/test/cloud-executors/v2/legacy-unknown-quiescence",
+        "POST,/api/test/cloud-executors/v2/legacy-unknown-quiescence/info",
+        "POST,/api/test/cloud-executors/v2/legacy-unknown-quiescence/",
+        "GET,/api/test/cloud-executors/v2/legacy-unknown-quiescence/info/extra",
         "POST,/api/app/devices/11/task/claim",
         "POST,/auth/users/login"
     })

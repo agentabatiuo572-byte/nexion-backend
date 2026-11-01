@@ -42,9 +42,9 @@ public class GeoBlockEnforcementFilter extends OncePerRequestFilter {
     private static final Pattern CLOUD_GET_PATH = Pattern.compile(
             "/api/test/cloud-executors/v1/(?:instances|eligibility|requests/status|tasks/(?!\\.{1,2}/)[A-Za-z0-9._:-]{1,96}/(?:receipt|manifest|rollback-review|stability-review))");
     private static final Pattern CLOUD_V2_POST_PATH = Pattern.compile(
-            "/api/test/cloud-executors/v2/(?:next-task|tasks/CV2-[0-9A-F]{32}/(?:complete|heartbeat|exited|observed-exit))");
+            "/api/test/cloud-executors/v2/(?:next-task|legacy-unknown-quiescence|tasks/CV2-[0-9A-F]{32}/(?:complete|heartbeat|exited|observed-exit))");
     private static final Pattern CLOUD_V2_GET_PATH = Pattern.compile(
-            "/api/test/cloud-executors/v2/tasks/CV2-[0-9A-F]{32}/receipt");
+            "/api/test/cloud-executors/v2/(?:legacy-unknown-quiescence/info|tasks/CV2-[0-9A-F]{32}/receipt)");
 
     public static boolean isTestCloudRoute(HttpServletRequest request) {
         String path = request.getRequestURI();

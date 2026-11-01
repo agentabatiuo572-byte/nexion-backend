@@ -1332,6 +1332,40 @@ class OpsAuditCenterServiceTest {
         assertThat(ticketRows.get(operation).getStatus()).isEqualTo("approved");
     }
 
+    @Test
+    void legacyUnknownControllerUsesActualTypedA2ProposalAndIndependentChecker() {
+        var c=ffdd.opsconsole.device.application.LegacyUnknownZeroCreditCases.require(1208);
+        var proof=ffdd.opsconsole.device.application.LegacyUnknownZeroCreditFixtures.proof();
+        var command=new AuditReplayCommand("E",ffdd.opsconsole.device.application.LegacyUnknownZeroCreditCases.OP,
+                Map.of("deviceId",1208L,"caseId",c.caseId(),"proof",Map.of("observation",proof.observation(),"signature",proof.signature())));
+        var unknown=mock(ffdd.opsconsole.device.application.LegacyUnknownZeroCreditService.class);
+        when(unknown.proposal(1208,"a".repeat(64))).thenReturn(command);
+        var config=mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class);
+        var guard=new AuditReplayBusinessPermissionGuard(mock(ffdd.opsconsole.content.domain.TrustDisclosureRepository.class),
+                mock(ffdd.opsconsole.shared.security.AdminOperatorRoleResolver.class),mock(ffdd.opsconsole.emergency.domain.EmergencyControlRepository.class),
+                mock(org.springframework.beans.factory.ObjectProvider.class),config,null,null,null,unknown);
+        when(replayBusinessPermissionGuard.validateProposalContext(any())).thenAnswer(i->guard.validateProposalContext(i.getArgument(0)));
+        when(replayBusinessPermissionGuard.validateProposal(any())).thenAnswer(i->guard.validateProposal(i.getArgument(0)));
+        when(replayBusinessPermissionGuard.validateApproval(any())).thenAnswer(i->guard.validateApproval(i.getArgument(0)));
+        var grants=List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("device_e5_write"),
+                new org.springframework.security.core.authority.SimpleGrantedAuthority("platform_a2_operation_approve"));
+        authenticate("41","zero.maker");var maker=SecurityContextHolder.getContext().getAuthentication();
+        var authorized=new UsernamePasswordAuthenticationToken(maker.getPrincipal(),null,grants);authorized.setDetails(maker.getDetails());
+        SecurityContextHolder.getContext().setAuthentication(authorized);
+        var controller=new ffdd.opsconsole.device.web.LegacyUnknownZeroCreditController(unknown,service);
+        Object response=controller.propose(1208,"zero-proposal",new ffdd.opsconsole.device.web.LegacyUnknownZeroCreditController.Proposal("真实退出且无收益，申请取消原未确认任务","a".repeat(64)));
+        assertThat(response).isInstanceOf(ApiResult.class);var result=(ApiResult<?>)response;assertThat(result.getCode()).isZero();
+        var ticket=(AuditCenterOverview.AuditOperationTicket)result.getData();
+        assertThat(ticket.status()).isEqualTo("pending");assertThat(ticketRows.get(ticket.id()).getOperationType()).isEqualTo("acct");
+        assertThat(ticketRows.get(ticket.id()).getAfterValue()).contains("ZERO CREDIT","proof",ffdd.opsconsole.device.application.LegacyUnknownZeroCreditFixtures.EPOCH);
+        assertThat(ticketRows.get(ticket.id()).getCommandJson()).contains(proof.signature());
+        assertThat(service.approve("zero-self",ticket.id(),new AuditOperationDecisionRequest("同一管理员不应批准本案无收益终结","spoofed")).getMessage()).isEqualTo("A2_MAKER_CHECKER_REQUIRED");
+        authenticate("52","zero.checker");var checker=SecurityContextHolder.getContext().getAuthentication();
+        var checkerAuth=new UsernamePasswordAuthenticationToken(checker.getPrincipal(),null,grants);checkerAuth.setDetails(checker.getDetails());SecurityContextHolder.getContext().setAuthentication(checkerAuth);
+        assertThat(service.approve("zero-check",ticket.id(),new AuditOperationDecisionRequest("独立管理员核对原四案退出证明和无资金副作用","spoofed")).getCode()).isZero();
+        verify(replayDispatcher,org.mockito.Mockito.times(1)).dispatch(any(),any());
+    }
+
     private AuditOperationProposalRequest proposal(String operator) {
         return new AuditOperationProposalRequest(
                 "A6 role grants", "role:9", "read", "write", operator, "ADMIN", "param",

@@ -8,6 +8,8 @@ import org.apache.ibatis.annotations.*;
 /** Narrow TEST-only persistence. Every mutation is called under the existing user/device/task locks. */
 @Mapper
 public interface TestCloudExecutorMapper extends BaseMapper<Object> {
+    @Select("SELECT COUNT(*) FROM nx_test_cloud_zero_credit_resolution WHERE BINARY incident_case_id=BINARY #{caseId}")
+    int zeroCreditCaseEvidence(@Param("caseId")String caseId);
     // Exact reviewed historical identities may bypass dates only; the paid delivery contract below remains authoritative.
     String LEGACY_ADMISSION = """
         (#{legacyEnabled} AND EXISTS(SELECT 1 FROM nx_test_cloud_legacy_admission la

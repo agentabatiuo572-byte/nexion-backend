@@ -15,9 +15,9 @@ public interface ComputeV2AdmissionMapper extends BaseMapper<Object> {
             SELECT (SELECT COUNT(*) FROM nx_compute_task WHERE user_id=#{userId} AND user_device_id=#{deviceId}
               AND is_deleted=0 AND source_environment='PRODUCTION' AND status IN ('CLAIMED','RUNNING')
               AND task_no NOT LIKE 'CV2-%')
-              +(SELECT COUNT(*) FROM nx_test_cloud_request WHERE owner_id=#{userId} AND device_id=#{deviceId}
-              AND state IN ('PROCESSING','UNKNOWN'))
-            """)
+              +(SELECT COUNT(*) FROM nx_test_cloud_request r WHERE r.owner_id=#{userId} AND r.device_id=#{deviceId}
+              AND r.state IN ('PROCESSING','UNKNOWN') AND NOT EXISTS (
+            """+LegacyZeroCreditResolutionSql.RESOLVED_REQUEST+"))")
     int unresolvedLegacy(@Param("userId")long userId,@Param("deviceId")long deviceId);
 
     @Select("SELECT id,fund_incarnation AS incarnation FROM nx_user_wallet WHERE user_id=#{userId} AND is_deleted=0 AND sandbox=0 FOR UPDATE")

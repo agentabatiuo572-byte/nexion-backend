@@ -1,0 +1,33 @@
+-- Fixed TEST incident: cancellation evidence only. Original UNKNOWN requests and financial history remain intact.
+CREATE TABLE IF NOT EXISTS nx_test_cloud_zero_credit_resolution (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  incident_case_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  deployment_scope VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  request_id BIGINT NOT NULL,
+  executor_id VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  operation VARCHAR(8) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  request_key_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  request_body_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  owner_id BIGINT NOT NULL,
+  device_id BIGINT NOT NULL,
+  instance_no VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  task_config_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  task_no VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  request_generation BIGINT NOT NULL,
+  case_set_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  quiescence_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  backend_instance_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  a2_operation_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  outcome VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  task_status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  snapshot_json JSON NOT NULL,
+  resolved_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_zero_credit_request (request_id,request_generation),
+  UNIQUE KEY uk_zero_credit_case (incident_case_id),
+  UNIQUE KEY uk_zero_credit_task (task_no),
+  KEY idx_zero_credit_owner_device (owner_id,device_id),
+  CONSTRAINT chk_zero_credit_scope CHECK (deployment_scope='TEST' AND operation='COMPLETE'),
+  CONSTRAINT chk_zero_credit_terminal CHECK (outcome='ZERO_CREDIT_CANCELLED' AND task_status='CANCELLED'),
+  CONSTRAINT chk_zero_credit_incident CHECK (owner_id=60723153007 AND device_id IN (1208,1209,1212,1214)
+    AND request_generation=1)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;

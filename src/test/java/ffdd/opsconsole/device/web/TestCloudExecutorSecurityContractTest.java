@@ -30,7 +30,7 @@ class TestCloudExecutorSecurityContractTest {
     MockMvc mvc;
     TestCloudExecutorService service;
     @Configuration @EnableWebSecurity @EnableWebMvc
-    @Import({TestCloudExecutorSecurityConfig.class,TestCloudExecutorController.class,GlobalExceptionHandler.class})
+    @Import({TestCloudExecutorSecurityConfig.class,TestCloudExecutorController.class,GlobalExceptionHandler.class,LegacyQuiescenceProbe.class})
     static class Config {
         @Bean ObjectMapper json() { return new ObjectMapper(); }
         @Bean AuditLogService audit() { return mock(AuditLogService.class); }
@@ -38,6 +38,13 @@ class TestCloudExecutorSecurityContractTest {
             return spy(new TestCloudExecutorService(mock(AppTaskAssignmentMapper.class),mock(TestCloudExecutorMapper.class),
                     mock(AppTaskAssignmentService.class),audit,Clock.systemUTC(),environment,TestCloudRequestTestSupport.passthrough()));
         }
+    }
+    @org.springframework.web.bind.annotation.RestController
+    static class LegacyQuiescenceProbe {
+        @org.springframework.web.bind.annotation.GetMapping("/api/test/cloud-executors/v2/legacy-unknown-quiescence/info")
+        ApiResult<?> info() { return ApiResult.ok(Map.of("reached",true)); }
+        @org.springframework.web.bind.annotation.PostMapping("/api/test/cloud-executors/v2/legacy-unknown-quiescence")
+        ApiResult<?> register() { return ApiResult.ok(Map.of("reached",true)); }
     }
     @BeforeEach void start() {
         context=new AnnotationConfigWebApplicationContext(); context.setServletContext(new MockServletContext());
@@ -56,6 +63,25 @@ class TestCloudExecutorSecurityContractTest {
         mvc=MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();
     }
     @AfterEach void close() { context.close(); SecurityContextHolder.clearContext(); }
+    @Test void legacyQuiescenceOnlyExposesItsTwoExactDedicatedLoopbackRoutes() throws Exception {
+        String registration="/api/test/cloud-executors/v2/legacy-unknown-quiescence";
+        for(String path:List.of(registration,registration+"/info")) {
+            boolean read=path.endsWith("/info");
+            assertThat(mvc.perform((read?get(path):post(path)).header("Authorization","Bearer "+TOKEN))
+                    .andReturn().getResponse().getStatus()).isEqualTo(200);
+            assertThat(mvc.perform((read?get(path):post(path)).header("Authorization","Bearer admin-jwt"))
+                    .andReturn().getResponse().getStatus()).isEqualTo(401);
+            assertThat(mvc.perform((read?get(path):post(path)).header("Authorization","Bearer "+TOKEN)
+                    .header("Forwarded","for=127.0.0.1")).andReturn().getResponse().getStatus()).isEqualTo(403);
+            assertThat(mvc.perform((read?get(path):post(path)).header("Authorization","Bearer "+TOKEN)
+                    .with(req->{req.setRemoteAddr("203.0.113.5");return req;})).andReturn().getResponse().getStatus()).isEqualTo(403);
+            assertThat(mvc.perform((read?post(path):get(path)).header("Authorization","Bearer "+TOKEN))
+                    .andReturn().getResponse().getStatus()).isEqualTo(403);
+            assertThat(mvc.perform((read?get(path+"/"):post(path+"/")).header("Authorization","Bearer "+TOKEN))
+                    .andReturn().getResponse().getStatus()).isEqualTo(403);
+        }
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+    }
     @Test void onlyDedicatedCredentialCanReachExactNamespace() throws Exception {
         for(String token:List.of("Bearer user-jwt","Bearer admin-jwt","Bearer tc1_"+TOKEN.substring(4),"Bearer tw1_"+TOKEN.substring(4))) {
             assertThat(mvc.perform(post(BASE+"/next-task").header("Authorization",token).content("{}")).andReturn().getResponse().getStatus()).isEqualTo(401);
