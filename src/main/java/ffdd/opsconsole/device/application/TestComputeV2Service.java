@@ -402,7 +402,11 @@ public class TestComputeV2Service {
         result.put("generation",event.generation());result.put("inputHash",event.task().inputSha256());
         result.put("startedAt",event.task().startedAt()==null?null:event.task().startedAt().toString());
         boolean exited=runtime.hasExited(taskNo,generation) || admission.exitCount(taskNo,generation)>0;
-        result.put("state",event.kind()==Kind.VERIFIED?"COMPLETED":exited?"FAILED":"IN_PROGRESS");result.put("exitConfirmed",exited);
+        boolean failed=exited || runtime.viewDevice(event.deviceId())
+                .filter(view->view.event().taskNo().equals(taskNo) && view.event().generation()==generation
+                        && Set.of("FAILED","RECOVERING").contains(view.status()))
+                .filter(view->!runtime.completionPending(taskNo,generation)).isPresent();
+        result.put("state",event.kind()==Kind.VERIFIED?"COMPLETED":failed?"FAILED":"IN_PROGRESS");result.put("exitConfirmed",exited);
         if(event.evidence()!=null) {result.put("resultHash",event.evidence().resultSha256());result.put("receiptNo",event.receiptNo());}
         return result;
     }
