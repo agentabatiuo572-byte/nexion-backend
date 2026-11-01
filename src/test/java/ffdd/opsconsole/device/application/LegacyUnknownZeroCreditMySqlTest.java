@@ -58,7 +58,7 @@ class LegacyUnknownZeroCreditMySqlTest {
         source.setTransactionIsolation("TRANSACTION_READ_COMMITTED");jdbc=new JdbcTemplate(source);
         String schema=Files.readString(Path.of("scripts/schema.sql"));
         for(String table:List.of("nx_user","nx_user_wallet","nx_user_device","nx_user_device_runtime","nx_compute_task",
-                "nx_compute_receipt","nx_earning_event","nx_wallet_ledger","nx_event_outbox","nx_audit_log","nx_audit_log_archive","nx_config_item"))
+                "nx_compute_receipt","nx_earning_event","nx_wallet_ledger","nx_event_outbox","nx_audit_log","nx_audit_log_archive","nx_config_item","nx_compute_dc_ops_state"))
             createFrom(schema,table);
         createFrom(Files.readString(Path.of("scripts/migrations/20261011_support_fund_operations.sql")),"nx_support_fund_operation");
         String requests=Files.readString(Path.of("scripts/migrations/20261031_test_cloud_request_journal.sql"));
@@ -76,6 +76,7 @@ class LegacyUnknownZeroCreditMySqlTest {
     private SqlSessionTemplate session(DataSource ds) {
         var config=new Configuration(new Environment("zero-cancel",new SpringManagedTransactionFactory(),ds));
         config.addMapper(LegacyUnknownZeroCreditMapper.class);config.addMapper(AppTaskAssignmentMapper.class);config.addMapper(TestCloudRequestMapper.class);
+        config.addMapper(ComputeV2AdmissionMapper.class);
         return new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(config));
     }
     private LegacyUnknownZeroCreditService service(DataSource ds,AuditLogService log) {
@@ -213,6 +214,36 @@ class LegacyUnknownZeroCreditMySqlTest {
         assertThat(jdbc.queryForObject("SELECT status FROM nx_user_device WHERE id=1209",String.class)).isEqualTo("DEACTIVATED");
         assertThat(jdbc.queryForObject("SELECT pending_deactivate FROM nx_user_device WHERE id=1209",Integer.class)).isZero();
         verify(outbox).publishUserEvent(eq("USER_DEVICE"),eq(LegacyUnknownZeroCreditCases.require(1209).instanceNo()),eq("device.deactivated"),anyLong(),anyString(),anyInt(),anyString(),any());noCredit();
+    }
+    @Test void cancellingDoesNotInventAPauseOrClearARealUserPauseBeforeV2Admission() {
+        var sessions=session(source);var actualAssignments=sessions.getMapper(AppTaskAssignmentMapper.class);
+        var cloud=mock(TestCloudExecutorService.class);
+        var runtime=mock(ffdd.opsconsole.device.compute.v2.ComputeV2Runtime.class);
+        var env=environment().withProperty("nexion.compute-v2.device-ids","1208,1209,1212,1214")
+                .withProperty("nexion.compute-v2.allowed-task-ids","fixture-task")
+                .withProperty("nexion.compute-v2.validator-container-id",String.format("%064x",7));
+        for(int n=1;n<=6;n++)env.setProperty("nexion.compute-v2.runner-"+n+"-container-id",String.format("%064x",n));
+        var bridge=new TestComputeV2Service(runtime,cloud,mock(TestCloudRequests.class),actualAssignments,
+                mock(TaskSchedulingPolicyMapper.class),mock(ffdd.opsconsole.shared.storage.ObjectStorageService.class),
+                sessions.getMapper(ComputeV2AdmissionMapper.class),env,JSON,CLOCK,Optional.empty(),mock(TestCloudActivationAdmission.class));
+        var fleet=new TestCloudExecutorService.Identity("fleet",0,0,"fleet","fixture","bge-m3:567m",LegacyUnknownZeroCreditCases.require(1208).modelDigest());
+        for(long device:List.of(1208L,1212L)) {
+            var c=LegacyUnknownZeroCreditCases.require(device);
+            when(cloud.computeV2Identity(fleet,device)).thenReturn(new TestCloudExecutorService.Identity(c.executorId(),c.ownerId(),device,c.instanceNo(),c.taskConfigId(),c.modelTag(),c.modelDigest()));
+        }
+        assertThat(jdbc.queryForObject("SELECT paused_reason FROM nx_user_device_runtime WHERE user_device_id=1208",String.class)).isNull();
+        approve(1208);
+        assertThat(actualAssignments.ownedDevice(LegacyUnknownZeroCreditCases.OWNER,1208L).pausedReason()).isNull();
+        AppTaskAssignmentMapper.DeviceRow eligible=tx.execute(s->org.springframework.test.util.ReflectionTestUtils.invokeMethod(
+                bridge,"eligible",fleet,1208L,LegacyUnknownZeroCreditCases.OWNER,false));
+        assertThat(eligible.id()).isEqualTo(1208L);
+        jdbc.update("UPDATE nx_user_device_runtime SET paused_reason='USER_PAUSED' WHERE user_device_id=1212");
+        approve(1212);
+        assertThat(actualAssignments.ownedDevice(LegacyUnknownZeroCreditCases.OWNER,1212L).pausedReason()).isEqualTo("USER_PAUSED");
+        assertThatThrownBy(()->tx.execute(s->org.springframework.test.util.ReflectionTestUtils.invokeMethod(
+                bridge,"eligible",fleet,1212L,LegacyUnknownZeroCreditCases.OWNER,false)))
+                .hasMessage("COMPUTE_V2_DEVICE_NOT_ACTIVE");
+        noCredit();
     }
     @Test void aDifferentTasksRealDailyUvtLedgerIsPreservedButAnUnattributedOneBlocks() {
         var c=LegacyUnknownZeroCreditCases.require(1208);

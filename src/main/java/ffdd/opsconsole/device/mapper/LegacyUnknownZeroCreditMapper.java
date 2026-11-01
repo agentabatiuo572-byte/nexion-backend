@@ -92,8 +92,7 @@ public interface LegacyUnknownZeroCreditMapper extends BaseMapper<Object> {
         """)
     int cancelTask(@Param("owner")long owner,@Param("device")long device,@Param("task")String task,@Param("now")LocalDateTime now);
     @Update("""
-        UPDATE nx_user_device_runtime SET active_task_no=NULL,online_status='OFFLINE',
-          paused_reason='UNKNOWN_ABANDONED_NO_CREDIT',updated_at=#{now}
+        UPDATE nx_user_device_runtime SET active_task_no=NULL,online_status='OFFLINE',updated_at=#{now}
          WHERE user_device_id=#{device} AND BINARY active_task_no=BINARY #{task}
            AND BINARY agent_version=BINARY #{marker} AND client_name='UVEL TEST BGE-M3' AND is_deleted=0
         """)
