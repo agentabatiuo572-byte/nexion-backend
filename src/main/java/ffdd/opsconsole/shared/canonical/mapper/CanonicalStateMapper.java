@@ -373,6 +373,37 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
             """)
     boolean hasActiveTask(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
 
+    @Select("SELECT EXISTS(SELECT 1 FROM nx_test_cloud_request WHERE owner_id=#{userId} AND device_id=#{deviceId} AND state IN ('PROCESSING','UNKNOWN'))")
+    boolean hasUnresolvedComputeV1Request(@Param("userId") long userId,@Param("deviceId") long deviceId);
+
+    @Select("SELECT EXISTS(SELECT 1 FROM nx_compute_task WHERE user_id=#{userId} AND user_device_id=#{deviceId} AND is_deleted=0 AND source_environment='PRODUCTION' AND status IN ('CLAIMED','RUNNING') AND task_no NOT LIKE 'CV2-%')")
+    boolean hasActiveComputeV1Task(@Param("userId") long userId,@Param("deviceId") long deviceId);
+
+    @Select("SELECT EXISTS(SELECT 1 FROM nx_compute_v2_event WHERE user_id=#{userId} AND user_device_id=#{deviceId} AND task_no=#{taskNo} AND generation=#{generation} AND deployment_scope=#{scope} AND kind='EXITED')")
+    boolean hasComputeV2Exit(@Param("userId") long userId,@Param("deviceId") long deviceId,@Param("taskNo") String taskNo,@Param("generation") long generation,@Param("scope") String scope);
+
+    @Select("SELECT task_no taskNo,generation FROM nx_compute_v2_event WHERE deployment_scope=#{scope} AND user_device_id=#{deviceId} AND user_id=#{userId} AND kind='EXITED' ORDER BY generation DESC LIMIT 1")
+    ComputeV2Exit lastComputeV2Exit(@Param("userId") long userId,@Param("deviceId") long deviceId,@Param("scope") String scope);
+    record ComputeV2Exit(String taskNo,long generation) {}
+
+    @Select("SELECT id deviceId,user_id userId FROM nx_user_device WHERE id>#{afterId} AND source_environment='PRODUCTION' AND run_id='' AND pending_deactivate=1 AND is_deleted=0 AND ownership_status='OWNED' ORDER BY id LIMIT #{limit}")
+    List<ComputeV2PendingDevice> pendingComputeV2Deactivations(@Param("afterId") long afterId,@Param("limit") int limit);
+    record ComputeV2PendingDevice(long deviceId,long userId) {}
+
+    @Update("""
+        UPDATE nx_user_device d SET status='DEACTIVATED',activated_at=NULL,deactivated_at=NOW(),
+            pending_deactivate=0,row_version=row_version+1,updated_at=NOW()
+        WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.is_deleted=0
+            AND d.source_environment='PRODUCTION' AND d.run_id='' AND d.ownership_status='OWNED'
+            AND d.status IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE') AND d.pending_deactivate=1
+            AND d.activated_at IS NOT NULL AND d.row_version=#{expectedVersion}
+            AND NOT EXISTS(SELECT 1 FROM nx_compute_task t WHERE t.user_id=#{userId} AND t.user_device_id=#{deviceId}
+                AND t.is_deleted=0 AND t.source_environment='PRODUCTION' AND t.status IN ('CLAIMED','RUNNING') AND t.task_no NOT LIKE 'CV2-%')
+            AND NOT EXISTS(SELECT 1 FROM nx_test_cloud_request q WHERE q.owner_id=#{userId} AND q.device_id=#{deviceId}
+                AND q.state IN ('PROCESSING','UNKNOWN'))
+        """)
+    int deactivatePendingComputeV2Device(@Param("userId") long userId,@Param("deviceId") long deviceId,@Param("expectedVersion") Long expectedVersion);
+
     @Update("""
             UPDATE nx_user_device SET pending_deactivate=1,updated_at=NOW()
              WHERE id=#{deviceId} AND user_id=#{userId} AND is_deleted=0
@@ -416,6 +447,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                SET t.status = 'CANCELLED', t.proof_consumed_at = NOW(), t.updated_at = NOW()
              WHERE t.user_id = #{userId} AND t.user_device_id = #{deviceId} AND t.is_deleted = 0
                AND t.source_environment = 'PRODUCTION' AND UPPER(t.status) IN ('CLAIMED','RUNNING')
+               AND t.task_no NOT LIKE 'CV2-%'
                AND d.source_environment = 'PRODUCTION' AND d.run_id = '' AND d.is_deleted = 0
                AND UPPER(d.ownership_status) = 'OWNED' AND UPPER(d.status) = 'DEACTIVATED'
             """)

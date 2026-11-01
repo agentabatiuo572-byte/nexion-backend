@@ -32,12 +32,15 @@ public class TestCloudExecutorSecurityConfig {
                         .accessDeniedHandler((req,res,ex)->error(res,403,"TEST_CLOUD_FORBIDDEN")))
                 .authorizeHttpRequests(auth->auth.requestMatchers(HttpMethod.POST,"/api/test/cloud-executors/v1/next-task",
                         "/api/test/cloud-executors/v1/heartbeat","/api/test/cloud-executors/v1/tasks/*/heartbeat",
-                        "/api/test/cloud-executors/v1/tasks/*/complete","/api/test/cloud-executors/v1/requests/terminate").hasRole("TEST_CLOUD_EXECUTOR")
+                        "/api/test/cloud-executors/v1/tasks/*/complete","/api/test/cloud-executors/v1/requests/terminate",
+                        "/api/test/cloud-executors/v2/next-task","/api/test/cloud-executors/v2/tasks/*/heartbeat",
+                        "/api/test/cloud-executors/v2/tasks/*/complete","/api/test/cloud-executors/v2/tasks/*/exited",
+                        "/api/test/cloud-executors/v2/tasks/*/observed-exit").hasRole("TEST_CLOUD_EXECUTOR")
                         .requestMatchers(HttpMethod.GET,"/api/test/cloud-executors/v1/tasks/*/receipt",
                                 "/api/test/cloud-executors/v1/tasks/*/manifest","/api/test/cloud-executors/v1/tasks/*/rollback-review",
                                 "/api/test/cloud-executors/v1/tasks/*/stability-review",
                                 "/api/test/cloud-executors/v1/instances","/api/test/cloud-executors/v1/eligibility",
-                                "/api/test/cloud-executors/v1/requests/status").hasRole("TEST_CLOUD_EXECUTOR")
+                                "/api/test/cloud-executors/v1/requests/status","/api/test/cloud-executors/v2/tasks/*/receipt").hasRole("TEST_CLOUD_EXECUTOR")
                         .anyRequest().denyAll())
                 .addFilterBefore(new CloudAuthenticationFilter(service),UsernamePasswordAuthenticationFilter.class).build();
     }

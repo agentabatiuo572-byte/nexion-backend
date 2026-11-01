@@ -40,7 +40,6 @@ import org.springframework.stereotype.Repository;
 import org.springframework.util.StringUtils;
 
 @Repository
-@RequiredArgsConstructor
 public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     private static final Pattern FIRST_DECIMAL = Pattern.compile("[0-9]+(?:\\.[0-9]+)?");
     private static final TypeReference<List<String>> STRING_LIST = new TypeReference<>() {
@@ -48,6 +47,17 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
 
     private final DeviceCatalogMapper mapper;
     private final ObjectMapper objectMapper;
+    private final ffdd.opsconsole.device.mapper.TaskSchedulingPolicyMapper taskScheduling;
+
+    public MybatisDeviceCatalogRepository(DeviceCatalogMapper mapper, ObjectMapper objectMapper) {
+        this(mapper, objectMapper, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public MybatisDeviceCatalogRepository(DeviceCatalogMapper mapper, ObjectMapper objectMapper,
+            ffdd.opsconsole.device.mapper.TaskSchedulingPolicyMapper taskScheduling) {
+        this.mapper = mapper; this.objectMapper = objectMapper; this.taskScheduling = taskScheduling;
+    }
 
     @PostConstruct
     void ensureSchema() {
@@ -85,6 +95,11 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
         if (mapper.countTaskExtensionColumn() == 0) {
             mapper.addTaskExtensionColumns();
         }
+        if (mapper.taskRewardScale() < 6) {
+            if (mapper.oversizedTaskRewardCount() > 0) throw new IllegalStateException("TASK_REWARD_SCALE_MIGRATION_OVERFLOW");
+            mapper.widenTaskRewardScale();
+        }
+        if (taskScheduling != null) taskScheduling.ensureSchema();
         mapper.backfillDefaultTaskExtensions();
         mapper.normalizeLegacyTaskClasses();
         mapper.createPhoneTierRewardTable();
@@ -233,29 +248,54 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
         long offset = (pageNum - 1) * pageSize;
         long total = mapper.countTasks(status, keyword, taskClass);
         List<DeviceTaskView> records = mapper.pageTasks(status, keyword, taskClass, pageSize, offset);
+        if (taskScheduling != null && records != null && !records.isEmpty()) {
+            var policies = taskScheduling.findMany(records.stream().map(DeviceTaskView::taskId).toList()).stream()
+                    .collect(java.util.stream.Collectors.toMap(
+                            ffdd.opsconsole.device.mapper.TaskSchedulingPolicyMapper.Policy::taskId,
+                            ffdd.opsconsole.device.mapper.TaskSchedulingPolicyMapper.Policy::settings));
+            records = records.stream().map(task -> policies.containsKey(task.taskId())
+                    ? task.withScheduling(policies.get(task.taskId())) : task).toList();
+        }
         return new PageResult<>(total, pageNum, pageSize, records);
     }
 
     @Override
     public Optional<DeviceTaskView> findTask(String taskId) {
-        return Optional.ofNullable(mapper.findTask(taskId));
+        return Optional.ofNullable(withTaskScheduling(mapper.findTask(taskId)));
     }
 
     @Override
     public Optional<DeviceTaskView> findTaskForUpdate(String taskId) {
-        return Optional.ofNullable(mapper.findTaskForUpdate(taskId));
+        return Optional.ofNullable(withTaskScheduling(mapper.findTaskForUpdate(taskId)));
     }
 
     @Override
     public DeviceTaskView createTask(String taskId, DeviceTaskUpsertRequest request, LocalDateTime now) {
+        var settings = ffdd.opsconsole.device.domain.TaskSchedulingSettings.defaults(request.taskClass(), request.model()).merge(request);
         mapper.insertTask(taskWrite(taskId, request, now, now));
+        if (request.hasSchedulingSettings()) saveTaskScheduling(taskId, settings);
         return findTask(taskId).orElseThrow();
     }
 
     @Override
     public Optional<DeviceTaskView> updateTask(String taskId, DeviceTaskUpsertRequest request, LocalDateTime now) {
+        var before = findTask(taskId);
+        if (before.isEmpty()) return Optional.empty();
+        var settings = before.get().scheduling().merge(request);
         int updated = mapper.updateTask(taskWrite(taskId, request, now, now));
+        if (updated != 0 && request.hasSchedulingSettings()) saveTaskScheduling(taskId, settings);
         return updated == 0 ? Optional.empty() : findTask(taskId);
+    }
+
+    private DeviceTaskView withTaskScheduling(DeviceTaskView task) {
+        if (task == null || taskScheduling == null) return task;
+        var policy = taskScheduling.find(task.taskId());
+        return policy == null ? task : task.withScheduling(policy.settings());
+    }
+
+    private void saveTaskScheduling(String taskId, ffdd.opsconsole.device.domain.TaskSchedulingSettings settings) {
+        if (taskScheduling == null) throw new IllegalStateException("TASK_SCHEDULING_REPOSITORY_REQUIRED");
+        taskScheduling.save(taskId, settings);
     }
 
     @Override

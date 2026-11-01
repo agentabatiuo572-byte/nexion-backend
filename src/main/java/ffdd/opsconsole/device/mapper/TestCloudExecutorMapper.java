@@ -149,6 +149,16 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
 
     String LIVE_FLEET_BINDING = "SELECT 1 " + PAID_FLEET_FROM + FLEET_LIVE
             + " AND (#{completing} OR d.pending_deactivate=0) AND d.id=#{deviceId} AND d.user_id=#{ownerId} AND d.instance_no=#{instanceNo}";
+    // V2 owns its own runtime. Reuse the paid delivery contract without v1 execution-table predicates.
+    @Select("SELECT 1 " + PAID_FLEET_FROM + """
+             AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+             AND (#{completing} OR d.pending_deactivate=0)
+             AND d.id=#{deviceId} AND d.user_id=#{ownerId} AND d.instance_no=#{instanceNo}
+             FOR UPDATE OF o,d
+            """)
+    Integer computeV2PaidBinding(@Param("cutoff") LocalDateTime cutoff,@Param("tradeinCutoff") LocalDateTime tradeinCutoff,
+            @Param("ownerId") long ownerId,@Param("deviceId") long deviceId,@Param("instanceNo") String instanceNo,
+            @Param("completing") boolean completing,@Param("legacyEnabled") boolean legacyEnabled);
     @Select(LIVE_FLEET_BINDING)
     Integer fleetBinding(@Param("cutoff") LocalDateTime cutoff,@Param("tradeinCutoff") LocalDateTime tradeinCutoff,@Param("ownerId") long ownerId,
                          @Param("deviceId") long deviceId,@Param("instanceNo") String instanceNo,@Param("completing") boolean completing,@Param("legacyEnabled") boolean legacyEnabled);

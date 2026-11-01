@@ -171,7 +171,8 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
 
     // Large task histories can make MySQL choose a non-covering competitor despite the status key.
     // Deploy the active-read migration first; keep these equality probes on its covering index.
-    @Select("""
+    String ASSIGNMENT_CANDIDATES_SQL = """
+            <script>
             SELECT d.user_id AS userId, d.id AS deviceId
               FROM nx_user_device d
               JOIN nx_user u ON u.id = d.user_id
@@ -213,11 +214,20 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                                   AND l.source_environment = 'PRODUCTION' AND l.is_deleted = 0
                                   AND l.lock_until > CURRENT_TIMESTAMP)
                AND d.id > #{afterDeviceId}
+               <if test="_parameter.containsKey('excludedDeviceIds') and excludedDeviceIds != null and !excludedDeviceIds.isEmpty()">
+               AND d.id NOT IN
+               <foreach collection="excludedDeviceIds" item="excludedDeviceId" open="(" separator="," close=")">#{excludedDeviceId}</foreach>
+               </if>
              ORDER BY d.id
              LIMIT #{limit}
-            """)
+            </script>
+            """;
+    @Select(ASSIGNMENT_CANDIDATES_SQL)
     List<AssignmentCandidate> assignmentCandidates(@Param("afterDeviceId") Long afterDeviceId,
                                                     @Param("limit") int limit);
+    @Select(ASSIGNMENT_CANDIDATES_SQL)
+    List<AssignmentCandidate> assignmentCandidatesExcluding(@Param("afterDeviceId") Long afterDeviceId,
+            @Param("limit") int limit,@Param("excludedDeviceIds") List<Long> excludedDeviceIds);
 
     @Select("""
             SELECT d.id, d.instance_no AS instanceNo, d.device_type AS deviceType,
@@ -810,7 +820,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     @Update("""
             UPDATE nx_compute_task
                SET status = 'EXPIRED', last_error = 'LEASE_EXPIRED', updated_at = #{now}
-             WHERE task_no = #{taskNo} AND user_id = #{userId}
+             WHERE task_no = #{taskNo} AND user_id = #{userId} AND task_no NOT LIKE 'CV2-%'
                AND source_environment = #{sourceEnvironment} AND source_environment = 'PRODUCTION'
                AND UPPER(status) IN ('CLAIMED','RUNNING') AND lease_expires_at <= #{now}
                AND proof_consumed_at IS NULL AND is_deleted = 0

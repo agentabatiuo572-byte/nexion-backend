@@ -41,6 +41,7 @@ import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.device.domain.ProductInventoryMode;
 import ffdd.opsconsole.device.domain.DeviceSkuSpecifications;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
+import ffdd.opsconsole.device.domain.TaskSchedulingSettings;
 import ffdd.opsconsole.device.domain.DeviceTradeinOverviewView;
 import ffdd.opsconsole.device.dto.ComputeConfigParamResponse;
 import ffdd.opsconsole.device.dto.ComputeConfigParamUpdateRequest;
@@ -1276,6 +1277,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     "taskClass", created.taskClass(), "model", created.model(),
                     "minReward", created.minReward(), "maxReward", created.maxReward(),
                     "minVram", created.minVram(), "killInit", created.killInit(),
+                    "scheduling", created.scheduling(),
                     "reason", trusted.reason(), "idempotencyKey", idempotencyKey.trim()));
             return ApiResult.ok(created);
         });
@@ -1297,15 +1299,21 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (before == null) {
                 return ApiResult.fail(404, "TASK_NOT_FOUND");
             }
+            TaskSchedulingSettings nextScheduling;
+            try { nextScheduling = before.scheduling().merge(trusted); }
+            catch (IllegalArgumentException invalid) { return ApiResult.fail(422, invalid.getMessage()); }
             if (!before.status().equals(trusted.status())) {
                 return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
                         "TASK_STATUS_REQUIRES_LIFECYCLE_ACTION");
             }
             boolean beforeEnabled = "active".equals(before.status()) && !"已 kill".equals(before.killInit());
             boolean nextEnabled = "active".equals(trusted.status()) && !"已 kill".equals(trusted.killInit());
-            if (e2TaskPricingAmplifiesFinancialOutflow(
+            if ((e2TaskPricingAmplifiesFinancialOutflow(
                     before.minReward(), before.maxReward(), parseVram(before.minVram()), beforeEnabled,
                     trusted.minReward(), trusted.maxReward(), parseVram(trusted.minVram()), nextEnabled)
+                    || nextEnabled && (nextScheduling.selectionWeight() > before.scheduling().selectionWeight()
+                        || nextScheduling.expectedDurationMinSec() < before.scheduling().expectedDurationMinSec()
+                        || before.scheduling().runtimeKey().isEmpty() && !nextScheduling.runtimeKey().isEmpty()))
                     && coverageBelowRedline()) {
                 return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                         OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
@@ -1337,6 +1345,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 "afterMinVram", updated.minVram(),
                 "beforeKillInit", before.killInit(),
                 "afterKillInit", updated.killInit(),
+                "beforeScheduling", before.scheduling(),
+                "afterScheduling", updated.scheduling(),
                 "reason", trusted.reason(),
                 "idempotencyKey", idempotencyKey.trim()));
             return ApiResult.ok(updated);
@@ -2031,6 +2041,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (nextMin == null || nextMax == null || nextMin.compareTo(BigDecimal.ZERO) < 0
                     || nextMax.compareTo(BigDecimal.ZERO) < 0 || nextMin.compareTo(nextMax) > 0) {
                 return ApiResult.fail(400, "TASK_REWARD_RANGE_INVALID");
+            }
+            if (!taskRewardPrecisionValid(nextMin) || !taskRewardPrecisionValid(nextMax)) {
+                return ApiResult.fail(422, "TASK_REWARD_PRECISION_INVALID");
             }
             if (nextVram < 0) {
                 return ApiResult.fail(400, "TASK_MIN_VRAM_INVALID");
@@ -3406,7 +3419,20 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (!allows(request.killInit(), TASK_KILL_INIT_STATES)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TASK_KILL_INIT_INVALID");
         }
+        if (!taskRewardPrecisionValid(request.minReward()) || !taskRewardPrecisionValid(request.maxReward()))
+            return ApiResult.fail(422, "TASK_REWARD_PRECISION_INVALID");
+        try {
+            TaskSchedulingSettings.validateSupplied(request);
+        } catch (IllegalArgumentException invalid) {
+            return ApiResult.fail(422, invalid.getMessage());
+        }
         return null;
+    }
+
+    private static boolean taskRewardPrecisionValid(BigDecimal reward) {
+        if (reward == null || reward.signum() < 0 || reward.compareTo(new BigDecimal("999999999999.999999")) > 0) return false;
+        try { reward.setScale(6, java.math.RoundingMode.UNNECESSARY); return true; }
+        catch (ArithmeticException invalid) { return false; }
     }
 
     private ApiResult<DeviceOrderView> transitionOrder(
@@ -3748,7 +3774,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 request.name().trim(), request.price(), request.unit().trim(), request.requirement().trim(),
                 request.saturation(), normalizeTaskStatus(request.status()), normalizeUpper(request.taskClass()),
                 request.model().trim(), request.minReward(), request.maxReward(), parseVram(request.minVram()) + "GB",
-                request.killInit().trim(), request.reason().trim(), operator(request.operator()));
+                request.killInit().trim(), request.reason().trim(), operator(request.operator()),
+                request.selectionWeight(), request.expectedDurationMinSec(), request.expectedDurationMaxSec(),
+                request.executionTimeoutSec(), request.runtimeKey(), request.validatorKey(), request.workloadConfigJson());
     }
 
     private ApiResult<Map<String, Object>> requireE1ForceUnlockTransition(
@@ -5283,7 +5311,18 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 str(p, "name"), decimal(p, "price"), str(p, "unit"), str(p, "requirement"),
                 decimal(p, "saturation"), str(p, "status"), str(p, "taskClass"), str(p, "model"),
                 decimal(p, "minReward"), decimal(p, "maxReward"), str(p, "minVram"), str(p, "killInit"),
-                reason, operator);
+                reason, operator, schedulingInt(p, "selectionWeight"), schedulingInt(p, "expectedDurationMinSec"),
+                schedulingInt(p, "expectedDurationMaxSec"), schedulingInt(p, "executionTimeoutSec"),
+                str(p, "runtimeKey"), str(p, "validatorKey"), str(p, "workloadConfigJson"));
+    }
+
+    private static Integer schedulingInt(Map<String, Object> params, String key) {
+        Object value = params.get(key);
+        if (value == null) return null;
+        try { return new BigDecimal(value.toString()).intValueExact(); }
+        catch (NumberFormatException | ArithmeticException invalid) {
+            throw new ffdd.opsconsole.shared.exception.BizException(422, "TASK_SCHEDULING_VALUE_INVALID");
+        }
     }
 
     /** 从 replay params 重建 DeviceDatacenterUpsertRequest(e5_datacenter_create/update 复用)。 */

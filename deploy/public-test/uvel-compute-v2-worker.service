@@ -1,0 +1,35 @@
+[Unit]
+Description=UVEL TEST bounded Compute V2 runners
+After=nexgrid-backend.service
+Wants=nexgrid-backend.service
+PartOf=nexgrid-backend.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=uvel-compute-v2
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/uvel-compute-v2
+Environment=UVEL_COMPUTE_V2_ENABLED=false
+Environment=UVEL_COMPUTE_V2_SCOPE=TEST
+EnvironmentFile=-/etc/uvel-compute-v2/worker.env
+LoadCredential=cloud-worker-token:/srv/nexgrid/secrets/cloud-bge-worker.credential
+ExecStart=/usr/bin/python3 -I -B /opt/uvel-compute-v2/compute-v2-worker.py --journal-directory=/var/lib/uvel-compute-v2 --credential-file=%d/cloud-worker-token --backend=http://127.0.0.1:8110 --ollama-urls=http://127.0.0.1:11436,http://127.0.0.1:11437,http://127.0.0.1:11438,http://127.0.0.1:11439,http://127.0.0.1:11440,http://127.0.0.1:11441
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=1800
+MemoryMax=256M
+TasksMax=32
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

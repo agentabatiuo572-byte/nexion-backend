@@ -12,6 +12,8 @@ import ffdd.opsconsole.finance.facade.FinanceSupportPaymentFactsFacade;
 import ffdd.opsconsole.finance.facade.SupportFundsReadFacade.*;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts;
 import ffdd.opsconsole.finance.mapper.SupportFundReadMapper;
+import ffdd.opsconsole.finance.mapper.ComputeV2SettlementMapper;
+import ffdd.opsconsole.finance.compute.v2.ComputeV2FundEvidence;
 import ffdd.opsconsole.market.facade.SupportGenesisReadFacade;
 import ffdd.opsconsole.market.facade.SupportExchangeReadFacade;
 import ffdd.opsconsole.market.facade.SupportStakingReadFacade;
@@ -51,6 +53,7 @@ public class SupportFundReadService {
     private final SupportDirectReferralReadFacade direct;
     private final SupportFundCommissionEvidence commissionEvidence;
     private final SupportFundDirectReferralEvidence directEvidence;
+    private final ComputeV2SettlementMapper computeV2Mapper;
     private record TrialRefundInputs(SupportPaymentFacts.Snapshot history,List<Map<String,Object>> orders,
                                      Map<String,SupportFundEarningsEvidence.TrialRecovery> recoveries) { }
     public SupportFundReadService(SupportFundReadMapper mapper,SupportFundBirthReadFacade auth,
@@ -73,18 +76,29 @@ public class SupportFundReadService {
         this(mapper,auth,payments,codec,dataSource,earningsEvidence,genesis,exchanges,genesisEvidence,exchangeEvidence,devices,staking,deviceEvidence,stakingEvidence,
             null,null,new SupportFundCommissionEvidence(codec,new ObjectMapper()),new SupportFundDirectReferralEvidence(codec,new ObjectMapper()));
     }
-    @Autowired
     public SupportFundReadService(SupportFundReadMapper mapper,SupportFundBirthReadFacade auth,
             FinanceSupportPaymentFactsFacade payments,SupportFundJournalBindingService codec,DataSource dataSource,
             SupportFundEarningsEvidence earningsEvidence,SupportGenesisReadFacade genesis,SupportExchangeReadFacade exchanges,
             SupportFundGenesisEvidence genesisEvidence,SupportFundExchangeEvidence exchangeEvidence,
             SupportDeviceReadFacade devices,SupportStakingReadFacade staking,SupportFundDeviceEvidence deviceEvidence,SupportFundStakingEvidence stakingEvidence,
             SupportCommissionReadFacade commissions,SupportDirectReferralReadFacade direct,SupportFundCommissionEvidence commissionEvidence,SupportFundDirectReferralEvidence directEvidence) {
+        this(mapper,auth,payments,codec,dataSource,earningsEvidence,genesis,exchanges,genesisEvidence,exchangeEvidence,
+                devices,staking,deviceEvidence,stakingEvidence,commissions,direct,commissionEvidence,directEvidence,null);
+    }
+    @Autowired
+    public SupportFundReadService(SupportFundReadMapper mapper,SupportFundBirthReadFacade auth,
+            FinanceSupportPaymentFactsFacade payments,SupportFundJournalBindingService codec,DataSource dataSource,
+            SupportFundEarningsEvidence earningsEvidence,SupportGenesisReadFacade genesis,SupportExchangeReadFacade exchanges,
+            SupportFundGenesisEvidence genesisEvidence,SupportFundExchangeEvidence exchangeEvidence,
+            SupportDeviceReadFacade devices,SupportStakingReadFacade staking,SupportFundDeviceEvidence deviceEvidence,SupportFundStakingEvidence stakingEvidence,
+            SupportCommissionReadFacade commissions,SupportDirectReferralReadFacade direct,SupportFundCommissionEvidence commissionEvidence,
+            SupportFundDirectReferralEvidence directEvidence,ComputeV2SettlementMapper computeV2Mapper) {
         this.mapper=mapper;this.auth=auth;this.payments=payments;this.codec=codec;this.dataSource=dataSource;
         this.earningsEvidence=earningsEvidence;this.genesis=genesis;this.exchanges=exchanges;
         this.genesisEvidence=genesisEvidence;this.exchangeEvidence=exchangeEvidence;
         this.devices=devices;this.staking=staking;this.deviceEvidence=deviceEvidence;this.stakingEvidence=stakingEvidence;
         this.commissions=commissions;this.direct=direct;this.commissionEvidence=commissionEvidence;this.directEvidence=directEvidence;
+        this.computeV2Mapper=computeV2Mapper;
     }
     public NetSnapshot read(Collection<Long> requested) {
         if(requested==null || requested.stream().anyMatch(id->id==null || id<=0))throw new IllegalArgumentException("Explicit positive customer scope required");
@@ -174,6 +188,8 @@ public class SupportFundReadService {
                     var representedEarnings=new HashSet<String>();var earningsPhases=new HashSet<String>();var exchangePhases=new HashSet<String>();
                     var devicePhases=new HashSet<String>();var stakingPhases=new HashSet<String>();var linkedEarnings=new HashSet<String>();
                     var commissionPhases=new HashSet<String>();var directPhases=new HashSet<String>();
+                    var computeV2=new ComputeV2FundEvidence(computeV2Mapper,new ObjectMapper().findAndRegisterModules());
+                    var computeV2Operations=new ArrayList<ComputeV2FundEvidence.Verified>();
                     for(var row:componentOps) {
                         long id=number(row,"id");var parties=parties(id,partyIndex);var opLegs=legs(id,legIndex);
                         var events=decodedReceipts.get(row);var source=codec.readCurrentProof(text(row,"sourceSnapshotJson"));
@@ -217,6 +233,12 @@ public class SupportFundReadService {
                                 catch(IllegalArgumentException ex){throw bad(Gap.SOURCE);}
                                 require(devicePhases.add(device.coveredPhase()),Gap.SOURCE);
                                 stamp=device.stamp();sourcePoints=device.points();
+                            }
+                            case "SUPPORT_COMPUTE_V2_BATCH" -> {
+                                ComputeV2FundEvidence.Verified batch;
+                                try {batch=computeV2.verify(row,source,proof,events,deviceInput);}
+                                catch(IllegalArgumentException ex){throw bad(Gap.SOURCE);}
+                                computeV2Operations.add(batch);stamp=batch.stamp();sourcePoints=batch.points();
                             }
                             case "SUPPORT_STAKING" -> {
                                 SupportFundStakingEvidence.Verified position;
@@ -274,7 +296,10 @@ public class SupportFundReadService {
                     try {
                         genesisEvidence.verifyCoverage(component,genesisInput,represented);
                         holdings.addAll(exchangeEvidence.verifyCoverage(component,exchangeInput,exchangePhases));
-                        deviceEvidence.verifyCoverage(component,deviceInput,devicePhases);
+                        var legacyDeviceInput=computeV2Operations.isEmpty()?deviceInput:
+                            new SupportFundDeviceEvidence.Inputs(computeV2.legacySources(component,deviceInput,computeV2Operations),
+                                raw,ops,partyRows,legs,deviceInput.precisions());
+                        deviceEvidence.verifyCoverage(component,legacyDeviceInput,devicePhases);
                         holdings.addAll(stakingEvidence.verifyCoverage(component,stakingInput,stakingPhases));
                         commissionEvidence.verifyCoverage(component,commissionInput,commissionPhases);
                         directEvidence.verifyCoverage(component,directInput,directPhases);

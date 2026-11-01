@@ -586,6 +586,12 @@ public class AppTaskAssignmentService {
         return claimInternal(userId, deviceId, "PRODUCTION", null, true);
     }
 
+    private boolean managedComputeV2(Long deviceId) {
+        return deviceId != null && Boolean.TRUE.equals(environment.getProperty("nexion.compute-v2.enabled",Boolean.class,false))
+                && java.util.Arrays.stream(environment.getProperty("nexion.compute-v2.device-ids","").split(","))
+                .map(String::trim).anyMatch(String.valueOf(deviceId)::equals);
+    }
+
     private boolean managedTestCloud(Long userId, Long deviceId) {
         if (!"TEST".equals(environment.getProperty(TestCloudExecutorService.PREFIX + "deployment-scope"))
                 || !Set.of(environment.getActiveProfiles()).equals(Set.of("dev"))) return false;
@@ -603,6 +609,7 @@ public class AppTaskAssignmentService {
     }
 
     private ApiResult<AppTaskAssignmentView> claimInternal(Long userId, Long deviceId, String sourceEnvironment, Grant grant, boolean cloud) {
+        if (managedComputeV2(deviceId)) throw new BizException(409,"COMPUTE_V2_EXECUTOR_REQUIRED");
         LocalDateTime now = now();
         lockProductionUser(userId);
         if (grant == null && !cloud) phoneSessions.requireExecutionOwner(userId, deviceId);
@@ -743,6 +750,7 @@ public class AppTaskAssignmentService {
 
     private <T> ApiResult<T> completeInternal(Long userId, String taskNo, AppTaskCompleteRequest request,
             String sourceEnvironment, Grant grant, CompleteRequest testRequest, TestCloudExecutorService.CloudProof cloudProof) {
+        if (taskNo != null && taskNo.startsWith("CV2-")) throw new BizException(409,"COMPUTE_V2_PROTOCOL_REQUIRED");
         if (grant != null) testWorker.requireCurrent(grant);
         Instant completedAt = clock.instant();
         LocalDateTime now = LocalDateTime.ofInstant(completedAt, clock.getZone()).truncatedTo(java.time.temporal.ChronoUnit.MICROS);
@@ -963,7 +971,7 @@ public class AppTaskAssignmentService {
                 .orElseThrow(() -> new BizException(409, "TASK_ASSIGNMENT_NO_ELIGIBLE_TASK"));
     }
 
-    private int effectiveRoutingVram(DeviceRow device) {
+    static int effectiveRoutingVram(DeviceRow device) {
         String identity = String.join(" ", value(device.deviceType()), value(device.productCode()))
                 .toUpperCase(Locale.ROOT);
         if (identity.contains("CLOUD-SHARE") || identity.contains("CLOUD_SHARE")

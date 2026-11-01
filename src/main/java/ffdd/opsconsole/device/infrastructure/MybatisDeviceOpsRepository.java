@@ -27,7 +27,7 @@ import org.springframework.stereotype.Repository;
 import org.springframework.util.StringUtils;
 
 @Repository
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_ = @org.springframework.beans.factory.annotation.Autowired)
 public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
     private static final Set<String> E3_CONFIG_KEYS = Set.of(
             "stageEarlyEnd",
@@ -73,6 +73,11 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
     private final DeviceOpsMapper mapper;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final CanonicalStateMapper canonicalStateMapper;
+    private final ffdd.opsconsole.device.application.ComputeV2DeviceLifecycleService computeV2Lifecycle;
+
+    public MybatisDeviceOpsRepository(DeviceOpsMapper mapper,OpsReadTimeSeedPolicy readTimeSeedPolicy,CanonicalStateMapper canonicalStateMapper) {
+        this(mapper,readTimeSeedPolicy,canonicalStateMapper,null);
+    }
 
     @Override
     public Map<String, Object> overviewCounters() {
@@ -186,6 +191,13 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
 
     @Override
     public Optional<DeviceOpsView> deactivateE5Device(Long deviceId, boolean unbind, LocalDateTime now) {
+        if(computeV2Lifecycle!=null && computeV2Lifecycle.manages(deviceId)){
+            var original=findDevice(deviceId).orElse(null);
+            if(original!=null){
+                if(unbind)computeV2Lifecycle.requireDrainedForReplacement(original.userId(),deviceId);
+                else if(computeV2Lifecycle.deferDeactivation(original.userId(),deviceId,null))return findDevice(deviceId);
+            }
+        }
         if (mapper.deactivateE5Device(deviceId, unbind ? 1 : 0, now) != 1) {
             return Optional.empty();
         }
@@ -234,6 +246,11 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
         DeviceOpsView device = mapper.findDevice(deviceId);
         if (device == null || isFinalStatus(device.status())) {
             return Optional.empty();
+        }
+        if(computeV2Lifecycle!=null){
+            if("deactivate".equals(operation)){
+                if(computeV2Lifecycle.deferDeactivation(device.userId(),deviceId,null))return findDevice(deviceId);
+            }else computeV2Lifecycle.requireDrainedForReplacement(device.userId(),deviceId);
         }
         int updated;
         if ("replace".equals(operation)) {

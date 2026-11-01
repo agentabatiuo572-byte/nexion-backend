@@ -41,11 +41,15 @@ public class GeoBlockEnforcementFilter extends OncePerRequestFilter {
             "/api/test/cloud-executors/v1/(?:next-task|heartbeat|requests/terminate|tasks/(?!\\.{1,2}/)[A-Za-z0-9._:-]{1,96}/(?:complete|heartbeat))");
     private static final Pattern CLOUD_GET_PATH = Pattern.compile(
             "/api/test/cloud-executors/v1/(?:instances|eligibility|requests/status|tasks/(?!\\.{1,2}/)[A-Za-z0-9._:-]{1,96}/(?:receipt|manifest|rollback-review|stability-review))");
+    private static final Pattern CLOUD_V2_POST_PATH = Pattern.compile(
+            "/api/test/cloud-executors/v2/(?:next-task|tasks/CV2-[0-9A-F]{32}/(?:complete|heartbeat|exited|observed-exit))");
+    private static final Pattern CLOUD_V2_GET_PATH = Pattern.compile(
+            "/api/test/cloud-executors/v2/tasks/CV2-[0-9A-F]{32}/receipt");
 
     public static boolean isTestCloudRoute(HttpServletRequest request) {
         String path = request.getRequestURI();
-        return path != null && (("POST".equals(request.getMethod()) && CLOUD_POST_PATH.matcher(path).matches())
-                || ("GET".equals(request.getMethod()) && CLOUD_GET_PATH.matcher(path).matches()));
+        return path != null && (("POST".equals(request.getMethod()) && (CLOUD_POST_PATH.matcher(path).matches() || CLOUD_V2_POST_PATH.matcher(path).matches()))
+                || ("GET".equals(request.getMethod()) && (CLOUD_GET_PATH.matcher(path).matches() || CLOUD_V2_GET_PATH.matcher(path).matches())));
     }
 
     public static boolean isContinuousWorkerRoute(HttpServletRequest request) {

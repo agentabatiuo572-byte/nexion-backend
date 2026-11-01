@@ -63,7 +63,15 @@ public class AppTradeinService {
             StorefrontProductReleasePolicy productReleasePolicy,
             FundsSandboxProfileGuard fundsSandboxProfileGuard,
             ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper deviceLifecycle, TestCloudActivationAdmission testCloudAdmission) {
-        this(null,paymentAttribution,mapper,idempotencyService,outboxService,auditLogService,productReleasePolicy,fundsSandboxProfileGuard,deviceLifecycle,testCloudAdmission);
+        this(null,paymentAttribution,mapper,idempotencyService,outboxService,auditLogService,productReleasePolicy,fundsSandboxProfileGuard,deviceLifecycle,testCloudAdmission,null);
+    }
+    public AppTradeinService(ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade paymentAuthorization,
+            SupportPaymentAttributionFacade paymentAttribution,AppTradeinMapper mapper,AdminIdempotencyService idempotencyService,
+            EventOutboxService outboxService,AuditLogService auditLogService,StorefrontProductReleasePolicy productReleasePolicy,
+            FundsSandboxProfileGuard fundsSandboxProfileGuard,ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper deviceLifecycle,
+            TestCloudActivationAdmission testCloudAdmission) {
+        this(paymentAuthorization,paymentAttribution,mapper,idempotencyService,outboxService,auditLogService,
+                productReleasePolicy,fundsSandboxProfileGuard,deviceLifecycle,testCloudAdmission,null);
     }
     private static final Pattern LEVEL_GATE = Pattern.compile("^L([2-6])\\+\\s*持有者$");
     private static final Set<String> REQUIRED_CONFIG = Set.of(
@@ -86,6 +94,7 @@ public class AppTradeinService {
     private final ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper deviceLifecycle;
     @lombok.NonNull
     private final TestCloudActivationAdmission testCloudAdmission;
+    private final ComputeV2DeviceLifecycleService computeV2Lifecycle;
     private final StorefrontPurchaseGatePolicy purchaseGatePolicy = new StorefrontPurchaseGatePolicy();
 
     @Transactional(readOnly = true)
@@ -413,6 +422,7 @@ public class AppTradeinService {
     }
 
     private void retireTradeinSource(Long userId, AppTradeinMapper.SourceDevice source) {
+        if(computeV2Lifecycle!=null)computeV2Lifecycle.requireDrainedForReplacement(userId,source.id());
         long version = source.rowVersion();
         if (source.activated()) {
             if (deviceLifecycle.deactivateOwnedDeviceCas(userId, source.id(), version) != 1) {
@@ -456,6 +466,7 @@ public class AppTradeinService {
         if (source == null || !source.id().equals(request.sourceDeviceId())) {
             throw new BizException(409, "CAPACITY_REPLACEMENT_SOURCE_CHANGED");
         }
+        if(computeV2Lifecycle!=null)computeV2Lifecycle.requireDrainedForReplacement(userId,source.id());
         AppTradeinMapper.TargetProduct target = mapper.lockTargetProduct(null, request.targetProductNo());
         if (target == null || !finiteTarget(target) || target.stock() == null || target.stock() < 1) {
             throw new BizException(409, "TRADEIN_TARGET_NOT_ACTIVE");

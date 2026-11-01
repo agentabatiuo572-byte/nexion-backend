@@ -10,8 +10,39 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.device.mapper.DeviceCatalogMapper;
 import java.time.LocalDateTime;
 import org.junit.jupiter.api.Test;
+import ffdd.opsconsole.device.domain.TaskSchedulingSettings;
+import ffdd.opsconsole.device.domain.DeviceTaskView;
+import ffdd.opsconsole.device.dto.DeviceTaskUpsertRequest;
+import ffdd.opsconsole.device.mapper.TaskSchedulingPolicyMapper;
+import java.math.BigDecimal;
 
 class MybatisDeviceCatalogRepositoryTest {
+    @Test void computePolicySchemaIsReadyBeforeReadsAndPrecisionMigrationRefusesOverflow() {
+        var policies=mock(TaskSchedulingPolicyMapper.class);
+        var repository=new MybatisDeviceCatalogRepository(mapper,new ObjectMapper(),policies);
+        when(mapper.taskRewardScale()).thenReturn(5);
+        repository.ensureSchema();
+        verify(mapper).widenTaskRewardScale(); verify(policies).ensureSchema();
+        when(mapper.oversizedTaskRewardCount()).thenReturn(1);
+        org.assertj.core.api.Assertions.assertThatThrownBy(repository::ensureSchema).hasMessage("TASK_REWARD_SCALE_MIGRATION_OVERFLOW");
+    }
+
+    @Test void policySaveAndReadBackUseTheActualMapperAndOmittedFieldsPreserveExistingValues() {
+        var policies=mock(TaskSchedulingPolicyMapper.class);
+        var repository=new MybatisDeviceCatalogRepository(mapper,new ObjectMapper(),policies);
+        var raw=new DeviceTaskView("EM-1","Embedding",BigDecimal.ONE,"/1k","手机+",BigDecimal.ZERO,"paused","EM","BGE-M3",BigDecimal.ZERO,BigDecimal.ONE,"8GB","派发中",now,now);
+        when(mapper.findTask("EM-1")).thenReturn(raw);
+        when(mapper.updateTask(org.mockito.ArgumentMatchers.any())).thenReturn(1);
+        var saved=new java.util.concurrent.atomic.AtomicReference<TaskSchedulingSettings>(new TaskSchedulingSettings(2,5,8,30,"test-bge-m3-v1","test-bge-m3-v1","{}"));
+        when(policies.find("EM-1")).thenAnswer(call -> { var s=saved.get(); return new TaskSchedulingPolicyMapper.Policy("EM-1",s.selectionWeight(),s.expectedDurationMinSec(),s.expectedDurationMaxSec(),s.executionTimeoutSec(),s.runtimeKey(),s.validatorKey(),s.workloadConfigJson(),1); });
+        when(policies.save(org.mockito.ArgumentMatchers.eq("EM-1"),org.mockito.ArgumentMatchers.any())).thenAnswer(call -> { saved.set(call.getArgument(1)); return 1; });
+        var request=new DeviceTaskUpsertRequest("Embedding",BigDecimal.ONE,"/1k","手机+",BigDecimal.ZERO,"paused","EM","BGE-M3",BigDecimal.ZERO,BigDecimal.ONE,"8GB","派发中","test reason","operator",3,null,null,null,null,null,"{\"texts\":[\"hello\"]}");
+        var updated=repository.updateTask("EM-1",request,now).orElseThrow();
+        assertThat(updated.selectionWeight()).isEqualTo(3); assertThat(updated.expectedDurationMaxSec()).isEqualTo(8);
+        assertThat(updated.runtimeKey()).isEqualTo("test-bge-m3-v1"); assertThat(updated.workloadConfigJson()).isEqualTo("{\"texts\":[\"hello\"]}");
+        assertThat(repository.findTask("EM-1").orElseThrow().scheduling()).isEqualTo(saved.get());
+        assertThat(updated.status()).isEqualTo("paused");
+    }
     @Test void unreservedUnpaidOrderClosureNeverRestocksOrTouchesAssets() {
         when(mapper.orderRestockPlan("UNPAID-0")).thenReturn(
                 new DeviceCatalogMapper.OrderRestockPlan("SINGLE",1,1,1L,1L,0L,1L,false));

@@ -810,17 +810,38 @@ public class TestCloudExecutorService {
         result.put("taskConfigId",i.taskConfigId()); result.put("model",i.model()); result.put("modelDigest",i.modelDigest()); return result;
     }
 
-    double[][] infer(Identity i) {
+    /** V2 shares the existing paid-instance authority; it never changes v1 request recovery rights. */
+    Identity computeV2Identity(Identity caller,long deviceId) {
+        requireCurrent(caller);
+        if(!"fleet".equals(caller.executorId()) || deviceId<=0) throw error(403,"TEST_CLOUD_FLEET_REQUIRED");
+        return deviceId==configured().deviceId()?configured():authenticatedIdentity("fleet-"+deviceId);
+    }
+
+    void requireComputeV2Paid(Identity identity,boolean completing) {
+        requireCurrent(identity);
+        if(!fleet(identity)) { requireBinding(identity,true,completing,true);return; }
+        if(!Long.valueOf(identity.ownerId()).equals(assignments.lockProductionUser(identity.ownerId())))
+            throw error(403,"TEST_CLOUD_BINDING_INVALID");
+        var device=assignments.lockOwnedDevice(identity.ownerId(),identity.deviceId());
+        if(device==null || !identity.instanceNo().equals(device.instanceNo())) throw error(403,"TEST_CLOUD_BINDING_INVALID");
+        var admission=!legacyEnabled()?null:mapper.legacyAdmission(identity.ownerId(),identity.deviceId(),identity.instanceNo(),null,identity.taskConfigId());
+        if(!Integer.valueOf(1).equals(mapper.computeV2PaidBinding(fleetCutoff(),tradeinFleetCutoff(environment),identity.ownerId(),
+                identity.deviceId(),identity.instanceNo(),completing,admission!=null))) throw error(403,"TEST_CLOUD_BINDING_INVALID");
+    }
+
+    double[][] infer(Identity i) { return infer(i,TEXTS); }
+
+    double[][] infer(Identity i,List<String> texts) {
         URI origin=URI.create(property("ollama-origin"));
         if(!"http".equals(origin.getScheme()) || !"127.0.0.1".equals(origin.getHost()) || origin.getPort()<1
                 || origin.getRawUserInfo()!=null || origin.getRawQuery()!=null || origin.getRawFragment()!=null
                 || !(origin.getPath().isEmpty() || origin.getPath().equals("/"))) throw error(503,"TEST_CLOUD_MODEL_ORIGIN_INVALID");
         requireModelDigest(origin,i);
-        JsonNode response=http(origin.resolve("/api/embed"),json(Map.of("model",i.model(),"input",TEXTS,"truncate",false)));
+        JsonNode response=http(origin.resolve("/api/embed"),json(Map.of("model",i.model(),"input",texts,"truncate",false)));
         if(!i.model().equals(response.path("model").asText())) throw error(503,"TEST_CLOUD_MODEL_RESPONSE_INVALID");
         JsonNode rows=response.path("embeddings");
-        if(!rows.isArray() || rows.size()!=TEXTS.size()) throw error(503,"TEST_CLOUD_MODEL_RESPONSE_INVALID");
-        double[][] output=new double[TEXTS.size()][1024];
+        if(!rows.isArray() || rows.size()!=texts.size()) throw error(503,"TEST_CLOUD_MODEL_RESPONSE_INVALID");
+        double[][] output=new double[texts.size()][1024];
         for(int r=0;r<output.length;r++) {
             if(!rows.get(r).isArray() || rows.get(r).size()!=1024) throw error(503,"TEST_CLOUD_MODEL_RESPONSE_INVALID");
             for(int c=0;c<1024;c++) {
