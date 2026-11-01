@@ -148,11 +148,13 @@ public class LegacyUnknownZeroCreditService {
         if (number(device.get("pendingDeactivate"))==1) {
             if (assignments.deactivatePendingDevice(c.ownerId(),c.deviceId(),now)!=1) throw denied("LEGACY_UNKNOWN_DEVICE_CHANGED");
             assignments.markRuntimeDeactivated(c.ownerId(),c.deviceId(),now);deactivated=true;
+            Long rowVersion=assignments.deviceRowVersion(c.ownerId(),c.deviceId());
+            if (rowVersion==null) throw denied("LEGACY_UNKNOWN_DEVICE_CHANGED");
             var attribution=assignments.userEventAttribution(c.ownerId());
             if (attribution==null) throw denied("LEGACY_UNKNOWN_EVENT_ATTRIBUTION_MISSING");
             outbox.publishUserEvent("USER_DEVICE",c.instanceNo(),"device.deactivated",c.ownerId(),attribution.phase(),
-                    attribution.accountAgeMonths(),attribution.cohort(),Map.of("deviceId",c.deviceId(),"instanceNo",c.instanceNo(),
-                        "status","DEACTIVATED","trigger","UNKNOWN_ABANDONED_NO_CREDIT"));
+                    attribution.accountAgeMonths(),attribution.cohort(),Map.of("userId",c.ownerId(),"deviceId",c.deviceId(),
+                        "instanceNo",c.instanceNo(),"previousStatus",device.get("status"),"status","DEACTIVATED","rowVersion",rowVersion));
         }
         var snapshot=new LinkedHashMap<String,Object>();snapshot.put("case",c);snapshot.put("requestTaskExecution",original);
         snapshot.put("runtime",runtime);snapshot.put("device",device);snapshot.put("proof",command.proof());
