@@ -78,8 +78,8 @@ the unchanged other 12 files, original JAR/external/job pins, new opt-in, releas
 and migration state bytes, service/CI identity and original timer state. A lost
 success acknowledgement is resolved by those reads; this baseline-specific
 updater does not repin or reinstall an already changed/unknown closure. Then run
-the separately authorized **backend439 full CI** through the normal native
-broker. Installing this updater is not evidence that any migration or build ran.
+the **full CI artifact of the final current `test` commit** through the normal
+native broker. Installing this updater is not evidence that any migration or build ran.
 
 Local verification: `python -m unittest test_compute_v2_migrations_update -q`
 from this directory uses disposable files and controlled systemctl/Docker

@@ -53,6 +53,13 @@ class ComputeV2ReadServiceTest {
         verify(runtime).pendingVerifiedSnapshot(10L); verifyNoMoreInteractions(runtime); verifyNoInteractions(mapper);
     }
 
+    @Test void anAccountWithoutDevicesNeverBuildsAnEmptySqlInList() {
+        var response=original(List.of());
+        when(legacy.assignments(10L)).thenReturn(ApiResult.ok(new AppTaskAssignmentsResponse(response.serverNow(),List.of(),"server","PRODUCTION","",true)));
+        assertThatThrownBy(()->service.assignments(10L)).isInstanceOfSatisfying(BizException.class,ex->assertThat(ex.getCode()).isEqualTo(404));
+        verifyNoInteractions(mapper);
+    }
+
     @ParameterizedTest @CsvSource({"ISSUING,QUEUED","STARTING,QUEUED","QUEUED,QUEUED","COMPUTING,RUNNING","VERIFYING,VERIFYING","RECOVERING,RECOVERING","FAILED,FAILED"})
     void activeQuotesAreNotPendingEarningsAndReadsNeverIssueWork(String state,String expected) {
         var event=event(Kind.ISSUED,false,"TEST");
@@ -195,6 +202,70 @@ class ComputeV2ReadServiceTest {
         assertThatThrownBy(() -> service.settlements(10L,null,20)).hasMessage("COMPUTE_V2_RUNTIME_UNSUPPORTED");
         verifyNoInteractions(mapper);
     }
+
+    @ParameterizedTest @CsvSource({"UNKNOWN,0,true","UNKNOWN,600,true","PROCESSING,599,false","PROCESSING,600,false","PROCESSING,601,true","COMMITTED,3600,false","ROLLED_BACK,3600,false"})
+    void legacyRecoveryUsesTheBusinessClockAndStrictTenMinuteBoundary(String state,int ageSeconds,boolean recovering) {
+        var current=oldTask("CT-CURRENT","RUNNING");
+        var original=withCurrent(current);
+        when(legacy.assignments(10L)).thenReturn(ApiResult.ok(original));
+        when(mapper.legacyCompletionRequests(10L,List.of(7L,8L))).thenReturn(List.of(
+                new ComputeV2ReadMapper.LegacyCompletionRequest("CT-CURRENT",7L,"INSTANCE-7",state,original.serverNow().minusSeconds(ageSeconds))));
+        var response=service.assignments(10L);
+        assertThat(current(response)).containsEntry("status",recovering?"RECOVERING":"RUNNING")
+                .containsEntry("completableAt",recovering?null:current.completableAt()).containsEntry("receiptNo",null)
+                .containsEntry("settlementStatus","NONE").containsEntry("actualDurationSec",null);
+        assertThat(device(response)).containsEntry("recoveryPending",recovering);
+        assertThat(original.devices().get(0).currentTask().status()).isEqualTo("RUNNING");
+        assertThat((List<?>)response.get("pendingEarned")).allSatisfy(row->assertThat(((Map<?,?>)row).get("amount")).isEqualTo("0.000000"));
+        verify(mapper).legacyCompletionRequests(10L,List.of(7L,8L));
+        verifyNoMoreInteractions(mapper);
+    }
+
+    @Test void expiredLeaseStillHasADeviceRecoveryFactWithoutManufacturingACurrentTask() {
+        var original=original(List.of());
+        when(mapper.legacyCompletionRequests(10L,List.of(7L,8L))).thenReturn(List.of(
+                new ComputeV2ReadMapper.LegacyCompletionRequest("CT-EXPIRED",7L,"INSTANCE-7","PROCESSING",original.serverNow().minusHours(6))));
+        var response=service.assignments(10L);
+        assertThat(current(response)).isNull();
+        assertThat(device(response)).containsEntry("recoveryPending",true).containsEntry("recoveryReason","LEGACY_COMPLETE_OUTCOME_UNKNOWN");
+        assertThat(history(response)).isEmpty();
+    }
+
+    @Test void historicalUnknownDoesNotPoisonAnotherCurrentTaskOrACompletedReceipt() {
+        when(legacy.assignments(10L)).thenReturn(ApiResult.ok(withCurrent(oldTask("CT-NEW","RUNNING"))));
+        when(mapper.legacyCompletionRequests(10L,List.of(7L,8L))).thenReturn(List.of(
+                new ComputeV2ReadMapper.LegacyCompletionRequest("CT-OLD",7L,"INSTANCE-7","UNKNOWN",LocalDateTime.MIN)));
+        var response=service.assignments(10L);
+        assertThat(current(response)).containsEntry("status","RUNNING");
+        assertThat(device(response)).containsEntry("recoveryPending",false);
+        when(legacy.assignments(10L)).thenReturn(ApiResult.ok(withCurrent(legacyTask())));
+        when(mapper.legacyCompletionRequests(10L,List.of(7L,8L))).thenReturn(List.of(
+                new ComputeV2ReadMapper.LegacyCompletionRequest("CT-OLD",7L,"INSTANCE-7","UNKNOWN",LocalDateTime.MIN)));
+        response=service.assignments(10L);
+        assertThat(current(response)).containsEntry("status","COMPLETED").containsEntry("receiptNo","CTR-T1").containsEntry("settlementStatus","POSTED");
+        assertThat(device(response)).containsEntry("recoveryPending",false);
+    }
+
+    @Test void aForeignDeviceOrReplacedInstanceCannotBecomeARecoveryFact() {
+        for (var row : List.of(
+                new ComputeV2ReadMapper.LegacyCompletionRequest("CT-OLD",99L,"INSTANCE-99","UNKNOWN",LocalDateTime.MIN),
+                new ComputeV2ReadMapper.LegacyCompletionRequest("CT-OLD",7L,"OLD-INSTANCE-7","UNKNOWN",LocalDateTime.MIN))) {
+            when(mapper.legacyCompletionRequests(10L,List.of(7L,8L))).thenReturn(List.of(row));
+            assertThatThrownBy(()->service.assignments(10L)).hasMessage("COMPUTE_V2_STATE_INVALID");
+        }
+    }
+
+    private AppTaskAssignmentsResponse withCurrent(AppTaskAssignmentView current) {
+        var response=original(List.of());
+        return new AppTaskAssignmentsResponse(response.serverNow(),List.of(
+                new AppTaskDeviceState(7L,"INSTANCE-7","CLOUD_SHARE",null,current,List.of()),response.devices().get(1)),"server","PRODUCTION","",true);
+    }
+    private AppTaskAssignmentView oldTask(String taskNo,String status) {
+        var start=LocalDateTime.ofInstant(NOW,ZoneOffset.ofHours(8)).minusHours(6);
+        return new AppTaskAssignmentView(taskNo,7L,"EM-1","Embedding","EM","BGE-M3","TEST",status,new BigDecimal("0.123456"),5,
+                start,start.plusSeconds(5),null,null,null,null,"server","PRODUCTION","",true,null,0);
+    }
+    @SuppressWarnings("unchecked") private Map<String,Object> device(Map<String,Object> response) { return (Map<String,Object>)((List<?>)response.get("devices")).get(0); }
 
     private AppTaskAssignmentsResponse original(List<AppTaskAssignmentView> recent) {
         return new AppTaskAssignmentsResponse(LocalDateTime.ofInstant(NOW,ZoneOffset.ofHours(8)),List.of(

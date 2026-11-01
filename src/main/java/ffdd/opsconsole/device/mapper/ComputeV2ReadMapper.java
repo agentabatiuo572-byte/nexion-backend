@@ -1,6 +1,7 @@
 package ffdd.opsconsole.device.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.Mapper;
@@ -10,6 +11,28 @@ import org.apache.ibatis.annotations.Select;
 /** Read-only, account/scope-bound projections; callers supply values, never SQL fragments. */
 @Mapper
 public interface ComputeV2ReadMapper extends BaseMapper<Object> {
+    record LegacyCompletionRequest(String taskNo,long deviceId,String instanceNo,String state,LocalDateTime updatedAt) { }
+
+    @Select("""
+            <script>
+            SELECT DISTINCT t.task_no taskNo,t.user_device_id deviceId,d.instance_no instanceNo,r.state,r.updated_at updatedAt
+            FROM nx_compute_task t
+            JOIN nx_user u ON u.id=t.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=0
+            JOIN nx_user_device d ON d.id=t.user_device_id AND d.user_id=t.user_id
+            JOIN nx_test_cloud_request r ON r.task_no=t.task_no AND r.owner_id=t.user_id
+              AND r.device_id=t.user_device_id AND r.instance_no=d.instance_no AND r.task_config_id=t.task_config_id
+            WHERE t.user_id=#{userId} AND t.source_environment='PRODUCTION' AND t.is_deleted=0
+              AND t.status&lt;&gt;'COMPLETED' AND t.completed_at IS NULL AND t.task_no NOT LIKE 'CV2-%'
+              AND d.source_environment='PRODUCTION' AND d.run_id='' AND d.is_deleted=0 AND UPPER(d.ownership_status)='OWNED'
+              AND r.operation='COMPLETE' AND r.state IN ('UNKNOWN','PROCESSING')
+              AND NOT EXISTS (SELECT 1 FROM nx_compute_receipt receipt
+                              WHERE receipt.task_no=t.task_no AND receipt.source_environment='PRODUCTION' AND receipt.is_deleted=0)
+              AND t.user_device_id IN
+            <foreach collection="deviceIds" item="deviceId" open="(" separator="," close=")">#{deviceId}</foreach>
+            </script>
+            """)
+    List<LegacyCompletionRequest> legacyCompletionRequests(@Param("userId") long userId,@Param("deviceIds") List<Long> deviceIds);
+
     @Select("""
             <script>
             SELECT a.event_id,a.asset,a.amount_micros,a.task_no,a.receipt_no,a.user_device_id

@@ -72,11 +72,29 @@ public class ComputeV2ReadService {
             for (var history : device.recentTasks()) if (history.taskNo().startsWith("CV2-")) taskNos.add(history.taskNo());
         }
         Map<String,PostedTask> posted=postedTasks(userId,taskNos);
+        var recoveringLegacy=new HashSet<String>();
+        var recoveringDevices=new HashSet<Long>();
+        var ownedDevices=original.devices().stream().collect(java.util.stream.Collectors.toMap(device->device.deviceId(),device->device));
+        // serverNow uses the legacy service's business Clock, not the database UTC clock.
+        var staleBefore=original.serverNow().minusMinutes(10);
+        var legacyRequests=ownedDevices.isEmpty()?List.<ComputeV2ReadMapper.LegacyCompletionRequest>of()
+                :mapper.legacyCompletionRequests(userId,original.devices().stream().map(device->device.deviceId()).toList());
+        for (var request : legacyRequests) {
+            var device=ownedDevices.get(request.deviceId());
+            if (device==null || !device.instanceNo().equals(request.instanceNo()) || request.taskNo().startsWith("CV2-")) invalid();
+            var task=device.currentTask();
+            if ((task==null || (task.taskNo().equals(request.taskNo()) && task.completedAt()==null && task.receiptNo()==null
+                    && Set.of("CLAIMED","RUNNING","PAUSED").contains(task.status())))
+                    && ("UNKNOWN".equals(request.state()) || ("PROCESSING".equals(request.state())
+                    && request.updatedAt()!=null && request.updatedAt().isBefore(staleBefore)))) {
+                recoveringLegacy.add(request.taskNo()); recoveringDevices.add(device.deviceId());
+            }
+        }
         List<Map<String,Object>> devices = new ArrayList<>();
         for (var device : original.devices()) {
-            Map<String,Object> current=device.currentTask()==null ? null : legacyTask(device.currentTask(),posted);
+            Map<String,Object> current=device.currentTask()==null ? null : legacyTask(device.currentTask(),posted,recoveringLegacy);
             var history=new LinkedHashMap<String,Map<String,Object>>();
-            for (var task : device.recentTasks()) history.put(task.taskNo(),legacyTask(task,posted));
+            for (var task : device.recentTasks()) history.put(task.taskNo(),legacyTask(task,posted,Set.of()));
             var view=views.get(device.deviceId());
             if (view!=null) {
                 var task=runtimeTask(view,posted.get(view.event().taskNo()));
@@ -90,8 +108,10 @@ public class ComputeV2ReadService {
                 }
             }
             var recent=history.values().stream().sorted(Comparator.comparingLong((Map<String,Object> task) -> epoch(task.get("completedAt"))).reversed()).limit(10).toList();
+            boolean recovery=recoveringDevices.contains(device.deviceId()) && (current==null || "RECOVERING".equals(current.get("status")));
             devices.add(fields("deviceId",device.deviceId(),"instanceNo",device.instanceNo(),"deviceType",device.deviceType(),
-                    "lockUntil",device.lockUntil(),"currentTask",current,"recentTasks",recent));
+                    "lockUntil",device.lockUntil(),"currentTask",current,"recentTasks",recent,
+                    "recoveryPending",recovery,"recoveryReason",recovery?"LEGACY_COMPLETE_OUTCOME_UNKNOWN":null));
         }
         ComputeV2Runtime.PendingSummary pending=unpostedSummary(userId,pendingSnapshot);
         if (pending.pendingUsdtMicros()<0 || pending.pendingNexMicros()<0 || pending.pendingTaskCount()<0
@@ -256,13 +276,14 @@ public class ComputeV2ReadService {
         return result;
     }
 
-    private Map<String,Object> legacyTask(AppTaskAssignmentView task,Map<String,PostedTask> posted) {
+    private Map<String,Object> legacyTask(AppTaskAssignmentView task,Map<String,PostedTask> posted,Set<String> recovering) {
         var saved=posted.get(task.taskNo());
         if (saved!=null) return runtimeTask(new ComputeV2Runtime.RuntimeView(saved.event(),"COMPLETED",null,null,0,0),saved);
+        boolean recovery=recovering.contains(task.taskNo());
         var result=authority();
         result.putAll(fields("protocolVersion",2,"taskNo",task.taskNo(),"deviceId",task.deviceId(),"taskId",task.taskId(),"taskName",task.taskName(),
-                "taskClass",task.taskClass(),"model",task.model(),"client",task.client(),"status",task.status(),"rewardUsdt",task.rewardUsdt(),
-                "requiredSeconds",task.requiredSeconds(),"startedAt",task.startedAt(),"completableAt",task.completableAt(),"completedAt",task.completedAt(),
+                "taskClass",task.taskClass(),"model",task.model(),"client",task.client(),"status",recovery?"RECOVERING":task.status(),"rewardUsdt",task.rewardUsdt(),
+                "requiredSeconds",task.requiredSeconds(),"startedAt",task.startedAt(),"completableAt",recovery?null:task.completableAt(),"completedAt",task.completedAt(),
                 "receiptNo",task.receiptNo(),"proofNonce",task.proofNonce(),"proofExpiresAt",task.proofExpiresAt(),"pausedAt",task.pausedAt(),"pausedSeconds",task.pausedSeconds(),
                 "queuedAt",null,"actualDurationSec",null,"settlementStatus","COMPLETED".equals(task.status())?"POSTED":"NONE", "settlementBatchNo",null,"settledAt",null,"configVersion",null));
         return result;

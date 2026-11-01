@@ -42,6 +42,17 @@ class ComputeV2ReadMapperTest {
         assertThat(values(page,parameters)).containsExactly("TEST",10L,timestamp,timestamp,"batch-1",21);
     }
 
+    @Test void legacyRecoveryReadBindsOnlyTheOwnersCurrentTasksAndExactCompleteIdentity() {
+        var parameters=Map.<String,Object>of("userId",10L,"deviceIds",List.of(7L,8L));
+        var query=sql("legacyCompletionRequests",parameters);
+        String text=query.getSql().replaceAll("\\s+"," ");
+        assertThat(text).contains("t.user_id=?", "r.task_no=t.task_no", "r.owner_id=t.user_id", "r.device_id=t.user_device_id",
+                "r.instance_no=d.instance_no", "r.task_config_id=t.task_config_id", "r.operation='COMPLETE'",
+                "r.state IN ('UNKNOWN','PROCESSING')", "u.sandbox=0", "t.source_environment='PRODUCTION'", "d.run_id=''",
+                "t.completed_at IS NULL", "t.status<>'COMPLETED'", "NOT EXISTS (SELECT 1 FROM nx_compute_receipt", "IN ( ? , ? )").doesNotContain("UTC_TIMESTAMP");
+        assertThat(values(query,parameters)).containsExactly(10L,7L,8L);
+    }
+
     private BoundSql sql(String method,Map<String,Object> parameters) {
         return configuration.getMappedStatement(ComputeV2ReadMapper.class.getName()+"."+method).getBoundSql(parameters);
     }
