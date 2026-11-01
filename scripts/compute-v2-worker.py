@@ -37,7 +37,13 @@ class WorkerError(Exception):
     pass
 
 
-class Rejected(WorkerError):
+class HttpFailure(WorkerError):
+    def __init__(self, source, status):
+        self.source, self.status = source, status
+        super().__init__(source + '_HTTP_' + str(status))
+
+
+class Rejected(HttpFailure):
     pass
 
 
@@ -97,10 +103,10 @@ class Http:
             response = connection.getresponse()
             raw = response.read(1024 * 1024 + 1)
             require(len(raw) <= 1024 * 1024, 'RESPONSE_TOO_LARGE')
+            if not 200 <= response.status < 300:
+                failure = Rejected if self.token and 400 <= response.status < 500 else HttpFailure
+                raise failure('BACKEND' if self.token else 'MODEL', response.status)
             value = decode(raw)
-            if 400 <= response.status < 500:
-                raise Rejected('HTTP_REJECTED_' + str(response.status))
-            require(200 <= response.status < 300, 'HTTP_OUTCOME_UNKNOWN')
             if self.token:
                 require(type(value.get('code')) is int and value['code'] == 0 and isinstance(value.get('data'), dict), 'API_OUTCOME_UNKNOWN')
                 return value['data']
@@ -253,8 +259,11 @@ class Runner:
                 require(result.get('model') == task['model'], 'RESULT_MODEL_INVALID')
                 raw = artifact(result.get('embeddings'))
                 verify_model(self.model, task)
-            except Exception:
-                self.journal.set({**state, 'phase': 'RECOVERY_REQUIRED', 'reason': 'INFERENCE_OUTCOME_UNKNOWN'})
+            except Exception as failure:
+                recovery = {**state, 'phase': 'RECOVERY_REQUIRED', 'reason': 'INFERENCE_OUTCOME_UNKNOWN'}
+                if isinstance(failure, HttpFailure):
+                    recovery.update(errorSource=failure.source, httpStatus=failure.status)
+                self.journal.set(recovery)
                 raise
             body = {**self.binding(task), 'proofNonce': task['proofNonce'], 'inputHash': task['inputHash'],
                     'modelDigest': task['modelDigest'], 'resultHash': hashlib.sha256(raw).hexdigest(),
@@ -285,12 +294,16 @@ class Runner:
         while not self.stop.is_set():
             try:
                 self.step()
-            except Rejected:
-                state = self.journal.get()
-                self.journal.set({**state, 'phase': 'RECOVERY_REQUIRED', 'reason': 'BACKEND_REJECTED_OR_EXPIRED'})
             except Exception as failure:
-                print(encode({'runner': self.name, 'event': 'RETRY_OR_RECOVERY', 'phase': self.journal.get()['phase'],
-                              'errorClass': type(failure).__name__}).decode(), flush=True)
+                state = self.journal.get()
+                if isinstance(failure, Rejected) and state['phase'] != 'RECOVERY_REQUIRED':
+                    self.journal.set({**state, 'phase': 'RECOVERY_REQUIRED', 'reason': 'BACKEND_REJECTED_OR_EXPIRED',
+                                      'errorSource': failure.source, 'httpStatus': failure.status})
+                event = {'runner': self.name, 'event': 'RETRY_OR_RECOVERY', 'phase': self.journal.get()['phase'],
+                         'errorClass': type(failure).__name__}
+                if isinstance(failure, HttpFailure):
+                    event.update(errorSource=failure.source, httpStatus=failure.status)
+                print(encode(event).decode(), flush=True)
             self.stop.wait(1)
 
 

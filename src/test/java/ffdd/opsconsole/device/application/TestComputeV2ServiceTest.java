@@ -79,6 +79,29 @@ class TestComputeV2ServiceTest {
     }
     ComputeV2Event event(Kind kind,Verified v){return new ComputeV2Event(2,ComputeV2Event.eventId(TASK,1,kind),kind,"TEST","PRODUCTION","",7,11,"DEV-11",TASK,1,clock.instant(),task,v,null);}
     ComputeV2Runtime.RuntimeView view(ComputeV2Event e,String state){return new ComputeV2Runtime.RuntimeView(e,state,"compute-v2:runner-1",NOW.plusSeconds(35),0,0);}
+    @Test void expiredExecutionsEnterRecoveryWithoutAnotherNextRequestOrReleasingCapacity(){
+        when(runtime.isReady()).thenReturn(true);
+        clearInvocations(runtime,cloud,transactions);
+        for(String state:List.of("STARTING","COMPUTING","VERIFYING")) {
+            current.set(new ComputeV2Runtime.RuntimeView(event(Kind.STARTED,null),state,"compute-v2:runner-1",NOW.minusSeconds(1),0,0));
+            service.recoverExpiredExecutions();
+        }
+        verify(runtime,times(3)).fenceExpired(7L,11L,1L);
+        verify(runtime,never()).executionExited(anyLong(),anyLong(),anyLong(),anyString());
+        verify(runtime,never()).executionObservedExit(anyLong(),anyLong(),anyLong(),anyString());
+        verifyNoInteractions(cloud,transactions);
+    }
+    @Test void recoveryScanLeavesLiveLeasesAndStagedCompletionsUntouched(){
+        when(runtime.isReady()).thenReturn(true);
+        service.recoverExpiredExecutions();
+        current.set(new ComputeV2Runtime.RuntimeView(event(Kind.STARTED,null),"VERIFYING","compute-v2:runner-1",NOW.minusSeconds(1),0,0));
+        when(runtime.completionPending(TASK,1L)).thenReturn(true);
+        service.recoverExpiredExecutions();
+        when(runtime.completionPending(TASK,1L)).thenReturn(false);
+        current.set(new ComputeV2Runtime.RuntimeView(event(Kind.STARTED,null),"RECOVERING","compute-v2:runner-1",NOW.minusSeconds(1),0,0));
+        service.recoverExpiredExecutions();
+        verify(runtime,never()).fenceExpired(anyLong(),anyLong(),anyLong());
+    }
     @Test void realProofAdapterPreservesFrozenQuoteAndPersistsOnlyVerifiedArtifact(){
         var result=service.complete(caller,"runner-1",TASK,proof);
         assertThat(result.get("state")).isEqualTo("COMPLETED");assertThat(accepted.get().rewardNexMicros()).isEqualTo(3000001);

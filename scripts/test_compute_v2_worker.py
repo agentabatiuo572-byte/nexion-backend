@@ -5,7 +5,7 @@ import struct
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location('compute_v2_worker', Path(__file__).with_name('compute-v2-worker.py'))
 w = importlib.util.module_from_spec(spec)
@@ -83,6 +83,76 @@ class WorkerTests(unittest.TestCase):
     def tearDown(self):
         self.journal.close()
         self.directory.cleanup()
+
+    def run_once(self):
+        self.stop.clear()
+        with patch.object(self.stop, 'wait', side_effect=lambda _: self.stop.set()), patch('builtins.print') as output:
+            self.runner.run()
+        return [w.decode(call.args[0]) for call in output.call_args_list]
+
+    def test_http_failure_source_and_status_survive_non_json_error_without_exposing_body(self):
+        for token in (None, 'private-token'):
+            for status in (400, 503):
+                with self.subTest(source='BACKEND' if token else 'MODEL', status=status):
+                    connection = Mock()
+                    connection.getresponse.return_value.status = status
+                    connection.getresponse.return_value.read.return_value = b'private upstream error, not JSON'
+                    with patch.object(w.http.client, 'HTTPConnection', return_value=connection):
+                        with self.assertRaises(w.HttpFailure) as raised:
+                            w.Http(('127.0.0.1', 11434), token).call('POST', '/api/embed', body=b'{}')
+                    failure = raised.exception
+                    self.assertEqual((failure.source, failure.status), ('BACKEND' if token else 'MODEL', status))
+                    self.assertEqual(isinstance(failure, w.Rejected), bool(token) and status == 400)
+                    self.assertNotIn('private', str(failure))
+                    connection.close.assert_called_once()
+
+    def test_model_http_failure_and_later_backend_rejection_preserve_original_recovery(self):
+        self.model.failure = w.HttpFailure('MODEL', 400)
+        events = self.run_once()
+        original = self.journal.get()
+        self.assertEqual((original['phase'], original['reason'], original['errorSource'], original['httpStatus']),
+                         ('RECOVERY_REQUIRED', 'INFERENCE_OUTCOME_UNKNOWN', 'MODEL', 400))
+        self.assertEqual((events[-1]['errorSource'], events[-1]['httpStatus']), ('MODEL', 400))
+        self.assertFalse(any(path.endswith('/complete') or path.endswith('/exited') for _, path, _ in self.backend.calls))
+        with patch.object(self.backend, 'call', side_effect=w.Rejected('BACKEND', 409)):
+            events = self.run_once()
+        self.assertEqual(self.journal.get(), original)
+        self.assertEqual((events[-1]['errorSource'], events[-1]['httpStatus']), ('BACKEND', 409))
+        self.assertEqual(sum(path == '/api/embed' for _, path, _ in self.model.calls), 1)
+
+    def test_backend_rejection_retains_original_claim_payload_and_status(self):
+        with patch.object(self.backend, 'call', side_effect=w.Rejected('BACKEND', 403)):
+            events = self.run_once()
+        state = self.journal.get()
+        self.assertEqual((state['phase'], state['reason'], state['errorSource'], state['httpStatus']),
+                         ('RECOVERY_REQUIRED', 'BACKEND_REJECTED_OR_EXPIRED', 'BACKEND', 403))
+        self.assertEqual(w.decode(state['request']), {'runner': 'runner-1'})
+        self.assertEqual((events[-1]['errorSource'], events[-1]['httpStatus']), ('BACKEND', 403))
+        self.assertEqual(self.model.calls, [])
+
+    def test_backend_server_failure_keeps_exact_unconfirmed_claim_retryable(self):
+        with patch.object(self.backend, 'call', side_effect=w.HttpFailure('BACKEND', 503)):
+            events = self.run_once()
+        self.assertEqual(self.journal.get(), {'phase': 'CLAIM_INTENT', 'request': w.encode({'runner': 'runner-1'}).decode()})
+        self.assertEqual((events[-1]['errorSource'], events[-1]['httpStatus']), ('BACKEND', 503))
+        self.assertEqual(self.model.calls, [])
+
+    def test_recovery_does_not_renew_but_live_phases_still_send_heartbeats(self):
+        original = {'phase': 'RECOVERY_REQUIRED', 'task': task(), 'reason': 'INFERENCE_OUTCOME_UNKNOWN',
+                    'errorSource': 'MODEL', 'httpStatus': 400}
+        self.journal.set(original)
+        stop = Mock()
+        stop.wait.side_effect = [False, True]
+        w.heartbeat([self.runner], stop)
+        self.assertEqual(self.backend.calls, [])
+        self.assertEqual(self.journal.get(), original)
+        for phase in ('CLAIMED', 'COMPUTE_INTENT', 'COMPLETE_INTENT'):
+            self.journal.set({'phase': phase, 'task': task()})
+            stop.wait.side_effect = [False, True]
+            with patch.object(self.backend, 'call') as call:
+                w.heartbeat([self.runner], stop)
+            call.assert_called_once()
+            self.assertTrue(call.call_args.args[1].endswith('/heartbeat'))
 
     def test_drain_stops_only_idle_new_claims(self):
         marker = Path(self.directory.name) / 'drain.json'

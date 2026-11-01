@@ -10,11 +10,13 @@ import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
 import java.sql.Timestamp;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.*;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -29,10 +31,17 @@ public class ComputeV2ReadService {
     private final Environment environment;
     private final ComputeV2ReadMapper mapper;
     private final ObjectMapper json;
+    private final Clock clock;
 
     public ComputeV2ReadService(AppTaskAssignmentService legacy, Optional<ComputeV2Runtime> runtime,
             Environment environment, ComputeV2ReadMapper mapper, ObjectMapper json) {
-        this.legacy=legacy; this.runtime=runtime; this.environment=environment; this.mapper=mapper; this.json=json;
+        this(legacy,runtime,environment,mapper,json,Clock.systemUTC());
+    }
+
+    @Autowired
+    public ComputeV2ReadService(AppTaskAssignmentService legacy, Optional<ComputeV2Runtime> runtime,
+            Environment environment, ComputeV2ReadMapper mapper, ObjectMapper json, Clock clock) {
+        this.legacy=legacy; this.runtime=runtime; this.environment=environment; this.mapper=mapper; this.json=json; this.clock=clock;
     }
 
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
@@ -268,12 +277,20 @@ public class ComputeV2ReadService {
                 "taskName",task.taskName(),"taskClass",task.taskClass(),"model",task.modelName(),"client",task.clientName(),"status",status,
                 "rewardUsdt",money(task.rewardUsdtMicros()),"requiredSeconds",task.requiredSeconds(),"queuedAt",task.issuedAt(),
                 "startedAt",task.startedAt(),"completableAt",task.startedAt()==null ? null : task.startedAt().plusSeconds(task.requiredSeconds()),
-                "completedAt",completed,"actualDurationSec",verified ? BigDecimal.valueOf(Duration.between(task.startedAt(),completed).toMillis(),3) : null,
+                "completedAt",completed,"actualDurationSec",actualDurationSec(e,status),
                 "settlementStatus",posted!=null ? "POSTED" : verified ? blockedReason==null ? "PENDING" : "BLOCKED" : "NONE","settlementBatchNo",posted==null ? null : posted.batchNo(),
                 "settledAt",posted==null ? null : posted.postedAt(),"receiptNo",posted==null ? null : e.receiptNo(),"configVersion",task.configVersion(),
                 "proofNonce",null,"proofExpiresAt",null,"pausedAt",null,"pausedSeconds",0));
         if (blockedReason!=null) result.put("settlementBlockReason",blockedReason);
         return result;
+    }
+
+    private BigDecimal actualDurationSec(ComputeV2Event event,String status) {
+        Instant started=event.task().startedAt();
+        if (event.kind()==ComputeV2Event.Kind.VERIFIED)
+            return BigDecimal.valueOf(Duration.between(started,event.evidence().completedAt()).toMillis(),3);
+        if (started==null || !Set.of("RUNNING","VERIFYING","RECOVERING").contains(status)) return null;
+        return BigDecimal.valueOf(Math.max(0L,Duration.between(started,clock.instant()).toMillis()),3);
     }
 
     private Map<String,Object> legacyTask(AppTaskAssignmentView task,Map<String,PostedTask> posted,Set<String> recovering) {

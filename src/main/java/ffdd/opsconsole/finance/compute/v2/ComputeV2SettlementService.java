@@ -233,8 +233,7 @@ public class ComputeV2SettlementService implements ComputeV2Persistence {
         var attribution = one(mapper.attribution(customer),"EVENT_ATTRIBUTION_MISSING");
         for (var e : events) {
             Map<String,Object> payload = Map.of("task_id",e.task().taskConfigId(),"task_no",e.taskNo(),"device_id",e.deviceId(),
-                    "receipt_no",e.receiptNo(),"amount_usdt",money(e.task().rewardUsdtMicros()),"compute_engine","V2",
-                    "completed_at",e.evidence().completedAt().toString(),"wallet_posted_at",posted.toString());
+                    "receipt_no",e.receiptNo(),"amount_usdt",money(e.task().rewardUsdtMicros()));
             for (String type : List.of("task.completed","earnings.credited")) outbox.publishUserEvent("COMPUTE_TASK",e.taskNo(),type,customer,
                     attribution.get("phase").toString(),Math.toIntExact(number(attribution.get("age"))),attribution.get("cohort").toString(),payload);
         }

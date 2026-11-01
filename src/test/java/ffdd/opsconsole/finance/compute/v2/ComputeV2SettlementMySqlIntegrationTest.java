@@ -25,6 +25,7 @@ import ffdd.opsconsole.finance.domain.SupportFundAllocation.Event;
 import ffdd.opsconsole.finance.mapper.SupportFundJournalMapper;
 import ffdd.opsconsole.finance.mapper.ComputeV2SettlementMapper;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper;
 import java.math.BigDecimal;
 import java.nio.file.*;
 import java.sql.*;
@@ -242,6 +243,70 @@ public class ComputeV2SettlementMySqlIntegrationTest {
         assertThatThrownBy(()->persist("outbox-fault",List.of(event(1,100,0,completed)))).hasMessage("INJECTED_OUTBOX_FAILURE");
         assertWallet("0","0",0);assertCount("nx_earning_event",0);assertCount("nx_compute_receipt",0);
         assertCount("nx_support_fund_operation",0);assertCount("nx_compute_v2_checkpoint",0);
+    }
+
+    @Test void realCanonicalOutboxCommitsBothAssetsAndZeroChildWithoutDuplicatingReplay() throws Exception {
+        useCanonicalOutbox();
+        var events=List.of(event(1,100,3000000,completed),event(2,0,0,completed));
+        persist("canonical-events",events);assertWallet("0.000100","3",2);
+        assertCount("nx_event_outbox",4);assertCount("nx_compute_v2_allocation",3);
+        for(var row:jdbc.queryForList("SELECT event_name,schema_revision,schema_registered,payload FROM nx_event_outbox")) {
+            assertThat(row.get("event_name")).isIn("task.completed","earnings.credited");
+            assertThat(((Number)row.get("schema_revision")).intValue()).isEqualTo(316);
+            assertThat(((Number)row.get("schema_registered")).intValue()).isEqualTo(1);
+            var payload=json.readTree(row.get("payload").toString());
+            assertThat(payload.path("user_id").longValue()).isEqualTo(7);
+            assertThat(payload.path("task_id").asText()).isEqualTo("TASK-EM");
+            assertThat(payload.path("device_id").longValue()).isEqualTo(11);
+            assertThat(payload.path("receipt_no").asText()).isEqualTo("CTR-"+payload.path("task_no").asText().substring(payload.path("task_no").asText().length()-32));
+            assertThat(payload.path("amount_usdt").decimalValue()).isEqualByComparingTo(
+                    payload.path("task_no").asText().equals(events.get(0).taskNo())?"0.000100":"0");
+            for(String removed:List.of("compute_engine","completed_at","wallet_posted_at"))assertThat(payload.has(removed)).isFalse();
+        }
+        var retained=json.readTree(jdbc.queryForObject("SELECT payload FROM nx_compute_v2_event WHERE event_id=?",String.class,events.get(0).eventId()));
+        assertThat(retained.path("evidence").path("completedAt").asText()).isEqualTo(completed.toString());
+        assertThat(retained.path("task").path("rewardUsdtMicros").longValue()).isEqualTo(100);
+        persist("canonical-events",events);persist("canonical-events-other-checkpoint",events);
+        assertWallet("0.000100","3",2);assertCount("nx_event_outbox",4);verifyEvidence();
+    }
+
+    @Test void realCanonicalOutboxStillRejectsTheOriginalUnregisteredExtensions() throws Exception {
+        useCanonicalOutbox();
+        Map<String,Object> old=new LinkedHashMap<>(Map.of("task_id","TASK-EM","task_no","TASK-fixture",
+                "device_id",11L,"receipt_no","CTR-fixture","amount_usdt",new BigDecimal("0.000100"),
+                "compute_engine","V2","completed_at",completed.toString(),"wallet_posted_at",completed.plusSeconds(60).toString()));
+        assertThatThrownBy(()->outbox.publishUserEvent("COMPUTE_TASK","TASK-fixture","task.completed",7L,"P2",1,"2026-W37",old))
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class).hasMessage("A4_SCHEMA_PROPERTY_NOT_REGISTERED");
+        assertWallet("0","0",0);assertCount("nx_event_outbox",0);assertCount("nx_support_fund_operation",0);
+    }
+
+    @Test void secondRealBusinessEventRejectionRollsBackBothAssetsAndRetriesTheSameImmutableBatch() throws Exception {
+        useCanonicalOutbox();
+        jdbc.update("UPDATE nx_event_schema_property p JOIN nx_event_schema_registry s ON s.id=p.schema_id SET p.property_type='string' WHERE s.event_name='earnings.credited' AND p.property_name='amount_usdt'");
+        var events=List.of(event(1,100,3000000,completed));
+        assertThatThrownBy(()->persist("real-outbox-retry",events)).isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class)
+                .hasMessage("A4_SCHEMA_PROPERTY_TYPE_MISMATCH");
+        assertWallet("0","0",0);
+        for(String table:List.of("nx_event_outbox","nx_compute_task","nx_compute_receipt","nx_compute_v2_settlement","nx_compute_v2_allocation",
+                "nx_wallet_ledger","nx_earning_event","nx_support_wallet_journal","nx_support_fund_operation","nx_support_fund_operation_leg",
+                "nx_compute_v2_event","nx_compute_v2_checkpoint"))assertCount(table,0);
+        jdbc.update("UPDATE nx_event_schema_property p JOIN nx_event_schema_registry s ON s.id=p.schema_id SET p.property_type='number' WHERE s.event_name='earnings.credited' AND p.property_name='amount_usdt'");
+        persist("real-outbox-retry",events);assertWallet("0.000100","3",2);assertCount("nx_event_outbox",2);verifyEvidence();
+    }
+
+    private void useCanonicalOutbox() throws Exception {
+        String schema=Files.readString(Path.of("scripts/schema.sql"));
+        for(String table:List.of("nx_event_outbox","nx_event_schema_revision","nx_event_schema_registry","nx_event_schema_property"))createTable(schema,table);
+        createTable(Files.readString(Path.of("scripts/migrations/20260810_ab_pending_closure.sql")),"nx_admin_event_lifecycle");
+        try(Connection connection=source.getConnection()) {
+            org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(connection,
+                    new org.springframework.core.io.FileSystemResource("scripts/migrations/20260831_business_event_schema_closure.sql"));
+        }
+        var config=new Configuration(new Environment("compute-v2-real-outbox",new SpringManagedTransactionFactory(),source));
+        config.addMapper(EventOutboxMapper.class);
+        var mapper=new SqlSessionTemplate(new SqlSessionFactoryBuilder().build(config)).getMapper(EventOutboxMapper.class);
+        outbox=new EventOutboxService(mapper,json,new ffdd.opsconsole.shared.outbox.OutboxProperties(),mock(ffdd.opsconsole.platform.application.A4RuntimePolicyService.class));
+        sink=new ComputeV2SettlementService(settlementMapper,manager,new SupportFundJournalBindingService(journal,source,json),outbox,json);
     }
 
     @Test void orphanTaskEvidenceBlocksWithoutDeletingTheUnownedOriginal() {

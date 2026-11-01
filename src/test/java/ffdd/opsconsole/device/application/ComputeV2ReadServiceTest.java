@@ -32,9 +32,11 @@ class ComputeV2ReadServiceTest {
     private final MockEnvironment environment=new MockEnvironment().withProperty("nexion.compute-v2.enabled","true")
             .withProperty("nexion.compute-v2.deployment-scope","TEST").withProperty("nexion.compute-v2.device-ids","7");
     private final JsonMapper json=JsonMapper.builder().addModule(new JavaTimeModule()).build();
-    private final ComputeV2ReadService service=new ComputeV2ReadService(legacy,Optional.of(runtime),environment,mapper,json);
+    private final Clock clock=mock(Clock.class);
+    private final ComputeV2ReadService service=new ComputeV2ReadService(legacy,Optional.of(runtime),environment,mapper,json,clock);
 
     @BeforeEach void prepare() {
+        when(clock.instant()).thenReturn(NOW.plusMillis(30125));
         when(legacy.assignments(10L)).thenReturn(ApiResult.ok(original(List.of())));
         when(runtime.view(10L,7L)).thenReturn(Optional.empty());
         when(runtime.pendingVerifiedSnapshot(10L)).thenReturn(new ComputeV2Runtime.PendingVerifiedSnapshot(new ComputeV2Runtime.PendingSummary(0,0,0,0),List.of()));
@@ -74,6 +76,37 @@ class ComputeV2ReadServiceTest {
         verify(runtime).view(10L,7L); verify(runtime).pendingVerifiedSnapshot(10L); verifyNoMoreInteractions(runtime);
     }
 
+    @ParameterizedTest @CsvSource({"COMPUTING,RUNNING","RUNNING,RUNNING","VERIFYING,VERIFYING","RECOVERING,RECOVERING","FAILING,RECOVERING"})
+    void startedWorkShowsServerElapsedWithoutConfirmingCompletion(String state,String expected) {
+        var event=event(Kind.STARTED,true,"TEST");
+        when(runtime.view(10L,7L)).thenReturn(Optional.of(new ComputeV2Runtime.RuntimeView(event,state,null,null,0,0)));
+        var response=service.assignments(10L);
+        assertThat(current(response)).containsEntry("status",expected).containsEntry("actualDurationSec",new BigDecimal("20.125"))
+                .containsEntry("startedAt",NOW.plusSeconds(10)).containsEntry("requiredSeconds",5)
+                .containsEntry("rewardUsdt","0.123456").containsEntry("settlementStatus","NONE").containsEntry("completedAt",null);
+        assertThat(event.kind()).isEqualTo(Kind.STARTED);
+        assertThat(event.task().rewardUsdtMicros()).isEqualTo(123456);
+        assertThat((List<?>)response.get("pendingEarned")).allSatisfy(row->assertThat(((Map<?,?>)row).get("amount")).isEqualTo("0.000000"));
+        verify(runtime).view(10L,7L); verify(runtime).pendingVerifiedSnapshot(10L); verifyNoMoreInteractions(runtime);
+    }
+
+    @Test void activeDurationAdvancesWithTheServerClockRatherThanCountingDownTheEstimate() {
+        var event=event(Kind.STARTED,true,"TEST");
+        when(runtime.view(10L,7L)).thenReturn(Optional.of(new ComputeV2Runtime.RuntimeView(event,"COMPUTING",null,null,0,0)));
+        when(clock.instant()).thenReturn(NOW.plusMillis(30125),NOW.plusMillis(31125));
+        assertThat(current(service.assignments(10L))).containsEntry("actualDurationSec",new BigDecimal("20.125"));
+        assertThat(current(service.assignments(10L))).containsEntry("actualDurationSec",new BigDecimal("21.125"))
+                .containsEntry("status","RUNNING").containsEntry("settlementStatus","NONE");
+    }
+
+    @Test void aFutureStartDoesNotProduceNegativeDurationOrConfirmCompletion() {
+        var event=event(Kind.STARTED,true,"TEST");
+        when(runtime.view(10L,7L)).thenReturn(Optional.of(new ComputeV2Runtime.RuntimeView(event,"COMPUTING",null,null,0,0)));
+        when(clock.instant()).thenReturn(NOW);
+        assertThat(current(service.assignments(10L))).containsEntry("actualDurationSec",new BigDecimal("0.000"))
+                .containsEntry("status","RUNNING").containsEntry("settlementStatus","NONE").containsEntry("completedAt",null);
+    }
+
     @Test void confirmedCompletionUsesActualStartAndSeparatePerCurrencyCounts() {
         var event=event(Kind.VERIFIED,true,"TEST");
         when(runtime.view(10L,7L)).thenReturn(Optional.of(new ComputeV2Runtime.RuntimeView(event,"COMPLETED",null,null,123456,500000)));
@@ -86,6 +119,7 @@ class ComputeV2ReadServiceTest {
                 .containsEntry("actualDurationSec",new BigDecimal("3.500")).containsEntry("startedAt",NOW.plusSeconds(10)).containsEntry("settlementBatchNo",null);
         assertThat(response.get("pendingEarned")).isEqualTo(List.of(
                 Map.of("asset","USDT","amount","0.234567","taskCount",2L),Map.of("asset","NEX","amount","0.500000","taskCount",1L)));
+        verifyNoInteractions(clock);
     }
 
     @Test void committedSqlButUnknownAckExcludesEveryPostedEventEvenOutsideVisibleDeviceHistory() {
