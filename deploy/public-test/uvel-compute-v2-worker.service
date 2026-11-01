@@ -14,7 +14,8 @@ Environment=UVEL_COMPUTE_V2_ENABLED=false
 Environment=UVEL_COMPUTE_V2_SCOPE=TEST
 EnvironmentFile=-/etc/uvel-compute-v2/worker.env
 LoadCredential=cloud-worker-token:/srv/nexgrid/secrets/cloud-bge-worker.credential
-ExecStart=/usr/bin/python3 -I -B /opt/uvel-compute-v2/compute-v2-worker.py --journal-directory=/var/lib/private/uvel-compute-v2 --credential-file=%d/cloud-worker-token --backend=http://127.0.0.1:8110 --ollama-urls=http://127.0.0.1:11436,http://127.0.0.1:11437,http://127.0.0.1:11438,http://127.0.0.1:11439,http://127.0.0.1:11440,http://127.0.0.1:11441
+LoadCredential=modal-worker-token:/srv/nexgrid/secrets/compute-modal-worker.credential
+ExecStart=/usr/bin/python3 -I -B /opt/uvel-compute-v2/compute-v2-worker.py --journal-directory=/var/lib/private/uvel-compute-v2 --credential-file=%d/cloud-worker-token --backend=http://127.0.0.1:8110 --shared-bge --ollama-urls=http://127.0.0.1:11436 --modal-endpoint=http://127.0.0.1:11442 --modal-credential-file=%d/modal-worker-token
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=1800
