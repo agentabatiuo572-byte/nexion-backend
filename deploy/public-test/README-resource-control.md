@@ -17,19 +17,20 @@ Store the reviewed budget in root-owned `/etc/uvel-task-control/budget.json`:
 {
   "version": 1,
   "scope": "TEST",
-  "maxActiveExecutors": 7,
-  "buildBudgetBytes": 3221225472,
+  "maxActiveExecutors": 6,
+  "buildsEnabled": false,
+  "buildBudgetBytes": 1073741824,
   "buildControl": {"type": "docker", "name": "nexgrid-ci-agent"},
-  "buildRequests": {"backend": 3221225472, "pc": 3221225472, "uniapp": 3221225472},
+  "buildRequests": {"backend": 1073741824, "pc": 1073741824, "uniapp": 1073741824},
   "stoppedControls": [{"type": "docker", "name": "uvel-cloud-bge-model-fleet-7"}],
   "commitments": [
-    {"name": "backend", "kind": "backend", "bytes": 2684354560,
+    {"name": "backend", "kind": "backend", "bytes": 4294967296,
      "control": {"type": "systemd", "name": "nexgrid-backend.service"}},
     {"name": "each-reviewed-model", "kind": "model", "bytes": 1610612736,
      "control": {"type": "docker", "name": "REPLACE_WITH_REAL_CONTAINER"}},
-    {"name": "business-mysql", "kind": "database", "bytes": 3489660928,
+    {"name": "business-mysql", "kind": "database", "bytes": 3758096384,
      "control": {"type": "docker", "name": "nexgrid-mysql"}},
-    {"name": "all-other-host-work", "kind": "other", "bytes": 5368709120}
+    {"name": "all-other-host-work", "kind": "other", "bytes": 5905580032}
   ],
   "workerServices": [
     {"name": "uvel-cloud-bge-fleet.service", "journalRoots": ["/var/lib/uvel-cloud-bge-fleet/instances"]},
@@ -47,10 +48,13 @@ model limit from this example: first measure cold-start and inference cgroup
 memory, including anon, file cache and temporary workspaces, and leave required
 overhead. `maxActiveExecutors` is the global task-runner capacity across all owners
 and worker services, excluding runners used only for validation. It is distinct
-from fleet parallelism. The reviewed candidate topology is six distinct fleet
-endpoints (11436–11441) plus one base runner (11435) used by single worker 1202 and
-backend validation: seven runnable model containers, fleet parallelism six and
-global maxActiveExecutors seven. Existing activated instances remain untouched;
+from fleet parallelism. The measured runtime topology has six distinct fleet
+endpoints (11436–11441) plus one base runner (11435) used only for backend
+validation: seven runnable model containers, fleet parallelism six and global
+maxActiveExecutors six. The base validator is not a seventh task slot. The actual
+cohort is 1204/1208/1209/1210/1212/1214; 1206 is deactivated and single1202 is
+SHARE/DEACTIVATED. Any future net addition, including 1202 if it becomes eligible,
+still needs room within the global six-slot bound. Existing activated instances remain untouched;
 historical activated fixtures above the global bound close only new activation.
 The example is intentionally rejected because it has fewer models than executors.
 
@@ -58,7 +62,8 @@ The revised runtime envelope is `7*1.5 + 4 backend + 3.5 MySQL + 1 idle CI +
 5.5 other = 24.5 GiB`, below 80% of the measured approximately 30.974 GiB host.
 The backend uses a 3 GiB heap within its 4 GiB service cap. The previous
 2 GiB/Xmx1280m backend repeatedly exhausted its heap; that budget did not pass.
-These revised limits still require the continuous workload acceptance.
+These revised limits passed the specific continuous workload recorded below;
+they do not guarantee larger inputs or longer workloads will fit.
 Real MemAvailable must independently remain above the 20% reserve.
 
 Runtime config sets `buildsEnabled: false`. The optional field defaults to true
@@ -72,12 +77,25 @@ Heavy builds require an operator-coordinated maintenance budget. First drain
 workers and verify their complete stopped journal inventory, then stop only the
 three confirmed idle fleet runners 4–6 while preserving their containers and
 configuration. Four remaining model runners, backend4, MySQL3.5, CI3 and other5.5
-reserve 22 GiB. A separately reserved 1.75 GiB may cover an isolated test database
-and test JVM, for 23.75 GiB total. New activation is bounded to four during this
-window; all previously activated devices remain paused only for the release.
-After build/test processes terminate, lower idle CI to 1 GiB before restarting
-the three runners, restore seven-runner capacity and disable heavy builds before
+reserve 22 GiB: three fleet task runners and one base validator, so maintenance
+maxActiveExecutors is three. A separately reserved 1.75 GiB may cover an isolated
+test database and test JVM, for 23.75 GiB total. In a separate phase, after
+releasing that isolated-test reservation, a temporary 2.5 GiB frontend-switch
+commitment brought maintenance to 24.5 GiB. These reservations were replacements,
+not cumulative, and both have now been removed.
+All previously activated devices remain paused only for the release; the smaller
+maintenance snapshot does not revoke their activation. After build/test processes
+terminate, pause CI and recheck terminal build metadata, reservations and actual
+memory before lowering it to 1 GiB. Only then restart the three runners, restore
+seven model containers with maxActiveExecutors six, and disable heavy builds before
 resuming workers. Never use this maintenance budget as a six-slot runtime claim.
+
+The backend CI435/source `07731861`, PC277 and App356 have been deployed to TEST.
+All 154 real SQL cases (8+111+35) passed with zero skips. Each of the original five
+requests has one completion receipt and the current six devices continue cycling.
+The final 3601.08807-second observer window, resource replay, unique-settlement
+audit and App/H5 page acceptance are complete as recorded below. Deployment and
+SQL results are separate from this continuous workload evidence.
 
 The eighth model container, `uvel-cloud-bge-model-fleet-7`, may be omitted from
 runtime commitments only after root proves no current lease/inference, gracefully
@@ -142,9 +160,11 @@ This pessimistically counts resident builds again, preserving headroom rather th
 overselling unspent commitments. Only a matching completed `build.xml` releases a
 reservation. A failed trigger leaves its reservation held for operator inspection;
 there is no TTL or automatic cancellation of a possibly queued/running build.
-Direct UI builds bypass this pre-trigger refusal but remain inside the fully
-reserved CI hard cap; use the wrapper entry for all builds in this task. A trigger
-process exiting never releases a reservation without terminal Jenkins metadata.
+Direct UI builds bypass the wrapper's pre-trigger reservation but still face the
+fixed host 20% memory gate, inherited cgroup allowance check and fully reserved CI
+hard cap. The 1 GiB runtime envelope rejects heavy work before compilation. Use
+the reviewed maintenance entry for builds in this task. A trigger process exiting
+never releases a reservation without terminal Jenkins metadata.
 
 Install `resource-control-snapshot.service` and `.timer` under
 `/etc/systemd/system`, then enable the timer. It publishes root-owned,
@@ -219,3 +239,49 @@ expires. Never delete a held marker to force a release.
 
 Local validation (does not access live services):
 `python -m unittest scripts.ops.test_resource_control -v`.
+
+## TEST acceptance snapshot, 2026-11-01
+
+Backend 435 (`07731861772d90ed88f345192f629e46efcaf0d5`) completed the
+six-slot observation from 2026-10-31T22:38:35.498459Z to
+23:38:36.586529Z (3601.08807 seconds). All 3602 expected samples were complete;
+maximum complete gap was 1.433902 seconds and collection took at most 0.498274
+seconds. Observed identities were unchanged and all observed OOM increments were
+zero. Minimum host MemAvailable was 9,461,432,320 bytes (28.4485% of physical
+memory), above the 20% reserve. Independent resource replay matched the analysis.
+
+The financial snapshot, read at 2026-11-01T00:10:01Z, verified 2609 settlements
+inside the same observation window,
+zero duplicate or mismatched task chains and no unresolved request states. Every
+device had completions in all twelve full five-minute buckets. Observed throughput
+was 0.724503 tasks/second; this is a lower bound for this short-text workload,
+not measured maximum database TPS. Fleet runner overlap reached six distinct
+devices and ports for 42.910421 seconds. Original-five recovery and existing
+protected journals/budgets were verified separately and again in the final read.
+
+Local limits remain material: backend sampled current reached within 50.664 MiB
+of its 4 GiB cap; MySQL reached within 0.25 MiB of its 3.5 GiB cap, with 1270
+additional memory.events.max counts. These are reclaim/limit pressure, not OOM.
+The hour does not exclude longer-term leaks. Twenty-four notification-list
+deadlock victims were recorded separately as issue 702 (active); they are not
+120 incidents despite 120 matching transaction-keyword lines. No connection
+acquisition timeout, connection exception class mention, Hikari or OOM match was
+observed in the same 11995 backend MESSAGE rows. This is not a claim of an
+error-free whole application.
+
+Durable originals are under
+`/srv/nexgrid/backups/task-stability-20261031/`: `sixty-minute-final1/`,
+`six-60m-financial-ci435-final3/`, `independent-sixty-minute-review-001/` and
+`original-five-financial-ci435-2/`. The final financial evidence digest is
+`742ad9506802c8f788acd8a2bb4bfcf18efb95e7f1dff299c9f7878c678436b8`.
+The original read-query timeout attempts are retained; optimized audit queries
+kept the 15-second statement cap, 60-second client cap and original assertions.
+These audit-only changes did not restart or change the application or window.
+Independent review read the full financial original and recomputed all 2620
+related chains, including 2609 in-window settlements, the original five and six
+tasks created inside but completed outside the window. Only the first group
+counts toward throughput. A zero inflightTail at snapshot time does not assert
+zero in-flight work at the window boundary. All 37 protection checks passed a fresh read-only
+comparison. Independent financial summary SHA256:
+`3b872ef70a0721e365ba81c238316383b35a9bdb4ab6db8e1848150689434d9e`.
+Issue 701 was closed/fixed and read back at 2026-11-01T00:16:35Z; 702 remains active.
