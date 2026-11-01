@@ -962,6 +962,7 @@ public class AppTaskAssignmentService {
             throw new BizException(503, "E2_TASK_CONFIG_INVALID");
         }
         return pool.stream()
+                .filter(task -> !PhoneComputeV2Access.MODEL.equals(task.modelName()))
                 .filter(task -> activeDevice(task.status()))
                 .filter(task -> !killed(task.killInit()))
                 .filter(task -> task.minVram() != null && task.minVram() <= vramTotalGb)
