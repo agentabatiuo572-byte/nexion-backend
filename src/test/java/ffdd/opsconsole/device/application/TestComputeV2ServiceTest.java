@@ -196,6 +196,32 @@ class TestComputeV2ServiceTest {
         finally{TransactionSynchronizationManager.setActualTransactionActive(false);}
         verifyNoInteractions(runtime,transactions,physicalAdmission);
     }
+    @Test void issuedTaskPreservesTheConfiguredDisplayNameAndModel(){
+        environment.setProperty(TestCloudExecutorService.PREFIX+"task-config-id","EM-A");
+        environment.setProperty(TestCloudExecutorService.PREFIX+"model","bge-m3:567m");
+        environment.setProperty(TestCloudExecutorService.PREFIX+"model-digest",MODEL);
+        when(runtime.isReady()).thenReturn(true);when(runtime.canAcceptWork()).thenReturn(true);
+        when(runtime.viewDevice(11L)).thenReturn(Optional.empty());
+        when(assignments.eligibleTasks(8)).thenReturn(List.of(new AppTaskAssignmentMapper.TaskConfigRow(
+                "EM-A","PC configured task","EM","BGE-M3",new BigDecimal("0.000010"),
+                new BigDecimal("0.000020"),8,"active","派发中")));
+        when(assignments.e3CapacityConfig()).thenReturn(Map.ofEntries(
+                Map.entry("capacityBand1DeltaPct","-3"),Map.entry("capacityBand2DeltaPct","-6"),
+                Map.entry("capacityBand3DeltaPct","-23.7"),Map.entry("stageEarlyEnd","3"),
+                Map.entry("stageMidEnd","8"),Map.entry("cycleMonths","13"),
+                Map.entry("capacityFloorPct","22"),Map.entry("capacitySubsidyDays","30"),
+                Map.entry("taskLockS1","30"),Map.entry("taskLockPro","150"),Map.entry("taskLockRack","480"),
+                Map.entry("capacityApplyToPhone","false"),Map.entry("capacityApplyToCloudShare","false"),
+                Map.entry("capacityApplyToPcGpu","false"),Map.entry("capacityApplyToS1","true"),
+                Map.entry("capacityApplyToPro","true"),Map.entry("capacityApplyToProV2","true"),
+                Map.entry("capacityApplyToRackP1","true"),Map.entry("capacityApplyToRackP2","true"))
+                .entrySet().stream().map(entry->new AppTaskAssignmentMapper.ConfigRow(entry.getKey(),entry.getValue())).toList());
+        var frozen=org.mockito.ArgumentCaptor.forClass(TaskSnapshot.class);
+        service.issueEnrolled();
+        verify(runtime).issue(eq(7L),eq(11L),eq("DEV-11"),frozen.capture());
+        assertThat(frozen.getValue().taskName()).isEqualTo("PC configured task");
+        assertThat(frozen.getValue().modelName()).isEqualTo("BGE-M3");
+    }
     @Test void completedDeviceIsDispatchedBeforeTheSixThousandSlotScanCursor(){
         service.complete(caller,"runner-1",TASK,proof);
         environment.setProperty("nexion.compute-v2.device-ids",java.util.stream.LongStream.rangeClosed(1,6000).mapToObj(Long::toString).collect(java.util.stream.Collectors.joining(",")));

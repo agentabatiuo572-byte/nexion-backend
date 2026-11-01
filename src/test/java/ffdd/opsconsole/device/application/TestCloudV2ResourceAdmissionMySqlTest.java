@@ -49,7 +49,13 @@ class TestCloudV2ResourceAdmissionMySqlTest {
         jdbc.execute("CREATE DATABASE "+database+" CHARACTER SET utf8mb4"); jdbc.execute("USE "+database);
         jdbc.execute("CREATE TABLE nx_user_device(id BIGINT PRIMARY KEY,is_deleted INT,source_environment VARCHAR(16),run_id VARCHAR(32),ownership_status VARCHAR(16),device_type VARCHAR(16),activated_at DATETIME,deactivated_at DATETIME,status VARCHAR(16),pending_deactivate INT)");
         LegacyZeroCreditResourceSchema.requests(jdbc);
+        jdbc.execute("ALTER TABLE nx_test_cloud_request ADD proof_validated TINYINT DEFAULT 0, ADD reviewed_termination TINYINT DEFAULT 0, ADD response_json JSON");
         LegacyZeroCreditResourceSchema.resolutions(jdbc);
+        String schema=Files.readString(Path.of("scripts/schema.sql"));
+        for(String table:List.of("nx_test_cloud_execution","nx_compute_receipt")) {
+            var ddl=java.util.regex.Pattern.compile("(?s)CREATE TABLE IF NOT EXISTS "+table+" \\(.*?\\) ENGINE=InnoDB[^\\r\\n]*;").matcher(schema);
+            assertThat(ddl.find()).as(table).isTrue();jdbc.execute(ddl.group());
+        }
         for(int run=0;run<2;run++) ScriptUtils.executeSqlScript(connection,new FileSystemResource("scripts/migrations/20261101_compute_v2_resource_index.sql"));
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='nx_test_cloud_request' AND index_name='idx_state_device_owner'",Integer.class)).isEqualTo(3);
         jdbc.execute("CREATE TABLE nx_compute_task(task_no VARCHAR(96),user_device_id BIGINT,is_deleted INT,source_environment VARCHAR(16),status VARCHAR(16),user_id BIGINT,task_config_id VARCHAR(64),completed_at DATETIME,KEY idx_active(status,user_device_id))");

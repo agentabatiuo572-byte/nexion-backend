@@ -85,6 +85,67 @@ public interface TestCloudRequestMapper extends BaseMapper<TestCloudRequestEntit
     @Select("<script>SELECT COUNT(*) "+V1_PHYSICAL_FROM+" WHERE d.id=#{deviceId} AND "+RESOURCE_EXECUTOR_BASE
             +" AND "+RESOURCE_EXECUTOR_CURRENT+" AND legacy.device_id IS NULL "+NOT_LOGICAL_DEVICE+" FOR UPDATE</script>")
     int v1ResourceExecutorCount(@Param("deviceId") long deviceId,@Param("logicalDevices") Collection<Long> logicalDevices);
+    // Execution admission is separate from activation promises. A bare logical task never ran a model.
+    // saveResult and settlement commit atomically. Read their completed facts, never re-audit historical artifacts here.
+    String UNCLOSED_MANIFEST="""
+        FROM nx_test_cloud_execution e
+        WHERE CASE WHEN e.result_hash IS NOT NULL THEN NOT EXISTS (
+          SELECT 1 FROM nx_compute_task t JOIN nx_compute_receipt receipt ON receipt.task_no=t.task_no
+           AND BINARY receipt.task_no=BINARY t.task_no
+           AND receipt.user_id=t.user_id AND receipt.user_device_id=t.user_device_id
+           AND receipt.source_environment='PRODUCTION' AND receipt.is_deleted=0
+           AND receipt.earning_status IN ('CREDITED','SETTLED','SUCCESS')
+          WHERE t.task_no=CONVERT(e.task_no USING utf8mb4) COLLATE utf8mb4_0900_ai_ci
+           AND BINARY t.task_no=BINARY e.task_no AND t.user_id=e.owner_id AND t.user_device_id=e.device_id
+           AND BINARY t.task_config_id=BINARY e.task_config_id AND t.is_deleted=0 AND t.source_environment='PRODUCTION'
+           AND t.status='COMPLETED' AND t.completed_at IS NOT NULL
+           AND e.complete_key_hash IS NOT NULL AND e.complete_body_hash IS NOT NULL
+        ) ELSE NOT EXISTS (
+          SELECT 1 FROM nx_test_cloud_request r JOIN nx_compute_task t ON t.task_no=r.task_no AND BINARY t.task_no=BINARY r.task_no
+           AND t.user_id=r.owner_id AND t.user_device_id=r.device_id AND BINARY t.task_config_id=BINARY r.task_config_id
+           AND t.is_deleted=0 AND t.source_environment='PRODUCTION' AND t.status IN ('EXPIRED','CANCELLED')
+          WHERE r.task_no=CONVERT(e.task_no USING utf8mb4) COLLATE utf8mb4_0900_ai_ci
+           AND BINARY r.task_no=BINARY e.task_no AND r.owner_id=e.owner_id AND r.device_id=e.device_id
+           AND BINARY r.executor_id=BINARY e.executor_id AND BINARY r.instance_no=BINARY e.instance_no
+           AND BINARY r.task_config_id=BINARY e.task_config_id AND r.operation='COMPLETE' AND r.state='ROLLED_BACK'
+           AND r.recovery_used=1 AND r.generation>1 AND (r.proof_validated=1 OR r.reviewed_termination=1)
+           AND JSON_UNQUOTE(JSON_EXTRACT(r.response_json,'$.state'))='ROLLED_BACK'
+           AND BINARY JSON_UNQUOTE(JSON_EXTRACT(r.response_json,'$.taskNo'))=BINARY e.task_no
+           AND JSON_UNQUOTE(JSON_EXTRACT(r.response_json,'$.taskStatus'))=t.status
+           AND JSON_UNQUOTE(JSON_EXTRACT(r.response_json,'$.executionGeneration'))=CAST(r.generation AS CHAR)
+           AND JSON_UNQUOTE(JSON_EXTRACT(r.response_json,'$.recoveryAllowed'))='false')
+        AND NOT EXISTS (
+          SELECT 1 FROM nx_test_cloud_request r WHERE r.task_no=CONVERT(e.task_no USING utf8mb4) COLLATE utf8mb4_0900_ai_ci
+           AND BINARY r.task_no=BINARY e.task_no
+           AND r.owner_id=e.owner_id AND r.device_id=e.device_id AND BINARY r.executor_id=BINARY e.executor_id
+           AND BINARY r.instance_no=BINARY e.instance_no AND BINARY r.task_config_id=BINARY e.task_config_id
+        """+" AND EXISTS ("+LegacyZeroCreditResolutionSql.RESOLVED_REQUEST+")) END";
+    String ACTUAL_V1_WORK="""
+        SELECT r.device_id FROM nx_test_cloud_request r WHERE r.state IN ('PROCESSING','UNKNOWN')
+        """+" AND NOT EXISTS ("+LegacyZeroCreditResolutionSql.RESOLVED_REQUEST+") UNION SELECT e.device_id "+UNCLOSED_MANIFEST;
+    /** Current read under the resource mutex + READ_COMMITTED; never lock another request behind its owner. */
+    @Select("SELECT COUNT(*) FROM ("+ACTUAL_V1_WORK+") actual_v1")
+    int actualV1Executions();
+    @Select("SELECT COUNT(*) "+UNCLOSED_MANIFEST+" AND e.device_id=#{deviceId}")
+    int unclosedManifests(@Param("deviceId") long deviceId);
+    @Select("SELECT COUNT(*) FROM nx_test_cloud_request r WHERE r.device_id=#{deviceId} AND r.state IN ('PROCESSING','UNKNOWN') AND NOT EXISTS ("+LegacyZeroCreditResolutionSql.RESOLVED_REQUEST+")")
+    int uncertainDeviceRequests(@Param("deviceId") long deviceId);
+    @Select("""
+        SELECT COUNT(*) FROM nx_test_cloud_execution e JOIN nx_compute_task t ON t.task_no=CONVERT(e.task_no USING utf8mb4) COLLATE utf8mb4_0900_ai_ci
+         AND BINARY t.task_no=BINARY e.task_no
+         AND t.user_id=e.owner_id AND t.user_device_id=e.device_id AND BINARY t.task_config_id=BINARY e.task_config_id
+        WHERE e.owner_id=#{ownerId} AND e.device_id=#{deviceId} AND BINARY e.instance_no=BINARY #{instanceNo}
+         AND BINARY e.executor_id=BINARY #{executorId} AND BINARY e.task_config_id=BINARY #{taskConfigId}
+         AND e.next_key_hash=#{keyHash} AND t.status IN ('CLAIMED','RUNNING') AND t.source_environment='PRODUCTION'
+         AND t.is_deleted=0 AND t.lease_expires_at>#{now} AND t.proof_expires_at>#{now}
+         AND e.result_hash IS NULL AND e.result_artifact IS NULL AND e.complete_key_hash IS NULL AND e.complete_body_hash IS NULL
+        """)
+    int sameLiveNext(@Param("ownerId") long ownerId,@Param("deviceId") long deviceId,@Param("instanceNo") String instanceNo,
+                     @Param("executorId") String executorId,@Param("taskConfigId") String taskConfigId,@Param("keyHash") String keyHash,@Param("now") LocalDateTime now);
+    @Select("SELECT id FROM nx_user WHERE id=#{ownerId} AND is_deleted=0 FOR UPDATE")
+    Long lockExecutionOwner(@Param("ownerId") long ownerId);
+    @Select("SELECT id FROM nx_user_device WHERE id=#{deviceId} AND user_id=#{ownerId} AND BINARY instance_no=BINARY #{instanceNo} AND is_deleted=0 AND source_environment='PRODUCTION' FOR UPDATE")
+    Long lockExecutionDevice(@Param("ownerId") long ownerId,@Param("deviceId") long deviceId,@Param("instanceNo") String instanceNo);
     String COLUMNS="executor_id executorId,operation,key_hash keyHash,body_hash bodyHash,owner_id ownerId,device_id deviceId,"
             +"instance_no instanceNo,task_config_id taskConfigId,task_no taskNo,state,generation,recovery_token recoveryToken,"
             +"recovery_used recoveryUsed,proof_timestamp proofTimestamp,proof_validated proofValidated,reviewed_termination reviewedTermination,response_json responseJson,updated_at updatedAt";
