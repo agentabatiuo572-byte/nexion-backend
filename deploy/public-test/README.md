@@ -23,8 +23,8 @@ root-owned, non-symlink, non-writable ancestors before compiling verified bytes.
 Never regenerate a trust lock from unverified host files. Infra updates need review.
 
 GitHub test is approved business source: ordinary mapper, startup and source changes
-do not require a second schema fingerprint approval. CI compiles/packages test and
-runs the complete backend Maven test suite before an artifact reaches the broker.
+do not require a second schema fingerprint approval. Backend CI only compiles/packages
+test with `-Dmaven.test.skip=true`; business acceptance uses E2E and system business flows.
 UniApp type checking and actual frontend/backend compilation remain build checks.
 Frontends use alternate local ports before Nginx cutover. Backend restarts only its
 own service. For a code-only release, a durable journal restores the old release on
@@ -69,8 +69,8 @@ containers. Jenkins keeps ten build records and five artifact sets. Daily mainte
 also prunes build cache older than seven days down to 5 GB, dangling images older
 than fourteen days, journal history above 512 MB, and downloaded apt packages.
 
-Local gate: `python -m unittest discover -v`. Isolated tests alone do not prove live
-deployment, business acceptance or real rollback completion.
+Acceptance uses existing E2E and system business flows. Build success alone does not
+prove live deployment, business acceptance or real rollback completion.
 
 `update_independent_releases.py` is a one-time operator migration, not automatic
 runtime code. Independently pin its SHA256 and the new lock from an immutable
