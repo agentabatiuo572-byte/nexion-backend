@@ -978,8 +978,7 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
                     mock(ffdd.opsconsole.growth.application.WheelSandboxProfile.class),env,audit,outbox,platform,businessClock,
                     new PhoneInstallationService(session.getMapper(PhoneInstallationMapper.class),current),
                     mock(ffdd.opsconsole.onboarding.application.PhoneReplacementService.class),
-                    mock(ffdd.opsconsole.common.boundary.PhoneActivationCapacityContract.class),
-                    mock(ffdd.opsconsole.common.boundary.UserTermsAcceptanceContract.class)));
+                    mock(ffdd.opsconsole.common.boundary.PhoneActivationCapacityContract.class)));
             appSessions=new AppSingleSessionService(session.getMapper(AuthSessionMapper.class),session.getMapper(AppLoginAttemptMapper.class),
                     new JwtTokenProvider(new JwtProperties()),phone,audit,outbox,platform,users,blocklist,env);
         }

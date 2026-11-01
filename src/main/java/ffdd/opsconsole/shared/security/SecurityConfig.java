@@ -48,8 +48,7 @@ public class SecurityConfig {
             ImpersonationReadOnlyEnforcementFilter impersonationReadOnlyEnforcementFilter,
             ObjectProvider<DeveloperApiKeyAuthenticationFilter> developerApiKeyAuthenticationFilterProvider,
             ObjectProvider<AuthenticatedPrincipalRateLimitFilter> principalRateLimitFilterProvider,
-            ObjectProvider<UserBlocklistEnforcementFilter> userBlocklistFilterProvider,
-            ObjectProvider<UserBusinessWriteGateFilter> userBusinessWriteGateFilterProvider) throws Exception {
+            ObjectProvider<UserBlocklistEnforcementFilter> userBlocklistFilterProvider) throws Exception {
         UserBlocklistEnforcementFilter userBlocklistEnforcementFilter = userBlocklistFilterProvider.getIfAvailable(
                 () -> new UserBlocklistEnforcementFilter(userId -> false));
         AuthenticatedPrincipalRateLimitFilter authenticatedPrincipalRateLimitFilter =
@@ -151,8 +150,6 @@ public class SecurityConfig {
                 .addFilterAfter(impersonationReadOnlyEnforcementFilter, AuthenticatedPrincipalRateLimitFilter.class)
                 .addFilterAfter(userBlocklistEnforcementFilter, ImpersonationReadOnlyEnforcementFilter.class)
                 .addFilterAfter(adminRbacAuthorizationFilter, UserBlocklistEnforcementFilter.class);
-        userBusinessWriteGateFilterProvider.ifAvailable(
-                filter -> configured.addFilterAfter(filter, AdminRbacAuthorizationFilter.class));
         return configured.build();
     }
 

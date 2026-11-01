@@ -345,7 +345,6 @@ class PurchasePaymentHttpMySqlTest {
         @Bean AppPaymentPasswordController pinController(AppPaymentPasswordService pin,ObjectProvider<ExternalPurchaseCommandQuery> external){return new AppPaymentPasswordController(pin,external);}
         @Bean HdPayPayInCallbackController callback(ObjectProvider<PurchasePaymentService> direct){return new HdPayPayInCallbackController(new HdPayCallbackService(fixture.provider,new HdPayCallbackVerifier(fixture.hd),mock(HdPayCallbackSettlementService.class),direct));}
         @Bean AdminRbacAuthorizationFilter rbac(){return new AdminRbacAuthorizationFilter(fixture.audit,fixture.mapper(AdminAccountStateMapper.class));}
-        @Bean UserBusinessWriteGateFilter businessGate(){return new UserBusinessWriteGateFilter(fixture.mapper(UserOpsMapper.class));}
         @Bean JwtAuthenticationFilter jwt(org.springframework.core.env.Environment environment){return new JwtAuthenticationFilter(fixture.jwt,fixture.authSessions,fixture.mapper(UserOpsMapper.class),environment,new GatewaySecurityProperties(),mock(AdminSessionRegistry.class),mock(AdminPermissionCache.class),mock(ImpersonationSessionVerifier.class),fixture.configs,user->false,mock(UserSessionRevocationService.class));}
     }
 }

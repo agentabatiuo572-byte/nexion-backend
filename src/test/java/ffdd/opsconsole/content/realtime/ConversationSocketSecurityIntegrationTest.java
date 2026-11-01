@@ -9,7 +9,6 @@ import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
 import ffdd.opsconsole.content.mapper.SupportAcceptanceSandboxMapper;
 import ffdd.opsconsole.content.domain.ContentConversationView;
 import ffdd.opsconsole.content.domain.ConversationRepository;
-import ffdd.opsconsole.content.terms.LegalTermsService;
 import ffdd.opsconsole.content.web.AppSupportController;
 import ffdd.opsconsole.content.web.OpsConversationController;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -124,7 +123,7 @@ class ConversationSocketSecurityIntegrationTest {
         return tokens.createToken(7L, "ADMIN", "reader", List.of("stale_claim"), session, Duration.ofMinutes(5));
     }
 
-    @Test void incompleteOnboardingUserGetsTicketAndUsesOwnSupportWindowWhileBusinessWritesStayBlocked() throws Exception {
+    @Test void phoneInitializationDoesNotGateSupportOrOtherBusinessRequests() throws Exception {
         String token = activeUser();
         when(app.startConversation(anyString(), any(), any())).thenReturn(ApiResult.ok(null));
         when(app.replyConversation(anyString(), anyString(), any(), any())).thenReturn(ApiResult.ok(null));
@@ -140,10 +139,53 @@ class ConversationSocketSecurityIntegrationTest {
         verify(app).startConversation(eq("support-key-42"), any(), any());
         verify(app).replyConversation(eq("CV-42"), eq("support-key-42"), any(), any());
         verify(app).markConversationRead(eq("CV-42"), any(), any());
-        for (String path : List.of("/api/orders", "/api/app/deposits/vietqr/intents")) {
-            HttpResponse<String> response = post(path, token);
-            assertEquals(428, response.statusCode());
-            assertEquals("USER_ONBOARDING_REQUIRED", json.readTree(response.body()).path("message").asText());
+        for (var entry : Map.of(
+                "POST", List.of("/api/app/trade-in/eligibility", "/api/orders/quote", "/api/orders",
+                        "/api/app/deposits/vietqr/intents", "/api/withdrawals/eligibility", "/api/points/sign-in",
+                        "/api/content/learning/courses/fixture/start"),
+                "PUT", List.of("/api/app/profile"),
+                "PATCH", List.of("/api/me/notification-preferences"),
+                "DELETE", List.of("/api/goals/fixture")).entrySet()) {
+            for (String path : entry.getValue()) {
+                HttpResponse<String> response = businessRequest(entry.getKey(), path, token);
+                assertEquals(200, response.statusCode(), entry.getKey() + " " + path);
+                assertEquals("42", json.readTree(response.body()).path("userId").asText());
+            }
+        }
+        verify(users, never()).isOnboardingComplete(anyLong());
+    }
+
+    @Test void businessRequestsStillRequireAnActiveUnblockedUserSession() throws Exception {
+        assertEquals(401, businessRequest("POST", "/api/orders", "invalid-token").statusCode());
+        String token = activeUser();
+        when(blocklist.isBlocked(42L)).thenReturn(true);
+        assertEquals(401, businessRequest("POST", "/api/orders", token).statusCode());
+        when(blocklist.isBlocked(42L)).thenReturn(false);
+        when(userSessions.touchActiveUserSession("user-session", 42L, 30)).thenReturn(0);
+        assertEquals(401, businessRequest("POST", "/api/orders", token).statusCode());
+    }
+
+    private HttpResponse<String> businessRequest(String method, String path, String token) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path))
+                .header("Authorization", "Bearer " + token).header("Content-Type", "application/json")
+                .method(method, HttpRequest.BodyPublishers.ofString("{}")).build();
+        return HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
+    }
+
+    // Synthetic handlers exercise the real HTTP security chain without business writes.
+    @org.springframework.web.bind.annotation.RestController
+    static class BusinessFixture {
+        @org.springframework.web.bind.annotation.RequestMapping(
+                path = {"/api/app/trade-in/eligibility", "/api/orders/quote", "/api/orders",
+                        "/api/app/deposits/vietqr/intents", "/api/withdrawals/eligibility", "/api/points/sign-in",
+                        "/api/content/learning/courses/fixture/start", "/api/app/profile",
+                        "/api/me/notification-preferences", "/api/goals/fixture"},
+                method = {org.springframework.web.bind.annotation.RequestMethod.POST,
+                        org.springframework.web.bind.annotation.RequestMethod.PUT,
+                        org.springframework.web.bind.annotation.RequestMethod.PATCH,
+                        org.springframework.web.bind.annotation.RequestMethod.DELETE})
+        Map<String, String> dispatch(org.springframework.security.core.Authentication authentication) {
+            return Map.of("userId", authentication.getName());
         }
     }
 
@@ -242,7 +284,7 @@ class ConversationSocketSecurityIntegrationTest {
     @ImportAutoConfiguration({ServletWebServerFactoryAutoConfiguration.class, DispatcherServletAutoConfiguration.class,
             WebMvcAutoConfiguration.class, WebSocketServletAutoConfiguration.class, JacksonAutoConfiguration.class,
             SecurityAutoConfiguration.class, SecurityFilterAutoConfiguration.class})
-    @Import({SecurityConfig.class, ConversationSocketConfig.class, ConversationSocketTicketController.class})
+    @Import({SecurityConfig.class, ConversationSocketConfig.class, ConversationSocketTicketController.class, BusinessFixture.class})
     static class SecurityApplication {
         @Bean JwtProperties jwtProperties() { JwtProperties p = new JwtProperties(); p.setSecret("socket-security-integration-test-secret-0123456789"); p.setTtlMinutes(10); return p; }
         @Bean JwtTokenProvider jwtTokenProvider(JwtProperties p) { return new JwtTokenProvider(p); }
@@ -271,10 +313,6 @@ class ConversationSocketSecurityIntegrationTest {
         }
         @Bean UserAccountBlocklistVerifier userAccountBlocklistVerifier() { return mock(UserAccountBlocklistVerifier.class); }
 
-        @Bean LegalTermsService legalTermsService() { return mock(LegalTermsService.class); }
-        @Bean UserBusinessWriteGateFilter userBusinessWriteGateFilter(UserOpsMapper users, LegalTermsService legalTerms) {
-            return new UserBusinessWriteGateFilter(users);
-        }
         @Bean ffdd.opsconsole.content.domain.ConversationRepository conversationRepository() { return mock(ffdd.opsconsole.content.domain.ConversationRepository.class); }
         @Bean ConversationSocketAccess conversationSocketAccess(JwtAuthenticationFilter auth, AdminRbacAuthorizationFilter gate,
                 UserAccountBlocklistVerifier blocklist,

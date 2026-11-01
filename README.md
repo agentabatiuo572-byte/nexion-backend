@@ -2,6 +2,8 @@
 
 Active runtime: Nexion Ops Console modular monolith.
 
+User business access is independent of phone initialization. No global request filter requires an active or deferred phone calibration before other business operations. Authentication, session and blocklist checks, ownership, business eligibility and payment checks remain authoritative; phone activation retains its own installation and calibration rules. See the product contract `docs/PRD/specs/FEAT-PHONE-INITIALIZATION-BUSINESS-INDEPENDENCE-20261101.md` in the ops-console repository.
+
 The backend now runs as one Spring Boot process with one primary database transaction boundary. Code is split by business domain packages under the root `src` tree, with a single Maven `pom.xml`.
 
 ## Active Project
