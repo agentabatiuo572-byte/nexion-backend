@@ -53,7 +53,12 @@ sudo /usr/bin/python3 -I -B /opt/uvel-task-control/compute-v2-ci-maintenance.py 
 sudo env UVEL_COMPUTE_V2_SCOPE=TEST /usr/bin/python3 -I -B /opt/uvel-task-control/compute-v2-ci-maintenance.py enter --budget-sha256 REVIEWED_BUDGET_SHA256
 ```
 
-Only the known 24.5 GiB runtime budget is accepted. The helper records the original
+Only the known 24.5 GiB runtime budget plus the installed Compute V2 worker and
+observation commitments is accepted: `compute-v2-worker` reserves 268435456 bytes
+for `systemd/uvel-compute-v2-worker.service`, and `compute-v2-observation` reserves
+25165824 bytes for `systemd/uvel-compute-v2-observation.service`, both kind `other`.
+These two commitments remain unchanged during maintenance and restore.
+The helper records the original
 budget bytes, CI container identity and hard limits, six fleet identities/ports/
 limits/model digests, and stopped journal fingerprints. It creates a root-private
 persistent `/var/lib/uvel-task-control/ci-maintenance.json` receipt and its own exact
@@ -66,7 +71,9 @@ container IDs, and verifies every stopped PID is zero. The base validator remain
 reserved and running. It raises CI memory and swap limits to 3 GiB, removes only
 those six stopped model commitments, sets `maxActiveExecutors=1`, and sets the CI
 build budget and all existing component requests to 3 GiB with builds enabled.
-The resulting total is 17.5 GiB. Other commitments, worker inventory, protected
+The resulting total is 17.5 GiB plus 293601280 bytes, exactly 19084083200 bytes;
+the budget assertion, plan and ACTIVE output use the same total.
+Other commitments, worker inventory, protected
 journals, stopped-control rules and all other budget fields remain identical.
 The original controller snapshot must allow heavy builds before the agent resumes.
 
@@ -115,4 +122,5 @@ locks remain brief and are not held during Docker, model-health or snapshot wait
 Only the dedicated maintenance-operation lock spans those waits, leaving normal
 resource snapshots and build admission available.
 
-Local validation: `python -m unittest scripts.ops.test_compute_v2_ci_maintenance -v`.
+Validation uses the existing TEST maintenance, actual build and restore flow;
+unit and independent integration test suites are not run.

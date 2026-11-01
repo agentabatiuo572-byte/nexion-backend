@@ -18,6 +18,7 @@ import uuid
 import xml.etree.ElementTree as ET
 
 GIB = 1024 ** 3
+MAINTENANCE_BYTES = 35 * GIB // 2 + 268435456 + 25165824
 BASELINE_SHA = "1b66c15b0b03c8ee17e9a46219027e9f3030f963beac448bab4bc3573e0f52b8"
 RESOURCE_SHA = "b2c053f53ca95d805f7d413d6d8449254ae1cbe7369115761626a2b56fcf52a9"
 RESOURCE = Path("/opt/uvel-task-control/resource-control.py")
@@ -135,6 +136,8 @@ def maintenance_budget(original):
         "backend": ("backend", 4 * GIB, {"type": "systemd", "name": "nexgrid-backend.service"}),
         "business-mysql": ("database", 7 * GIB // 2, {"type": "docker", "name": "nexgrid-mysql"}),
         "other-host-work": ("other", 11 * GIB // 2, None),
+        "compute-v2-worker": ("other", 268435456, {"type": "systemd", "name": "uvel-compute-v2-worker.service"}),
+        "compute-v2-observation": ("other", 25165824, {"type": "systemd", "name": "uvel-compute-v2-observation.service"}),
         "uvel-cloud-bge-model": ("model", 3 * GIB // 2, {"type": "docker", "name": "uvel-cloud-bge-model"}),
         **{name: ("model", 3 * GIB // 2, {"type": "docker", "name": name}) for name in FLEET}}
     require(len(entries) == len(expected) and {entry.get("name") for entry in entries} == set(expected),
@@ -147,7 +150,7 @@ def maintenance_budget(original):
     updated.update(buildBudgetBytes=3 * GIB, buildRequests={kind: 3 * GIB for kind in original["buildRequests"]},
                    buildsEnabled=True, maxActiveExecutors=1)
     updated["commitments"] = [entry for entry in updated["commitments"] if entry["name"] not in FLEET]
-    require(sum(entry["bytes"] for entry in updated["commitments"]) + updated["buildBudgetBytes"] == 35 * GIB // 2,
+    require(sum(entry["bytes"] for entry in updated["commitments"]) + updated["buildBudgetBytes"] == MAINTENANCE_BYTES,
             "MAINTENANCE_BUDGET_TOTAL_INVALID")
     return updated
 
@@ -289,7 +292,7 @@ def prepare(control, budget_sha):
 def public_plan(plan):
     return {"action": "plan", "scope": "TEST", "budgetSha256": plan["originalBudgetSha256"],
             "stopModels": list(FLEET), "retainValidator": "uvel-cloud-bge-model", "ciMemoryBytes": 3 * GIB,
-            "committedBytes": 35 * GIB // 2, "maxActiveExecutors": 1, "workerRestarted": False}
+            "committedBytes": MAINTENANCE_BYTES, "maxActiveExecutors": 1, "workerRestarted": False}
 
 
 def decoded(receipt):
@@ -400,7 +403,7 @@ def _enter(control, budget_sha):
     require(state["allowHeavyBuilds"], "ORIGINAL_RESOURCE_BUILD_GATE_CLOSED")
     unpause_ci(receipt)
     save(control, receipt, "ACTIVE")
-    return {"maintenance": "ACTIVE", "taskId": plan["taskId"], "committedBytes": 35 * GIB // 2,
+    return {"maintenance": "ACTIVE", "taskId": plan["taskId"], "committedBytes": MAINTENANCE_BYTES,
             "next": "Use the original resource-control.py admit-build before the reviewed manual CI trigger."}
 
 
