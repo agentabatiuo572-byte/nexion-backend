@@ -40,7 +40,9 @@ public class SimulatedTaskLifecycleService {
                 "previousStatus",device.status(),"status","DEACTIVATED","rowVersion",device.rowVersion()+1,
                 "generation",runtime.generation(),"executionMode","SIMULATED");
         outbox.publishUserEvent("USER_DEVICE",device.instanceNo(),"device.deactivated",userId,attribution.phase(),
-                attribution.accountAgeMonths(),attribution.cohort(),state);
+                attribution.accountAgeMonths(),attribution.cohort(),Map.of("userId",userId,"deviceId",deviceId,
+                    "instanceNo",device.instanceNo(),"previousStatus",device.status(),"status","DEACTIVATED",
+                    "rowVersion",device.rowVersion()+1));
         audit.recordRequiredForTrustedActor(AuditLogWriteRequest.builder().action("USER_DEVICE_DEFERRED_DEACTIVATED")
                 .resourceType("USER_DEVICE").resourceId(Long.toString(deviceId)).bizNo(device.instanceNo()).userId(userId)
                 .actorId(0L).actorType("SYSTEM").actorUsername("system").method("INTERNAL")

@@ -163,11 +163,10 @@ public class ComputeV2DeviceLifecycleService {
             if(attribution==null)throw error("USER_EVENT_ATTRIBUTION_UNAVAILABLE");
             if(mapper.deactivatePendingComputeV2Device(user,device,row.rowVersion())!=1)return false;
             mapper.markDeviceRuntimeDeactivated(device);
-            var state=Map.<String,Object>of("userId",user,"deviceId",device,"instanceNo",row.instanceNo(),
-                    "previousStatus",row.status(),"status","DEACTIVATED","rowVersion",row.rowVersion()+1,
-                    "taskNo",task,"generation",generation);
             outbox.publishUserEvent("USER_DEVICE",row.instanceNo(),"device.deactivated",user,attribution.phase(),
-                    attribution.accountAgeMonths(),attribution.cohort(),state);
+                    attribution.accountAgeMonths(),attribution.cohort(),Map.of("userId",user,"deviceId",device,
+                        "instanceNo",row.instanceNo(),"previousStatus",row.status(),"status","DEACTIVATED",
+                        "rowVersion",row.rowVersion()+1));
             record("USER_DEVICE_DEFERRED_DEACTIVATED",user,row,task,row.rowVersion()+1);
             return true;
         }));
