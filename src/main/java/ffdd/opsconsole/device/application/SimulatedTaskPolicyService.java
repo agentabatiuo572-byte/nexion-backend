@@ -14,13 +14,14 @@ import java.time.LocalDateTime;
 import java.util.*;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.ObjectProvider;
 
 /** Published configuration history; reads never publish or repair a missing past version. */
 @Service
 @RequiredArgsConstructor
 public class SimulatedTaskPolicyService {
     private final SimulatedTaskPolicyMapper mapper;
-    private final DeviceOpsRepository devices;
+    private final ObjectProvider<DeviceOpsRepository> devices;
     private final ObjectMapper json;
     private final Clock clock;
     public record TaskTypeSnapshot(String taskTypeId,long typeVersion,String name,String taskClass,
@@ -122,10 +123,10 @@ public class SimulatedTaskPolicyService {
     public void lockE3Configuration() { mapper.lockE3Configuration(); }
     public void recordE3(LocalDateTime at) {
         var previous=mapper.lockE3Version();
-        if(previous!=null)mapper.insertE3(new E3Version(previous.version()+1,at,encode(devices.e3Config())));
+        if(previous!=null)mapper.insertE3(new E3Version(previous.version()+1,at,encode(devices.getObject().e3Config())));
     }
     private void initializeE3(LocalDateTime at) {
-        if(mapper.lockE3Version()==null)mapper.insertE3(new E3Version(1,at,encode(devices.e3Config())));
+        if(mapper.lockE3Version()==null)mapper.insertE3(new E3Version(1,at,encode(devices.getObject().e3Config())));
     }
     private String encode(Object value) {
         try {return json.writeValueAsString(value);}
