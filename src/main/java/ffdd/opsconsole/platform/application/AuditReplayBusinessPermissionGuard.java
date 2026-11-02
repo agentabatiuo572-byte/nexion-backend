@@ -1235,6 +1235,8 @@ public class AuditReplayBusinessPermissionGuard {
                 default -> null;
             };
             case "E" -> switch (operation) {
+                case "e1_sku_create", "e1_sku_update", "e1_sku_status", "e1_sku_delete", "e1_phone_task_policy" -> "device_e1_write";
+                case "e2_task_create", "e2_task_update", "e2_task_price", "e2_task_status", "e2_task_delete" -> "device_e2_write";
                 case "e1_legacy_unknown_zero_credit_cancel" -> "device_e5_write";
                 case "e3_config" -> "device_e3_write";
                 case "e4_order_refund" -> "device_e4_order_refund";

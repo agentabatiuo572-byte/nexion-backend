@@ -25,13 +25,17 @@ public class ComputeV2DeviceLifecycleService {
     private final EventOutboxService outbox;
     private final TransactionTemplate transaction;
     private final Set<Long> enrolled;
+    private final SimulatedTaskService simulated;
+    private final SimulatedTaskLifecycleService simulatedLifecycle;
     @SuppressWarnings("ArchitectureConfigField") // Derived from the constructor-injected environment.
     private final String scope;
     private final AtomicLong cursor=new AtomicLong();
 
     public ComputeV2DeviceLifecycleService(Optional<ComputeV2Runtime> runtime,CanonicalStateMapper mapper,
-            PlatformTransactionManager transactions,AuditLogService audit,EventOutboxService outbox,Environment environment) {
+            PlatformTransactionManager transactions,AuditLogService audit,EventOutboxService outbox,Environment environment,
+            SimulatedTaskService simulated,SimulatedTaskLifecycleService simulatedLifecycle) {
         this.runtime=runtime;this.mapper=mapper;this.audit=audit;this.outbox=outbox;
+        this.simulated=simulated;this.simulatedLifecycle=simulatedLifecycle;
         transaction=new TransactionTemplate(transactions);
         transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         scope=environment.getProperty("nexion.compute-v2.deployment-scope","");
@@ -41,9 +45,13 @@ public class ComputeV2DeviceLifecycleService {
     }
 
     /** Caller owns its existing user/device command transaction; cancellation runs only after commit. */
-    public boolean manages(long device){return runtime.isPresent() && enrolled.contains(device);}
+    public boolean manages(long device){return simulated.manages(device) || runtime.isPresent() && enrolled.contains(device);}
 
     public boolean deferDeactivation(long user,long device,Long expectedVersion) {
+        if(simulated.manages(device) && (simulated.runtimesByUser(user).containsKey(device)
+                || !simulated.hasLegacyPending(user,device))) {
+            stopSimulated(user,device,expectedVersion,true);return true;
+        }
         var view=ownedView(user,device);
         if(view.isEmpty()){
             if(runtime.isPresent() && enrolled.contains(device) && mapper.hasUnresolvedComputeV1Request(user,device))
@@ -75,6 +83,16 @@ public class ComputeV2DeviceLifecycleService {
 
     /** Trade-in/unbind never recycle a running or uncertain generation underneath its proof. */
     public void requireDrainedForReplacement(long user,long device) {
+        if(simulated.manages(device)) {
+            var current=simulated.runtimesByUser(user).get(device);
+            if(current!=null && (current.currentTaskNo()!=null || current.nextActionAt()!=null
+                    || !Set.of("STOPPED","EXPIRED").contains(current.state())))
+                throw error("SIMULATED_DEVICE_BUSY");
+            if(current!=null) {
+                if(simulated.hasLegacyPending(user,device))throw error("COMPUTE_V2_LEGACY_REQUEST_UNRESOLVED");
+                return;
+            }
+        }
         var view=ownedView(user,device);
         if(runtime.isPresent() && enrolled.contains(device) && mapper.hasUnresolvedComputeV1Request(user,device))
             throw error("COMPUTE_V2_LEGACY_REQUEST_UNRESOLVED");
@@ -89,6 +107,26 @@ public class ComputeV2DeviceLifecycleService {
         if(view.isPresent() && (view.get().event().userId()!=user || view.get().event().deviceId()!=device))
             throw error("COMPUTE_V2_OWNER_CHANGED");
         return view;
+    }
+
+    public ffdd.opsconsole.device.mapper.SimulatedTaskMapper.RuntimeRow stopSimulated(
+            long user,long device,Long expectedVersion,boolean afterCurrent) {
+        if(!simulated.manages(device))throw error("SIMULATED_TASKS_UNAVAILABLE");
+        if(!TransactionSynchronizationManager.isActualTransactionActive())
+            throw new IllegalStateException("SIMULATED_LIFECYCLE_TRANSACTION_REQUIRED");
+        var owner=mapper.lockUser(user);
+        var row=mapper.lockDeviceForUserCommand(device);
+        if(owner==null || owner.sandbox() || row==null || row.userId()!=user
+                || !"OWNED".equalsIgnoreCase(row.ownershipStatus()))throw error("DEVICE_FORBIDDEN");
+        if(row.rowVersion()==null || expectedVersion!=null && !expectedVersion.equals(row.rowVersion()))
+            throw error("DEVICE_VERSION_CONFLICT");
+        if(!row.pendingDeactivate()) {
+            if(mapper.markDevicePendingDeactivate(user,device,row.rowVersion())!=1)throw error("DEVICE_VERSION_CONFLICT");
+            record("SIMULATED_DEVICE_DEACTIVATE_PENDING",user,row,"SIMULATED",row.rowVersion());
+        }
+        var state=simulated.requestStop(user,device,afterCurrent);
+        simulatedLifecycle.finalizeStopped(user,device);
+        return state;
     }
 
     private boolean drained(RuntimeView view) {

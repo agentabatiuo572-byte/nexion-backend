@@ -373,7 +373,8 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
             """)
     boolean hasActiveTask(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
 
-    @Select("SELECT EXISTS(SELECT 1 FROM nx_test_cloud_request WHERE owner_id=#{userId} AND device_id=#{deviceId} AND state IN ('PROCESSING','UNKNOWN'))")
+    @Select("SELECT EXISTS(SELECT 1 FROM nx_test_cloud_request r WHERE owner_id=#{userId} AND device_id=#{deviceId} AND state IN ('PROCESSING','UNKNOWN') AND NOT EXISTS ("
+            +ffdd.opsconsole.device.mapper.LegacyZeroCreditResolutionSql.RESOLVED_REQUEST+"))")
     boolean hasUnresolvedComputeV1Request(@Param("userId") long userId,@Param("deviceId") long deviceId);
 
     @Select("SELECT EXISTS(SELECT 1 FROM nx_compute_task WHERE user_id=#{userId} AND user_device_id=#{deviceId} AND is_deleted=0 AND source_environment='PRODUCTION' AND status IN ('CLAIMED','RUNNING') AND task_no NOT LIKE 'CV2-%')")
@@ -399,9 +400,9 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
             AND d.activated_at IS NOT NULL AND d.row_version=#{expectedVersion}
             AND NOT EXISTS(SELECT 1 FROM nx_compute_task t WHERE t.user_id=#{userId} AND t.user_device_id=#{deviceId}
                 AND t.is_deleted=0 AND t.source_environment='PRODUCTION' AND t.status IN ('CLAIMED','RUNNING') AND t.task_no NOT LIKE 'CV2-%')
-            AND NOT EXISTS(SELECT 1 FROM nx_test_cloud_request q WHERE q.owner_id=#{userId} AND q.device_id=#{deviceId}
-                AND q.state IN ('PROCESSING','UNKNOWN'))
-        """)
+            AND NOT EXISTS(SELECT 1 FROM nx_test_cloud_request r WHERE r.owner_id=#{userId} AND r.device_id=#{deviceId}
+                AND r.state IN ('PROCESSING','UNKNOWN') AND NOT EXISTS (
+        """+ffdd.opsconsole.device.mapper.LegacyZeroCreditResolutionSql.RESOLVED_REQUEST+"))")
     int deactivatePendingComputeV2Device(@Param("userId") long userId,@Param("deviceId") long deviceId,@Param("expectedVersion") Long expectedVersion);
 
     @Update("""

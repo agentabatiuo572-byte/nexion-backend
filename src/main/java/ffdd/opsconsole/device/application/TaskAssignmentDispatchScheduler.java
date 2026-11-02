@@ -19,9 +19,11 @@ public class TaskAssignmentDispatchScheduler {
     private final int batchSize;
     private final AtomicLong afterDeviceId = new AtomicLong();
     private final List<Long> computeV2Devices;
+    private final boolean simulatedTasksEnabled;
 
     public TaskAssignmentDispatchScheduler(AppTaskAssignmentMapper mapper,AppTaskAssignmentService service,int batchSize) {
         this.mapper=mapper;this.service=service;this.batchSize=batchSize;this.computeV2Devices=List.of();
+        this.simulatedTasksEnabled=false;
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -29,6 +31,7 @@ public class TaskAssignmentDispatchScheduler {
             @Value("${nexion.tasks.assignment-dispatch-batch-size:100}") int batchSize,
             org.springframework.core.env.Environment environment) {
         this.mapper=mapper;this.service=service;this.batchSize=batchSize;
+        simulatedTasksEnabled=environment.getProperty("nexion.simulated-tasks.enabled",Boolean.class,false);
         computeV2Devices=Boolean.TRUE.equals(environment.getProperty("nexion.compute-v2.enabled",Boolean.class,false))
                 ?java.util.Arrays.stream(environment.getProperty("nexion.compute-v2.device-ids","").split(","))
                 .map(String::trim).filter(value->!value.isEmpty()).map(Long::parseLong).distinct().sorted().toList():List.of();
@@ -38,6 +41,7 @@ public class TaskAssignmentDispatchScheduler {
 
     @Scheduled(fixedDelayString = "${nexion.tasks.assignment-dispatch-delay-ms:30000}")
     public synchronized void dispatch() {
+        if(simulatedTasksEnabled)return;
         int limit = Math.max(1, Math.min(batchSize, 500));
         long cursor = afterDeviceId.get();
         List<AppTaskAssignmentMapper.AssignmentCandidate> candidates =

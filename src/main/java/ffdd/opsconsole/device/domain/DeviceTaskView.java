@@ -25,7 +25,33 @@ public record DeviceTaskView(
         Integer executionTimeoutSec,
         String runtimeKey,
         String validatorKey,
+        String workloadConfigJson, ffdd.opsconsole.device.application.SimulatedTaskPolicyService.TypeView simulation) {
+    public DeviceTaskView(
+        String taskId,
+        String name,
+        BigDecimal price,
+        String unit,
+        String requirement,
+        BigDecimal saturation,
+        String status,
+        String taskClass,
+        String model,
+        BigDecimal minReward,
+        BigDecimal maxReward,
+        String minVram,
+        String killInit,
+        LocalDateTime createdAt,
+        LocalDateTime updatedAt,
+        Integer selectionWeight,
+        Integer expectedDurationMinSec,
+        Integer expectedDurationMaxSec,
+        Integer executionTimeoutSec,
+        String runtimeKey,
+        String validatorKey,
         String workloadConfigJson) {
+        this(taskId,name,price,unit,requirement,saturation,status,taskClass,model,minReward,maxReward,minVram,killInit,createdAt,updatedAt,selectionWeight,expectedDurationMinSec,expectedDurationMaxSec,executionTimeoutSec,runtimeKey,validatorKey,workloadConfigJson,null);
+    }
+
     @org.apache.ibatis.annotations.AutomapConstructor
     public DeviceTaskView(String taskId, String name, BigDecimal price, String unit, String requirement,
             BigDecimal saturation, String status, String taskClass, String model, BigDecimal minReward,
@@ -50,4 +76,6 @@ public record DeviceTaskView(
         return new TaskSchedulingSettings(selectionWeight, expectedDurationMinSec,
                 expectedDurationMaxSec, executionTimeoutSec, runtimeKey, validatorKey, workloadConfigJson);
     }
+
+    public DeviceTaskView withSimulation(ffdd.opsconsole.device.application.SimulatedTaskPolicyService.TypeView value) { return new DeviceTaskView(taskId,name,price,unit,requirement,saturation,status,taskClass,model,minReward,maxReward,minVram,killInit,createdAt,updatedAt,selectionWeight,expectedDurationMinSec,expectedDurationMaxSec,executionTimeoutSec,runtimeKey,validatorKey,workloadConfigJson,value); }
 }

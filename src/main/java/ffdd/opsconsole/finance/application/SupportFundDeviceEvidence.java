@@ -3,6 +3,7 @@ package ffdd.opsconsole.finance.application;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.device.facade.SupportDeviceReadFacade.FundEarnings;
+import ffdd.opsconsole.device.mapper.SimulatedTaskMapper.TaskRow;
 import ffdd.opsconsole.finance.domain.SupportFundAllocation.*;
 import ffdd.opsconsole.finance.domain.SupportFundReplay.*;
 import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
@@ -28,11 +29,13 @@ public class SupportFundDeviceEvidence {
         JsonNode proof=ffdd.opsconsole.common.domain.LegacyUvtProof.current(originalProof);
         require("SUPPORT_DEVICE_EARNING".equals(op.get("businessType"))&&"CREDIT".equals(op.get("phase"))&&"PRODUCTION".equals(op.get("sourceEnvironment"))&&"nx_compute_receipt".equals(op.get("sourceTable")));
         String no=text(op.get("sourceKey"));long id=number(op.get("id"));require(id>0&&key(no).equals(op.get("operationKey"))&&number(one(input.operations(),"operationKey",key(no)).get("id"))==id);
-        keys(source,Set.of("schemaVersion","receipt","tasks","ledgers","earningEvents"));keys(proof,Set.of("schemaVersion","walletStages","eventIds"));require("SUPPORT_DEVICE_EARNING_V1".equals(text(source.path("schemaVersion")))&&"SUPPORT_DEVICE_EARNING_V1".equals(text(proof.path("schemaVersion"))));
+        keys(source,Set.of("schemaVersion","receipt","tasks","ledgers","earningEvents"));keys(proof,Set.of("schemaVersion","walletStages","eventIds"));require(Set.of("SUPPORT_DEVICE_EARNING_V1","SUPPORT_DEVICE_EARNING_V2").contains(text(source.path("schemaVersion")))&&text(source.path("schemaVersion")).equals(text(proof.path("schemaVersion"))));
         require(equal(codec.readCurrentProof(text(op.get("sourceSnapshotJson"))),source)&&equal(codec.readCurrentProof(text(op.get("sourceProofJson"))),proof));
-        var originals=source(input.sources(),no);require(equal(source.path("receipt"),originals.receipt)&&equal(source.path("tasks"),List.of(originals.task))&&equal(source.path("ledgers"),originals.ledgers)&&equal(source.path("earningEvents"),originals.earnings));
-        var completed=time(originals.receipt.get("completedAt"));stored(time(originals.task.get("completedAt")),completed,"nx_compute_task.completed_at",input);stored(time(originals.task.get("proofConsumedAt")),completed,"nx_compute_task.proof_consumed_at",input);
-        for(var l:originals.ledgers)stored(time(l.get("createdAt")),completed,"nx_wallet_ledger.created_at",input);for(var e:originals.earnings){stored(time(e.get("walletPostedAt")),completed,"nx_earning_event.wallet_posted_at",input);stored(time(e.get("createdAt")),completed,"nx_earning_event.created_at",input);}
+        var originals=source(input.sources(),no);require((originals.simulation==null?"SUPPORT_DEVICE_EARNING_V1":"SUPPORT_DEVICE_EARNING_V2").equals(text(source.path("schemaVersion")))&&equal(source.path("receipt"),originals.receipt)&&equal(source.path("tasks"),List.of(originals.task))&&equal(source.path("ledgers"),originals.ledgers)&&equal(source.path("earningEvents"),originals.earnings));
+        var completed=time(originals.receipt.get("completedAt"));stored(time(originals.task.get("completedAt")),completed,"nx_compute_task.completed_at",input);
+        if(originals.simulation==null)stored(time(originals.task.get("proofConsumedAt")),completed,"nx_compute_task.proof_consumed_at",input);
+        var posted=originals.simulation==null?completed:originals.simulation.postedAt();
+        for(var l:originals.ledgers)stored(time(l.get("createdAt")),posted,"nx_wallet_ledger.created_at",input);for(var e:originals.earnings){stored(time(e.get("walletPostedAt")),posted,"nx_earning_event.wallet_posted_at",input);stored(time(e.get("createdAt")),posted,"nx_earning_event.created_at",input);}
         var expected=originals.events;require(expected.equals(events)&&equal(codec.readCurrentProof(text(op.get("orderedEventsJson"))),json.valueToTree(events))&&equal(proof.path("eventIds"),events.stream().map(Event::id).toList()));
         long customer=number(originals.receipt.get("customerId"));var parties=input.parties().stream().filter(p->number(p.get("operationId"))==id).toList();require(parties.size()==1&&number(parties.get(0).get("customerId"))==customer);
         var legs=new ArrayList<>(input.legs().stream().filter(l->number(l.get("operationId"))==id).toList());require(legs.size()==(money(originals.receipt.get("rewardNex")).signum()>0?2:1));legs.sort(Comparator.comparingLong(l->number(l.get("revision"))));
@@ -40,10 +43,11 @@ public class SupportFundDeviceEvidence {
         for(int i=0;i<legs.size();i++){
             var leg=legs.get(i);String inc=text(leg.get("incarnation"));long revision=number(leg.get("revision"));require(inc.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")&&revision>0&&(i==0||inc.equals(incarnation)&&revision==prior+1));incarnation=inc;prior=revision;
             var raws=input.raw().stream().filter(r->inc.equals(r.get("incarnation"))&&number(r.get("revision"))==revision).toList();require(raws.size()==1);var raw=raws.get(0);require("CHANGE".equals(raw.get("observation"))&&number(raw.get("oldUserId"))==customer&&number(raw.get("newUserId"))==customer&&number(raw.get("oldId"))>0&&number(raw.get("oldId"))==number(raw.get("newId"))&&number(raw.get("newVersion"))==number(raw.get("oldVersion"))+1&&time(raw.get("oldCreatedAt")).equals(time(raw.get("newCreatedAt"))));
+            if(originals.simulation!=null)require(inc.equals(originals.simulation.walletIncarnation())&&number(raw.get("oldId"))==originals.simulation.walletId());
             wallet(stages.get(i),raw,"old",inc,revision-1);wallet(stages.get(i+1),raw,"new",inc,revision);
             Cash before=cash(raw,"old"),after=cash(raw,"new");String asset=i==0?"USDT":"UVT";var amount=money(originals.receipt.get(i==0?"rewardUsdt":"rewardNex"));require(before.pending().compareTo(after.pending())==0&&before.risk().compareTo(after.risk())==0);
             require(after.usdt().subtract(before.usdt()).compareTo(asset.equals("USDT")?amount:BigDecimal.ZERO)==0&&after.nex().subtract(before.nex()).compareTo(asset.equals("UVT")?amount:BigDecimal.ZERO)==0);
-            var ledger=originals.ledgers.stream().filter(l->asset.equals(l.get("asset"))).findFirst().orElseThrow();require(money(ledger.get("balanceAfter")).compareTo(asset.equals("USDT")?after.usdt():after.nex())==0);
+            for(var ledger:originals.ledgers.stream().filter(l->asset.equals(l.get("asset"))).toList())require(money(ledger.get("balanceAfter")).compareTo(asset.equals("USDT")?after.usdt():after.nex())==0);
             points.add(new Point(inc,revision,customer,before,after,amount.signum()==0?List.of():List.of(key(no)+":"+("USDT".equals(asset)?"USDT":"NEX"))));
         }
         Integer precision=input.precisions().get("nx_compute_receipt.completed_at");require(precision!=null);return new Verified(new Stamp(no,time(originals.receipt.get("completedAt")),DateTimeFormatConfig.BUSINESS_ZONE.getId(),precision),points,no+":CREDIT");
@@ -59,8 +63,13 @@ public class SupportFundDeviceEvidence {
         var opKeys=new HashSet<String>();for(var op:input.operations())if("SUPPORT_DEVICE_EARNING".equals(op.get("businessType"))){long id=number(op.get("id"));if(componentOperations.contains(id))require(opKeys.add(text(op.get("sourceKey")))&&receipts.contains(text(op.get("sourceKey")))&&"CREDIT".equals(op.get("phase")));}
         require(expected.equals(covered));
     }
-    private record Original(Map<String,Object> receipt,Map<String,Object> task,List<Map<String,Object>> ledgers,List<Map<String,Object>> earnings,List<Event> events){}
+    private record Original(Map<String,Object> receipt,Map<String,Object> task,List<Map<String,Object>> ledgers,List<Map<String,Object>> earnings,List<Event> events,TaskRow simulation){}
     private Original source(FundEarnings sources,String no){
+        var receipt=one(sources.receipts(),"receiptNo",no);var task=one(sources.tasks(),"taskNo",text(receipt.get("taskNo")));
+        if("SIMULATED".equals(task.get("executionMode")) || task.containsKey("simulation") || text(task.get("taskNo")).startsWith("SIM-"))return simulatedSource(sources,no,receipt,task);
+        return modelSource(sources,no);
+    }
+    private Original modelSource(FundEarnings sources,String no){
         var r=one(sources.receipts(),"receiptNo",no);long customer=number(r.get("customerId")),device=number(r.get("deviceId"));require(number(r.get("id"))>0&&customer>0&&device>0&&zero(r.get("deleted"))&&zero(r.get("userDeleted"))&&zero(r.get("userSandbox"))&&"PRODUCTION".equals(r.get("sourceEnvironment"))&&"CREDITED".equals(r.get("earningStatus"))&&text(r.get("proofHash")).matches("[A-Fa-f0-9]{64,128}"));
         String taskNo=text(r.get("taskNo"));var t=one(sources.tasks(),"taskNo",taskNo);require(number(t.get("id"))>0&&number(t.get("customerId"))==customer&&number(t.get("deviceId"))==device&&zero(t.get("deleted"))&&"PRODUCTION".equals(t.get("sourceEnvironment"))&&"COMPLETED".equals(t.get("status"))&&text(t.get("clientName")).equals(text(r.get("clientName")))&&time(t.get("completedAt")).equals(time(r.get("completedAt")))&&!time(t.get("completedAt")).isBefore(time(t.get("startedAt")))&&close(time(t.get("proofConsumedAt")),time(r.get("completedAt"))));
         require(text(t.get("taskType")).equals(text(r.get("taskType"))));
@@ -71,7 +80,62 @@ public class SupportFundDeviceEvidence {
             require(number(l.get("customerId"))==customer&&"COMPUTE_TASK_REWARD".equals(l.get("bizType"))&&"IN".equals(l.get("direction"))&&"SUCCESS".equals(l.get("status"))&&zero(l.get("deleted"))&&amount.compareTo(money(l.get("amount")))==0&&money(l.get("balanceAfter")).signum()>=0&&(asset.equals("USDT")?taskNo:daily).equals(l.get("bizNo"))&&close(time(l.get("createdAt")),time(r.get("completedAt")))&&!time(l.get("updatedAt")).isBefore(time(l.get("createdAt"))));
             require(number(e.get("customerId"))==customer&&number(e.get("deviceId"))==device&&"POSTED".equals(e.get("status"))&&zero(e.get("deleted"))&&amount.compareTo(money(e.get("amount")))==0&&(asset.equals("USDT")?"EARN-"+taskNo:"EARN-NEX-"+no).equals(e.get("eventNo"))&&close(time(e.get("walletPostedAt")),time(r.get("completedAt")))&&close(time(e.get("createdAt")),time(r.get("completedAt")))&&!time(e.get("updatedAt")).isBefore(time(e.get("createdAt"))));
             if(amount.signum()>0)events.add(new Event(key(no)+":"+("USDT".equals(asset)?"USDT":"NEX"),Action.EARNINGS,null,new Account(customer,asset,"available"),null,amount,null));
-        }return new Original(r,t,ledgers,earnings,List.copyOf(events));
+        }return new Original(r,t,ledgers,earnings,List.copyOf(events),null);
+    }
+    private Original simulatedSource(FundEarnings sources,String no,Map<String,Object> r,Map<String,Object> t){
+        require("SIMULATED".equals(t.get("executionMode"))&&t.get("simulation") instanceof TaskRow);
+        var simulation=(TaskRow)t.get("simulation");String taskNo=text(r.get("taskNo"));long customer=number(r.get("customerId")),device=number(r.get("deviceId"));
+        require(taskNo.matches("SIM-[A-F0-9]{32}")&&taskNo.equals(simulation.taskNo())&&no.equals(simulation.receiptNo())&&no.equals("CTR-"+taskNo.substring(4))
+            &&number(r.get("id"))>0&&customer>0&&device>0&&simulation.userId()==customer&&simulation.deviceId()==device&&simulation.generation()>0
+            &&number(t.get("id"))>0&&number(t.get("customerId"))==customer&&number(t.get("deviceId"))==device&&taskNo.equals(t.get("taskNo"))
+            &&zero(r.get("deleted"))&&zero(r.get("userDeleted"))&&zero(r.get("userSandbox"))&&zero(t.get("deleted"))
+            &&"PRODUCTION".equals(r.get("sourceEnvironment"))&&"PRODUCTION".equals(t.get("sourceEnvironment"))
+            &&"CREDITED".equals(r.get("earningStatus"))&&"COMPLETED".equals(t.get("status"))&&"COMPLETED".equals(simulation.status())
+            &&r.get("proofHash")==null&&t.get("proofConsumedAt")==null&&simulation.cancelReason()==null
+            &&text(t.get("clientName")).equals(text(r.get("clientName")))&&text(t.get("taskType")).equals(text(r.get("taskType")))
+            &&simulation.taskClass().equals(t.get("taskType"))&&simulation.taskTypeId().equals(t.get("taskId"))
+            &&simulation.taskTypeVersion()>0&&simulation.productPolicyVersion()>0&&simulation.e3Version()>0
+            &&simulation.durationSeconds()>=60&&simulation.durationSeconds()<=86400&&simulation.startedAt()!=null&&simulation.dueAt()!=null
+            &&simulation.completedAt()!=null&&simulation.postedAt()!=null&&simulation.startedAt().plusSeconds(simulation.durationSeconds()).equals(simulation.dueAt())
+            &&simulation.completedAt().equals(simulation.dueAt())&&!simulation.postedAt().isBefore(simulation.dueAt())
+            &&time(t.get("startedAt")).equals(simulation.startedAt())&&time(t.get("completedAt")).equals(simulation.dueAt())
+            &&time(r.get("completedAt")).equals(simulation.dueAt())&&close(time(r.get("createdAt")),simulation.postedAt())&&close(time(r.get("updatedAt")),simulation.postedAt())
+            &&simulation.walletId()>0&&text(simulation.walletIncarnation()).matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+            &&Set.of("USDT","UVT").contains(simulation.asset()));
+        var base=money(simulation.baseReward());var reward=money(simulation.rewardAmount());var frozenDaily=money(simulation.cloudDailyNex());
+        require(base.signum()>=0&&reward.signum()>=0&&frozenDaily.signum()>=0&&simulation.e3Multiplier().signum()>=0
+            &&base.multiply(simulation.e3Multiplier()).setScale(6,java.math.RoundingMode.HALF_UP).compareTo(reward)==0);
+        var usd=money(r.get("rewardUsdt"));var nex=money(r.get("rewardNex"));
+        var baseNex="UVT".equals(simulation.asset())?reward:BigDecimal.ZERO;var dailyNex=nex.subtract(baseNex);
+        require(usd.signum()>=0&&nex.signum()>=0&&usd.compareTo("USDT".equals(simulation.asset())?reward:BigDecimal.ZERO)==0
+            &&usd.compareTo(money(t.get("rewardUsdt")))==0&&dailyNex.signum()>=0&&(dailyNex.signum()==0||dailyNex.compareTo(frozenDaily)==0));
+        String daily="CLOUD_SHARE_DAILY:"+device+":"+simulation.dueAt().atZone(DateTimeFormatConfig.BUSINESS_ZONE).withZoneSameInstant(ZoneOffset.UTC).toLocalDate();
+        var ledgers=sources.ledgers().stream().filter(l->taskNo.equals(l.get("bizNo"))||dailyNex.signum()>0&&daily.equals(l.get("bizNo"))).toList();
+        var earnings=sources.earningEvents().stream().filter(e->no.equals(e.get("receiptNo"))).toList();
+        require(ledgers.size()==1+(baseNex.signum()>0?1:0)+(dailyNex.signum()>0?1:0)&&earnings.size()==(nex.signum()>0?2:1));
+        var events=new ArrayList<Event>();var seenLedger=new HashSet<Long>();var seenEarning=new HashSet<Long>();
+        for(String asset:nex.signum()>0?List.of("USDT","UVT"):List.of("USDT")){
+            var amount="USDT".equals(asset)?usd:nex;var assetLedgers=ledgers.stream().filter(l->asset.equals(l.get("asset"))).toList();
+            require(assetLedgers.size()==("USDT".equals(asset)?1:(baseNex.signum()>0?1:0)+(dailyNex.signum()>0?1:0)));
+            var ledgerKeys=new HashSet<String>();BigDecimal total=BigDecimal.ZERO;
+            for(var l:assetLedgers){
+                String biz=text(l.get("bizNo"));var expected="USDT".equals(asset)?usd:taskNo.equals(biz)?baseNex:dailyNex;
+                require(seenLedger.add(number(l.get("id")))&&number(l.get("id"))>0&&ledgerKeys.add(biz)&&number(l.get("customerId"))==customer
+                    &&"COMPUTE_TASK_REWARD".equals(l.get("bizType"))&&"IN".equals(l.get("direction"))&&"SUCCESS".equals(l.get("status"))&&zero(l.get("deleted"))
+                    &&("USDT".equals(asset)?taskNo.equals(biz):taskNo.equals(biz)&&baseNex.signum()>0||daily.equals(biz)&&dailyNex.signum()>0)
+                    &&expected.compareTo(money(l.get("amount")))==0&&money(l.get("balanceAfter")).signum()>=0
+                    &&close(time(l.get("createdAt")),simulation.postedAt())&&!time(l.get("updatedAt")).isBefore(time(l.get("createdAt"))));
+                total=total.add(money(l.get("amount")));
+            }
+            require(total.compareTo(amount)==0);var e=one(earnings,"asset",asset);
+            require(seenEarning.add(number(e.get("id")))&&number(e.get("id"))>0&&number(e.get("customerId"))==customer&&number(e.get("deviceId"))==device
+                &&"POSTED".equals(e.get("status"))&&zero(e.get("deleted"))&&amount.compareTo(money(e.get("amount")))==0
+                &&("USDT".equals(asset)?"EARN-"+taskNo:"EARN-NEX-"+no).equals(e.get("eventNo"))
+                &&close(time(e.get("walletPostedAt")),simulation.postedAt())&&close(time(e.get("createdAt")),simulation.postedAt())
+                &&!time(e.get("updatedAt")).isBefore(time(e.get("createdAt"))));
+            if(amount.signum()>0)events.add(new Event(key(no)+":"+("USDT".equals(asset)?"USDT":"NEX"),Action.EARNINGS,null,new Account(customer,asset,"available"),null,amount,null));
+        }
+        return new Original(r,t,ledgers,earnings,List.copyOf(events),simulation);
     }
     private void wallet(JsonNode w,Map<String,Object> raw,String side,String incarnation,long revision){keys(w,Set.of("id","customerId","incarnation","revision","version","usdtAvailable","nexAvailable","cregisRiskHeld","pendingWithdraw","sandbox","deleted","createdAt"));require(incarnation.equals(text(w.path("incarnation")))&&number(w.path("revision"))==revision);
         for(var pair:Map.of("id","Id","customerId","UserId","version","Version","usdtAvailable","UsdtAvailable","nexAvailable","NexAvailable","cregisRiskHeld","CregisRiskHeld","pendingWithdraw","PendingWithdraw","createdAt","CreatedAt").entrySet())require(equal(w.path(pair.getKey()),raw.get(side+pair.getValue())));require(zero(w.path("sandbox"))&&zero(w.path("deleted"))&&zero(raw.get(side+"Sandbox"))&&zero(raw.get(side+"IsDeleted")));}

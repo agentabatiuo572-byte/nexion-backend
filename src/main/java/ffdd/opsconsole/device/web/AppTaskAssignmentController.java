@@ -26,11 +26,48 @@ import org.springframework.web.bind.annotation.RestController;
 public class AppTaskAssignmentController {
     private final AppTaskAssignmentService service;
     private final ffdd.opsconsole.onboarding.application.PhoneInstallationService installations;
+    private final ffdd.opsconsole.device.application.SimulatedTaskService simulated;
+    private final ffdd.opsconsole.device.application.SimulatedTaskReadService simulatedRead;
+    private final java.time.Clock clock;
+    private final ffdd.opsconsole.device.application.ComputeV2DeviceLifecycleService lifecycle;
 
     @GetMapping("/api/tasks/assignments")
-    public ApiResult<AppTaskAssignmentsResponse> assignments(Authentication authentication) {
+    public ApiResult<?> assignments(Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED") : service.assignments(userId);
+        if(userId==null)return ApiResult.fail(403,"USER_SUBJECT_REQUIRED");
+        return simulated.enabled()?ApiResult.ok(simulatedRead.assignments(userId)):service.assignments(userId);
+    }
+
+    public record PhoneOnlineRequest(long deviceId) { }
+    @PostMapping("/api/tasks/simulated/phone-online")
+    @org.springframework.transaction.annotation.Transactional
+    public ApiResult<?> phoneOnline(@RequestBody PhoneOnlineRequest request,
+            @RequestHeader(name="X-Phone-Installation-Id") String installationId,Authentication authentication) {
+        Long user=userId(authentication);
+        if(user==null)throw new BizException(403,"USER_SUBJECT_REQUIRED");
+        if(request.deviceId()<=0)throw new BizException(422,"SIMULATED_PHONE_REQUIRED");
+        installations.requireSimulatedForDevice(authentication,request.deviceId(),installationId);
+        var result=simulated.phoneOnline(user,request.deviceId());
+        var data=new java.util.LinkedHashMap<String,Object>();
+        data.put("serverNow",java.time.LocalDateTime.now(clock));data.put("deviceId",request.deviceId());
+        data.put("phoneValidUntil",result.runtime().phoneValidUntil());
+        data.put("simulationState",result.onlineConfirmed()?result.runtime().state():"CLOSING");
+        data.put("onlineConfirmed",result.onlineConfirmed());data.put("retryAfterSeconds",result.retryAfterSeconds());
+        return ApiResult.ok(data);
+    }
+
+    public record StopRequest(long deviceId,boolean afterCurrent,Long expectedVersion) { }
+    @PostMapping("/api/tasks/simulated/stop")
+    @org.springframework.transaction.annotation.Transactional
+    public ApiResult<?> stop(@RequestBody StopRequest request,
+            @RequestHeader(name="X-Phone-Installation-Id",required=false) String installationId,Authentication authentication) {
+        Long user=userId(authentication);
+        if(user==null)throw new BizException(403,"USER_SUBJECT_REQUIRED");
+        installations.requireSimulatedStopForDevice(authentication,request.deviceId(),installationId);
+        var state=lifecycle.stopSimulated(user,request.deviceId(),request.expectedVersion(),request.afterCurrent());
+        var data=new java.util.LinkedHashMap<String,Object>();data.put("deviceId",request.deviceId());
+        data.put("simulationState",state.state());data.put("phoneValidUntil",state.phoneValidUntil());
+        return ApiResult.ok(data);
     }
 
     @PostMapping("/api/tasks/assignments/claim")

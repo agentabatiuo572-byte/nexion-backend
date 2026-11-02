@@ -23,7 +23,32 @@ public record DeviceTaskUpsertRequest(
         @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=StrictSchedulingInteger.class) Integer executionTimeoutSec,
         String runtimeKey,
         String validatorKey,
+        String workloadConfigJson, TaskSimulationSettings simulation) {
+    public DeviceTaskUpsertRequest(
+        String name,
+        BigDecimal price,
+        String unit,
+        String requirement,
+        BigDecimal saturation,
+        String status,
+        String taskClass,
+        String model,
+        BigDecimal minReward,
+        BigDecimal maxReward,
+        String minVram,
+        String killInit,
+        String reason,
+        String operator,
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=StrictSchedulingInteger.class) Integer selectionWeight,
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=StrictSchedulingInteger.class) Integer expectedDurationMinSec,
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=StrictSchedulingInteger.class) Integer expectedDurationMaxSec,
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=StrictSchedulingInteger.class) Integer executionTimeoutSec,
+        String runtimeKey,
+        String validatorKey,
         String workloadConfigJson) {
+        this(name,price,unit,requirement,saturation,status,taskClass,model,minReward,maxReward,minVram,killInit,reason,operator,selectionWeight,expectedDurationMinSec,expectedDurationMaxSec,executionTimeoutSec,runtimeKey,validatorKey,workloadConfigJson,null);
+    }
+
     public DeviceTaskUpsertRequest(String name, BigDecimal price, String unit, String requirement,
             BigDecimal saturation, String status, String taskClass, String model, BigDecimal minReward,
             BigDecimal maxReward, String minVram, String killInit, String reason, String operator) {
