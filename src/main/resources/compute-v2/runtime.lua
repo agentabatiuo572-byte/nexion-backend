@@ -3,6 +3,9 @@ local p = KEYS[1]
 local op = ARGV[1]
 local function key(s) return p .. s end
 local function err(s) return redis.error_reply('COMPUTE_V2_' .. s) end
+local function ruleCycle(snapshot)
+  return string.match(snapshot.inputArtifactRef,'^device%-reward/[A-Za-z0-9_%-]+/input/' .. snapshot.inputSha256 .. '%.json$') ~= nil
+end
 local function admissionError(now,backlog,capacity)
   if redis.call('GET',key('ready')) ~= '1' or redis.call('EXISTS',key('last-freeze')) == 0 then return 'RECOVERING' end
   for _,name in ipairs({'pending-age','outgoing-age'}) do
@@ -43,6 +46,7 @@ local function prune(task, replacing, postedTtl)
   end
   redis.call('ZREM',key('leases'),task)
   redis.call('ZREM',key('queue'),task)
+  redis.call('ZREM',key('rule-due'),task)
   return true
 end
 if op == 'initialize' then
@@ -99,6 +103,10 @@ if op == 'restore' then
     return '1'
   end
   if tonumber(gen) >= oldgen then
+    if tonumber(gen) > oldgen then
+      local previous=redis.call('HGET',key('devices'),dev)
+      if previous and previous ~= task then redis.call('ZREM',key('rule-due'),previous) end
+    end
     redis.call('HSET',key('device-generation'),dev,gen)
     redis.call('HSET',key('devices'),dev,task)
   end
@@ -118,16 +126,25 @@ if op == 'restore' then
     redis.call('HSET',key('start-events'),task,ARGV[8])
     local state = redis.call('HGET',key('states'),task)
     if not state or state == 'QUEUED' then
-      redis.call('HSET',key('states'),task,'RECOVERING')
-      redis.call('HSET',key('executors'),task,'RECOVERY_REQUIRED')
-      redis.call('SADD',key('permits'),task .. ':' .. gen)
-      redis.call('ZADD',key('leases'),ARGV[10],task)
+      if ruleCycle(cjson.decode(ARGV[7])) then
+        redis.call('HSET',key('states'),task,'COMPUTING')
+        -- Rule snapshots retain required legacy lifetime fields; their lease is due + 120s.
+        redis.call('ZADD',key('rule-due'),tonumber(ARGV[10])-120000,task)
+      else
+        redis.call('HSET',key('states'),task,'RECOVERING')
+        redis.call('HSET',key('executors'),task,'RECOVERY_REQUIRED')
+        redis.call('SADD',key('permits'),task .. ':' .. gen)
+        redis.call('ZADD',key('leases'),ARGV[10],task)
+      end
       redis.call('ZREM',key('queue'),task)
     end
   elseif kind == 'VERIFIED' then
     redis.call('HSET',key('states'),task,'COMPLETED')
     redis.call('HSET',key('completed'),task,ARGV[8])
     redis.call('ZREM',key('queue'),task)
+    if ruleCycle(cjson.decode(ARGV[7])) and redis.call('HEXISTS',key('lifecycle-events'),task .. ':' .. gen .. ':EXITED') == 0 then
+      redis.call('ZADD',key('rule-due'),tonumber(ARGV[10])-120000,task)
+    end
   elseif kind == 'FAILED' or kind == 'FENCED' then
     redis.call('HSET',key(kind == 'FENCED' and 'fenced-events' or 'failed-events'),task,ARGV[8])
     if redis.call('HGET',key('states'),task) ~= 'COMPLETED' then
@@ -138,6 +155,7 @@ if op == 'restore' then
     redis.call('HDEL',key('executors'),task)
     redis.call('SREM',key('permits'),task .. ':' .. gen)
     redis.call('ZREM',key('leases'),task)
+    redis.call('ZREM',key('rule-due'),task)
     if redis.call('HGET',key('states'),task) ~= 'COMPLETED' then redis.call('HSET',key('states'),task,'FAILED') end
   end
   return '1'
@@ -173,10 +191,30 @@ if op == 'reserve' then
   redis.call('HSET',key('snapshots'),task,ARGV[10])
   return {task,tostring(gen)}
 end
+if op == 'rule-due' then
+  return redis.call('ZRANGEBYSCORE',key('rule-due'),'-inf',ARGV[2],'LIMIT',0,ARGV[3])
+end
+if op == 'rule-start' then
+  local task=ARGV[2]
+  if redis.call('GET',key('ready')) ~= '1' then return err('RECOVERING') end
+  if redis.call('HGET',key('generation'),task) ~= ARGV[3] then return err('STALE_GENERATION') end
+  if not ruleCycle(cjson.decode(redis.call('HGET',key('snapshots'),task))) then return err('RULE_CYCLE_REQUIRED') end
+  local state=redis.call('HGET',key('states'),task)
+  if state == 'STARTING' or state == 'COMPUTING' then return redis.call('HGET',key('start-events'),task) end
+  if state ~= 'QUEUED' then return err('NOT_QUEUED') end
+  if ARGV[8] ~= '1' then return err('ADMISSION_PAUSED') end
+  local blocked=admissionError(ARGV[5],ARGV[6],ARGV[7])
+  if blocked then return err(blocked) end
+  redis.call('HSET',key('states'),task,'STARTING')
+  redis.call('HSET',key('start-events'),task,ARGV[4])
+  redis.call('ZADD',key('rule-due'),ARGV[9],task)
+  return ARGV[4]
+end
 if op == 'start' then
   local task = ARGV[2]
   if redis.call('GET',key('ready')) ~= '1' then return err('RECOVERING') end
   if redis.call('HGET',key('generation'),task) ~= ARGV[3] then return err('STALE_GENERATION') end
+  if ruleCycle(cjson.decode(redis.call('HGET',key('snapshots'),task))) then return err('MODEL_EXECUTION_REQUIRED') end
   local state = redis.call('HGET',key('states'),task)
   if state == 'STARTING' or state == 'COMPUTING' then
     if redis.call('HGET',key('executors'),task) ~= ARGV[4] then return err('LEASE_OWNED') end
@@ -222,13 +260,16 @@ if op == 'start' then
       -- that queue, and they cannot borrow server inference RAM/CPU by changing their label.
       local cloudHead = nil
       for _,queued in ipairs(redis.call('ZRANGE',key('queue'),0,-1)) do
-        if not phone(snapshot(queued)) then cloudHead = queued; break end
+        if not phone(snapshot(queued)) and not ruleCycle(snapshot(queued)) then cloudHead = queued; break end
       end
       if cloudHead ~= task then return '' end
     end
   else
-    local head = redis.call('ZRANGE',key('queue'),0,0)
-    if #head == 0 or head[1] ~= task then return '' end
+    local head=nil
+    for _,queued in ipairs(redis.call('ZRANGE',key('queue'),0,-1)) do
+      if not ruleCycle(cjson.decode(redis.call('HGET',key('snapshots'),queued))) then head=queued; break end
+    end
+    if head ~= task then return '' end
   end
   redis.call('SADD',key('permits'),task .. ':' .. ARGV[3])
   redis.call('HSET',key('executors'),task,ARGV[4])
@@ -280,7 +321,10 @@ if op == 'stage' then
   if existing then return existing end
   local state = redis.call('HGET',key('states'),task)
   if ARGV[6] == 'VERIFIED' then
-    if state ~= 'VERIFYING' or tonumber(redis.call('ZSCORE',key('leases'),task) or '0') <= tonumber(ARGV[7]) then return err('LEASE_STALE') end
+    if ruleCycle(cjson.decode(redis.call('HGET',key('snapshots'),task))) then
+      if (state ~= 'COMPUTING' and state ~= 'VERIFYING')
+          or tonumber(redis.call('ZSCORE',key('rule-due'),task) or '9007199254740991') > tonumber(ARGV[7]) then return err('RULE_CYCLE_NOT_DUE') end
+    elseif state ~= 'VERIFYING' or tonumber(redis.call('ZSCORE',key('leases'),task) or '0') <= tonumber(ARGV[7]) then return err('LEASE_STALE') end
     if ARGV[8] ~= '' then
       local daily = key('daily:' .. ARGV[8])
       local owner = redis.call('GET',daily)
@@ -368,6 +412,10 @@ if op == 'apply' then
       redis.call('HSET',key('states'),task,'COMPUTING')
       redis.call('ZREM',key('queue'),task)
       redis.call('HSET',key('snapshots'),task,ARGV[14])
+      if ruleCycle(cjson.decode(ARGV[14])) then
+        redis.call('HSET',key('start-events'),task,ARGV[6])
+        redis.call('ZADD',key('rule-due'),tonumber(ARGV[18])-120000,task)
+      end
     elseif kind == 'VERIFIED' and redis.call('HEXISTS',key('failed-events'),task) == 0
         and redis.call('HEXISTS',key('fenced-events'),task) == 0 then
       redis.call('HSET',key('states'),task,'COMPLETED')
@@ -384,6 +432,7 @@ if op == 'apply' then
       redis.call('SREM',key('permits'),task .. ':' .. gen)
       redis.call('HDEL',key('executors'),task)
       redis.call('ZREM',key('leases'),task)
+      redis.call('ZREM',key('rule-due'),task)
       if state == 'RECOVERING' then redis.call('HSET',key('states'),task,'FAILED') end
     end
   end

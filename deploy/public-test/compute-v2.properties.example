@@ -4,6 +4,9 @@
 # Never commit a configured proof secret.
 nexion.compute-v2.enabled=false
 nexion.compute-v2.accepting=true
+# Opt-in server-driven reward cycles for enrolled cloud devices. The switch is
+# independent of the deployment scope; old model tasks and phone execution drain normally.
+nexion.compute-v2.rule-cycle-enabled=false
 nexion.compute-v2.deployment-scope=TEST
 nexion.compute-v2.device-ids=
 nexion.compute-v2.allowed-task-ids=
