@@ -11,7 +11,6 @@ import org.springframework.stereotype.Component;
 @ConfigurationProperties(prefix = "nexion.compute-v2")
 public class ComputeV2Properties {
     private boolean enabled;
-    private boolean ruleCycleEnabled;
     private boolean accepting = true;
     private boolean strictDurability;
     private String deploymentScope = "";
