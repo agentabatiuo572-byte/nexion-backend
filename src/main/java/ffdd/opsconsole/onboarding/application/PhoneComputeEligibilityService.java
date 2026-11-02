@@ -26,7 +26,7 @@ public class PhoneComputeEligibilityService {
             List<String> supportedTaskClasses,List<PhoneEligibility> devices,String source,String sourceEnvironment,
             String runId,boolean serverCanonical) { }
 
-    @Transactional(readOnly=true)
+    @Transactional
     public Eligibility read(long userId) {
         var now=LocalDateTime.now(clock);
         var appSessions=sessions.adminSummary(userId);
