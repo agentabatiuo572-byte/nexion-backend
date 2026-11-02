@@ -23,13 +23,14 @@ public class SupportDeviceReadService implements SupportDeviceReadFacade {
     private static final Set<String> RUNNING = Set.of("ONLINE", "BUSY", "RUNNING", "ACTIVE", "OFFLINE");
     private static final Set<String> NOT_STARTED = Set.of("INVENTORY", "PENDING", "PENDING_ACTIVATION");
     private final SupportDeviceReadMapper mapper;
+    private final ffdd.opsconsole.device.mapper.SimulatedTaskMapper simulatedTasks;
 
     @Override public FundEarnings readFundEarnings(Collection<Long> ids) {
         if(ids==null||ids.size()>4096||ids.stream().anyMatch(id->id==null||id<=0))throw new IllegalArgumentException("INVALID_SUPPORT_DEVICE_SCOPE");
         var scope=List.copyOf(new TreeSet<>(ids));if(scope.isEmpty())return new FundEarnings(List.of(),List.of(),List.of(),List.of());
         var receipts=mapper.fundReceipts(scope);var tasks=mapper.fundTasks(scope);var ledgers=mapper.fundLedgers(scope);var events=mapper.fundEvents(scope);
         for(var rows:java.util.Arrays.asList(receipts,tasks,ledgers,events))validateFundRows(scope,rows);
-        return new FundEarnings(receipts,tasks,ledgers,events);
+        return new FundEarnings(receipts,simulationTaskSnapshots(tasks),ledgers,events);
     }
     @Override public FundEarnings readFundEarning(long customerId,String receiptNo) {
         if(customerId<=0||receiptNo==null||receiptNo.isEmpty())throw new IllegalArgumentException("INVALID_SUPPORT_DEVICE_SCOPE");
@@ -45,8 +46,27 @@ public class SupportDeviceReadService implements SupportDeviceReadFacade {
         }
         var tasks=mapper.fundReceiptTasks(customerId,taskNo);var ledgers=mapper.fundReceiptLedgers(customerId,List.copyOf(ledgerNos));var events=mapper.fundReceiptEvents(customerId,receiptNo);
         for(var rows:java.util.Arrays.asList(tasks,ledgers,events))validateFundRows(scope,rows);
-        return new FundEarnings(receipts,tasks.stream().filter(t->java.util.Objects.equals(taskNo,t.get("taskNo"))).toList(),
+        return new FundEarnings(receipts,simulationTaskSnapshots(tasks.stream().filter(t->java.util.Objects.equals(taskNo,t.get("taskNo"))).toList()),
             ledgers.stream().filter(l->ledgerNos.contains(l.get("bizNo"))).toList(),events.stream().filter(e->receiptNo.equals(e.get("receiptNo"))).toList());
+    }
+    private List<Map<String,Object>> simulationTaskSnapshots(List<Map<String,Object>> tasks) {
+        var groups=new java.util.LinkedHashMap<Long,List<String>>();
+        for(var task:tasks)if(task.get("taskNo") instanceof String no && no.startsWith("SIM-"))
+            groups.computeIfAbsent(((Number)task.get("customerId")).longValue(),id->new ArrayList<>()).add(no);
+        var snapshots=new java.util.HashMap<String,ffdd.opsconsole.device.mapper.SimulatedTaskMapper.TaskRow>();
+        for(var group:groups.entrySet())for(int start=0;start<group.getValue().size();start+=200)
+            for(var row:simulatedTasks.tasksByUser(group.getKey(),group.getValue().subList(start,Math.min(start+200,group.getValue().size()))))
+                snapshots.put(row.taskNo(),row);
+        return tasks.stream().map(task->{
+            String no=(String)task.get("taskNo");
+            if(!no.startsWith("SIM-"))return task;
+            var snapshot=snapshots.get(no);
+            if(snapshot==null || snapshot.userId()!=((Number)task.get("customerId")).longValue()
+                    || snapshot.deviceId()!=((Number)task.get("deviceId")).longValue())
+                throw new IllegalStateException("SIMULATED_TASK_FUND_SOURCE_MISSING");
+            var enriched=new java.util.LinkedHashMap<>(task);
+            enriched.put("executionMode","SIMULATED");enriched.put("simulation",snapshot);return (Map<String,Object>)enriched;
+        }).toList();
     }
     private static void validateFundRows(Collection<Long> scope,List<Map<String,Object>> rows){
         if(rows==null||rows.stream().anyMatch(r->r==null||!(r.get("customerId") instanceof Number n)||!scope.contains(n.longValue())))throw new IllegalStateException("INVALID_SUPPORT_DEVICE_FUND_ROWS");

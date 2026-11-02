@@ -370,8 +370,9 @@ public class AppCanonicalBoundaryService {
 
     private ApiResult<Map<String,Object>> deferComputeV2Deactivation(Long user,CanonicalStateMapper.UserDeviceCommandRow device,Long version) {
         if(computeV2Lifecycle==null || !computeV2Lifecycle.deferDeactivation(user,device.id(),version))return null;
-        return ApiResult.ok(linked("deviceId",device.id(),"instanceNo",device.instanceNo(),"status","PENDING_DEACTIVATE",
-                "rowVersion",device.rowVersion(),"pendingDeactivate",true,"alreadyPending",device.pendingDeactivate()));
+        var current=mapper.lockDeviceForUserCommand(device.id());
+        return ApiResult.ok(linked("deviceId",device.id(),"instanceNo",device.instanceNo(),"status",current.pendingDeactivate()?"PENDING_DEACTIVATE":current.status(),
+                "rowVersion",current.rowVersion(),"pendingDeactivate",current.pendingDeactivate(),"alreadyPending",device.pendingDeactivate()));
     }
 
     private boolean isSlotOccupyingActiveState(String status) {

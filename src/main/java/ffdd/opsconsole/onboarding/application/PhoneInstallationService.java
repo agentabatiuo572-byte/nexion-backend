@@ -49,6 +49,30 @@ public class PhoneInstallationService {
         requireDeviceBinding(auth, userId, deviceId, installationId);
     }
 
+    public void requireSimulatedForDevice(Authentication auth,long deviceId,String installationId) {
+        requireSimulatedDevice(auth,deviceId,installationId,true);
+    }
+
+    public void requireSimulatedStopForDevice(Authentication auth,long deviceId,String installationId) {
+        requireSimulatedDevice(auth,deviceId,installationId,false);
+    }
+
+    private void requireSimulatedDevice(Authentication auth,long deviceId,String installationId,boolean phoneRequired) {
+        long userId=userId(auth);
+        lockUser(userId);
+        var binding=mapper.deviceBinding(userId,deviceId);
+        if(binding==null)throw new BizException(403,"DEVICE_FORBIDDEN");
+        boolean phone="PHONE".equalsIgnoreCase(binding.deviceType()) || "MOBILE".equalsIgnoreCase(binding.deviceType());
+        if(!phone) {
+            if(phoneRequired)throw new BizException(403,"SIMULATED_PHONE_REQUIRED");
+            return;
+        }
+        validateInstallationId(installationId);
+        currentSessions.requireCurrent(auth,installationId,false);
+        if(!installationId.equals(binding.installationId()))
+            throw new BizException(403,"SIMULATED_PHONE_INSTALLATION_MISMATCH");
+    }
+
     private void requireDeviceBinding(Authentication auth, long userId, long deviceId, String installationId) {
         var binding = mapper.deviceBinding(userId, deviceId);
         if (binding == null) throw new BizException(404, "TASK_ASSIGNMENT_DEVICE_NOT_FOUND");

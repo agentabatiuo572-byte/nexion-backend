@@ -185,6 +185,8 @@ public class TestComputeV2Service {
             runtime.retire(caller.ownerId(),caller.deviceId());current=Optional.empty();
         }
         if(current.isEmpty()) {
+            if(environment.getProperty("nexion.simulated-tasks.enabled",Boolean.class,false))
+                return Map.of("state","IDLE","retryAfterMs",60000);
             if(!runtime.isReady() || !runtime.canAcceptWork())return Map.of("state","IDLE","retryAfterMs",1000);
             Issuance issuance=transactions.db(()->{access.requireCurrent(auth,caller);return freeze(caller.deviceId(),caller);});
             issue(issuance);current=runtime.view(caller.ownerId(),caller.deviceId());
@@ -452,6 +454,7 @@ public class TestComputeV2Service {
     public synchronized void issueEnrolled() {
         if(enrolled.isEmpty() || !runtime.isReady()) return;
         lifecycle.ifPresent(ComputeV2DeviceLifecycleService::finalizePendingEnrolled);
+        if(environment.getProperty("nexion.simulated-tasks.enabled",Boolean.class,false))return;
         if(!runtime.canAcceptWork())return;
         List<Long> devices=enrolled.stream().sorted().toList();
         // One shared cursor, bounded work per tick; no account-specific timer, JVM or journal.

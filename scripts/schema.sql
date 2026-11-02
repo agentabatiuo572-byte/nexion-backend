@@ -2982,7 +2982,7 @@ CREATE TABLE IF NOT EXISTS nx_compute_task (
   source_environment VARCHAR(16) NOT NULL DEFAULT 'PRODUCTION',
   client_name VARCHAR(128) NOT NULL,
   status VARCHAR(32) NOT NULL,
-  started_at DATETIME NULL,
+  started_at DATETIME(6) NULL,
   worker_ack_at DATETIME NULL,
   lease_expires_at DATETIME NULL,
   attempt_count INT NOT NULL DEFAULT 1,
@@ -3058,7 +3058,7 @@ CREATE TABLE IF NOT EXISTS nx_compute_receipt (
   reward_nex DECIMAL(18,6) NOT NULL DEFAULT 0,
   earning_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
   source_environment VARCHAR(16) NOT NULL DEFAULT 'PRODUCTION',
-  proof_hash VARCHAR(128) NOT NULL,
+  proof_hash VARCHAR(128) NULL,
   completed_at DATETIME(6) NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -3313,6 +3313,7 @@ CREATE TABLE IF NOT EXISTS nx_admin_device_sku (
   spec_document_title VARCHAR(200) NULL,
   spec_document_url VARCHAR(2048) NULL,
   features_json TEXT NULL,
+  allowed_task_type_ids_json JSON NULL,
   generation INT NULL,
   lifecycle VARCHAR(32) NULL,
   superseded_by VARCHAR(64) NULL,
@@ -7502,3 +7503,103 @@ CREATE TABLE IF NOT EXISTS nx_test_cloud_legacy_admission (
   CONSTRAINT ck_test_cloud_legacy_review CHECK (enabled IN (0,1) AND CHAR_LENGTH(reason)>0
     AND evidence_sha256 REGEXP '^[a-f0-9]{64}$')
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
+-- 2026-11-02 simulated task configuration and runtime; no policy values are seeded.
+CREATE TABLE IF NOT EXISTS nx_sim_task_type_version (
+  task_type_id VARCHAR(64) NOT NULL,
+  version BIGINT NOT NULL,
+  effective_at DATETIME(6) NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  task_class VARCHAR(8) NOT NULL,
+  duration_seconds INT NOT NULL,
+  base_reward DECIMAL(18,6) NOT NULL,
+  asset VARCHAR(8) NOT NULL,
+  enabled TINYINT NOT NULL,
+  PRIMARY KEY(task_type_id,version),
+  KEY idx_sim_task_type_effective(task_type_id,effective_at,version),
+  CHECK(duration_seconds BETWEEN 60 AND 86400 AND MOD(duration_seconds,60)=0),
+  CHECK(base_reward>=0), CHECK(asset IN ('USDT','NEX'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS nx_sim_product_task_policy_version (
+  product_key VARCHAR(64) NOT NULL,
+  version BIGINT NOT NULL,
+  effective_at DATETIME(6) NOT NULL,
+  allowed_task_type_ids JSON NOT NULL,
+  PRIMARY KEY(product_key,version),
+  KEY idx_sim_product_policy_effective(product_key,effective_at,version)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS nx_sim_e3_version (
+  version BIGINT NOT NULL PRIMARY KEY,
+  effective_at DATETIME(6) NOT NULL,
+  config_json JSON NOT NULL,
+  KEY idx_sim_e3_effective(effective_at,version)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- New simulated runtime only. Existing model tasks and receipts retain their original evidence.
+CREATE TABLE IF NOT EXISTS nx_simulated_device_runtime (
+  user_device_id BIGINT NOT NULL PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  instance_no VARCHAR(96) NOT NULL,
+  product_code VARCHAR(64) NOT NULL,
+  phone TINYINT NOT NULL,
+  generation BIGINT NOT NULL,
+  interval_started_at DATETIME(6) NOT NULL,
+  phone_valid_until DATETIME(6) NULL,
+  stop_at DATETIME(6) NULL,
+  stop_after_current TINYINT NOT NULL DEFAULT 0,
+  finish_after_at DATETIME(6) NULL,
+  next_start_at DATETIME(6) NOT NULL,
+  current_task_no VARCHAR(64) NULL,
+  next_action_at DATETIME(6) NULL,
+  state VARCHAR(32) NOT NULL,
+  last_error VARCHAR(128) NULL,
+  UNIQUE KEY uk_simulated_current_task(current_task_no),
+  KEY idx_simulated_due(next_action_at,user_device_id),
+  KEY idx_simulated_runtime_user(user_id,user_device_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS nx_simulated_task (
+  task_no VARCHAR(64) NOT NULL PRIMARY KEY,
+  receipt_no VARCHAR(64) NOT NULL,
+  user_id BIGINT NOT NULL,
+  user_device_id BIGINT NOT NULL,
+  instance_no VARCHAR(96) NOT NULL,
+  generation BIGINT NOT NULL,
+  product_id BIGINT NULL,
+  product_code VARCHAR(64) NOT NULL,
+  product_tier VARCHAR(64) NULL,
+  device_name VARCHAR(128) NOT NULL,
+  device_type VARCHAR(64) NOT NULL,
+  gpu_model VARCHAR(128) NULL,
+  vram_total_gb INT NULL,
+  task_type_id VARCHAR(64) NOT NULL,
+  task_type_version BIGINT NOT NULL,
+  product_policy_version BIGINT NOT NULL,
+  e3_version BIGINT NOT NULL,
+  task_name VARCHAR(128) NOT NULL,
+  task_class VARCHAR(64) NOT NULL,
+  duration_seconds INT NOT NULL,
+  asset VARCHAR(8) NOT NULL,
+  base_reward DECIMAL(18,6) NOT NULL,
+  reward_amount DECIMAL(18,6) NOT NULL,
+  e3_multiplier DECIMAL(18,8) NOT NULL,
+  cloud_daily_nex DECIMAL(18,6) NOT NULL,
+  wallet_id BIGINT NOT NULL,
+  wallet_incarnation CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  started_at DATETIME(6) NOT NULL,
+  due_at DATETIME(6) NOT NULL,
+  status VARCHAR(16) NOT NULL,
+  completed_at DATETIME(6) NULL,
+  posted_at DATETIME(6) NULL,
+  cancel_reason VARCHAR(128) NULL,
+  UNIQUE KEY uk_simulated_receipt(receipt_no),
+  KEY idx_simulated_task_user(user_id,started_at,task_no),
+  KEY idx_simulated_task_device(user_device_id,generation,started_at),
+  CONSTRAINT chk_simulated_duration CHECK(duration_seconds BETWEEN 60 AND 86400),
+  CONSTRAINT chk_simulated_asset CHECK(asset IN ('USDT','UVT')),
+  CONSTRAINT chk_simulated_reward CHECK(base_reward>=0 AND reward_amount>=0),
+  CONSTRAINT chk_simulated_status CHECK(status IN ('RUNNING','COMPLETED','CANCELLED'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

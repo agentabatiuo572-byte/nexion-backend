@@ -48,6 +48,8 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     private final DeviceCatalogMapper mapper;
     private final ObjectMapper objectMapper;
     private final ffdd.opsconsole.device.mapper.TaskSchedulingPolicyMapper taskScheduling;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ffdd.opsconsole.device.application.SimulatedTaskPolicyService simulationPolicies;
 
     public MybatisDeviceCatalogRepository(DeviceCatalogMapper mapper, ObjectMapper objectMapper) {
         this(mapper, objectMapper, null);
@@ -256,6 +258,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
             records = records.stream().map(task -> policies.containsKey(task.taskId())
                     ? task.withScheduling(policies.get(task.taskId())) : task).toList();
         }
+        records=records.stream().map(t->t.withSimulation(simulationPolicies.typeView(t.taskId()))).toList();
         return new PageResult<>(total, pageNum, pageSize, records);
     }
 
@@ -290,7 +293,8 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     private DeviceTaskView withTaskScheduling(DeviceTaskView task) {
         if (task == null || taskScheduling == null) return task;
         var policy = taskScheduling.find(task.taskId());
-        return policy == null ? task : task.withScheduling(policy.settings());
+        var result=policy == null ? task : task.withScheduling(policy.settings());
+        return result.withSimulation(simulationPolicies.typeView(task.taskId()));
     }
 
     private void saveTaskScheduling(String taskId, ffdd.opsconsole.device.domain.TaskSchedulingSettings settings) {
@@ -644,7 +648,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 row.updatedAt(),
                 row.productType(),
                 row.inventoryMode(),
-                Boolean.TRUE.equals(row.trialEligible()), row.specDocumentTitle(), row.specDocumentUrl(), row.computePoints());
+                Boolean.TRUE.equals(row.trialEligible()), row.specDocumentTitle(), row.specDocumentUrl(), row.computePoints()).withTaskPolicy(simulationPolicies.productView(row.skuId()));
     }
 
     private DeviceCatalogMapper.SkuWrite skuWrite(String skuId, DeviceSkuUpsertRequest request,

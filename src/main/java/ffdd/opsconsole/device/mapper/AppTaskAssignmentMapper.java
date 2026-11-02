@@ -273,6 +273,8 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
               FROM nx_admin_device_task
              WHERE is_deleted = 0 AND LOWER(TRIM(status)) = 'active'
                AND LOWER(TRIM(COALESCE(kill_init, ''))) NOT IN ('kill','killed','已 kill','已kill')
+               AND NOT EXISTS (SELECT 1 FROM nx_sim_task_type_version simulated
+                               WHERE simulated.task_type_id=nx_admin_device_task.task_id)
              ORDER BY updated_at DESC, id DESC
              FOR UPDATE
             """)

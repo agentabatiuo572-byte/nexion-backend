@@ -107,6 +107,18 @@ public class OpsDeviceController {
         return deviceService.sku(skuId);
     }
 
+    @GetMapping("/skus/phone/task-policy")
+    @PreAuthorize("hasAuthority('device_e1_read')")
+    public ApiResult<Map<String,Object>> phoneTaskPolicy() { return deviceService.phoneTaskPolicy(); }
+
+    @PutMapping("/skus/phone/task-policy")
+    @PreAuthorize("hasAuthority('device_e1_write')")
+    public ApiResult<Map<String,Object>> updatePhoneTaskPolicy(
+            @RequestHeader(value=OpsAdminApi.IDEMPOTENCY_KEY_HEADER,required=false)String idempotencyKey,
+            @RequestBody ffdd.opsconsole.device.dto.PhoneTaskPolicyUpdateRequest request) {
+        return deviceService.updatePhoneTaskPolicy(idempotencyKey,request);
+    }
+
     @PostMapping("/skus")
     @PreAuthorize("hasAuthority('device_e1_write')")
     public ApiResult<DeviceSkuView> createSku(
