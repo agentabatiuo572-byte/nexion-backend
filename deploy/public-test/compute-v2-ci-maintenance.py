@@ -20,7 +20,8 @@ import xml.etree.ElementTree as ET
 GIB = 1024 ** 3
 MAINTENANCE_BYTES = 35 * GIB // 2 + 268435456 + 25165824
 BASELINE_SHA = "1b66c15b0b03c8ee17e9a46219027e9f3030f963beac448bab4bc3573e0f52b8"
-RESOURCE_SHA = "cb756f5f3c47ed887957e1209a44f061b52e6c4541998cddcd107b82ebb6bf4e"
+RESOURCE_SHA = "5b8696ae68acded46449521ed92189caa107c345623f424391a1d4edf4a44cdd"
+PREVIOUS_RECEIPT_RESOURCE_SHA = "cb756f5f3c47ed887957e1209a44f061b52e6c4541998cddcd107b82ebb6bf4e"
 LEGACY_RECEIPT_RESOURCE_SHA = "b2c053f53ca95d805f7d413d6d8449254ae1cbe7369115761626a2b56fcf52a9"
 RESOURCE = Path("/opt/uvel-task-control/resource-control.py")
 BASELINE = Path("/opt/uvel-task-control/resource-control.pre-compute-v2.py")
@@ -321,7 +322,7 @@ def public_plan(plan):
 def decoded(receipt):
     plan = receipt["plan"]
     require(receipt.get("version") == 1 and plan.get("scope") == "TEST"
-            and plan.get("resourceSha256") in (RESOURCE_SHA, LEGACY_RECEIPT_RESOURCE_SHA)
+            and plan.get("resourceSha256") in (RESOURCE_SHA, PREVIOUS_RECEIPT_RESOURCE_SHA, LEGACY_RECEIPT_RESOURCE_SHA)
             and sha(json.dumps(plan, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()) == receipt.get("receiptSha256"),
             "MAINTENANCE_RECEIPT_INVALID")
     raw = base64.b64decode(plan["originalBudget"], validate=True)
@@ -329,7 +330,7 @@ def decoded(receipt):
     original = json.loads(raw)
     require(maintenance_budget(original) == plan["maintenanceBudget"], "MAINTENANCE_RECEIPT_INVALID")
     profile_name, models = model_profile(original)
-    require(plan["resourceSha256"] == RESOURCE_SHA or profile_name == "six-bge", "MAINTENANCE_RECEIPT_INVALID")
+    require(plan["resourceSha256"] != LEGACY_RECEIPT_RESOURCE_SHA or profile_name == "six-bge", "MAINTENANCE_RECEIPT_INVALID")
     require(len(plan["models"]) == len(models) and {model["name"] for model in plan["models"]} == {"/" + name for name in models},
             "MAINTENANCE_RECEIPT_INVALID")
     for model in plan["models"]:
@@ -534,6 +535,7 @@ def main():
         require(os.geteuid() == 0 and sys.flags.isolated and os.environ.get("UVEL_COMPUTE_V2_SCOPE") == "TEST",
                 "ISOLATED_TEST_ROOT_ENTRY_REQUIRED")
     trusted(Path(__file__))
+    require(not Path("/var/lib/uvel-task-control/compute-retirement.json").exists(), "COMPUTE_PERMANENTLY_RETIRED")
     control = load_control(args.baseline_resource)
     for directory in (control.STATE, control.RUNTIME, RELEASE):
         trusted(directory, directory=True)
