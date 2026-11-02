@@ -1375,7 +1375,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
              WHERE is_deleted = 0
                AND task_id IN ('TK-1','TK-2','TK-3','TK-4','TK-5','TK-6')
                AND NOT EXISTS (SELECT 1 FROM nx_sim_task_type_version simulated
-                               WHERE simulated.task_type_id=nx_admin_device_task.task_id)
+                               WHERE simulated.task_type_id=nx_admin_device_task.task_id COLLATE utf8mb4_unicode_ci)
                AND (model_name = '' OR min_reward = 0 OR max_reward = 0 OR min_vram = '')
             """)
     int backfillDefaultTaskExtensions();
