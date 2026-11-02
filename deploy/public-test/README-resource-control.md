@@ -31,6 +31,23 @@ restored while the permanent receipt exists.
 
 ## Budget and real entry points
 
+### TEST Jenkins after model retirement
+
+The original retirement receipt and its sealed budget remain the baseline. On
+2026-11-03 the operator enabled the approved `CI_10_GIB` profile in
+`/etc/uvel-task-control/retired-ci.json`, bound to that receipt's SHA256. The
+installed controller SHA256 is `129569c7d164de4c3402995dc87424f4c838a304bc5eeb788793b9ec419b09d7`.
+Both the running agent and its Compose definition use 10 GiB memory and
+10 GiB memory-plus-swap. The controller admits one 10 GiB build at a time
+and keeps the 20% host reserve. Model executors stay at zero.
+
+The previous controller, Compose definition, base budget and before/after
+snapshots are in `/var/lib/uvel-task-control/retired-ci-20261103/`. A rollback
+requires the idle agent to be temporarily offline, removal of the CI profile,
+restoration of the 1 GiB limits in Docker and Compose, and a verified snapshot
+before bringing the agent online. Run each real Jenkins job through
+`admit-build` with its actual next build number.
+
 Root must collect the current `/proc/meminfo`, all runnable persistent model containers,
 backend/other service limits, CI container limits and full worker journal inventory.
 Store the reviewed budget in root-owned `/etc/uvel-task-control/budget.json`:

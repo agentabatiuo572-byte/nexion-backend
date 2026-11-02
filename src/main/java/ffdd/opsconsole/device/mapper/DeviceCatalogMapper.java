@@ -545,6 +545,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
              WHERE is_deleted = 0
                AND LOWER(TRIM(status)) = 'active'
                AND price > 0
+               AND NOT EXISTS (SELECT 1 FROM nx_sim_task_type_version s WHERE s.task_type_id = nx_admin_device_task.task_id COLLATE utf8mb4_unicode_ci)
              ORDER BY id
             """)
     List<TaskPriceSeedRow> activeTaskPriceSeeds();
@@ -589,6 +590,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
              WHERE is_deleted = 0
                AND LOWER(TRIM(status)) = 'active'
                AND price > 0
+               AND NOT EXISTS (SELECT 1 FROM nx_sim_task_type_version s WHERE s.task_type_id = nx_admin_device_task.task_id COLLATE utf8mb4_unicode_ci)
             ON DUPLICATE KEY UPDATE sample_key = VALUES(sample_key)
             """)
     int snapshotActiveTaskPrices(@Param("observedAt") LocalDateTime observedAt,

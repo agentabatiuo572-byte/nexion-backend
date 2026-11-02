@@ -28,6 +28,7 @@ V2_SERVICE = "uvel-compute-v2-worker.service"
 V2_ROOT = Path("/var/lib/uvel-compute-v2")
 V2_JOURNALS = {f"runner-{number}.sqlite" for number in range(1, 7)}
 RETIREMENT = STATE / "compute-retirement.json"
+RETIRED_CI = CONFIG.with_name("retired-ci.json")
 
 
 class Rejected(RuntimeError):
@@ -133,6 +134,13 @@ def load_config():
                 and receipt.get("retiredBudgetSha256") == digest({key: item for key, item in value.items()
                                                                if key != "retirementReceiptSha256"}),
                 "RETIREMENT_RECEIPT_MISMATCH")
+        if RETIRED_CI.exists():
+            trusted(RETIRED_CI)
+            ci = json.loads(RETIRED_CI.read_bytes())
+            require(ci == {"profile": "CI_10_GIB", "retirementReceiptSha256": value["retirementReceiptSha256"]},
+                    "RETIRED_CI_PROFILE_INVALID")
+            value.update(buildsEnabled=True, buildBudgetBytes=10 * 1024**3,
+                         buildRequests={component: 10 * 1024**3 for component in COMPONENTS})
     else:
         require(not RETIREMENT.exists(), "COMPUTE_PERMANENTLY_RETIRED")
     for service in value["workerServices"]:

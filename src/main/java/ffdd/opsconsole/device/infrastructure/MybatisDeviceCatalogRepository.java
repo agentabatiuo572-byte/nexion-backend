@@ -258,7 +258,8 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
             records = records.stream().map(task -> policies.containsKey(task.taskId())
                     ? task.withScheduling(policies.get(task.taskId())) : task).toList();
         }
-        records=records.stream().map(t->t.withSimulation(simulationPolicies.typeView(t.taskId()))).toList();
+        var simulations=simulationPolicies.typeViews(records.stream().map(DeviceTaskView::taskId).toList());
+        records=records.stream().map(t->t.withSimulation(simulations.get(t.taskId()))).toList();
         return new PageResult<>(total, pageNum, pageSize, records);
     }
 

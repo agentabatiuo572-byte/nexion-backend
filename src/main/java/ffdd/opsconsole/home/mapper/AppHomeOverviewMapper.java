@@ -88,7 +88,7 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
     @Select("""
             SELECT COALESCE(NULLIF(r.task_no, ''), r.receipt_no) AS id,
                    r.client_name AS client,
-                   COALESCE(NULLIF(t.model_name, ''), r.task_type) AS model,
+                   COALESCE(NULLIF(CASE WHEN t.task_no LIKE 'SIM-%' THEN t.task_name ELSE t.model_name END, ''), r.task_type) AS model,
                    r.reward_usdt AS rewardUsdt,
                    r.completed_at AS completedAt
               FROM nx_compute_receipt r
@@ -305,6 +305,7 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
                    max_reward AS maxReward
               FROM nx_admin_device_task
              WHERE is_deleted = 0
+               AND NOT EXISTS (SELECT 1 FROM nx_sim_task_type_version s WHERE s.task_type_id = nx_admin_device_task.task_id COLLATE utf8mb4_unicode_ci)
                AND LOWER(TRIM(status)) = 'active'
                AND UPPER(TRIM(task_class)) IN ('IG','VG','LL','FT','EM','SP',
                                                'IMAGE_GEN','VIDEO_RENDER','LLM_INFERENCE',
@@ -323,6 +324,7 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
                AND t.is_deleted = 0
                AND LOWER(TRIM(t.status)) = 'active'
              WHERE h.observed_at >= DATE_SUB(NOW(3), INTERVAL 25 HOUR)
+               AND NOT EXISTS (SELECT 1 FROM nx_sim_task_type_version s WHERE s.task_type_id = t.task_id COLLATE utf8mb4_unicode_ci)
              ORDER BY h.task_id, h.observed_at, h.id
             """)
     List<TaskPriceHistoryRow> marketTaskPriceHistory();

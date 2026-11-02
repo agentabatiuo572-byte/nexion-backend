@@ -40,11 +40,15 @@ public class SimulatedTaskPolicyService {
         if(e3==null)throw new BizException(422,"SIMULATED_E3_POLICY_HISTORY_MISSING");
         var types=new ArrayList<TaskTypeSnapshot>();
         LocalDateTime effectiveAt=product.effectiveAt().isAfter(e3.effectiveAt())?product.effectiveAt():e3.effectiveAt();
-        for(String id:decode(product.allowedTaskTypeIdsJson(),new TypeReference<List<String>>(){})) {
-            var type=mapper.typeAt(id,at);
+        List<String> ids=decode(product.allowedTaskTypeIdsJson(),new TypeReference<List<String>>(){});
+        var versions=ids.isEmpty()?List.<TypeVersion>of():mapper.typesAt(ids,at);
+        var byId=new HashMap<String,TypeVersion>();
+        for(var version:versions)byId.put(version.taskTypeId().toUpperCase(Locale.ROOT),version);
+        for(var id:ids) {
+            var type=byId.get(id.toUpperCase(Locale.ROOT));
             if(type==null)throw new BizException(422,"SIMULATED_TASK_TYPE_HISTORY_MISSING");
             if(type.effectiveAt().isAfter(effectiveAt))effectiveAt=type.effectiveAt();
-            types.add(new TaskTypeSnapshot(id,type.version(),type.name(),type.taskClass(),type.durationSeconds(),
+            types.add(new TaskTypeSnapshot(type.taskTypeId(),type.version(),type.name(),type.taskClass(),type.durationSeconds(),
                     type.baseReward(),type.asset(),type.enabled()));
         }
         return new PolicyVersion(productKey,product.version(),effectiveAt,List.copyOf(types),e3.version(),
@@ -68,7 +72,15 @@ public class SimulatedTaskPolicyService {
 
     public TypeView typeView(String taskId) {
         var t=mapper.typeAt(taskId,LocalDateTime.now(clock));
-        return t==null?null:new TypeView(t.durationSeconds()/60,t.baseReward(),t.asset(),t.enabled(),t.version(),t.effectiveAt());
+        return t==null?null:toView(t);
+    }
+    public Map<String,TypeView> typeViews(List<String> ids) {
+        var views=new HashMap<String,TypeView>();
+        if(!ids.isEmpty())for(var type:mapper.typesAt(ids,LocalDateTime.now(clock)))views.put(type.taskTypeId(),toView(type));
+        return views;
+    }
+    private TypeView toView(TypeVersion t) {
+        return new TypeView(t.durationSeconds()/60,t.baseReward(),t.asset(),t.enabled(),t.version(),t.effectiveAt());
     }
     public List<TaskTypeSnapshot> currentTypes() {
         return mapper.currentTypes().stream().map(t->new TaskTypeSnapshot(t.taskTypeId(),t.version(),t.name(),t.taskClass(),
@@ -103,9 +115,9 @@ public class SimulatedTaskPolicyService {
             if(id==null||!id.matches("[A-Za-z0-9_-]{1,64}"))throw new BizException(422,"SIMULATED_TASK_TYPE_ID_INVALID");
             var type=publishing?mapper.lockType(id):mapper.typeAt(id,LocalDateTime.now(clock));
             if(type==null||publishing&&!type.enabled())throw new BizException(422,"SIMULATED_TASK_TYPE_NOT_AVAILABLE");
-            ids.add(id);
+            ids.add(type.taskTypeId());
         }
-        if(ids.size()>200||publishing&&ids.isEmpty())throw new BizException(422,"SIMULATED_ALLOWED_TYPES_REQUIRED");
+        if(ids.size()>300||publishing&&ids.isEmpty())throw new BizException(422,"SIMULATED_ALLOWED_TYPES_REQUIRED");
         return List.copyOf(ids);
     }
     public void saveProduct(String key,List<String> raw,boolean publishing,LocalDateTime at) {
