@@ -13,6 +13,12 @@ public interface SimulatedTaskPolicyMapper {
 
     @Select("SELECT "+TYPE_COLUMNS+" FROM nx_sim_task_type_version WHERE task_type_id=#{id} AND effective_at<=#{at} ORDER BY effective_at DESC,version DESC LIMIT 1")
     TypeVersion typeAt(@Param("id")String id,@Param("at")LocalDateTime at);
+    @Select("<script>SELECT "+TYPE_COLUMNS+" FROM (SELECT t.*, ROW_NUMBER() OVER (PARTITION BY task_type_id "
+            +"ORDER BY effective_at DESC,version DESC) AS version_rank FROM nx_sim_task_type_version t "
+            +"WHERE effective_at&lt;=#{at} AND task_type_id IN "
+            +"<foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>"
+            +") ranked WHERE version_rank=1</script>")
+    List<TypeVersion> typesAt(@Param("ids")List<String> ids,@Param("at")LocalDateTime at);
     @Select("SELECT "+TYPE_COLUMNS+" FROM nx_sim_task_type_version WHERE task_type_id=#{id} ORDER BY version DESC LIMIT 1 FOR UPDATE")
     TypeVersion lockType(String id);
     @Select("SELECT "+TYPE_COLUMNS+" FROM nx_sim_task_type_version t WHERE NOT EXISTS(SELECT 1 FROM nx_sim_task_type_version n WHERE n.task_type_id=t.task_type_id AND n.version>t.version) ORDER BY t.task_type_id")
