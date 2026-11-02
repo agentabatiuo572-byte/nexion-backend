@@ -97,6 +97,63 @@ public class ComputeV2Runtime {
         if (reserved.kind()!=Kind.STARTED) throw new IllegalArgumentException("Reserved STARTED event required");
         return send(reserved);
     }
+    public static boolean isRuleCycle(ComputeV2Event event) {
+        return event.taskNo().startsWith("CV2-") && isRuleCycle(event.task(),event.deploymentScope());
+    }
+    public static boolean isRuleCycle(TaskSnapshot task,String scope) {
+        return task.inputArtifactRef().equals("device-reward/"+scope+"/input/"+task.inputSha256()+".json");
+    }
+    public boolean ruleCycleEnabled() { return config.isRuleCycleEnabled(); }
+
+    /** Server-owned cycles share durable accounting, but never borrow model permits or leases. */
+    public ComputeV2Event startRuleCycle(long userId,long deviceId) {
+        var current=view(userId,deviceId).orElseThrow().event();
+        if(!isRuleCycle(current))throw new IllegalArgumentException("Rule cycle required");
+        Instant now=clock.instant();
+        var started=started(current.task(),now,now.plusSeconds(current.task().requiredSeconds()+120L),
+                now.plusSeconds(current.task().requiredSeconds()+120L));
+        var event=event(Kind.STARTED,userId,deviceId,current.instanceNo(),current.taskNo(),current.generation(),now,started,null,"RULE_CYCLE");
+        String reserved=store.execute("rule-start",current.taskNo(),Long.toString(current.generation()),store.encode(event),
+                Long.toString(clock.millis()),Long.toString(config.getBacklogStopSeconds()*1000L),Integer.toString(config.getUnpersistedCapacity()),
+                config.isAccepting()?"1":"0",Long.toString(now.plusSeconds(current.task().requiredSeconds()).toEpochMilli()));
+        return send(store.decode(reserved,ComputeV2Event.class));
+    }
+    public List<RuntimeView> ruleCyclesDue(int limit) {
+        var due=new ArrayList<RuntimeView>();
+        for(Object value:store.reserve("rule-due",Long.toString(clock.millis()),Integer.toString(limit))) {
+            String taskNo=value.toString();
+            var indexed=event(taskNo);
+            var current=indexed.isEmpty()?Optional.<RuntimeView>empty():viewDevice(indexed.get().deviceId());
+            if(indexed.isEmpty() || current.isEmpty() || !taskNo.equals(current.get().event().taskNo())
+                    || indexed.get().generation()!=current.get().event().generation()) {
+                store.removeSorted("rule-due",taskNo);continue;
+            }
+            due.add(current.get());
+        }
+        return List.copyOf(due);
+    }
+    public ComputeV2Event completeRuleCycle(long userId,long deviceId,long generation,Verified evidence) {
+        var current=require(userId,deviceId,generation);
+        if(!isRuleCycle(current) || current.task().startedAt()==null
+                || clock.instant().isBefore(current.task().startedAt().plusSeconds(current.task().requiredSeconds())))
+            throw new IllegalStateException("COMPUTE_V2_RULE_CYCLE_NOT_DUE");
+        return verifiedComplete(userId,deviceId,generation,evidence);
+    }
+    public boolean retryRuleCompletion(long userId,long deviceId,long generation) {
+        var current=require(userId,deviceId,generation);
+        if(!isRuleCycle(current))throw new IllegalArgumentException("Rule cycle required");
+        String id=ComputeV2Event.eventId(current.taskNo(),generation,Kind.VERIFIED);
+        String pending=store.field("staged",id);
+        if(pending==null)pending=store.field("outgoing",id);
+        if(pending==null)return false;
+        send(store.decode(pending,ComputeV2Event.class));return true;
+    }
+    public ComputeV2Event exitRuleCycle(long userId,long deviceId,long generation) {
+        var current=require(userId,deviceId,generation);
+        if(!isRuleCycle(current))throw new IllegalArgumentException("Rule cycle required");
+        return stageAndSend(event(Kind.EXITED,userId,deviceId,current.instanceNo(),current.taskNo(),generation,
+                clock.instant(),current.task(),null,"RULE_CYCLE_FINISHED"));
+    }
     public int activeExecutionCount() { return Math.toIntExact(store.setSize("permits")); }
 
     public ComputeV2Event renew(long userId, long deviceId, long generation, String executorId) {
@@ -200,7 +257,7 @@ public class ComputeV2Runtime {
     /** Cloud FIFO excludes phone-owned work; phones reserve only their authenticated device's task. */
     public List<RuntimeView> queuedCloud(int limit) {
         return store.sorted("queue").stream().map(task -> store.field("issued-events",task)).filter(Objects::nonNull)
-                .map(value -> store.decode(value,ComputeV2Event.class)).filter(event -> !phoneExecution(event.task()))
+                .map(value -> store.decode(value,ComputeV2Event.class)).filter(event -> !phoneExecution(event.task()) && !isRuleCycle(event))
                 .limit(Math.min(limit,config.getManagedCapacity()))
                 .map(event -> view(event.userId(),event.deviceId()).orElseThrow()).toList();
     }

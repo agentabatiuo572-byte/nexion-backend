@@ -10,6 +10,7 @@ import ffdd.opsconsole.device.domain.TaskSchedulingSettings;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper;
 import ffdd.opsconsole.device.mapper.TaskSchedulingPolicyMapper;
 import ffdd.opsconsole.device.mapper.ComputeV2AdmissionMapper;
+import ffdd.opsconsole.device.mapper.RuleCycleAdmissionMapper;
 import ffdd.opsconsole.shared.capacity.E3DeviceCapacityPolicy;
 import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -35,7 +36,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.core.Authentication;
 
-/** TEST-only bridge. DB authority is short-lived; inference/MinIO/MQ never hold a SQL connection. */
+/** Model adapter plus server-owned rule cycles. External work never holds a SQL connection. */
 @Service
 @ConditionalOnProperty(name="nexion.compute-v2.enabled",havingValue="true")
 public class TestComputeV2Service {
@@ -49,6 +50,9 @@ public class TestComputeV2Service {
     private final ComputeV2AdmissionMapper admission;
     private final TestCloudActivationAdmission physicalAdmission;
     private final Environment environment;
+    private final RuleCycleAdmissionMapper ruleAdmission;
+    private final String scope;
+    private final boolean ruleCycles;
     private final ObjectMapper json;
     private final ComputeV2ModalRegistry modalRegistry;
     private final ComputeV2ModalVerifier modalVerifier;
@@ -75,33 +79,45 @@ public class TestComputeV2Service {
             Optional<ComputeV2DeviceLifecycleService> lifecycle,TestCloudActivationAdmission physicalAdmission) {
         this(runtime,cloud,transactions,assignments,policies,objects,admission,environment,json,clock,lifecycle,physicalAdmission,Optional.empty());
     }
-    @Autowired
     public TestComputeV2Service(ComputeV2Runtime runtime,TestCloudExecutorService cloud,TestCloudRequests transactions,
             AppTaskAssignmentMapper assignments,TaskSchedulingPolicyMapper policies,ObjectStorageService objects,
             ComputeV2AdmissionMapper admission,Environment environment,ObjectMapper json,Clock clock,
             Optional<ComputeV2DeviceLifecycleService> lifecycle,TestCloudActivationAdmission physicalAdmission,Optional<PhoneComputeV2Access> phones) {
+        this(runtime,cloud,transactions,assignments,policies,objects,admission,environment,json,clock,lifecycle,physicalAdmission,phones,null);
+    }
+    @Autowired
+    public TestComputeV2Service(ComputeV2Runtime runtime,TestCloudExecutorService cloud,TestCloudRequests transactions,
+            AppTaskAssignmentMapper assignments,TaskSchedulingPolicyMapper policies,ObjectStorageService objects,
+            ComputeV2AdmissionMapper admission,Environment environment,ObjectMapper json,Clock clock,
+            Optional<ComputeV2DeviceLifecycleService> lifecycle,TestCloudActivationAdmission physicalAdmission,Optional<PhoneComputeV2Access> phones,
+            RuleCycleAdmissionMapper ruleAdmission) {
         this.runtime=runtime;this.cloud=cloud;this.transactions=transactions;this.assignments=assignments;
         this.policies=policies;this.objects=objects;this.admission=admission;this.lifecycle=lifecycle;this.physicalAdmission=physicalAdmission;
-        this.environment=environment;this.json=json;this.clock=clock;
+        this.environment=environment;this.json=json;this.clock=clock;this.ruleAdmission=ruleAdmission;
+        this.scope=environment.getProperty("nexion.compute-v2.deployment-scope","");
+        this.ruleCycles=environment.getProperty("nexion.compute-v2.rule-cycle-enabled",Boolean.class,false);
         this.modalRegistry=new ComputeV2ModalRegistry(environment,json);this.modalVerifier=new ComputeV2ModalVerifier(environment,json);
         this.phones=phones;
-        if(!"TEST".equals(environment.getProperty("nexion.compute-v2.deployment-scope")))
-            throw new IllegalStateException("COMPUTE_V2_TEST_ADAPTER_SCOPE_REQUIRED");
+        if(!scope.matches("[A-Za-z0-9_-]{1,64}"))
+            throw new IllegalStateException("COMPUTE_V2_DEPLOYMENT_SCOPE_REQUIRED");
         enrolled=ids(environment.getProperty("nexion.compute-v2.device-ids",""));
         allowedTasks=Set.copyOf(Arrays.stream(environment.getProperty("nexion.compute-v2.allowed-task-ids","").split(","))
                 .map(String::trim).filter(s->!s.isEmpty()).toList());
         String secret=environment.getProperty("nexion.compute-v2.proof-secret","");
-        if(!secret.matches("[a-f0-9]{64}") || allowedTasks.isEmpty())
+        if(!secret.isEmpty() && !secret.matches("[a-f0-9]{64}"))
             throw new IllegalStateException("COMPUTE_V2_EXECUTOR_CAPABILITY_CONFIGURATION_REQUIRED");
         proofSecret=HexFormat.of().parseHex(secret);
         var containers=new HashMap<String,String>();
         for(int n=1;n<=6;n++) {
             String id=environment.getProperty("nexion.compute-v2.runner-"+n+"-container-id","");
+            if(id.isEmpty())continue;
             if(!id.matches("[a-f0-9]{64}")) throw new IllegalStateException("COMPUTE_V2_RUNNER_CONTAINER_REQUIRED");
             containers.put("runner-"+n,id);
         }
         validatorContainer=environment.getProperty("nexion.compute-v2.validator-container-id","");
-        if(!validatorContainer.matches("[a-f0-9]{64}") || new HashSet<>(containers.values()).size()!=6 || containers.containsValue(validatorContainer))
+        boolean modelsConfigured=!secret.isEmpty() || !containers.isEmpty() || !validatorContainer.isEmpty();
+        if(modelsConfigured && (proofSecret.length!=32 || allowedTasks.isEmpty()
+                || !validatorContainer.matches("[a-f0-9]{64}") || new HashSet<>(containers.values()).size()!=6 || containers.containsValue(validatorContainer)))
             throw new IllegalStateException("COMPUTE_V2_EXCLUSIVE_MODEL_CONTAINERS_REQUIRED");
         runnerContainers=Map.copyOf(containers);
         sharedBgeContainer=environment.getProperty("nexion.compute-v2.shared-bge-container-id","");
@@ -125,7 +141,7 @@ public class TestComputeV2Service {
     public synchronized Map<String,Object> next(Identity caller,String runner) {
         if(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())
             throw new IllegalStateException("COMPUTE_V2_DISPATCH_OUTER_TRANSACTION");
-        requireFleet(caller);String executor=executor(runner);
+        requireCloudModelCapability();requireFleet(caller);String executor=executor(runner);
         var original=runtime.forExecutor(executor);
         if(original.isPresent()) {
             var view=original.get();var event=view.event();
@@ -174,6 +190,7 @@ public class TestComputeV2Service {
     }
 
     public synchronized Map<String,Object> phoneNext(Authentication auth,PhoneComputeV2Access.EngineReady report) {
+        if(proofSecret.length!=32)throw error(503,"COMPUTE_V2_MODEL_PROOF_CONFIGURATION_REQUIRED");
         PhoneComputeV2Access access=phones.orElseThrow(()->error(503,"PHONE_EXECUTOR_UNAVAILABLE"));
         Identity caller=transactions.db(()->{
             Identity current=access.current(auth);
@@ -452,11 +469,12 @@ public class TestComputeV2Service {
     public synchronized void issueEnrolled() {
         if(enrolled.isEmpty() || !runtime.isReady()) return;
         lifecycle.ifPresent(ComputeV2DeviceLifecycleService::finalizePendingEnrolled);
+        advanceRuleCycles();
         if(!runtime.canAcceptWork())return;
         List<Long> devices=enrolled.stream().sorted().toList();
         // One shared cursor, bounded work per tick; no account-specific timer, JVM or journal.
-        for(int n=0;n<Math.min(12,devices.size());n++) {
-            Long priority=n<6?readyDevices.poll():null;
+        for(int n=0;n<Math.min(ruleCycles?200:12,devices.size());n++) {
+            Long priority=n<(ruleCycles?100:6)?readyDevices.poll():null;
             if(priority!=null)readyDeviceIds.remove(priority);
             long deviceId=priority==null?devices.get(Math.floorMod(scanCursor.getAndIncrement(),devices.size())):priority;
             if(phones.isPresent() && phones.get().manages(deviceId))continue;
@@ -467,12 +485,20 @@ public class TestComputeV2Service {
                     if("ISSUING".equals(view.status())) {
                         runtime.issue(event.userId(),deviceId,event.instanceNo(),event.task());continue;
                     }
+                    if(ComputeV2Runtime.isRuleCycle(event) && Set.of("QUEUED","STARTING").contains(view.status())) {
+                        transactions.db(()->{ruleEligible(deviceId,event.userId(),false);return null;});
+                        runtime.startRuleCycle(event.userId(),deviceId);continue;
+                    }
                     if(!Set.of("COMPLETED","FAILED").contains(view.status()) || view.executorId()!=null)continue;
+                    if(ComputeV2Runtime.isRuleCycle(event) && event.task().startedAt()!=null
+                            && !runtime.hasExited(event.taskNo(),event.generation()))continue;
                     runtime.retire(event.userId(),deviceId);
                 }
                 Issuance issuance=transactions.db(()->freeze(deviceId));
                 if(issuance==null) continue;
                 issue(issuance);
+                if(ComputeV2Runtime.isRuleCycle(issuance.snapshot(),scope))
+                    runtime.startRuleCycle(issuance.identity().ownerId(),deviceId);
             } catch(RuntimeException failure) {
                 LOG.warn("Compute v2 admission deferred device={} reason={}",deviceId,failure.getClass().getSimpleName());
             }
@@ -488,18 +514,29 @@ public class TestComputeV2Service {
         runtime.issue(issuance.identity().ownerId(),issuance.identity().deviceId(),issuance.identity().instanceNo(),issuance.snapshot());
     }
     private Issuance freeze(long deviceId,Identity phone) {
+        boolean rule=phone==null && ruleCycles;
+        if(phone==null && !rule)requireCloudModelCapability();
         Identity fleet=new Identity("fleet",0,0,"fleet",environment.getProperty(TestCloudExecutorService.PREFIX+"task-config-id"),
                 environment.getProperty(TestCloudExecutorService.PREFIX+"model"),environment.getProperty(TestCloudExecutorService.PREFIX+"model-digest"));
         Identity caller=phone==null?fleet:phone;
-        Identity device=phone==null?cloud.computeV2Identity(fleet,deviceId):phone;
-        var owned=eligible(caller,deviceId,device.ownerId(),false);
+        Long ruleOwner=rule?ruleAdmission.owner(deviceId):null;
+        if(rule && ruleOwner==null)throw error(404,"COMPUTE_V2_DEVICE_NOT_FOUND");
+        var ruleDevice=rule?ruleEligible(deviceId,ruleOwner,false):null;
+        Identity device=rule?new Identity("rule-cycle",ruleOwner,deviceId,ruleDevice.instanceNo(),"","","")
+                :phone==null?cloud.computeV2Identity(fleet,deviceId):phone;
+        var owned=rule?ruleDevice:eligible(caller,deviceId,device.ownerId(),false);
         int routingVram=phone==null?AppTaskAssignmentService.effectiveRoutingVram(owned):0;
         var candidates=new ArrayList<ComputeV2Selection.Candidate>();
         for(var task:assignments.eligibleTasks(routingVram)) {
-            if(!allowedTasks.contains(task.taskId()) || task.minVram()==null || task.minVram()>routingVram) continue;
+            if((!rule || !allowedTasks.isEmpty()) && !allowedTasks.contains(task.taskId())
+                    || task.minVram()==null || task.minVram()>routingVram) continue;
             var saved=policies.find(task.taskId());
             var policy=saved==null?TaskSchedulingSettings.defaults(task.taskClass(),task.modelName()):saved.settings();
-            if(phone==null && "EM".equals(task.taskClass()) && "BGE-M3".equals(task.modelName()) && "test-bge-m3-v1".equals(policy.runtimeKey())
+            if(rule) {
+                if(!Set.of("IG","VG","LL","FT","EM","SP").contains(task.taskClass()))continue;
+                candidates.add(new ComputeV2Selection.Candidate(task.taskId(),task.name(),task.taskClass(),task.modelName(),
+                        task.minReward(),task.maxReward(),saved==null?0:saved.revision(),policy,List.of()));
+            } else if(phone==null && "EM".equals(task.taskClass()) && "BGE-M3".equals(task.modelName()) && "test-bge-m3-v1".equals(policy.runtimeKey())
                     && policy.runtimeKey().equals(policy.validatorKey())) {
                 candidates.add(new ComputeV2Selection.Candidate(task.taskId(),task.name(),task.taskClass(),task.modelName(),
                         task.minReward(),task.maxReward(),saved==null?0:saved.revision(),policy,texts(policy.workloadConfigJson())));
@@ -520,7 +557,16 @@ public class TestComputeV2Service {
         long reward=ComputeV2Selection.micros(E3DeviceCapacityPolicy.applyCapacity(BigDecimal.valueOf(selected.rawMicros(),6),projection));
         Object input;
         String modelDigest;
-        if(task.installedRuntime()==null) {
+        if(rule) {
+            modelDigest="sha256:"+"0".repeat(64);
+            var manifest=new LinkedHashMap<String,Object>();
+            manifest.put("version",4);manifest.put("executionMode","RULE_CYCLE");manifest.put("proofKind","RULE_SETTLEMENT");
+            manifest.put("modelExecuted",false);manifest.put("deploymentScope",scope);manifest.put("taskConfigId",task.taskId());
+            manifest.put("configVersion",task.revision());manifest.put("taskClass",task.taskClass());
+            manifest.put("requiredSeconds",selected.expectedSeconds());manifest.put("rawQuoteMicros",selected.rawMicros());
+            manifest.put("rewardUsdtMicros",reward);manifest.put("e3Multiplier",projection.capacityPct().movePointLeft(2));
+            input=manifest;
+        } else if(task.installedRuntime()==null) {
             modelDigest=device.modelDigest();
             input=new Manifest(2,task.settings().runtimeKey(),task.settings().validatorKey(),task.taskId(),task.revision(),
                     device.model(),modelDigest,task.settings().executionTimeoutSec(),task.texts());
@@ -541,13 +587,110 @@ public class TestComputeV2Service {
         byte[] bytes=encode(input);String hash=TestCloudExecutorService.sha256(bytes);var wallet=wallet(device.ownerId());
         Instant now=clock.instant();
         var snapshot=new TaskSnapshot("CV2-NEXT-"+UUID.randomUUID(),task.taskId(),task.name(),task.taskClass(),task.model(),
-                "UVEL Compute",task.revision(),selected.expectedSeconds(),task.settings().expectedDurationMinSec(),
+                rule?"UVEL Rule Cycle":"UVEL Compute",task.revision(),selected.expectedSeconds(),task.settings().expectedDurationMinSec(),
                 task.settings().expectedDurationMaxSec(),selected.expectedSeconds(),task.settings().executionTimeoutSec(),0,
                 now,null,now.plusSeconds(45),now.plusSeconds(task.settings().executionTimeoutSec()+120L),reward,selected.rawMicros(),
                 projection.capacityPct().movePointLeft(2),((Number)wallet.get("id")).longValue(),wallet.get("incarnation").toString(),
                 new DeviceSnapshot(owned.name(),owned.deviceType(),owned.productCode(),null,null,null,owned.vramTotalGb()),hash,
-                modelDigest.substring(7),"compute-v2/TEST/input/"+hash+".json");
+                modelDigest.substring(7),rule?"device-reward/"+scope+"/input/"+hash+".json":"compute-v2/TEST/input/"+hash+".json");
         return new Issuance(device,snapshot,bytes);
+    }
+
+    private AppTaskAssignmentMapper.DeviceRow ruleEligible(long deviceId,long userId,boolean completing) {
+        if(!enrolled.contains(deviceId))throw error(403,"COMPUTE_V2_DEVICE_NOT_ENROLLED");
+        if(assignments.lockProductionUser(userId)==null)throw error(403,"COMPUTE_V2_ACCOUNT_NOT_ACTIVE");
+        var device=assignments.lockOwnedDevice(userId,deviceId);
+        if(device==null || Set.of("PHONE","MOBILE").contains(device.deviceType().toUpperCase(Locale.ROOT)))
+            throw error(403,"COMPUTE_V2_RULE_DEVICE_REQUIRED");
+        LocalDateTime beginning=LocalDateTime.of(1970,1,1,0,0);
+        if(ruleAdmission.lockPaidOwner(deviceId,userId,completing,beginning,beginning,true)==null)
+            throw error(403,"COMPUTE_V2_PAID_DEVICE_REQUIRED");
+        Integer pending=admission.pendingDeactivate(deviceId,userId);
+        if((!completing && (pending==null || pending!=0)) || device.activatedAt()==null
+                || !Set.of("ACTIVE","ONLINE","BUSY","RUNNING").contains(device.status().toUpperCase(Locale.ROOT))
+                || Boolean.TRUE.equals(device.dispatchPaused()) || device.pausedReason()!=null&&!device.pausedReason().isBlank())
+            throw error(409,"COMPUTE_V2_DEVICE_NOT_ACTIVE");
+        if(admission.unresolvedLegacy(userId,deviceId)!=0)throw error(409,"COMPUTE_V2_V1_NOT_DRAINED");
+        long active=assignments.ownedDevices(userId).stream().filter(row->enrolled.contains(row.id()) && row.activatedAt()!=null
+                && Set.of("ACTIVE","ONLINE","BUSY","RUNNING","OFFLINE").contains(row.status().toUpperCase(Locale.ROOT))).count();
+        if(active>6)throw error(409,"COMPUTE_V2_ACCOUNT_SLOT_LIMIT");
+        return device;
+    }
+
+    private void advanceRuleCycles() {
+        // ponytail: bounded single-server work; raise this batch only after measuring cycle backlog.
+        for(var current:runtime.ruleCyclesDue(200)) {
+            var event=current.event();
+            if(!ComputeV2Runtime.isRuleCycle(event) || !enrolled.contains(event.deviceId()))continue;
+            try {
+                if(Set.of("STARTING","QUEUED").contains(current.status())) {
+                    runtime.startRuleCycle(event.userId(),event.deviceId());continue;
+                }
+                if(event.kind()!=Kind.VERIFIED && !"FAILED".equals(current.status())) {
+                    if(runtime.retryRuleCompletion(event.userId(),event.deviceId(),event.generation()))continue;
+                    Instant completed=event.task().startedAt().plusSeconds(event.task().requiredSeconds());
+                    LocalDate day=completed.atZone(ZoneOffset.UTC).toLocalDate();
+                    long nex=transactions.db(()->{
+                        var device=ruleEligible(event.deviceId(),event.userId(),true);
+                        if(!event.instanceNo().equals(device.instanceNo()))throw error(409,"COMPUTE_V2_OWNER_CHANGED");
+                        var gate=assignments.taskRuntimeGate(event.userId(),event.deviceId(),event.task().taskConfigId());
+                        if(gate==null || !"ACTIVE".equalsIgnoreCase(gate.status())
+                                || Set.of("kill","killed","已 kill","已kill").contains(Objects.toString(gate.killInit(),"").trim().toLowerCase(Locale.ROOT)))
+                            throw error(409,"COMPUTE_V2_TASK_DISABLED");
+                        if(gate.minVram()==null || gate.deviceVram()==null || gate.deviceVram()<gate.minVram())
+                            throw error(409,"COMPUTE_V2_TASK_CAPACITY_CHANGED");
+                        var wallet=wallet(event.userId());
+                        if(((Number)wallet.get("id")).longValue()!=event.task().walletId()
+                                || !event.task().walletIncarnation().equals(wallet.get("incarnation")))
+                            throw error(409,"COMPUTE_V2_WALLET_IDENTITY_CHANGED");
+                        BigDecimal daily=assignments.lockPaidCloudShareDailyNex(event.userId(),event.deviceId());
+                        String entitlement="CLOUD_SHARE_DAILY:"+event.deviceId()+":"+day;
+                        if(assignments.lockDailyCloudShareNex(event.userId(),entitlement)!=null)return 0L;
+                        return daily==null?0L:ComputeV2Selection.micros(daily);
+                    });
+                    // Read and hash the actual frozen rule input; there is no model artifact or inference call.
+                    byte[] frozen=inputBytes(event);
+                    JsonNode rule;
+                    try {rule=json.readTree(frozen);}catch(java.io.IOException invalid){throw error(409,"COMPUTE_V2_RULE_INPUT_INVALID");}
+                    if(rule.path("version").asInt()!=4 || !"RULE_CYCLE".equals(rule.path("executionMode").asText())
+                            || rule.path("modelExecuted").asBoolean(true) || !"RULE_SETTLEMENT".equals(rule.path("proofKind").asText()))
+                        throw error(409,"COMPUTE_V2_RULE_INPUT_INVALID");
+                    var result=new LinkedHashMap<String,Object>();
+                    result.put("version",4);result.put("executionMode","RULE_CYCLE");result.put("modelExecuted",false);
+                    result.put("proofKind","RULE_SETTLEMENT");result.put("deploymentScope",scope);
+                    result.put("taskNo",event.taskNo());result.put("generation",event.generation());
+                    result.put("ownerId",event.userId());result.put("deviceId",event.deviceId());result.put("instanceNo",event.instanceNo());
+                    result.put("taskConfigId",event.task().taskConfigId());result.put("configVersion",event.task().configVersion());
+                    result.put("taskClass",event.task().taskClass());result.put("inputHash",event.task().inputSha256());
+                    result.put("startedAt",event.task().startedAt());result.put("completedAt",completed);
+                    result.put("requiredSeconds",event.task().requiredSeconds());result.put("rawQuoteMicros",event.task().rawQuoteMicros());
+                    result.put("e3Multiplier",event.task().e3Multiplier());result.put("rewardUsdtMicros",event.task().rewardUsdtMicros());
+                    // Daily NEX ownership is decided atomically by the shared event stage, then recorded in its evidence.
+                    result.put("utcDay",day);
+                    byte[] bytes=encode(result);String hash=TestCloudExecutorService.sha256(bytes);
+                    String artifact="device-reward/"+scope+"/settlement/"+event.userId()+"/"+event.taskNo()+"/"+hash+".json";
+                    objects.put(artifact,"application/json",new ByteArrayInputStream(bytes),bytes.length);
+                    String proof=TestCloudExecutorService.sha256("RULE_SETTLEMENT\n"+event.taskNo()+"\n"+event.generation()+"\n"+event.task().inputSha256()+"\n"+hash);
+                    runtime.completeRuleCycle(event.userId(),event.deviceId(),event.generation(),new Verified(proof,event.task().inputSha256(),hash,
+                            clock.instant(),completed,artifact,bytes.length,nex,nex>0?"CLOUD_SHARE_DAILY:"+event.deviceId()+":"+day:null,day));
+                }
+                if(!runtime.hasExited(event.taskNo(),event.generation()))runtime.exitRuleCycle(event.userId(),event.deviceId(),event.generation());
+                afterExit(event);
+            } catch(BizException rejected) {
+                boolean revoked=Set.of("COMPUTE_V2_ACCOUNT_NOT_ACTIVE","COMPUTE_V2_RULE_DEVICE_REQUIRED",
+                        "COMPUTE_V2_PAID_DEVICE_REQUIRED","COMPUTE_V2_DEVICE_NOT_ACTIVE","COMPUTE_V2_OWNER_CHANGED",
+                        "COMPUTE_V2_TASK_DISABLED","COMPUTE_V2_TASK_CAPACITY_CHANGED","COMPUTE_V2_WALLET_IDENTITY_CHANGED")
+                        .contains(rejected.getMessage());
+                if(revoked && rejected.getCode()>=400 && rejected.getCode()<500
+                        && !runtime.completionPending(event.taskNo(),event.generation()) && !Set.of("COMPLETED","FAILED").contains(current.status())) {
+                    runtime.fail(event.userId(),event.deviceId(),event.generation(),"RULE_CYCLE_AUTHORITY_REVOKED");
+                    runtime.exitRuleCycle(event.userId(),event.deviceId(),event.generation());afterExit(event);
+                }
+                LOG.warn("Rule cycle authority deferred device={} reason={}",event.deviceId(),rejected.getMessage());
+            } catch(RuntimeException unavailable) {
+                LOG.warn("Rule cycle completion deferred device={} reason={}",event.deviceId(),unavailable.getClass().getSimpleName());
+            }
+        }
     }
 
     private AppTaskAssignmentMapper.DeviceRow eligible(Identity caller,long deviceId,long userId,boolean completing) {
@@ -652,7 +795,8 @@ public class TestComputeV2Service {
         task.put("workload",input.workload());task.put("seed",input.seed());return task;
     }
     private byte[] inputBytes(ComputeV2Event event) {
-        if(!event.task().inputArtifactRef().equals("compute-v2/TEST/input/"+event.task().inputSha256()+".json")) throw error(409,"COMPUTE_V2_INPUT_MANIFEST_INVALID");
+        if(!ComputeV2Runtime.isRuleCycle(event)
+                && !event.task().inputArtifactRef().equals("compute-v2/TEST/input/"+event.task().inputSha256()+".json")) throw error(409,"COMPUTE_V2_INPUT_MANIFEST_INVALID");
         try(var stream=objects.get(event.task().inputArtifactRef())) {byte[] bytes=stream.readNBytes(20001);
             if(bytes.length>20000 || !event.task().inputSha256().equals(TestCloudExecutorService.sha256(bytes))) throw error(409,"COMPUTE_V2_INPUT_MANIFEST_INVALID");
             return bytes;
@@ -668,7 +812,12 @@ public class TestComputeV2Service {
     }
     private byte[] encode(Object value) {try{return json.writeValueAsBytes(value);}catch(java.io.IOException invalid){throw new IllegalArgumentException(invalid);}}
     private String signature(ComputeV2Event event,String purpose) {
+        if(proofSecret.length!=32)throw error(503,"COMPUTE_V2_MODEL_PROOF_CONFIGURATION_REQUIRED");
         return hmac((purpose+":"+event.taskNo()+":"+event.generation()+":"+event.deviceId()+":"+event.task().inputSha256()).getBytes(StandardCharsets.UTF_8));
+    }
+    private void requireCloudModelCapability() {
+        if(proofSecret.length!=32 || runnerContainers.size()!=6 || validatorContainer.isEmpty())
+            throw error(503,"COMPUTE_V2_MODEL_CAPABILITY_CONFIGURATION_REQUIRED");
     }
     private String hmac(byte[] bytes) {
         try {Mac mac=Mac.getInstance("HmacSHA256");mac.init(new SecretKeySpec(proofSecret,"HmacSHA256"));

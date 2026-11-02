@@ -1,5 +1,26 @@
 # TEST Compute V2
 
+## Server-driven rule cycles
+
+`nexion.compute-v2.rule-cycle-enabled=true` opts enrolled cloud devices into
+server-driven reward cycles. It is disabled by default and is independent of the
+deployment scope. The existing E2/A2 task configuration supplies the eligible
+classes, selection weights, reward ranges and duration ranges; each new cycle
+freezes its configuration and E3-adjusted quote once. The server advances the
+cycle without a Python worker, model inference, model permits or a phone heartbeat.
+
+The existing Redis/MQ lifecycle and 60-second SQL settlement remain authoritative.
+The input reference `device-reward/{scope}/input/{sha256}.json` identifies rule
+cycles without changing historical event serialization. Their receipt metadata is
+`executionMode=RULE_CYCLE`, `proofKind=RULE_SETTLEMENT`, `modelExecuted=false`.
+Input, result and proof hashes bind the actual rule and settlement data, rather
+than model outputs. The existing receipt page layout is retained.
+
+Already issued model tasks continue through their original worker, verifier and
+exit path. Phone tasks keep their real execution path. Disabling the rule-cycle
+switch stops new rule cycles without abandoning an existing one. Verify the full
+business flow before enabling this setting for a deployment.
+
 This protocol manages up to1,000 accounts and6,000 device slots. Six fixed runner threads
 share the six existing loopback model servers; one independent validator uses the existing
 11435 server. There is no distributed model pool, per-account JVM, model, timer or journal.

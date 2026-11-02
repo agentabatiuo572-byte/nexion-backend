@@ -24,7 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 /** Account-owned projection only. Reading never issues, starts, acknowledges or settles work. */
 @Service
 public class ComputeV2ReadService {
-    private static final String SCOPE = "TEST";
+    private final String scope;
     private static final String BATCH_ID = "[a-f0-9]{64}:(?:USDT|UVT)";
     private final AppTaskAssignmentService legacy;
     private final Optional<ComputeV2Runtime> runtime;
@@ -41,6 +41,7 @@ public class ComputeV2ReadService {
     @Autowired
     public ComputeV2ReadService(AppTaskAssignmentService legacy, Optional<ComputeV2Runtime> runtime,
             Environment environment, ComputeV2ReadMapper mapper, ObjectMapper json, Clock clock) {
+        this.scope=environment.getProperty("nexion.compute-v2.deployment-scope", "");
         this.legacy=legacy; this.runtime=runtime; this.environment=environment; this.mapper=mapper; this.json=json; this.clock=clock;
     }
 
@@ -48,7 +49,7 @@ public class ComputeV2ReadService {
     public Map<String,Object> assignments(Long userId) {
         requireUser(userId);
         if (!environment.getProperty("nexion.compute-v2.enabled",Boolean.class,false) || runtime.isEmpty()
-                || !SCOPE.equals(environment.getProperty("nexion.compute-v2.deployment-scope",""))) unavailable();
+                || scope.isBlank()) unavailable();
         Set<Long> enrolled = enrolledDevices();
         if (enrolled.isEmpty()) unavailable();
         // Capture Redis before the first SQL read establishes this transaction's consistent snapshot.
@@ -73,7 +74,7 @@ public class ComputeV2ReadService {
                 if (view!=null) {
                     var event=view.event();
                     if (event.userId()!=userId || event.deviceId()!=device.deviceId()
-                            || !device.instanceNo().equals(event.instanceNo()) || !SCOPE.equals(event.deploymentScope())) invalid();
+                            || !device.instanceNo().equals(event.instanceNo()) || !scope.equals(event.deploymentScope())) invalid();
                     views.put(device.deviceId(),view);
                     if (event.kind()==ComputeV2Event.Kind.VERIFIED) taskNos.add(event.taskNo());
                 }
@@ -138,7 +139,7 @@ public class ComputeV2ReadService {
         long usdt=0,nex=0,nexCount=0;
         try {
             for (var event : snapshot.events()) {
-                if (event.userId()!=userId || !SCOPE.equals(event.deploymentScope()) || event.kind()!=ComputeV2Event.Kind.VERIFIED
+                if (event.userId()!=userId || !scope.equals(event.deploymentScope()) || event.kind()!=ComputeV2Event.Kind.VERIFIED
                         || event.evidence()==null || events.putIfAbsent(event.eventId(),event)!=null) invalid();
                 usdt=Math.addExact(usdt,event.task().rewardUsdtMicros());
                 nex=Math.addExact(nex,event.evidence().rewardNexMicros());
@@ -152,7 +153,7 @@ public class ComputeV2ReadService {
             var committedAssets=new HashMap<String,Set<String>>();
             for (int offset=0;offset<ids.size();offset+=200) {
                 var page=ids.subList(offset,Math.min(offset+200,ids.size()));
-                var rows=mapper.pendingAllocations(userId,SCOPE,page);
+                var rows=mapper.pendingAllocations(userId,scope,page);
                 if (rows.size()>page.size()*2) invalid();
                 for (var row : rows) {
                     String id=String.valueOf(row.get("event_id")),asset=String.valueOf(row.get("asset"));
@@ -190,7 +191,7 @@ public class ComputeV2ReadService {
             if (boundary.size()!=1) throw new BizException(422,"COMPUTE_V2_CURSOR_INVALID");
             postedAt=boundary.get(0).get("posted_at_utc");
         }
-        var rows=mapper.batches(userId,SCOPE,postedAt,cursor,limit+1);
+        var rows=mapper.batches(userId,scope,postedAt,cursor,limit+1);
         var page=rows.stream().limit(limit).map(this::batch).toList();
         var response=authority();
         response.putAll(fields("records",page,"nextCursor",rows.size()>limit ? page.get(page.size()-1).get("batchNo") : null));
@@ -205,7 +206,7 @@ public class ComputeV2ReadService {
         if (rows.size()!=1) invalid();
         var row=rows.get(0);
         var response=authority(); response.putAll(batch(row));
-        var allocations=mapper.allocations(userId,SCOPE,batchNo);
+        var allocations=mapper.allocations(userId,scope,batchNo);
         if (allocations.size()>200 || allocations.size()!=number(row.get("task_count"))) invalid();
         long total=0; var identities=new HashSet<String>(); var items=new ArrayList<Map<String,Object>>();
         for (var allocation : allocations) {
@@ -221,7 +222,7 @@ public class ComputeV2ReadService {
     }
 
     private List<Map<String,Object>> batchRows(long userId,String batchNo) {
-        return mapper.batch(userId,SCOPE,batchNo);
+        return mapper.batch(userId,scope,batchNo);
     }
 
     private Map<String,Object> batch(Map<String,Object> row) {
@@ -237,13 +238,13 @@ public class ComputeV2ReadService {
     private record PostedTask(String batchNo,Instant postedAt,ComputeV2Event event) { }
     private Map<String,PostedTask> postedTasks(long userId,Set<String> taskNos) {
         if (taskNos.isEmpty()) return Map.of();
-        var rows=mapper.postedTasks(userId,SCOPE,new ArrayList<>(taskNos));
+        var rows=mapper.postedTasks(userId,scope,new ArrayList<>(taskNos));
         var result=new HashMap<String,PostedTask>();
         for (var row : rows) {
             try {
                 var event=json.readValue(String.valueOf(row.get("payload")),ComputeV2Event.class);
                 String taskNo=String.valueOf(row.get("task_no"));
-                if (event.userId()!=userId || !SCOPE.equals(event.deploymentScope()) || !event.taskNo().equals(taskNo)
+                if (event.userId()!=userId || !scope.equals(event.deploymentScope()) || !event.taskNo().equals(taskNo)
                         || event.kind()!=ComputeV2Event.Kind.VERIFIED || result.containsKey(taskNo)) invalid();
                 result.put(taskNo,new PostedTask(String.valueOf(row.get("settlement_id")),utc(row.get("posted_at_utc")),event));
             } catch (JsonProcessingException ex) { throw new BizException(503,"COMPUTE_V2_STATE_INVALID"); }
@@ -280,7 +281,10 @@ public class ComputeV2ReadService {
                 "completedAt",completed,"actualDurationSec",actualDurationSec(e,status),
                 "settlementStatus",posted!=null ? "POSTED" : verified ? blockedReason==null ? "PENDING" : "BLOCKED" : "NONE","settlementBatchNo",posted==null ? null : posted.batchNo(),
                 "settledAt",posted==null ? null : posted.postedAt(),"receiptNo",posted==null ? null : e.receiptNo(),"configVersion",task.configVersion(),
-                "proofNonce",null,"proofExpiresAt",null,"pausedAt",null,"pausedSeconds",0));
+                "proofNonce",null,"proofExpiresAt",null,"pausedAt",null,"pausedSeconds",0,
+                "executionMode",ComputeV2Runtime.isRuleCycle(e)?"RULE_CYCLE":"MODEL",
+                "proofKind",ComputeV2Runtime.isRuleCycle(e)?"RULE_SETTLEMENT":"MODEL_EXECUTION",
+                "modelExecuted",!ComputeV2Runtime.isRuleCycle(e) && verified));
         if (blockedReason!=null) result.put("settlementBlockReason",blockedReason);
         return result;
     }
@@ -321,7 +325,7 @@ public class ComputeV2ReadService {
     private void requireHistoryScope(Long userId) {
         requireUser(userId);
         ProductionDeviceRuntimeGate.requireProduction(environment,"COMPUTE_V2_RUNTIME_UNSUPPORTED");
-        if (!SCOPE.equals(environment.getProperty("nexion.compute-v2.deployment-scope",""))) unavailable();
+        if (scope.isBlank()) unavailable();
     }
     private static void requireUser(Long userId) { if (userId==null || userId<=0) throw new BizException(403,"USER_SUBJECT_REQUIRED"); }
     private static void requireBatchId(String value) { if (value==null || !value.matches(BATCH_ID)) throw new BizException(422,"COMPUTE_V2_BATCH_INVALID"); }
@@ -340,8 +344,8 @@ public class ComputeV2ReadService {
         if (value instanceof LocalDateTime time) return time.atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant().toEpochMilli();
         return 0;
     }
-    private static LinkedHashMap<String,Object> authority() {
-        return fields("source","server","sourceEnvironment","PRODUCTION","runId","","serverCanonical",true,"deploymentScope",SCOPE);
+    private LinkedHashMap<String,Object> authority() {
+        return fields("source","server","sourceEnvironment","PRODUCTION","runId","","serverCanonical",true,"deploymentScope",scope);
     }
     private static LinkedHashMap<String,Object> fields(Object... values) {
         var result=new LinkedHashMap<String,Object>();
