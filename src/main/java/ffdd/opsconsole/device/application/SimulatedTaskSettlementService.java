@@ -43,9 +43,11 @@ public class SimulatedTaskSettlementService {
         mapper.task(task,usdt,postedAt);
         mapper.receipt(task,usdt,nex,postedAt);
         var before=funds.begin(task.userId());
-        if(mapper.credit(task,"USDT",usdt,postedAt)!=1)throw new BizException(409,"SIMULATED_TASK_CREDIT_CONFLICT");
-        mapper.ledger(task.userId(),task.taskNo(),"USDT",usdt,mapper.usdt(task.userId()),postedAt);
-        mapper.earning(task,"EARN-"+task.taskNo(),"USDT",usdt,postedAt);
+        if(usdt.signum()>0) {
+            if(mapper.credit(task,"USDT",usdt,postedAt)!=1)throw new BizException(409,"SIMULATED_TASK_CREDIT_CONFLICT");
+            mapper.ledger(task.userId(),task.taskNo(),"USDT",usdt,mapper.usdt(task.userId()),postedAt);
+            mapper.earning(task,"EARN-"+task.taskNo(),"USDT",usdt,postedAt);
+        }
         funds.afterUsdt(before);
         if(nex.signum()>0) {
             if(mapper.credit(task,"UVT",nex,postedAt)!=1)throw new BizException(409,"SIMULATED_TASK_CREDIT_CONFLICT");

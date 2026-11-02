@@ -139,7 +139,7 @@ public class SimulatedTaskService {
             // Keep the original task and quote on a rolled-back financial/configuration failure; other devices continue.
             String reason=failure instanceof BizException?failure.getMessage():failure.getClass().getSimpleName();
             transaction.execute(status->{mapper.recordError(candidate.deviceId(),reason.substring(0,Math.min(128,reason.length())),observed.plusSeconds(30));return null;});
-            LOG.warn("Simulated task deferred device={} reason={}",candidate.deviceId(),reason);
+            LOG.warn("Simulated task deferred device={} reason={}",candidate.deviceId(),reason,failure);
         }
     }
 

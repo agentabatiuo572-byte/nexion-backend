@@ -232,6 +232,9 @@ public class SupportFundReadService {
                                 try {device=deviceEvidence.verify(row,source,proof,events,deviceInput);}
                                 catch(IllegalArgumentException ex){throw bad(Gap.SOURCE);}
                                 require(devicePhases.add(device.coveredPhase()),Gap.SOURCE);
+                                // Signed zero SIM receipts remain in source coverage without a cash replay movement.
+                                if("SUPPORT_DEVICE_EARNING_V2".equals(source.path("schemaVersion").asText())
+                                        &&events.isEmpty()&&device.points().isEmpty())continue;
                                 stamp=device.stamp();sourcePoints=device.points();
                             }
                             case "SUPPORT_COMPUTE_V2_BATCH" -> {

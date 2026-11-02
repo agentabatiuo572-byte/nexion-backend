@@ -2,6 +2,7 @@ package ffdd.opsconsole.device.dto;
 
 import java.math.BigDecimal;
 
+/** New publications accept USDT or UVT; legacy stored asset aliases are read-only compatibility. */
 public record TaskSimulationSettings(
         @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=DeviceTaskUpsertRequest.StrictSchedulingInteger.class)
         Integer durationMinutes, BigDecimal baseReward, String asset, Boolean enabled,

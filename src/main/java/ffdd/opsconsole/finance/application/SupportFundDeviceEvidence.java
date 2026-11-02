@@ -38,14 +38,22 @@ public class SupportFundDeviceEvidence {
         for(var l:originals.ledgers)stored(time(l.get("createdAt")),posted,"nx_wallet_ledger.created_at",input);for(var e:originals.earnings){stored(time(e.get("walletPostedAt")),posted,"nx_earning_event.wallet_posted_at",input);stored(time(e.get("createdAt")),posted,"nx_earning_event.created_at",input);}
         var expected=originals.events;require(expected.equals(events)&&equal(codec.readCurrentProof(text(op.get("orderedEventsJson"))),json.valueToTree(events))&&equal(proof.path("eventIds"),events.stream().map(Event::id).toList()));
         long customer=number(originals.receipt.get("customerId"));var parties=input.parties().stream().filter(p->number(p.get("operationId"))==id).toList();require(parties.size()==1&&number(parties.get(0).get("customerId"))==customer);
-        var legs=new ArrayList<>(input.legs().stream().filter(l->number(l.get("operationId"))==id).toList());require(legs.size()==(money(originals.receipt.get("rewardNex")).signum()>0?2:1));legs.sort(Comparator.comparingLong(l->number(l.get("revision"))));
+        var assets=originals.simulation==null?(money(originals.receipt.get("rewardNex")).signum()>0?List.of("USDT","UVT"):List.of("USDT"))
+            :originals.events.stream().map(event->event.to().currency()).toList();
+        var legs=new ArrayList<>(input.legs().stream().filter(l->number(l.get("operationId"))==id).toList());require(legs.size()==assets.size());legs.sort(Comparator.comparingLong(l->number(l.get("revision"))));
         var stages=proof.path("walletStages");require(stages.isArray()&&stages.size()==legs.size()+1);var points=new ArrayList<Point>();String incarnation=null;long prior=-1;
+        if(originals.simulation!=null && legs.isEmpty()){
+            var stage=stages.get(0);String inc=text(stage.path("incarnation"));long revision=number(stage.path("revision"));
+            require(inc.equals(originals.simulation.walletIncarnation())&&number(stage.path("id"))==originals.simulation.walletId()&&number(stage.path("customerId"))==customer&&revision>=0);
+            var raws=input.raw().stream().filter(r->inc.equals(r.get("incarnation"))&&number(r.get("revision"))==revision).toList();require(raws.size()==1);
+            wallet(stage,raws.get(0),"new",inc,revision);
+        }
         for(int i=0;i<legs.size();i++){
             var leg=legs.get(i);String inc=text(leg.get("incarnation"));long revision=number(leg.get("revision"));require(inc.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")&&revision>0&&(i==0||inc.equals(incarnation)&&revision==prior+1));incarnation=inc;prior=revision;
             var raws=input.raw().stream().filter(r->inc.equals(r.get("incarnation"))&&number(r.get("revision"))==revision).toList();require(raws.size()==1);var raw=raws.get(0);require("CHANGE".equals(raw.get("observation"))&&number(raw.get("oldUserId"))==customer&&number(raw.get("newUserId"))==customer&&number(raw.get("oldId"))>0&&number(raw.get("oldId"))==number(raw.get("newId"))&&number(raw.get("newVersion"))==number(raw.get("oldVersion"))+1&&time(raw.get("oldCreatedAt")).equals(time(raw.get("newCreatedAt"))));
             if(originals.simulation!=null)require(inc.equals(originals.simulation.walletIncarnation())&&number(raw.get("oldId"))==originals.simulation.walletId());
             wallet(stages.get(i),raw,"old",inc,revision-1);wallet(stages.get(i+1),raw,"new",inc,revision);
-            Cash before=cash(raw,"old"),after=cash(raw,"new");String asset=i==0?"USDT":"UVT";var amount=money(originals.receipt.get(i==0?"rewardUsdt":"rewardNex"));require(before.pending().compareTo(after.pending())==0&&before.risk().compareTo(after.risk())==0);
+            Cash before=cash(raw,"old"),after=cash(raw,"new");String asset=assets.get(i);var amount=money(originals.receipt.get("USDT".equals(asset)?"rewardUsdt":"rewardNex"));require(before.pending().compareTo(after.pending())==0&&before.risk().compareTo(after.risk())==0);
             require(after.usdt().subtract(before.usdt()).compareTo(asset.equals("USDT")?amount:BigDecimal.ZERO)==0&&after.nex().subtract(before.nex()).compareTo(asset.equals("UVT")?amount:BigDecimal.ZERO)==0);
             for(var ledger:originals.ledgers.stream().filter(l->asset.equals(l.get("asset"))).toList())require(money(ledger.get("balanceAfter")).compareTo(asset.equals("USDT")?after.usdt():after.nex())==0);
             points.add(new Point(inc,revision,customer,before,after,amount.signum()==0?List.of():List.of(key(no)+":"+("USDT".equals(asset)?"USDT":"NEX"))));
@@ -112,9 +120,10 @@ public class SupportFundDeviceEvidence {
         String daily="CLOUD_SHARE_DAILY:"+device+":"+simulation.dueAt().atZone(DateTimeFormatConfig.BUSINESS_ZONE).withZoneSameInstant(ZoneOffset.UTC).toLocalDate();
         var ledgers=sources.ledgers().stream().filter(l->taskNo.equals(l.get("bizNo"))||dailyNex.signum()>0&&daily.equals(l.get("bizNo"))).toList();
         var earnings=sources.earningEvents().stream().filter(e->no.equals(e.get("receiptNo"))).toList();
-        require(ledgers.size()==1+(baseNex.signum()>0?1:0)+(dailyNex.signum()>0?1:0)&&earnings.size()==(nex.signum()>0?2:1));
+        var assets=new ArrayList<String>();if(usd.signum()>0)assets.add("USDT");if(nex.signum()>0)assets.add("UVT");
+        require(ledgers.size()==(usd.signum()>0?1:0)+(baseNex.signum()>0?1:0)+(dailyNex.signum()>0?1:0)&&earnings.size()==assets.size());
         var events=new ArrayList<Event>();var seenLedger=new HashSet<Long>();var seenEarning=new HashSet<Long>();
-        for(String asset:nex.signum()>0?List.of("USDT","UVT"):List.of("USDT")){
+        for(String asset:assets){
             var amount="USDT".equals(asset)?usd:nex;var assetLedgers=ledgers.stream().filter(l->asset.equals(l.get("asset"))).toList();
             require(assetLedgers.size()==("USDT".equals(asset)?1:(baseNex.signum()>0?1:0)+(dailyNex.signum()>0?1:0)));
             var ledgerKeys=new HashSet<String>();BigDecimal total=BigDecimal.ZERO;

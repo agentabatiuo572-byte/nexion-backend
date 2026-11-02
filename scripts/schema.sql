@@ -7519,7 +7519,7 @@ CREATE TABLE IF NOT EXISTS nx_sim_task_type_version (
   PRIMARY KEY(task_type_id,version),
   KEY idx_sim_task_type_effective(task_type_id,effective_at,version),
   CHECK(duration_seconds BETWEEN 60 AND 86400 AND MOD(duration_seconds,60)=0),
-  CHECK(base_reward>=0), CHECK(asset IN ('USDT','NEX'))
+  CHECK(base_reward>=0), CONSTRAINT chk_sim_task_type_asset CHECK(asset IN ('USDT','NEX','UVT'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS nx_sim_product_task_policy_version (
