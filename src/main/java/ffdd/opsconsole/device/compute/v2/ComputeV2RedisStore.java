@@ -55,8 +55,7 @@ public class ComputeV2RedisStore {
                 Integer.toString(config.getUnpersistedCapacity()),Integer.toString(config.getDedupRetentionSeconds()),
                 Long.toString(event.userId()),Long.toString(event.kind() == ComputeV2Event.Kind.VERIFIED ? event.task().rewardUsdtMicros() : 0),
                 Long.toString(event.evidence() == null ? 0 : event.evidence().rewardNexMicros()),encode(event.task()),digest(payload),
-                Long.toString(windowEnd(event.userId(),receivedAt).getEpochSecond()),Long.toString(event.deviceId()),
-                Long.toString(event.task().leaseExpiresAt().toEpochMilli()));
+                Long.toString(windowEnd(event.userId(),receivedAt).getEpochSecond()),Long.toString(event.deviceId()));
         if (event.evidence() != null && event.evidence().rewardNexMicros() > 0)
             daily(event.evidence().dailyEntitlementKey(),event.eventId());
     }

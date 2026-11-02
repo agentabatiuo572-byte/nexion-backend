@@ -318,9 +318,7 @@ public class AppTaskAssignmentService {
         requireProductionRuntime(userId);
         row = mapper.receipt(userId, normalizedReceiptNo);
         if (row == null) throw new BizException(404, "TASK_RECEIPT_NOT_FOUND");
-        boolean ruleCycle = row.taskNo().startsWith("CV2-")
-                && mapper.ruleCycleReceiptTasks(userId, List.of(row.taskNo())).contains(row.taskNo());
-        return ApiResult.ok(receiptView(row, ruleCycle));
+        return ApiResult.ok(receiptView(row));
     }
 
     @Transactional(readOnly = true)
@@ -357,16 +355,11 @@ public class AppTaskAssignmentService {
                     normalizedOffset, normalizedLimit + 1));
         }
         boolean hasMore = rows.size() > normalizedLimit;
-        var v2Tasks = rows.stream().limit(normalizedLimit).map(ReceiptRow::taskNo)
-                .filter(task -> task.startsWith("CV2-")).toList();
-        Set<String> ruleTasks = v2Tasks.isEmpty() ? Set.of()
-                : Set.copyOf(mapper.ruleCycleReceiptTasks(userId, v2Tasks));
         List<AppComputeReceiptSummaryView> items = rows.stream().limit(normalizedLimit)
-                .map(row -> receiptView(row, ruleTasks.contains(row.taskNo())))
+                .map(this::receiptView)
                 .map(view -> new AppComputeReceiptSummaryView(
                         view.receiptNo(), view.taskNo(), view.taskClass(), view.model(), view.client(),
-                        view.rewardUsdt(), view.rewardNex(), view.earningStatus(), view.completedAt(),
-                        view.executionMode(), view.proofKind(), view.modelExecuted()))
+                        view.rewardUsdt(), view.rewardNex(), view.earningStatus(), view.completedAt()))
                 .toList();
         Integer nextOffset = hasMore ? normalizedOffset + normalizedLimit : null;
         String nextCursor = hasMore && !rows.isEmpty()
@@ -1030,7 +1023,7 @@ public class AppTaskAssignmentService {
                 paused ? pausedAt : null, pausedSeconds);
     }
 
-    private AppComputeReceiptView receiptView(ReceiptRow row, boolean ruleCycle) {
+    private AppComputeReceiptView receiptView(ReceiptRow row) {
         String proofHash = value(row.proofHash()).toLowerCase(Locale.ROOT);
         if (!PROOF_HASH.matcher(proofHash).matches() || row.deviceId() == null || row.deviceId() <= 0
                 || row.startedAt() == null || row.completedAt() == null
@@ -1050,8 +1043,7 @@ public class AppTaskAssignmentService {
                 canonicalTaskClass(row.taskClass()), TestCloudExecutorService.publicModel(value(row.modelName())), TestCloudExecutorService.publicClient(row.modelName(), row.clientName()),
                 row.rewardUsdt(), row.rewardNex(), row.earningStatus(), proofHash,
                 row.startedAt(), row.completedAt(), row.durationSec(),
-                PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true,
-                ruleCycle ? "RULE_CYCLE" : "MODEL", ruleCycle ? "RULE_SETTLEMENT" : "MODEL_EXECUTION", !ruleCycle);
+                PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true);
     }
 
     private String canonicalTaskClass(String taskClass) {

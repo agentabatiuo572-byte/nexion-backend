@@ -13,18 +13,6 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
-    @Select("""
-            <script>
-            SELECT e.task_no FROM nx_compute_v2_event e
-            WHERE e.user_id=#{userId} AND e.kind='VERIFIED' AND e.task_no IN
-            <foreach collection="taskNos" item="taskNo" open="(" separator="," close=")">#{taskNo}</foreach>
-            AND JSON_UNQUOTE(JSON_EXTRACT(e.payload,'$.task.inputArtifactRef')) =
-                CONCAT('device-reward/',e.deployment_scope,'/input/',
-                       JSON_UNQUOTE(JSON_EXTRACT(e.payload,'$.task.inputSha256')),'.json')
-            </script>
-            """)
-    List<String> ruleCycleReceiptTasks(@Param("userId") long userId, @Param("taskNos") List<String> taskNos);
-
     @Select("SELECT COUNT(*) " + TestCloudExecutorMapper.PAID_FLEET_FROM
             + " AND d.id=#{deviceId} AND d.user_id=#{userId} AND d.id<>#{legacyDeviceId}")
     int managedFleet(@Param("userId") long userId,@Param("deviceId") long deviceId,
