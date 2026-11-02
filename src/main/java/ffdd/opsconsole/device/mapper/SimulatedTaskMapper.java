@@ -76,10 +76,12 @@ public interface SimulatedTaskMapper {
     List<TaskRow> tasksByUser(@Param("userId")long userId,@Param("taskNos")List<String> taskNos);
     @Select("<script>"+TASK+"""
             WHERE user_id=#{userId} AND task_no IN (SELECT task_no FROM (
-              SELECT task_no,ROW_NUMBER() OVER(PARTITION BY user_device_id ORDER BY completed_at DESC,task_no DESC) row_no
-              FROM nx_simulated_task WHERE user_id=#{userId} AND status='COMPLETED' AND user_device_id IN
-              <foreach collection='deviceIds' item='id' open='(' separator=',' close=')'>#{id}</foreach>
-            ) ranked WHERE row_no&lt;=#{perDeviceLimit}) ORDER BY completed_at DESC,task_no DESC
+              <foreach collection='deviceIds' item='id' separator=' UNION ALL '>
+                (SELECT task_no FROM nx_simulated_task
+                 WHERE user_id=#{userId} AND user_device_id=#{id} AND status='COMPLETED'
+                 ORDER BY completed_at DESC,task_no DESC LIMIT #{perDeviceLimit})
+              </foreach>
+            ) recent) ORDER BY completed_at DESC,task_no DESC
             </script>
             """)
     List<TaskRow> recentTasksByUser(@Param("userId")long userId,@Param("deviceIds")List<Long> deviceIds,@Param("perDeviceLimit")int perDeviceLimit);

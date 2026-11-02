@@ -7598,6 +7598,7 @@ CREATE TABLE IF NOT EXISTS nx_simulated_task (
   UNIQUE KEY uk_simulated_receipt(receipt_no),
   KEY idx_simulated_task_user(user_id,started_at,task_no),
   KEY idx_simulated_task_device(user_device_id,generation,started_at),
+  KEY idx_simulated_task_recent(user_id,user_device_id,status,completed_at DESC,task_no DESC),
   CONSTRAINT chk_simulated_duration CHECK(duration_seconds BETWEEN 60 AND 86400),
   CONSTRAINT chk_simulated_asset CHECK(asset IN ('USDT','UVT')),
   CONSTRAINT chk_simulated_reward CHECK(base_reward>=0 AND reward_amount>=0),
