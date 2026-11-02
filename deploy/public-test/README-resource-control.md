@@ -7,6 +7,28 @@ It neither imports nor modifies the broker's trusted closure. The existing
 release entry. No token, password, database credential or raw journal state is
 needed by this tool.
 
+## Permanent retirement applied on TEST
+
+The explicit `RETIRED` zero-model profile was applied successfully on 2026-11-03
+through the independently reviewed [compute-retirement operator flow](README-compute-retirement.md).
+Retirement ID `b07f8aea51924a33a182362253ca0aa4` closed normal READY drain
+`c5582f4afe0e45ebb9c65ea33a326fec` through the original `resume-maintenance`.
+The sealed receipt is `/var/lib/uvel-task-control/compute-retirement.json`, SHA256
+`cf920ab9a76f42bfa72869c1f050febd11645daf918ba9d0d3517ab4e59c5767`;
+original budget/source/journal evidence is preserved under
+`/var/lib/uvel-task-control/retirements/b07f8aea51924a33a182362253ca0aa4/`.
+Committed bytes changed from `26600275968` to `15032385536`; the three compute
+workers and observation unit are permanently condition-disabled, nine old model
+containers have restart `no`, and the original journals remain read-only archived.
+Independent ollama 11434 and RAG 8010 were not changed.
+
+The installed controller SHA256 is
+`5b8696ae68acded46449521ed92189caa107c345623f424391a1d4edf4a44cdd`.
+The retired budget has maxActiveExecutors 0 and empty active worker/protection/
+stopped lists, bound to the exact preserved receipt. Existing MODEL profiles below
+retain their historical rules; they are not the current host budget and cannot be
+restored while the permanent receipt exists.
+
 ## Budget and real entry points
 
 Root must collect the current `/proc/meminfo`, all runnable persistent model containers,

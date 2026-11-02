@@ -1,8 +1,15 @@
 # Compute V2 CI maintenance budget exchange
 
-This independent TEST operator tool is a candidate for review. It is not installed
-by these files and is outside the 13 trusted release files. The resource controller
-and its original snapshot/admission rules remain unchanged.
+This independent TEST operator tool is outside the 13 trusted release files.
+The reviewed retirement version is installed on TEST as of 2026-11-03. The host is
+now permanently RETIRED: former MODEL plan/enter/restore operations are blocked by
+`/var/lib/uvel-task-control/compute-retirement.json`, SHA256
+`cf920ab9a76f42bfa72869c1f050febd11645daf918ba9d0d3517ab4e59c5767`.
+Retirement ID `b07f8aea51924a33a182362253ca0aa4` applied successfully, committed
+budget changed from `26600275968` to `15032385536` bytes, and the original journals
+remain preserved. See the [applied retirement evidence](README-compute-retirement.md).
+The MODEL exchange procedure below is retained for historical receipts and source
+review; it is not the current retired-host CI budget path.
 
 Before installation, verify the helper and resource candidate hashes independently.
 Preserve the root-owned pre-V2 resource source as
@@ -10,7 +17,14 @@ Preserve the root-owned pre-V2 resource source as
 absolute path with `--baseline-resource`). Its required SHA256 is
 `1b66c15b0b03c8ee17e9a46219027e9f3030f963beac448bab4bc3573e0f52b8`.
 The installed resource controller must match SHA256
-`cb756f5f3c47ed887957e1209a44f061b52e6c4541998cddcd107b82ebb6bf4e`.
+`5b8696ae68acded46449521ed92189caa107c345623f424391a1d4edf4a44cdd`.
+The installed permanent-retirement version refuses every plan/enter/restore while
+`/var/lib/uvel-task-control/compute-retirement.json` exists; a zero-model host must
+not restore a former model profile. The controlled [retirement flow](README-compute-retirement.md)
+checked the prior installed resource/CI hashes before installing these reviewed sources.
+Historical receipts from resource digest `cb756f5f3c47ed887957e1209a44f061b52e6c4541998cddcd107b82ebb6bf4e`
+remain readable on a MODEL host alongside the previous six-BGE-only legacy pin.
+
 Both source files and their path ancestors must be root-owned and unwritable by
 other users. A source update requires a new independent review and matching pin.
 

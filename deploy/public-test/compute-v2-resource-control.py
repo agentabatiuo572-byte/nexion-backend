@@ -27,6 +27,7 @@ STOPPED_MODAL_FLEET = {f"uvel-cloud-bge-model-fleet-{number}" for number in rang
 V2_SERVICE = "uvel-compute-v2-worker.service"
 V2_ROOT = Path("/var/lib/uvel-compute-v2")
 V2_JOURNALS = {f"runner-{number}.sqlite" for number in range(1, 7)}
+RETIREMENT = STATE / "compute-retirement.json"
 
 
 class Rejected(RuntimeError):
@@ -88,8 +89,11 @@ def load_config():
     value = json.loads(CONFIG.read_bytes())
     require(value.get("version") == 1 and value.get("scope") == "TEST", "TEST_BUDGET_REQUIRED")
     require(type(value.get("buildsEnabled", True)) is bool, "BUILDS_ENABLED_INVALID")
+    retired = value.get("executionProfile", "MODEL") == "RETIRED"
+    require(value.get("executionProfile", "MODEL") in ("MODEL", "RETIRED"), "EXECUTION_PROFILE_INVALID")
     require(type(value.get("buildBudgetBytes")) is int and value["buildBudgetBytes"] > 0
-            and type(value.get("maxActiveExecutors")) is int and value["maxActiveExecutors"] > 0,
+            and type(value.get("maxActiveExecutors")) is int
+            and (value["maxActiveExecutors"] == 0 if retired else value["maxActiveExecutors"] > 0),
             "BUDGET_INVALID")
     require(isinstance(value.get("commitments"), list) and value["commitments"], "COMMITMENTS_REQUIRED")
     names = set()
@@ -111,13 +115,26 @@ def load_config():
         "uvel-compute-modal-runtime": (15 * 1024 ** 3 // 2, {"type": "docker", "name": "uvel-compute-modal-runtime"})
     } and {entry["name"] for entry in stopped} == STOPPED_MODAL_FLEET
     require(sum(entry["kind"] == "backend" for entry in value["commitments"]) == 1
-            and (len(models) >= value["maxActiveExecutors"] or modal_profile),
+            and (not models if retired else len(models) >= value["maxActiveExecutors"] or modal_profile),
             "EXECUTOR_RESERVATION_REQUIRED")
     require(value.get("buildControl", {}).get("type") == "docker", "CI_CONTAINER_LIMIT_REQUIRED")
     require(set(value.get("buildRequests", {})) == set(COMPONENTS)
             and all(type(size) is int and 0 < size <= value["buildBudgetBytes"] for size in value["buildRequests"].values()),
             "BUILD_REQUESTS_INVALID")
-    require(isinstance(value.get("workerServices"), list) and value["workerServices"], "WORKER_INVENTORY_REQUIRED")
+    require(isinstance(value.get("workerServices"), list)
+            and (not value["workerServices"] if retired else bool(value["workerServices"])), "WORKER_INVENTORY_REQUIRED")
+    if retired:
+        require(value.get("protectedJournals") == [] and stopped == [], "RETIRED_ACTIVE_INVENTORY_FORBIDDEN")
+        trusted(RETIREMENT)
+        raw = RETIREMENT.read_bytes()
+        receipt = json.loads(raw)
+        require(hashlib.sha256(raw).hexdigest() == value.get("retirementReceiptSha256")
+                and receipt.get("version") == 1 and receipt.get("scope") == "TEST"
+                and receipt.get("retiredBudgetSha256") == digest({key: item for key, item in value.items()
+                                                               if key != "retirementReceiptSha256"}),
+                "RETIREMENT_RECEIPT_MISMATCH")
+    else:
+        require(not RETIREMENT.exists(), "COMPUTE_PERMANENTLY_RETIRED")
     for service in value["workerServices"]:
         require((re.fullmatch(r"uvel-cloud-bge-(?:worker|fleet)\.service", service.get("name", "")) is not None
                  or service.get("name") == V2_SERVICE)
@@ -315,6 +332,8 @@ def v2_journal_fingerprint(path):
 
 
 def inventory(config):
+    if config.get("executionProfile") == "RETIRED":
+        return []
     paths, v2_paths = set(), set()
     for service in config["workerServices"]:
         for item in service["journalRoots"]:
@@ -435,6 +454,8 @@ def resume(config, restart_workers=True):
         require(receipt_path.exists() and marker.exists(), "DRAIN_RECEIPT_OR_MARKER_MISSING")
         receipt = json.loads(receipt_path.read_bytes())
         require(receipt.get("ready") is True and json.loads(marker.read_bytes())["drainId"] == receipt["drainId"], "DRAIN_NOT_READY")
+        require(config.get("executionProfile") != "RETIRED" or not receipt["services"],
+                "RETIRED_WORKER_RESTART_FORBIDDEN")
         release_root = RELEASE_STATE.parent
         require(not any((release_root / name).exists() for name in
                         ("HALTED.json", "transaction.json", "migrations/active.json", "migrations/START_BLOCKED")),
