@@ -85,7 +85,7 @@ public class SimulatedTaskPolicyService {
             throw new BizException(422,"SIMULATED_DURATION_MINUTES_INVALID");
         if(s.baseReward()==null||s.baseReward().signum()<0||s.baseReward().compareTo(new BigDecimal("999999999999.999999"))>0
                 || s.baseReward().stripTrailingZeros().scale()>6)throw new BizException(422,"SIMULATED_FIXED_REWARD_INVALID");
-        if(!Set.of("USDT","NEX").contains(s.asset()==null?"":s.asset()))throw new BizException(422,"SIMULATED_ASSET_INVALID");
+        if(!Set.of("USDT","UVT").contains(s.asset()==null?"":s.asset()))throw new BizException(422,"SIMULATED_ASSET_INVALID");
         if(s.enabled()==null||s.expectedVersion()==null||s.expectedVersion()<0)throw new BizException(422,"SIMULATED_POLICY_VERSION_REQUIRED");
     }
     public void publishType(String id,String name,String taskClass,TaskSimulationSettings settings,LocalDateTime at) {

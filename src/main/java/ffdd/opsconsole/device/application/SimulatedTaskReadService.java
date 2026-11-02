@@ -72,7 +72,7 @@ public class SimulatedTaskReadService {
 
     private Map<String,Object> task(TaskRow task) {
         boolean completed="COMPLETED".equals(task.status());
-        String asset="UVT".equals(task.asset())?"NEX":task.asset();
+        String asset=task.asset();
         BigDecimal usdt="USDT".equals(task.asset())?task.rewardAmount():BigDecimal.ZERO;
         LocalDateTime end=completed?task.dueAt():LocalDateTime.now(clock);
         return fields("protocolVersion",3,"taskNo",task.taskNo(),"deviceId",task.deviceId(),"taskId",task.taskTypeId(),

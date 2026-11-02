@@ -8,7 +8,7 @@ import org.apache.ibatis.annotations.*;
 @Mapper
 public interface SimulatedTaskPolicyMapper {
     String TYPE_COLUMNS="task_type_id taskTypeId,version,effective_at effectiveAt,name,task_class taskClass,"
-            +"duration_seconds durationSeconds,base_reward baseReward,asset,enabled";
+            +"duration_seconds durationSeconds,base_reward baseReward,CASE asset WHEN 'NEX' THEN 'UVT' ELSE asset END asset,enabled";
     String PRODUCT_COLUMNS="product_key productKey,version,effective_at effectiveAt,allowed_task_type_ids allowedTaskTypeIdsJson";
 
     @Select("SELECT "+TYPE_COLUMNS+" FROM nx_sim_task_type_version WHERE task_type_id=#{id} AND effective_at<=#{at} ORDER BY effective_at DESC,version DESC LIMIT 1")

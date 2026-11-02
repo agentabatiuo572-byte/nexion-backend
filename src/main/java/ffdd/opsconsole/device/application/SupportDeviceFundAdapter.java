@@ -30,12 +30,15 @@ public class SupportDeviceFundAdapter {
     @Transactional(propagation=Propagation.MANDATORY)
     public void recorded(Before before,String receiptNo){
         var token=token(before);if(token.afterUsdt==null)throw new IllegalStateException("Device cash stage missing");var actual=sources.readFundEarning(token.customer,receiptNo);var receipts=actual.receipts().stream().filter(r->receiptNo.equals(r.get("receiptNo"))).toList();if(receipts.size()!=1)throw new IllegalStateException("Device receipt missing or ambiguous");var receipt=receipts.get(0);String taskNo=(String)receipt.get("taskNo");
-        var events=new ArrayList<Event>();var usd=amount(receipt.get("rewardUsdt"));var nex=amount(receipt.get("rewardNex"));var snapshots=new ArrayList<Map<String,Object>>();snapshots.add(token.before);snapshots.add(token.afterUsdt);var after=wallet(token.customer);if(nex.signum()>0)snapshots.add(after);else if(!token.afterUsdt.equals(after))throw new IllegalStateException("Unexpected device cash mutation");
+        var simulation=actual.tasks().stream().filter(t->taskNo.equals(t.get("taskNo"))).map(t->t.get("simulation")).filter(Objects::nonNull).findFirst();
+        var events=new ArrayList<Event>();var usd=amount(receipt.get("rewardUsdt"));var nex=amount(receipt.get("rewardNex"));var snapshots=new ArrayList<Map<String,Object>>();snapshots.add(token.before);var after=wallet(token.customer);
+        if(simulation.isEmpty() || usd.signum()>0){snapshots.add(token.afterUsdt);check(token.before,token.afterUsdt,usd,BigDecimal.ZERO);}
+        else if(!token.before.equals(token.afterUsdt))throw new IllegalStateException("Unexpected device cash mutation");
+        if(nex.signum()>0){snapshots.add(after);check(token.afterUsdt,after,BigDecimal.ZERO,nex);}
+        else if(!token.afterUsdt.equals(after))throw new IllegalStateException("Unexpected device cash mutation");
         if(usd.signum()>0)events.add(new Event(key(receiptNo)+":USDT",Action.EARNINGS,null,new Account(token.customer,"USDT","available"),null,usd,null));if(nex.signum()>0)events.add(new Event(key(receiptNo)+":NEX",Action.EARNINGS,null,new Account(token.customer,"UVT","available"),null,nex,null));
-        check(token.before,token.afterUsdt,usd,BigDecimal.ZERO);if(nex.signum()>0)check(token.afterUsdt,after,BigDecimal.ZERO,nex);
         var earnings=actual.earningEvents().stream().filter(e->receiptNo.equals(e.get("receiptNo"))).toList();var ledgerNos=new HashSet<String>();ledgerNos.add(taskNo);
         // UVT daily ledger is identified by the actual UTC settlement day, never a new earning entry.
-        var simulation=actual.tasks().stream().filter(t->taskNo.equals(t.get("taskNo"))).map(t->t.get("simulation")).filter(Objects::nonNull).findFirst();
         BigDecimal baseNex=simulation.filter(ffdd.opsconsole.device.mapper.SimulatedTaskMapper.TaskRow.class::isInstance)
                 .map(ffdd.opsconsole.device.mapper.SimulatedTaskMapper.TaskRow.class::cast)
                 .filter(t->"UVT".equals(t.asset())).map(ffdd.opsconsole.device.mapper.SimulatedTaskMapper.TaskRow::rewardAmount).orElse(BigDecimal.ZERO);
