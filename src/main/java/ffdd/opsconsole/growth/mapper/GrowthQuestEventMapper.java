@@ -187,6 +187,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                    sort_order AS sortOrder
               FROM nx_event_quest q
              WHERE q.is_deleted = 0
+               AND q.target_type IN ('discount','referral','wheel','regional','boost','seasonal','onboarding')
              ORDER BY sort_order ASC, id ASC
             """)
     List<Map<String, Object>> listEvents();

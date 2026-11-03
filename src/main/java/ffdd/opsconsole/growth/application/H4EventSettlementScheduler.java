@@ -18,11 +18,11 @@ public class H4EventSettlementScheduler {
             try{engine.notifyReminder(number(row.get("user_id")).longValue(),text(row.get("event_code")));}
             catch(RuntimeException ex){log.warn("H4 reminder failed for {} / {}: {}",row.get("event_code"),row.get("user_id"),ex.getMessage());}
         }
-        for(var rule:db.rows("SELECT event_code FROM nx_growth_event_rule WHERE activated_at IS NOT NULL AND kind IN ('holding','regional') AND ends_at<=UTC_TIMESTAMP(6) AND settled_at IS NULL")){
+        for(var rule:db.rows("SELECT event_code FROM nx_growth_event_rule WHERE activated_at IS NOT NULL AND kind='regional' AND ends_at<=UTC_TIMESTAMP(6) AND settled_at IS NULL")){
             String code=text(rule.get("event_code"));
             try{engine.settle(code);}catch(RuntimeException ex){log.warn("H4 settlement failed for {}: {}",code,ex.getMessage());}
         }
-        for(var row:db.rows("SELECT p.event_code,p.user_id FROM nx_growth_event_pool_result p JOIN nx_growth_event_rule r ON r.event_code=p.event_code AND r.settled_at IS NOT NULL WHERE p.status='READY' ORDER BY p.created_at,p.user_id LIMIT 100")){
+        for(var row:db.rows("SELECT p.event_code,p.user_id FROM nx_growth_event_pool_result p JOIN nx_growth_event_rule r ON r.event_code=p.event_code AND r.settled_at IS NOT NULL AND r.kind='regional' WHERE p.status='READY' ORDER BY p.created_at,p.user_id LIMIT 100")){
             try{engine.payPool(text(row.get("event_code")),number(row.get("user_id")).longValue());}
             catch(RuntimeException ex){log.warn("H4 pool payment failed for {} / {}: {}",row.get("event_code"),row.get("user_id"),ex.getMessage());}
         }
