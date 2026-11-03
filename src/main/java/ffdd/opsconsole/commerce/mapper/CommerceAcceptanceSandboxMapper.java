@@ -134,7 +134,7 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
                    c.ai_image_gen_per_min AS aiImageGenPerMin,c.ai_llm_tokens_per_sec AS aiLlmTokensPerSec,
                    c.ai_video_min_per_hour AS aiVideoMinPerHour,c.ai_fine_tune_mins AS aiFineTuneMins,
                    c.ai_unlocks AS aiUnlocks,c.purchase_gate_json AS purchaseGateJson,
-                   c.device_type AS productType,c.inventory_mode AS inventoryMode
+                   c.device_type AS productType,c.inventory_mode AS inventoryMode,p.compute_points AS computePoints
               FROM nx_commerce_sandbox_catalog c
               JOIN nx_product p ON p.id=c.product_id AND p.product_no=c.product_no AND p.is_deleted=0 AND p.store_visible=1
                                 AND UPPER(p.status) IN ('ACTIVE','ON_SALE')
@@ -436,7 +436,22 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
                                  BigDecimal phoneDailyEarn, BigDecimal phoneDailyEarnNex, String featuresJson,
                                  BigDecimal aiImageGenPerMin, BigDecimal aiLlmTokensPerSec,
                                  BigDecimal aiVideoMinPerHour, BigDecimal aiFineTuneMins,
-                                 String aiUnlocks, String purchaseGateJson, String productType, String inventoryMode) {
+                                 String aiUnlocks, String purchaseGateJson, String productType, String inventoryMode, Long computePoints) {
+        /** Existing callers without compute points keep the line hidden. */
+        public SandboxCatalogProduct(Long productId, String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
+                                     Integer sold, String gpuModel, Integer vramTotalGb, BigDecimal hashrate, BigDecimal dailyUsdt,
+                                     BigDecimal dailyNex, String tagline, String badge, String unlockPhase, Long version,
+                                     LocalDateTime updatedAt, String power, String datacenter, String uptime, String warranty,
+                                     BigDecimal phoneDailyEarn, BigDecimal phoneDailyEarnNex, String featuresJson,
+                                     BigDecimal aiImageGenPerMin, BigDecimal aiLlmTokensPerSec,
+                                     BigDecimal aiVideoMinPerHour, BigDecimal aiFineTuneMins,
+                                     String aiUnlocks, String purchaseGateJson, String productType, String inventoryMode) {
+            this(productId, productNo, name, tier, priceUsdt, stock, sold, gpuModel, vramTotalGb, hashrate,
+                    dailyUsdt, dailyNex, tagline, badge, unlockPhase, version, updatedAt, power, datacenter, uptime,
+                    warranty, phoneDailyEarn, phoneDailyEarnNex, featuresJson, aiImageGenPerMin, aiLlmTokensPerSec,
+                    aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, purchaseGateJson, productType, inventoryMode, 0L);
+        }
+
         public SandboxCatalogProduct(Long productId, String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
                                      Integer sold, String gpuModel, Integer vramTotalGb, BigDecimal hashrate, BigDecimal dailyUsdt,
                                      BigDecimal dailyNex, String tagline, String badge, String unlockPhase, Long version,
