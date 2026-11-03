@@ -82,7 +82,7 @@ public class OpsNovaService {
     private static final List<NovaEventDrivenView> EVENT_DRIVEN_CHANNELS = List.of(
             new NovaEventDrivenView("risk-alert", "设备掉线或任务失败时立即推送。",
                     "设备运行与风控异常", "warn", "事件触发"),
-            new NovaEventDrivenView("team_event", "有新的邀请绑定或佣金发放时，按设定频率推送。",
+            new NovaEventDrivenView("team_event", "有新的邀请绑定或奖励发放时，按设定频率推送。",
                     "团队事件", "ok", "已接入"),
             new NovaEventDrivenView("staking_event", "用户的质押有新动态时，按设定频率推送。",
                     "质押事件", "ok", "已接入"),

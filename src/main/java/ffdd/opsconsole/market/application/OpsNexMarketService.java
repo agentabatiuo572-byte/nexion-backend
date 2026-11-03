@@ -2176,11 +2176,11 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return List.of(
                 stakingPositionGroup("pending_lock", "pending_lock 待确认", "支付或链上确认中,服务器确认后进入 active。", "PENDING_LOCK"),
                 stakingPositionGroup("active", "active 计息中", "按开仓时锁定 APY 线性计息,参数更新不追溯。", "ACTIVE"),
-                stakingPositionGroup("mature_unclaimed", "mature_unclaimed 到期未领", "到期后生成待领取本息,claim 写 D4 账单。", "MATURE_UNCLAIMED"),
-                stakingPositionGroup("claimed", "claimed 已领取", "本息已原子入账并写 D4。", "CLAIMED"),
-                stakingPositionGroup("early_withdrawn", "本月 early_withdrawn 提前赎回", "提前赎回按本金罚款并没收未领取利息。", "EARLY_WITHDRAWN"),
+                stakingPositionGroup("mature_unclaimed", "mature_unclaimed 到期未领", "到期后生成待领取的锁定金额及奖励,claim 写 D4 账单。", "MATURE_UNCLAIMED"),
+                stakingPositionGroup("claimed", "claimed 已领取", "锁定金额及奖励已原子入账并写 D4。", "CLAIMED"),
+                stakingPositionGroup("early_withdrawn", "本月 early_withdrawn 提前解锁", "提前解锁按锁定金额扣款并放弃未领取的质押奖励。", "EARLY_WITHDRAWN"),
                 stakingPositionGroup("slashed", "slashed 熔断处置", "G1 熔断按结构化处置方案终结持仓;恢复只能走 J1。", "SLASHED"),
-                stakingPositionGroup("refunded", "refunded 锁定失败退款", "开仓失败后本金已退回钱包。", "REFUNDED"));
+                stakingPositionGroup("refunded", "refunded 锁定失败退款", "开仓失败后锁定金额已退回钱包。", "REFUNDED"));
     }
 
     private Map<String, Object> stakingPositionGroup(
@@ -2278,7 +2278,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             case "active" -> "锁仓中";
             case "mature_unclaimed" -> "到期未领取";
             case "claimed" -> "已领取";
-            case "early_withdrawn" -> "提前赎回";
+            case "early_withdrawn" -> "提前解锁";
             case "slashed" -> "已扣罚";
             case "refunded" -> "已退款";
             default -> status;

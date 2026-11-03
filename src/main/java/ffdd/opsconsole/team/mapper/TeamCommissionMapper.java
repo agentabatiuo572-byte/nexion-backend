@@ -826,10 +826,10 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             SELECT LOWER(commission_type) AS `key`,
                    UPPER(commission_type) AS code,
                    CASE LOWER(commission_type)
-                     WHEN 'direct' THEN '直推佣金'
-                     WHEN 'network' THEN '网络版税'
-                     WHEN 'binary' THEN '双轨平衡匹配'
-                     WHEN 'leadership' THEN '领导奖池'
+                     WHEN 'direct' THEN '好友购买奖励'
+                     WHEN 'network' THEN '团队购买奖励'
+                     WHEN 'binary' THEN '团队平衡奖励'
+                     WHEN 'leadership' THEN '团队激励池'
                      ELSE commission_type
                    END AS label,
                    CONCAT('$', ROUND(SUM(amount_usdt), 2)) AS amountLabel,

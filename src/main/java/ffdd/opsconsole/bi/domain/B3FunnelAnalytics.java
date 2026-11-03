@@ -33,7 +33,7 @@ public final class B3FunnelAnalytics {
             "checkout.completed",
             "wallet.reinvest",
             "withdraw.submitted");
-    private static final List<String> STAGE_NAMES = List.of("注册", "首购", "复投", "提现");
+    private static final List<String> STAGE_NAMES = List.of("注册", "首购", "锁定计划", "提现");
     private static final List<String> STAGE_KEYS = List.of("register", "purchase", "repurchase", "withdraw");
     private static final List<String> STAGE_EVENTS = List.of(
             "auth.register_completed",
@@ -132,7 +132,7 @@ public final class B3FunnelAnalytics {
                 "dailyFirstPurchase", dailyFirstPurchase(registered, purchased),
                 "purchaseChannels", purchaseChannels(registered, purchased),
                 "sources", List.of("nx_event_outbox", "nx_event_schema_registry"),
-                "sourceStatement", "只统计已登记并通过校验的事件；同一用户必须按 注册→首购→复投→提现 的顺序推进");
+                "sourceStatement", "只统计已登记并通过校验的事件；同一用户必须按 注册→首购→锁定计划→提现 的顺序推进");
     }
 
     public static Map<String, Object> cohortTrend(

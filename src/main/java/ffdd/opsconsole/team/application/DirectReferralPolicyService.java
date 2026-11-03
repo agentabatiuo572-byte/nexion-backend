@@ -95,7 +95,7 @@ public class DirectReferralPolicyService {
         var value=config.activeValueForUpdate(SEVEN_REVISION_KEY).orElseThrow(()->new BizException(503,"SEVEN_LAYER_REVISION_UNAVAILABLE"));
         try{return Long.parseLong(value);}catch(RuntimeException e){throw new BizException(503,"SEVEN_LAYER_REVISION_UNAVAILABLE");}
     }
-    public long bumpSevenLayerRevision() {long next=Math.addExact(lockSevenLayerRevision(),1);config.upsertAdminValue(SEVEN_REVISION_KEY,Long.toString(next),"NUMBER","team","七层配置一致性版本锁");return next;}
+    public long bumpSevenLayerRevision() {long next=Math.addExact(lockSevenLayerRevision(),1);config.upsertAdminValue(SEVEN_REVISION_KEY,Long.toString(next),"NUMBER","team","L1–L7 配置一致性版本锁");return next;}
     public Map<String,Object> sevenLayerReference() {
         return sevenLayerReference(false);
     }
@@ -171,10 +171,10 @@ public class DirectReferralPolicyService {
             if(c.coverageRatio().compareTo(c.redlinePct())<0)throw new BizException(409,"COVERAGE_BELOW_REDLINE");
         }
         if("ACTIVATE".equals(request.action()))config.upsertAdminValue(CUTOVER_KEY,
-                clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS).toString(),"STRING","team","七层结算首次批准切换时间，不可删除或移动");
-        config.upsertAdminValue(PAUSED_KEY,Boolean.toString("PAUSE".equals(request.action())),"BOOLEAN","team","仅暂停首次七层来源准备，保留原事件和既有快照");
+                clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS).toString(),"STRING","team","L1–L7 结算首次批准切换时间，不可删除或移动");
+        config.upsertAdminValue(PAUSED_KEY,Boolean.toString("PAUSE".equals(request.action())),"BOOLEAN","team","仅暂停首次 L1–L7 来源准备，保留原事件和既有快照");
         long next=Math.addExact(revision,1);
-        config.upsertAdminValue(SEVEN_REVISION_KEY,Long.toString(next),"NUMBER","team","七层配置一致性版本锁");
+        config.upsertAdminValue(SEVEN_REVISION_KEY,Long.toString(next),"NUMBER","team","L1–L7 配置一致性版本锁");
         int redriven="RESUME".equals(request.action())?mapper.resumePausedDeliveries():0;
         var after=current(2);
         audit.recordRequired(AuditLogWriteRequest.builder().action("F_SEVEN_LAYER_"+request.action()+"_APPROVED").resourceType("TEAM_POLICY")
@@ -219,7 +219,7 @@ public class DirectReferralPolicyService {
                     json.writeValueAsString(Integer.valueOf(2).equals(request.schemaVersion())?Map.of("schemaVersion",2,"enabled",request.purchaseSplit().enabled(),"usdtSharePct",request.purchaseSplit().usdtSharePct(),"sevenLayerRevision",revision,"sevenLayerReference",reference):request.purchase()),json.writeValueAsString(request.deviceEarning()),
                     A2ReplayContext.operationId(),request.reason().trim())!=1)throw new BizException(409,"DIRECT_REFERRAL_VERSION_CONFLICT");
         } catch(com.fasterxml.jackson.core.JsonProcessingException e){throw new IllegalStateException(e);}
-        config.upsertAdminValue(VERSION_KEY,Long.toString(version+1),"NUMBER","team","直属分成版本锁");
+        config.upsertAdminValue(VERSION_KEY,Long.toString(version+1),"NUMBER","team","好友奖励版本锁");
         audit.recordRequired(AuditLogWriteRequest.builder().action("F_DIRECT_REFERRAL_POLICY_APPROVED").resourceType("TEAM_POLICY")
                 .resourceId("direct_referral_policy/current").actorUsername(AdminActorResolver.resolve("A2"))
                 .riskLevel("HIGH").detail(Map.of("policyVersion",version+1,"effectiveAt",effective.toString(),"request",request,"operationId",A2ReplayContext.operationId())).build());

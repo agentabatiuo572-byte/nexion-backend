@@ -62,8 +62,8 @@ public class OpsKillSwitchService {
 
     private static final List<GateSeed> GATE_SEEDS = List.of(
             new GateSeed("withdraw", "提现开关", "提现申请、审核和链上转账", "控制所有提现", "出现资金风险时一键停止提现", true, true, "immediate", ""),
-            new GateSeed("staking", "质押开关", "新增质押和高收益档位", "控制新增质押和以后要付的利息", "恢复后，以后要付的利息会增加", true, true, "delayed", ""),
-            new GateSeed("genesis", "创世节点开关", "创世节点购买和转让市场", "控制节点购买、分红和交易", "恢复后，节点分红和交易会马上增加", true, true, "immediate", ""),
+            new GateSeed("staking", "质押开关", "新增质押和高收益档位", "控制新增质押和以后要付的质押奖励", "恢复后，以后要付的质押奖励会增加", true, true, "delayed", ""),
+            new GateSeed("genesis", "创世节点开关", "创世节点购买和转让市场", "控制节点购买、收益发放和交易", "恢复后，节点收益发放和交易会马上增加", true, true, "immediate", ""),
             new GateSeed("exchange", "兑换开关", "UVT 与 USDT 兑换", "控制兑换", "出现资金风险时一键停止兑换", true, true, "immediate", ""),
             new GateSeed("trial", "试用开关", "试用权益发放和续期", "控制试用权益（不直接付钱）", "不直接付钱，但会影响拉新", false, false, "none", ""));
 

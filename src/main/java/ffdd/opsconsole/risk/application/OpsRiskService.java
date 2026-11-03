@@ -157,8 +157,8 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             new K2ViewSpec("gift", "新人礼刷取", "· 新人礼刷取 · 看领完礼就走的闭环行为",
                     List.of("簇", "实体", "已发 / 已拦", "涉及金额", "闭环特征"),
                     "K1 看同一实体重复领；K2 加看行为闭环。拦截只停发后续,不动已入账资产。"),
-            new K2ViewSpec("board", "排行榜刷榜", "· 排行榜刷榜 · 邀请/佣金增速异常的冲榜账户",
-                    List.of("账户", "本期累计佣金", "增速(对基线)", "直推增长", "关联簇"),
+            new K2ViewSpec("board", "排行榜刷榜", "· 排行榜刷榜 · 邀请/奖励增速异常的冲榜账户",
+                    List.of("账户", "本期累计奖励", "增速(对基线)", "直接邀请增长", "关联簇"),
                     "这里只标记并发信号给 F8 和风险雷达；取消参榜资格、从奖池剔除由 F8 执行。"));
     private static final Map<String, DimensionMeta> K3_DIMENSION_META = Map.ofEntries(
             Map.entry("largeAmountUsdt", new DimensionMeta("largeAmountUsdt", "金额", "由 nx_admin_risk_withdraw_rule 配置", "card", 0)),
