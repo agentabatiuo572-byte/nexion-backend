@@ -44,12 +44,13 @@ fi
 # Same ordered list as the $migrations block in apply_startup_schema_migrations.ps1.
 files=()
 while IFS= read -r f; do files+=("$f"); done < <(awk '/^\$migrations = @\(/{on=1; next} on && /^\)/{exit} on && $0 !~ /^[[:space:]]*#/' \
-  "$BACKEND/scripts/apply_startup_schema_migrations.ps1" | grep -oE 'scripts\\migrations\\[^"]+\.sql' | sed 's#.*\\##')
+  "$BACKEND/scripts/apply_startup_schema_migrations.ps1" | grep -oE 'scripts\\(migrations|local)\\[^"]+\.sql' | tr '\\' '/')
 echo "Startup migrations: ${#files[@]}"
 i=0
-for f in "${files[@]}"; do
+for path in "${files[@]}"; do
+  f=${path##*/}
   i=$((i+1))
-  [[ -f "$MIG/$f" ]] || { echo "Missing migration: $f"; exit 1; }
+  [[ -f "$BACKEND/$path" ]] || { echo "Missing migration: $path"; exit 1; }
   if entry=$(grep "^$f|" "$FRESH/skip.txt"); then
     IFS='|' read -r _ reason run_when <<<"$entry"
     if [[ -z "$run_when" || "$(scalar "$run_when")" == "0" ]]; then
@@ -59,23 +60,15 @@ for f in "${files[@]}"; do
   fi
   while IFS='|' read -r target pre; do
     [[ "$target" == "$f" ]] || continue
-    case "$pre" in
-      migrations/*) p="$MIG/${pre#migrations/}" ;;
-      fresh_db/*) p="$FRESH/${pre#fresh_db/}" ;;
-    esac
-    run_file "$(printf '20-%03d-pre-%s' $i "$(basename "$pre")")" "$p"
+    run_file "$(printf '20-%03d-pre-%s' $i "$(basename "$pre")")" "$BACKEND/scripts/$pre"
   done < <(grep -v '^#' "$FRESH/prereqs.txt" | grep -v '^$')
-  run_file "$(printf '20-%03d-%s' $i "$f")" "$MIG/$f"
+  run_file "$(printf '20-%03d-%s' $i "$f")" "$BACKEND/$path"
 done
 
 j=0
 while IFS= read -r pre; do
   j=$((j+1))
-  case "$pre" in
-    migrations/*) p="$MIG/${pre#migrations/}" ;;
-    fresh_db/*) p="$FRESH/${pre#fresh_db/}" ;;
-  esac
-  run_file "$(printf '30-%03d-%s' $j "$(basename "$pre")")" "$p"
+  run_file "$(printf '30-%03d-%s' $j "$(basename "$pre")")" "$BACKEND/scripts/$pre"
 done < <(grep -v '^#' "$FRESH/post.txt" | grep -v '^$')
 
 # Postconditions (same checks as the PowerShell runner).

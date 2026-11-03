@@ -233,15 +233,16 @@ class PurchasePaymentHttpMySqlTest {
             var prereqs=Files.readAllLines(Path.of("scripts/fresh_db/prereqs.txt"));
             var manifest=Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
             int first=manifest.indexOf("$migrations = @("),last=manifest.indexOf("\n)",first);
-            var matcher=java.util.regex.Pattern.compile("scripts\\\\migrations\\\\([^\"]+\\.sql)").matcher(manifest.substring(first,last));
+            var matcher=java.util.regex.Pattern.compile("scripts\\\\(migrations|local)\\\\([^\"]+\\.sql)").matcher(manifest.substring(first,last));
             while(matcher.find()){
-                String file=matcher.group(1);
+                String file=matcher.group(2);
                 // This source-provided fresh-bootstrap rule is a DML postcondition requiring a console-created S1.
                 if(file.equals("20260921_h2_trial_product_daily_yield.sql"))continue;
                 for(String line:prereqs)if(!line.startsWith("#")&&line.startsWith(file+"|")){
                     Path prerequisite=Path.of("scripts",line.split("\\|",2)[1]);sql(Files.readString(prerequisite),prerequisite.toString());
                 }
-                migrate(file);
+                Path migration=Path.of("scripts",matcher.group(1),file);
+                sql(Files.readString(migration),file);
             }
             for(String line:Files.readAllLines(Path.of("scripts/fresh_db/post.txt")))if(!line.isBlank()&&!line.startsWith("#")){
                 Path post=Path.of("scripts",line);sql(Files.readString(post),post.toString());
