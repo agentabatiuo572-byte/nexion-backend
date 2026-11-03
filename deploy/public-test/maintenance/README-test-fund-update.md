@@ -2,13 +2,13 @@
 
 本维护仅锁定 TEST MySQL `123d8594-ab52-11f1-b635-f661104b171d` 的 `nexion` 库，不由启动迁移自动执行，不增加产品公共开关，不改变 PROD。
 
-永久移除 operation/leg/party 三条 BEFORE UPDATE 禁止触发器，空替换及实际 UPDATE 均允许。三条 BEFORE DELETE 禁止触发器原样保留。钱包 journal、debit counter、H4、所有表结构/FK/金额规则及应用中的摘要、真实批准、来源校验保留；修改历史正文不会自动获得有效摘要或批准。
+永久移除 operation/leg/party 三条 BEFORE UPDATE 禁止触发器，空替换及实际 UPDATE 均允许。三条 BEFORE DELETE 禁止触发器原样保留。钱包 journal、debit counter、所有表结构/FK/金额规则及应用中的摘要、真实批准、来源校验保留；修改历史正文不会自动获得有效摘要或批准。
 
-现场旧 `nx_support_fund_schema_ready_v1` 已返回0：它要求钱包触发器总数/白名单为4，但合法部署的 `nx_wallet_h4_holding_observation` 是第5条。维护定义将三条资金BU改为必须缺失，保留三条BD全文校验；钱包总数/白名单改为5，并按现场原文精确校验H4的正文、definer、ROW、AFTER UPDATE、ACTION_ORDER=2。其他原始校验块保持字节一致。`--stage diagnose` 输出旧合同及维护前置合同各子条件，可确认是否还有其他漂移。
+2026-11-04 起，先执行 [H4 下线](README-h4-retirement.md)，再运行本维护。H4 第五条钱包触发器及其兼容条款已退役，本维护只将三条资金 BU 改为必须缺失，保留三条 BD 全文校验；钱包清单保持原四条。已经安装的旧维护版由下线工具识别并只去除 H4 条款，不恢复 BU。`--stage diagnose` 输出原始及当前维护前置合同各子条件。
 
 ## 生成与执行
 
-`test_fund_update_source.json` 是本轮现场SHOW CREATE、routine definition、11条相关触发器、两条EXECUTE授权及4条资产CHECK的无凭据快照。脚本只渲染SQL，不连接数据库、不取凭据、不启动服务。
+`test_fund_update_source.json` 是本轮现场SHOW CREATE、routine definition、11条历史相关触发器（含已退役 H4，仅用于下线识别）、两条EXECUTE授权及4条资产CHECK的无凭据快照。脚本只渲染SQL，不连接数据库、不取凭据、不启动服务。
 
 ```bash
 # 真实TEST：固定UUID，先生成、审核，再由主流程按本批授权执行。
@@ -44,16 +44,12 @@ python3 render_test_fund_update.py --stage asset-finalize --output asset-finaliz
 
 ## 验证
 
-```bash
-python3 -m unittest -v test_render_test_fund_update
-```
+本轮不编写或运行测试；真实副本验证要求：
 
-离线合同测试覆盖固定目标/错误参数、只删除三BU、三BD及其他约束保留、H4精确校验、部分DDL恢复合同、definer/授权保留及4CHECK两阶段。真实副本必须另验证：
-
-1. 旧schema_ready=0及诊断失败子条件；维护后=1，原应用账号也可调用。
+1. H4 已下线、钱包清单为4；维护后 schema_ready=1，原应用账号也可调用。
 2. 对三表现存行分别在事务中执行 `UPDATE ... SET <原列>=<原列> LIMIT 1` 后ROLLBACK，证明空替换不再被阻止；再读回行数与原值。
 3. 三表DELETE各自仍报 `SUPPORT_FUND_RECORD_IMMUTABLE`，事务ROLLBACK；不要在一个普通batch中混合三个预期错误。
-4. 实际trigger清单只少三BU，所有剩余trigger全文/顺序不变；临时扰动BD或H4时schema_ready必须为0，恢复后为1。
+4. 实际trigger清单只少三BU，所有剩余trigger全文/顺序不变；临时扰动BD或增加未知钱包触发器时schema_ready必须为0，恢复后为1。
 5. 错误UUID/数据库SQL在首个目标检查失败，schema及数据不变；资产expand→迁移→finalize全链在副本验证。
 
-离线测试不等于真实TEST已执行；实际变更与验收证据由主流程单独记录。
+副本验证不等于真实TEST已执行；实际变更与验收证据由主流程单独记录。

@@ -461,11 +461,11 @@ public interface AppGrowthEngagementMapper {
                 ON u.quest_id=q.id AND u.user_id=#{userId} AND u.is_deleted=0
             """;
 
-    @Select(EVENT_STATE_SELECT + " WHERE q.is_deleted=0 ORDER BY q.sort_order,q.id")
+    @Select(EVENT_STATE_SELECT + " WHERE q.target_type IN " + ffdd.opsconsole.growth.application.H4EventRuleService.ACTIVE_KINDS_SQL + " AND q.is_deleted=0 ORDER BY q.sort_order,q.id")
     List<Map<String, Object>> eventState(@Param("userId") Long userId, @Param("locale") String locale);
 
     // Detail-only lookup; the engine authorizes access from this user's historical rights.
-    @Select(EVENT_STATE_SELECT + " WHERE q.is_deleted=1 AND q.quest_code=#{eventCode}")
+    @Select(EVENT_STATE_SELECT + " WHERE q.target_type IN " + ffdd.opsconsole.growth.application.H4EventRuleService.ACTIVE_KINDS_SQL + " AND q.is_deleted=1 AND q.quest_code=#{eventCode}")
     List<Map<String,Object>> deletedEventState(@Param("userId") Long userId,@Param("locale") String locale,@Param("eventCode") String eventCode);
 
     @Select("""
@@ -509,6 +509,7 @@ public interface AppGrowthEngagementMapper {
                    reward_amount rewardAmount,badge_achievement_code badgeCode
               FROM nx_event_quest
              WHERE quest_code=#{eventCode} AND status=1 AND is_deleted=0
+               AND target_type IN ('discount','referral','wheel','regional','boost','seasonal','onboarding')
                AND (starts_at IS NULL OR starts_at<=UTC_TIMESTAMP()) AND (ends_at IS NULL OR ends_at>UTC_TIMESTAMP())
              LIMIT 1 FOR UPDATE
             """)
@@ -529,6 +530,7 @@ public interface AppGrowthEngagementMapper {
               JOIN nx_event_quest q ON q.id=u.quest_id AND q.status=1 AND q.is_deleted=0
              WHERE u.user_id=#{userId} AND u.quest_code=#{eventCode} AND u.is_deleted=0
                AND q.target_value>0 AND LOWER(q.target_type)<>'wheel'
+               AND q.target_type IN ('discount','referral','regional','boost','seasonal','onboarding')
                AND (q.starts_at IS NULL OR q.starts_at<=UTC_TIMESTAMP())
                AND (q.ends_at IS NULL OR q.ends_at>UTC_TIMESTAMP())
                AND (u.progress_value>=q.target_value OR UPPER(u.claim_status) IN ('COMPLETED','CLAIMABLE'))
@@ -542,6 +544,7 @@ public interface AppGrowthEngagementMapper {
                AND UPPER(claim_status)<>'CLAIMED' AND is_deleted=0
                AND progress_value >= (SELECT target_value FROM nx_event_quest
                                         WHERE quest_code=#{eventCode} AND status=1 AND is_deleted=0
+                                          AND target_type IN ('discount','referral','wheel','regional','boost','seasonal','onboarding')
                                           AND target_value>0 AND LOWER(target_type)<>'wheel'
                                           AND (starts_at IS NULL OR starts_at<=UTC_TIMESTAMP())
                                           AND (ends_at IS NULL OR ends_at>UTC_TIMESTAMP()) LIMIT 1)

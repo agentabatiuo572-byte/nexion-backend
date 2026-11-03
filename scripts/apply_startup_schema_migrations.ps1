@@ -333,6 +333,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261008_support_payment_attribution.sql")
   (Join-Path $root "scripts\migrations\20261008_support_payment_history_birth.sql")
   # AUTH and cash writers need the canonical fund schema before API startup.
+  # Retire the historical fifth wallet trigger before replaying the four-trigger guard.
+  (Join-Path $root "scripts\migrations\20261104_h4_holding_retire.sql")
   (Join-Path $root "scripts\migrations\20261011_support_fund_journal.sql")
   (Join-Path $root "scripts\migrations\20261011_support_fund_operations.sql")
   (Join-Path $root "scripts\migrations\20261011_support_fund_operation_party.sql")

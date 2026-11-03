@@ -1,7 +1,7 @@
 # Fixed Compute V2 migrator update (TEST)
 
 This operator-only updater is separate from the 13 trusted release runtime files.
-It installs only the reviewed fixed Compute V2 migration lane; the normal native
+It installs the reviewed fixed Compute V2 lane and removes the retired H4 lane; the normal native
 broker later performs the SQL backup, persistent hold, migration journal, trigger
 checks and backend health checks. The updater never imports or executes the
 migrator, runs SQL, changes grants, starts a build or changes auth, jobs, models,
@@ -11,20 +11,22 @@ The fixed installed baseline is:
 
 - `runtime-lock.json` SHA256 `907fb594f70782151ba12cdb168c324af47ef81c9ca961c9ce1f4a5e803d5cbc`.
 - Installed `database_migrations.py` SHA256 `0794fa15fb5d0aa2470bb6486dc56fad18eb6732337e471e0a15e4961b1a7221`.
-- Candidate migrator SHA256 `3452485f429c1d814e6e97b146fff01c692c30e9926330e2f5c5bfd048cc5ca8`,
+- Candidate migrator SHA256 `80ea3667306ef99f7d3af423de20cfc5c197b0c85369625daf01f766f11820c2`,
   fixed by `NEW_MIGRATIONS_SHA` in the independently reviewed updater.
 
 The candidate comes from the reviewed immutable Git source
 `deploy/public-test/compute-v2-database-migrations.py`, renamed to
 `database_migrations.py` in the stage. Its new lane accepts the exact settlement
-SQL file and eight immutable triggers. Existing Cregis, support, H4 and earnings
-lanes and the generic stored-program rejection remain in that candidate.
+SQL file and eight immutable triggers. Existing Cregis, support and earnings lanes and the generic stored-program
+rejection remain. The H4 installer is removed; perform the
+[TEST retirement step](maintenance/README-h4-retirement.md) before deployment.
 
-The current task explicitly approves adding only
+The reviewed updater adds
 `allow_fixed_compute_v2_trigger_install: true`. The updater requires that new key
 to be absent at the original baseline, adds it together with the migrator pin,
-and preserves all existing approval flags and other config semantics. The only
-other changed config value is `trusted_files.database_migrations.py`.
+removes the retired H4 installer approval key if present, and preserves other
+approval flags and config semantics. It also updates
+`trusted_files.database_migrations.py`. No H4 installation opt-in remains.
 
 Before running, wait for all current backend/pc/uniapp builds and reservations to
 finish. Use the original CI maintenance helper's `restore` flow to restore its
