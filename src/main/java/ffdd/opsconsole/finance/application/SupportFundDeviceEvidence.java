@@ -156,7 +156,12 @@ public class SupportFundDeviceEvidence {
     private static Object normalize(Object v){if(v instanceof LocalDateTime t)return t.toString();if(v instanceof Timestamp t)return t.toLocalDateTime().toString();if(v instanceof Map<?,?> m){var r=new LinkedHashMap<String,Object>();m.forEach((k,x)->r.put(k.toString(),normalize(x)));return r;}if(v instanceof Collection<?> c)return c.stream().map(SupportFundDeviceEvidence::normalize).toList();return v;}
     private static String key(String no){try{return "DEVICE-EARNING:"+HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(no.getBytes(StandardCharsets.UTF_8)));}catch(java.security.NoSuchAlgorithmException e){throw new IllegalStateException(e);}}
     private static BigDecimal money(Object v){require(v instanceof Number);var n=new BigDecimal(v.toString());require(n.stripTrailingZeros().scale()<=6);return n;}
-    private static long number(Object v){require(v instanceof Number);try{return new BigDecimal(v.toString()).longValueExact();}catch(ArithmeticException e){throw failure();}}
+    private static long number(Object v){
+        require(v instanceof Number);
+        if(v instanceof Long || v instanceof Integer || v instanceof Short || v instanceof Byte)return ((Number)v).longValue();
+        try{return v instanceof BigDecimal n?n.longValueExact():new BigDecimal(v.toString()).longValueExact();}
+        catch(ArithmeticException e){throw failure();}
+    }
     private static long number(JsonNode v){require(v.isNumber());return number(v.numberValue());}
     private static boolean zero(Object v){if(v instanceof Boolean b)return !b;return number(v)==0;}
     private static boolean zero(JsonNode v){if(v.isBoolean())return !v.booleanValue();return number(v)==0;}

@@ -15,6 +15,10 @@ public class SupportAnalyticsRedisStore {
     static final String SNAPSHOT_KEY="uvel:support:analytics:v1:snapshot";
     static final String LOCK_KEY="uvel:support:analytics:v1:lock";
     static final Duration LOCK_LEASE=Duration.ofSeconds(120);
+    static final DefaultRedisScript<Long> RENEW=new DefaultRedisScript<>("""
+        if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+        return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+        """,Long.class);
     static final DefaultRedisScript<Long> PUBLISH=new DefaultRedisScript<>("""
         if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
         redis.call('SET', KEYS[2], ARGV[2])
@@ -36,6 +40,12 @@ public class SupportAnalyticsRedisStore {
         String token=UUID.randomUUID().toString();
         try {return Boolean.TRUE.equals(redis.opsForValue().setIfAbsent(LOCK_KEY,token,LOCK_LEASE))?token:null;}
         catch(DataAccessException failure) {throw unavailable();}
+    }
+    public void renew(String token) {
+        try {
+            if(!Long.valueOf(1).equals(redis.execute(RENEW,List.of(LOCK_KEY),token,Long.toString(LOCK_LEASE.toMillis()))))
+                throw new BizException(503,"SUPPORT_ANALYTICS_CACHE_LEASE_LOST");
+        } catch(DataAccessException failure) {throw unavailable();}
     }
     public boolean publish(String token,String payload) {
         if(token==null || token.isBlank() || payload==null || payload.isBlank())throw new IllegalArgumentException("COMPLETE_STATISTICS_GENERATION_REQUIRED");

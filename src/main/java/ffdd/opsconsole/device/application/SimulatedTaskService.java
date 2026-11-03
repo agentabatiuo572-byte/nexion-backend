@@ -15,14 +15,15 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.env.Environment;
-import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.scheduling.annotation.SchedulingConfigurer;
+import org.springframework.scheduling.config.ScheduledTaskRegistrar;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /** One shared SQL due loop. Reads never issue work, extend a phone interval, or credit money. */
 @Service
-public class SimulatedTaskService {
+public class SimulatedTaskService implements SchedulingConfigurer {
     private static final Logger LOG=LoggerFactory.getLogger(SimulatedTaskService.class);
     private static final int BATCH_SIZE=500,CATCH_UP_LIMIT=12;
     private final SimulatedTaskMapper mapper;
@@ -35,6 +36,7 @@ public class SimulatedTaskService {
     private final Clock clock;
     private final SecureRandom random=new SecureRandom();
     private final AtomicLong initialCursor=new AtomicLong();
+    private boolean moreWork;
 
     public SimulatedTaskService(SimulatedTaskMapper mapper,AppTaskAssignmentMapper assignments,
             SimulatedTaskPolicyService policies,SimulatedTaskSettlementService settlement,SimulatedTaskLifecycleService lifecycle,
@@ -109,16 +111,29 @@ public class SimulatedTaskService {
         });
     }
 
-    @Scheduled(fixedDelay=30000,initialDelay=30000)
+    @Override
+    public void configureTasks(ScheduledTaskRegistrar tasks) {
+        tasks.addTriggerTask(this::tick, context -> {
+            Instant completed=context.lastCompletion();
+            return completed==null ? context.getClock().instant().plusSeconds(30)
+                    : completed.plusSeconds(moreWork ? 1 : 30);
+        });
+    }
+
     public void tick() {
+        moreWork=false;
         if(!enabled())return;
         LocalDateTime observed=now();
-        for(var candidate:mapper.due(observed,BATCH_SIZE))process(candidate,observed,false);
+        var due=mapper.due(observed,BATCH_SIZE);
+        boolean advancedDue=false,advancedInitial=false;
+        for(var candidate:due)advancedDue|=process(candidate,observed,false);
         var candidates=mapper.initialDevices(initialCursor.get(),BATCH_SIZE);
         if(candidates.isEmpty())initialCursor.set(0);
-        for(var candidate:candidates){initialCursor.set(candidate.deviceId());process(candidate,observed,true);}
+        for(var candidate:candidates){initialCursor.set(candidate.deviceId());advancedInitial|=process(candidate,observed,true);}
+        moreWork=(due.size()==BATCH_SIZE && advancedDue) || (candidates.size()==BATCH_SIZE && advancedInitial);
+        if(!moreWork && (advancedDue || advancedInitial))moreWork=!mapper.due(now(),1).isEmpty();
     }
-    private void process(Candidate candidate,LocalDateTime observed,boolean initial) {
+    private boolean process(Candidate candidate,LocalDateTime observed,boolean initial) {
         try {
             if(initial)transaction.execute(status->{
                 var device=owned(candidate.userId(),candidate.deviceId());
@@ -129,17 +144,22 @@ public class SimulatedTaskService {
                         || !"DEVICE_PAUSED".equals(runtime.lastError()) && !device.activatedAt().isAfter(runtime.intervalStartedAt())))return null;
                 startInterval(device,runtime,observed,null);return null;
             });
-            transaction.execute(status->{
+            return Boolean.TRUE.equals(transaction.execute(status->{
                 var device=owned(candidate.userId(),candidate.deviceId());
                 var runtime=mapper.lockRuntime(candidate.deviceId());
-                if(runtime!=null){requireIdentity(device,runtime);advance(device,runtime,observed);}
-                return null;
-            });
+                if(runtime==null)return false;
+                requireIdentity(device,runtime);
+                if(!initial && (runtime.nextActionAt()==null || runtime.nextActionAt().isAfter(observed)))return false;
+                var after=advance(device,runtime,observed);
+                return !Objects.equals(after.currentTaskNo(),runtime.currentTaskNo())
+                        || !Objects.equals(after.nextStartAt(),runtime.nextStartAt()) || !after.state().equals(runtime.state());
+            }));
         } catch(RuntimeException failure) {
             // Keep the original task and quote on a rolled-back financial/configuration failure; other devices continue.
             String reason=failure instanceof BizException?failure.getMessage():failure.getClass().getSimpleName();
-            transaction.execute(status->{mapper.recordError(candidate.deviceId(),reason.substring(0,Math.min(128,reason.length())),observed.plusSeconds(30));return null;});
+            transaction.execute(status->{mapper.recordError(candidate.deviceId(),reason.substring(0,Math.min(128,reason.length())),now().plusSeconds(30));return null;});
             LOG.warn("Simulated task deferred device={} reason={}",candidate.deviceId(),reason,failure);
+            return false;
         }
     }
 
