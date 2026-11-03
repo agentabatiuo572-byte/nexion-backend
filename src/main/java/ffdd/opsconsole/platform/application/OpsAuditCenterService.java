@@ -330,8 +330,9 @@ public class OpsAuditCenterService {
                         if(request.targets()!=null && !request.targets().isEmpty())return fail(OpsErrorCode.VALIDATION_FAILED,"A2_TARGET_MISMATCH");
                         target=new AuditLockTarget("E","device_task",rule.target());
                         ticket.setAction("发布规则任务"); ticket.setObjectText(rule.name()); ticket.setSourceDomain("E2");
-                        ticket.setOperationType("param"); ticket.setRoleGate(normalizeRoleGate("门槛者"));
+                        ticket.setOperationType("param"); ticket.setSos(0); ticket.setRoleGate(normalizeRoleGate("门槛者"));
                         ticket.setBeforeValue(rule.before()); ticket.setAfterValue(rule.after());
+                        if(rule.statusVersion()!=null)stored.put("ruleStatusReviewVersion",rule.statusVersion());
                     }
                 }
                 if (A2ReplayContext.isAvatarCommand(command)) {
@@ -911,6 +912,12 @@ public class OpsAuditCenterService {
             com.fasterxml.jackson.databind.node.ObjectNode stored = (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(commandJson);
             stored.remove("avatarMakerAdminId");
             stored.remove("skuReview");
+            var version=stored.remove("ruleStatusReviewVersion");
+            if("E".equals(stored.path("domain").asText()) && "e2_task_status".equals(stored.path("op").asText())
+                    && stored.path("params") instanceof com.fasterxml.jackson.databind.node.ObjectNode params) {
+                params.remove("reviewedRuleVersion");
+                if(version!=null)params.set("reviewedRuleVersion",version);
+            }
             return objectMapper.treeToValue(stored, AuditReplayCommand.class);
         } catch (Exception ex) {
             return null;
