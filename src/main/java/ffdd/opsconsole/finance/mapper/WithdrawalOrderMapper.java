@@ -195,7 +195,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                      '; 活跃=', (SELECT COUNT(1) FROM nx_user_device ud WHERE ud.user_id=w.user_id AND ud.is_deleted=0 AND ud.status IN ('ONLINE','BUSY','ACTIVE','RUNNING')),
                      '; 最近=', COALESCE((SELECT CONCAT(ud.name,'/',ud.status,'/',COALESCE(ud.dc_location,'未知地域')) FROM nx_user_device ud WHERE ud.user_id=w.user_id AND ud.is_deleted=0 ORDER BY COALESCE(ud.last_seen_at,ud.updated_at) DESC LIMIT 1),'无')
                    ) AS deviceSummary,
-                   CONCAT('邀请码=',COALESCE(u.referral_code,'—'),'; 上级=',COALESCE(u.sponsor_code,'—')) AS referralPosition,
+                   CONCAT('邀请码=',COALESCE(u.referral_code,'—'),'; 邀请人=',COALESCE(u.sponsor_code,'—')) AS referralPosition,
                    CASE WHEN COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) IS NULL THEN 'K4评分不可用'
                         ELSE CONCAT('提交快照=',COALESCE(CAST(w.d2_k4_risk_score AS CHAR),'无'),'; 当前模型=',COALESCE(CAST(k4.model_score AS CHAR),'无'),'; 人工覆盖=',COALESCE(CAST(k4o.override_score AS CHAR),'无'),'; 决策=',COALESCE(rd.decision,'无'),'; 规则=',COALESCE(rd.rule_codes,hit.hit_rules,'无'))
                    END AS riskScoreBreakdown,
@@ -409,7 +409,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                      '; 活跃=', (SELECT COUNT(1) FROM nx_user_device ud WHERE ud.user_id=w.user_id AND ud.is_deleted=0 AND ud.status IN ('ONLINE','BUSY','ACTIVE','RUNNING')),
                      '; 最近=', COALESCE((SELECT CONCAT(ud.name,'/',ud.status,'/',COALESCE(ud.dc_location,'未知地域')) FROM nx_user_device ud WHERE ud.user_id=w.user_id AND ud.is_deleted=0 ORDER BY COALESCE(ud.last_seen_at,ud.updated_at) DESC LIMIT 1),'无')
                    ) AS deviceSummary,
-                   CONCAT('邀请码=',COALESCE(u.referral_code,'—'),'; 上级=',COALESCE(u.sponsor_code,'—')) AS referralPosition,
+                   CONCAT('邀请码=',COALESCE(u.referral_code,'—'),'; 邀请人=',COALESCE(u.sponsor_code,'—')) AS referralPosition,
                    CASE WHEN COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) IS NULL THEN 'K4评分不可用'
                         ELSE CONCAT('提交快照=',COALESCE(CAST(w.d2_k4_risk_score AS CHAR),'无'),'; 当前模型=',COALESCE(CAST(k4.model_score AS CHAR),'无'),'; 人工覆盖=',COALESCE(CAST(k4o.override_score AS CHAR),'无'),'; 决策=',COALESCE(rd.decision,'无'),'; 规则=',COALESCE(rd.rule_codes,hit.hit_rules,'无'))
                    END AS riskScoreBreakdown,

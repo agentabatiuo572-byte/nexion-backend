@@ -1405,7 +1405,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                        GREATEST(8, CHAR_LENGTH(CAST(candidates.user_id AS CHAR))), '0')),
                    CONCAT(ROUND(candidates.current_usdt, 2), ' USDT'),
                    CONCAT(ROUND(candidates.delta_usdt / candidates.median_delta, 2), 'x 基线'),
-                   CONCAT(GREATEST(candidates.current_directs - candidates.previous_directs, 0), ' 新增直推'),
+                   CONCAT(GREATEST(candidates.current_directs - candidates.previous_directs, 0), ' 新增直接邀请'),
                    COALESCE(candidates.cluster_id, '未关联 K1 簇'),
                    NULL,
                    IF(candidates.delta_usdt > candidates.median_delta * 10, 4, 3),

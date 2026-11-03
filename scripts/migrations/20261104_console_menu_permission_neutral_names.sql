@@ -45,4 +45,7 @@ UPDATE nx_admin_permission SET permission_name='G7 锁定计划常规写(抽奖�
 UPDATE nx_admin_permission SET permission_name='G7 锁定计划参考年奖励率(调高放大流出·过B1)', updated_at=NOW() WHERE permission_code='finprod_g7_apy_write' AND CAST(permission_name AS BINARY)=CAST('G7 复投年化APY(升息放大流出·过B1)' AS BINARY);
 UPDATE nx_admin_permission SET permission_name='G7 好友升级奖励倍率(调高放大奖励负债·过B1)', updated_at=NOW() WHERE permission_code='finprod_g7_nurture_write' AND CAST(permission_name AS BINARY)=CAST('G7 培育奖倍率(升倍率放大奖励负债·过B1)' AS BINARY);
 
+UPDATE nx_admin_permission SET permission_name='G4 转让手续费(改费率影响转让市场流转)', updated_at=NOW() WHERE permission_code='finprod_g4_royalty_write' AND CAST(permission_name AS BINARY)=CAST('G4 二级版税(改版税影响二级流转)' AS BINARY);
+UPDATE nx_admin_permission SET permission_name='G4 认购与转让市场熔断/恢复(止血·同步J1)', updated_at=NOW() WHERE permission_code='finprod_g4_market_toggle' AND CAST(permission_name AS BINARY)=CAST('G4 一二级市场熔断/恢复(止血·同步J1)' AS BINARY);
+
 COMMIT;

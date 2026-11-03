@@ -36,11 +36,11 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('finprod_g4_write',               'G4 Genesis 常规写(总量/基数口径/重跑批次)', 'API', '/finance-products/genesis',    'WRITE', 0, 1, 0),
   ('finprod_g4_price_write',         'G4 一级单价(改价放大Genesis负债·过B1)', 'API', '/finance-products/genesis',    'HIGH',  1, 1, 0),
   ('finprod_g4_dividend_rate_write', 'G4 每日收益比例(调高放大收益负债·过B1)', 'API', '/finance-products/genesis',    'HIGH',  1, 1, 0),
-  ('finprod_g4_royalty_write',       'G4 二级版税(改版税影响二级流转)', 'API', '/finance-products/genesis',    'HIGH',  1, 1, 0),
+  ('finprod_g4_royalty_write',       'G4 转让手续费(改费率影响转让市场流转)', 'API', '/finance-products/genesis',    'HIGH',  1, 1, 0),
   ('finprod_g4_airdrop_pct_write',   'G4 空投比例(放大Genesis派发)',   'API', '/finance-products/genesis',    'HIGH',  1, 1, 0),
   ('finprod_g4_emission_curve_write','G4 释放曲线(改变长期释放负债)',   'API', '/finance-products/genesis',    'HIGH',  1, 1, 0),
   ('finprod_g4_airdrop_lock_days_write','G4 空投锁定期(改变流通节奏)', 'API', '/finance-products/genesis',    'HIGH',  1, 1, 0),
-  ('finprod_g4_market_toggle',       'G4 一二级市场熔断/恢复(止血·同步J1)', 'API', '/finance-products/genesis',    'HIGH',  1, 1, 0),
+  ('finprod_g4_market_toggle',       'G4 认购与转让市场熔断/恢复(止血·同步J1)', 'API', '/finance-products/genesis',    'HIGH',  1, 1, 0),
 
   -- G7 锁定计划 /finance-products/repurchase（4 点）
   ('finprod_g7_read',                'G7 锁定计划页面读',            'API', '/finance-products/repurchase', 'READ',  0, 1, 0),

@@ -209,8 +209,8 @@ public class OpsTeamService implements AuditReplayable {
             new F2PolicyParamSeed("promo", "promo 周倍率", "F.promo.weekMultiplier", "1.0×", "warn", "活动周对团队购买奖励的倍率放大。放大奖励流出,受 B1 覆盖率约束。", true, true, "×"),
             new F2PolicyParamSeed("min", "奖励支付阈值", "F.royalty.minPayout", "$10", "", "最小可提金额。调高 = 凑不够提不出。", false, false, ""),
             new F2PolicyParamSeed("peer", "peer 同级奖励比例", "F.peer.rate", "5%", "brand", "同 V 级同级奖励比例(V3+)。放大奖励流出。", true, true, "%"),
-            new F2PolicyParamSeed("depth", "深度起算层", "F.unilevel.depthGate", "L4", "cyan", "从该层起按阶位门槛校验；L1-L7。", false, false, ""),
-            new F2PolicyParamSeed("depthRank", "深度最低阶位", "F.unilevel.depthGateRank", "V2", "cyan", "深度起算层及以下的邀请人最低 V 阶；V0-V8。", false, false, ""),
+            new F2PolicyParamSeed("depth", "等级解锁起点", "F.unilevel.depthGate", "L4", "cyan", "从该编号（L1-L7）起，团队购买奖励需达到解锁等级。", false, false, ""),
+            new F2PolicyParamSeed("depthRank", "解锁等级", "F.unilevel.depthGateRank", "V2", "cyan", "等级解锁起点及之后获得团队购买奖励所需的最低 V 级；V0-V8。", false, false, ""),
             new F2PolicyParamSeed("nexcap", "UVT/USDT 折算上限", "F.unilevel.nexCap", "$50/d", "", "单用户单日 UVT 派发折算 USDT 的上限。", false, false, ""),
             new F2PolicyParamSeed("backfill", "回溯窗口", "F.unilevel.backfill", "0d", "", "改后是否回溯已计提,原则上不回溯。", true, false, "天"));
     private static final List<F2PolicyParamSeed> F_SHARED_POLICY_PARAM_SEEDS = List.of(
