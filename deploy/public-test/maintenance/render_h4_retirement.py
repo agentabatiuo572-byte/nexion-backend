@@ -64,7 +64,7 @@ def render(stage, reader=None, clone_uuid=None, rehearsal=False, clone_database=
         sql += " ELSE 'UNKNOWN_REFUSED' END AS reader, " + h4_count + ' AS h4_trigger_count,\n'
         sql += "(SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE='nx_user_wallet') AS wallet_trigger_count;\n"
         return sql
-    if stage != 'retire' or reader not in variants:
+    if stage not in {'retire', 'reader'} or reader not in variants:
         raise ValueError('DIAGNOSE_THEN_SELECT_READER')
     before, create = variants[reader]
     expected = fund.metadata_body(create)
@@ -80,8 +80,10 @@ def render(stage, reader=None, clone_uuid=None, rehearsal=False, clone_database=
         " AND (SELECT COUNT(*) FROM information_schema.PARAMETERS WHERE SPECIFIC_SCHEMA=DATABASE() AND SPECIFIC_NAME='" + fund.FUNCTION + "' AND ORDINAL_POSITION>0)=0",
         'H4_READER_SOURCE_CHANGED')
     h4 = next(t for t in fund.SOURCE['triggers'] if t['name'] == TRIGGER)
-    preflight = fund.replace_once(fund.condition(create), WALLET_COUNT,
-        "AND EVENT_OBJECT_TABLE='nx_user_wallet')=4+" + h4_count + '\n AND (SELECT COUNT(*)')
+    preflight = fund.condition(create)
+    if stage == 'retire':
+        preflight = fund.replace_once(preflight, WALLET_COUNT,
+            "AND EVENT_OBJECT_TABLE='nx_user_wallet')=4+" + h4_count + '\n AND (SELECT COUNT(*)')
     sql += fund.assertion('(' + preflight + ') AND (' + h4_count + '=0 OR ' + fund.trigger_matches(h4) + ')',
                           'H4_UNEXPECTED_SCHEMA_DRIFT')
     grants = fund.SOURCE['routinePrivileges']
@@ -91,7 +93,8 @@ def render(stage, reader=None, clone_uuid=None, rehearsal=False, clone_database=
         grant_conditions.append('(SELECT COUNT(*)' + privilege_scope + ' AND User=' + fund.quoted(grant['user']) +
             ' AND Host=' + fund.quoted(grant['host']) + " AND Proc_priv='Execute')=1")
     sql += fund.assertion(' AND '.join(grant_conditions), 'H4_EXECUTE_GRANTS_CHANGED')
-    sql += RETIREMENT.read_text(encoding='utf-8') + '\n'
+    if stage == 'retire':
+        sql += RETIREMENT.read_text(encoding='utf-8') + '\n'
     sql += 'DROP FUNCTION `' + fund.FUNCTION + '`;\nDELIMITER $$\n' + create + '$$\nDELIMITER ;\n'
     for grant in grants:
         sql += 'GRANT EXECUTE ON FUNCTION `' + database + '`.`' + fund.FUNCTION + '` TO ' + fund.quoted(grant['user']) + '@' + fund.quoted(grant['host']) + ';\n'
@@ -104,7 +107,7 @@ def render(stage, reader=None, clone_uuid=None, rehearsal=False, clone_database=
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--stage', choices=['diagnose', 'retire'], required=True)
+    parser.add_argument('--stage', choices=['diagnose', 'retire', 'reader'], required=True)
     parser.add_argument('--reader', choices=['original', 'bug001', 'fund-update'])
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--rehearsal', action='store_true')

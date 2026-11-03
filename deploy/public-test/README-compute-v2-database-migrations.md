@@ -4,13 +4,15 @@
 trusted `database_migrations.py`. It is based on the actual 75,700-byte host file,
 SHA256 `0794fa15fb5d0aa2470bb6486dc56fad18eb6732337e471e0a15e4961b1a7221`.
 It does not replace the repository's older `database_migrations.py`. The H4 trigger installer is retired as of 2026-11-04. Cregis, support, ordinary
-SQL, backup, startup hold and recovery remain. Run the fixed-target
-[H4 retirement step](maintenance/README-h4-retirement.md) before deployment.
-The new forward retirement migration is discovered by the existing sorted catalog
-and runs once after the unchanged historical H4 file recorded in migration history.
+SQL, backup, startup hold and recovery remain. First read the H4 migration registry and follow the
+[recorded/pending retirement order](maintenance/README-h4-retirement.md).
+A pending, exact-hash historical H4 file executes only its original table/seed
+prefix as the app account, records APPLIED with RETIRED_H4_TRIGGER_SKIPPED,
+and is followed by the new retirement migration. The trigger is never installed.
+Unknown historical bytes are rejected; generic stored-program checks remain.
 
 Candidate SHA256:
-`80ea3667306ef99f7d3af423de20cfc5c197b0c85369625daf01f766f11820c2`.
+`8c4c28270ce7867aecb7d712a78af8999fa12f2f04e1ffb1c57d75d9b372d8db`.
 The separate reviewed updater must accept the exact installed baseline and this
 candidate, update the trusted closure and both pins together, and preserve all
 other trusted files and approval values, apart from removing the retired H4
@@ -61,7 +63,7 @@ Install this candidate only via the separately reviewed exact-baseline updater,
 after the maintenance budget/model restoration and removal of this task's owned
 hold have succeeded. Do not execute it as an independent migration shell. The
 verified native entry continues to load `database_migrations.py` and the backend
-broker continues to own the full backup and four pending forward migrations.
+broker continues to own the full backup and the pending forward migrations.
 
 Historical validation of the pre-retirement candidate (not rerun or claimed for
 the 2026-11-04 candidate; no tests were run for this change):

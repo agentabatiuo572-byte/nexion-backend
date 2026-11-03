@@ -11,15 +11,17 @@ The fixed installed baseline is:
 
 - `runtime-lock.json` SHA256 `907fb594f70782151ba12cdb168c324af47ef81c9ca961c9ce1f4a5e803d5cbc`.
 - Installed `database_migrations.py` SHA256 `0794fa15fb5d0aa2470bb6486dc56fad18eb6732337e471e0a15e4961b1a7221`.
-- Candidate migrator SHA256 `80ea3667306ef99f7d3af423de20cfc5c197b0c85369625daf01f766f11820c2`,
+- Candidate migrator SHA256 `8c4c28270ce7867aecb7d712a78af8999fa12f2f04e1ffb1c57d75d9b372d8db`,
   fixed by `NEW_MIGRATIONS_SHA` in the independently reviewed updater.
 
 The candidate comes from the reviewed immutable Git source
 `deploy/public-test/compute-v2-database-migrations.py`, renamed to
 `database_migrations.py` in the stage. Its new lane accepts the exact settlement
 SQL file and eight immutable triggers. Existing Cregis, support and earnings lanes and the generic stored-program
-rejection remain. The H4 installer is removed; perform the
-[TEST retirement step](maintenance/README-h4-retirement.md) before deployment.
+rejection remain. The H4 installer is removed. A pending pinned H4 file now
+executes only its table/seed prefix as the app account, with a skipped-trigger
+note in APPLIED history and the journal. Read the migration registry first and
+follow the [TEST retirement order](maintenance/README-h4-retirement.md).
 
 The reviewed updater adds
 `allow_fixed_compute_v2_trigger_install: true`. The updater requires that new key

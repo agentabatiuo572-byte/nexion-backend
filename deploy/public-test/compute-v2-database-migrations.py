@@ -34,6 +34,9 @@ NAME = re.compile(r'[0-9]{8}_[a-z0-9_]+\.sql')
 SHA = re.compile(r'[0-9a-f]{40}')
 MAX_ARCHIVE = 100 * 1024**2
 MAX_SQL = 8 * 1024**2
+RETIRED_H4_FILE = '20261025_h4_event_rules.sql'
+RETIRED_H4_SHA256 = '921d9f1e3567dfbd049da78ba878ab2187f9c6b15ed449a748be3e2118688d5d'
+RETIRED_H4_NOTE = 'RETIRED_H4_TRIGGER_SKIPPED'
 EARNINGS_FILE = '20261007_earnings_source_recovery.sql'
 EARNINGS_SHA256 = 'f443722d71d6a9da77759e55142ddd12e15b71c8af356a5dc9cd73dd03a410e9'
 EARNINGS_TRIGGER = 'nx_wallet_earnings_debit_counter_v1'
@@ -313,10 +316,18 @@ def stored_program_text(text, *, backslash_escapes):
 
 
 
+def retired_h4_prefix(data):
+    """The pinned historical tables/seeds are still needed; its trigger is retired."""
+    require(digest(data) == RETIRED_H4_SHA256, 'MIGRATION_H4_FIXED_SOURCE_CHANGED')
+    return data.split(b'DELIMITER $$\n', 1)[0]
+
+
 def migration_preflight(pending, user, password, root_password):
     """Check the entire pending batch before creating a journal, hold or any DDL."""
     special = False
     for name, data in pending:
+        if name == RETIRED_H4_FILE:
+            data = retired_h4_prefix(data)
         if name == EARNINGS_FILE:
             earnings_parts(data)
             special = True
@@ -1231,12 +1242,20 @@ def apply(sha, *, rollback_check=False):
                 execute_cregis_file(name, data, folder, user, password, root_password, cregis_context, cregis_parts, journal)
             elif compute_v2_parts and name == COMPUTE_V2_FILE:
                 execute_compute_v2_file(data, folder, user, password, root_password, compute_v2_context, journal)
+            elif name == RETIRED_H4_FILE:
+                prefix = retired_h4_prefix(data)
+                journal['retired_h4'] = {'file': name, 'note': RETIRED_H4_NOTE,
+                                         'prefix_sha256': digest(prefix)}
+                save(ROOT / 'active.json', journal)
+                execute_sql(name + '.retired-prefix', prefix, folder, user, password)
             elif name == EARNINGS_FILE and trigger_context['root_install']:
                 execute_earnings_recovery(data, folder, user, password, root_password, trigger_context, journal)
             else:
                 execute_sql(name, data, folder, user, password)
             state['scripts'][name] = {'sha256': digest(data), 'status': 'APPLIED',
                                       'sha': sha, 'backup': journal['backup']['path']}
+            if name == RETIRED_H4_FILE:
+                state['scripts'][name]['note'] = RETIRED_H4_NOTE
             save(ROOT / 'state.json', state)
             journal['completed'].append(name)
             save(ROOT / 'active.json', journal)
