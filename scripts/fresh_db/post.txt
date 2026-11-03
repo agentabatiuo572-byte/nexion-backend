@@ -1,8 +1,10 @@
-# Run after the startup chain on a fresh database: structure-only copies of historical migrations whose tables the app still queries.
+# Run after the startup chain: runtime table prerequisites and migrations that depend on them.
 fresh_db/ddl-20260720_d1_finance_closure.sql
 fresh_db/ddl-20260722_f1_vrank_promotion_engine.sql
 fresh_db/ddl-20260722_g2_g3_closure.sql
 fresh_db/ddl-20260722_g7_repurchase_closure.sql
+# Raffle ticket backfill requires the G7 ticket table above, including on an empty database.
+migrations/20261025_genesis_raffle.sql
 fresh_db/ddl-20260722_i3_a4_event_closure.sql
 fresh_db/ddl-20260722_k4_d2_routing_event_closure.sql
 fresh_db/ddl-20260723_b3_funnel_closure.sql
@@ -30,4 +32,6 @@ migrations/20260727_h5_daily_nex_canonical_closure.sql
 migrations/20260927_h3_quest_claim_event_schema.sql
 migrations/20261025_h4_event_rules.sql
 migrations/20261104_h4_holding_retire.sql
+# Repair legacy notification visibility after the reminder table exists and H4 triggers are retired.
+migrations/20261025_h4_reminder_visibility.sql
 migrations/20261101_compute_v2_settlement.sql
