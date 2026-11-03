@@ -32,7 +32,7 @@ final class NovaRuntimeAdapterCatalog {
 
     static List<NovaOptionView> options() {
         return List.of(
-                option("commission.paid", "团队佣金到账"),
+                option("commission.paid", "团队奖励到账"),
                 option("referral.bound", "团队推荐关系绑定"),
                 option("staking.opened", "质押仓位创建"),
                 option("staking.claimed", "质押收益领取"),

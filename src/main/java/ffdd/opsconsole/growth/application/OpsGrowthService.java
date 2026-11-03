@@ -4266,9 +4266,9 @@ public class OpsGrowthService implements AuditReplayable {
         return List.of(
                 phaseAttributionRow("P1", "新手上手期", "新用户与任务加成驱动激活", "newUserBonusMultiplier", "2", "增长主导"),
                 phaseAttributionRow("P2", "裂变扩散期", "邀请奖励拉新驱动裂变", "inviteRewardMultiplier", "1.5", "增长主导"),
-                phaseAttributionRow("P3", "沉淀转化期", "复投加成驱动沉淀", "reinvestMultiplier", "2", "增长+运营"),
+                phaseAttributionRow("P3", "沉淀转化期", "锁定计划加成驱动沉淀", "reinvestMultiplier", "2", "增长+运营"),
                 phaseAttributionRow("P4", "拐点调节期", "提现冷却与合规审查共同控制流出", "withdrawCooldownDays", "35", "增长+风控"),
-                phaseAttributionRow("P5", "稳态运营期", "双轨封顶与提现费率维持资金稳态", "binaryDailyCap", "2000", "增长+资金"),
+                phaseAttributionRow("P5", "稳态运营期", "团队平衡奖励封顶与提现费率维持资金稳态", "binaryDailyCap", "2000", "增长+资金"),
                 phaseAttributionRow("P6", "软退场期", "增强合规审查与提现费率约束尾部风险", "complianceHoldEnabled", "是", "增长+风控"));
     }
 

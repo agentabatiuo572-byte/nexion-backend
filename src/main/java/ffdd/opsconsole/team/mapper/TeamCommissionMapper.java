@@ -144,9 +144,9 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                      WHERE is_deleted = 0
                     UNION ALL
                     SELECT 'weeklyUsdtRoyalty' AS id,
-                           '本周 USDT 版税' AS label,
+                           '本周 USDT 奖励' AS label,
                            CONCAT('$', ROUND(SUM(amount_usdt), 2)) AS value,
-                           CONCAT(COUNT(1), ' 笔佣金事件') AS sub,
+                           CONCAT(COUNT(1), ' 笔奖励记录') AS sub,
                            'ok' AS tone,
                            COUNT(1) AS sampleCount
                       FROM nx_commission_event
@@ -157,7 +157,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                     SELECT 'weeklyNexPayout' AS id,
                            '本周 UVT 派发' AS label,
                            ROUND(SUM(amount_nex), 2) AS value,
-                           CONCAT(COUNT(1), ' 笔 UVT 佣金事件') AS sub,
+                           CONCAT(COUNT(1), ' 笔 UVT 奖励记录') AS sub,
                            'cyan' AS tone,
                            COUNT(1) AS sampleCount
                       FROM nx_commission_event
@@ -173,7 +173,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             SELECT CONCAT('L', layer_no) AS level,
                    ROUND(usdt_rate * 100, 6) AS usdtPct,
                    nex_per_usd AS nexReward,
-                   CASE WHEN layer_no = 1 THEN '直推 DIRECT' ELSE '扩展 EXTENDED' END AS label,
+                   CASE WHEN layer_no = 1 THEN '好友 DIRECT' ELSE '团队 EXTENDED' END AS label,
                    CASE WHEN layer_no = 1 THEN TRUE ELSE FALSE END AS direct,
                    'nx_commission_rule' AS source
               FROM nx_commission_rule
@@ -826,10 +826,10 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             SELECT LOWER(commission_type) AS `key`,
                    UPPER(commission_type) AS code,
                    CASE LOWER(commission_type)
-                     WHEN 'direct' THEN '直推佣金'
-                     WHEN 'network' THEN '网络版税'
-                     WHEN 'binary' THEN '双轨平衡匹配'
-                     WHEN 'leadership' THEN '领导奖池'
+                     WHEN 'direct' THEN '好友购买奖励'
+                     WHEN 'network' THEN '团队购买奖励'
+                     WHEN 'binary' THEN '团队平衡奖励'
+                     WHEN 'leadership' THEN '团队激励池'
                      ELSE commission_type
                    END AS label,
                    CONCAT('$', ROUND(SUM(amount_usdt), 2)) AS amountLabel,
@@ -845,7 +845,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i') AS `when`,
-                   CONCAT('佣金事件 ', CONCAT('CM-', id), ' 状态 ', status, ' · ', LOWER(commission_type)) AS text,
+                   CONCAT('奖励记录 ', CONCAT('CM-', id), ' 状态 ', status, ' · ', LOWER(commission_type)) AS text,
                    CASE
                      WHEN UPPER(status) IN ('REJECTED', 'FROZEN', 'REVERSED', 'ROLLBACK') THEN 'HIGH'
                      WHEN UPPER(status) IN ('UNLOCKED', 'AVAILABLE', 'SETTLED', 'PAID') THEN 'MEDIUM'

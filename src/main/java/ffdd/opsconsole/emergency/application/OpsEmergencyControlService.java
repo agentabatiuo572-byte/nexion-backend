@@ -3489,7 +3489,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                 actionOption("J1", SOP_J1_WITHDRAW_ACTION, "withdraw", true,
                         "调用 J1 Kill-Switch 暂停 D2 用户提现，用于挤兑或对账缺口止血"),
                 actionOption("J1", SOP_J1_GENESIS_ACTION, "genesis", true,
-                        "调用 J1 Kill-Switch 暂停 Genesis 交易或二级市场入口"),
+                        "调用 J1 Kill-Switch 暂停 Genesis 交易或转让市场入口"),
                 parameterizedActionOption("J2", SOP_J2_GEO_BLOCK_ACTION, "geo-block:{target}", true,
                         "调用 J2 应急封锁；参数为 ISO 两位国家码，例如 US", "ISO 两位国家码", "US"),
                 parameterizedActionOption("C2", SOP_C2_USER_FREEZE_ACTION, "user-freeze:{target}", true,

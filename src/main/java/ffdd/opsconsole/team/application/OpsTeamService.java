@@ -203,20 +203,20 @@ public class OpsTeamService implements AuditReplayable {
     private static final long MAX_SAFE_COMPUTE_POINTS = 9_007_199_254_740_991L;
     private static final Set<String> VRANK_REWARD_TYPES = Set.of("usdt", "uvt", "voucher", "sku", "custom");
     private static final List<F2PolicyParamSeed> F2_POLICY_PARAM_SEEDS = List.of(
-            new F2PolicyParamSeed("clampMin", "影响分下限", "F.influence.clampMin", "1.0", "", "InfluenceScore 下限;clamp 后参与版税权重计算。", false, false, ""),
-            new F2PolicyParamSeed("clampMax", "影响分上限", "F.influence.clampMax", "5.0", "", "InfluenceScore 上限;clamp 后参与版税权重计算。", false, false, ""),
-            new F2PolicyParamSeed("cool", "佣金冷却", "F.cooldown", "30d", "", "计提后冷却期;期满才进入可提余额。改后对新计提佣金生效。", true, true, "天"),
-            new F2PolicyParamSeed("promo", "promo 周倍率", "F.promo.weekMultiplier", "1.0×", "warn", "活动周对网络版税的倍率放大。放大佣金流出,受 B1 覆盖率约束。", true, true, "×"),
-            new F2PolicyParamSeed("min", "版税支付阈值", "F.royalty.minPayout", "$10", "", "最小可提金额。调高 = 凑不够提不出。", false, false, ""),
-            new F2PolicyParamSeed("peer", "peer 平级比例", "F.peer.rate", "5%", "brand", "同 V 级平级奖励比例(V3+)。放大佣金流出。", true, true, "%"),
-            new F2PolicyParamSeed("depth", "深度起算层", "F.unilevel.depthGate", "L4", "cyan", "从该层起按阶位门槛校验；L1-L7。", false, false, ""),
-            new F2PolicyParamSeed("depthRank", "深度最低阶位", "F.unilevel.depthGateRank", "V2", "cyan", "深度起算层及以下的上级最低 V 阶；V0-V8。", false, false, ""),
+            new F2PolicyParamSeed("clampMin", "影响分下限", "F.influence.clampMin", "1.0", "", "InfluenceScore 下限;clamp 后参与团队购买奖励权重计算。", false, false, ""),
+            new F2PolicyParamSeed("clampMax", "影响分上限", "F.influence.clampMax", "5.0", "", "InfluenceScore 上限;clamp 后参与团队购买奖励权重计算。", false, false, ""),
+            new F2PolicyParamSeed("cool", "奖励冷却", "F.cooldown", "30d", "", "计提后冷却期;期满才进入可提余额。改后对新计提奖励生效。", true, true, "天"),
+            new F2PolicyParamSeed("promo", "promo 周倍率", "F.promo.weekMultiplier", "1.0×", "warn", "活动周对团队购买奖励的倍率放大。放大奖励流出,受 B1 覆盖率约束。", true, true, "×"),
+            new F2PolicyParamSeed("min", "奖励支付阈值", "F.royalty.minPayout", "$10", "", "最小可提金额。调高 = 凑不够提不出。", false, false, ""),
+            new F2PolicyParamSeed("peer", "peer 同级奖励比例", "F.peer.rate", "5%", "brand", "同 V 级同级奖励比例(V3+)。放大奖励流出。", true, true, "%"),
+            new F2PolicyParamSeed("depth", "等级解锁起点", "F.unilevel.depthGate", "L4", "cyan", "从该编号（L1-L7）起，团队购买奖励需达到解锁等级。", false, false, ""),
+            new F2PolicyParamSeed("depthRank", "解锁等级", "F.unilevel.depthGateRank", "V2", "cyan", "等级解锁起点及之后获得团队购买奖励所需的最低 V 级；V0-V8。", false, false, ""),
             new F2PolicyParamSeed("nexcap", "UVT/USDT 折算上限", "F.unilevel.nexCap", "$50/d", "", "单用户单日 UVT 派发折算 USDT 的上限。", false, false, ""),
             new F2PolicyParamSeed("backfill", "回溯窗口", "F.unilevel.backfill", "0d", "", "改后是否回溯已计提,原则上不回溯。", true, false, "天"));
     private static final List<F2PolicyParamSeed> F_SHARED_POLICY_PARAM_SEEDS = List.of(
-            new F2PolicyParamSeed("binary-threshold", "两轨结算门槛", "F.binary.threshold", "$1,000 / 轨", "", "最低门槛;改后对下一周期结算生效。", false, false, ""),
-            new F2PolicyParamSeed("binary-rate", "平衡匹配比例", "F.binary.matchRate", "10%", "brand", "min(A,B) × 该比例日结算;放大佣金流出,受 B1 覆盖率约束。", true, true, "%"),
-            new F2PolicyParamSeed("pool-ratio", "领导池比例", "F.pool.ratio", "5%", "brand", "每周 GMV 注入领导池的比例;放大池子流出,受 B1 约束。", true, true, "%"));
+            new F2PolicyParamSeed("binary-threshold", "两组发放门槛", "F.binary.threshold", "$1,000 / 轨", "", "最低门槛;改后对下一周期结算生效。", false, false, ""),
+            new F2PolicyParamSeed("binary-rate", "团队平衡奖励比例", "F.binary.matchRate", "10%", "brand", "min(A,B) × 该比例按日发放;放大奖励流出,受 B1 覆盖率约束。", true, true, "%"),
+            new F2PolicyParamSeed("pool-ratio", "团队激励池比例", "F.pool.ratio", "5%", "brand", "每周 GMV 注入团队激励池的比例;放大池子流出,受 B1 约束。", true, true, "%"));
     private static final Set<String> UI_CONFIG_KEYS = uiConfigKeys();
 
     private final PlatformConfigFacade configFacade;
@@ -2162,7 +2162,7 @@ public class OpsTeamService implements AuditReplayable {
         return commissionKind(
                 textValue(raw, "key", "all"),
                 textValue(raw, "code", "ALL"),
-                textValue(raw, "label", "全部佣金类型"),
+                textValue(raw, "label", "全部奖励类型"),
                 textValue(raw, "amountLabel", "$0"),
                 textValue(raw, "countLabel", "0 笔"),
                 textValue(raw, "className", ""),

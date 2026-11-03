@@ -379,13 +379,13 @@ public class OpsPlatformParamRegistryService {
             return new Owner("D", "D3", "资金储备与应付款", "/finance/pool");
         }
         if ("commission/cooling-days".equals(key)) {
-            return new Owner("F", "F2", "团队分成", "/network/royalty");
+            return new Owner("F", "F2", "团队奖励设置", "/network/royalty");
         }
         if (key.contains(".binary.")) {
-            return new Owner("F", "F3", "左右团队业绩结算", "/network/binary");
+            return new Owner("F", "F3", "团队平衡奖励", "/network/binary");
         }
         if (key.contains(".unilevel.")) {
-            return new Owner("F", "F2", "团队分成", "/network/royalty");
+            return new Owner("F", "F2", "团队奖励设置", "/network/royalty");
         }
         if (key.contains(".pool.")) {
             return new Owner("F", "F4", "奖励池、名额与排行榜", "/network/leadership-pool");
@@ -505,21 +505,21 @@ public class OpsPlatformParamRegistryService {
             case "featured" -> "活动精选状态";
             case "reward" -> "活动奖励";
             case "status" -> "当前状态";
-            case "commission_tightening_pct" -> "佣金收紧比例";
+            case "commission_tightening_pct" -> "奖励收紧比例";
             case "current" -> "当前阶段";
             case "current_month", "currentmonth" -> "当前运营月份";
             case "device_release_pacing_pct" -> "设备释放节奏";
-            case "genesis_emissions_open" -> "Genesis 排放开关";
-            case "commissiontighteningpct" -> "月度佣金收紧比例";
+            case "genesis_emissions_open" -> "Genesis 释放开关";
+            case "commissiontighteningpct" -> "月度奖励收紧比例";
             case "quest_reward_multiplier" -> "任务奖励倍率";
             case "tri_reward" -> "首日任务奖励";
             case "window_ms" -> "任务有效窗口";
             case "phaseprogresspct" -> "阶段进度";
             case "totalmonths" -> "总运营月数";
-            case "matchrate" -> "双轨匹配率";
-            case "cooldown" -> "佣金冷却周期";
-            case "ratio" -> "领导池比例";
-            case "l1" -> "一代佣金比例";
+            case "matchrate" -> "团队平衡奖励比例";
+            case "cooldown" -> "奖励冷却周期";
+            case "ratio" -> "团队激励池比例";
+            case "l1" -> "L1 奖励比例";
             case "healthy_pct" -> "双账本健康阈值";
             case "redline_pct" -> "双账本红线";
             case "run_risk_pct" -> "挤兑风险阈值";

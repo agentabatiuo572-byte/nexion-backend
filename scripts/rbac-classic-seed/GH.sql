@@ -5,11 +5,11 @@
 INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type, resource_path, perm_type, amplifies, status, is_deleted) VALUES
   -- ===== G 域 · 金融产品（finprod，30 点）=====
 
-  -- G1 Staking 池配置 /finance-products/staking（6 点）
+  -- G1 质押产品配置 /finance-products/staking（6 点）
   ('finprod_g1_read',                'G1 Staking 页面读',           'API', '/finance-products/staking',    'READ',  0, 1, 0),
   ('finprod_g1_write',               'G1 Staking 常规写(停售/恢复开售)', 'API', '/finance-products/staking',    'WRITE', 0, 1, 0),
-  ('finprod_g1_apy_write',           'G1 调 APY(升息放大流出·过B1)',  'API', '/finance-products/staking',    'HIGH',  1, 1, 0),
-  ('finprod_g1_penalty_write',       'G1 调提前赎回罚款(降罚放大流出)', 'API', '/finance-products/staking',    'HIGH',  1, 1, 0),
+  ('finprod_g1_apy_write',           'G1 调参考年奖励率(调高放大流出·过B1)',  'API', '/finance-products/staking',    'HIGH',  1, 1, 0),
+  ('finprod_g1_penalty_write',       'G1 调提前解锁扣款(降低扣款放大流出)', 'API', '/finance-products/staking',    'HIGH',  1, 1, 0),
   ('finprod_g1_min_write',           'G1 调最小额(降额放大负债)',     'API', '/finance-products/staking',    'HIGH',  1, 1, 0),
   ('finprod_g1_kill_toggle',         'G1 单档熔断/解除(止血·同步J1/B5)', 'API', '/finance-products/staking',    'HIGH',  1, 1, 0),
 
@@ -31,22 +31,22 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('finprod_g3_override_price_write',    'G3 现价直写应急(过B1·60s全网生效)', 'API', '/finance-products/market',     'HIGH',  1, 1, 0),
   ('finprod_g3_engine_pause_toggle',     'G3 暂停/恢复行情引擎(止血·冻结现价)', 'API', '/finance-products/market',     'HIGH',  1, 1, 0),
 
-  -- G4 Genesis 经济 /finance-products/genesis（6 点）
-  ('finprod_g4_read',                'G4 Genesis 经济页面读',        'API', '/finance-products/genesis',    'READ',  0, 1, 0),
+  -- G4 创世节点销售与收益 /finance-products/genesis（6 点）
+  ('finprod_g4_read',                'G4 创世节点销售与收益页面读',        'API', '/finance-products/genesis',    'READ',  0, 1, 0),
   ('finprod_g4_write',               'G4 Genesis 常规写(总量/基数口径/重跑批次)', 'API', '/finance-products/genesis',    'WRITE', 0, 1, 0),
   ('finprod_g4_price_write',         'G4 一级单价(改价放大Genesis负债·过B1)', 'API', '/finance-products/genesis',    'HIGH',  1, 1, 0),
-  ('finprod_g4_dividend_rate_write', 'G4 每日分红率(升率放大分红负债·过B1)', 'API', '/finance-products/genesis',    'HIGH',  1, 1, 0),
-  ('finprod_g4_royalty_write',       'G4 二级版税(改版税影响二级流转)', 'API', '/finance-products/genesis',    'HIGH',  1, 1, 0),
+  ('finprod_g4_dividend_rate_write', 'G4 每日收益比例(调高放大收益负债·过B1)', 'API', '/finance-products/genesis',    'HIGH',  1, 1, 0),
+  ('finprod_g4_royalty_write',       'G4 转让手续费(改费率影响转让市场流转)', 'API', '/finance-products/genesis',    'HIGH',  1, 1, 0),
   ('finprod_g4_airdrop_pct_write',   'G4 空投比例(放大Genesis派发)',   'API', '/finance-products/genesis',    'HIGH',  1, 1, 0),
   ('finprod_g4_emission_curve_write','G4 释放曲线(改变长期释放负债)',   'API', '/finance-products/genesis',    'HIGH',  1, 1, 0),
   ('finprod_g4_airdrop_lock_days_write','G4 空投锁定期(改变流通节奏)', 'API', '/finance-products/genesis',    'HIGH',  1, 1, 0),
-  ('finprod_g4_market_toggle',       'G4 一二级市场熔断/恢复(止血·同步J1)', 'API', '/finance-products/genesis',    'HIGH',  1, 1, 0),
+  ('finprod_g4_market_toggle',       'G4 认购与转让市场熔断/恢复(止血·同步J1)', 'API', '/finance-products/genesis',    'HIGH',  1, 1, 0),
 
-  -- G7 复投激励 /finance-products/repurchase（4 点）
-  ('finprod_g7_read',                'G7 复投激励页面读',            'API', '/finance-products/repurchase', 'READ',  0, 1, 0),
-  ('finprod_g7_write',               'G7 复投常规写(抽奖券/早赎罚/preset)', 'API', '/finance-products/repurchase', 'WRITE', 0, 1, 0),
-  ('finprod_g7_apy_write',           'G7 复投年化APY(升息放大流出·过B1)', 'API', '/finance-products/repurchase', 'HIGH',  1, 1, 0),
-  ('finprod_g7_nurture_write',       'G7 培育奖倍率(升倍率放大奖励负债·过B1)', 'API', '/finance-products/repurchase', 'HIGH',  1, 1, 0),
+  -- G7 锁定计划 /finance-products/repurchase（4 点）
+  ('finprod_g7_read',                'G7 锁定计划页面读',            'API', '/finance-products/repurchase', 'READ',  0, 1, 0),
+  ('finprod_g7_write',               'G7 锁定计划常规写(抽奖券/提前解锁扣款/preset)', 'API', '/finance-products/repurchase', 'WRITE', 0, 1, 0),
+  ('finprod_g7_apy_write',           'G7 锁定计划参考年奖励率(调高放大流出·过B1)', 'API', '/finance-products/repurchase', 'HIGH',  1, 1, 0),
+  ('finprod_g7_nurture_write',       'G7 好友升级奖励倍率(调高放大奖励负债·过B1)', 'API', '/finance-products/repurchase', 'HIGH',  1, 1, 0),
 
   -- ===== H 域 · 增长与运营节奏（growth，18 点）=====
 

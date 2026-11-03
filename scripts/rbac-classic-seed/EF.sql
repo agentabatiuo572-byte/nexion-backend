@@ -47,30 +47,30 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('network_f1_promote_user',                 'F1 V-Rank 评估触发 / 手动晋升回滚', 'API', '/network/v-rank',         'HIGH',  1, 1, 0),
   ('network_f1_reward_reissue',               'F1 V-Rank 派发流水补发(F1-MD4)',   'API', '/network/v-rank',         'HIGH',  1, 1, 0),
   ('network_f1_reward_reverse',               'F1 V-Rank 派发流水撤销红冲(F1-MD4)','API', '/network/v-rank',         'HIGH',  1, 1, 0),
-  -- F2 网络版税费率 /network/royalty
-  ('network_f2_read',                         'F2 网络版税费率 - 读',             'API', '/network/royalty',        'READ',  0, 1, 0),
-  ('network_f2_write',                        'F2 网络版税费率 - 常规写',         'API', '/network/royalty',        'WRITE', 0, 1, 0),
-  ('network_f2_royalty_rate',                 'L1-L7 版税费率放宽',               'API', '/network/royalty',        'HIGH',  1, 1, 0),
+  -- F2 团队奖励设置 /network/royalty
+  ('network_f2_read',                         'F2 团队奖励设置 - 读',             'API', '/network/royalty',        'READ',  0, 1, 0),
+  ('network_f2_write',                        'F2 团队奖励设置 - 常规写',         'API', '/network/royalty',        'WRITE', 0, 1, 0),
+  ('network_f2_royalty_rate',                 'L1-L7 团队购买奖励比例放宽',               'API', '/network/royalty',        'HIGH',  1, 1, 0),
   ('network_f2_policy_amplify',               'Partner 档位与费率杠杆参数',       'API', '/network/royalty',        'HIGH',  1, 1, 0),
-  -- F3 双轨结算引擎 /network/binary
-  ('network_f3_read',                         'F3 双轨结算引擎 - 读',             'API', '/network/binary',         'READ',  0, 1, 0),
-  ('network_f3_write',                        'F3 双轨结算引擎 - 常规写',         'API', '/network/binary',         'WRITE', 0, 1, 0),
+  -- F3 团队平衡奖励 /network/binary
+  ('network_f3_read',                         'F3 团队平衡奖励 - 读',             'API', '/network/binary',         'READ',  0, 1, 0),
+  ('network_f3_write',                        'F3 团队平衡奖励 - 常规写',         'API', '/network/binary',         'WRITE', 0, 1, 0),
   ('network_f3_match_rate',                   '平衡匹配比例调整',                 'API', '/network/binary',         'HIGH',  1, 1, 0),
-  ('network_f3_engine_pause',                 '暂停双轨结算引擎',                 'API', '/network/binary',         'HIGH',  1, 1, 0),
-  -- F4 池 / 配额 / 大使 / 榜 /network/leadership-pool
+  ('network_f3_engine_pause',                 '暂停团队平衡奖励发放',                 'API', '/network/binary',         'HIGH',  1, 1, 0),
+  -- F4 奖励池、名额与排行榜 /network/leadership-pool
   ('network_f4_read',                         'F4 池配额大使榜 - 读',             'API', '/network/leadership-pool','READ',  0, 1, 0),
   ('network_f4_write',                        'F4 池配额大使榜 - 常规写',         'API', '/network/leadership-pool','WRITE', 0, 1, 0),
   ('network_f4_pool_fund',                    '奖池资金类调整',                   'API', '/network/leadership-pool','HIGH',  1, 1, 0),
   ('network_f4_ambassador_approve',           '区域大使审批',                     'API', '/network/leadership-pool','HIGH',  1, 1, 0),
   ('network_f4_leaderboard_control',          '排行榜控制(暂停/取消资格)',        'API', '/network/leadership-pool','HIGH',  1, 1, 0),
-  -- F5 佣金事件审计 /network/commissions
-  ('network_f5_read',                         'F5 佣金事件审计 - 读',             'API', '/network/commissions',    'READ',  0, 1, 0),
-  ('network_f5_write',                        'F5 佣金事件审计 - 常规写',         'API', '/network/commissions',    'WRITE', 0, 1, 0),
-  ('network_f5_commission_freeze',            '佣金冻结与解冻',                   'API', '/network/commissions',    'HIGH',  1, 1, 0),
-  ('network_f5_commission_suspend',           '暂停用户佣金',                     'API', '/network/commissions',    'HIGH',  1, 1, 0),
-  ('network_f5_commission_release',           '佣金提前解锁与支付',               'API', '/network/commissions',    'HIGH',  1, 1, 0),
-  ('network_f5_commission_reverse',           '佣金冲正',                         'API', '/network/commissions',    'HIGH',  1, 1, 0),
-  ('network_f5_commission_reissue',           '佣金补发',                         'API', '/network/commissions',    'HIGH',  1, 1, 0)
+  -- F5 奖励记录核对 /network/commissions
+  ('network_f5_read',                         'F5 奖励记录核对 - 读',             'API', '/network/commissions',    'READ',  0, 1, 0),
+  ('network_f5_write',                        'F5 奖励记录核对 - 常规写',         'API', '/network/commissions',    'WRITE', 0, 1, 0),
+  ('network_f5_commission_freeze',            '奖励冻结与解冻',                   'API', '/network/commissions',    'HIGH',  1, 1, 0),
+  ('network_f5_commission_suspend',           '暂停用户奖励',                     'API', '/network/commissions',    'HIGH',  1, 1, 0),
+  ('network_f5_commission_release',           '奖励提前解锁与发放',               'API', '/network/commissions',    'HIGH',  1, 1, 0),
+  ('network_f5_commission_reverse',           '奖励撤销',                         'API', '/network/commissions',    'HIGH',  1, 1, 0),
+  ('network_f5_commission_reissue',           '奖励补发',                         'API', '/network/commissions',    'HIGH',  1, 1, 0)
 ON DUPLICATE KEY UPDATE
   permission_name = VALUES(permission_name),
   resource_type   = VALUES(resource_type),

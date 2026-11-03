@@ -61,7 +61,7 @@ public class L3FinanceReportService {
                 "streams", streams,
                 "breakdown", "stream",
                 "serverAuthoritative", true,
-                "sources", List.of("设备订单", "团队佣金账本", "代币兑换订单", "算力服务费账本")));
+                "sources", List.of("设备订单", "团队奖励账本", "代币兑换订单", "算力服务费账本")));
     }
 
     public ApiResult<Map<String, Object>> redemption(String period, String from, String to, String cohort) {
@@ -99,7 +99,7 @@ public class L3FinanceReportService {
         return List.of(
                 new RevenueFact("device_sales", "设备销售 GMV", "设备订单",
                         requireRevenue(mapper.sumDeviceSalesGmv(from, to))),
-                new RevenueFact("team_commission", "团队分润佣金", "团队佣金账本",
+                new RevenueFact("team_commission", "团队奖励", "团队奖励账本",
                         requireRevenue(mapper.sumTeamCommission(from, to))),
                 new RevenueFact("token_economy", "代币经济", "代币兑换订单",
                         requireRevenue(mapper.sumTokenEconomyVolume(from, to))),

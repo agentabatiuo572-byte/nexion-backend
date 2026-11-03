@@ -58,13 +58,13 @@ public class OpsNotificationCampaignService {
     private static final Set<String> KINDS = Set.of("system", "commission", "team", "staking", "market", "genesis");
     private static final List<NotificationAudienceOption> CTA_ROUTES = List.of(
             new NotificationAudienceOption("", "无跳转"),
-            new NotificationAudienceOption("/pages/me/wallet-repurchase", "我的 · 钱包复投"),
+            new NotificationAudienceOption("/pages/me/wallet-repurchase", "我的 · 锁定计划"),
             new NotificationAudienceOption("/pages/team/team", "赚取 · 团队"),
             new NotificationAudienceOption("/pages/staking/staking", "赚取 · 质押"),
             new NotificationAudienceOption("/pages/market/market", "商城 · 市场"),
             new NotificationAudienceOption("/pages/genesis/marketplace", "商城 · Genesis"));
     private static final List<NotificationSwipeRouteView> SWIPE_ROUTES = List.of(
-            new NotificationSwipeRouteView("/reinvest", "commission", "佣金到账 -> 复投"),
+            new NotificationSwipeRouteView("/reinvest", "commission", "奖励到账 -> 锁定计划"),
             new NotificationSwipeRouteView("/me/bills", "refund", "退款到账 -> 账单"),
             new NotificationSwipeRouteView("-", "system", "维护公告 / 监管通告 / 运营公告 - system kind 无转化跳转"));
     private static final DateTimeFormatter CAMPAIGN_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
@@ -645,7 +645,7 @@ public class OpsNotificationCampaignService {
         return new NotificationDeliveryCatalog(
                 List.of(
                         new NotificationAudienceOption("system", "系统通知"),
-                        new NotificationAudienceOption("commission", "佣金通知"),
+                        new NotificationAudienceOption("commission", "奖励通知"),
                         new NotificationAudienceOption("team", "团队通知"),
                         new NotificationAudienceOption("staking", "质押通知"),
                         new NotificationAudienceOption("market", "市场通知"),

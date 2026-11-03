@@ -646,9 +646,9 @@ public class AuditReplayBusinessPermissionGuard {
             String label=switch(request.action()){case "ACTIVATE"->"启用";case "PAUSE"->"暂停";default->"恢复";};
             boolean amplifies=!"PAUSE".equals(request.action());
             return new DelegatedProposalDescriptor("七层结算"+label,"current",
-                    "七层版本 "+request.expectedSevenLayerRevision()+"；政策版本 "+request.expectedPolicyVersion()+"；启用时间 "+state.get("cutoverAt")+"；暂停 "+state.get("sevenLayerPaused"),
-                    "ACTIVATE".equals(request.action())?"批准时以服务器时间首次启用；旧来源不改、不补历史层级":
-                            "PAUSE".equals(request.action())?"仅暂停尚无冻结的七层新来源；保留因暂停滞留的原来源；既有快照继续":
+                    "L1–L7 版本 "+request.expectedSevenLayerRevision()+"；政策版本 "+request.expectedPolicyVersion()+"；启用时间 "+state.get("cutoverAt")+"；暂停 "+state.get("sevenLayerPaused"),
+                    "ACTIVATE".equals(request.action())?"批准时以服务器时间首次启用；旧来源不改、不回补历史":
+                            "PAUSE".equals(request.action())?"仅暂停尚无冻结的 L1–L7 新来源；保留因暂停滞留的原来源；既有快照继续":
                                     "保持原启用时间，恢复新来源及因本次暂停滞留的原来源；不重复处理已完成来源",
                     "F2",amplifies?"fund":"param",amplifies,new AuditLockTarget("F","seven_layer_activation","current"));
         }
@@ -668,12 +668,12 @@ public class AuditReplayBusinessPermissionGuard {
                     || request.deviceEarning().amplifies((ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("deviceEarning"));
             boolean v2=Integer.valueOf(2).equals(request.schemaVersion());
             var beforePurchase=Integer.valueOf(2).equals(current.get("policySchemaVersion"))?(ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("purchase"):ffdd.opsconsole.team.domain.DirectReferralPolicy.DISABLED;
-            String beforeSummary=v2?"七层版本 "+request.expectedSevenLayerRevision()+"；L1原预算 "+service.sevenLayerReference().get("baseRatePct")+"%；统一冷却 "+service.sevenLayerReference().get("coolingDays")+" 天；"+(beforePurchase.enabled()?"购买拆分 USDT "+beforePurchase.usdtSharePct()+"%":"购买未拆分，全额USDT加旧UVT系数 "+service.sevenLayerReference().get("legacyNexPerUsd"))+"；设备 "+directRuleSummary((ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("deviceEarning")):
+            String beforeSummary=v2?"L1–L7 版本 "+request.expectedSevenLayerRevision()+"；L1原预算 "+service.sevenLayerReference().get("baseRatePct")+"%；统一冷却 "+service.sevenLayerReference().get("coolingDays")+" 天；"+(beforePurchase.enabled()?"购买拆分 USDT "+beforePurchase.usdtSharePct()+"%":"购买未拆分，全额USDT加旧UVT系数 "+service.sevenLayerReference().get("legacyNexPerUsd"))+"；设备 "+directRuleSummary((ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("deviceEarning")):
                     directPolicySummary(((Number) current.get("policyVersion")).longValue(),
                             (ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule) current.get("purchase"),
                             (ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule) current.get("deviceEarning"));
-            String afterSummary=v2?"七层版本 "+request.expectedSevenLayerRevision()+"；L1原预算及冷却不变；"+(request.purchaseSplit().enabled()?"购买拆分 USDT "+request.purchaseSplit().usdtSharePct()+"%，拆分UVT替代旧额外UVT":"购买拆分关闭，恢复全额USDT和旧UVT系数 "+service.sevenLayerReference().get("legacyNexPerUsd"))+"；设备 "+directRuleSummary(request.deviceEarning()):directPolicySummary(request.expectedVersion()+1,request.effectivePurchase(),request.deviceEarning());
-            return new DelegatedProposalDescriptor("直属双币分成政策", "current",beforeSummary,afterSummary,
+            String afterSummary=v2?"L1–L7 版本 "+request.expectedSevenLayerRevision()+"；L1原预算及冷却不变；"+(request.purchaseSplit().enabled()?"购买拆分 USDT "+request.purchaseSplit().usdtSharePct()+"%，拆分UVT替代旧额外UVT":"购买拆分关闭，恢复全额USDT和旧UVT系数 "+service.sevenLayerReference().get("legacyNexPerUsd"))+"；设备 "+directRuleSummary(request.deviceEarning()):directPolicySummary(request.expectedVersion()+1,request.effectivePurchase(),request.deviceEarning());
+            return new DelegatedProposalDescriptor("好友奖励双币政策", "current",beforeSummary,afterSummary,
                     "F2", amplifies?"fund":"param", amplifies,
                     new AuditLockTarget("F","direct_referral_policy","current"));
         }
@@ -682,14 +682,14 @@ public class AuditReplayBusinessPermissionGuard {
             String refundRef = value(params, "refundRef");
             if (!commissionId.matches("^CM-[1-9]\\d*$") || refundRef.isBlank() || refundRef.length() > 160) return null;
             return new DelegatedProposalDescriptor(
-                    "冲正佣金事件 " + commissionId, commissionId, "以服务器执行时状态为准", "REVERSED",
+                    "撤销奖励记录 " + commissionId, commissionId, "以服务器执行时状态为准", "REVERSED",
                     "F5", "fund", false, new AuditLockTarget("F", "commission_event", commissionId));
         }
         if ("f5_commission_reissue".equals(operation)) {
             List<String> ids = canonicalF5CommissionIds(params.get("commissionIds"));
             if (ids.isEmpty()) return null;
             return new DelegatedProposalDescriptor(
-                    "批量补发佣金 · " + ids.size() + " 笔", String.join(",", ids),
+                    "批量补发奖励 · " + ids.size() + " 笔", String.join(",", ids),
                     "以服务器执行时状态为准", "重新进入冷却计提", "F5", "fund", true, null);
         }
         if ("f5_commission_suspension".equals(operation)) {
@@ -699,7 +699,7 @@ public class AuditReplayBusinessPermissionGuard {
             if (userId.isBlank() || kinds.isEmpty() || !(rawSuspended instanceof Boolean suspended)) return null;
             String targetId = userId + ":" + String.join(",", kinds);
             return new DelegatedProposalDescriptor(
-                    (suspended ? "暂停" : "恢复") + "用户佣金 " + userId, targetId,
+                    (suspended ? "暂停" : "恢复") + "用户奖励 " + userId, targetId,
                     "以服务器执行时状态为准", suspended ? "SUSPENDED" : "ACTIVE",
                     "F5", "acct", false, new AuditLockTarget("F", "commission_user_kind", targetId));
         }
@@ -720,9 +720,9 @@ public class AuditReplayBusinessPermissionGuard {
             }
             boolean amplifies = "unlocked".equals(state);
             String action = switch (state) {
-                case "frozen" -> "冻结佣金事件 " + eventId;
-                case "unlocked" -> "提前解锁佣金事件 " + eventId;
-                default -> "解冻佣金事件 " + eventId;
+                case "frozen" -> "冻结奖励记录 " + eventId;
+                case "unlocked" -> "提前解锁奖励记录 " + eventId;
+                default -> "解冻奖励记录 " + eventId;
             };
             return new DelegatedProposalDescriptor(
                     action,

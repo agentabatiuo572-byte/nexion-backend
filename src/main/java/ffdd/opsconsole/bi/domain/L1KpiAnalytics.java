@@ -329,7 +329,7 @@ public final class L1KpiAnalytics {
                 spec(4, "购买转化", 5, "%", "band", List.of(5, 10), "V1 实时", "支付完成去重用户 ÷ 看过商城去重用户", "checkout.completed ÷ store.viewed", List.of("checkout.completed", "store.viewed"), "健康带为 5%–10%", "/analytics/funnel-cohort"),
                 spec(5, "L4→L5 推广", 40, "%", "gte", List.of(), "V4 完整", "发出邀请的设备持有者 ÷ 设备持有者", "device holder referral.invite_sent ÷ device holders", List.of("referral.invite_sent", "device.purchase_completed"), "推广率不是提现或收入指标", "/analytics/operations"),
                 spec(6, "Nova 推送点击", 25, "%", "gte", List.of(), "V1 实时", "推送点击去重用户 ÷ 推送送达去重用户", "nova.push_clicked ÷ nova.push_sent", List.of("nova.push_clicked", "nova.push_sent"), "点击为锁定的客户端 KPI 事件", "/analytics/funnel-cohort"),
-                spec(7, "团队佣金触发率", 80, "%", "gte", List.of(), "V4 完整", "直推中产生首单佣金的人数 ÷ 直推人数", "L1 referred first commission.paid ÷ referral.bound", List.of("commission.paid", "referral.bound"), "只计算能与直推关系匹配的佣金事件", "/analytics/operations"),
+                spec(7, "团队奖励触发率", 80, "%", "gte", List.of(), "V4 完整", "直接邀请的好友中产生首笔奖励的人数 ÷ 直接邀请的好友人数", "L1 referred first commission.paid ÷ referral.bound", List.of("commission.paid", "referral.bound"), "只计算能与邀请关系匹配的奖励事件", "/analytics/operations"),
                 spec(8, "Genesis 售罄速度", 14, "d", "lte", List.of(), "V1 实时", "累计售出达到 1,000 的自然日数", "genesis.purchased cumulative 1,000 days", List.of("genesis.purchased"), "未售罄时显示不可计算并保留进度", "/analytics/financial"));
     }
 
