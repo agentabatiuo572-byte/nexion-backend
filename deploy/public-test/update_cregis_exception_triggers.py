@@ -4,6 +4,7 @@
 Run as root with /usr/bin/python3 -I. This updater changes runtime source and
 its pins only; it never imports migration code, runs SQL, changes grants, or
 resets release/migration state. The fixed Cregis trigger lane is limited to reviewed migration and program hashes.
+The candidate also replays only the pinned retired H4 table/seed prefix.
 Existing approval flags and all business/release state remain unchanged.
 """
 import argparse
@@ -27,7 +28,7 @@ PERMIT = Path('/run/nexgrid-backend-migration-start')
 GUARD_TEXT = ('[Unit]\nConditionPathExists=|!/srv/nexgrid/cd/migrations/START_BLOCKED\n'
               'ConditionPathExists=|/run/nexgrid-backend-migration-start\n').encode()
 OLD_LOCK = 'cc860b4242e357669447e14257f03d69e6c4b164c6de2d133df373ee5b5835bd'
-NEW_MIGRATIONS_SHA = 'f4f66b3609f28f08d7562685d3f54ebec6f9fb575ea4326a6fe8a81bab9adbee'
+NEW_MIGRATIONS_SHA = '66319ce60249ea969ac0fb6855c74ce78427389e03705ca5479fa05756f97165'
 # JAR policy is independently pinned; the installed closure includes an older
 # bundled policy file that is not used to validate current release artifacts.
 EXPECTED_JAR_POLICY_SHA = '6ed34f3ea7e78ea8de6211e62de9d3ebda09243cd29f0a65d0d2284c48209f5e'
