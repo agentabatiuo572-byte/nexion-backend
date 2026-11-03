@@ -7,6 +7,7 @@ import ffdd.opsconsole.commerce.mapper.AppStorefrontActivityMapper;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.api.ApiResult;
+import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -20,7 +21,7 @@ class AppStorefrontActivityServiceTest {
     private final FundsSandboxProfileGuard profileGuard = mock(FundsSandboxProfileGuard.class);
     private final Environment environment = mock(Environment.class);
     private final AppStorefrontActivityService service = new AppStorefrontActivityService(
-            mapper, acceptanceRun, profileGuard, environment);
+            mapper, acceptanceRun, profileGuard, environment, Clock.systemUTC());
 
     @BeforeEach
     void strictProductionByDefault() {
@@ -123,7 +124,7 @@ class AppStorefrontActivityServiceTest {
     void socialProofUsesTheAuthenticatedUserEnvironmentAndWhitelistedWindow() {
         when(mapper.userEnvironment(8L)).thenReturn(new AppStorefrontActivityMapper.UserEnvironmentRow(false));
         when(mapper.product("stellarbox-pro-v2")).thenReturn(
-                new AppStorefrontActivityMapper.ProductRow(12L, "NexionBox Pro"));
+                new AppStorefrontActivityMapper.ProductRow(12L, "NexionBox Pro", "stellarbox-pro-v2", 42));
         when(mapper.salesTotal(12L, false)).thenReturn(91L);
         when(mapper.salesSince(eq(12L), eq(false), any(LocalDateTime.class))).thenReturn(4L);
 
@@ -151,7 +152,7 @@ class AppStorefrontActivityServiceTest {
                 .thenReturn("18708173775");
         when(mapper.userEnvironment(8L)).thenReturn(new AppStorefrontActivityMapper.UserEnvironmentRow(false));
         when(mapper.product("stellarbox-pro-v2")).thenReturn(
-                new AppStorefrontActivityMapper.ProductRow(12L, "NexionBox Pro"));
+                new AppStorefrontActivityMapper.ProductRow(12L, "NexionBox Pro", "stellarbox-pro-v2", 42));
         when(mapper.salesTotal(12L, false)).thenReturn(91L);
         when(mapper.salesSince(eq(12L), eq(false), any(LocalDateTime.class))).thenReturn(4L);
 
@@ -175,7 +176,7 @@ class AppStorefrontActivityServiceTest {
         when(acceptanceRun.requireRunId()).thenReturn(runId);
         when(mapper.userEnvironment(8L)).thenReturn(new AppStorefrontActivityMapper.UserEnvironmentRow(true));
         when(mapper.sandboxProduct(runId, "stellarbox-pro-v2")).thenReturn(
-                new AppStorefrontActivityMapper.ProductRow(12L, "NexionBox Pro"));
+                new AppStorefrontActivityMapper.ProductRow(12L, "NexionBox Pro", "stellarbox-pro-v2", 42));
         when(mapper.sandboxSalesTotal(runId, 12L)).thenReturn(91L);
         when(mapper.sandboxSalesSince(eq(runId), eq(12L), any(LocalDateTime.class))).thenReturn(4L);
 

@@ -281,21 +281,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
             SELECT p.product_no AS productNo,p.name,p.tier,p.price_usdt AS priceUsdt,p.stock,
                    p.product_type AS deviceType,p.generation,p.gpu_model AS gpuModel,
                    p.vram_total_gb AS vramTotalGb,p.hashrate,p.estimated_daily_usdt AS dailyUsdt,
-                   p.daily_nex AS dailyNex,p.tagline,p.badge,
-                   COALESCE((SELECT SUM(oi.quantity)
-                               FROM nx_order_item oi
-                               JOIN nx_order o ON o.order_no=oi.order_no
-                               JOIN nx_user u ON u.id=o.user_id AND u.is_deleted=0 AND u.sandbox=0
-                              WHERE oi.product_id=p.id AND oi.is_deleted=0
-                                AND o.payment_status='PAID' AND o.is_deleted=0),0)
-                   + COALESCE((SELECT SUM(o.quantity)
-                                  FROM nx_order o
-                                  JOIN nx_user u ON u.id=o.user_id AND u.is_deleted=0 AND u.sandbox=0
-                                 WHERE o.product_id=p.id AND o.payment_status='PAID' AND o.is_deleted=0
-                                   AND UPPER(o.order_type)='SINGLE' AND o.quantity>0
-                                   AND NOT EXISTS (SELECT 1 FROM nx_order_item historical_item
-                                                     WHERE historical_item.order_no=o.order_no
-                                                       AND historical_item.is_deleted=0)),0) AS sold,
+                   p.daily_nex AS dailyNex,p.tagline,p.badge,p.sold_count AS sold,
                    p.unlock_phase AS unlockPhase,p.updated_at AS updatedAt,
                    s.power_text AS power,s.datacenter AS datacenter,s.uptime AS uptime,s.warranty AS warranty,
                    s.phone_daily_earn AS phoneDailyEarn,s.phone_daily_earn_nex AS phoneDailyEarnNex,s.features_json AS featuresJson,
