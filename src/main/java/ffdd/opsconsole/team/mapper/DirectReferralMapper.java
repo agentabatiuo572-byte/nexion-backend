@@ -150,7 +150,7 @@ public interface DirectReferralMapper extends BaseMapper<Object> {
       """)
     List<String> reissueRecoveryOrders(@Param("env") String env,@Param("run") String run,@Param("cursor") String cursor);
     @Select("""
-        <script>SELECT * FROM nx_direct_referral_settlement WHERE beneficiary_user_id=#{id} AND source_environment=#{env} AND run_id=#{runId}
+        <script>SELECT * FROM nx_visible_direct_referral WHERE beneficiary_user_id=#{id} AND source_environment=#{env} AND run_id=#{runId}
          AND source_type IN ('direct_purchase','direct_device_earning') AND policy_version>0 AND created_at &lt;= #{snapshotAt}
          <if test="from != null"> AND created_at &gt;= #{from}</if><if test="kind != null"> AND source_type=#{kind}</if>
          ORDER BY id DESC LIMIT #{limit} OFFSET #{offset}</script>
@@ -164,7 +164,7 @@ public interface DirectReferralMapper extends BaseMapper<Object> {
          COALESCE(SUM(CASE WHEN credited_at IS NOT NULL AND reversal_recorded=0 THEN amount_nex-recovered_nex ELSE 0 END),0) creditedNEX,
          COALESCE(SUM(CASE WHEN credited_at IS NULL AND status IN ('WAITING_CALCULATION','COOLING','FROZEN') THEN amount_usdt ELSE 0 END),0) pendingUSDT,
          COALESCE(SUM(CASE WHEN credited_at IS NULL AND status IN ('WAITING_CALCULATION','COOLING','FROZEN') THEN amount_nex ELSE 0 END),0) pendingNEX
-         FROM nx_direct_referral_settlement WHERE beneficiary_user_id=#{id} AND source_environment=#{env} AND run_id=#{runId}
+         FROM nx_visible_direct_referral WHERE beneficiary_user_id=#{id} AND source_environment=#{env} AND run_id=#{runId}
          AND source_type IN ('direct_purchase','direct_device_earning') AND policy_version>0 AND created_at &lt;= #{snapshotAt}
          <if test="from != null"> AND created_at &gt;= #{from}</if><if test="kind != null"> AND source_type=#{kind}</if> GROUP BY source_type</script>
         """) List<Map<String,Object>> filteredSums(@Param("id") Long id,@Param("env") String env,@Param("runId") String run,@Param("snapshotAt") LocalDateTime snapshot,@Param("from") LocalDateTime from,@Param("kind") String kind);
@@ -219,7 +219,7 @@ public interface DirectReferralMapper extends BaseMapper<Object> {
     @Select("SELECT settlement_no FROM nx_direct_referral_settlement WHERE beneficiary_user_id=#{id} AND source_type=#{kind} AND source_environment=#{env} AND run_id=#{runId} AND status IN ('COOLING','FROZEN') ORDER BY id")
     List<String> openGroups(@Param("id") Long id,@Param("kind") String kind,@Param("env") String env,@Param("runId") String runId);
     @Select("""
-        <script>SELECT * FROM nx_direct_referral_settlement WHERE beneficiary_user_id=#{id} AND source_environment=#{env} AND run_id=#{runId}
+        <script>SELECT * FROM nx_visible_direct_referral WHERE beneficiary_user_id=#{id} AND source_environment=#{env} AND run_id=#{runId}
          AND policy_version>0 AND nex_usdt_price>0 AND created_at &lt;= #{snapshotAt}<if test="from != null"> AND created_at &gt;= #{from}</if>
          ORDER BY id DESC LIMIT #{limit} OFFSET #{offset}</script>
         """) List<Map<String,Object>> events(@Param("id") Long id,@Param("env") String env,@Param("runId") String runId,@Param("snapshotAt") LocalDateTime snapshot,
@@ -228,7 +228,7 @@ public interface DirectReferralMapper extends BaseMapper<Object> {
         <script>SELECT source_type kind,COUNT(*) count,
          COALESCE(SUM(CASE WHEN status IN ('REJECTED','REVERSED','RECOVERY_PENDING') THEN 0 ELSE amount_usdt-recovered_usdt END),0) amountUSDT,
          COALESCE(SUM(CASE WHEN status IN ('REJECTED','REVERSED','RECOVERY_PENDING') THEN 0 ELSE amount_nex-recovered_nex END),0) amountNEX
-         FROM nx_direct_referral_settlement WHERE beneficiary_user_id=#{id} AND source_environment=#{env} AND run_id=#{runId}
+         FROM nx_visible_direct_referral WHERE beneficiary_user_id=#{id} AND source_environment=#{env} AND run_id=#{runId}
          AND policy_version>0 AND nex_usdt_price>0 AND created_at &lt;= #{snapshotAt}<if test="from != null"> AND created_at &gt;= #{from}</if> GROUP BY source_type</script>
         """) List<Map<String,Object>> sums(@Param("id") Long id,@Param("env") String env,@Param("runId") String runId,@Param("snapshotAt") LocalDateTime snapshot,@Param("from") LocalDateTime from);
 }

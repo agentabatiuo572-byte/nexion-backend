@@ -391,6 +391,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261102_simulated_task_runtime_recent_read_index.sql")
   (Join-Path $root "scripts\migrations\20261103_english_rule_task_catalog.sql")
   (Join-Path $root "scripts\migrations\20261103_retired_compute_read_views.sql")
+  (Join-Path $root "scripts\migrations\20261103_retired_device_referral_read_view.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
