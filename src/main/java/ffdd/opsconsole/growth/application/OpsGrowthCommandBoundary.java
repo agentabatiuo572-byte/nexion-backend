@@ -36,9 +36,12 @@ public class OpsGrowthCommandBoundary {
         String normalizedTarget = target == null || target.isBlank() ? "GLOBAL" : target.trim();
         String scope = commandScope(normalizedModule, normalizedOperation, normalizedTarget, request);
         String requestText = String.valueOf(request);
-        // Preserve the deployed H9 fingerprint for retries from clients predating globeDisplay.
-        if (request instanceof GrowthPublicStatsUpdateRequest h9 && h9.globeDisplay() == null) {
-            requestText = requestText.substring(0, requestText.length() - ", globeDisplay=null]".length()) + "]";
+        // Keep the two older H9 request fingerprints. An explicitly cleared base is its own command.
+        if (request instanceof GrowthPublicStatsUpdateRequest h9 && h9.activeJobsBase() == null) {
+            requestText = requestText.substring(0, requestText.length() - ", activeJobsBase=null]".length()) + "]";
+            if (h9.globeDisplay() == null) {
+                requestText = requestText.substring(0, requestText.length() - ", globeDisplay=null]".length()) + "]";
+            }
         }
         String requestHash = hash(scope + "|" + requestText);
         try {

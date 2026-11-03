@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.dto;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import java.math.BigDecimal;
 import java.util.List;
 
@@ -25,7 +26,23 @@ public record GrowthPublicStatsUpdateRequest(
         Integer registeredUsersTickIntervalSec,
         Long registeredUsersTickStepMin,
         Long registeredUsersTickStepMax,
-        GlobeDisplayConfig globeDisplay) {
+        GlobeDisplayConfig globeDisplay,
+        JsonNode activeJobsBase) {
+
+    // Jackson gives an omitted JsonNode a Java null and an explicit JSON null a NullNode.
+    public GrowthPublicStatsUpdateRequest(Integer fleetDevices, BigDecimal onlineRatePct, Integer onlineJitter,
+            Long registeredUsersBase, BigDecimal registeredUsersMonthlyGrowthPct, Long virtualUserCount,
+            List<PercentileBand> hashratePercentileTable, Long expectedVersion, String reason, String operator,
+            Long homeOnlineCurrent, Integer homeOnlineStepMin, Integer homeOnlineStepMax,
+            BigDecimal homePaidCurrent, BigDecimal homePaidStepMin, BigDecimal homePaidStepMax, Boolean homeDisplayEnabled,
+            Integer registeredUsersTickIntervalSec, Long registeredUsersTickStepMin, Long registeredUsersTickStepMax,
+            GlobeDisplayConfig globeDisplay) {
+        this(fleetDevices, onlineRatePct, onlineJitter, registeredUsersBase, registeredUsersMonthlyGrowthPct,
+                virtualUserCount, hashratePercentileTable, expectedVersion, reason, operator, homeOnlineCurrent,
+                homeOnlineStepMin, homeOnlineStepMax, homePaidCurrent, homePaidStepMin, homePaidStepMax,
+                homeDisplayEnabled, registeredUsersTickIntervalSec, registeredUsersTickStepMin, registeredUsersTickStepMax,
+                globeDisplay, null);
+    }
 
     public GrowthPublicStatsUpdateRequest(Integer fleetDevices, BigDecimal onlineRatePct, Integer onlineJitter,
             Long registeredUsersBase, BigDecimal registeredUsersMonthlyGrowthPct, Long virtualUserCount,
