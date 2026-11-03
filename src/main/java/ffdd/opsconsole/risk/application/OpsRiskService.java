@@ -150,15 +150,15 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private static final List<K2ViewSpec> K2_VIEWS = List.of(
             new K2ViewSpec("trial", "试用循环", "· 试用循环养号 · 服务器端复活计数,不信客户端状态",
                     List.of("实体 / 簇", "30 天循环次数", "关联账户", "累计套取试用收益"),
-                    "循环次数是服务器记的开试用、取消、再开的轮数。层数命中 = 多账户 / 绑上级 / 试用循环。"),
+                    "循环次数是服务器记的开试用、取消、再开的轮数。层数命中 = 多账户 / 绑邀请人 / 试用循环。"),
             new K2ViewSpec("tradein", "换新套利", "· 高频下架置换 · 礼金/返佣叠加行为证据后再判定闭环",
                     List.of("账户 / 实体", "设备链", "观察窗口", "高频下架置换", "礼金/返佣叠加"),
                     "置换抵扣阶梯归 E3；K2 只根据高频下架置换与礼金/返佣叠加证据判定异常，不使用持有月或旧残值闸门。"),
             new K2ViewSpec("gift", "新人礼刷取", "· 新人礼刷取 · 看领完礼就走的闭环行为",
                     List.of("簇", "实体", "已发 / 已拦", "涉及金额", "闭环特征"),
                     "K1 看同一实体重复领；K2 加看行为闭环。拦截只停发后续,不动已入账资产。"),
-            new K2ViewSpec("board", "排行榜刷榜", "· 排行榜刷榜 · 邀请/佣金增速异常的冲榜账户",
-                    List.of("账户", "本期累计佣金", "增速(对基线)", "直推增长", "关联簇"),
+            new K2ViewSpec("board", "排行榜刷榜", "· 排行榜刷榜 · 邀请/奖励增速异常的冲榜账户",
+                    List.of("账户", "本期累计奖励", "增速(对基线)", "直接邀请增长", "关联簇"),
                     "这里只标记并发信号给 F8 和风险雷达；取消参榜资格、从奖池剔除由 F8 执行。"));
     private static final Map<String, DimensionMeta> K3_DIMENSION_META = Map.ofEntries(
             Map.entry("largeAmountUsdt", new DimensionMeta("largeAmountUsdt", "金额", "由 nx_admin_risk_withdraw_rule 配置", "card", 0)),

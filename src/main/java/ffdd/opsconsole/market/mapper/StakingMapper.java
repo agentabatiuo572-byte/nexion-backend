@@ -278,7 +278,7 @@ public interface StakingMapper extends BaseMapper<StakingProductEntity> {
                      WHEN 'ACTIVE' THEN '计息中'
                      WHEN 'MATURE_UNCLAIMED' THEN '到期未领'
                      WHEN 'CLAIMED' THEN '已领取'
-                     WHEN 'EARLY_WITHDRAWN' THEN '提前赎回'
+                     WHEN 'EARLY_WITHDRAWN' THEN '提前解锁'
                      WHEN 'SLASHED' THEN '已扣罚'
                      WHEN 'REFUNDED' THEN '已退款'
                      ELSE UPPER(sp.status)

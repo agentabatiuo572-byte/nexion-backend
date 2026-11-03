@@ -386,7 +386,7 @@ public class OpsBiService implements AuditReplayable {
                 scope,
                 "CSV",
                 scope,
-                "成员用户编码（部分脱敏）、上级用户编码（部分脱敏）、团队深度、V-Rank、团队GMV、加入时间",
+                "成员用户编码（部分脱敏）、邀请人用户编码（部分脱敏）、关系深度、V-Rank、团队GMV、加入时间",
                 (long) rows.size(),
                 true,
                 "PARTIAL",
@@ -1349,7 +1349,7 @@ public class OpsBiService implements AuditReplayable {
                     rows.add(List.of("七日到期", day + " 提现到期", stringValue(item.get("withdrawUsd")), "USD", "到期排程"));
                 }
                 if (item.containsKey("interestUsd")) {
-                    rows.add(List.of("七日到期", day + " 利息到期", stringValue(item.get("interestUsd")), "USD", "到期排程"));
+                    rows.add(List.of("七日到期", day + " 质押奖励到期", stringValue(item.get("interestUsd")), "USD", "到期排程"));
                 }
             }
         }
@@ -1385,7 +1385,7 @@ public class OpsBiService implements AuditReplayable {
 
     private String networkTreeCsv(List<Map<String, Object>> rows) {
         StringBuilder csv = new StringBuilder(csvRow(List.of(
-                "成员用户编码（部分脱敏）", "上级用户编码（部分脱敏）", "团队深度", "V-Rank", "团队GMV USDT", "加入时间")));
+                "成员用户编码（部分脱敏）", "邀请人用户编码（部分脱敏）", "关系深度", "V-Rank", "团队GMV USDT", "加入时间")));
         for (Map<String, Object> row : rows) {
             csv.append(csvRow(List.of(
                     safeNetworkCsvValue(row.get("memberUserIdPartial")),
@@ -1421,9 +1421,9 @@ public class OpsBiService implements AuditReplayable {
                 "dispatched", "任务分配量", "completed", "任务完成量", "acceptanceRate", "任务承接率",
                 "queueSaturation", "队列饱和度", "checkinActive", "签到活跃人数"), "任务与签到事件");
         appendOperationsSummary(rows, slice, "网络", mutableObjectMap(network.get("summary")), Map.of(
-                "directRefs", "直接邀请用户数（去重）", "commissionEvents", "佣金事件数",
-                "commissionPaidUsdt", "佣金发放 USDT", "teamGmvUsdt", "团队 GMV USDT",
-                "promotionRate", "L4→L5 推广率", "commissionTriggerRate", "团队佣金触发率"), "团队事件");
+                "directRefs", "直接邀请用户数（去重）", "commissionEvents", "奖励事件数",
+                "commissionPaidUsdt", "奖励发放 USDT", "teamGmvUsdt", "团队 GMV USDT",
+                "promotionRate", "L4→L5 推广率", "commissionTriggerRate", "团队奖励触发率"), "团队事件");
         Object phaseRows = dashboard.get("phaseEffect");
         if (phaseRows instanceof List<?> values) {
             for (Object value : values) {
@@ -1521,11 +1521,11 @@ public class OpsBiService implements AuditReplayable {
     private String liabilityAccountLabel(String key) {
         return switch (key) {
             case "balance" -> "可提现余额";
-            case "stake_principal" -> "质押本金";
-            case "stake_interest" -> "质押应计利息";
+            case "stake_principal" -> "质押锁定金额";
+            case "stake_interest" -> "质押应计奖励";
             case "nex_payable" -> "UVT 应付款";
             case "withdraw_queue" -> "提现队列";
-            case "commission_cooling" -> "佣金冷静期余额";
+            case "commission_cooling" -> "奖励冷却期余额";
             case "pending_withdraw" -> "钱包待提现金额";
             default -> "其他负债";
         };
@@ -1566,8 +1566,8 @@ public class OpsBiService implements AuditReplayable {
         return switch (key) {
             case "totalBills" -> "钱包账单总数";
             case "earningBills" -> "收益账单";
-            case "teamCommissionBills" -> "团队佣金账单";
-            case "genesisDividendBills" -> "创世节点分红账单";
+            case "teamCommissionBills" -> "团队奖励账单";
+            case "genesisDividendBills" -> "创世节点收益账单";
             case "refundBills" -> "退款账单";
             default -> "其他财务事实";
         };
@@ -1747,8 +1747,8 @@ public class OpsBiService implements AuditReplayable {
             case "P1" -> "重心:获客、注册和首笔收益体验";
             case "P2" -> "重心:激活和首购转化";
             case "P3" -> "重心:拉新和首购转化,放宽试用,谨慎增加资金流出";
-            case "P4" -> "重心:复投、留存和任务节奏稳定";
-            case "P5" -> "重心:收紧奖励、控制提现和佣金流出";
+            case "P4" -> "重心:锁定计划、留存和任务节奏稳定";
+            case "P5" -> "重心:收紧奖励、控制提现和奖励流出";
             case "P6" -> "重心:平稳退出、报表归档和收紧风险缺口";
             default -> "重心:等待设置运营阶段";
         };

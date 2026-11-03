@@ -500,13 +500,13 @@ public class OpsTreasuryService {
     private static Object liabilityExportLabel(Object category, Object label) {
         return switch (String.valueOf(category)) {
             case "withdrawable_balance" -> "可提现余额";
-            case "usdt_staking_principal" -> "USDT 质押本金";
-            case "staking_interest" -> "质押应付利息";
-            case "genesis_daily_emission" -> "创世节点应付分红";
+            case "usdt_staking_principal" -> "USDT 质押锁定金额";
+            case "staking_interest" -> "应付质押奖励";
+            case "genesis_daily_emission" -> "创世节点应付收益";
             case "nex_v2_future" -> "UVT 锁仓到期应付";
             case "withdrawal_queue" -> "待处理提现";
-            case "commission_cooling" -> "冷却期内未发放的佣金";
-            case "lock_other" -> "其他锁仓本息";
+            case "commission_cooling" -> "冷却期内未发放的奖励";
+            case "lock_other" -> "其他锁定金额及奖励";
             case "unverified_deposit" -> "未确认的入金";
             default -> label;
         };
