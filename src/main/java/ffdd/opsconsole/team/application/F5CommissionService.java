@@ -854,14 +854,14 @@ public class F5CommissionService {
             counts.merge(kind, count == null ? 0L : count, Long::sum);
         }
         Map<String, String> labels = Map.of(
-                "network", "网络版税",
-                "binary", "双轨平衡匹配",
-                "peer", "平级奖",
-                "cultivation", "培育奖",
-                "leadership", "领导奖池",
-                "genesis", "创世排放",
-                "direct_purchase", "直属购买分成",
-                "direct_device_earning", "直属设备收益分成");
+                "network", "团队购买奖励",
+                "binary", "团队平衡奖励",
+                "peer", "同级奖励",
+                "cultivation", "好友升级奖励",
+                "leadership", "团队激励池",
+                "genesis", "创世节点收益",
+                "direct_purchase", "好友购买奖励",
+                "direct_device_earning", "好友设备收益奖励");
         return List.of("network", "binary", "peer", "cultivation", "leadership", "genesis", "direct_purchase", "direct_device_earning")
                 .stream()
                 .map(kind -> {
@@ -938,7 +938,7 @@ public class F5CommissionService {
     private List<Map<String, Object>> recentAudit(List<Map<String, Object>> rows) {
         return rows.stream().limit(12).map(this::eventView).map(row -> linked(
                 "when", row.getOrDefault("settledAt", ""),
-                "text", "佣金事件 " + row.get("commissionId") + " 状态 " + row.get("status")
+                "text", "奖励记录 " + row.get("commissionId") + " 状态 " + row.get("status")
                         + " · " + row.get("kind"),
                 "level", Set.of("reversed", "frozen").contains(text(row.get("status"))) ? "HIGH" : "LOW"))
                 .toList();

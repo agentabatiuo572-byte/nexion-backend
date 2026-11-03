@@ -144,7 +144,7 @@ public class OpsEventCenterService {
             new EventKpiFormula(4, "下单转化", "完成支付的人 ÷ 看过商城的人"),
             new EventKpiFormula(5, "持有者推广", "发过邀请的设备持有者 ÷ 持有者总数"),
             new EventKpiFormula(6, "Nova 点击率", "推送点击 ÷ 推送送达（以系统确认送达为准）"),
-            new EventKpiFormula(7, "佣金触发", "直接邀请的用户下首单并产生佣金的人数 ÷ 直接邀请总人数"),
+            new EventKpiFormula(7, "奖励触发", "直接邀请的好友下首单并产生奖励的人数 ÷ 直接邀请总人数"),
             new EventKpiFormula(8, "创世节点售罄天数", "从开售到卖完所用的天数"));
 
     private final PlatformConfigFacade configFacade;

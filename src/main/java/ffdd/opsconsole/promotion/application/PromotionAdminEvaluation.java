@@ -156,7 +156,7 @@ final class PromotionAdminEvaluation {
             case "PROMOTION_DISCOUNT_REQUIRES_PAYMENT"->new String[]{"活动立减后整单仍需保留应付金额，请调整购买数量或活动配置","The order must retain a positive payable amount after the promotion discount.","Đơn hàng phải còn số tiền cần thanh toán sau khi giảm giá."};
             case "PROMOTION_DISCOUNT_LINE_MISSING"->new String[]{"立减对应商品不在当前订单中","The discounted product is absent from this order.","Sản phẩm được giảm giá không có trong đơn hàng này."};
             case "SAMPLE_ACCOUNT_REQUIRED"->new String[]{"请选择账户样本后核对资格与奖励","Select an account sample to evaluate eligibility and rewards.","Chọn tài khoản mẫu để kiểm tra điều kiện và phần thưởng."};
-            case "F4B_REQUIREMENTS_NOT_MET"->new String[]{"所选商品的有效直推或团队业绩购买条件尚未满足","The selected product's active-direct or team-volume purchase requirements are not met.","Chưa đáp ứng điều kiện mua về giới thiệu trực tiếp hoặc doanh số nhóm của sản phẩm đã chọn."};
+            case "F4B_REQUIREMENTS_NOT_MET"->new String[]{"所选商品的直接邀请好友或团队订单额购买条件尚未满足","The selected product's purchase requirements for friends you invited or team order volume are not met.","Chưa đáp ứng điều kiện mua về bạn bè do bạn mời hoặc doanh số đơn hàng nhóm của sản phẩm đã chọn."};
             case "F4B_MONTHLY_QUOTA_EXHAUSTED"->new String[]{"所选商品本月购买配额已用完","The selected product's monthly purchase quota is exhausted.","Hạn mức mua tháng này của sản phẩm đã chọn đã hết."};
             case "F4B_QUOTA_UNAVAILABLE","PURCHASE_ELIGIBILITY_UNAVAILABLE"->new String[]{"商品购买资格暂无法确认，请稍后重试","Product purchase eligibility is unavailable; retry later.","Chưa thể xác nhận điều kiện mua sản phẩm; vui lòng thử lại sau."};
             case "PURCHASE_GATE_NOT_MET"->new String[]{"尚未满足所选商品的购买条件","The selected product's purchase requirements are not met.","Chưa đáp ứng điều kiện mua sản phẩm đã chọn."};
@@ -169,7 +169,7 @@ final class PromotionAdminEvaluation {
             case "ORDER_REWARD_LIMIT"->new String[]{"整单奖励项数已达到上限","The order reward-unit limit has been reached.","Đã đạt giới hạn phần thưởng của đơn."};
             case "RULE_PRIORITY_OR_USAGE_LIMIT"->new String[]{"优先规则或首台限定已分配本次奖励","Rule priority or the first eligible unit has already allocated this reward.","Ưu tiên quy tắc hoặc đơn vị đầu tiên đã phân bổ phần thưởng."};
             case "RESOURCE_SHORTAGE"->new String[]{"当前预算或库存不足","The current budget or inventory is insufficient.","Ngân sách hoặc tồn kho hiện không đủ."};
-            case "DIRECT_INVITER_REQUIRED"->new String[]{"缺少有效直属邀请人","A valid direct inviter is required.","Cần người mời trực tiếp hợp lệ."};
+            case "DIRECT_INVITER_REQUIRED"->new String[]{"缺少有效的邀请人","A valid inviter is required.","Cần người mời hợp lệ."};
             case "FIRST_PURCHASE_ALREADY_USED","AUDIENCE_NEVERPURCHASED"->new String[]{"已有购买记录，不符合首购口径","Purchase history does not qualify as a first purchase.","Lịch sử mua không đáp ứng điều kiện mua lần đầu."};
             case "VALID_PURCHASE_REQUIRED","AUDIENCE_PURCHASEHISTORY"->new String[]{"历史购买不满足所选人群条件","Purchase history does not match the selected audience.","Lịch sử mua không khớp nhóm đã chọn."};
             case "ACCOUNT_INACTIVE"->new String[]{"账户当前不可参与","The account is currently inactive.","Tài khoản hiện không hoạt động."};

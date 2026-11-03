@@ -31,10 +31,10 @@ public class OpsPhaseOverviewService {
     private static final List<DialDefinition> DIALS = List.of(
             dial("newUserBonusMultiplier", "新用户加成", "倍", "相关功能上线后生效", false),
             dial("inviteRewardMultiplier", "邀请加成", "倍", "相关功能上线后生效", false),
-            dial("reinvestMultiplier", "复投加成", "倍", "复投激励上线后生效", false),
+            dial("reinvestMultiplier", "锁定计划加成", "倍", "锁定计划上线后生效", false),
             dial("withdrawPenaltyFeeRate", "提现惩罚费率", "%", "已生效", true),
             dial("withdrawCooldownDays", "提现冷却", "天", "已生效", true),
-            dial("binaryDailyCap", "左右团队每日封顶", "USDT", "左右团队结算上线后生效", false),
+            dial("binaryDailyCap", "团队平衡奖励每日封顶", "USDT", "团队平衡奖励上线后生效", false),
             dial("questBonusMultiplier", "任务加成", "倍", "用户任务上线后生效", false),
             dial("complianceHoldEnabled", "增强合规审查", "", "已生效", true));
 
@@ -295,7 +295,7 @@ public class OpsPhaseOverviewService {
             candidates.add(lever("推荐", "邀请加成 " + plain(snapshot.inviteRewardMultiplier()) + " 倍", "增强可信推荐"));
         }
         if (snapshot.reinvestMultiplier().compareTo(BigDecimal.ONE) > 0) {
-            candidates.add(lever("复投", "复投加成 " + plain(snapshot.reinvestMultiplier()) + " 倍", "鼓励继续持有"));
+            candidates.add(lever("锁定计划", "锁定计划加成 " + plain(snapshot.reinvestMultiplier()) + " 倍", "鼓励继续持有"));
         }
         if (snapshot.questBonusMultiplier().compareTo(BigDecimal.ONE) > 0) {
             candidates.add(lever("任务", "任务加成 " + plain(snapshot.questBonusMultiplier()) + " 倍", "提升任务参与"));
@@ -305,7 +305,7 @@ public class OpsPhaseOverviewService {
         }
         candidates.add(lever("提现", "费率 " + plain(snapshot.withdrawPenaltyFeeRate()) + "% / 冷却 "
                 + snapshot.withdrawCooldownDays() + " 天", "控制资金流出节奏"));
-        candidates.add(lever("结算", "左右团队每日封顶 " + plain(snapshot.binaryDailyCap()) + " USDT", "限制单日佣金峰值"));
+        candidates.add(lever("结算", "团队平衡奖励每日封顶 " + plain(snapshot.binaryDailyCap()) + " USDT", "限制单日奖励峰值"));
         return List.copyOf(candidates.subList(0, Math.min(3, candidates.size())));
     }
 

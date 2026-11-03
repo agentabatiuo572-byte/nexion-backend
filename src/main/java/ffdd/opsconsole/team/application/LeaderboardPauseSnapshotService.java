@@ -161,7 +161,7 @@ public class LeaderboardPauseSnapshotService {
                 podium.add(Map.of("rank", rank, "memberUserId", row.path("userId").asLong(),
                         "userId", "U" + row.path("userId").asText(),
                         "gmvLabel", "$" + row.path("earnedUsdt").decimalValue().toPlainString(),
-                        "tip", (state.paused() ? "冻结时 · " : "") + "本期已解锁 USDT 佣金",
+                        "tip", (state.paused() ? "冻结时 · " : "") + "本期已解锁 USDT 奖励",
                         "className", "r-" + rank));
             }
             Map<String, Object> value = new LinkedHashMap<>();

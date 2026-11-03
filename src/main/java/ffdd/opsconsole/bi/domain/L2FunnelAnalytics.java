@@ -92,7 +92,7 @@ public final class L2FunnelAnalytics {
         Map<String, EventFact> withdrew = nextStage(byActor, repurchased, "withdraw.submitted");
 
         List<Map<String, EventFact>> stages = List.of(registered, firstPurchase, repurchased, withdrew);
-        List<String> stageNames = List.of("注册", "首购", "复投", "提现");
+        List<String> stageNames = List.of("注册", "首购", "锁定计划", "提现");
         List<String> stageEvents = List.of(
                 "auth.register_completed",
                 "checkout.completed",
@@ -466,7 +466,7 @@ public final class L2FunnelAnalytics {
                 "服务器权威注册完成",
                 "同一注册用户完成首笔购买",
                 "首购后 wallet.reinvest 或第二笔购买",
-                "复投后发起提现").get(index);
+                "参与锁定计划后发起提现").get(index);
     }
 
     private static String stageNote(int index) {
@@ -474,7 +474,7 @@ public final class L2FunnelAnalytics {
                 "注册是 cohort 与后续全部阶段的同用户分母。",
                 "仅统计注册后同一用户的第一笔 checkout.completed。trial 子路径独立展示。",
                 "优先使用 wallet.reinvest；同时兼容首购后的第二笔 checkout.completed。",
-                "仅统计完成复投后同一用户的 withdraw.submitted。").get(index);
+                "仅统计参与锁定计划后同一用户的 withdraw.submitted。").get(index);
     }
 
     private static Double percent(long numerator, long denominator) {
