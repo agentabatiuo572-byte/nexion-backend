@@ -6,7 +6,6 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
-import ffdd.opsconsole.content.domain.AdvisorRoutingDecision;
 import ffdd.opsconsole.content.domain.ContentConversationDetail;
 import ffdd.opsconsole.content.domain.ContentConversationMessageView;
 import ffdd.opsconsole.content.domain.ContentConversationView;
@@ -43,7 +42,6 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -62,7 +60,6 @@ public class OpsConversationService {
     private static final Set<String> TRANSFER_TARGET_TYPES = Set.of("agent", "queue", "standby");
     private static final Set<String> CONVERSATION_TYPES = Set.of("advisor", "support");
     private static final Set<String> DIRECT_STATUS_TARGETS = Set.of("OPEN", "RESOLVED", "CLOSED");
-    private static final DateTimeFormatter CONVERSATION_NO_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
     private static final String TIMEOUT_FALLBACK_CONFIG_KEY = "I.session.workbench.timeoutFallback";
     private static final int TRANSFER_TIMEOUT_MINUTES = 30;
     private static final int AUTO_FALLBACK_BATCH_SIZE = 50;
@@ -93,6 +90,8 @@ public class OpsConversationService {
     private final SupportOwnershipService ownership;
     private final SupportHumanMessageService humanMessages;
     private final SupportReplyService replies;
+    private final SupportSessionService sessions;
+    private final ffdd.opsconsole.content.mapper.ConversationMessageMapper messageMapper;
     private final SupportCustomerProfileService customerProfiles;
 
     @Transactional(readOnly=true)
@@ -272,7 +271,7 @@ public class OpsConversationService {
         if (guard != null) {
             return new MessageCommandResult(guard, null);
         }
-        if(persistedActor==null) ownership.writeConversation(conversationNo,true);
+        if(persistedActor==null) ownership.requireMessageWriter(ownership.conversationCustomer(conversationNo));
         else ownership.requireWriterForActor(persistedActor,ownership.conversationCustomer(conversationNo),true);
         ContentConversationView conversation = conversationRepository.findByConversationNoForUpdate(conversationNo.trim()).orElse(null);
         if (conversation == null) {
@@ -285,29 +284,33 @@ public class OpsConversationService {
                 "REPLY:"+conversationNo,request,request.clientMessageId(),request.kind(),request.intent(),
                 request.attachmentId(),request.expectedAssignmentId());
         if(prepared.previousMessageId()!=null) return new MessageCommandResult(ApiResult.ok(conversation),prepared.previousMessageId());
+        var speaker=speaker(prepared,persistedActor);
         if (!matchesExpectedSnapshot(request.expectedStatus(), request.expectedVersion(), conversation)
                 || "TRANSFERRED".equalsIgnoreCase(conversation.status())) {
             return new MessageCommandResult(invalidState(), null);
         }
-        String peer = String.valueOf(persistedActor == null ? ownership.actorId() : persistedActor);
+        String peer = prepared.assignment().agentAdminId().toString();
         boolean claimed = conversationRepository.claimUnassignedPeerForWrite(conversationNo.trim(), peer);
         conversationRepository.requirePeerForWrite(conversationNo.trim(), peer);
+        if(!"ADVISOR".equals(speaker.role())) conversationRepository.requireCurrentAdvisorThread(conversation,peer);
         String body = prepared.content(request.body());
         String actor = persistedActor==null ? operator(request.operator()) : "admin:"+persistedActor;
         LocalDateTime now = LocalDateTime.now(clock);
-        Long messageId = persistedActor==null ? conversationRepository.replyAndReturnMessageId(conversation,body,actor,now)
-            : conversationRepository.replyAndReturnMessageId(conversation,body,persistedActor,actor,now);
+        Long messageId=conversationRepository.replyAndReturnMessageId(conversation,body,speaker,now);
         if (messageId == null) {
             if (claimed) throw new ffdd.opsconsole.shared.exception.BizException(409, "INVALID_STATE_TRANSITION");
             return new MessageCommandResult(invalidState(), null);
         }
         if(persistedActor==null) humanMessages.committed(prepared,messageId,idempotencyKey);
         else humanMessages.committedForActor(prepared,messageId,idempotencyKey);
+        if(!speaker.bulk()) sessions.sent(prepared.assignment(),speaker.id(),speaker.name(),speaker.role(),conversation.conversationNo());
         replies.handled(conversation.userId(),conversation.conversationNo(),messageId,request);
         ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
         Map<String,Object> detail=Map.of(
                 "bodyLength", body.length(),
                 "claimedUnassignedPeer", claimed,
+                "senderRole",speaker.role(),
+                "senderAdminId",speaker.id(),
                 "reason", reasonOrDefault(request.reason(), "agent reply"),
                 "idempotencyKey", idempotencyKey.trim());
         if(persistedActor==null) audit("I9_CONVERSATION_REPLIED",conversation.conversationNo(),actor,detail);
@@ -456,6 +459,7 @@ public class OpsConversationService {
         if (!conversationRepository.updateStatus(conversation, targetStatus, actor, LocalDateTime.now(clock))) {
             return invalidState();
         }
+        if ("RESOLVED".equals(targetStatus)) sessions.resolve(conversation.userId());
         ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
         audit("I9_CONVERSATION_STATUS_CHANGED", conversation.conversationNo(), actor, Map.of(
                 "from", conversation.status(),
@@ -601,7 +605,7 @@ public class OpsConversationService {
         if (guard != null) {
             return new MessageCommandResult(guard, null);
         }
-        if(persistedActor==null) ownership.requireWriter(request.userId(),true);
+        if(persistedActor==null) ownership.requireMessageWriter(request.userId());
         else ownership.requireWriterForActor(persistedActor,request.userId(),true);
         var prepared=persistedActor==null ? humanMessages.prepare(request.userId(),"ADMIN",ownership.actorId(),idempotencyKey,
                 "CREATE",request,request.clientMessageId(),request.kind(),request.intent(),
@@ -611,34 +615,37 @@ public class OpsConversationService {
                 request.attachmentId(),request.expectedAssignmentId());
         if(prepared.previousMessageId()!=null) return new MessageCommandResult(
                 ApiResult.ok(conversationRepository.findByConversationNoForUpdate(prepared.previousConversationNo()).orElseThrow()),prepared.previousMessageId());
+        var speaker=speaker(prepared,persistedActor);
         if (!ConversationCategoryPolicy.enabled(configFacade, "advisor")) {
             throw new ffdd.opsconsole.shared.exception.BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "CONVERSATION_CATEGORY_DISABLED");
         }
         String type = "advisor";
         String actor = persistedActor==null ? operator(request.operator()) : "admin:"+persistedActor;
-        AdvisorRoutingDecision routing = routingDecision(type, request, actor);
-        String ownerName = routing.targetName();
-        String ownerId = routing.targetId();
+        Long assignedAdvisor=prepared.assignment().agentAdminId();
+        String ownerName=messageMapper.senderDisplayName(assignedAdvisor);
+        String ownerId=assignedAdvisor.toString();
         String text = prepared.content(request.openingText());
         LocalDateTime now = LocalDateTime.now(clock);
-        String conversationNo = "CV-OUT-" + now.format(CONVERSATION_NO_TIME);
-        ConversationRepository.PersistedConversation persisted = persistedActor==null
-            ? conversationRepository.createConversationWithMessage(conversationNo,request.userId(),type,ownerId,ownerName,text,now)
-            : conversationRepository.createConversationWithMessage(conversationNo,request.userId(),type,ownerId,ownerName,text,persistedActor,actor,now);
+        String conversationNo = "CV-OUT-" + java.util.UUID.randomUUID().toString().replace("-","");
+        ConversationRepository.PersistedConversation persisted=conversationRepository.createConversationWithMessage(
+                conversationNo,request.userId(),type,ownerId,ownerName,text,speaker,now);
         ContentConversationView created = persisted.conversation();
         if(persistedActor==null) humanMessages.committed(prepared,persisted.messageId(),idempotencyKey);
         else humanMessages.committedForActor(prepared,persisted.messageId(),idempotencyKey);
+        if(!speaker.bulk()) sessions.sent(prepared.assignment(),speaker.id(),speaker.name(),speaker.role(),created.conversationNo());
         if(request.replyTargets()!=null) replies.handled(request.userId(),created.conversationNo(),persisted.messageId(),
                 new ConversationReplyRequest(text,created.status(),created.version(),request.reason(),request.operator(),request.replyTargets(),null));
         Map<String, Object> detail = auditDetail(
                 "conversationType", type,
                 "userId", request.userId() == null ? "audience" : request.userId(),
                 "openingLength", text.length(),
+                "senderRole",speaker.role(),
+                "senderAdminId",speaker.id(),
                 "ownerAgentId", ownerId,
                 "ownerAgentName", ownerName,
-                "routingTargetType", routing.targetType(),
-                "routingReason", routing.reason(),
-                "dedicatedAdvisor", routing.dedicated(),
+                "routingTargetType", "agent",
+                "routingReason", "CURRENT_ASSIGNMENT",
+                "dedicatedAdvisor", true,
                 "fallbackTicket", false,
                 "reason", reasonOrDefault(request.reason(), "single-user routine"),
                 "idempotencyKey", idempotencyKey.trim());
@@ -647,11 +654,13 @@ public class OpsConversationService {
         return new MessageCommandResult(ApiResult.ok(created), persisted.messageId());
     }
 
-    public record MessageCommandResult(ApiResult<ContentConversationView> result, Long messageId) {}
-
-    private AdvisorRoutingDecision routingDecision(String type, ConversationInitiateRequest request, String actor) {
-        return supportAgentService.routeAdvisorForUser(request.userId());
+    private ConversationRepository.Speaker speaker(SupportHumanMessageService.Prepared message,Long bulkActor) {
+        String role=bulkActor==null?ownership.messageRole(message.actor(),message.assignment()):"ADVISOR";
+        sessions.check(message.assignment(),message.actor(),role,message.intent());
+        return new ConversationRepository.Speaker(message.actor(),messageMapper.senderDisplayName(message.actor()),role,bulkActor!=null);
     }
+
+    public record MessageCommandResult(ApiResult<ContentConversationView> result, Long messageId) {}
 
     private void ensureSeedData() {
     }

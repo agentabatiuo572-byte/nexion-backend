@@ -51,14 +51,15 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
               content,
               COALESCE(receipt.receipt_status, CASE WHEN msg.sender_type IN ('agent','user') THEN 'sent' ELSE NULL END) AS receiptStatus,
               msg.created_at AS createdAt,
-              h.assignment_id AS assignmentId,COALESCE(h.kind,'TEXT') AS kind,COALESCE(h.intent,'SERVICE') AS intent,
+              h.assignment_id AS assignmentId,COALESCE(msg.support_kind,h.kind,'TEXT') AS kind,COALESCE(h.intent,'SERVICE') AS intent,
               h.client_message_id AS clientMessageId,h.attachment_id AS attachmentId,
-              CASE WHEN h.message_id IS NULL THEN 'UNKNOWN' ELSE 'VERIFIED' END AS authorConfidence,
+              CASE WHEN h.message_id IS NULL AND msg.origin IS NULL THEN 'UNKNOWN' ELSE 'VERIFIED' END AS authorConfidence,
               DATE_FORMAT(h.committed_at,'%Y-%m-%dT%H:%i:%s.%fZ') AS committedAt,
               h.sku_id AS skuId,h.sku_name AS skuName,h.link_target_json AS linkTargetJson,
-              CASE WHEN h.actor_type='ADMIN' AND h.actor_id=av.admin_id THEN av.avatar_asset_id END AS senderAvatarAssetId,
-              CASE WHEN h.actor_type='ADMIN' AND h.actor_id=av.admin_id THEN av.avatar_version END AS senderAvatarVersion,
+              CASE WHEN ((h.actor_type='ADMIN' AND h.actor_id=av.admin_id) OR (msg.origin='WELCOME' AND msg.sender_id=av.admin_id)) THEN av.avatar_asset_id END AS senderAvatarAssetId,
+              CASE WHEN ((h.actor_type='ADMIN' AND h.actor_id=av.admin_id) OR (msg.origin='WELCOME' AND msg.sender_id=av.admin_id)) THEN av.avatar_version END AS senderAvatarVersion,
             """ + TARGET_AVAILABILITY + """
+              ,msg.sender_role senderRole,msg.origin origin
             FROM nx_conversation_message msg
             LEFT JOIN nx_support_human_message h ON h.message_id=msg.id
               LEFT JOIN nx_admin_account_state av ON av.admin_id=msg.sender_id AND av.is_deleted=0 AND msg.sender_type='agent'
@@ -74,20 +75,21 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
               ,content,
                    COALESCE(receipt.receipt_status, CASE WHEN msg.sender_type IN ('agent','user') THEN 'sent' ELSE NULL END) AS receiptStatus,
                    msg.created_at AS createdAt,
-              h.assignment_id AS assignmentId,COALESCE(h.kind,'TEXT') AS kind,COALESCE(h.intent,'SERVICE') AS intent,
+              h.assignment_id AS assignmentId,COALESCE(msg.support_kind,h.kind,'TEXT') AS kind,COALESCE(h.intent,'SERVICE') AS intent,
               h.client_message_id AS clientMessageId,h.attachment_id AS attachmentId,
-              CASE WHEN h.message_id IS NULL THEN 'UNKNOWN' ELSE 'VERIFIED' END AS authorConfidence,
+              CASE WHEN h.message_id IS NULL AND msg.origin IS NULL THEN 'UNKNOWN' ELSE 'VERIFIED' END AS authorConfidence,
               DATE_FORMAT(h.committed_at,'%Y-%m-%dT%H:%i:%s.%fZ') AS committedAt,
               h.sku_id AS skuId,h.sku_name AS skuName,h.link_target_json AS linkTargetJson,
-              CASE WHEN h.actor_type='ADMIN' AND h.actor_id=av.admin_id THEN av.avatar_asset_id END AS senderAvatarAssetId,
-              CASE WHEN h.actor_type='ADMIN' AND h.actor_id=av.admin_id THEN av.avatar_version END AS senderAvatarVersion,
+              CASE WHEN ((h.actor_type='ADMIN' AND h.actor_id=av.admin_id) OR (msg.origin='WELCOME' AND msg.sender_id=av.admin_id)) THEN av.avatar_asset_id END AS senderAvatarAssetId,
+              CASE WHEN ((h.actor_type='ADMIN' AND h.actor_id=av.admin_id) OR (msg.origin='WELCOME' AND msg.sender_id=av.admin_id)) THEN av.avatar_version END AS senderAvatarVersion,
             """ + TARGET_AVAILABILITY + """
+              ,NULL senderRole,NULL origin
               FROM nx_conversation_message msg
               LEFT JOIN nx_support_human_message h ON h.message_id=msg.id
               LEFT JOIN nx_admin_account_state av ON av.admin_id=msg.sender_id AND av.is_deleted=0 AND msg.sender_type='agent'
               LEFT JOIN nx_conversation_message_receipt receipt ON receipt.message_id=msg.id
              WHERE msg.is_deleted=0 AND msg.conversation_no=#{conversationNo}
-               AND msg.sender_type IN ('user','agent')
+               AND (msg.sender_type IN ('user','agent') OR (msg.sender_type='system' AND msg.support_kind='AGENT_SWITCH'))
                AND msg.id > """ + AppConversationVisibilitySql.CONVERSATION_THROUGH + """
              ORDER BY msg.created_at ASC,msg.id ASC
             """)
@@ -101,18 +103,19 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
                    recent.content,
                    COALESCE(receipt.receipt_status, CASE WHEN recent.sender_type IN ('agent','user') THEN 'sent' ELSE NULL END) AS receiptStatus,
                    recent.created_at AS createdAt,
-              h.assignment_id AS assignmentId,COALESCE(h.kind,'TEXT') AS kind,COALESCE(h.intent,'SERVICE') AS intent,
+              h.assignment_id AS assignmentId,COALESCE(recent.support_kind,h.kind,'TEXT') AS kind,COALESCE(h.intent,'SERVICE') AS intent,
               h.client_message_id AS clientMessageId,h.attachment_id AS attachmentId,
-              CASE WHEN h.message_id IS NULL THEN 'UNKNOWN' ELSE 'VERIFIED' END AS authorConfidence,
+              CASE WHEN h.message_id IS NULL AND recent.origin IS NULL THEN 'UNKNOWN' ELSE 'VERIFIED' END AS authorConfidence,
               DATE_FORMAT(h.committed_at,'%Y-%m-%dT%H:%i:%s.%fZ') AS committedAt,
               h.sku_id AS skuId,h.sku_name AS skuName,h.link_target_json AS linkTargetJson,
-              CASE WHEN h.actor_type='ADMIN' AND h.actor_id=av.admin_id THEN av.avatar_asset_id END AS senderAvatarAssetId,
-              CASE WHEN h.actor_type='ADMIN' AND h.actor_id=av.admin_id THEN av.avatar_version END AS senderAvatarVersion,
+              CASE WHEN ((h.actor_type='ADMIN' AND h.actor_id=av.admin_id) OR (recent.origin='WELCOME' AND recent.sender_id=av.admin_id)) THEN av.avatar_asset_id END AS senderAvatarAssetId,
+              CASE WHEN ((h.actor_type='ADMIN' AND h.actor_id=av.admin_id) OR (recent.origin='WELCOME' AND recent.sender_id=av.admin_id)) THEN av.avatar_version END AS senderAvatarVersion,
             """ + TARGET_AVAILABILITY + """
+              ,NULL senderRole,NULL origin
               FROM (
-                SELECT id,conversation_id,conversation_no,sender_id,sender_type,sender_name,content,created_at
+                SELECT id,conversation_id,conversation_no,sender_id,sender_type,sender_name,content,created_at,support_kind,origin
                   FROM nx_conversation_message
-                 WHERE is_deleted=0 AND conversation_no=#{conversationNo} AND sender_type IN ('user','agent')
+                 WHERE is_deleted=0 AND conversation_no=#{conversationNo} AND (sender_type IN ('user','agent') OR (sender_type='system' AND support_kind='AGENT_SWITCH'))
                    AND id > """ + AppConversationVisibilitySql.CONVERSATION_THROUGH + """
                  ORDER BY id DESC LIMIT #{limit}
                  <if test="currentRead">FOR SHARE</if>
@@ -137,18 +140,19 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
                    recent.content,
                    COALESCE(receipt.receipt_status, CASE WHEN recent.sender_type IN ('agent','user') THEN 'sent' ELSE NULL END) AS receiptStatus,
                    recent.created_at AS createdAt,
-              h.assignment_id AS assignmentId,COALESCE(h.kind,'TEXT') AS kind,COALESCE(h.intent,'SERVICE') AS intent,
+              h.assignment_id AS assignmentId,COALESCE(recent.support_kind,h.kind,'TEXT') AS kind,COALESCE(h.intent,'SERVICE') AS intent,
               h.client_message_id AS clientMessageId,h.attachment_id AS attachmentId,
-              CASE WHEN h.message_id IS NULL THEN 'UNKNOWN' ELSE 'VERIFIED' END AS authorConfidence,
+              CASE WHEN h.message_id IS NULL AND recent.origin IS NULL THEN 'UNKNOWN' ELSE 'VERIFIED' END AS authorConfidence,
               DATE_FORMAT(h.committed_at,'%Y-%m-%dT%H:%i:%s.%fZ') AS committedAt,
               h.sku_id AS skuId,h.sku_name AS skuName,h.link_target_json AS linkTargetJson,
-              CASE WHEN h.actor_type='ADMIN' AND h.actor_id=av.admin_id THEN av.avatar_asset_id END AS senderAvatarAssetId,
-              CASE WHEN h.actor_type='ADMIN' AND h.actor_id=av.admin_id THEN av.avatar_version END AS senderAvatarVersion,
+              CASE WHEN ((h.actor_type='ADMIN' AND h.actor_id=av.admin_id) OR (recent.origin='WELCOME' AND recent.sender_id=av.admin_id)) THEN av.avatar_asset_id END AS senderAvatarAssetId,
+              CASE WHEN ((h.actor_type='ADMIN' AND h.actor_id=av.admin_id) OR (recent.origin='WELCOME' AND recent.sender_id=av.admin_id)) THEN av.avatar_version END AS senderAvatarVersion,
             """ + TARGET_AVAILABILITY + """
+              ,NULL senderRole,NULL origin
               FROM (
-                SELECT id,conversation_id,conversation_no,sender_id,sender_type,sender_name,content,created_at
+                SELECT id,conversation_id,conversation_no,sender_id,sender_type,sender_name,content,created_at,support_kind,origin
                   FROM nx_conversation_message
-                 WHERE is_deleted=0 AND conversation_no=#{conversationNo} AND sender_type IN ('user','agent')
+                 WHERE is_deleted=0 AND conversation_no=#{conversationNo} AND (sender_type IN ('user','agent') OR (sender_type='system' AND support_kind='AGENT_SWITCH'))
                    AND id > """ + AppConversationVisibilitySql.CONVERSATION_THROUGH + """
                    AND (#{beforeMessageId} IS NULL OR id < #{beforeMessageId})
                  ORDER BY id DESC LIMIT #{limit}

@@ -416,7 +416,8 @@ public class AppGrowthEngagementService {
         for (Map<String, Object> row : rows) {
             Map<String, Object> next = new LinkedHashMap<>(row);
             String path = String.valueOf(row.get("targetPath"));
-            Boolean available = STAKING_PERK_PATHS.contains(path) ? staking
+            Boolean available = "CHECKIN_MULTIPLIER".equals(row.get("effectType")) ? Boolean.TRUE
+                    : STAKING_PERK_PATHS.contains(path) ? staking
                     : GENESIS_PERK_PATHS.contains(path) ? genesis : null;
             next.put("businessAvailable", available);
             enriched.add(next);
@@ -814,16 +815,19 @@ public class AppGrowthEngagementService {
             int luckyReward = BigDecimal.valueOf(base).multiply(multiplier)
                     .setScale(0, RoundingMode.DOWN).intValueExact();
             int streakBonus = streak % 7 == 0 ? positiveInt(mapper.checkInRule("bonus7"), 5) : 0;
-            int reward = Math.addExact(luckyReward, streakBonus);
+            if (streak == 1 && before.lastCheckInDate() != null) mapper.expireCheckInBoost(userId);
+            BigDecimal powerUpMultiplier = mapper.activeCheckInMultiplier(userId);
+            int reward = BigDecimal.valueOf(Math.addExact(luckyReward, streakBonus)).multiply(powerUpMultiplier)
+                    .setScale(0, RoundingMode.DOWN).intValueExact();
             if (eventEngine != null) reward = eventEngine.checkInReward(userId, today, reward);
             if (mapper.insertCheckIn(userId, missionId, today, base, multiplier,
-                    luckyReward - base, streakBonus, reward) != 1) {
+                    luckyReward - base, streakBonus, reward, powerUpMultiplier) != 1) {
                 throw conflict("DAILY_CHECK_IN_CONFLICT");
             }
             if (mapper.updateStreak(userId, streak, today) != 1) throw conflict("DAILY_STREAK_CONFLICT");
             BigDecimal rewardNex = BigDecimal.valueOf(reward).setScale(6);
             creditNex(userId, "DAILY:" + userId + ":" + today, "DAILY_CHECK_IN",
-                    rewardNex, "H5 daily check-in");
+                    rewardNex, "H5 daily check-in; powerUpMultiplier=" + powerUpMultiplier.stripTrailingZeros().toPlainString());
             Map<String, Object> detail = linked(
                     "checkInDate", today.toString(),
                     "baseNex", BigDecimal.valueOf(base).setScale(6),
@@ -834,6 +838,7 @@ public class AppGrowthEngagementService {
             Attribution attribution = attribution(userId);
             publish("DAILY_CHECK_IN", userId + ":" + today, "daily.checkin",
                     userId, attribution, detail);
+            detail.put("powerUpMultiplier", powerUpMultiplier);
             if (multiplier.compareTo(BigDecimal.ONE) > 0) {
                 publish("DAILY_CHECK_IN", userId + ":" + today, "daily.lucky_triggered",
                         userId, attribution, linked("multiplier", multiplier));
@@ -893,7 +898,8 @@ public class AppGrowthEngagementService {
                 // A temporary closure must remain retryable with the same idempotency key.
                 throw conflict("DAILY_POWER_UP_BUSINESS_UNAVAILABLE");
             }
-            if (mapper.activatePowerUp(userId, row) != 1) {
+            if (mapper.activatePowerUp(userId, row) != 1
+                    && !("CHECKIN_BOOST".equals(row.powerUpCode()) && mapper.reactivateCheckInBoost(userId, row.powerUpId()) == 1)) {
                 throw conflict("DAILY_POWER_UP_ACTIVATION_CONFLICT");
             }
             if (StringUtils.hasText(row.badgeCode())) {

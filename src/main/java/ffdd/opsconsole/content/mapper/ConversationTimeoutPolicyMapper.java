@@ -52,6 +52,7 @@ public interface ConversationTimeoutPolicyMapper extends BaseMapper<Conversation
               policy_key VARCHAR(64) PRIMARY KEY,
               warn_minutes INT NOT NULL,
               close_minutes INT NOT NULL,
+              session_end_minutes INT NOT NULL DEFAULT 10,
               version BIGINT NOT NULL DEFAULT 1,
               updated_by VARCHAR(64) NOT NULL,
               reason VARCHAR(500) NOT NULL,
@@ -97,7 +98,7 @@ public interface ConversationTimeoutPolicyMapper extends BaseMapper<Conversation
                    version,
                    updated_by AS updatedBy,
                    reason,
-                   updated_at AS updatedAt
+                   updated_at AS updatedAt, session_end_minutes AS sessionEndMinutes
               FROM nx_conversation_timeout_policy
              WHERE policy_key='GLOBAL'
              LIMIT 1
@@ -111,7 +112,7 @@ public interface ConversationTimeoutPolicyMapper extends BaseMapper<Conversation
                    version,
                    updated_by AS updatedBy,
                    reason,
-                   updated_at AS updatedAt
+                   updated_at AS updatedAt, session_end_minutes AS sessionEndMinutes
               FROM nx_conversation_timeout_policy
              WHERE policy_key='GLOBAL'
              LIMIT 1
@@ -123,6 +124,7 @@ public interface ConversationTimeoutPolicyMapper extends BaseMapper<Conversation
             UPDATE nx_conversation_timeout_policy
                SET warn_minutes=#{warnMinutes},
                    close_minutes=#{closeMinutes},
+                   session_end_minutes=#{endMinutes},
                    version=version+1,
                    updated_by=#{operator},
                    reason=#{reason},
@@ -133,6 +135,7 @@ public interface ConversationTimeoutPolicyMapper extends BaseMapper<Conversation
     int updatePolicy(
             @Param("warnMinutes") Integer warnMinutes,
             @Param("closeMinutes") Integer closeMinutes,
+            @Param("endMinutes") Integer endMinutes,
             @Param("expectedVersion") Long expectedVersion,
             @Param("operator") String operator,
             @Param("reason") String reason,

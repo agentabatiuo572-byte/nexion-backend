@@ -214,6 +214,9 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             """)
     String trialPolicyValue(@Param("policyKey") String policyKey);
 
+    @Select("SELECT current_value FROM nx_growth_trial_policy WHERE policy_key=#{policyKey} AND is_deleted=0 FOR UPDATE")
+    String lockTrialPolicyValue(@Param("policyKey") String policyKey);
+
     @Insert("""
             INSERT INTO nx_growth_trial_policy (
                 policy_key, policy_name, description, current_value, value_type,
@@ -347,7 +350,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                    user_id AS userId,
                    claim_no AS claimNo,
                    LOWER(status) AS state,
-                   GREATEST(price_usdt - LEAST(offset_cap_usdt, daily_usdt * GREATEST(1, duration_days)), 0) AS chargeAmount
+                   GREATEST(price_usdt - LEAST(COALESCE(offset_cap_usdt,price_usdt), daily_usdt * GREATEST(1, duration_days)), 0) AS chargeAmount
               FROM nx_trial_claim
              WHERE is_deleted = 0
                AND (CONCAT('trial-', claim_no) = #{sessionId} OR claim_no = #{sessionId})

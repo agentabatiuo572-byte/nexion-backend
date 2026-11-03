@@ -394,6 +394,14 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261103_retired_device_referral_read_view.sql")
   (Join-Path $root "scripts\migrations\20261103_task_class_authorization.sql")
   (Join-Path $root "scripts\migrations\20261103_h9_globe_distribution.sql")
+  (Join-Path $root "scripts\migrations\20261103_handoff_checkin_boost.sql")
+  (Join-Path $root "scripts\migrations\20261103_handoff_commerce_trial.sql")
+  (Join-Path $root "scripts\migrations\20261103_handoff_disclosure_defaults.sql")
+  (Join-Path $root "scripts\migrations\20261103_handoff_disclosure_gates.sql")
+  (Join-Path $root "scripts\migrations\20261103_handoff_legal_terms.sql")
+  (Join-Path $root "scripts\migrations\20261103_handoff_quest_completion.sql")
+  (Join-Path $root "scripts\migrations\20261103_handoff_registration.sql")
+  (Join-Path $root "scripts\migrations\20261103_handoff_support.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

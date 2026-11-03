@@ -672,10 +672,10 @@ public interface AppGrowthEngagementMapper {
     @Insert("""
             INSERT IGNORE INTO nx_daily_check_in
               (user_id,mission_id,check_in_date,base_points,reward_multiplier,bonus_points,
-               streak_bonus_points,reward_points,created_at,updated_at,is_deleted)
+                 streak_bonus_points,reward_points,power_up_multiplier,created_at,updated_at,is_deleted)
             VALUES
               (#{userId},#{missionId},#{checkInDate},#{basePoints},#{multiplier},#{bonusPoints},
-               #{streakBonusPoints},#{rewardPoints},NOW(),NOW(),0)
+                 #{streakBonusPoints},#{rewardPoints},#{powerUpMultiplier},NOW(),NOW(),0)
             """)
     int insertCheckIn(
             @Param("userId") Long userId,
@@ -685,7 +685,31 @@ public interface AppGrowthEngagementMapper {
             @Param("multiplier") BigDecimal multiplier,
             @Param("bonusPoints") int bonusPoints,
             @Param("streakBonusPoints") int streakBonusPoints,
-            @Param("rewardPoints") int rewardPoints);
+            @Param("rewardPoints") int rewardPoints,
+            @Param("powerUpMultiplier") BigDecimal powerUpMultiplier);
+
+    @Select("""
+            SELECT COALESCE(MAX(CAST(p.effect_value AS DECIMAL(12,4))),1)
+              FROM nx_user_streak_power_up u JOIN nx_streak_power_up p ON p.id=u.power_up_id
+             WHERE u.user_id=#{userId} AND u.power_up_status='ACTIVATED' AND u.is_deleted=0
+               AND p.status=1 AND p.is_deleted=0 AND p.effect_type='CHECKIN_MULTIPLIER'
+            """)
+    BigDecimal activeCheckInMultiplier(@Param("userId") Long userId);
+
+    @Update("""
+            UPDATE nx_user_streak_power_up u JOIN nx_streak_power_up p ON p.id=u.power_up_id
+               SET u.power_up_status='EXPIRED',u.expires_at=NOW(),u.updated_at=NOW()
+             WHERE u.user_id=#{userId} AND u.power_up_status='ACTIVATED' AND u.is_deleted=0
+               AND p.effect_type='CHECKIN_MULTIPLIER'
+            """)
+    int expireCheckInBoost(@Param("userId") Long userId);
+
+    @Update("""
+            UPDATE nx_user_streak_power_up SET power_up_status='ACTIVATED',unlocked_at=NOW(),activated_at=NOW(),
+                   expires_at=NULL,updated_at=NOW()
+             WHERE user_id=#{userId} AND power_up_id=#{powerUpId} AND power_up_status='EXPIRED' AND is_deleted=0
+            """)
+    int reactivateCheckInBoost(@Param("userId") Long userId, @Param("powerUpId") Long powerUpId);
 
     @Update("""
             UPDATE nx_user_streak

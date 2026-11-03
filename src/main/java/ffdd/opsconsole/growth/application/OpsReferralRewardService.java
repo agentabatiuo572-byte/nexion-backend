@@ -152,7 +152,7 @@ public class OpsReferralRewardService {
         boolean enabled = referralEnabled();
         LocalDateTime effectiveAt = effectiveAtRequired();
         long currentVersion = version(config.activeValue(VERSION_KEY).orElse("1"));
-        List<ReferralRewardMapper.ReferralRow> fixtures = mapper.findPendingSandboxReferral(effectiveAt, runId, null);
+        List<ReferralRewardMapper.ReferralRow> fixtures = mapper.findEligibleSandboxReferral(effectiveAt, runId, null,"risk_bucket".equals(lockMode()));
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("params", Map.of(
                 "enabled", enabled,
@@ -170,8 +170,7 @@ public class OpsReferralRewardService {
         result.put("pending", fixtures.size());
         result.put("settled", mapper.totalSandboxSettled(runId));
         result.put("blockedByK2", 0);
-        result.put("fixtureCandidates", fixtures.stream().map(row -> Map.of(
-                "invitedUserId", row.invitedUserId(), "inviterUserId", row.inviterUserId())).toList());
+        result.put("fixtureCandidates", fixtures);
         result.put("recentSettlements", mapper.recentSandboxSettlements(runId, 20));
         result.put("source", "mock");
         result.put("sourceEnvironment", "SANDBOX");
@@ -393,26 +392,24 @@ public class OpsReferralRewardService {
                 + ",lockMode=" + snapshot.lockMode();
         int settled = 0;
         int skipped = 0;
-        for (ReferralRewardMapper.ReferralRow row : mapper.findPendingSandboxReferral(
-                snapshot.effectiveAt(), runId, onlyInvitedUserId)) {
+        for (ReferralRewardMapper.ReferralRow row : mapper.findEligibleSandboxReferral(
+                snapshot.effectiveAt(), runId, onlyInvitedUserId,"risk_bucket".equals(snapshot.lockMode()))) {
             String settlementNo = "SBX-REF-"
                     + UUID.randomUUID().toString().replace("-", "").substring(0, 24).toUpperCase();
+            BigDecimal inviterNex = row.inviterUserId()==null ? BigDecimal.ZERO : rewards.inviterNex();
             if (mapper.insertSandboxSettlement(settlementNo, row.invitedUserId(), row.inviterUserId(),
-                    rewards.newcomerUsdt(), rewards.newcomerNex(), rewards.inviterNex(),
+                    rewards.newcomerUsdt(), rewards.newcomerNex(), inviterNex,
                     snapshot.lockMode(), configSnapshot, operator, reason, key, runId, snapshot.effectiveAt()) != 1) {
                 skipped++;
                 continue;
             }
-            postSandboxAsset(settlementNo, row.invitedUserId(), "USDT", rewards.newcomerUsdt(),
-                    runId, "[SANDBOX][MOCK_REFERRAL] newcomer referral reward");
-            postSandboxAsset(settlementNo, row.invitedUserId(), "UVT", rewards.newcomerNex(),
-                    runId, "[SANDBOX][MOCK_REFERRAL] newcomer referral reward");
-            postSandboxAsset(settlementNo, row.inviterUserId(), "UVT", rewards.inviterNex(),
+            settleNewcomer(settlementNo,row.invitedUserId(),rewards.newcomerUsdt(),rewards.newcomerNex(),1,runId);
+            if (row.inviterUserId()!=null) postSandboxAsset(settlementNo, row.inviterUserId(), "UVT", inviterNex,
                     runId, "[SANDBOX][MOCK_REFERRAL] inviter referral reward");
-            sandboxAudit.recordSuccess(runId, "H8_ACCEPTANCE_SANDBOX_REFERRAL_SETTLED", settlementNo, operator, key,
-                    Map.of("invitedUserId", row.invitedUserId(), "inviterUserId", row.inviterUserId(),
-                            "source", "mock", "sourceEnvironment", "SANDBOX", "runId", runId,
-                            "reason", reason));
+            Map<String,Object> detail=new LinkedHashMap<>(Map.of("invitedUserId",row.invitedUserId(),
+                    "source","mock","sourceEnvironment","SANDBOX","runId",runId,"reason",reason));
+            detail.put("inviterUserId",row.inviterUserId());
+            sandboxAudit.recordSuccess(runId, "H8_ACCEPTANCE_SANDBOX_REFERRAL_SETTLED", settlementNo, operator, key, detail);
             settled++;
         }
         sandboxAudit.recordSuccess(runId, "H8_ACCEPTANCE_SANDBOX_SETTLEMENT_RUN", "sandbox", operator, key,
@@ -467,12 +464,17 @@ public class OpsReferralRewardService {
         List<ReferralRewardMapper.ReferralRow> pending = mapper.findPendingReferrals(
                 effectiveAt, SETTLEMENT_ENVIRONMENT, accountSandbox, holdRisky, limit, onlyInvitedUserId);
         if (onlyInvitedUserId != null && pending.isEmpty()) {
+            if(Boolean.TRUE.equals(mapper.freezeNewcomer(onlyInvitedUserId))) {
+                int released=releasePurchasedGifts(onlyInvitedUserId);
+                if(released>0) return Map.of("settled",0,"skipped",0,"released",released,"limit",limit);
+            }
             throw new BizException(409, "REFERRAL_REWARD_USER_NOT_ELIGIBLE_OR_SETTLED");
         }
         for (ReferralRewardMapper.ReferralRow row : pending) {
             String settlementNo = "REF-" + UUID.randomUUID().toString().replace("-", "").substring(0, 24).toUpperCase();
+            BigDecimal actualInviterNex=row.inviterUserId()==null?BigDecimal.ZERO:inviterNex;
             if (mapper.insertSettlement(settlementNo, row.invitedUserId(), row.inviterUserId(),
-                    newcomerUsdt, newcomerNex, inviterNex, lockMode, configSnapshot, operator, reason, key,
+                    newcomerUsdt, newcomerNex, actualInviterNex, lockMode, configSnapshot, operator, reason, key,
                     effectiveAt, SETTLEMENT_ENVIRONMENT, accountSandbox, holdRisky) != 1) {
                 if (onlyInvitedUserId != null) {
                     throw new BizException(409, "REFERRAL_REWARD_USER_NOT_ELIGIBLE_OR_SETTLED");
@@ -480,21 +482,17 @@ public class OpsReferralRewardService {
                 skipped++;
                 continue;
             }
-            creditReward(row.invitedUserId(), settlementNo + ":NEWCOMER", "USDT", newcomerUsdt);
-            creditReward(row.invitedUserId(), settlementNo + ":NEWCOMER", "UVT", newcomerNex);
-            creditReward(row.inviterUserId(), settlementNo + ":INVITER", "UVT", inviterNex);
-            post(settlementNo + ":NEWCOMER", row.invitedUserId(), newcomerUsdt, newcomerNex, "新用户邀请奖励");
-            post(settlementNo + ":INVITER", row.inviterUserId(), BigDecimal.ZERO, inviterNex, "邀请人奖励");
-            audit("REFERRAL_REWARD_SETTLED", settlementNo, operator, key,
-                    Map.of("invitedUserId", row.invitedUserId(), "inviterUserId", row.inviterUserId(),
-                            "newcomerUsdt", newcomerUsdt, "newcomerNex", newcomerNex,
-                            "inviterNex", inviterNex, "lockMode", lockMode, "reason", reason,
-                            "sourceEnvironment", SETTLEMENT_ENVIRONMENT));
-            outbox.publish("REFERRAL_REWARD_SETTLEMENT", settlementNo, "H8_REFERRAL_REWARD_SETTLED",
-                    Map.of("invitedUserId", row.invitedUserId(), "inviterUserId", row.inviterUserId(),
-                            "newcomerUsdt", newcomerUsdt, "newcomerNex", newcomerNex,
-                            "inviterNex", inviterNex, "lockMode", lockMode,
-                            "sourceEnvironment", SETTLEMENT_ENVIRONMENT));
+            settleNewcomer(settlementNo,row.invitedUserId(),newcomerUsdt,newcomerNex,0,null);
+            if(row.inviterUserId()!=null) {
+                creditReward(row.inviterUserId(), settlementNo + ":INVITER", "UVT", actualInviterNex);
+                post(settlementNo + ":INVITER", row.inviterUserId(), BigDecimal.ZERO, actualInviterNex, "邀请人奖励");
+            }
+            Map<String,Object> detail=new LinkedHashMap<>(Map.of("invitedUserId",row.invitedUserId(),
+                    "newcomerUsdt",newcomerUsdt,"newcomerNex",newcomerNex,"inviterNex",actualInviterNex,
+                    "lockMode",lockMode,"reason",reason,"sourceEnvironment",SETTLEMENT_ENVIRONMENT));
+            if(row.inviterUserId()!=null) detail.put("inviterUserId",row.inviterUserId());
+            audit("REFERRAL_REWARD_SETTLED",settlementNo,operator,key,detail);
+            if(row.inviterUserId()!=null) outbox.publish("REFERRAL_REWARD_SETTLEMENT",settlementNo,"H8_REFERRAL_REWARD_SETTLED",detail);
             settled++;
         }
         // Recompute from the wallet state written by this transaction. If the batch
@@ -519,6 +517,56 @@ public class OpsReferralRewardService {
         outbox.publish("REFERRAL_REWARD_SETTLEMENT", key, "H8_REFERRAL_REWARD_BATCH_COMPLETED",
                 completed);
         return Map.of("settled", settled, "skipped", skipped, "limit", limit);
+    }
+
+    private void settleNewcomer(String no,long user,BigDecimal usdt,BigDecimal nex,int sandbox,String run) {
+        if(Boolean.TRUE.equals(mapper.freezeNewcomer(user))) {
+            mapper.holdGift(no,user,sandbox,run,usdt,nex);
+            if(sandbox==0) {
+                if(usdt.signum()>0) ledger.postLedgerEntry(no+":HOLD",user,"REGISTRATION_GIFT_HOLD","USDT","IN",usdt,"PENDING","新人礼待首笔购买");
+                if(nex.signum()>0) ledger.postLedgerEntry(no+":HOLD",user,"REGISTRATION_GIFT_HOLD","UVT","IN",nex,"PENDING","新人礼待首笔购买");
+            }
+            releasePurchasedGifts(user);
+        } else creditNewcomer(no,user,usdt,nex,run);
+    }
+
+    private void creditNewcomer(String no,long user,BigDecimal usdt,BigDecimal nex,String run) {
+        if(run!=null) {
+            postSandboxAsset(no,user,"USDT",usdt,run,"[SANDBOX][MOCK_REFERRAL] newcomer reward");
+            postSandboxAsset(no,user,"UVT",nex,run,"[SANDBOX][MOCK_REFERRAL] newcomer reward");
+        } else {
+            creditReward(user,no+":NEWCOMER","USDT",usdt);
+            creditReward(user,no+":NEWCOMER","UVT",nex);
+            post(no+":NEWCOMER",user,usdt,nex,"注册新人奖励");
+        }
+    }
+
+    @org.springframework.context.event.EventListener
+    @Transactional
+    public void purchaseCompleted(ffdd.opsconsole.shared.outbox.EventOutboxMessage message) {
+        if(!"checkout.completed".equals(message.getEventType()) || !"ORDER".equals(message.getAggregateType())
+                || !Boolean.TRUE.equals(message.getServerAuthoritative())) return;
+        Long user=mapper.paidOrderUser(message.getAggregateId());
+        if(user!=null && Boolean.TRUE.equals(mapper.freezeNewcomer(user))) releasePurchasedGifts(user);
+    }
+
+    private int releasePurchasedGifts(long user) {
+        boolean sandbox=H8AcceptanceSandboxProfileCondition.isStrictIsolatedProfile(environment.getActiveProfiles());
+        var holds=mapper.frozenForUser(user,sandbox?1:0);
+        if(holds.isEmpty()) return 0;
+        String order=mapper.firstPaidOrder(user);
+        if(order==null) return 0;
+        int released=0;
+        for(var hold:holds) {
+            if(sandbox && !hold.runId().equals(sandboxRunScope.requireRunId())) continue;
+            if(mapper.giftReleaseAllowed(user,hold.sandbox(),"risk_bucket".equals(hold.lockMode()))!=1) continue;
+            if(hold.sandbox()==0) requireHealthyCoverage();
+            creditNewcomer(hold.settlementNo(),user,hold.usdt(),hold.nex(),hold.runId());
+            if(mapper.releaseGift(hold.settlementNo(),order)!=1) throw new BizException(409,"H8_GIFT_RELEASE_CONFLICT");
+            if(hold.sandbox()==0) requireHealthyCoverage();
+            released++;
+        }
+        return released;
     }
 
     private void creditReward(Long userId, String sourceRef, String asset, BigDecimal amount) {

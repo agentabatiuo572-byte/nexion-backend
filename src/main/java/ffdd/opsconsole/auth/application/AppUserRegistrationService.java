@@ -89,30 +89,27 @@ public class AppUserRegistrationService {
     private final ffdd.opsconsole.content.facade.SupportRegistrationFacade supportBindingService;
     private final AuthNewAccountCreator accountCreator;
 
-    /** Called only after a signed provider identity and browser receipt were verified. */
     @Transactional(propagation = Propagation.MANDATORY)
     public ApiResult<UserLoginResponse> registerProvider(String provider, String subject, String displayName,
             String sponsorCode, String clientAddress, AppLoginContext context, UserOAuthIdentityMapper identities) {
+        return registerProvider(provider,subject,displayName,sponsorCode,clientAddress,context,identities,null);
+    }
+
+    /** Called only after a signed provider identity and browser receipt were verified. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public ApiResult<UserLoginResponse> registerProvider(String provider, String subject, String displayName,
+            String sponsorCode, String clientAddress, AppLoginContext context, UserOAuthIdentityMapper identities, String captchaTicket) {
         if (UserAuthEnvironment.resolve(environment).orElse(null) != UserAuthEnvironment.PRODUCTION)
             throw new BizException(503, "OAUTH_PROFILE_FORBIDDEN");
         String ip = normalizeClientAddress(clientAddress);
         if ("unknown".equalsIgnoreCase(ip)) throw new BizException(503, "USER_REGISTRATION_CLIENT_IP_UNAVAILABLE");
-        if (mapper.countNewAccountsByClientIp24h(ip) >= requiredK1MaxSignupPerIp24h())
-            throw new BizException(409, "USER_REGISTRATION_K1_IP_LIMIT");
-        UserEntity sponsor = null;
-        if (StringUtils.hasText(sponsorCode)) {
-            String canonical = canonicalReferralCode(sponsorCode);
-            if (!canonical.matches("[A-Z0-9]{4,32}")) throw new BizException(422, "USER_REGISTRATION_SPONSOR_INVALID");
-            List<UserEntity> candidates = mapper.findActiveSponsorsByCanonicalCode(canonical);
-            if (candidates == null || candidates.isEmpty()) throw new BizException(422, "USER_REGISTRATION_SPONSOR_NOT_FOUND");
-            if (candidates.size() != 1) throw new BizException(409, "USER_REGISTRATION_SPONSOR_AMBIGUOUS");
-            String stored = candidates.get(0).getReferralCode();
-            if (!StringUtils.hasText(stored) || !canonical.equals(canonicalReferralCode(stored)))
-                throw new BizException(409, "USER_REGISTRATION_SPONSOR_STATE_CHANGED");
-            sponsor = mapper.findSponsorForUpdate(stored);
-            if (sponsor == null) throw new BizException(409, "USER_REGISTRATION_SPONSOR_STATE_CHANGED");
-            if (sandboxOf(sponsor) != 0) throw new BizException(409, "USER_REGISTRATION_SPONSOR_ENVIRONMENT_MISMATCH");
+        checkRegistrationLimits(ip,0,context);
+        if (context.group()==AppSessionSurface.H5 && context.installationId().isEmpty()) {
+            var decision=captchaGate.checkAndConsume(CaptchaScene.REGISTER,captchaTicket,ip,0,true);
+            if (!decision.allowed()) throw new BizException(decision.status(),decision.code());
         }
+        String code = suppliedCode(sponsorCode);
+        UserEntity sponsor = resolveSponsor(code,0);
         String name = StringUtils.hasText(displayName) ? displayName.trim() : "UVEL User";
         name = name.substring(0, Math.min(name.length(), 64));
         String referralCode = nextReferralCode();
@@ -130,9 +127,10 @@ public class AppUserRegistrationService {
         identity.setDisplayName(displayName);
         try { identities.insertIdentity(identity); }
         catch (DuplicateKeyException exception) { throw new BizException(409, "OAUTH_IDENTITY_ALREADY_LINKED"); }
-        supportBindingService.register(userId, sponsor == null ? null : sponsor.getId());
+        var receipt = saveRegistration(userId,sponsor,0,context);
+        supportBindingService.register(userId, sponsor == null ? null : sponsor.getId(), advisorCode(code), "en-US");
         dayOneInstanceFacade.provisionForRegisteredUser(userId);
-        createTeamGraphProjection(userId, 0);
+        if (advisorCode(code)==null) createTeamGraphProjection(userId, 0);
         userMapper.resetLoginFailures(userId);
         accountCreator.ensureWallet(birth);
         String eventId = outboxService.publish("USER_REGISTRATION", String.valueOf(userId),
@@ -143,8 +141,7 @@ public class AppUserRegistrationService {
                         "source", "nx_user.sponsor_user_id"));
         ApiResult<UserLoginResponse> session = authService.issueProviderSession(userId, clientAddress, context, null, null, null);
         if (session.getCode() != 0 || session.getData() == null) throw new BizException(session.getCode(), session.getMessage());
-        return sponsor == null ? session : new ApiResult<>(session.getCode(), session.getMessage(),
-                session.getData().withRegistrationReceipt(registrationReceipt(sponsor, 0)));
+        return ApiResult.ok(session.getData().withRegistrationReceipt(receipt));
     }
 
     @PostConstruct
@@ -156,6 +153,17 @@ public class AppUserRegistrationService {
     public ApiResult<UserRegistrationOtpResponse> sendOtp(
             UserRegistrationOtpRequest request,
             String clientAddress) {
+        return sendOtp(request,clientAddress,AppSessionSurface.APP,null);
+    }
+
+    @Transactional(noRollbackFor = BizException.class)
+    public ApiResult<UserRegistrationOtpResponse> sendOtp(UserRegistrationOtpRequest request,String clientAddress,
+            AppSessionSurface surface,String installation) {
+        boolean h5=surface==AppSessionSurface.H5;
+        String device=installation==null?"":installation;
+        if (h5 && !device.isEmpty() && !device.matches("[A-Za-z0-9._:-]{1,128}"))
+            return ApiResult.fail(422,"LOGIN_INSTALLATION_INVALID");
+        boolean force=h5 && (device.isEmpty() || flag("h5_register_captcha"));
         if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.countryCode(), request.phone())) {
             return ApiResult.fail(422, "USER_REGISTRATION_PHONE_INVALID");
         }
@@ -179,7 +187,7 @@ public class AppUserRegistrationService {
         }
         OtpSendRateDecision rateDecision = consumeOtpSendRate(
                 registrationKey(audience, countryCode, phone), LocalDateTime.now(), policy,
-                request.captchaTicket(), clientIp);
+                request.captchaTicket(), clientIp, force);
         if (rateDecision == OtpSendRateDecision.COOLDOWN) {
             return ApiResult.fail(429, "USER_REGISTRATION_OTP_COOLDOWN");
         }
@@ -202,6 +210,7 @@ public class AppUserRegistrationService {
                 challengeNo, countryCode, phone, clientIp, audience.name(), code, policy.ttlMinutes()) != 1) {
             throw new IllegalStateException("USER_REGISTRATION_OTP_CREATE_FAILED");
         }
+        if(h5) mapper.recordH5Challenge(challengeNo,device,force);
         try {
             otpDeliveryService.deliver(
                     countryCode, phone, challengeNo, code, policy.ttlMinutes());
@@ -243,7 +252,7 @@ public class AppUserRegistrationService {
      * registration table has no unique open-challenge key, so the count queries alone race.
      */
     private OtpSendRateDecision consumeOtpSendRate(String key, LocalDateTime now, AppOtpPolicy policy,
-            String captchaTicket, String clientAddress) {
+            String captchaTicket, String clientAddress, boolean force) {
         loginGuardMapper.initializeOtpSendGuard(key, now);
         UserOtpSendGuardRecord guard = loginGuardMapper.lockOtpSendGuard(key);
         if (guard == null) throw new IllegalStateException("USER_OTP_SEND_GUARD_UNAVAILABLE");
@@ -257,7 +266,7 @@ public class AppUserRegistrationService {
             return OtpSendRateDecision.DAILY_LIMIT;
         }
         CaptchaOtpGate.Decision captcha = captchaGate.checkAndConsume(
-                CaptchaScene.REGISTER, captchaTicket, clientAddress, trailing24hCount);
+                CaptchaScene.REGISTER, captchaTicket, clientAddress, trailing24hCount,force);
         if (!captcha.allowed()) {
             return switch (captcha.code()) {
                 case "USER_CAPTCHA_REQUIRED" -> OtpSendRateDecision.CAPTCHA_REQUIRED;
@@ -358,49 +367,15 @@ public class AppUserRegistrationService {
                 || "unknown".equalsIgnoreCase(registrationIp.trim())) {
             throw new BizException(503, "USER_REGISTRATION_CLIENT_IP_UNAVAILABLE");
         }
-        // Production keeps the K1 anti-farm ceiling. Strict isolated profiles
-        // already write only sandbox users/wallets and all local browsers share
-        // the same loopback address, so applying the production 24h IP quota
-        // would permanently block repeat registration acceptance on a PC.
-        // OTP per-IP/per-phone rate limits above remain active in both modes.
-        if (sandbox == 0) {
-            int maxSignupPerIp24h = requiredK1MaxSignupPerIp24h();
-            if (mapper.countRegisteredAccountsByClientIp24hInEnvironment(
-                    registrationIp.trim(), audience.name(), sandbox) >= maxSignupPerIp24h) {
-                return ApiResult.fail(409, "USER_REGISTRATION_K1_IP_LIMIT");
-            }
-        }
-
-        UserEntity sponsor = null;
-        if (StringUtils.hasText(request.sponsorCode())) {
-            String sponsorCode = canonicalReferralCode(request.sponsorCode());
-            if (!sponsorCode.matches("[A-Z0-9]{4,32}")) {
-                return ApiResult.fail(422, "USER_REGISTRATION_SPONSOR_INVALID");
-            }
-            List<UserEntity> candidates = mapper.findActiveSponsorsByCanonicalCode(sponsorCode);
-            if (candidates == null || candidates.isEmpty()) {
-                return ApiResult.fail(422, "USER_REGISTRATION_SPONSOR_NOT_FOUND");
-            }
-            if (candidates.size() != 1) {
-                return ApiResult.fail(409, "USER_REGISTRATION_SPONSOR_AMBIGUOUS");
-            }
-            String storedSponsorCode = candidates.get(0).getReferralCode();
-            if (!StringUtils.hasText(storedSponsorCode)
-                    || !sponsorCode.equals(canonicalReferralCode(storedSponsorCode))) {
-                return ApiResult.fail(409, "USER_REGISTRATION_SPONSOR_STATE_CHANGED");
-            }
-            sponsor = mapper.findSponsorForUpdate(storedSponsorCode);
-            if (sponsor == null) {
-                return ApiResult.fail(409, "USER_REGISTRATION_SPONSOR_STATE_CHANGED");
-            }
-        }
-        // A referral is optional. When supplied, it must stay inside the same
-        // production/sandbox identity graph. This check precedes every user
-        // and wallet write, so a rejected cross-environment request leaves no
-        // partially created account or funding surface behind.
-        if (sponsor != null && sandbox != sandboxOf(sponsor)) {
-            return ApiResult.fail(409, "USER_REGISTRATION_SPONSOR_ENVIRONMENT_MISMATCH");
-        }
+        var challenge = mapper.h5Challenge(challengeNo);
+        if (context.group()==AppSessionSurface.H5) {
+            boolean force=context.installationId().isEmpty() || flag("h5_register_captcha");
+            if (challenge==null && force || challenge!=null && (!context.installationId().equals(challenge.installationId())
+                    || force && !challenge.captchaRequired())) throw new BizException(428,"USER_CAPTCHA_REQUIRED");
+        } else if (challenge!=null) throw new BizException(422,"USER_REGISTRATION_SURFACE_MISMATCH");
+        checkRegistrationLimits(registrationIp.trim(),sandbox,context);
+        String invitationCode = suppliedCode(request.sponsorCode());
+        UserEntity sponsor = resolveSponsor(invitationCode,sandbox);
 
         UserEntity user = new UserEntity();
         user.setCountryCode(countryCode);
@@ -429,9 +404,10 @@ public class AppUserRegistrationService {
             throw new BizException(409, "USER_REGISTRATION_IDENTITY_CONFLICT");
         }
         if (paymentPasswords!=null) paymentPasswords.recordVerifiedPhone(user.getId(),countryCode,phone);
-        supportBindingService.register(user.getId(), sponsor == null ? null : sponsor.getId());
+        var receipt = saveRegistration(user.getId(),sponsor,sandbox,context);
+        supportBindingService.register(user.getId(), sponsor == null ? null : sponsor.getId(), advisorCode(invitationCode),user.getLanguage());
         dayOneInstanceFacade.provisionForRegisteredUser(user.getId());
-        createTeamGraphProjection(user.getId(), sandbox);
+        if (advisorCode(invitationCode)==null) createTeamGraphProjection(user.getId(), sandbox);
         userMapper.resetLoginFailures(user.getId());
         accountCreator.ensureWallet(birth);
         String registrationEventId = outboxService.publish(
@@ -451,9 +427,60 @@ public class AppUserRegistrationService {
                             "source", "nx_user.sponsor_user_id"));
         }
         ApiResult<UserLoginResponse> session = authService.issueRegisteredSession(user, clientAddress, context);
-        if (session.getData() == null || sponsor == null) return session;
-        return new ApiResult<>(session.getCode(), session.getMessage(),
-                session.getData().withRegistrationReceipt(registrationReceipt(sponsor, sandbox)));
+        if (session.getData()==null || session.getCode()!=0) throw new BizException(session.getCode(),session.getMessage());
+        return ApiResult.ok(session.getData().withRegistrationReceipt(receipt));
+    }
+
+    private String suppliedCode(String raw) {
+        String code=canonicalReferralCode(raw);
+        if(code.isEmpty() && StringUtils.hasText(raw)) throw new BizException(422,"USER_REGISTRATION_SPONSOR_INVALID");
+        return code;
+    }
+
+    private static String advisorCode(String code) {
+        return code.startsWith("CS")?code:null;
+    }
+
+    private UserEntity resolveSponsor(String code,int sandbox) {
+        if (code.isEmpty()) return null;
+        if (advisorCode(code)!=null) {
+            if (sandbox!=0 || !code.matches("CS[A-HJ-NP-Z2-9]{6}")) throw new BizException(422,"USER_REGISTRATION_SPONSOR_NOT_FOUND");
+            return null;
+        }
+        if (!code.matches("[A-Z0-9]{4,32}")) throw new BizException(422,"USER_REGISTRATION_SPONSOR_INVALID");
+        List<UserEntity> candidates=mapper.findActiveSponsorsByCanonicalCode(code);
+        if (candidates.isEmpty()) throw new BizException(422,"USER_REGISTRATION_SPONSOR_NOT_FOUND");
+        if (candidates.size()!=1) throw new BizException(409,"USER_REGISTRATION_SPONSOR_AMBIGUOUS");
+        String stored=candidates.get(0).getReferralCode();
+        if (!code.equals(canonicalReferralCode(stored))) throw new BizException(409,"USER_REGISTRATION_SPONSOR_STATE_CHANGED");
+        UserEntity sponsor=mapper.findSponsorForUpdate(stored);
+        if (sponsor==null) throw new BizException(409,"USER_REGISTRATION_SPONSOR_STATE_CHANGED");
+        if (sandboxOf(sponsor)!=sandbox) throw new BizException(409,"USER_REGISTRATION_SPONSOR_ENVIRONMENT_MISMATCH");
+        return sponsor;
+    }
+
+    private void checkRegistrationLimits(String ip,int sandbox,AppLoginContext context) {
+        boolean h5=context.group()==AppSessionSurface.H5;
+        if (sandbox==1 && !h5) return;
+        // This existing K1 row lock spans the count, account creation and origin insert on both registration paths.
+        int ipLimit=requiredK1MaxSignupPerIp24h();
+        if (mapper.registeredByIp(ip,sandbox)>=ipLimit) throw new BizException(409,"USER_REGISTRATION_K1_IP_LIMIT");
+        if (h5 && !context.installationId().isEmpty()) {
+            int limit=Integer.parseInt(configFacade.activeValue("auth.risk.h5_register_device_limit").orElse("3"));
+            if(limit>0 && mapper.registeredByDevice(context.installationId(),sandbox)>=limit)
+                throw new BizException(409,"USER_REGISTRATION_DEVICE_LIMIT");
+        }
+    }
+
+    private boolean flag(String key) {
+        return !"0".equals(configFacade.activeValue("auth.risk."+key).orElse("1"));
+    }
+
+    private UserLoginResponse.RegistrationReceipt saveRegistration(long id,UserEntity sponsor,int sandbox,AppLoginContext context) {
+        boolean freeze=context.group()==AppSessionSurface.H5 && flag("h5_freeze_newcomer_gift");
+        var receipt=registrationReceipt(sponsor,sandbox,freeze);
+        mapper.recordOrigin(id,context.loginAttemptId(),context.group().name(),context.installationId(),sandbox,freeze,receipt);
+        return receipt;
     }
 
     private void createTeamGraphProjection(Long memberUserId, int sandbox) {
@@ -503,7 +530,7 @@ public class AppUserRegistrationService {
                 .toUpperCase(Locale.ROOT);
     }
 
-    private UserLoginResponse.RegistrationReceipt registrationReceipt(UserEntity sponsor, int sandbox) {
+    private UserLoginResponse.RegistrationReceipt registrationReceipt(UserEntity sponsor, int sandbox,boolean freeze) {
         String sourceEnvironment = sandbox == 1 ? "SANDBOX" : "PRODUCTION";
         BigDecimal giftUsdt = null;
         BigDecimal giftNex = null;
@@ -511,12 +538,13 @@ public class AppUserRegistrationService {
         if (referralRewardService != null) {
             try {
                 ReferralRewardPublicConfigView config = referralRewardService.publicConfig();
-                if (config != null && config.enabled() && config.welcomeGift() != null
+                if (config != null && config.enabled() && config.effectiveAt()!=null && !config.effectiveAt().isAfter(java.time.Instant.now())
+                        && config.welcomeGift() != null
                         && config.welcomeGift().usdtAmount() != null
                         && config.welcomeGift().nexAmount() != null) {
                     giftUsdt = config.welcomeGift().usdtAmount();
                     giftNex = config.welcomeGift().nexAmount();
-                    status = "PENDING_REVIEW";
+                    status = freeze ? "FROZEN" : "PENDING_REVIEW";
                 }
             } catch (RuntimeException ignored) {
                 // Registration remains committed; the UI must fail closed when the
@@ -524,8 +552,8 @@ public class AppUserRegistrationService {
             }
         }
         return new UserLoginResponse.RegistrationReceipt(
-                canonicalReferralCode(sponsor.getReferralCode()),
-                maskSponsorName(sponsor.getNickname()), sourceEnvironment, status, giftUsdt, giftNex);
+                sponsor==null?null:canonicalReferralCode(sponsor.getReferralCode()),
+                sponsor==null?null:maskSponsorName(sponsor.getNickname()), sourceEnvironment, status, giftUsdt, giftNex);
     }
 
     private String maskSponsorName(String value) {

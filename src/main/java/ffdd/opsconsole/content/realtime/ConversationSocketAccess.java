@@ -20,6 +20,7 @@ public class ConversationSocketAccess {
     private final ProductionSupportPathGuard production;
     private final ffdd.opsconsole.content.application.SupportOwnershipService ownership;
     private final ffdd.opsconsole.content.mapper.SupportBindingMapper bindings;
+    private final ffdd.opsconsole.content.application.SupportSessionService sessions;
 
     public Authentication authenticate(String token, String audience) {
         Authentication auth = authentication.authenticateSocketToken(token);
@@ -49,8 +50,8 @@ public class ConversationSocketAccess {
 
     public boolean canWrite(Authentication auth,String audience,String no) {
         if (!canRead(auth,audience,no)) return false;
-        return !"ADMIN".equals(audience) || (bindings.eligibleAgent(ownership.actorId(auth))==1
-                && Objects.equals(bindings.currentAgent(ownership.conversationCustomer(no)),ownership.actorId(auth)));
+        return !"ADMIN".equals(audience) || (has(auth,"service_m3_write")
+                && sessions.canType(ownership.actorId(auth),ownership.conversationCustomer(no)));
     }
 
     public static boolean has(Authentication auth, String permission) {
@@ -60,7 +61,11 @@ public class ConversationSocketAccess {
     /** Loaded once per watched conversation in a presence batch; never retained across batches. */
     public Optional<Participants> participants(String no) {
         if (no == null || !no.matches("[A-Za-z0-9_-]{1,100}")) return Optional.empty();
-        return conversations.findByConversationNo(no).map(c -> new Participants(String.valueOf(c.userId()), String.valueOf(bindings.currentAgent(c.userId())), ownership));
+        return conversations.findByConversationNo(no).filter(c->c.userId()!=null).map(c -> {
+            var current=sessions.holders(List.of(c.userId())).get(c.userId());
+            Long peer=current==null?bindings.currentAgent(c.userId()):current.adminId();
+            return new Participants(String.valueOf(c.userId()),String.valueOf(peer),ownership);
+        });
     }
 
     public record Participants(String userId, String agentId, ffdd.opsconsole.content.application.SupportOwnershipService ownership) {
@@ -75,7 +80,7 @@ public class ConversationSocketAccess {
     public Set<String> presenceKeys(Authentication auth, String audience) {
         if (audience.equals("USER")) return Set.of("USER:" + auth.getName());
         if (!has(auth, "service_m3_write")) return Set.of();
-        if (bindings.eligibleAgent(ownership.actorId(auth))!=1) return Set.of();
+        if (bindings.eligibleAgent(ownership.actorId(auth))!=1 && !ownership.supervisor(ownership.actorId(auth))) return Set.of();
         Set<String> keys = new HashSet<>();
         keys.add("ADMIN:" + auth.getName());
         Object username = ((Map<?, ?>) auth.getDetails()).get("username");

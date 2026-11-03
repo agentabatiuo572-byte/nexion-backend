@@ -111,7 +111,7 @@ public class PurchasePaymentService {
             throw new BizException(422,"EXTERNAL_PAYMENT_CREDENTIAL_FORBIDDEN");
         ready(method);
         return tx(()->{
-            user(owner,true);Instant pricingAt=now();var pricing=pricing(owner,kind,payload,pricingAt);
+            user(owner,true);Instant pricingAt=now();var pricing=pricing(owner,kind,payload,pricingAt,false);
             if("ORDER_PAY".equals(kind))payload.put("orderNo",pricing.get("orderNo"));
             if(!activeIntents(owner,kind,json(payload),"").isEmpty())
                 throw new BizException(409,"PURCHASE_PAYMENT_EXISTING_INTENT_REQUIRED");
@@ -131,6 +131,7 @@ public class PurchasePaymentService {
                     "roundingAdjustmentUsdt",subtotal.subtract(new BigDecimal(text(pricing.get("businessAmountUsdt")))).setScale(6,RoundingMode.UNNECESSARY).toPlainString(),"channelFeeRatePct",rate.toPlainString(),"channelFeeFixed",fixed.toPlainString(),
                     "channelFeeUsdt",fee.toPlainString(),"networkConfirmFeeUsdt",network.toPlainString(),"totalUsdt",total.toPlainString(),
                     "feePolicyVersion",current.get("version"),"paymentFeesConfigured",true,"pricingAsOf",pricingAt.toString(),"expiresAt",expires.toString(),"deadlineAt",deadline.toString(),"confirmationGraceEndsAt",graceEnd(method,deadline).toString(),"currency","HDPAY_BANK".equals(method)?"VND":"USDT");
+            if("TRIAL_CONVERT".equals(kind))quote.put("trialOffsetBasis","ACCRUED");
             if("HDPAY_BANK".equals(method)){
                 var config=fx.findFxQuoteConfig();if(config==null)throw new BizException(503,"FX_QUOTE_UNAVAILABLE");
                 BigDecimal quoted=VietnamPaymentPolicy.quoteRate(new BigDecimal(text(config.get("baseRateVndPerUsdt"))),new BigDecimal(text(config.get("buySpreadPct"))));
@@ -176,7 +177,7 @@ public class PurchasePaymentService {
         String key="PAYMENT_TIMEOUT".equals(status)&&!orderNo.isBlank()?"ORDER:"+orderNo:"INTENT:"+text(row.get("intent_no"));
         db.write("INSERT IGNORE INTO nx_purchase_payment_result(notification_key,intent_no,outcome,user_id,order_no) VALUES(?,?,?,?,?)",key,row.get("intent_no"),status,row.get("user_id"),orderNo);
     }
-    private Map<String,Object> pricing(long owner,String kind,Map<String,Object> payload,Instant pricingAt){
+    private Map<String,Object> pricing(long owner,String kind,Map<String,Object> payload,Instant pricingAt,boolean legacyTrialQuote){
         switch(kind){
             case "ORDER_PAY":{
                 var order=db.one("SELECT * FROM nx_order WHERE order_no=? AND user_id=? AND is_deleted=0 FOR UPDATE",text(payload.get("orderNo")),owner);
@@ -201,8 +202,13 @@ public class PurchasePaymentService {
                 return values("businessAmountUsdt",q.payableUsdt().toPlainString(),"subtotalUsdt",money(q.payableUsdt()).toPlainString(),"targetProductId",q.targetProductId(),"source",source);
             }
             case "TRIAL_CONVERT":{
-                var q=require(trials.externalPaymentPricing(owner,pricingAt));
+                var q=require(trials.externalPaymentPricing(owner,pricingAt,legacyTrialQuote));
                 if(payload.get("quoteVersion")!=null&&!text(payload.get("quoteVersion")).equals(text(q.get("quoteVersion"))))throw new BizException(409,"TRIAL_QUOTE_CHANGED");
+                if(!legacyTrialQuote){
+                    String expected=text(payload.get("expectedAmountUsdt"));
+                    if(!expected.matches("[0-9]{1,7}(\\.[0-9]{1,2})?")||new BigDecimal(expected).compareTo(new BigDecimal("1000000"))>0)throw new BizException(409,"TRIAL_AMOUNT_INVALID");
+                    if(money(q.get("amountUsdt")).compareTo(new BigDecimal(expected))>0)throw new BizException(409,"TRIAL_AMOUNT_MISMATCH");
+                }
                 return values("businessAmountUsdt",text(q.get("amountUsdt")),"subtotalUsdt",money(q.get("amountUsdt")).toPlainString(),"quoteVersion",q.get("quoteVersion"),"productNo",payload.get("productNo"),"trial",q);
             }
             default:throw new BizException(422,"PURCHASE_PAYMENT_KIND_INVALID");
@@ -235,7 +241,8 @@ public class PurchasePaymentService {
             var feeVersion=db.one("SELECT version FROM nx_purchase_payment_policy WHERE id=1 FOR SHARE");
             if(feeVersion==null||number(feeVersion.get("version"))!=number(parse(quote.get("quote_json")).get("feePolicyVersion")))
                 throw new BizException(409,"PURCHASE_PAYMENT_FEE_POLICY_CHANGED");
-            if(!hash(pricing(owner,text(quote.get("kind")),parse(quote.get("payload_json")),Instant.parse(text(parse(quote.get("quote_json")).get("pricingAsOf"))))).equals(quote.get("pricing_hash")))throw new BizException(409,"PURCHASE_PAYMENT_PRICING_CHANGED");
+            var frozenQuote=parse(quote.get("quote_json"));
+            if(!hash(pricing(owner,text(quote.get("kind")),parse(quote.get("payload_json")),Instant.parse(text(frozenQuote.get("pricingAsOf"))),!frozenQuote.containsKey("trialOffsetBasis"))).equals(quote.get("pricing_hash")))throw new BizException(409,"PURCHASE_PAYMENT_PRICING_CHANGED");
             ready(text(quote.get("payment_method")));
             if(!activeIntents(owner,quote.get("kind"),text(quote.get("payload_json")),"").isEmpty())
                 throw new BizException(409,"PURCHASE_PAYMENT_EXISTING_INTENT_REQUIRED");
@@ -466,11 +473,13 @@ public class PurchasePaymentService {
             long owner=number(intent.get("user_id"));String kind=text(intent.get("kind"));var payload=parse(intent.get("payload_json"));
             if("ORDER_PAY".equals(kind))orders.lockDirectPaymentOrderParticipants(text(payload.get("orderNo")));
             user(owner,true);var quote=parse(intent.get("quote_json"));
-            if(!hash(pricing(owner,kind,payload,Instant.parse(text(quote.get("pricingAsOf"))))).equals(intent.get("pricing_hash")))throw new BizException(409,"PURCHASE_PAYMENT_PRICING_CHANGED");
-            var result=VerifiedPurchasePayment.settle(owner,text(intent.get("payment_method")),no,money(quote.get("subtotalUsdt")),Instant.parse(text(quote.get("pricingAsOf"))),intent.get("paid_at")==null?instant(intent.get("confirmed_at")):instant(intent.get("paid_at")),()->fulfil(owner,kind,payload,no));
+            boolean legacyTrialQuote=!quote.containsKey("trialOffsetBasis");
+            if(!hash(pricing(owner,kind,payload,Instant.parse(text(quote.get("pricingAsOf"))),legacyTrialQuote)).equals(intent.get("pricing_hash")))throw new BizException(409,"PURCHASE_PAYMENT_PRICING_CHANGED");
+            var result=VerifiedPurchasePayment.settle(owner,text(intent.get("payment_method")),no,money(quote.get("subtotalUsdt")),Instant.parse(text(quote.get("pricingAsOf"))),intent.get("paid_at")==null?instant(intent.get("confirmed_at")):instant(intent.get("paid_at")),()->fulfil(owner,kind,payload,no,legacyTrialQuote));
             Object receipt=require(result);
             Map<String,Object> canonical=jsonMapper.convertValue(receipt,new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>(){});
             canonical.put("walletDebitUsdt","0.00");canonical.put("amountUsdt",quote.get("businessAmountUsdt"));
+            canonical.put("paidTotalUsdt",quote.get("totalUsdt"));
             canonical.put("paymentSubtotalUsdt",quote.get("subtotalUsdt"));canonical.put("roundingAdjustmentUsdt",quote.get("roundingAdjustmentUsdt"));
             canonical.put("paymentMethod",intent.get("payment_method"));canonical.put("paymentRail",intent.get("payment_method"));
             String orderNo=text(canonical.get("orderNo"));
@@ -513,13 +522,13 @@ public class PurchasePaymentService {
             return trades.size()==1&&amount.compareTo(new BigDecimal(text(parse(intent.get("quote_json")).get("totalUsdt"))))==0;
         }catch(RuntimeException unavailable){return false;}
     }
-    private ApiResult<?> fulfil(long owner,String kind,Map<String,Object> payload,String no){
+    private ApiResult<?> fulfil(long owner,String kind,Map<String,Object> payload,String no,boolean legacyTrialQuote){
         return switch(kind){
             case "ORDER_PAY"->orders.settleVerifiedExternal(owner,text(payload.get("orderNo")));
             case "TRADE_IN"->tradeins.settleVerifiedExternal(owner,"TRADE_IN",no,jsonMapper.convertValue(payload,AppTradeinSubmitRequest.class),null,null);
             case "CAPACITY_REPLACE"->tradeins.settleVerifiedExternal(owner,"CAPACITY_REPLACE",no,null,jsonMapper.convertValue(payload,AppCapacityReplaceSubmitRequest.class),null);
             case "CAPACITY_KEEP"->tradeins.settleVerifiedExternal(owner,"CAPACITY_KEEP",no,null,null,jsonMapper.convertValue(payload,AppCapacityKeepSubmitRequest.class));
-            case "TRIAL_CONVERT"->trials.settleVerifiedExternal(owner,text(payload.get("productNo")),new BigDecimal(text(payload.get("expectedAmountUsdt"))),text(payload.get("quoteVersion")));
+            case "TRIAL_CONVERT"->trials.settleVerifiedExternal(owner,text(payload.get("productNo")),new BigDecimal(text(payload.get("expectedAmountUsdt"))),text(payload.get("quoteVersion")),legacyTrialQuote);
             default->throw new BizException(422,"PURCHASE_PAYMENT_KIND_INVALID");
         };
     }
@@ -568,7 +577,11 @@ public class PurchasePaymentService {
         if(row.get("address")!=null&&(admin||now().isBefore(paymentDeadline(row))))result.put("address",row.get("address"));
         result.put("paymentAllowed","AWAITING_PAYMENT".equals(row.get("status"))&&now().isBefore(paymentDeadline(row)));
         result.put("fulfilmentStatus",row.get("receipt_json")==null?"NOT_DELIVERED":"DELIVERED");
-        if(row.get("receipt_json")!=null)result.put("receipt",parse(row.get("receipt_json")));
+        if(row.get("receipt_json")!=null){
+            var receipt=parse(row.get("receipt_json"));
+            receipt.put("paidTotalUsdt",result.get("totalUsdt"));
+            result.put("receipt",receipt);
+        }
         result.put("reconciliationStatus",row.get("reconciliation_status"));
         if(admin)result.putAll(values("userId",text(row.get("user_id")),"request",parse(row.get("payload_json")),"providerReference",row.get("provider_reference"),
                 "providerActualFeeUsdt",row.get("provider_actual_fee_usdt")==null?null:new BigDecimal(text(row.get("provider_actual_fee_usdt"))).toPlainString(),

@@ -171,7 +171,11 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         boolean businessCalendarRead = HttpMethod.GET.matches(request.getMethod())
                 && "/api/admin/platform/business-calendar".equals(path);
         boolean selfAvatarRequest = isSelfAvatarRequest(path, request.getMethod());
-        if ((reasonPolicyRead || businessCalendarRead || selfAvatarRequest || "/api/admin/auth/activity".equals(path))
+        boolean selfInviteRequest = path.equals("/api/admin/content/support-agents/self/invite-code")
+                && (HttpMethod.GET.matches(request.getMethod()) || HttpMethod.POST.matches(request.getMethod()));
+        boolean supportCommandRead = HttpMethod.GET.matches(request.getMethod())
+                && pathMatcher.match("/api/admin/content/support-workbench/commands/*",path);
+        if ((reasonPolicyRead || businessCalendarRead || selfAvatarRequest || selfInviteRequest || supportCommandRead || "/api/admin/auth/activity".equals(path))
                 && !isTrustedAuthenticatedAdmin(authentication)) {
             auditDenial(request, authentication, "ADMIN_SUBJECT_REQUIRED", null);
             reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_SUBJECT_REQUIRED");
@@ -182,7 +186,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_PASSWORD_CHANGE_REQUIRED");
             return;
         }
-        if (reasonPolicyRead || businessCalendarRead || selfAvatarRequest) {
+        if (reasonPolicyRead || businessCalendarRead || selfAvatarRequest || selfInviteRequest || supportCommandRead) {
             filterChain.doFilter(request, response);
             return;
         }

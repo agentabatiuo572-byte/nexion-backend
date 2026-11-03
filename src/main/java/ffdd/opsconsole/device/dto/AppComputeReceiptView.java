@@ -34,13 +34,16 @@ public record AppComputeReceiptView(
         LocalDateTime settledAt,
         String displayReceiptNo,
         String receiptHash) {
+    @com.fasterxml.jackson.annotation.JsonProperty("postingTimeVerified")
+    public boolean postingTimeVerified() { return settledAt != null; }
+
     public AppComputeReceiptView(String receiptNo,String taskNo,Long deviceId,String deviceInstanceNo,
             String deviceName,String deviceType,String deviceGpu,Integer vramTotalGb,String taskId,String taskName,
             String taskClass,String model,String client,BigDecimal rewardUsdt,BigDecimal rewardNex,String earningStatus,
             String proofHash,LocalDateTime startedAt,LocalDateTime completedAt,Integer durationSec,String source,
-            String sourceEnvironment,String runId,boolean serverCanonical,String displayReceiptNo) {
+            String sourceEnvironment,String runId,boolean serverCanonical,LocalDateTime settledAt,String displayReceiptNo) {
         this(receiptNo,taskNo,deviceId,deviceInstanceNo,deviceName,deviceType,deviceGpu,vramTotalGb,taskId,taskName,
                 taskClass,model,client,rewardUsdt,rewardNex,earningStatus,proofHash,startedAt,completedAt,durationSec,
-                source,sourceEnvironment,runId,serverCanonical,"MODEL","MODEL_EXECUTION",true,completedAt,displayReceiptNo,null);
+                source,sourceEnvironment,runId,serverCanonical,"MODEL","MODEL_EXECUTION",true,settledAt,displayReceiptNo,null);
     }
 }

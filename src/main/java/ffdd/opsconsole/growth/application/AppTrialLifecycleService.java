@@ -167,8 +167,8 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_COOLDOWN_ACTIVE");
         }
         int days = positiveInt(policy, "trialDays", 3);
-        BigDecimal offsetCap = decimal(policy, "trialOffsetCapUSD",
-                policy.getOrDefault("discountCapUSD", "50"));
+        String configuredCap = policy.get("trialOffsetCapUSD");
+        BigDecimal offsetCap = StringUtils.hasText(configuredCap) ? new BigDecimal(configuredCap) : null;
         String productCode = trialProductCode(policy);
         if (productCode == null) {
             return ApiResult.fail(409, "TRIAL_PRODUCT_CONFIG_INVALID");
@@ -207,7 +207,7 @@ public class AppTrialLifecycleService {
                 + ",dailyUsdtSource=" + (productDailyUsdt != null ? "nx_product.estimated_daily_usdt" : "policy.shadowDailyUSD")
                 + ",dailyNexSource=" + (productDailyNex != null ? "nx_product.daily_nex" : "policy.shadowDailyNEX")
                 + ",dailyUsdt=" + dailyUsdt + ",dailyNex=" + dailyNex
-                + ",offsetCapUsdt=" + offsetCap + ",priceUsdt=" + price
+                + ",offsetCapUsdt=" + (offsetCap == null ? "UNLIMITED" : offsetCap) + ",priceUsdt=" + price
                 + ",seatsLeftTodayBefore=" + seatsBeforeClaim + ",seatsLeftTodayAfter=" + seatsAfterClaim;
         int changed = existing == null
                 ? mapper.insertTrial(userId, claimNo, idempotencyKey, paymentMethodId, normalizedDevice,
@@ -320,28 +320,40 @@ public class AppTrialLifecycleService {
                     testCloudAdmission.lock();
                     requireUser(userId);
                     return once("TRIAL_CONVERT:PRODUCTION",userId,idempotencyKey,request,
-                            () -> convertOnce(userId,normalized,expectedAmountUsdt,confirmedQuote));
+                            () -> convertOnce(userId,normalized,expectedAmountUsdt,confirmedQuote,false));
                 });
     }
 
     @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY,rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> settleVerifiedExternal(Long owner,String product,BigDecimal expected,String version) {
+        return settleVerifiedExternal(owner,product,expected,version,false);
+    }
+    @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY,rollbackFor=Exception.class)
+    public ApiResult<Map<String,Object>> settleVerifiedExternal(Long owner,String product,BigDecimal expected,String version,boolean legacyQuote) {
         if (!VerifiedPurchasePayment.active()) throw new BizException(403,"PURCHASE_PAYMENT_SCOPE_REQUIRED");
         testCloudAdmission.lock();
-        requireUser(owner); return convertOnce(owner,product,expected,version);
+        requireUser(owner); return convertOnce(owner,product,expected,StringUtils.hasText(version)?version:null,legacyQuote);
     }
     @Transactional(readOnly=true)
     public ApiResult<Map<String,Object>> externalPaymentPricing(Long owner,Instant pricingInstant) {
+        return externalPaymentPricing(owner,pricingInstant,false);
+    }
+    @Transactional(readOnly=true)
+    public ApiResult<Map<String,Object>> externalPaymentPricing(Long owner,Instant pricingInstant,boolean legacyQuote) {
         if(owner==null||invalidUser(activeUser(owner,false)))return ApiResult.fail(404,"USER_NOT_FOUND");
         TrialRow row=mapper.trial(owner);
         if(row==null||!active(row.status()))return ApiResult.fail(409,"TRIAL_NOT_CONVERTIBLE");
-        var frozen=quoteView(quote(row,policyMap(),LocalDateTime.ofInstant(pricingInstant,BUSINESS_ZONE)),row.priceUsdt());
-        frozen.put("sourceVersion",row.version());frozen.put("claimNo",row.claimNo());
+        LocalDateTime pricingAt=LocalDateTime.ofInstant(pricingInstant,BUSINESS_ZONE);
+        var frozen=quoteView(quote(row,policyMap(),pricingAt,legacyQuote),row.priceUsdt());
+        // Entering grace is the single automatic revision between the original term and grace.
+        long pricingVersion="GRACE".equals(normalize(row.status())) && pricingAt.isBefore(row.expiresAt())
+                ? row.version()-1 : row.version();
+        frozen.put("sourceVersion",pricingVersion);frozen.put("claimNo",row.claimNo());
         return ApiResult.ok(frozen);
     }
 
     private ApiResult<Map<String, Object>> convertOnce(
-            Long userId, String productNo, BigDecimal expectedAmountUsdt, String confirmedQuote) {
+            Long userId, String productNo, BigDecimal expectedAmountUsdt, String confirmedQuote, boolean legacyQuote) {
         if (!trialGateEnabled()) return ApiResult.fail(409, "TRIAL_KILL_SWITCH_DISABLED");
         if (!productNo.matches("[A-Za-z0-9._-]{2,64}")) return ApiResult.fail(422, "TRIAL_PRODUCT_REQUIRED");
         if (!validExpectedAmount(expectedAmountUsdt)) {
@@ -385,7 +397,7 @@ public class AppTrialLifecycleService {
             throw new BizException(409, "TRIAL_PRICE_SNAPSHOT_INVALID");
         }
         Quote quote = quote(row, policy, VerifiedPurchasePayment.active()
-                ? LocalDateTime.ofInstant(VerifiedPurchasePayment.pricingInstant(),BUSINESS_ZONE) : now);
+                ? LocalDateTime.ofInstant(VerifiedPurchasePayment.pricingInstant(),BUSINESS_ZONE) : now, legacyQuote);
         Settlement settlement = quote.accrued();
         BigDecimal promoDiscount = quote.promoDiscountUsdt();
         BigDecimal discount = quote.discountUsdt();
@@ -453,7 +465,7 @@ public class AppTrialLifecycleService {
         }
         Long deviceId = mapper.deviceIdByInstanceNo(instanceNo);
         String paymentRail = VerifiedPurchasePayment.active() ? VerifiedPurchasePayment.method() : "UVEL_USDT_WALLET";
-        String snapshot = settlement.snapshot("convert", paymentRail, product.productNo())
+        String snapshot = settlement.snapshot("convert", paymentRail, product.productNo(),quote.offsetUsdt(),quote.remainderUsdt())
                 + ",orderNo=" + orderNo + ",promoDiscountUsdt=" + promoDiscount
                 + ",totalDiscountUsdt=" + discount + ",amountUsdt=" + amount
                 + ",trialDailyUsdt=" + row.dailyUsdt() + ",trialDailyNex=" + row.dailyNex()
@@ -484,6 +496,7 @@ public class AppTrialLifecycleService {
                 linked("order_id", orderNo, "order_no", orderNo, "order_subtotal_usdt", amount, "amount_usdt", amount));
         record("H2_TRIAL_CONVERTED", row.claimNo(), userId, detail);
         if (!VerifiedPurchasePayment.active()) paymentAttribution.record(prepared);
+        if (!VerifiedPurchasePayment.active()) detail.put("paidTotalUsdt",amount.setScale(2,RoundingMode.HALF_UP).toPlainString());
         return ApiResult.ok(detail);
     }
 
@@ -534,7 +547,7 @@ public class AppTrialLifecycleService {
         days = days.min(maxDays);
         BigDecimal shadowUsdt = row.dailyUsdt().multiply(days).setScale(6, RoundingMode.DOWN);
         BigDecimal shadowNex = row.dailyNex().multiply(days).setScale(6, RoundingMode.DOWN);
-        BigDecimal offset = shadowUsdt.min(row.offsetCapUsdt()).setScale(6, RoundingMode.DOWN);
+        BigDecimal offset = row.offsetCapUsdt() == null ? shadowUsdt : shadowUsdt.min(row.offsetCapUsdt());
         BigDecimal remainder = shadowUsdt.subtract(offset).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
         BigDecimal discount = BigDecimal.ZERO;
         if (early) {
@@ -555,7 +568,7 @@ public class AppTrialLifecycleService {
      * early-conversion reward. Grace/extension never add days or the fixed discount. Claims without a
      * complete snapshot keep the accrued rule instead of inventing zero-valued rewards.
      */
-    private Quote quote(TrialRow row, Map<String, String> policy, LocalDateTime now) {
+    private Quote quote(TrialRow row, Map<String, String> policy, LocalDateTime now, boolean legacyQuote) {
         Settlement accrued = settlement(row, policy, false, now);
         BigDecimal configured = earlyPurchaseDiscount(policy);
         boolean early = configured.signum() > 0 && fullTermSnapshot(row) && inOriginalTerm(row, now);
@@ -566,10 +579,13 @@ public class AppTrialLifecycleService {
             settledUsdt = row.dailyUsdt().multiply(days).setScale(6, RoundingMode.DOWN).max(settledUsdt);
             settledNex = row.dailyNex().multiply(days).setScale(6, RoundingMode.DOWN).max(settledNex);
         }
-        BigDecimal offset = settledUsdt.min(row.offsetCapUsdt()).setScale(6, RoundingMode.DOWN);
-        BigDecimal remainder = settledUsdt.subtract(offset).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
         BigDecimal subtotal = row.priceUsdt();
         BigDecimal promo = conversionPromoDiscount(subtotal, policy);
+        // Previously issued external payment quotes retain the exact discount and reward they froze.
+        BigDecimal offset = legacyQuote && row.offsetCapUsdt()!=null ? settledUsdt.min(row.offsetCapUsdt()) :
+                accrued.offsetUsdt().min(subtotal.subtract(promo).max(BigDecimal.ZERO));
+        offset = offset.setScale(6, RoundingMode.DOWN);
+        BigDecimal remainder = settledUsdt.subtract(offset).setScale(6, RoundingMode.DOWN);
         BigDecimal baseDiscount = promo.add(offset).min(subtotal).setScale(6, RoundingMode.DOWN);
         BigDecimal base = subtotal.subtract(baseDiscount).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
         // Bounded by what is left to pay: never a negative price, never paid out as cash.
@@ -577,11 +593,15 @@ public class AppTrialLifecycleService {
                 : BigDecimal.ZERO.setScale(6);
         BigDecimal amount = base.subtract(earlyDiscount).setScale(6, RoundingMode.DOWN);
         String policyName = early ? FULL_TERM_POLICY : ACCRUED_POLICY;
-        // The early quote is constant for the whole original term, so its version is stable across
-        // reads; the accrued quote moves every second and is versioned by its rule only.
-        String version = early ? FULL_TERM_POLICY + ":" + sha256(String.join("|", row.claimNo(),
-                settledUsdt.toPlainString(), settledNex.toPlainString(), promo.toPlainString(),
-                earlyDiscount.toPlainString(), amount.toPlainString())).substring(0, 16) : ACCRUED_POLICY;
+        // Confirm the claim and pricing rule. Accrual alone can only improve the confirmed price.
+        String version = policyName;
+        if (early) {
+            String basis = legacyQuote ? String.join("|",row.claimNo(),settledUsdt.toPlainString(),settledNex.toPlainString(),
+                    promo.toPlainString(),earlyDiscount.toPlainString(),amount.toPlainString())
+                    : String.join("|","ACCRUED_OFFSET",row.claimNo(),settledUsdt.toPlainString(),settledNex.toPlainString(),
+                    promo.toPlainString(),configured.toPlainString(),String.valueOf(row.offsetCapUsdt()));
+            version += ":" + sha256(basis).substring(0,16);
+        }
         return new Quote(accrued, policyName, version, early, settledUsdt, settledNex,
                 settledUsdt.subtract(accrued.shadowUsdt()), settledNex.subtract(accrued.shadowNex()),
                 offset, remainder, promo, configured, earlyDiscount, baseDiscount.add(earlyDiscount), amount,
@@ -596,14 +616,14 @@ public class AppTrialLifecycleService {
     private boolean fullTermSnapshot(TrialRow row) {
         return row.durationDays() != null && row.durationDays() > 0
                 && positiveOrNull(row.dailyUsdt()) != null && positiveOrNull(row.dailyNex()) != null
-                && row.offsetCapUsdt() != null && row.offsetCapUsdt().signum() >= 0
+                && (row.offsetCapUsdt() == null || row.offsetCapUsdt().signum() >= 0)
                 && row.priceUsdt() != null && row.priceUsdt().signum() > 0
                 && row.claimedAt() != null && row.expiresAt() != null;
     }
 
     /** Server time, not the scheduler-advanced status, decides whether the original term is still running. */
     private boolean inOriginalTerm(TrialRow row, LocalDateTime now) {
-        return List.of("CLAIMED", "ACTIVE").contains(normalize(row.status()))
+        return List.of("CLAIMED", "ACTIVE", "GRACE").contains(normalize(row.status()))
                 && row.expiresAt() != null && now.isBefore(row.expiresAt());
     }
 
@@ -710,8 +730,13 @@ public class AppTrialLifecycleService {
         result.put("offsetUsdt", preview == null ? BigDecimal.ZERO : preview.offsetUsdt());
         result.put("remainderUsdt", preview == null ? safe(row.remainderUsdt()) : preview.remainderUsdt());
         result.put("priceUsdt", row.priceUsdt());
-        if (preview != null && row.priceUsdt() != null && row.priceUsdt().signum() > 0 && row.offsetCapUsdt() != null) {
-            result.put("quote", quoteView(quote(row, policy, now), row.priceUsdt()));
+        if (preview != null && row.priceUsdt() != null && row.priceUsdt().signum() > 0) {
+            Quote current = quote(row, policy, now, false);
+            Map<String,Object> purchaseQuote = quoteView(current, row.priceUsdt());
+            purchaseQuote.put("trialOffsetCapUSD",row.offsetCapUsdt()==null?null:row.offsetCapUsdt().stripTrailingZeros().toPlainString());
+            result.put("offsetUsdt",current.offsetUsdt());
+            result.put("remainderUsdt",current.remainderUsdt());
+            result.put("quote",purchaseQuote);
         }
         if ("REDEEMED".equals(effectiveState)) {
             // The purchase order may have been refunded since; the App must not keep saying "purchased".
@@ -737,7 +762,7 @@ public class AppTrialLifecycleService {
                 frozenProduct ? row.dailyNex() : catalogProduct == null ? null : catalogProduct.dailyNex());
         if (frozenProduct) {
             config.put("trialDays", Integer.toString(Math.max(1, row.durationDays() == null ? 1 : row.durationDays())));
-            config.put("trialOffsetCapUSD", row.offsetCapUsdt().stripTrailingZeros().toPlainString());
+            config.put("trialOffsetCapUSD", row.offsetCapUsdt()==null?null:row.offsetCapUsdt().stripTrailingZeros().toPlainString());
         }
         result.put("config", config);
         return result;
@@ -803,7 +828,7 @@ public class AppTrialLifecycleService {
         Map<String, Object> result = new LinkedHashMap<>();
         Map<String, String> defaults = linkedString(
                 "trialDays", "3", "graceDays", "7", "extensionDays", "3",
-                "discountRate", "0.15", "discountCapUSD", "20", "trialOffsetCapUSD", "50",
+                "discountRate", "0.15", "discountCapUSD", "20",
                 "autoChargeAtEnd", "false", "highQualityThresholdUSD", "100",
                 "trialProductId", CANONICAL_TRIAL_PRODUCT_ID, "trialPriceUSD", "1299",
                 // 🔴 试用收益口径的兜底值不再是「像真数字」的 38.52/65(zentao #78):
@@ -821,6 +846,8 @@ public class AppTrialLifecycleService {
                 result.put(key, policy.getOrDefault(key, fallback));
             }
         });
+        String offsetCap = policy.get("trialOffsetCapUSD");
+        result.put("trialOffsetCapUSD",StringUtils.hasText(offsetCap)?offsetCap:null);
         // H2 emergency auto-push stop lives outside the regular policy table.
         // It suppresses only unsolicited prompts, never the manual trial lifecycle.
         String killed = mapper.autoPushKilled();
@@ -1083,10 +1110,10 @@ public class AppTrialLifecycleService {
     private record Settlement(
             BigDecimal shadowUsdt, BigDecimal shadowNex, BigDecimal offsetUsdt,
             BigDecimal remainderUsdt, BigDecimal discountUsdt, BigDecimal chargeUsdt) {
-        String snapshot(String trigger, String paymentRail, String productCode) {
+        String snapshot(String trigger, String paymentRail, String productCode,BigDecimal appliedOffset,BigDecimal creditedRemainder) {
             return "trigger=" + trigger + ",paymentRail=" + paymentRail + ",productCode=" + productCode
-                    + ",shadowUsdt=" + shadowUsdt + ",shadowNex=" + shadowNex + ",offsetUsdt=" + offsetUsdt
-                    + ",remainderUsdt=" + remainderUsdt + ",discountUsdt=" + discountUsdt
+                    + ",shadowUsdt=" + shadowUsdt + ",shadowNex=" + shadowNex + ",offsetUsdt=" + appliedOffset
+                    + ",remainderUsdt=" + creditedRemainder + ",discountUsdt=" + discountUsdt
                     + ",chargeUsdt=" + chargeUsdt;
         }
     }

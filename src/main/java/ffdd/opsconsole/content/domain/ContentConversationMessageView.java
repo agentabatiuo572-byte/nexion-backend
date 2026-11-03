@@ -15,7 +15,17 @@ public record ContentConversationMessageView(
         Long assignmentId,String kind,String intent,String clientMessageId,String attachmentId,String authorConfidence,String committedAt,
         String skuId,String skuName,@com.fasterxml.jackson.annotation.JsonIgnore String linkTargetJson,
         @com.fasterxml.jackson.annotation.JsonIgnore String senderAvatarAssetId,@com.fasterxml.jackson.annotation.JsonIgnore Long senderAvatarVersion,
-        String targetAvailability) {
+        String targetAvailability,
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) String senderRole,
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) String origin) {
+    public ContentConversationMessageView(Long id,Long conversationId,String conversationNo,Long senderId,String senderType,
+            String senderName,String content,String receiptStatus,LocalDateTime createdAt,Long assignmentId,String kind,String intent,
+            String clientMessageId,String attachmentId,String authorConfidence,String committedAt,String skuId,String skuName,
+            String linkTargetJson,String senderAvatarAssetId,Long senderAvatarVersion,String targetAvailability) {
+        this(id,conversationId,conversationNo,senderId,senderType,senderName,content,receiptStatus,createdAt,assignmentId,
+             kind,intent,clientMessageId,attachmentId,authorConfidence,committedAt,skuId,skuName,linkTargetJson,
+             senderAvatarAssetId,senderAvatarVersion,targetAvailability,null,null);
+    }
     public ContentConversationMessageView(Long id,Long conversationId,String conversationNo,Long senderId,String senderType,
             String senderName,String content,String receiptStatus,LocalDateTime createdAt,Long assignmentId,String kind,String intent,
             String clientMessageId,String attachmentId,String authorConfidence,String committedAt) {

@@ -43,15 +43,22 @@ public class PromotionPublicService {
         Instant now=Instant.now();
         String state=effectiveLifecycle(row.get("status"),contract,now);
         String eligibility=user==null?"SIGN_IN_REQUIRED":"UNKNOWN";
+        boolean repurchase="REPURCHASE".equals(contract.get("template"));
+        Map<String,Object> audience=map(contract.get("buyerAudience"));
+        Map<String,Object> interval=repurchase?map(audience.get("lastValidPurchaseAge")):null;
+        String lastValidPurchaseAt=null;
         if(user!=null){
             Map<String,Object> policies=parse(row.get("resolved_policies_json"));
-            var account=evaluator.account(user,map(contract.get("buyerAudience")),policies,null);
+            var account=evaluator.account(user,audience,policies,null);
             Map<String,Object> first=PromotionPolicyResolver.content(policies,"firstPurchase");
             boolean restores=first!=null&&Boolean.TRUE.equals(first.get("restoreAfterRefund"));
-            boolean matches=PromotionRules.eligible(map(contract.get("buyerAudience")),account,now,restores);
+            boolean matches=PromotionRules.eligible(audience,account,now,restores);
             if(Set.of("FIRST_PURCHASE","DIRECT_REFERRAL").contains(text(contract.get("template"))))
                 matches=matches&&first!=null&&(restores?account.firstPurchasePaid():account.everPaid())==0;
-            if("REPURCHASE".equals(contract.get("template")))matches=matches&&account.validPaid()>0;
+            if(repurchase){
+                matches=matches&&account.validPaid()>0;
+                if(account.lastValidPaid()!=null)lastValidPurchaseAt=account.lastValidPaid().toString();
+            }
             if("DIRECT_REFERRAL".equals(contract.get("template")))matches=matches&&account.sponsorId()!=null&&account.sponsorId()!=user;
             eligibility="ACTIVE".equals(state)&&matches?"ESTIMATE_ELIGIBLE":"INELIGIBLE";
         }
@@ -70,7 +77,9 @@ public class PromotionPublicService {
         return values("activityId",row.get("activity_id"),"version",number(row.get("active_version")),"template",contract.get("template"),"state",state,
             "startsAt",contract.get("startsAt"),"endsAt",contract.get("endsAt"),"serverTime",now.toString(),"title",contract.get("title"),"terms",contract.get("terms"),
             "placement",contract.get("placement"),"bannerImageUrl","ACTIVE".equals(state)?banners.issueUrl(text(row.get("activity_id")),number(row.get("active_version")),contract.get("bannerAssetId")):null,"target","STORE","productNos",publicRules.stream().map(r->r.get("productNo")).distinct().toList(),
-            "minimumClientCapabilities",contract.get("minimumClientCapabilities"),"eligibility",eligibility,"eligibilityMessage",null,"rewardRules",publicRules);
+            "minimumClientCapabilities",contract.get("minimumClientCapabilities"),"eligibility",eligibility,"eligibilityMessage",null,
+            "repurchaseWindow",repurchase?values("minDays",interval.get("minDays"),"maxDays",interval.get("maxDays")):null,
+            "lastValidPurchaseAt",lastValidPurchaseAt,"rewardRules",publicRules);
     }
     /** Only public benefits are projected; the supplied policy map is the original approved snapshot. */
     public static Map<String,Object> disclosure(PromotionMapper db,Map<String,Object> contract,Map<String,Object> policies,Map<String,Object> spec){

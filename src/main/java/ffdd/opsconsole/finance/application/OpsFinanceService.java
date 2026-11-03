@@ -104,7 +104,6 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private static final Set<String> D2_SORT_FIELDS = Set.of("createdAt", "amount", "riskScore", "status");
     private static final String WITHDRAW_KILLSWITCH_KEY = "killswitch.withdraw";
     private static final String WITHDRAW_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.withdraw";
-    private static final String WITHDRAW_DISCLOSURE_GATE_KEY = "disclosure.gate.withdraw";
     private static final String WITHDRAW_GEO_EMERGENCY_KEY = "emergency.geo.j4.block.required";
     private static final String WITHDRAW_GEO_ENDPOINT_KEY = "withdraw";
     private static final String D2_SCHEDULED_EXPIRY = "SCHEDULED_EXPIRY";
@@ -2256,9 +2255,6 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (!withdrawGateEnabled()) {
             return "WITHDRAWAL_KILL_SWITCH_DISABLED";
         }
-        if (withdrawDisclosureGateActive()) {
-            return "WITHDRAWAL_DISCLOSURE_REACK_REQUIRED";
-        }
         if (withdrawGeoEmergencyBlocked() || withdrawGeoEndpointBlocked(order)) {
             return "WITHDRAWAL_GEO_BLOCKED";
         }
@@ -2312,12 +2308,6 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         return ffdd.opsconsole.emergency.domain.KillSwitchState.enabled(
                 controlValue(WITHDRAW_KILLSWITCH_KEY),
                 controlValue(WITHDRAW_LEGACY_KILLSWITCH_KEY));
-    }
-
-    private boolean withdrawDisclosureGateActive() {
-        return controlValue(WITHDRAW_DISCLOSURE_GATE_KEY)
-                .map(this::parseDisclosureGateActive)
-                .orElse(false);
     }
 
     private boolean withdrawGeoEmergencyBlocked() {

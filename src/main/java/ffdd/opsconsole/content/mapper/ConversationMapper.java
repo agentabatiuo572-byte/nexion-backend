@@ -16,6 +16,9 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
     @Select("SELECT conversation_no FROM nx_conversation WHERE user_id=#{userId} AND owner_agent_id=#{ownerAgentId} AND is_deleted=0 AND conversation_type IN ('advisor','support') ORDER BY id DESC LIMIT 1 FOR UPDATE")
     String currentCustomerConversation(@Param("userId") Long userId, @Param("ownerAgentId") String ownerAgentId);
 
+    @Select("SELECT c.conversation_no FROM nx_conversation c WHERE c.user_id=#{customer} AND c.owner_agent_id IS NULL AND c.is_deleted=0 AND c.conversation_type='advisor' AND EXISTS(SELECT 1 FROM nx_conversation_message m WHERE m.conversation_no=c.conversation_no AND m.origin='WELCOME' AND m.sender_id IS NULL AND m.is_deleted=0) ORDER BY c.id DESC LIMIT 1 FOR UPDATE")
+    String unassignedWelcome(Long customer);
+
     @Select("SELECT owner_agent_id FROM nx_conversation WHERE conversation_no=#{conversationNo} AND is_deleted=0 FOR SHARE")
     String storedPeerAgentId(@Param("conversationNo") String conversationNo);
 
@@ -31,7 +34,7 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               AND c.conversation_type IN ('advisor','support') AND c.owner_agent_id IS NULL
               AND CAST(sa.agent_admin_id AS CHAR)=#{staffId}
               AND NOT EXISTS (SELECT 1 FROM nx_conversation_message m
-                WHERE m.conversation_no=c.conversation_no AND m.sender_type='agent')
+                WHERE m.conversation_no=c.conversation_no AND m.sender_type='agent' AND (m.origin IS NULL OR m.sender_id IS NOT NULL))
             """)
     int claimUnassignedPeer(@Param("conversationNo") String conversationNo, @Param("staffId") String staffId);
 
@@ -154,7 +157,7 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                   AND waiting.id>COALESCE(handled.through_message_id,0)) AS pendingReplySince,
               (SELECT MAX(human_message.created_at) FROM nx_conversation_message human_message
                 WHERE human_message.conversation_no=c.conversation_no AND human_message.is_deleted=0
-                  AND human_message.sender_type IN ('user','agent')) AS lastHumanMessageAt,
+                  AND human_message.sender_type IN ('user','agent') AND human_message.origin IS NULL) AS lastHumanMessageAt,
               (SELECT nickname_user.nickname FROM nx_user nickname_user WHERE nickname_user.id=c.user_id) AS customerNickname,
               (SELECT avatar_user.avatar_url FROM nx_user avatar_user WHERE avatar_user.id=c.user_id) AS customerAvatarKey
             FROM nx_conversation c
@@ -245,7 +248,7 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                 <if test='currentRead'>FOR SHARE</if>) AS pendingReplySince,
               (SELECT MAX(human_message.created_at) FROM nx_conversation_message human_message
                 WHERE human_message.conversation_no=c.conversation_no AND human_message.is_deleted=0
-                  AND human_message.sender_type IN ('user','agent')) AS lastHumanMessageAt,
+                  AND human_message.sender_type IN ('user','agent') AND human_message.origin IS NULL) AS lastHumanMessageAt,
               (SELECT nickname_user.nickname FROM nx_user nickname_user WHERE nickname_user.id=c.user_id) AS customerNickname,
               (SELECT avatar_user.avatar_url FROM nx_user avatar_user WHERE avatar_user.id=c.user_id) AS customerAvatarKey
             FROM nx_conversation c
@@ -314,7 +317,7 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                   AND waiting.id>COALESCE(handled.through_message_id,0)) AS pendingReplySince,
               (SELECT MAX(human_message.created_at) FROM nx_conversation_message human_message
                 WHERE human_message.conversation_no=c.conversation_no AND human_message.is_deleted=0
-                  AND human_message.sender_type IN ('user','agent')) AS lastHumanMessageAt,
+                  AND human_message.sender_type IN ('user','agent') AND human_message.origin IS NULL) AS lastHumanMessageAt,
               (SELECT nickname_user.nickname FROM nx_user nickname_user WHERE nickname_user.id=c.user_id) AS customerNickname,
               (SELECT avatar_user.avatar_url FROM nx_user avatar_user WHERE avatar_user.id=c.user_id) AS customerAvatarKey
             FROM nx_conversation c

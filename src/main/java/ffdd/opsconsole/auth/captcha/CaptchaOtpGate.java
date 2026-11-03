@@ -25,10 +25,12 @@ public class CaptchaOtpGate {
     private final Clock clock;
 
     public Decision checkAndConsume(CaptchaScene scene, String ticket, String clientAddress, int successfulSendsLast24h) {
+        return checkAndConsume(scene,ticket,clientAddress,successfulSendsLast24h,false);
+    }
+    public Decision checkAndConsume(CaptchaScene scene, String ticket, String clientAddress, int successfulSendsLast24h, boolean force) {
         RegistrationRiskCaptchaWindow.State window = RegistrationRiskCaptchaWindow.state(
                 configs.activeValue(RegistrationRiskCaptchaWindow.CONFIG_KEY).orElse(null), clock);
-        if (window.disabled()) return Decision.granted();
-        if (!required(scene, successfulSendsLast24h)) return Decision.granted();
+        if (!force && (window.disabled() || !required(scene, successfulSendsLast24h))) return Decision.granted();
         if (ticket == null || ticket.isBlank() || ticket.length() > 2048) return Decision.reject(428, "USER_CAPTCHA_REQUIRED");
         CaptchaTicketVerifier verifier = verifiers.stream().filter(value -> !(value instanceof HoldCaptchaTicketVerifier))
                 .filter(value -> value.supports(environment)).max(Comparator.comparingInt(CaptchaTicketVerifier::priority))

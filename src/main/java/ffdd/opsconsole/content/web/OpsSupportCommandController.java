@@ -21,22 +21,23 @@ public class OpsSupportCommandController {
     private final ffdd.opsconsole.content.application.SupportBindingRandomService random;
     private final ffdd.opsconsole.content.application.SupportBulkService bulk;
     private final ffdd.opsconsole.content.mapper.ConversationTimeoutPolicyMapper timeoutPolicy;
+    @org.springframework.beans.factory.annotation.Autowired private ffdd.opsconsole.content.application.SupportInviteCodeService invites;
     private static final List<String> SCOPES=List.of("SUPPORT_TRANSFER","SUPPORT_LEGACY_TRANSFER","SUPPORT_LEGACY_SINGLE","SUPPORT_RULES","SUPPORT_RANDOM",
-            "M3_MAINTENANCE","M3_CONVERSATION_INITIATE","M3_CONVERSATION_REPLY","M3_CONVERSATION_STATUS","M3_CONVERSATION_ARCHIVE",
+            "SUPPORT_WELCOME","M3_SESSION_END","M3_MAINTENANCE","M3_CONVERSATION_INITIATE","M3_CONVERSATION_REPLY","M3_CONVERSATION_STATUS","M3_CONVERSATION_ARCHIVE",
             "M3_CONVERSATION_ARCHIVE_BATCH","M3_CONVERSATION_TO_TICKET","M3_CUSTOMER_TAG_ADD","M3_CUSTOMER_TAG_REMOVE",
             "M3_CUSTOMER_NOTE_ADD","M3_CUSTOMER_NOTE_REMOVE","M2_SUPPORT_TICKET_CREATE","M2_SUPPORT_TICKET_REPLY","M2_SUPPORT_TICKET_ESCALATE",
             "M3_SUPPORT_BULK_CREATE","M3_SUPPORT_BULK_CANCEL","M3_SUPPORT_BULK_RETRY",
             "SUPPORT_GROUP_CREATE","SUPPORT_GROUP_RENAME","SUPPORT_GROUP_STATUS","SUPPORT_GROUP_OWNER",
-            "SUPPORT_GROUP_MEMBER","SUPPORT_GROUP_QUALIFICATION","SUPPORT_GROUP_ROUTE");
+            "SUPPORT_GROUP_MEMBER","SUPPORT_GROUP_QUALIFICATION","SUPPORT_GROUP_ROUTE","SUPPORT_INVITE_SELF","SUPPORT_INVITE_REVOKE");
 
     @GetMapping("/api/admin/content/support-workbench/commands/{key}")
-    @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read','platform_a1_read')")
+    @PreAuthorize("isAuthenticated()")
     @Transactional
     public ApiResult<Map<String,Object>> recover(@PathVariable String key) throws com.fasterxml.jackson.core.JsonProcessingException {
         if(key==null || key.isBlank() || key.length()>128) throw new BizException(422,"IDEMPOTENCY_KEY_INVALID");
         long actor=ownership.actorId();
         boolean supportRead=List.of("service_m1_read","service_m3_read").stream().anyMatch(SupportOwnershipService::hasAuthority);
-        List<String> scopes=new ArrayList<>(SCOPES.stream().filter(s->supportRead || s.equals("SUPPORT_GROUP_QUALIFICATION"))
+        List<String> scopes=new ArrayList<>(SCOPES.stream().filter(s->supportRead || s.equals("SUPPORT_INVITE_SELF") || (s.equals("SUPPORT_GROUP_QUALIFICATION") && SupportOwnershipService.hasAuthority("platform_a1_read")))
                 .map(s->s+":"+actor).toList());
         // Legacy timeout keys are global; only their existing configuration writers may recover them.
         if(supportRead && ownership.currentSuperAdmin() && !timeoutPolicy.timeoutManageGrant(actor).isEmpty())
@@ -54,6 +55,19 @@ public class OpsSupportCommandController {
         // Ticket workflows are retired; their historical receipts (M2_*, M3_CONVERSATION_TO_TICKET) stay listed in
         // SCOPES only so a lost response resolves to 410 instead of being replayed or reported as missing.
         if(receipt.getScope().contains("TICKET")) throw new BizException(410,"SUPPORT_TICKETS_RETIRED");
+        if(receipt.getScope().startsWith("SUPPORT_INVITE_")) {
+            boolean self=receipt.getScope().equals("SUPPORT_INVITE_SELF:"+actor);
+            invites.authorizeRecovery(self,key.trim());
+            if(!"SUCCEEDED".equals(receipt.getStatus())) return ApiResult.ok(Map.of("status",receipt.getStatus()));
+            return ApiResult.ok(Map.of("status","SUCCEEDED","resultType",self?"SUPPORT_INVITE_SELF":"SUPPORT_INVITE_REVOKE",
+                    "result",json.readTree(receipt.getResponseJson())));
+        }
+        if(receipt.getScope().startsWith("SUPPORT_WELCOME:")) {
+            if(!SupportOwnershipService.hasAuthority("service_m1_read")) throw new BizException(403,"SUPPORT_COMMAND_READ_FORBIDDEN");
+            ownership.requireSuperAdmin();
+            if(!"SUCCEEDED".equals(receipt.getStatus())) return ApiResult.ok(Map.of("status",receipt.getStatus()));
+            return ApiResult.ok(Map.of("status","SUCCEEDED","resultType","SUPPORT_WELCOME","result",json.readTree(receipt.getResponseJson())));
+        }
         if(receipt.getScope().startsWith("SUPPORT_GROUP_")) {
             if(key.length()>96)throw new BizException(422,"IDEMPOTENCY_KEY_INVALID");
             if(receipt.getScope().equals("SUPPORT_GROUP_QUALIFICATION:"+actor)) {

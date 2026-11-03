@@ -6,8 +6,13 @@ import java.math.BigDecimal;
 public record PublicSponsorPreviewView(
         String code,
         String sourceEnvironment,
+        String kind,
         Sponsor sponsor,
         Gift gift) {
+
+    public PublicSponsorPreviewView(String code, String sourceEnvironment, Sponsor sponsor, Gift gift) {
+        this(code, sourceEnvironment, "USER", sponsor, gift);
+    }
 
     public record Sponsor(String displayName, String vRank) {
     }

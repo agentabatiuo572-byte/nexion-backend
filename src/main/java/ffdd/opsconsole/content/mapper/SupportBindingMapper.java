@@ -169,6 +169,14 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
            AND scope_q.qualification_kind='SERVICE' AND scope_q.state='ENABLED' AND
         """;
     String ELIGIBLE_AGENT_FROM=ELIGIBLE_AGENT_BASE_FROM+SupportGroupMapper.UNIQUE_QUALIFICATION;
+    @Select("SELECT active_owner FROM nx_support_invite_code WHERE code=#{code} FOR SHARE")
+    Long currentCodeOwner(String code);
+    record Advisor(Long adminId, String name) {}
+    String INVITED_ADVISOR = "SELECT DISTINCT a.id adminId,COALESCE(NULLIF(a.nickname,''),a.username) name " + ELIGIBLE_AGENT_BASE_FROM + SupportGroupMapper.UNIQUE_QUALIFICATION_SNAPSHOT
+            + " AND EXISTS (SELECT 1 FROM nx_support_invite_code c WHERE c.code=#{code} AND c.active_owner=a.id)";
+    @Select("<script>" + INVITED_ADVISOR + "</script>")
+    Advisor advisorByCode(String code);
+
     @Select("<script>SELECT COUNT(DISTINCT a.id) " + ELIGIBLE_AGENT_FROM + " AND a.id=#{id} FOR SHARE</script>")
     int eligibleAgent(Long id);
     @Select("<script>SELECT COUNT(DISTINCT a.id) " + ELIGIBLE_AGENT_BASE_FROM + SupportGroupMapper.UNIQUE_QUALIFICATION_SNAPSHOT + " AND a.id=#{id}</script>")

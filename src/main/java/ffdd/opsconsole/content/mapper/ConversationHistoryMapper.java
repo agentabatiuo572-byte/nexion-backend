@@ -40,16 +40,17 @@ public interface ConversationHistoryMapper {
           msg.sender_id senderId,msg.sender_type senderType,
         """+ConversationMessageMapper.SENDER_NAME+"""
           ,msg.content,COALESCE(receipt.receipt_status,CASE WHEN msg.sender_type IN ('agent','user') THEN 'sent' ELSE NULL END) receiptStatus,
-          msg.created_at createdAt,h.assignment_id assignmentId,COALESCE(h.kind,'TEXT') kind,COALESCE(h.intent,'SERVICE') intent,
+          msg.created_at createdAt,h.assignment_id assignmentId,COALESCE(msg.support_kind,h.kind,'TEXT') kind,COALESCE(h.intent,'SERVICE') intent,
           h.client_message_id clientMessageId,h.attachment_id attachmentId,
-          CASE WHEN h.message_id IS NULL THEN 'UNKNOWN' ELSE 'VERIFIED' END authorConfidence,
+          CASE WHEN h.message_id IS NULL AND msg.origin IS NULL THEN 'UNKNOWN' ELSE 'VERIFIED' END authorConfidence,
           DATE_FORMAT(h.committed_at,'%Y-%m-%dT%H:%i:%s.%fZ') committedAt,
           h.sku_id skuId,h.sku_name skuName,h.link_target_json linkTargetJson,
-          CASE WHEN h.actor_type='ADMIN' AND h.actor_id=av.admin_id THEN av.avatar_asset_id END senderAvatarAssetId,
-          CASE WHEN h.actor_type='ADMIN' AND h.actor_id=av.admin_id THEN av.avatar_version END senderAvatarVersion,
+          CASE WHEN ((h.actor_type='ADMIN' AND h.actor_id=av.admin_id) OR (msg.origin='WELCOME' AND msg.sender_id=av.admin_id)) THEN av.avatar_asset_id END senderAvatarAssetId,
+          CASE WHEN ((h.actor_type='ADMIN' AND h.actor_id=av.admin_id) OR (msg.origin='WELCOME' AND msg.sender_id=av.admin_id)) THEN av.avatar_version END senderAvatarVersion,
         """+ConversationMessageMapper.TARGET_AVAILABILITY+"""
+          ,msg.sender_role senderRole,msg.origin origin
         FROM (
-          SELECT m.id,m.conversation_id,m.conversation_no,m.sender_id,m.sender_type,m.sender_name,m.content,m.created_at
+          SELECT m.id,m.conversation_id,m.conversation_no,m.sender_id,m.sender_type,m.sender_name,m.content,m.created_at,m.sender_role,m.support_kind,m.origin
           FROM nx_conversation c JOIN nx_conversation_message m ON m.conversation_no=c.conversation_no
           WHERE c.user_id=#{customerId} AND c.is_deleted=0 AND c.conversation_type IN ('advisor','support') AND m.is_deleted=0
           <if test='beforeId != null'>

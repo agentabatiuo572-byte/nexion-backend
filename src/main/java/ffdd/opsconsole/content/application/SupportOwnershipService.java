@@ -250,6 +250,31 @@ public class SupportOwnershipService {
         return assignment;
     }
 
+    /** Only human message/receipt paths allow a manager to speak in their own identity. */
+    public SupportAssignment requireMessageWriter(Long customer) {
+        lockCustomer(customer);
+        if(mapper.canonicalCustomer(customer)!=1) throw new BizException(404,"SUPPORT_CUSTOMER_NOT_FOUND");
+        Long actor=actorId();
+        lockAgent(actor);
+        if (!hasAuthority("service_m3_write") || mapper.writerGrant(actor).isEmpty())
+            throw new BizException(403,"SUPPORT_WRITE_FORBIDDEN");
+        SupportAssignment assignment=mapper.current(customer);
+        if (messageRole(actor,assignment)==null) throw new BizException(404,"SUPPORT_CUSTOMER_NOT_FOUND");
+        return assignment;
+    }
+
+    public String messageRole(Long actor,SupportAssignment assignment) {
+        if (assignment==null) return null;
+        if (actor.equals(assignment.agentAdminId()))
+            return mapper.eligibleAgent(actor)==1 ? "ADVISOR" : null;
+        ReadScope scope=currentCustomerScope(actor,assignment.customerId());
+        return scope==null ? null : switch(scope.mode()) {
+            case ALL -> "ADMIN";
+            case MANAGED -> "SUPERVISOR";
+            case PERSONAL -> null;
+        };
+    }
+
     /** Internal persisted-actor authorization; never derives permission from an ambient session. */
     public void requireSendingActor(Long actor) {
         if (!TransactionSynchronizationManager.isActualTransactionActive())

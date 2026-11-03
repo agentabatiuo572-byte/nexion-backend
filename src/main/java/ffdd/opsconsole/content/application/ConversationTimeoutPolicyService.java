@@ -63,7 +63,8 @@ public class ConversationTimeoutPolicyService {
         if (!before.version().equals(request.expectedVersion())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "M3_TIMEOUT_POLICY_STALE");
         }
-        if (before.warnMinutes().equals(warnMinutes)
+        int endMinutes = request.sessionEndMinutes() == null ? before.sessionEndMinutes() : request.sessionEndMinutes().intValue();
+        if (before.sessionEndMinutes().equals(endMinutes) && before.warnMinutes().equals(warnMinutes)
                 && before.closeMinutes().equals(closeMinutes)) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "M3_TIMEOUT_POLICY_UNCHANGED");
         }
@@ -72,6 +73,7 @@ public class ConversationTimeoutPolicyService {
         int updated = mapper.updatePolicy(
                 warnMinutes,
                 closeMinutes,
+                endMinutes,
                 request.expectedVersion(),
                 actor,
                 reason,
@@ -94,6 +96,8 @@ public class ConversationTimeoutPolicyService {
                         "beforeCloseMinutes", before.closeMinutes(),
                         "afterWarnMinutes", warnMinutes,
                         "afterCloseMinutes", closeMinutes,
+                        "beforeSessionEndMinutes", before.sessionEndMinutes(),
+                        "afterSessionEndMinutes", endMinutes,
                         "beforeVersion", before.version(),
                         "afterVersion", before.version() + 1,
                         "reason", reason))
@@ -115,6 +119,11 @@ public class ConversationTimeoutPolicyService {
                 || request.expectedVersion() < 1) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "M3_TIMEOUT_POLICY_REQUIRED");
         }
+        var endMinutes = request.sessionEndMinutes();
+        if (endMinutes != null && (!endMinutes.isNumber() || endMinutes.decimalValue().stripTrailingZeros().scale() > 0
+                || endMinutes.decimalValue().compareTo(java.math.BigDecimal.valueOf(2)) < 0
+                || endMinutes.decimalValue().compareTo(java.math.BigDecimal.valueOf(120)) > 0))
+            return ApiResult.fail(422,"SUPPORT_SESSION_END_MINUTES_INVALID");
         if (!request.hasIntegralMinutes()) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(),
                     "M3_TIMEOUT_MINUTES_INTEGER_REQUIRED");

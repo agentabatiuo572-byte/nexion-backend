@@ -352,7 +352,7 @@ public class SupportBulkService {
                     || Set.of("SUPPORT_ASSIGNMENT_CHANGED","SUPPORT_MAINTENANCE_STOPPED","SUPPORT_AGENT_UNAVAILABLE",
                         "SUPPORT_CUSTOMER_NOT_FOUND","SUPPORT_WRITE_FORBIDDEN","SUPPORT_PRODUCTION_PATH_FORBIDDEN",
                         "CONVERSATION_CLOSED","CONVERSATION_TRANSFERRED","CONVERSATION_ARCHIVED","CONVERSATION_CONVERTED",
-                        "SUPPORT_BULK_CONVERSATION_CHANGED").contains(code);
+                        "SUPPORT_BULK_CONVERSATION_CHANGED","SUPPORT_SESSION_BUSY").contains(code);
                 outcome(batch,customer,skipped?"SKIPPED":"FAILED","KNOWN",null,null,code,!skipped && (b.getCode()==503 || "SUPPORT_SKU_UNAVAILABLE".equals(code)),1);
             } else {
                 // A database commit exception may have committed. Preserve uncertainty until a real message lookup.

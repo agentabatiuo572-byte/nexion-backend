@@ -2027,7 +2027,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
 
     private void executeDisclosureAction(List<Map<String, Object>> writes, int stepIndex, String sourceDomain,
                                          String action, String execId, SopPlaybookRunRequest request) {
-        for (String gate : List.of("withdraw", "exchange", "staking", "genesis")) {
+        for (String gate : List.of("exchange", "genesis")) {
             addDomainWrite(writes, sourceDomain, stepIndex, action, "disclosure.gate." + gate, "true",
                     "BOOLEAN", "content", "J4 I5 disclosure gate required | execId=" + execId, request);
         }

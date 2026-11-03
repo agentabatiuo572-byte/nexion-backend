@@ -22,16 +22,26 @@ public class PublicSponsorPreviewService {
     public ApiResult<PublicSponsorPreviewView> preview(String rawCode) {
         String code = canonicalCode(rawCode);
         if (!code.matches("[A-Z0-9]{4,32}")) {
-            return ApiResult.fail(422, "REFERRAL_PREVIEW_INVALID");
+            return code.startsWith("CS")?ApiResult.fail(404,"REFERRAL_PREVIEW_NOT_FOUND"):ApiResult.fail(422,"REFERRAL_PREVIEW_INVALID");
         }
         UserAuthEnvironment audience = UserAuthEnvironment.resolve(environment).orElse(null);
         if (audience == null) return ApiResult.fail(503, "REFERRAL_PREVIEW_UNAVAILABLE");
-        List<PublicSponsorPreviewMapper.SponsorRow> candidates = mapper.findActiveByCanonicalCode(code);
-        if (candidates == null || candidates.size() != 1
-                || !audience.acceptsSandbox(candidates.get(0).sandbox())) {
-            return ApiResult.fail(404, "REFERRAL_PREVIEW_NOT_FOUND");
+        boolean advisor = code.startsWith("CS");
+        String name;
+        String rank;
+        if (advisor) {
+            if (audience!=UserAuthEnvironment.PRODUCTION) return ApiResult.fail(404,"REFERRAL_PREVIEW_NOT_FOUND");
+            var row = mapper.advisorByCode(code);
+            if (row == null) return ApiResult.fail(404, "REFERRAL_PREVIEW_NOT_FOUND");
+            name = row.name();
+            rank = null;
+        } else {
+            List<PublicSponsorPreviewMapper.SponsorRow> candidates = mapper.findActiveByCanonicalCode(code);
+            if (candidates.size() != 1 || !audience.acceptsSandbox(candidates.get(0).sandbox()))
+                return ApiResult.fail(404, "REFERRAL_PREVIEW_NOT_FOUND");
+            name = candidates.get(0).nickname();
+            rank = safe(candidates.get(0).vRank(), "V0");
         }
-        PublicSponsorPreviewMapper.SponsorRow row = candidates.get(0);
         try {
             ReferralRewardPublicConfigView config = rewards.publicConfig();
             if (config == null || config.welcomeGift() == null
@@ -41,9 +51,9 @@ public class PublicSponsorPreviewService {
             }
             return ApiResult.ok(new PublicSponsorPreviewView(
                     code,
-                    audience.name(),
+                    audience.name(), advisor ? "ADVISOR" : "USER",
                     new PublicSponsorPreviewView.Sponsor(
-                            maskName(row.nickname()), safe(row.vRank(), "V0")),
+                            maskName(name), rank),
                     new PublicSponsorPreviewView.Gift(
                             config.enabled() ? "PENDING_REVIEW" : "DISABLED",
                             config.welcomeGift().usdtAmount(), config.welcomeGift().nexAmount())));

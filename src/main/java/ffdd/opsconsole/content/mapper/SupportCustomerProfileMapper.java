@@ -15,7 +15,7 @@ public interface SupportCustomerProfileMapper {
       SELECT (SELECT COUNT(*) FROM nx_conversation c WHERE c.user_id=#{customer} AND c.is_deleted=0) conversationCount,
        (SELECT COUNT(*) FROM nx_support_ticket t WHERE t.user_id=#{customer} AND t.is_deleted=0) ticketCount,
        (SELECT MAX(CONVERT_TZ(m.created_at,'+08:00','+00:00')) FROM nx_conversation_message m JOIN nx_conversation c ON c.conversation_no=m.conversation_no
-         WHERE c.user_id=#{customer} AND c.is_deleted=0 AND m.is_deleted=0 AND m.sender_type='agent') lastServiceAt,
+         WHERE c.user_id=#{customer} AND c.is_deleted=0 AND m.is_deleted=0 AND m.sender_type='agent' AND m.origin IS NULL) lastServiceAt,
        (SELECT c.conversation_no FROM nx_conversation c WHERE c.user_id=#{customer} AND c.is_deleted=0 ORDER BY c.updated_at DESC,c.id DESC LIMIT 1) conversationNo,
        (SELECT c.status FROM nx_conversation c WHERE c.user_id=#{customer} AND c.is_deleted=0 ORDER BY c.updated_at DESC,c.id DESC LIMIT 1) conversationStatus,
        (SELECT c.archived FROM nx_conversation c WHERE c.user_id=#{customer} AND c.is_deleted=0 ORDER BY c.updated_at DESC,c.id DESC LIMIT 1) archived

@@ -217,8 +217,22 @@ public class SupportBindingService {
     /** Caller is the registration transaction, already holding the direct inviter's nx_user lock. */
     @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY)
     public void register(Long customer, Long inviter) {
+        register(customer,inviter,null);
+    }
+
+    @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void register(Long customer, Long inviter, String advisorCode) {
         ownership.lockCustomer(customer);
         if(mapper.current(customer)!=null || mapper.poolVersion(customer)!=null) throw new BizException(409,"SUPPORT_REGISTRATION_ALREADY_BOUND");
+        if(advisorCode!=null) {
+            var advisor=mapper.advisorByCode(advisorCode);
+            if(advisor==null || mapper.lockAgent(advisor.adminId())==null
+                    || !advisor.adminId().equals(mapper.currentCodeOwner(advisorCode)) || mapper.eligibleAgent(advisor.adminId())!=1)
+                throw new BizException(422,"USER_REGISTRATION_SPONSOR_NOT_FOUND");
+            mapper.insertAssignment(advisor.adminId(),customer,"registration","Registered with advisor invite code",
+                    "ADVISOR_CODE",customer,0,null,null,"registration:"+customer);
+            return;
+        }
         if(inviter!=null) ownership.lockCustomer(inviter);
         SupportRules rules=mapper.rules();
         String reason;
@@ -269,7 +283,7 @@ public class SupportBindingService {
         for(SupportAssignment row=parent;row!=null;) {
             if(row.id()==null || !visited.add(row.id()) || row.depth()==null || row.depth()<0
                     || row.depth()==Integer.MAX_VALUE || !Objects.equals(root,row.segmentRootId())
-                    || row.source()==null || !Set.of("MANUAL","RANDOM","INHERITED","MIGRATED").contains(row.source())) return false;
+                    || row.source()==null || !Set.of("MANUAL","RANDOM","INHERITED","MIGRATED","ADVISOR_CODE").contains(row.source())) return false;
             if(row.depth()==0) return root.equals(row.customerId()) && row.parentAssignmentId()==null;
             if(row.parentAssignmentId()==null) return false;
             var ancestor=mapper.inheritanceSnapshot(row.parentAssignmentId());
