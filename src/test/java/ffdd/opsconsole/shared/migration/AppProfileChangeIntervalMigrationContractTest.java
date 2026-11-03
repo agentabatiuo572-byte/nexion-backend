@@ -17,7 +17,7 @@ class AppProfileChangeIntervalMigrationContractTest {
     @Test
     void migrationRunsInTheStartupChainAfterComputePointsAndOnFreshDatabases() throws Exception {
         String installer = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"), StandardCharsets.UTF_8);
-        var matcher = Pattern.compile("\"scripts\\\\migrations\\\\([^\"]+\\.sql)\"").matcher(installer);
+        var matcher = Pattern.compile("\"scripts\\\\(?:migrations|local)\\\\([^\"]+\\.sql)\"").matcher(installer);
         List<String> migrations = new ArrayList<>();
         while (matcher.find()) migrations.add(matcher.group(1));
         assertThat(migrations).containsOnlyOnce(MIGRATION);
