@@ -1482,6 +1482,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (before == null) {
             return ApiResult.fail(404, "TASK_NOT_FOUND");
         }
+        if(before.simulation()!=null && !A2ReplayContext.isReplaying())
+            return ApiResult.fail(409,"A2_CONFIRMATION_REQUIRED");
         boolean beforeEnabled = "active".equals(before.status()) && !"已 kill".equals(before.killInit());
         boolean nextEnabled = "active".equals(status) && !"已 kill".equals(before.killInit());
         if (e2TaskPricingAmplifiesFinancialOutflow(
@@ -3477,6 +3479,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TASK_NAME_REQUIRED");
         }
         if(request.simulation()!=null) {
+            if(!A2ReplayContext.isReplaying())return ApiResult.fail(409,"A2_CONFIRMATION_REQUIRED");
             simulationPolicies.validateType(request.simulation());
             if(StringUtils.hasText(request.taskClass())&&!allows(request.taskClass(),TASK_CLASSES))
                 return ApiResult.fail(422,"TASK_CLASS_INVALID");
@@ -5409,6 +5412,36 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     public record SkuProposalReview(String skuId,DeviceSkuView before,DeviceSkuUpsertRequest after,List<String> classes) { }
 
     public record PhoneClassReview(String before,String after) { }
+    public record RuleTaskReview(String target,String name,String before,String after) { }
+    public RuleTaskReview ruleTaskReview(AuditReplayCommand command) {
+        boolean create="e2_task_create".equals(command.op()),statusOnly="e2_task_status".equals(command.op());
+        var params=command.params();
+        if(!statusOnly && params.get("simulation")==null)return null;
+        String id=str(params,"taskId");
+        var old=create?null:catalogRepository.findTask(normalizeId(id)).orElseThrow(()->new BizException(404,"TASK_NOT_FOUND"));
+        var current=old==null?null:old.simulation();
+        if(statusOnly && current==null)return null;
+        String before=current==null?"未配置":ruleDescription(old.name(),old.taskClass(),current.enabled(),current.durationMinutes(),current.baseReward(),current.asset());
+        if(statusOnly) {
+            String status=normalizeTaskStatus(str(params,"status"));
+            if(status==null)throw new BizException(422,"TASK_STATUS_INVALID");
+            boolean enabled="active".equals(status) && !"已 kill".equals(old.killInit());
+            return new RuleTaskReview(id,old.name(),before,ruleDescription(old.name(),old.taskClass(),enabled,current.durationMinutes(),current.baseReward(),current.asset()));
+        }
+        var raw=buildTaskUpsertRequest(params,"规则任务审批","A2");
+        var settings=raw.simulation();
+        simulationPolicies.validateType(settings);
+        if(!StringUtils.hasText(raw.name()))throw new BizException(422,"TASK_NAME_REQUIRED");
+        if(settings.expectedVersion()!=(current==null?0:current.version()))throw new BizException(409,"SIMULATED_TASK_POLICY_VERSION_CONFLICT");
+        var next=trustedTaskRequest(raw);
+        if(!TASK_CLASSES.contains(next.taskClass()))throw new BizException(422,"TASK_CLASS_INVALID");
+        String lock=create?"new-"+java.util.UUID.nameUUIDFromBytes(next.name().getBytes(java.nio.charset.StandardCharsets.UTF_8)):id;
+        return new RuleTaskReview(lock,next.name(),before,ruleDescription(next.name(),next.taskClass(),
+                settings.enabled() && "active".equals(next.status()),settings.durationMinutes(),settings.baseReward(),settings.asset()));
+    }
+    private String ruleDescription(String name,String taskClass,boolean enabled,int minutes,BigDecimal reward,String asset) {
+        return name+" · "+classSummary(List.of(taskClass))+" · "+(enabled?"启用":"停用")+" · "+minutes+" 分钟 · "+reward.stripTrailingZeros().toPlainString()+" "+asset;
+    }
     public PhoneClassReview phoneClassReview(AuditReplayCommand command) {
         var policy=simulationPolicies.productView("phone");
         var params=command.params();
