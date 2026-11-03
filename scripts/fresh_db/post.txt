@@ -24,6 +24,8 @@ fresh_db/04_event_registry_restore.sql
 migrations/20261028_janus_retirement.sql
 migrations/20261028_support_ticket_rbac_retirement.sql
 migrations/20261028_f5_commission_key_split.sql
+# The F5 split above still writes the old F5 permission names; rename them again (byte-guarded, idempotent).
+migrations/20261104_console_menu_permission_neutral_names.sql
 local/20261028_compute_points.sql
 migrations/20261029_app_profile_change_interval.sql
 migrations/20260722_i5_a4_event_closure.sql
