@@ -510,7 +510,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
             SELECT r.user_device_id AS deviceId,
                    COALESCE(SUM(r.reward_usdt), 0) AS todayEarningsUsdt,
                    COALESCE(SUM(r.reward_nex), 0) AS todayEarningsNex
-              FROM nx_compute_receipt r
+              FROM nx_visible_compute_receipt r
               JOIN nx_user u ON u.id=r.user_id AND COALESCE(u.sandbox,0)=0
              WHERE r.user_id = #{userId} AND r.is_deleted = 0
                AND COALESCE(r.source_environment, 'PRODUCTION') = 'PRODUCTION'
@@ -581,7 +581,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                                       NULLIF(d.price_usdt_snapshot, 0), p.price_usdt, 0)
                    END AS actualPaidUsdt,
                    COALESCE((SELECT SUM(r.reward_usdt)
-                              FROM nx_compute_receipt r
+                              FROM nx_visible_compute_receipt r
                               WHERE r.user_device_id = d.id AND r.is_deleted = 0
                                 AND COALESCE(r.source_environment, 'PRODUCTION') = 'PRODUCTION'
                                 AND UPPER(r.earning_status) IN
@@ -612,7 +612,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
             SELECT r.user_device_id AS deviceId,
                    COALESCE(SUM(r.reward_usdt), 0) AS todayEarningsUsdt,
                    COALESCE(SUM(r.reward_nex), 0) AS todayEarningsNex
-              FROM nx_compute_receipt r
+              FROM nx_visible_compute_receipt r
               JOIN nx_user u ON u.id = r.user_id
                             AND u.sandbox = 1
                             AND UPPER(COALESCE(u.status, 'ACTIVE')) = 'ACTIVE'
@@ -678,7 +678,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                 ON runtime.user_device_id = d.id AND runtime.is_deleted = 0
               LEFT JOIN (
                 SELECT r.user_device_id, SUM(r.reward_usdt) AS totalUsdt
-                  FROM nx_compute_receipt r
+                  FROM nx_visible_compute_receipt r
                   JOIN nx_user_device owned ON owned.id = r.user_device_id
                                            AND owned.user_id = #{userId} AND owned.is_deleted = 0
                                            AND UPPER(owned.ownership_status) = 'OWNED'

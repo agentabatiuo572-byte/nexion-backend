@@ -21,20 +21,20 @@ public interface AppWalletBillsMapper extends BaseMapper<Object> {
     @Select("""
             SELECT id,biz_no bizNo,biz_type bizType,UPPER(asset) asset,UPPER(direction) direction,
                    amount,balance_after balanceAfter,UPPER(status) status,remark,created_at createdAt
-              FROM nx_wallet_ledger
+              FROM nx_visible_wallet_ledger
              WHERE user_id=#{userId} AND is_deleted=0
              ORDER BY created_at DESC,id DESC LIMIT #{limit} OFFSET #{offset}
             """)
     List<LedgerRow> rows(@Param("userId") Long userId, @Param("limit") int limit, @Param("offset") int offset);
 
-    @Select("SELECT COUNT(1) FROM nx_wallet_ledger WHERE user_id=#{userId} AND is_deleted=0")
+    @Select("SELECT COUNT(1) FROM nx_visible_wallet_ledger WHERE user_id=#{userId} AND is_deleted=0")
     long count(@Param("userId") Long userId);
 
     @Select("""
             <script>
             SELECT id,biz_no bizNo,biz_type bizType,UPPER(asset) asset,UPPER(direction) direction,
                    amount,balance_after balanceAfter,UPPER(status) status,remark,created_at createdAt
-              FROM nx_wallet_ledger
+              FROM nx_visible_wallet_ledger
              WHERE user_id=#{userId} AND is_deleted=0
              <if test="asset != null">AND UPPER(asset)=#{asset}</if>
              <if test="direction != null">AND UPPER(direction)=#{direction} AND COALESCE(amount,0)&gt;0</if>
@@ -63,7 +63,7 @@ public interface AppWalletBillsMapper extends BaseMapper<Object> {
 
     @Select("""
             <script>
-            SELECT COUNT(1) FROM nx_wallet_ledger
+            SELECT COUNT(1) FROM nx_visible_wallet_ledger
              WHERE user_id=#{userId} AND is_deleted=0
              <if test="asset != null">AND UPPER(asset)=#{asset}</if>
              <if test="direction != null">AND UPPER(direction)=#{direction} AND COALESCE(amount,0)&gt;0</if>
@@ -92,7 +92,7 @@ public interface AppWalletBillsMapper extends BaseMapper<Object> {
             <script>
             SELECT id,biz_no bizNo,biz_type bizType,UPPER(asset) asset,UPPER(direction) direction,
                    amount,balance_after balanceAfter,UPPER(status) status,remark,created_at createdAt
-              FROM nx_wallet_ledger
+              FROM nx_visible_wallet_ledger
              WHERE user_id=#{userId} AND is_deleted=0
              <if test="asset != null">AND UPPER(asset)=#{asset}</if>
              <if test="direction != null">AND UPPER(direction)=#{direction} AND COALESCE(amount,0)&gt;0</if>
@@ -167,7 +167,7 @@ public interface AppWalletBillsMapper extends BaseMapper<Object> {
                     WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'PURCHASE|ORDER|REPURCHASE|GENESIS|TRADE_IN' THEN IF(UPPER(direction)='IN','earn','purchase')
                     WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'EARN|RELEASE|TASK|TRIAL' THEN 'earn'
                     ELSE 'other' END bill_category
-                  FROM nx_wallet_ledger
+                  FROM nx_visible_wallet_ledger
                  WHERE user_id=#{userId} AND is_deleted=0
               ) scoped
             """)
@@ -178,7 +178,7 @@ public interface AppWalletBillsMapper extends BaseMapper<Object> {
     @Select("""
             SELECT id,biz_no bizNo,biz_type bizType,UPPER(asset) asset,UPPER(direction) direction,
                    amount,balance_after balanceAfter,UPPER(status) status,remark,created_at createdAt
-              FROM nx_wallet_ledger
+              FROM nx_visible_wallet_ledger
              WHERE user_id=#{userId} AND is_deleted=0 AND UPPER(asset)='UVT'
                AND UPPER(status) NOT IN ('FAILED','REJECTED','CANCELLED')
              ORDER BY created_at DESC,id DESC LIMIT #{limit}

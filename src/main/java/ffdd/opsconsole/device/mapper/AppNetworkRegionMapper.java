@@ -40,11 +40,11 @@ public interface AppNetworkRegionMapper extends BaseMapper<Object> {
                                      AND t.completed_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR) THEN 1 ELSE 0 END) AS jobsPerHour
                       FROM (
                             SELECT user_device_id, status, completed_at, source_environment, is_deleted
-                              FROM nx_compute_task
+                              FROM nx_visible_compute_task
                              WHERE status IN ('ASSIGNED','RUNNING','PROCESSING')
                             UNION ALL
                             SELECT user_device_id, status, completed_at, source_environment, is_deleted
-                              FROM nx_compute_task
+                              FROM nx_visible_compute_task
                              WHERE status = 'COMPLETED'
                                AND completed_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR)
                       ) t

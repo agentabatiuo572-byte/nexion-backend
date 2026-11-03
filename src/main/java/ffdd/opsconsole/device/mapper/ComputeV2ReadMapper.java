@@ -16,7 +16,7 @@ public interface ComputeV2ReadMapper extends BaseMapper<Object> {
     @Select("""
             <script>
             SELECT DISTINCT t.task_no taskNo,t.user_device_id deviceId,d.instance_no instanceNo,r.state,r.updated_at updatedAt
-            FROM nx_compute_task t
+            FROM nx_visible_compute_task t
             JOIN nx_user u ON u.id=t.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=0
             JOIN nx_user_device d ON d.id=t.user_device_id AND d.user_id=t.user_id
             JOIN nx_test_cloud_request r ON r.task_no=t.task_no AND r.owner_id=t.user_id
@@ -27,7 +27,7 @@ public interface ComputeV2ReadMapper extends BaseMapper<Object> {
               AND r.operation='COMPLETE' AND r.state IN ('UNKNOWN','PROCESSING')
               AND NOT EXISTS (
             """+LegacyZeroCreditResolutionSql.RESOLVED_REQUEST+")"+"""
-              AND NOT EXISTS (SELECT 1 FROM nx_compute_receipt receipt
+              AND NOT EXISTS (SELECT 1 FROM nx_visible_compute_receipt receipt
                               WHERE receipt.task_no=t.task_no AND receipt.source_environment='PRODUCTION' AND receipt.is_deleted=0)
               AND t.user_device_id IN
             <foreach collection="deviceIds" item="deviceId" open="(" separator="," close=")">#{deviceId}</foreach>
@@ -54,7 +54,8 @@ public interface ComputeV2ReadMapper extends BaseMapper<Object> {
             FROM nx_compute_v2_allocation a
             JOIN nx_compute_v2_settlement s ON s.settlement_id=a.settlement_id AND s.user_id=a.user_id
             JOIN nx_compute_v2_event e ON e.event_id=a.event_id AND e.user_id=a.user_id
-            WHERE a.user_id=#{userId} AND e.deployment_scope=#{scope} AND a.asset='USDT' AND a.task_no IN
+            WHERE NOT EXISTS (SELECT 1 FROM nx_compute_retired_task rt WHERE rt.task_no=a.task_no COLLATE utf8mb4_0900_ai_ci AND rt.user_id=a.user_id)
+              AND a.user_id=#{userId} AND e.deployment_scope=#{scope} AND a.asset='USDT' AND a.task_no IN
             <foreach collection="taskNos" item="taskNo" open="(" separator="," close=")">#{taskNo}</foreach>
             </script>
             """)
@@ -63,12 +64,13 @@ public interface ComputeV2ReadMapper extends BaseMapper<Object> {
 
     @Select("""
             <script>
-            SELECT s.settlement_id,s.asset,s.total_micros,s.window_start_utc,s.window_end_utc,s.posted_at_utc,
+            SELECT s.settlement_id,s.asset,SUM(a.amount_micros) total_micros,s.window_start_utc,s.window_end_utc,s.posted_at_utc,
                    COUNT(*) task_count
             FROM nx_compute_v2_settlement s
             JOIN nx_compute_v2_allocation a ON a.settlement_id=s.settlement_id AND a.user_id=s.user_id
             JOIN nx_compute_v2_event e ON e.event_id=a.event_id AND e.user_id=a.user_id AND e.deployment_scope=#{scope}
-            WHERE s.user_id=#{userId}
+            WHERE NOT EXISTS (SELECT 1 FROM nx_compute_retired_task rt WHERE rt.task_no=a.task_no COLLATE utf8mb4_0900_ai_ci AND rt.user_id=a.user_id)
+              AND s.user_id=#{userId}
             <if test="beforeId != null">
               AND (s.posted_at_utc &lt; #{beforePostedAt}
                    OR (s.posted_at_utc=#{beforePostedAt} AND s.settlement_id &lt; #{beforeId}))
@@ -81,12 +83,13 @@ public interface ComputeV2ReadMapper extends BaseMapper<Object> {
             @Param("beforePostedAt") Object beforePostedAt,@Param("beforeId") String beforeId,@Param("limit") int limit);
 
     @Select("""
-            SELECT s.settlement_id,s.asset,s.total_micros,s.window_start_utc,s.window_end_utc,s.posted_at_utc,
+            SELECT s.settlement_id,s.asset,SUM(a.amount_micros) total_micros,s.window_start_utc,s.window_end_utc,s.posted_at_utc,
                    COUNT(*) task_count
             FROM nx_compute_v2_settlement s
             JOIN nx_compute_v2_allocation a ON a.settlement_id=s.settlement_id AND a.user_id=s.user_id
             JOIN nx_compute_v2_event e ON e.event_id=a.event_id AND e.user_id=a.user_id AND e.deployment_scope=#{scope}
-            WHERE s.user_id=#{userId} AND s.settlement_id=#{batchNo}
+            WHERE NOT EXISTS (SELECT 1 FROM nx_compute_retired_task rt WHERE rt.task_no=a.task_no COLLATE utf8mb4_0900_ai_ci AND rt.user_id=a.user_id)
+              AND s.user_id=#{userId} AND s.settlement_id=#{batchNo}
             GROUP BY s.settlement_id,s.asset,s.total_micros,s.window_start_utc,s.window_end_utc,s.posted_at_utc
             """)
     List<Map<String,Object>> batch(@Param("userId") long userId,@Param("scope") String scope,@Param("batchNo") String batchNo);
@@ -96,7 +99,8 @@ public interface ComputeV2ReadMapper extends BaseMapper<Object> {
                    JSON_UNQUOTE(JSON_EXTRACT(e.payload,'$.task.taskClass')) task_type
             FROM nx_compute_v2_allocation a
             JOIN nx_compute_v2_event e ON e.event_id=a.event_id AND e.user_id=a.user_id AND e.deployment_scope=#{scope}
-            WHERE a.user_id=#{userId} AND a.settlement_id=#{batchNo} ORDER BY a.allocation_id LIMIT 201
+            WHERE NOT EXISTS (SELECT 1 FROM nx_compute_retired_task rt WHERE rt.task_no=a.task_no COLLATE utf8mb4_0900_ai_ci AND rt.user_id=a.user_id)
+              AND a.user_id=#{userId} AND a.settlement_id=#{batchNo} ORDER BY a.allocation_id LIMIT 201
             """)
     List<Map<String,Object>> allocations(@Param("userId") long userId,@Param("scope") String scope,@Param("batchNo") String batchNo);
 }

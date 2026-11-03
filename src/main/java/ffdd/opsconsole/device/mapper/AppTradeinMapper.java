@@ -395,7 +395,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
 
     @Select("""
             SELECT COALESCE(SUM(reward_usdt),0)
-             FROM nx_compute_receipt
+             FROM nx_visible_compute_receipt
              WHERE user_device_id=#{deviceId} AND is_deleted=0
                AND COALESCE(source_environment, 'PRODUCTION') = 'PRODUCTION'
                AND UPPER(earning_status) IN ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')

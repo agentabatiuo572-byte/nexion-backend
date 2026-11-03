@@ -45,7 +45,7 @@ public interface AppEarningGoalMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT COALESCE(SUM(reward_usdt),0)
-              FROM nx_compute_receipt
+              FROM nx_visible_compute_receipt
              WHERE user_id=#{userId} AND is_deleted=0
                AND UPPER(earning_status) IN ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')
             """)

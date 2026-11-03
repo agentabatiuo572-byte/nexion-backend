@@ -725,12 +725,12 @@ public interface AppGrowthEngagementMapper {
 
     @Select("""
             SELECT r.milestone_id milestoneId,r.threshold_usdt thresholdUsdt,r.reward_nex rewardNex,
-                   COALESCE((SELECT SUM(e.amount) FROM nx_earning_event e
+                   COALESCE((SELECT SUM(e.amount) FROM nx_visible_earning_event e
                               WHERE e.user_id=#{userId} AND e.asset='USDT'
                                 AND UPPER(e.status) IN ('POSTED','SUCCESS') AND e.is_deleted=0),0) lifetimeEarningsUsdt
               FROM nx_earning_milestone_rule r
              WHERE r.status=1 AND r.is_deleted=0
-               AND r.threshold_usdt<=COALESCE((SELECT SUM(e.amount) FROM nx_earning_event e
+               AND r.threshold_usdt<=COALESCE((SELECT SUM(e.amount) FROM nx_visible_earning_event e
                                                 WHERE e.user_id=#{userId} AND e.asset='USDT'
                                                   AND UPPER(e.status) IN ('POSTED','SUCCESS') AND e.is_deleted=0),0)
                AND NOT EXISTS (SELECT 1 FROM nx_earning_milestone m
@@ -864,11 +864,11 @@ public interface AppGrowthEngagementMapper {
 
     @Select("""
             SELECT r.milestone_id milestoneId,r.threshold_usdt thresholdUsdt,r.reward_nex rewardNex,
-                   COALESCE((SELECT SUM(e.amount) FROM nx_earning_event e
+                   COALESCE((SELECT SUM(e.amount) FROM nx_visible_earning_event e
                               WHERE e.user_id=#{userId} AND e.asset='USDT'
                                 AND UPPER(e.status) IN ('POSTED','SUCCESS') AND e.is_deleted=0),0) lifetimeEarningsUsdt,
                    CASE WHEN m.id IS NOT NULL THEN UPPER(m.status)
-                        WHEN r.threshold_usdt<=COALESCE((SELECT SUM(e.amount) FROM nx_earning_event e
+                        WHEN r.threshold_usdt<=COALESCE((SELECT SUM(e.amount) FROM nx_visible_earning_event e
                                                          WHERE e.user_id=#{userId} AND e.asset='USDT'
                                                            AND UPPER(e.status) IN ('POSTED','SUCCESS') AND e.is_deleted=0),0)
                           THEN 'CLAIMABLE' ELSE 'LOCKED' END status,m.achieved_at achievedAt
