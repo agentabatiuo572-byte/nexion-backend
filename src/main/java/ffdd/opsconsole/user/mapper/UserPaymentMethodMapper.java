@@ -207,16 +207,33 @@ public interface UserPaymentMethodMapper extends BaseMapper<Object> {
             INSERT IGNORE INTO nx_notification (
               biz_no, user_id, type, priority, title, body, cta_label, cta_href,
               read_flag, push_status, push_attempts, next_push_at, created_at, updated_at, is_deleted
-            ) SELECT #{bizNo}, u.id, 'PAYMENT_METHOD', 'high', #{title}, #{body},
-                      '查看支付方式', #{href}, 0, 'PENDING', 0, NOW(), NOW(), NOW(), 0
+            ) SELECT #{bizNo}, u.id, 'PAYMENT_METHOD', 'high',
+                     CASE LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))
+            WHEN 'zh' THEN COALESCE(NULLIF(title.zh_value,''), '支付方式更新')
+            WHEN 'vi' THEN COALESCE(NULLIF(title.vi_value,''), 'Cập nhật phương thức thanh toán')
+            ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(title.translations_json,
+                     CONCAT('$.',JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1)))))),''),NULLIF(title.en_value,''),'Payment method update') END,
+                     REPLACE(CASE LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))
+            WHEN 'zh' THEN COALESCE(NULLIF(body.zh_value,''), '请查看支付方式详情。')
+            WHEN 'vi' THEN COALESCE(NULLIF(body.vi_value,''), 'Xem chi tiết phương thức thanh toán.')
+            ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(body.translations_json,
+                     CONCAT('$.',JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1)))))),''),NULLIF(body.en_value,''),'View your payment method details.') END,'{last4}',#{last4}),
+                     CASE LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))
+            WHEN 'zh' THEN COALESCE(NULLIF(cta.zh_value,''), '查看支付方式')
+            WHEN 'vi' THEN COALESCE(NULLIF(cta.vi_value,''), 'Xem phương thức thanh toán')
+            ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(cta.translations_json,
+                     CONCAT('$.',JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1)))))),''),NULLIF(cta.en_value,''),'View payment methods') END, #{href}, 0, 'PENDING', 0, NOW(), NOW(), NOW(), 0
                 FROM nx_user u
+               LEFT JOIN nx_i18n_message_version title ON title.message_key=CONCAT('notifications.payment.',#{action},'.title') AND title.status='PUBLISHED' AND title.is_deleted=0
+               LEFT JOIN nx_i18n_message_version body ON body.message_key=CONCAT('notifications.payment.',#{action},'.body') AND body.status='PUBLISHED' AND body.is_deleted=0
+               LEFT JOIN nx_i18n_message_version cta ON cta.message_key='notifications.payment.cta' AND cta.status='PUBLISHED' AND cta.is_deleted=0
                LEFT JOIN nx_user_preference pref
                  ON pref.user_id = u.id AND pref.is_deleted = 0
                WHERE u.id = #{userId} AND u.is_deleted = 0
                  AND COALESCE(pref.notify_system, 1) = 1
             """)
     int queueNotification(@Param("userId") Long userId, @Param("bizNo") String bizNo,
-                          @Param("title") String title, @Param("body") String body,
+                          @Param("action") String action, @Param("last4") String last4,
                           @Param("href") String href);
 
     @Update("""

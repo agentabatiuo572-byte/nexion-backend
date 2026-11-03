@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.infrastructure;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import ffdd.opsconsole.content.domain.NotificationCampaignRepository;
 import ffdd.opsconsole.content.domain.NotificationCampaignRow;
+import ffdd.opsconsole.content.domain.NotificationTranslation;
 import ffdd.opsconsole.content.domain.NotificationAudienceTarget;
 import ffdd.opsconsole.content.domain.NotificationCapRuleView;
 import ffdd.opsconsole.content.domain.AppNotificationPage;
@@ -63,6 +64,7 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
         entity.setScheduleText("-");
         entity.setSentLabel("-");
         entity.setReadLabel("-");
+        entity.setTranslationsJson(NotificationTranslation.json(request.translations()));
         entity.setBodyEn(notificationBody(request.titleEn(), request.bodyEn()));
         entity.setBodyZh(notificationBody(request.titleZh(), request.bodyZh()));
         entity.setBodyVi(notificationBody(request.titleVi(), request.bodyVi()));
@@ -97,6 +99,7 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
                 notificationBody(request.titleEn(), request.bodyEn()),
                 notificationBody(request.titleZh(), request.bodyZh()),
                 notificationBody(request.titleVi(), request.bodyVi()),
+                NotificationTranslation.json(request.translations()),
                 text(request.ctaLabel()),
                 text(request.ctaHref()),
                 request.budget(),
@@ -151,8 +154,8 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
             return 0;
         }
         String bodyVi = localizedBody(entity.getBodyVi(), entity.getBodyZh());
-        String bodyEn = localizedBody(entity.getBodyEn(), bodyVi);
-        int inserted = campaignMapper.insertCampaignNotifications(
+        String bodyEn = entity.getBodyEn();
+        int inserted = campaignMapper.insertLocalizedCampaignNotifications(
                 bizNo,
                 entity.getKind(),
                 entity.getTier(),
@@ -162,8 +165,9 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
                 localizedContent(entity.getBodyZh()),
                 localizedTitle(bodyVi, entity.getName()),
                 localizedContent(bodyVi),
-                localizedTitle(bodyEn, ""),
-                localizedContent(bodyEn),
+                localizedTitle(bodyEn, "UVEL notification"),
+                localizedBody(localizedContent(bodyEn), "Open UVEL to view your notification."),
+                entity.getTranslationsJson(),
                 text(entity.getCtaLabel()),
                 text(entity.getCtaHref()),
                 now);
@@ -351,7 +355,7 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
                 target,
                 text(entity.getCtaLabel()),
                 text(entity.getCtaHref()),
-                revision(entity));
+                revision(entity), NotificationTranslation.read(entity.getTranslationsJson()));
     }
 
     private NotificationCapRuleView toCapView(NotificationCapRuleEntity entity) {
@@ -402,7 +406,8 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
             case "zh" -> "中文";
             case "vi" -> "越南语";
             case "en" -> "英文";
-            default -> "全语言";
+            case "all" -> "全语言";
+            default -> target.language();
         };
         return "%s～%s · %s · 注册大于 %d 天".formatted(
                 target.phaseMin(), target.phaseMax(), language, target.registrationDaysMin());

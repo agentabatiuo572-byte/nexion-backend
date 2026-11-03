@@ -15,7 +15,23 @@ public record CopyVersionPublishRequest(
         String copyPosition,
         String operator,
         String reason,
-        Long expectedRevision) {
+        Long expectedRevision,
+        java.util.Map<String, String> translations) {
+    public CopyVersionPublishRequest {
+        translations = ffdd.opsconsole.content.domain.MessageTranslations.ordered(translations);
+    }
+
+    public CopyVersionPublishRequest(
+            String version, String surface, String audience,
+            CopyAudienceTarget audienceTarget, String trafficSplit, String versionNote,
+            String zh, String en, String vi,
+            String copyPosition, String operator, String reason,
+            Long expectedRevision) {
+        this(version, surface, audience, audienceTarget, trafficSplit, versionNote,
+                zh, en, vi, copyPosition, operator, reason,
+                expectedRevision, null);
+    }
+
 
     public CopyVersionPublishRequest(
             String version, String surface, String audience, CopyAudienceTarget audienceTarget,

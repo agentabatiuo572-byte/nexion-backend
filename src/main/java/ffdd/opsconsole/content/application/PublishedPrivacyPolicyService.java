@@ -27,8 +27,6 @@ public class PublishedPrivacyPolicyService {
     static final String CONFIG_KEY = "legal.privacy-policy.published";
     /** Shipped default policy; it is the published policy until operations publish their own version. */
     static final String DEFAULT_RESOURCE = "/published-defaults/privacy-policy.json";
-    // nx_config_item.config_value is MySQL TEXT; count UTF-8 bytes including the retained snapshot.
-    private static final int MAX_STORED_BYTES = 65_535;
     private final PlatformConfigFacade config;
     private final Environment environment;
     private final AuditLogService audit;
@@ -90,7 +88,7 @@ public class PublishedPrivacyPolicyService {
                 || expectedRevision == null || expectedRevision < 0 || !bounded(reason, 500) || reason.trim().length() < 8)
             return ApiResult.fail(422, "PRIVACY_POLICY_INVALID");
         for (var entry : locales.entrySet()) {
-            if (!entry.getKey().matches("[a-z]{2}(?:-[a-z0-9]{2,8})?") || !validContent(map(entry.getValue())))
+            if (!entry.getKey().matches("(?:[a-z]{2}|fil)(?:-[a-z0-9]{2,8})?") || !validContent(map(entry.getValue())))
                 return ApiResult.fail(422, "PRIVACY_POLICY_INVALID");
         }
         if ("PUBLISHED".equals(status) && !locales.containsKey("en"))
@@ -119,7 +117,7 @@ public class PublishedPrivacyPolicyService {
         }
         try {
             String serialized = json.writeValueAsString(document);
-            if (serialized.getBytes(StandardCharsets.UTF_8).length > MAX_STORED_BYTES)
+            if (serialized.getBytes(StandardCharsets.UTF_8).length > PublishedContentSnapshot.MAX_STORED_BYTES)
                 return ApiResult.fail(422, "PRIVACY_POLICY_TOO_LARGE");
             config.upsertAdminValue(CONFIG_KEY, serialized, "JSON", "published_content", reason.trim());
             audit.recordRequired(AuditLogWriteRequest.builder().action("PRIVACY_POLICY_CHANGED")

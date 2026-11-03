@@ -10,5 +10,6 @@ public record PlatformExperienceConfigView(
         boolean homeNewcomerTasksEnabled,
         boolean homeWeeklyPromoEnabled,
         List<String> sources,
-        String updatedAt) {
+        String updatedAt,
+        List<String> interfaceLanguages) {
 }

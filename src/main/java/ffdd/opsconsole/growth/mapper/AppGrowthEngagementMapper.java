@@ -70,6 +70,8 @@ public interface AppGrowthEngagementMapper {
 
     @Select("""
             SELECT item.quest_code questCode,item.name name,'DAY_ONE' layer,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(item.name_translations_json, CONCAT('$."',#{locale},'".name'))),'') requestedName,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(item.name_translations_json, '$.en.name')),'') englishName,
                    item.category category,item.action_route actionRoute,
                    item.reward_points rewardNex,i.instance_key instanceKey,
                    DATE_FORMAT(i.entered_at,'%Y-%m-%dT%H:%i:%s+08:00') eligibleFrom,
@@ -95,7 +97,7 @@ public interface AppGrowthEngagementMapper {
              ORDER BY item.ordinal,item.id
             """)
     List<Map<String, Object>> dayOneSnapshotState(
-            @Param("userId") Long userId, @Param("instanceId") Long instanceId);
+            @Param("userId") Long userId, @Param("instanceId") Long instanceId, @Param("locale") String locale);
 
     @Select("""
             SELECT id instanceId,instance_key instanceKey,snapshot_status snapshotStatus,
@@ -265,7 +267,9 @@ public interface AppGrowthEngagementMapper {
 
     @Select("""
             SELECT q.mission_code questCode,
-                   COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.mission.\"', q.mission_code, '\".\"', #{locale}, '\".name'))),''),q.mission_name) name,
+                   q.mission_name name,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.mission.\"', q.mission_code, '\".\"', #{locale}, '\".name'))),'') requestedName,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.mission.\"', q.mission_code, '\".\"', 'en', '\".name'))),'') englishName,
                    q.mission_type layer,
                    q.reward_points rewardNex,
                    q.tri_reward triReward,
@@ -417,9 +421,10 @@ public interface AppGrowthEngagementMapper {
                      WHEN q.status=0 OR (q.starts_at IS NOT NULL AND q.starts_at>UTC_TIMESTAMP()) THEN 'upcoming'
                      ELSE 'ongoing'
                    END state,
-                   COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.event.\"', q.quest_code, '\".\"', #{locale}, '\".name'))),''),q.quest_name) title,
-                   COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.event.\"', q.quest_code, '\".\"', #{locale}, '\".description'))),''),COALESCE(q.description,'')) subtitle,
-                   COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.event.\"', q.quest_code, '\".\"', #{locale}, '\".rewardName'))),''),q.reward_name) rewardName,
+                   COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.event.\"', q.quest_code, '\".\"', #{locale}, '\".name'))),''),NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.event.\"', q.quest_code, '\".\"', 'en', '\".name'))),''),q.quest_name) title,
+                   COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.event.\"', q.quest_code, '\".\"', #{locale}, '\".description'))),''),NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.event.\"', q.quest_code, '\".\"', 'en', '\".description'))),''),COALESCE(q.description,'')) subtitle,
+                   COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.event.\"', q.quest_code, '\".\"', #{locale}, '\".rewardName'))),''),NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.event.\"', q.quest_code, '\".\"', 'en', '\".rewardName'))),''),q.reward_name) rewardName,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.event.\"', q.quest_code, '\".\"', #{locale}, '\".rewardName'))),'') authoredRewardName,
                    UPPER(q.reward_type) rewardType,
                    q.reward_amount rewardAmount,
                    CASE WHEN q.badge_achievement_code='FEATURED' THEN 1 ELSE 0 END featured,

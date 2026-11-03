@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.content.domain.DisclosureChapterView;
+import ffdd.opsconsole.content.domain.MessageTranslations;
 import ffdd.opsconsole.content.domain.DisclosureDraftView;
 import ffdd.opsconsole.content.domain.DisclosureGateActionView;
 import ffdd.opsconsole.content.domain.DisclosureJurisdictionView;
@@ -422,6 +423,7 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
         draft.setZhBody(normalize(request.zh()));
         draft.setViBody(normalize(request.vi()));
         draft.setEnBody(normalize(request.en()));
+        draft.setTranslationsJson(MessageTranslations.json(request.translations()));
         draft.setStatus(normalizeUpper(status));
         draft.setContentHash(contentHash);
         draft.setLastOperator(operator(request.operator()));
@@ -558,6 +560,8 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
             chapter.setZhBody(normalize(current.zhBody()));
             chapter.setViBody(normalize(current.viBody()));
             chapter.setEnBody(normalize(current.enBody()));
+            chapter.setTitleTranslationsJson(MessageTranslations.json(current.titleTranslations()));
+            chapter.setBodyTranslationsJson(MessageTranslations.json(current.bodyTranslations()));
             chapter.setSortOrder((index + 1) * 10);
             chapter.setLastOperator(operator(request.operator()));
             chapter.setCreatedAt(now);
@@ -809,7 +813,8 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
                 entity.getEnTitle(),
                 entity.getZhBody(),
                 entity.getViBody(),
-                entity.getEnBody());
+                entity.getEnBody(), MessageTranslations.read(entity.getTitleTranslationsJson()),
+                MessageTranslations.read(entity.getBodyTranslationsJson()), null, null);
     }
 
     /**
@@ -844,7 +849,7 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
                 entity.getEnBody(),
                 toViewStatus(entity.getStatus()),
                 entity.getRevision() == null ? 1L : entity.getRevision(),
-                normalize(entity.getContentHash()));
+                normalize(entity.getContentHash()), MessageTranslations.read(entity.getTranslationsJson()));
     }
 
     private String toViewStatus(String status) {

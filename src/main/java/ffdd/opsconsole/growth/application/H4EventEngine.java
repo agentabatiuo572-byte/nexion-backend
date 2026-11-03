@@ -13,6 +13,7 @@ import java.time.*;
 import java.util.*;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import org.springframework.transaction.annotation.Transactional;
 import static ffdd.opsconsole.growth.application.H4EventRuleService.*;
 
@@ -59,7 +60,7 @@ public class H4EventEngine {
     public List<Map<String,Object>> project(Long id,List<Map<String,Object>> rows,String locale){
         List<Map<String,Object>> projected=new ArrayList<>();
         for(var row:rows){String code=text(row.get("eventCode"));var rule=policies.find(code,false);
-            if(rule==null){projected.add(row);continue;}
+            if(rule==null){var legacy=new LinkedHashMap<>(row);legacy.remove("authoredRewardName");projected.add(legacy);continue;}
             var value=project(id,row,rule,locale);
             if(!enabled(code)&&!Set.of("JOINED","CLAIMABLE","CLAIMED").contains(text(value.get("userStatus"))))continue;
             projected.add(value);
@@ -72,7 +73,12 @@ public class H4EventEngine {
         row.put("progressValue",progress.getOrDefault("current",0));row.put("targetValue",progress.getOrDefault("target",1));
         boolean trackable=Set.of("referral","onboarding","regional").contains(text(rule.get("kind")))||"evt-reinvest-bonus".equals(code);
         row.put("trackable",trackable);
-        if(!"wheel".equals(rule.get("kind"))){row.put("rewardType","COMPOSITE");row.put("rewardAmount",0);row.put("rewardName",rewardSummary(r,locale));}
+        if(!"wheel".equals(rule.get("kind"))){
+            row.put("rewardType","COMPOSITE");row.put("rewardAmount",0);
+            String translated=text(source.get("authoredRewardName"));
+            row.put("rewardName", InterfaceLanguages.isAdditional(locale) && !translated.isBlank() ? translated : rewardSummary(r,locale));
+        }
+        row.remove("authoredRewardName");
         boolean claimed=db.row("SELECT 1 FROM nx_growth_event_claim WHERE event_code=? AND user_id=? AND claim_key='ONCE' AND status='CLAIMED'",code,id)!=null;
         boolean observed="holding".equals(rule.get("kind"))&&db.row("SELECT 1 FROM nx_growth_event_holding WHERE event_code=? AND user_id=?",code,id)!=null;
         Object previousStatus="CLAIMABLE".equals(source.get("userStatus"))?"JOINED":source.get("userStatus");
@@ -84,14 +90,15 @@ public class H4EventEngine {
     }
     public ApiResult<Map<String,Object>> detail(Long id,String code,String locale){
         user(id,false);var rule=policies.find(code,false);
-        var source=events.eventState(id,locale==null?"en":locale).stream().filter(e->code.equals(e.get("eventCode"))).findFirst().orElse(null);
+        locale = InterfaceLanguages.baseCode(locale);
+        var source=events.eventState(id,locale).stream().filter(e->code.equals(e.get("eventCode"))).findFirst().orElse(null);
         boolean deleted=source==null;
-        if(deleted)source=events.deletedEventState(id,locale==null?"en":locale,code).stream().findFirst().orElse(null);
+        if(deleted)source=events.deletedEventState(id,locale,code).stream().findFirst().orElse(null);
         if(source==null)throw new BizException(404,"EVENT_NOT_FOUND");
         if(deleted){source=new LinkedHashMap<>(source);source.put("deleted",true);source.put("href","");}
         if(deleted&&rule==null&&!Set.of("JOINED","CLAIMABLE","CLAIMED").contains(text(source.get("userStatus"))))throw new BizException(404,"EVENT_NOT_FOUND");
-        if(rule==null)return ApiResult.ok(values("event",source,"rules",Map.of(),"enabled",!deleted,"eligible",false,"eligibilityReason",deleted?"ENDED":"IN_PROGRESS",
-                "progressValue",source.get("progressValue"),"targetValue",source.get("targetValue"),"rewards",List.of(),"results",List.of(),"myRewardAmount",null,"userStatus",source.get("userStatus")));
+        if(rule==null){source=new LinkedHashMap<>(source);source.remove("authoredRewardName");return ApiResult.ok(values("event",source,"rules",Map.of(),"enabled",!deleted,"eligible",false,"eligibilityReason",deleted?"ENDED":"IN_PROGRESS",
+                "progressValue",source.get("progressValue"),"targetValue",source.get("targetValue"),"rewards",List.of(),"results",List.of(),"myRewardAmount",null,"userStatus",source.get("userStatus")));}
         var r=policies.rules(rule);var progress=progress(id,rule,r,source);var event=project(id,source,rule,locale);
         if(deleted&&!Boolean.TRUE.equals(progress.get("eligible"))&&!Set.of("JOINED","CLAIMABLE","CLAIMED").contains(text(event.get("userStatus")))
                 &&db.row("SELECT 1 FROM nx_growth_event_claim WHERE event_code=? AND user_id=? LIMIT 1",code,id)==null
@@ -131,7 +138,7 @@ public class H4EventEngine {
         if(rule==null||!"IN_PROGRESS".equals(phase(rule)))return;
         var reminder=db.row("SELECT notified_at FROM nx_growth_event_reminder WHERE event_code=? AND user_id=? FOR UPDATE",code,id);
         if(reminder==null||reminder.get("notified_at")!=null)return;
-        var account=user(id,false);String language=text(account.get("language"));String locale=language.startsWith("zh")?"zh":language.startsWith("vi")?"vi":"en";
+        var account=user(id,false);String language=text(account.get("language"));String locale=InterfaceLanguages.baseCode(language);
         var event=events.eventState(id,locale).stream().filter(e->code.equals(e.get("eventCode"))).findFirst().orElseThrow();
         int delivered=db.write("""
             INSERT INTO nx_notification(biz_no,user_id,type,title,body,cta_label,cta_href,push_status,pushed_at,created_at,updated_at,is_deleted)

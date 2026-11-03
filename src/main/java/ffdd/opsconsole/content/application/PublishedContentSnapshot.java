@@ -5,7 +5,7 @@ import java.util.Map;
 
 /** Backward-compatible publication envelope: drafts retain, but never replace, the public revision. */
 public final class PublishedContentSnapshot {
-    public static final int MAX_STORED_BYTES = 65_535; // nx_config_item.config_value: MySQL TEXT
+    public static final int MAX_STORED_BYTES = 1_048_576; // Includes the retained published version while editing a draft.
 
     private PublishedContentSnapshot() { }
 

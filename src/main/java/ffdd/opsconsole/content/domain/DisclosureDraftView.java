@@ -1,5 +1,7 @@
 package ffdd.opsconsole.content.domain;
 
+import java.util.Map;
+
 public record DisclosureDraftView(
         String version,
         String jurisdiction,
@@ -11,7 +13,22 @@ public record DisclosureDraftView(
         String en,
         String status,
         long revision,
+        String contentHash,
+        Map<String, String> translations) {
+    public DisclosureDraftView(
+        String version,
+        String jurisdiction,
+        String languageScope,
+        String effectiveDate,
+        boolean requiresReack,
+        String zh,
+        String vi,
+        String en,
+        String status,
+        long revision,
         String contentHash) {
+        this(version, jurisdiction, languageScope, effectiveDate, requiresReack, zh, vi, en, status, revision, contentHash, Map.of());
+    }
 
     public DisclosureDraftView(String version, String jurisdiction, String languageScope, String effectiveDate,
                                boolean requiresReack, String zh, String vi, String en, String status) {

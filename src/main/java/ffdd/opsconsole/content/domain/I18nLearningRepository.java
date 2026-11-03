@@ -42,6 +42,16 @@ public interface I18nLearningRepository {
 
     I18nMessagePairView saveMessagePair(String messageKey, String zh, String en, String vi, String status, LocalDateTime now);
 
+    default I18nMessagePairView saveMessagePair(String messageKey, String zh, String en, String vi,
+            Map<String, String> translations, String status, LocalDateTime now) {
+        return saveMessagePair(messageKey, zh, en, vi, status, now);
+    }
+
+    default I18nMessagePairView saveMessageDraftCas(String messageKey, String zh, String en, String vi,
+            Map<String, String> translations, String expectedVersion, LocalDateTime now) {
+        return saveMessageDraftCas(messageKey, zh, en, vi, expectedVersion, now);
+    }
+
     /**
      * Compatibility fallback for in-memory and test adapters.
      * The production MyBatis adapter overrides this with one database-atomic CAS.

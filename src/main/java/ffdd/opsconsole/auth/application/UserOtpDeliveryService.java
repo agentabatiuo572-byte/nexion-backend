@@ -49,6 +49,10 @@ public class UserOtpDeliveryService {
     }
 
     public void deliver(String countryCode, String phone, String challengeNo, String code, int ttlMinutes) {
+        deliver(countryCode, phone, challengeNo, code, ttlMinutes, null);
+    }
+
+    public void deliver(String countryCode, String phone, String challengeNo, String code, int ttlMinutes, String language) {
         if (!OtpPhoneCanonicalizer.isSupportedCountryCode(countryCode)) {
             throw new IllegalStateException("USER_OTP_DELIVERY_UNAVAILABLE");
         }
@@ -63,7 +67,7 @@ public class UserOtpDeliveryService {
             if (!itnioSmsClient.available()) {
                 throw new IllegalStateException("USER_OTP_DELIVERY_UNAVAILABLE");
             }
-            itnioSmsClient.send(countryCode, phone, challengeNo, code, ttlMinutes);
+            itnioSmsClient.send(countryCode, phone, challengeNo, code, ttlMinutes, language);
             return;
         }
         throw new IllegalStateException("USER_OTP_DELIVERY_UNAVAILABLE");

@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.infrastructure;
 
 import ffdd.opsconsole.content.domain.ContentExperimentRuntimeRepository;
+import ffdd.opsconsole.content.domain.MessageTranslations;
 import ffdd.opsconsole.content.mapper.ContentExperimentRuntimeMapper;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -110,7 +111,8 @@ public class MybatisContentExperimentRuntimeRepository implements ContentExperim
 
     private Optional<CopyBody> copy(ContentExperimentRuntimeRows.CopyBodyRow row) {
         return row == null ? Optional.empty() : Optional.of(new CopyBody(
-                row.getCopyKey(), row.getVersion(), row.getZhText(), row.getEnText(), row.getViText()));
+                row.getCopyKey(), row.getVersion(), row.getZhText(), row.getEnText(), row.getViText(),
+                MessageTranslations.read(row.getTranslationsJson())));
     }
 
     private long value(Long value) {

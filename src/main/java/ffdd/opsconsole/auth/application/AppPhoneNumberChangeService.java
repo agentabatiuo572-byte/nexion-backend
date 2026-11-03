@@ -1,5 +1,7 @@
 package ffdd.opsconsole.auth.application;
 
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
+
 import ffdd.opsconsole.auth.mapper.AppPhoneNumberChangeMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -119,8 +121,8 @@ public class AppPhoneNumberChangeService {
                 country, nextPhone, oldCode, newCode) != 1) {
             throw new IllegalStateException("USER_PHONE_CHANGE_CHALLENGE_NOT_CREATED");
         }
-        delivery.deliver(user.getCountryCode(), user.getPhone(), changeNo + "-OLD", oldCode, 10);
-        delivery.deliver(country, nextPhone, changeNo + "-NEW", newCode, 10);
+        delivery.deliver(user.getCountryCode(), user.getPhone(), changeNo + "-OLD", oldCode, 10, InterfaceLanguages.baseCode(user.getLanguage()));
+        delivery.deliver(country, nextPhone, changeNo + "-NEW", newCode, 10, InterfaceLanguages.baseCode(user.getLanguage()));
         record(userId, "USER_PHONE_NUMBER_CHANGE_CHALLENGE_SENT", changeNo, Map.of("delivery", "OLD_AND_NEW"));
         return challengeResponse(changeNo, user.getPhone(), nextPhone, 600);
     }

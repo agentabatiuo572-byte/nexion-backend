@@ -14,5 +14,6 @@ public class I18nMessageVersionEntity extends BaseEntity {
     private String zhValue;
     private String enValue;
     private String viValue;
+    private String translationsJson;
     private String status;
 }

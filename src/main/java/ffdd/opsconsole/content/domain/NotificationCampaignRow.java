@@ -21,7 +21,22 @@ public record NotificationCampaignRow(
         NotificationAudienceTarget audienceTarget,
         String ctaLabel,
         String ctaHref,
-        long revision) {
+        long revision,
+        java.util.Map<String, NotificationTranslation> translations) {
+    public NotificationCampaignRow(
+            String id, String name, String kind,
+            String tier, String audience, String reach,
+            String status, String schedule, String sent,
+            String read, String bodyEn, String bodyZh,
+            String bodyVi, String swipeTo, BigDecimal budget,
+            NotificationAudienceTarget audienceTarget, String ctaLabel, String ctaHref,
+            long revision) {
+        this(id, name, kind, tier, audience, reach,
+                status, schedule, sent, read, bodyEn, bodyZh,
+                bodyVi, swipeTo, budget, audienceTarget, ctaLabel, ctaHref,
+                revision, java.util.Map.of());
+    }
+
 
     public NotificationCampaignRow(
             String id, String name, String kind, String tier, String audience, String reach,

@@ -7,6 +7,8 @@ import ffdd.opsconsole.content.domain.NotificationCampaignRepository;
 import ffdd.opsconsole.content.domain.NotificationCampaignRow;
 import ffdd.opsconsole.content.domain.NotificationCampaignStats;
 import ffdd.opsconsole.content.domain.NotificationAudienceCatalog;
+import ffdd.opsconsole.content.domain.NotificationTranslation;
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import ffdd.opsconsole.content.domain.NotificationAudienceEstimateView;
 import ffdd.opsconsole.content.domain.NotificationAudienceOption;
 import ffdd.opsconsole.content.domain.NotificationAudienceTarget;
@@ -53,7 +55,6 @@ public class OpsNotificationCampaignService {
     private static final Set<String> ACTIVE_STATUSES = Set.of("draft", "scheduled", "sending", "sent", "failed", "cancelled");
     private static final String CURRENT_PHASE_KEY = "growth.phase.current";
     private static final List<String> PHASES = List.of("P1", "P2", "P3", "P4", "P5", "P6");
-    private static final Set<String> LANGUAGES = Set.of("all", "zh", "vi", "en");
     private static final Set<String> KINDS = Set.of("system", "commission", "team", "staking", "market", "genesis");
     private static final List<NotificationAudienceOption> CTA_ROUTES = List.of(
             new NotificationAudienceOption("", "无跳转"),
@@ -434,6 +435,9 @@ public class OpsNotificationCampaignService {
                 || (StringUtils.hasText(request.bodyEn()) && !placeholders(request.bodyZh()).equals(placeholders(request.bodyEn())))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_PLACEHOLDERS_MISMATCH");
         }
+        if (!validTranslations(request.translations(), request.titleZh(), request.bodyZh())) {
+            return ApiResult.fail(422, "NOTIFICATION_TRANSLATIONS_INVALID");
+        }
         if (!TIERS.contains(normalizeTier(request.tier()))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_TIER_UNSUPPORTED");
         }
@@ -469,6 +473,9 @@ public class OpsNotificationCampaignService {
                 || request.bodyZh().trim().length() > 4000 || request.bodyVi().trim().length() > 4000
                 || trimToEmpty(request.bodyEn()).length() > 4000) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_TEXT_TOO_LONG");
+        }
+        if (!validTranslations(request.translations(), request.titleZh(), request.bodyZh())) {
+            return ApiResult.fail(422, "NOTIFICATION_TRANSLATIONS_INVALID");
         }
         if (!TIERS.contains(normalizeTier(request.tier()))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_TIER_UNSUPPORTED");
@@ -510,6 +517,20 @@ public class OpsNotificationCampaignService {
         return null;
     }
 
+    private boolean validTranslations(Map<String, NotificationTranslation> translations, String title, String body) {
+        if (translations == null) return true;
+        return translations.entrySet().stream().allMatch(entry -> {
+            NotificationTranslation value = entry.getValue();
+            if ("en".equals(entry.getKey())) return value != null && value.title().isEmpty()
+                    && value.body().isEmpty() && value.ctaLabel().length() <= 80;
+            return InterfaceLanguages.isAdditional(entry.getKey()) && value != null
+                    && value.title().length() <= 160 && value.body().length() <= 4000 && value.ctaLabel().length() <= 80
+                    && !JSON_LIKE_PATTERN.matcher(value.body()).find()
+                    && (value.title().isEmpty() || placeholders(title).equals(placeholders(value.title())))
+                    && (value.body().isEmpty() || placeholders(body).equals(placeholders(value.body())));
+        });
+    }
+
     private NotificationCampaignCreateRequest normalizeCreate(NotificationCampaignCreateRequest request) {
         return new NotificationCampaignCreateRequest(
                 request.name().trim(),
@@ -526,7 +547,7 @@ public class OpsNotificationCampaignService {
                 request.reason().trim(),
                 normalizeKind(request.kind()),
                 trimToEmpty(request.ctaLabel()),
-                trimToEmpty(request.ctaHref()));
+                trimToEmpty(request.ctaHref()), request.translations());
     }
 
     private NotificationCampaignDraftRequest normalizeDraft(NotificationCampaignDraftRequest request) {
@@ -545,7 +566,7 @@ public class OpsNotificationCampaignService {
                 request.reason().trim(),
                 normalizeKind(request.kind()),
                 trimToEmpty(request.ctaLabel()),
-                trimToEmpty(request.ctaHref()));
+                trimToEmpty(request.ctaHref()), request.expectedRevision(), request.translations());
     }
 
     private NotificationCampaignRow findCampaign(String campaignNo) {
@@ -610,7 +631,13 @@ public class OpsNotificationCampaignService {
                         new NotificationAudienceOption("all", "全部语言"),
                         new NotificationAudienceOption("zh", "中文"),
                         new NotificationAudienceOption("vi", "越南语"),
-                        new NotificationAudienceOption("en", "英文")),
+                        new NotificationAudienceOption("en", "英文"),
+                        new NotificationAudienceOption("id", "印尼语"),
+                        new NotificationAudienceOption("ms", "马来语"),
+                        new NotificationAudienceOption("fil", "菲律宾语"),
+                        new NotificationAudienceOption("ru", "俄语"),
+                        new NotificationAudienceOption("kk", "哈萨克语"),
+                        new NotificationAudienceOption("uz", "乌兹别克语")),
                 "AND");
     }
 
@@ -663,7 +690,7 @@ public class OpsNotificationCampaignService {
         if (PHASES.indexOf(target.phaseMin()) > PHASES.indexOf(target.phaseMax())) {
             return "NOTIFICATION_AUDIENCE_PHASE_RANGE_INVALID";
         }
-        if (!LANGUAGES.contains(target.language())) {
+        if (!"all".equals(target.language()) && !InterfaceLanguages.CODES.contains(target.language())) {
             return "NOTIFICATION_AUDIENCE_LANGUAGE_UNSUPPORTED";
         }
         if (target.registrationDaysMin() == null || target.registrationDaysMin() < 0 || target.registrationDaysMin() > 36500) {

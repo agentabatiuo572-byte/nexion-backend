@@ -236,6 +236,36 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 4000
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "ms": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "fil": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "ru": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "kk": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "uz": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
           }
         },
         "required": [
@@ -4708,6 +4738,36 @@
             "maxLength": 4000
           },
           "vi": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "ms": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "fil": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "ru": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "kk": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "uz": {
             "type": "string",
             "minLength": 1,
             "maxLength": 4000

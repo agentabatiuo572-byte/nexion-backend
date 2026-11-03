@@ -145,6 +145,12 @@ public class MybatisNovaRepository implements NovaRepository {
     }
 
     @Override
+    public void setTemplateTranslations(String channel, String previous, String translations) {
+        if (mapper.setTemplateTranslations(channel, previous, translations) != 1)
+            throw new ffdd.opsconsole.shared.exception.BizException(409, "NOVA_TEMPLATE_CONCURRENT_MODIFICATION");
+    }
+
+    @Override
     public void updateTemplateStatus(String channel, String status, String operator, String reason) {
         ensureTables();
         mapper.updateTemplateStatus(channel, status, operator, reason);

@@ -57,7 +57,9 @@ public interface DayOneInstanceMapper {
             SELECT m.id sourceMissionId,b.id sourceBindingId,m.mission_code questCode,m.mission_name name,
                    m.mission_category category,m.action_route actionRoute,m.reward_points rewardPoints,
                    b.binding_code bindingCode,b.producer producer,
-                   b.event_type eventType,b.user_id_field userIdField
+                   b.event_type eventType,b.user_id_field userIdField,
+                   (SELECT JSON_EXTRACT(IF(JSON_VALID(config_value),config_value,'{}'),CONCAT('$.mission."',m.mission_code,'"'))
+                      FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1) nameTranslations
               FROM nx_mission m
               JOIN nx_growth_quest_event_binding b
                 ON b.quest_code=m.mission_code AND b.status=1 AND b.is_deleted=0
@@ -84,10 +86,10 @@ public interface DayOneInstanceMapper {
     @Insert("""
             INSERT INTO nx_growth_day_one_instance_item
               (instance_id,source_mission_id,quest_code,name,category,action_route,reward_points,
-               ordinal,completion_mode,created_at,updated_at,is_deleted)
+               ordinal,name_translations_json,completion_mode,created_at,updated_at,is_deleted)
             VALUES
               (#{instanceId},#{sourceMissionId},#{questCode},#{name},#{category},#{actionRoute},
-               #{rewardPoints},#{ordinal},'CANONICAL_EVENT',NOW(),NOW(),0)
+               #{rewardPoints},#{ordinal},#{nameTranslations},'CANONICAL_EVENT',NOW(),NOW(),0)
             """)
     int insertItem(
             @Param("instanceId") Long instanceId,
@@ -97,7 +99,8 @@ public interface DayOneInstanceMapper {
             @Param("category") String category,
             @Param("actionRoute") String actionRoute,
             @Param("rewardPoints") int rewardPoints,
-            @Param("ordinal") int ordinal);
+            @Param("ordinal") int ordinal,
+            @Param("nameTranslations") String nameTranslations);
 
     @Insert("""
             INSERT INTO nx_growth_day_one_instance_binding
@@ -182,7 +185,8 @@ public interface DayOneInstanceMapper {
             String bindingCode,
             String producer,
             String eventType,
-            String userIdField) {
+            String userIdField,
+            String nameTranslations) {
     }
 
     record DayOneSnapshotBinding(

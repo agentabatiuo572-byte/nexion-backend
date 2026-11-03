@@ -27,6 +27,7 @@ import ffdd.opsconsole.user.mapper.UserOpsMapper;
 import jakarta.annotation.PostConstruct;
 import java.util.List;
 import java.util.Locale;
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -134,7 +135,7 @@ public class AppUserRegistrationService {
         userMapper.resetLoginFailures(userId);
         accountCreator.ensureWallet(birth);
         String eventId = outboxService.publish("USER_REGISTRATION", String.valueOf(userId),
-                "auth.register_completed", Map.of("userId", userId));
+                "auth.register_completed", Map.of("userId", userId, "locale", "en"));
         accountCreator.complete(birth, eventId);
         if (sponsor != null) outboxService.publish("USER_REFERRAL", String.valueOf(userId),
                 "referral.bound", Map.of("userId", userId, "sponsorUserId", sponsor.getId(),
@@ -212,8 +213,10 @@ public class AppUserRegistrationService {
         }
         if(h5) mapper.recordH5Challenge(challengeNo,device,force);
         try {
-            otpDeliveryService.deliver(
-                    countryCode, phone, challengeNo, code, policy.ttlMinutes());
+            UserEntity owner = findUser(countryCode, phone, audience == UserAuthEnvironment.SANDBOX ? 1 : 0);
+            String language = owner == null ? request.language()
+                    : ffdd.opsconsole.shared.i18n.InterfaceLanguages.baseCode(owner.getLanguage());
+            otpDeliveryService.deliver(countryCode, phone, challengeNo, code, policy.ttlMinutes(), language);
         } catch (RuntimeException exception) {
             mapper.invalidateActiveInEnvironment(countryCode, phone, audience.name());
             throw new BizException(503, "USER_OTP_DELIVERY_FAILED");
@@ -337,7 +340,7 @@ public class AppUserRegistrationService {
                 || !StringUtils.hasText(request.code())
                 || !request.code().trim().matches("\\d{6}")
                 || (StringUtils.hasText(request.language())
-                    && !java.util.Set.of("en", "vi", "zh").contains(request.language().trim().toLowerCase(java.util.Locale.ROOT)))
+                    && !InterfaceLanguages.CODES.contains(request.language().trim().toLowerCase(Locale.ROOT)))
                 || !validPassword(request.password(), request.phone())) {
             return ApiResult.fail(422, "USER_REGISTRATION_REQUEST_INVALID");
         }
@@ -414,7 +417,7 @@ public class AppUserRegistrationService {
                 "USER_REGISTRATION",
                 String.valueOf(user.getId()),
                 "auth.register_completed",
-                Map.of("userId", user.getId()));
+                Map.of("userId", user.getId(), "locale", InterfaceLanguages.baseCode(user.getLanguage())));
         accountCreator.complete(birth, registrationEventId);
         if (sponsor != null) {
             outboxService.publish(

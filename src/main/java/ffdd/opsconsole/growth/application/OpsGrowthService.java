@@ -43,6 +43,7 @@ import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
@@ -1946,7 +1947,7 @@ public class OpsGrowthService implements AuditReplayable {
         if (promoConfig.matches()) {
             return updatePromoBannerConfig(mapper, promoConfig.group(1), configKey, idempotencyKey, request);
         }
-        Matcher localizedContent = Pattern.compile("^content\\.mission\\.([A-Za-z0-9_-]{2,64})\\.name\\.(en|zh|vi)$")
+        Matcher localizedContent = Pattern.compile("^content\\.mission\\.([A-Za-z0-9_-]{2,64})\\.name\\.(" + String.join("|", InterfaceLanguages.CODES) + ")$")
                 .matcher(configKey == null ? "" : configKey);
         if (localizedContent.matches()) {
             if (mapper.countByMissionCode(localizedContent.group(1)) != 1L) {
@@ -3434,7 +3435,7 @@ public class OpsGrowthService implements AuditReplayable {
         if (questEventMapper.isEmpty()) return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
         if (eventCode == null || !eventCode.matches("[A-Za-z0-9_-]{2,64}")
                 || !Set.of("name", "description", "rewardName").contains(field)
-                || !Set.of("en", "zh", "vi").contains(locale)) {
+                || !InterfaceLanguages.CODES.contains(locale)) {
             return validation("CONTENT_LOCALE_INVALID");
         }
         GrowthQuestEventMapper mapper = questEventMapper.get();
@@ -5373,7 +5374,8 @@ public class OpsGrowthService implements AuditReplayable {
             String configKey, String idempotencyKey, GrowthConfigUpdateRequest request) {
         String value;
         try {
-            value = normalizePlainText(request.value(), 512);
+            value = InterfaceLanguages.isAdditional(locale) && request.value() != null && request.value().isBlank()
+                    ? "" : normalizePlainText(request.value(), 512);
         } catch (IllegalArgumentException ex) {
             return validation(ex.getMessage());
         }
@@ -5384,8 +5386,8 @@ public class OpsGrowthService implements AuditReplayable {
         String oldValue = String.valueOf(languages.getOrDefault(field, ""));
         if (!expectedTextMatches(request.expectedValue(), oldValue)) return validation("CONTENT_LOCALE_STALE");
         if (oldValue.equals(value)) return validation("CONTENT_LOCALE_NO_CHANGE");
-        languages.put(field, value);
-        item.put(locale, languages);
+        if (value.isEmpty()) languages.remove(field); else languages.put(field, value);
+        if (languages.isEmpty()) item.remove(locale); else item.put(locale, languages);
         entities.put(code, item);
         root.put(entity, entities);
         writeJsonConfig(LOCALIZED_CONTENT_KEY, root, "H3/H4 operator-authored localized content", "growth");

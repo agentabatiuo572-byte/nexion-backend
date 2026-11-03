@@ -74,6 +74,7 @@ public interface NovaMapper extends BaseMapper<Object> {
               template_name VARCHAR(128) NOT NULL,
               cta VARCHAR(255) NOT NULL,
               version VARCHAR(32) NOT NULL,
+              translations_json JSON NULL,
               title_zh VARCHAR(255) NOT NULL DEFAULT '',
               body_zh TEXT NOT NULL,
               title_vi VARCHAR(255) NOT NULL DEFAULT '',
@@ -411,6 +412,14 @@ public interface NovaMapper extends BaseMapper<Object> {
             """)
     int deleteChannel(@Param("key") String key, @Param("operator") String operator, @Param("reason") String reason);
 
+    @Update("""
+            UPDATE nx_nova_template SET translations_json=#{translations}
+            WHERE channel_key=#{channel} AND status='DRAFT' AND is_deleted=0
+              AND translations_json <=> CAST(#{previous} AS JSON)
+            """)
+    int setTemplateTranslations(@Param("channel") String channel, @Param("previous") String previous,
+            @Param("translations") String translations);
+
     @Select("""
             SELECT channel_key AS channel,
                    template_name AS name,
@@ -422,7 +431,7 @@ public interface NovaMapper extends BaseMapper<Object> {
                    body_vi AS bodyVi,
                    title_en AS titleEn,
                    body_en AS bodyEn,
-                   status
+                   status, translations_json AS translationsJson
               FROM nx_nova_template
              WHERE is_deleted = 0
              ORDER BY channel_key ASC
@@ -440,7 +449,7 @@ public interface NovaMapper extends BaseMapper<Object> {
                    body_vi AS bodyVi,
                    title_en AS titleEn,
                    body_en AS bodyEn,
-                   status
+                   status, translations_json AS translationsJson
               FROM nx_nova_template
              WHERE is_deleted = 0
                AND channel_key = #{channel}
@@ -470,6 +479,7 @@ public interface NovaMapper extends BaseMapper<Object> {
                 body_vi = VALUES(body_vi),
                 title_en = VALUES(title_en),
                 body_en = VALUES(body_en),
+                translations_json = NULL,
                 status = VALUES(status),
                 operator = VALUES(operator),
                 reason = VALUES(reason),

@@ -47,6 +47,7 @@ public class PlatformComputeConfigController {
                 platformConfig.activeValue("G.staking.app_visible").map("true"::equalsIgnoreCase).orElse(true));
         return ApiResult.ok(new PlatformComputeConfigView(
                 featureFlags, publicStats.getData(), compute.onlineBonus(),
-                compute.computerCompute(), compute.phoneBinding(), experience.getData(), compute.updatedAt()));
+                compute.computerCompute(), compute.phoneBinding(), experience.getData(), compute.updatedAt(),
+                experienceConfigService.interfaceLanguages()));
     }
 }

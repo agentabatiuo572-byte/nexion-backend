@@ -1,6 +1,7 @@
 package ffdd.opsconsole.platform.application;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
@@ -14,10 +15,13 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.growth.application.OpsGrowthService;
 import java.net.URI;
 import java.time.LocalDateTime;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -34,6 +38,7 @@ public class PlatformExperienceConfigService {
     public static final String BASE_URL_KEY = "platform.experience.share.base_url";
     public static final String CHANNELS_KEY = "platform.experience.share.channels";
     public static final String APP_DOWNLOAD_KEY = "platform.experience.app_download";
+    private static final String LANGUAGES_KEY = "platform.experience.interface_languages";
     private static final String GROUP = "platform_app_experience";
     private static final Set<String> CHANNEL_KEYS = Set.of(
             "zalo", "telegram", "whatsapp", "messenger", "sms", "x", "copy", "poster", "system");
@@ -62,7 +67,29 @@ public class PlatformExperienceConfigService {
                 share.map(value -> List.of("nx_config_item:" + BASE_URL_KEY,
                         "nx_config_item:" + CHANNELS_KEY,
                         "nx_config_item:" + APP_DOWNLOAD_KEY)).orElse(List.of()),
-                LocalDateTime.now().toString()));
+                LocalDateTime.now().toString(), interfaceLanguages()));
+    }
+
+    public List<String> interfaceLanguages() {
+        return config.activeValue(LANGUAGES_KEY).map(value -> {
+            try {
+                List<String> languages = configuredLanguages(objectMapper.readTree(value));
+                if (languages != null) return languages;
+            } catch (JsonProcessingException ex) {
+                throw new BizException(503, "PLATFORM_EXPERIENCE_LANGUAGES_INVALID");
+            }
+            throw new BizException(503, "PLATFORM_EXPERIENCE_LANGUAGES_INVALID");
+        }).orElse(InterfaceLanguages.CODES);
+    }
+
+    private List<String> configuredLanguages(JsonNode value) {
+        if (value == null || !value.isArray()) return null;
+        Set<String> selected = new HashSet<>();
+        for (JsonNode item : value) {
+            if (!item.isTextual() || !InterfaceLanguages.CODES.contains(item.textValue()) || !selected.add(item.textValue())) return null;
+        }
+        return selected.containsAll(InterfaceLanguages.BASE)
+                ? InterfaceLanguages.CODES.stream().filter(selected::contains).toList() : null;
     }
 
     public ApiResult<PlatformComputeConfigView.ShareConfig> publicConfig(boolean officialLinkFragments) {
@@ -92,15 +119,19 @@ public class PlatformExperienceConfigService {
         }
         String validation = validate(request);
         if (validation != null) return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), validation);
+        List<String> languages = configuredLanguages(request.interfaceLanguages());
+        if (request.interfaceLanguages() != null && languages == null) {
+            return ApiResult.fail(422, "PLATFORM_EXPERIENCE_LANGUAGES_INVALID");
+        }
         String hash = requestHash(request);
         ApiResult result = idempotencyService.execute(
                 "A3_PLATFORM_EXPERIENCE", idempotencyKey.trim(), hash, ApiResult.class,
-                () -> updateOnce(idempotencyKey.trim(), request));
+                () -> updateOnce(idempotencyKey.trim(), request, languages));
         return (ApiResult<PlatformExperienceConfigView>) result;
     }
 
     private ApiResult<PlatformExperienceConfigView> updateOnce(
-            String idempotencyKey, PlatformExperienceConfigUpdateRequest request) {
+            String idempotencyKey, PlatformExperienceConfigUpdateRequest request, List<String> languages) {
         long current = readVersion(true).orElse(0L);
         if (request.expectedVersion() == null || request.expectedVersion() != current) {
             return ApiResult.fail(409, "PLATFORM_EXPERIENCE_VERSION_CONFLICT");
@@ -110,27 +141,30 @@ public class PlatformExperienceConfigService {
             return ApiResult.fail(homeFlags.getCode(), homeFlags.getMessage());
         }
         PlatformComputeConfigView.ShareConfig next = toShare(request);
-        String before = readShare(true).map(this::json).orElse("<unavailable>");
+        Optional<PlatformComputeConfigView.ShareConfig> previousShare = readShare(true);
+        List<String> previousLanguages = interfaceLanguages();
+        List<String> nextLanguages = languages == null ? previousLanguages : languages;
         config.upsertAdminValue(BASE_URL_KEY, next.baseUrl(), "STRING", GROUP, "A3 App experience base URL");
         config.upsertAdminValue(CHANNELS_KEY, json(next.channels()), "JSON", GROUP, "A3 App share channels");
         config.upsertAdminValue(APP_DOWNLOAD_KEY, json(next.appDownload()), "JSON", GROUP, "A3 App installer metadata");
+        if (languages != null) {
+            config.upsertAdminValue(LANGUAGES_KEY, json(languages), "JSON", GROUP, "A3 enabled interface languages");
+        }
         config.upsertAdminValue(VERSION_KEY, String.valueOf(current + 1), "NUMBER", GROUP, "A3 App experience CAS version");
-        auditLogService.recordRequired(AuditLogWriteRequest.builder()
-                .action("A3_PLATFORM_EXPERIENCE_CHANGED")
-                .resourceType("A3_PLATFORM_EXPERIENCE")
-                .resourceId(BASE_URL_KEY)
-                .actorType("ADMIN")
-                .actorUsername(AdminActorResolver.resolve(null))
-                .result("SUCCESS")
-                .riskLevel("MEDIUM")
-                .detail(Map.of(
-                        "before", before,
-                        "after", json(next),
-                        "expectedVersion", current,
-                        "version", current + 1,
-                        "reason", request.reason().trim(),
-                        "idempotencyKey", idempotencyKey))
-                .build());
+        boolean languagesChanged = !previousLanguages.equals(nextLanguages);
+        if (!languagesChanged || previousShare.filter(next::equals).isEmpty()) {
+            auditChange(BASE_URL_KEY, Map.of(
+                    "before", previousShare.map(this::json).orElse("<unavailable>"), "after", json(next),
+                    "expectedVersion", current, "version", current + 1,
+                    "reason", request.reason().trim(), "idempotencyKey", idempotencyKey));
+        }
+        if (languagesChanged) {
+            // Share templates can exceed the audit detail limit. The language change remains readable on its own.
+            auditChange(LANGUAGES_KEY, Map.of(
+                    "previousInterfaceLanguages", previousLanguages, "interfaceLanguages", nextLanguages,
+                    "expectedVersion", current, "version", current + 1,
+                    "reason", request.reason().trim(), "idempotencyKey", idempotencyKey));
+        }
         return ApiResult.ok(new PlatformExperienceConfigView(
                 current + 1, next, true,
                 homeFlags.getData().homeNewcomerTasksEnabled(),
@@ -138,7 +172,14 @@ public class PlatformExperienceConfigService {
                 List.of("nx_config_item:" + BASE_URL_KEY,
                         "nx_config_item:" + CHANNELS_KEY,
                         "nx_config_item:" + APP_DOWNLOAD_KEY),
-                LocalDateTime.now().toString()));
+                LocalDateTime.now().toString(), nextLanguages));
+    }
+
+    private void auditChange(String key, Map<String, Object> detail) {
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
+                .action("A3_PLATFORM_EXPERIENCE_CHANGED").resourceType("A3_PLATFORM_EXPERIENCE")
+                .resourceId(key).actorType("ADMIN").actorUsername(AdminActorResolver.resolve(null))
+                .result("SUCCESS").riskLevel("MEDIUM").detail(detail).build());
     }
 
     private String validate(PlatformExperienceConfigUpdateRequest request) {
@@ -322,7 +363,10 @@ public class PlatformExperienceConfigService {
     }
 
     private String requestHash(PlatformExperienceConfigUpdateRequest request) {
-        return Integer.toHexString(String.valueOf(request).hashCode());
+        String fields = request.toString();
+        // Keep the original fingerprint for old clients replaying an in-flight A3 command.
+        if (request.interfaceLanguages() == null) fields = fields.substring(0, fields.length() - ", interfaceLanguages=null]".length()) + "]";
+        return Integer.toHexString(fields.hashCode());
     }
 
     private String json(Object value) {

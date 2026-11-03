@@ -12,7 +12,13 @@ public record PlatformComputeConfigView(
         ComputeConfigView computerCompute,
         ComputeConfigView.PhoneBindingView phoneBinding,
         ShareConfig share,
-        String updatedAt) {
+        String updatedAt,
+        List<String> interfaceLanguages) {
+    public PlatformComputeConfigView(FeatureFlags featureFlags, Map<String, Object> publicStats, OnlineBonus onlineBonus,
+            ComputeConfigView computerCompute, ComputeConfigView.PhoneBindingView phoneBinding, ShareConfig share,
+            String updatedAt) {
+        this(featureFlags, publicStats, onlineBonus, computerCompute, phoneBinding, share, updatedAt, null);
+    }
     public record FeatureFlags(
             boolean computeShareEnabled,
             boolean homeNewcomerTasksEnabled,

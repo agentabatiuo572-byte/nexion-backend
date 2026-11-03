@@ -168,7 +168,7 @@ public class PublishedHowContentService {
         Map<String, Object> locales = map(entry == null ? null : entry.get("locales"));
         if (locales == null || locales.isEmpty() || locales.size() > 10) return false;
         for (Map.Entry<String, Object> item : locales.entrySet()) {
-            if (!item.getKey().matches("[a-z]{2}(?:-[a-z0-9]{2,8})?")) return false;
+            if (!item.getKey().matches("(?:[a-z]{2}|fil)(?:-[a-z0-9]{2,8})?")) return false;
             if (!validLocale(map(item.getValue()))) return false;
         }
         return true;

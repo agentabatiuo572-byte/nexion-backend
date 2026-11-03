@@ -22,14 +22,23 @@ import org.springframework.web.bind.annotation.RestController;
 public class AppRiskDisclosureController {
     private final AppRiskDisclosureService service;
 
-    @GetMapping("/current")
     public ApiResult<AppRiskDisclosureView> current(Authentication authentication) {
         return service.current(authenticatedUserId(authentication));
     }
 
-    @GetMapping("/public/current")
-    public ApiResult<AppRiskDisclosureView> publicCurrent(@RequestParam(required = false) String country) {
+    @GetMapping("/current")
+    public ApiResult<AppRiskDisclosureView> current(Authentication authentication, @RequestParam(required = false) String locale) {
+        return locale == null ? current(authentication) : service.current(authenticatedUserId(authentication), locale);
+    }
+
+    public ApiResult<AppRiskDisclosureView> publicCurrent(String country) {
         return service.publicCurrent(country);
+    }
+
+    @GetMapping("/public/current")
+    public ApiResult<AppRiskDisclosureView> publicCurrent(@RequestParam(required = false) String country,
+                                                         @RequestParam(required = false) String locale) {
+        return locale == null ? publicCurrent(country) : service.publicCurrent(country, locale);
     }
 
     @PostMapping("/acknowledgment")

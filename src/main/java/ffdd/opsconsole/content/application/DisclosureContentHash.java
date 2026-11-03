@@ -9,6 +9,8 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
+import ffdd.opsconsole.content.domain.MessageTranslations;
 
 public final class DisclosureContentHash {
     private DisclosureContentHash() {}
@@ -23,6 +25,7 @@ public final class DisclosureContentHash {
         add(digest, request.zh());
         add(digest, request.vi());
         add(digest, request.en());
+        addTranslations(digest, "disclosure", request.translations());
         List<DisclosureChapterInput> chapters = request.chapters() == null ? List.of() : request.chapters();
         for (DisclosureChapterInput chapter : chapters) {
             add(digest, chapter.no());
@@ -32,6 +35,8 @@ public final class DisclosureContentHash {
             add(digest, chapter.zhBody());
             add(digest, chapter.viBody());
             add(digest, chapter.enBody());
+            addTranslations(digest, "chapter.title", chapter.titleTranslations());
+            addTranslations(digest, "chapter.body", chapter.bodyTranslations());
         }
         return HexFormat.of().formatHex(digest.digest());
     }
@@ -42,8 +47,8 @@ public final class DisclosureContentHash {
                 draft.requiresReack(), draft.zh(), draft.vi(), draft.en(),
                 chapters.stream().map(chapter -> new DisclosureChapterInput(
                         chapter.no(), chapter.zh(), chapter.vi(), chapter.en(),
-                        chapter.zhBody(), chapter.viBody(), chapter.enBody())).toList(),
-                null, null, "system", "snapshot"));
+                        chapter.zhBody(), chapter.viBody(), chapter.enBody(), chapter.titleTranslations(), chapter.bodyTranslations())).toList(),
+                null, null, "system", "snapshot", draft.translations()));
     }
 
     public static String ofParts(String... parts) {
@@ -52,6 +57,14 @@ public final class DisclosureContentHash {
             for (String part : parts) add(digest, part);
         }
         return HexFormat.of().formatHex(digest.digest());
+    }
+
+    private static void addTranslations(MessageDigest digest, String field, Map<String, String> values) {
+        MessageTranslations.clean(values).forEach((code, text) -> {
+            add(digest, field);
+            add(digest, code);
+            add(digest, text);
+        });
     }
 
     private static void add(MessageDigest digest, String value) {

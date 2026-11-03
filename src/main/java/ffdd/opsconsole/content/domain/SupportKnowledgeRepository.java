@@ -2,6 +2,7 @@ package ffdd.opsconsole.content.domain;
 
 import ffdd.opsconsole.content.dto.SupportFaqUpsertRequest;
 import ffdd.opsconsole.content.dto.SupportSlaUpdateRequest;
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
@@ -15,7 +16,8 @@ public interface SupportKnowledgeRepository {
     default long countPublishedFaqs(String language, String surface, String category) {
         return listFaqs().stream()
                 .filter(faq -> "PUBLISHED".equalsIgnoreCase(faq.status()))
-                .filter(faq -> language.equalsIgnoreCase(faq.language()))
+                .filter(faq -> language.equalsIgnoreCase(faq.language())
+                        || InterfaceLanguages.isAdditional(language) && "en-US".equalsIgnoreCase(faq.language()))
                 .filter(faq -> surface.equalsIgnoreCase(faq.surface()))
                 .filter(faq -> category == null || category.isBlank()
                         || category.toLowerCase(Locale.ROOT).equals(faq.category().toLowerCase(Locale.ROOT)))
@@ -26,7 +28,8 @@ public interface SupportKnowledgeRepository {
             String language, String surface, String category, long offset, int limit) {
         return listFaqs().stream()
                 .filter(faq -> "PUBLISHED".equalsIgnoreCase(faq.status()))
-                .filter(faq -> language.equalsIgnoreCase(faq.language()))
+                .filter(faq -> language.equalsIgnoreCase(faq.language())
+                        || InterfaceLanguages.isAdditional(language) && "en-US".equalsIgnoreCase(faq.language()))
                 .filter(faq -> surface.equalsIgnoreCase(faq.surface()))
                 .filter(faq -> category == null || category.isBlank()
                         || category.toLowerCase(Locale.ROOT).equals(faq.category().toLowerCase(Locale.ROOT)))

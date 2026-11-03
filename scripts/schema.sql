@@ -4707,7 +4707,7 @@ CREATE TABLE IF NOT EXISTS nx_admin_fourth_batch_report (
   KEY idx_fourth_report_module_status (module_code, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-SET @sql = IF((SELECT DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_config_item' AND COLUMN_NAME = 'config_value') <> 'text',
+SET @sql = IF((SELECT DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_config_item' AND COLUMN_NAME = 'config_value') NOT IN ('text','mediumtext','longtext'),
   'ALTER TABLE nx_config_item MODIFY COLUMN config_value TEXT NOT NULL',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;

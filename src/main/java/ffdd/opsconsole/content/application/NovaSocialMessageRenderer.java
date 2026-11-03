@@ -21,15 +21,18 @@ final class NovaSocialMessageRenderer {
                 "amount", safe(event.amountDisplay()),
                 "eventType", safe(event.eventType()),
                 "sourceNote", safe(event.sourceNote()));
+        var translated = template.translations().get(language.toLowerCase(java.util.Locale.ROOT));
         String titleTemplate = switch (language) {
             case "ZH" -> template.titleZh();
-            case "EN" -> StringUtils.hasText(template.titleEn()) ? template.titleEn() : template.titleVi();
-            default -> template.titleVi();
+            case "VI" -> template.titleVi();
+            default -> translated != null && StringUtils.hasText(translated.title()) ? translated.title()
+                    : StringUtils.hasText(template.titleEn()) ? template.titleEn() : "UVEL notification";
         };
         String bodyTemplate = switch (language) {
             case "ZH" -> template.bodyZh();
-            case "EN" -> StringUtils.hasText(template.bodyEn()) ? template.bodyEn() : template.bodyVi();
-            default -> template.bodyVi();
+            case "VI" -> template.bodyVi();
+            default -> translated != null && StringUtils.hasText(translated.body()) ? translated.body()
+                    : StringUtils.hasText(template.bodyEn()) ? template.bodyEn() : "Open UVEL to view the update.";
         };
         return new RenderedMessage(replace(titleTemplate, values), renderBody(bodyTemplate, values, event, language));
     }
@@ -63,7 +66,7 @@ final class NovaSocialMessageRenderer {
                 default -> "Hoạt động thực đã được xác minh trên UVEL";
             };
         }
-        if ("EN".equals(language)) {
+        if (!"ZH".equals(language)) {
             return switch (event.eventType()) {
                 case "withdrawal" -> actor + " in " + city + " received a " + amount + " withdrawal";
                 case "vrank" -> actor + " advanced to a new V rank";

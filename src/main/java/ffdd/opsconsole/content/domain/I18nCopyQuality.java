@@ -20,6 +20,11 @@ public final class I18nCopyQuality {
                 && placeholders(message.zh()).equals(placeholders(message.vi()));
     }
 
+    public static boolean placeholdersMatch(String english, java.util.Map<String, String> translations) {
+        var expected = placeholders(english);
+        return translations.values().stream().allMatch(value -> expected.equals(placeholders(value)));
+    }
+
     private static Set<String> placeholders(String value) {
         Matcher matcher = PLACEHOLDER.matcher(value);
         Set<String> tokens = new TreeSet<>();

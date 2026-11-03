@@ -27,6 +27,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import java.util.Map;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
@@ -53,16 +54,26 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
 
     @Transactional
     public ApiResult<AppRiskDisclosureView> current(Long userId) {
-        return currentAndPublish(userId, null);
+        return current(userId, null);
+    }
+
+    @Transactional
+    public ApiResult<AppRiskDisclosureView> current(Long userId, String locale) {
+        return currentAndPublish(userId, null, locale);
     }
 
     @Transactional(readOnly = true)
     public ApiResult<AppRiskDisclosureView> publicCurrent(String country) {
+        return publicCurrent(country, null);
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResult<AppRiskDisclosureView> publicCurrent(String country, String locale) {
         // Caller-selected country is only for reading public text; account gates use the saved country.
         if (!StringUtils.hasText(CountryCodeNormalizer.normalize(country))) {
             return ApiResult.fail(422, "RISK_DISCLOSURE_COUNTRY_REQUIRED");
         }
-        return loadCurrent(null, country, false);
+        return loadCurrent(null, country, false, locale);
     }
 
     /**
@@ -71,7 +82,7 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
      */
     @Transactional
     ApiResult<AppRiskDisclosureView> currentWithTrustedIpCountry(Long userId, String trustedIpCountry) {
-        return currentAndPublish(userId, trustedIpCountry);
+        return currentAndPublish(userId, trustedIpCountry, null);
     }
 
     @Transactional
@@ -82,7 +93,7 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
         if (!StringUtils.hasText(request.acknowledgmentToken())) {
             return ApiResult.fail(422, "RISK_DISCLOSURE_READ_TOKEN_REQUIRED");
         }
-        ApiResult<AppRiskDisclosureView> current = loadCurrent(userId, null, false);
+        ApiResult<AppRiskDisclosureView> current = loadCurrent(userId, null, false, null);
         if (current.getCode() != 0) return current;
         AppRiskDisclosureView disclosure = current.getData();
         if (!StringUtils.hasText(request.jurisdiction()) || !StringUtils.hasText(request.version())
@@ -111,7 +122,7 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
                         "jurisdiction", disclosure.jurisdiction(),
                         "version", disclosure.version(),
                         "dual_gate_satisfied", true));
-        return loadCurrent(userId, null, false);
+        return loadCurrent(userId, null, false, null);
     }
 
     @Transactional
@@ -136,7 +147,7 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
                 .findFirst().orElse(null);
         if (action == null) return ApiResult.fail(404, "DISCLOSURE_GATE_ACTION_NOT_FOUND");
         if (!action.active()) return ApiResult.ok(null);
-        ApiResult<AppRiskDisclosureView> current = loadCurrent(userId, null, false);
+        ApiResult<AppRiskDisclosureView> current = loadCurrent(userId, null, false, null);
         if (current.getCode() != 0) return ApiResult.fail(current.getCode(), current.getMessage());
         if (!current.getData().acknowledged()) {
             recordBlockedOnce(userId, current.getData().jurisdiction(), current.getData().version(),
@@ -146,7 +157,7 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
         return ApiResult.ok(null);
     }
 
-    private ApiResult<AppRiskDisclosureView> loadCurrent(Long userId, String trustedIpCountry, boolean issueReadToken) {
+    private ApiResult<AppRiskDisclosureView> loadCurrent(Long userId, String trustedIpCountry, boolean issueReadToken, String locale) {
         if ((userId == null && !StringUtils.hasText(trustedIpCountry)) || (userId != null && userId <= 0)) {
             return ApiResult.fail(401, "USER_AUTH_REQUIRED");
         }
@@ -165,19 +176,25 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
         IssuedReadToken token = userId != null && !acknowledged && issueReadToken
                 ? issueReadToken(userId, jurisdiction.code(), disclosure.version()) : null;
         boolean localSandbox = isStrictLocalSandbox();
+        String code = InterfaceLanguages.baseCode(locale);
+        String summary = switch (code) {
+            case "zh" -> disclosure.zh();
+            case "vi" -> disclosure.vi();
+            default -> disclosure.translations().getOrDefault(code, disclosure.en());
+        };
         return ApiResult.ok(new AppRiskDisclosureView(
                 localSandbox ? "mock" : "server",
                 localSandbox ? "SANDBOX" : "PRODUCTION",
                 jurisdiction.code(), jurisdiction.name(), disclosure.version(), disclosure.languageScope(),
                 disclosure.effectiveDate(), acknowledged, acknowledged ? ack.getAcknowledgedAt() : null,
-                repository.listChapters(jurisdiction.code(), disclosure.version()),
+                repository.listChapters(jurisdiction.code(), disclosure.version()).stream().map(chapter -> chapter.forLanguage(code)).toList(),
                 token == null ? null : token.rawToken(),
                 token == null ? null : token.expiresAt().atZone(clock.getZone()).toOffsetDateTime(),
-                ackProperties.boundedMinReadSeconds()));
+                ackProperties.boundedMinReadSeconds(), summary));
     }
 
-    private ApiResult<AppRiskDisclosureView> currentAndPublish(Long userId, String trustedIpCountry) {
-        ApiResult<AppRiskDisclosureView> current = loadCurrent(userId, trustedIpCountry, true);
+    private ApiResult<AppRiskDisclosureView> currentAndPublish(Long userId, String trustedIpCountry, String locale) {
+        ApiResult<AppRiskDisclosureView> current = loadCurrent(userId, trustedIpCountry, true, locale);
         if (current.getCode() == 0) {
             AppRiskDisclosureView disclosure = current.getData();
             publishUserEvent(

@@ -517,18 +517,20 @@ public interface HdPayOrderMapper extends BaseMapper<Object> {
                 next_push_at, created_at, updated_at, is_deleted
             )
             SELECT #{bizNo}, u.id, 'WALLET', 'high',
-                   CASE
-                     WHEN LOWER(COALESCE(u.language, '')) LIKE 'vi%' THEN 'Nạp tiền thành công'
-                     WHEN LOWER(COALESCE(u.language, '')) LIKE 'zh%' THEN '充值已到账'
-                     ELSE 'Deposit credited'
-                   END,
-                   CASE
-                     WHEN LOWER(COALESCE(u.language, '')) LIKE 'vi%' THEN CONCAT(#{amountUsdt}, ' USDT đã được ghi có vào ví của bạn.')
-                     WHEN LOWER(COALESCE(u.language, '')) LIKE 'zh%' THEN CONCAT(#{amountUsdt}, ' USDT 已到账。')
-                     ELSE CONCAT(#{amountUsdt}, ' USDT has been credited to your wallet.')
-                   END,
+                   CASE LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))
+            WHEN 'zh' THEN COALESCE(NULLIF(title.zh_value,''), '充值已到账')
+            WHEN 'vi' THEN COALESCE(NULLIF(title.vi_value,''), 'Nạp tiền thành công')
+            ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(title.translations_json,
+                     CONCAT('$.',JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1)))))),''),NULLIF(title.en_value,''),'Deposit credited') END,
+                   REPLACE(CASE LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))
+            WHEN 'zh' THEN COALESCE(NULLIF(body.zh_value,''), '{amount} USDT 已到账。')
+            WHEN 'vi' THEN COALESCE(NULLIF(body.vi_value,''), '{amount} USDT đã được ghi có vào ví của bạn.')
+            ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(body.translations_json,
+                     CONCAT('$.',JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1)))))),''),NULLIF(body.en_value,''),'{amount} USDT has been credited to your wallet.') END,'{amount}',#{amountUsdt}),
                    NULL, NULL, 0, 'PENDING', 0, NOW(), NOW(), NOW(), 0
               FROM nx_user u
+              LEFT JOIN nx_i18n_message_version title ON title.message_key='notifications.deposit.title' AND title.status='PUBLISHED' AND title.is_deleted=0
+              LEFT JOIN nx_i18n_message_version body ON body.message_key='notifications.deposit.body' AND body.status='PUBLISHED' AND body.is_deleted=0
              WHERE u.id = #{userId} AND u.is_deleted = 0
             """)
     int insertDepositNotification(

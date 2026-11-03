@@ -1,5 +1,6 @@
 package ffdd.opsconsole.platform.dto;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import java.util.List;
 import java.util.Map;
 
@@ -10,7 +11,12 @@ public record PlatformExperienceConfigUpdateRequest(
         List<ShareChannelRequest> channels,
         AppDownloadRequest appDownload,
         String reason,
-        String operator) {
+        String operator,
+        JsonNode interfaceLanguages) {
+    public PlatformExperienceConfigUpdateRequest(Long expectedVersion, String baseUrl, List<ShareChannelRequest> channels,
+            AppDownloadRequest appDownload, String reason, String operator) {
+        this(expectedVersion, baseUrl, channels, appDownload, reason, operator, null);
+    }
     public record ShareChannelRequest(
             String key,
             String intentType,

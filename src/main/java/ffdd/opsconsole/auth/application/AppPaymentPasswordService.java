@@ -1,5 +1,7 @@
 package ffdd.opsconsole.auth.application;
 
+import java.util.Objects;
+
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade;
@@ -352,7 +354,7 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
             Instant expires=now.plusSeconds(policy.ttlMinutes()*60L);
             repo.expireResets(userId,now.toEpochMilli());
             repo.insertReset(challenge,userId,hash(sessionId),String.valueOf(credential.get("recovery_phone_hash")),PaymentPasswordMapper.number(credential,"credential_version"),encoder.encode(secret(code)),expires.toEpochMilli(),now.toEpochMilli());
-            delivery.deliver(country,phone,challenge,code,policy.ttlMinutes());
+            delivery.deliver(country,phone,challenge,code,policy.ttlMinutes(), Objects.toString(user.get("language"),"en"));
             return Map.of("challengeNo",challenge,"phoneMasked","****"+phone.substring(Math.max(0,phone.length()-4)),"resendAfterSec",policy.cooldownSeconds(),"expiresAt",expires);
         });
     }

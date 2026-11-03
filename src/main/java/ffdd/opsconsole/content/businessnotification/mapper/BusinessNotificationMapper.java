@@ -282,12 +282,27 @@ public interface BusinessNotificationMapper {
         INSERT INTO nx_notification(biz_no,user_id,type,priority,title,body,cta_label,cta_href,
           read_flag,push_status,push_attempts,next_push_at,created_at,updated_at,is_deleted)
         SELECT #{bizNo},u.id,#{fact.category},CASE WHEN #{fact.category} IN ('FUNDS_RESULT','ACCOUNT_SECURITY') THEN 'critical' ELSE 'high' END,
-          CASE WHEN LOWER(u.language) LIKE 'zh%' THEN #{zh} WHEN LOWER(u.language) LIKE 'vi%' THEN #{vi} ELSE #{en} END,
-          CASE WHEN LOWER(u.language) LIKE 'zh%' THEN #{zh} WHEN LOWER(u.language) LIKE 'vi%' THEN #{vi} ELSE #{en} END,
-          CASE WHEN LOWER(u.language) LIKE 'zh%' THEN '查看详情' WHEN LOWER(u.language) LIKE 'vi%' THEN 'Xem chi tiết' ELSE 'View details' END,
+          CASE LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))
+            WHEN 'zh' THEN COALESCE(NULLIF(msg.zh_value,''), #{zh})
+            WHEN 'vi' THEN COALESCE(NULLIF(msg.vi_value,''), #{vi})
+            ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(msg.translations_json,
+                     CONCAT('$.',JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1)))))),''),NULLIF(msg.en_value,''),#{en}) END,
+          CASE LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))
+            WHEN 'zh' THEN COALESCE(NULLIF(msg.zh_value,''), #{zh})
+            WHEN 'vi' THEN COALESCE(NULLIF(msg.vi_value,''), #{vi})
+            ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(msg.translations_json,
+                     CONCAT('$.',JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1)))))),''),NULLIF(msg.en_value,''),#{en}) END,
+          CASE LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))
+            WHEN 'zh' THEN COALESCE(NULLIF(cta.zh_value,''), '查看详情')
+            WHEN 'vi' THEN COALESCE(NULLIF(cta.vi_value,''), 'Xem chi tiết')
+            ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(cta.translations_json,
+                     CONCAT('$.',JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1)))))),''),NULLIF(cta.en_value,''),'View details') END,
           #{fact.route},0,CASE WHEN #{fact.messageKey} LIKE 'withdrawal_%' THEN 'DELIVERED' ELSE 'QUEUED' END,
           0,NOW(),COALESCE(#{fact.occurredAt},NOW()),NOW(),0
-        FROM nx_user u WHERE u.id=#{fact.userId} AND u.is_deleted=0
+        FROM nx_user u
+        LEFT JOIN nx_i18n_message_version msg ON msg.message_key=CONCAT('notifications.business.',#{fact.messageKey}) AND msg.status='PUBLISHED' AND msg.is_deleted=0
+        LEFT JOIN nx_i18n_message_version cta ON cta.message_key='notifications.details' AND cta.status='PUBLISHED' AND cta.is_deleted=0
+        WHERE u.id=#{fact.userId} AND u.is_deleted=0
         ON DUPLICATE KEY UPDATE type=VALUES(type),priority=VALUES(priority),title=VALUES(title),body=VALUES(body),
           cta_label=VALUES(cta_label),cta_href=VALUES(cta_href)
         """)

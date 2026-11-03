@@ -10,12 +10,13 @@ import org.apache.ibatis.annotations.Update;
 public interface I18nMessageVersionMapper extends BaseMapper<I18nMessageVersionEntity> {
     @Insert("""
             INSERT INTO nx_i18n_message_version
-                (message_key, version_no, zh_value, en_value, vi_value, status, created_at, updated_at, is_deleted)
+                (message_key, version_no, zh_value, en_value, vi_value, translations_json, status, created_at, updated_at, is_deleted)
             SELECT #{messageKey},
                    #{nextVersionNo},
                    #{zhValue},
                    #{enValue},
                    #{viValue},
+                   #{translations},
                    'DRAFT',
                    #{updatedAt},
                    #{updatedAt},
@@ -31,14 +32,21 @@ public interface I18nMessageVersionMapper extends BaseMapper<I18nMessageVersionE
                       AND newer.version_no > expected.version_no
                )
             """)
-    int insertDraftCas(
+    int insertLocalizedDraftCas(
             @Param("messageKey") String messageKey,
             @Param("expectedVersionNo") int expectedVersionNo,
             @Param("nextVersionNo") int nextVersionNo,
             @Param("zhValue") String zhValue,
             @Param("enValue") String enValue,
             @Param("viValue") String viValue,
+            @Param("translations") String translations,
             @Param("updatedAt") LocalDateTime updatedAt);
+
+    default int insertDraftCas(String messageKey, int expectedVersionNo, int nextVersionNo, String zhValue,
+            String enValue, String viValue, LocalDateTime updatedAt) {
+        return insertLocalizedDraftCas(messageKey, expectedVersionNo, nextVersionNo,
+                zhValue, enValue, viValue, null, updatedAt);
+    }
 
     @Update("""
             UPDATE nx_i18n_message_version

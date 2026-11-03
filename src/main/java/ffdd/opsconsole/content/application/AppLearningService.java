@@ -20,6 +20,7 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -80,17 +81,17 @@ public class AppLearningService {
                         .filter(row -> reward.courseId().equals(row.courseId()) && reward.version().equals(row.version()))
                         .filter(row -> !"DRAFT".equals(row.status()))
                         .findFirst()
-                        .map(row -> localized(locale, row.titleZh(), row.titleVi(), row.titleEn()))
+                        .map(row -> localized(locale, row.titleZh(), row.titleVi(), row.titleEn(), null))
                         .orElse(null);
             } else {
                 var snapshot = learningRepository.findCourseVersion(reward.courseId(), reward.version()).orElse(null);
                 if (snapshot != null && ("PUBLISHED".equals(snapshot.status()) || "SUPERSEDED".equals(snapshot.status()))) {
                     var payload = snapshot.payload();
-                    title = localized(locale, payload.titleZh(), payload.titleVi(), payload.titleEn());
+                    title = localized(locale, payload.titleZh(), payload.titleVi(), payload.titleEn(), payload.titleTranslations());
                 } else {
                     var current = learningRepository.findPublishedCourse(reward.courseId()).orElse(null);
                     if (current != null && reward.version().equals(current.version())) {
-                        title = localized(locale, current.titleZh(), current.titleVi(), current.titleEn());
+                        title = localized(locale, current.titleZh(), current.titleVi(), current.titleEn(), current.titleTranslations());
                     }
                 }
             }
@@ -407,14 +408,14 @@ public class AppLearningService {
         String locale = normalizeLanguage(language);
         List<AppLearningCourseView.Question> questions = (course.quizQuestions() == null ? List.<LearningQuizQuestionView>of() : course.quizQuestions())
                 .stream().map(question -> new AppLearningCourseView.Question(
-                        question.questionId(), localized(locale, question.questionZh(), question.questionVi(), question.questionEn()),
+                        question.questionId(), localized(locale, question.questionZh(), question.questionVi(), question.questionEn(), question.questionTranslations()),
                         localizedOptions(locale, question))).toList();
         int progressPct = progress == null ? 0 : progress.progressPct();
         boolean rewardGranted = progress != null && progress.progressPct() >= 100
                 && countGrantedReward(sandbox(sourceEnvironment), userId, course) > 0;
         return new AppLearningCourseView(course.id(),
-                localized(locale, course.titleZh(), course.titleVi(), course.titleEn()),
-                localized(locale, course.bodyZh(), course.bodyVi(), course.bodyEn()),
+                localized(locale, course.titleZh(), course.titleVi(), course.titleEn(), course.titleTranslations()),
+                localized(locale, course.bodyZh(), course.bodyVi(), course.bodyEn(), course.bodyTranslations()),
                 course.category(), course.format(), course.level(), course.duration(), course.rewardNex(), course.featured(),
                 course.version(), progressPct, progressPct >= 100, progress == null ? 0 : progress.attempts(),
                 progress == null ? 0 : progress.lastScore(), rewardGranted,
@@ -425,6 +426,10 @@ public class AppLearningService {
     }
 
     private List<String> localizedOptions(String locale, LearningQuizQuestionView question) {
+        if (InterfaceLanguages.isAdditional(locale)) {
+            List<String> translated = question.optionTranslations() == null ? null : question.optionTranslations().get(locale);
+            return translated == null || translated.isEmpty() ? question.optionsEn() : translated;
+        }
         List<String> values = switch (locale) {
             case "vi" -> question.optionsVi();
             case "en" -> question.optionsEn();
@@ -434,7 +439,11 @@ public class AppLearningService {
         return values == null ? List.of() : values;
     }
 
-    private String localized(String locale, String zh, String vi, String en) {
+    private String localized(String locale, String zh, String vi, String en, Map<String, String> translations) {
+        if (InterfaceLanguages.isAdditional(locale)) {
+            String value = translations == null ? null : translations.get(locale);
+            return StringUtils.hasText(value) ? value : en;
+        }
         String selected = switch (locale) {
             case "vi" -> vi;
             case "en" -> en;
@@ -447,8 +456,7 @@ public class AppLearningService {
 
     private String normalizeLanguage(String value) {
         if (!StringUtils.hasText(value)) return "vi";
-        String normalized = value.trim().toLowerCase(Locale.ROOT);
-        return List.of("zh", "vi", "en").contains(normalized) ? normalized : "vi";
+        return InterfaceLanguages.baseCode(value);
     }
 
     private <T> ApiResult<T> requireExpectedVersion(LearningCourseView course, String expectedVersion) {

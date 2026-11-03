@@ -144,9 +144,13 @@ public interface WeeklyQuestSnapshotMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT i.quest_code questCode,
-                   COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(
+                   i.name name,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(
                        CASE WHEN JSON_VALID(h.localized_content) THEN h.localized_content ELSE '{}' END,
-                       CONCAT('$.mission."',i.quest_code,'"."',#{locale},'".name'))),''),i.name) name,
+                       CONCAT('$.mission."',i.quest_code,'"."',#{locale},'".name'))),'') requestedName,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(
+                       CASE WHEN JSON_VALID(h.localized_content) THEN h.localized_content ELSE '{}' END,
+                       CONCAT('$.mission."',i.quest_code,'"."','en','".name'))),'') englishName,
                    i.layer,i.reward_points rewardNex,LOWER(i.category) category,i.action_route actionRoute,
                    h.instance_key instanceKey,h.business_timezone businessTimezone,
                    DATE_FORMAT(h.eligible_from,'%Y-%m-%dT%H:%i:%s+08:00') eligibleFrom,

@@ -11,7 +11,7 @@ public interface DisclosureDraftMapper extends BaseMapper<DisclosureDraftEntity>
             UPDATE nx_disclosure_draft
                SET language_scope = #{row.languageScope}, effective_date = #{row.effectiveDate},
                    requires_reack = #{row.requiresReack}, zh_body = #{row.zhBody}, vi_body = #{row.viBody},
-                   en_body = #{row.enBody}, status = #{row.status}, revision = revision + 1,
+                   en_body = #{row.enBody}, translations_json = #{row.translationsJson}, status = #{row.status}, revision = revision + 1,
                    content_hash = #{newContentHash}, last_operator = #{row.lastOperator}, updated_at = #{now}
              WHERE id = #{row.id} AND revision = #{expectedRevision}
                AND content_hash = #{expectedContentHash} AND status = 'DRAFT' AND is_deleted = 0

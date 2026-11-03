@@ -1,5 +1,7 @@
 package ffdd.opsconsole.auth.application;
 
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
+
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import ffdd.opsconsole.auth.dto.UserLoginRequest;
 import ffdd.opsconsole.auth.captcha.CaptchaOtpGate;
@@ -231,7 +233,7 @@ public class AppUserAuthService {
             throw new IllegalStateException("USER_OTP_LOGIN_CHALLENGE_CREATE_FAILED");
         }
         try {
-            otpDeliveryService.deliver(countryCode, phone, challengeNo, code, ttlMinutes);
+            otpDeliveryService.deliver(countryCode, phone, challengeNo, code, ttlMinutes, InterfaceLanguages.baseCode(user.getLanguage()));
         } catch (RuntimeException exception) {
             userMapper.invalidateOpenLoginOtpChallenges(user.getId());
             return ApiResult.fail(503, "USER_OTP_DELIVERY_FAILED");
@@ -456,7 +458,7 @@ public class AppUserAuthService {
             throw new IllegalStateException("USER_TWO_FACTOR_CHALLENGE_CREATE_FAILED");
         }
         try {
-            otpDeliveryService.deliver(countryCode, phone, challengeNo, code, ttlMinutes);
+            otpDeliveryService.deliver(countryCode, phone, challengeNo, code, ttlMinutes, InterfaceLanguages.baseCode(user.getLanguage()));
         } catch (RuntimeException exception) {
             userMapper.invalidateOpenLoginOtpChallenges(user.getId());
             return ApiResult.fail(503, "USER_OTP_DELIVERY_FAILED");
