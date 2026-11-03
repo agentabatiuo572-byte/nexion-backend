@@ -2,9 +2,9 @@
 """Operator-only TEST 13-to-13 update, independently SHA-approved before use.
 
 Run as root with /usr/bin/python3 -I. This updater changes runtime source and
-its pins and the explicitly approved fixed Compute V2 lane flag only; it never
+its pins and the Compute V2 / retired H4 lane flags; it never
 imports migration code, runs SQL, changes grants, or resets release/migration
-state. The old twelve runtime files and existing approval flags remain unchanged.
+state. The old twelve runtime files remain unchanged; the retired H4 opt-in is removed.
 """
 import argparse
 import hashlib
@@ -29,7 +29,7 @@ GUARD_TEXT = ('[Unit]\nConditionPathExists=|!/srv/nexgrid/cd/migrations/START_BL
               'ConditionPathExists=|/run/nexgrid-backend-migration-start\n').encode()
 OLD_LOCK = '907fb594f70782151ba12cdb168c324af47ef81c9ca961c9ce1f4a5e803d5cbc'
 OLD_MIGRATIONS_SHA = '0794fa15fb5d0aa2470bb6486dc56fad18eb6732337e471e0a15e4961b1a7221'
-NEW_MIGRATIONS_SHA = '3452485f429c1d814e6e97b146fff01c692c30e9926330e2f5c5bfd048cc5ca8'
+NEW_MIGRATIONS_SHA = '8c4c28270ce7867aecb7d712a78af8999fa12f2f04e1ffb1c57d75d9b372d8db'
 FLAG = 'allow_fixed_compute_v2_trigger_install'
 # JAR policy is independently pinned; the installed closure includes an older
 # bundled policy file that is not used to validate current release artifacts.
@@ -110,6 +110,8 @@ def preflight(old, *, timer_active, installed=False):
     config = json.loads(raw)
     require(isinstance(config, dict), 'CONFIG_REJECTED')
     require(config.get(FLAG) is True if installed else FLAG not in config, 'COMPUTE_V2_APPROVAL_FLAG_DRIFT')
+    if installed:
+        require('allow_fixed_h4_trigger_install' not in config, 'RETIRED_H4_APPROVAL_REMAINS')
     internal = config.get('trusted_files')
     external = config.get('trusted_external_files')
     jobs = config.get('job_hashes')
@@ -311,6 +313,7 @@ def update(stage, pin):
             print('COMPUTE_V2_MIGRATIONS_BACKUP_READY ' + str(backup), flush=True)
             config_again['trusted_files'][CHANGED] = new['files'][CHANGED]
             config_again[FLAG] = True
+            config_again.pop('allow_fixed_h4_trigger_install', None)
             try:
                 replace_bound(INSTALL / CHANGED, sources[CHANGED], previous[CHANGED][1], identities[CHANGED])
                 replace_bound(INSTALL / 'config.json',

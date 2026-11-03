@@ -27,13 +27,16 @@ public class H4EventRuleService {
     private final ffdd.opsconsole.platform.application.A2RuntimePolicy a2;
     public static final Set<String> CODES=Set.of("evt-pro-upgrade-7d","evt-refer-5-get-pro",
             "evt-weekend-double-nex","evt-regional-pk","evt-spring-spin","evt-reinvest-bonus",
-            "evt-onboarding-7d","evt-black-friday","evt-nex-holders-share","evt-anniversary-spin");
+            "evt-onboarding-7d","evt-black-friday","evt-anniversary-spin");
+
+    public static final Set<String> KINDS=Set.of("discount","referral","wheel","regional","boost","seasonal","onboarding");
+    public static final String ACTIVE_KINDS_SQL="('discount','referral','wheel','regional','boost','seasonal','onboarding')";
 
     public Map<String,Object> find(String code,boolean lock) {
-        return db.row("SELECT * FROM nx_growth_event_rule WHERE event_code=?"+(lock?" FOR UPDATE":""),code);
+        return db.row("SELECT * FROM nx_growth_event_rule WHERE kind IN "+ACTIVE_KINDS_SQL+" AND event_code=?"+(lock?" FOR UPDATE":""),code);
     }
     public List<Map<String,Object>> overview() {
-        return db.rows("SELECT r.* FROM nx_growth_event_rule r JOIN nx_event_quest q ON q.quest_code=r.event_code AND q.is_deleted=0 ORDER BY r.event_code").stream().map(this::view).toList();
+        return db.rows("SELECT r.* FROM nx_growth_event_rule r JOIN nx_event_quest q ON q.quest_code=r.event_code AND q.is_deleted=0 WHERE r.kind IN "+ACTIVE_KINDS_SQL+" AND q.target_type IN "+ACTIVE_KINDS_SQL+" ORDER BY r.event_code").stream().map(this::view).toList();
     }
 
     private Map<String,Object> deletionSnapshot(String code, boolean lock) {
@@ -72,7 +75,6 @@ public class H4EventRuleService {
     @Transactional(rollbackFor=Exception.class,isolation=org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public ApiResult<Map<String,Object>> delete(String code,ffdd.opsconsole.growth.dto.GrowthEventDeleteRequest request) {
         if(request==null||request.reason()==null||request.reason().trim().length()<a2.reasonMinChars())throw new BizException(422,"REASON_REQUIRED");
-        lockHoldingWallets(code);
         find(code,true);
         var snapshot=deletionSnapshot(code,true);
         if(snapshot==null||number(snapshot.get("is_deleted")).intValue()!=0)throw new BizException(404,"EVENT_NOT_FOUND");
@@ -90,15 +92,8 @@ public class H4EventRuleService {
     public void registerDraft(String code,String kind){
         db.write("INSERT IGNORE INTO nx_growth_event_rule(event_code,kind,rules_json,enabled) VALUES(?,?,JSON_OBJECT(),0)",code,kind);
     }
-    /** Caller owns a transaction. Match wallet writers before taking the holding policy lock. */
-    public void lockHoldingWallets(String code){
-        if(!"evt-nex-holders-share".equals(code))return;
-        db.rows("SELECT id FROM nx_user ORDER BY id FOR UPDATE");
-        db.rows("SELECT user_id FROM nx_user_wallet ORDER BY user_id FOR UPDATE");
-    }
     @Transactional(rollbackFor=Exception.class,isolation=org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public void stop(String code){
-        lockHoldingWallets(code);
         var row=find(code,true);if(row==null)return;
         if(number(row.get("enabled")).intValue()==1)freezeReferral(row);
         db.write("UPDATE nx_growth_event_rule SET enabled=0,disabled_at=COALESCE(disabled_at,UTC_TIMESTAMP(6)),revision=revision+1 WHERE event_code=? AND enabled=1",code);
@@ -150,7 +145,6 @@ public class H4EventRuleService {
     @Transactional(rollbackFor=Exception.class,isolation=org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public ApiResult<Map<String,Object>> update(String code,H4EventRuleRequest request) {
         if(request==null||request.reason()==null||request.reason().trim().length()<a2.reasonMinChars())throw new BizException(422,"REASON_REQUIRED");
-        lockHoldingWallets(code);
         var current=find(code,true);
         if(current==null)throw new BizException(404,"EVENT_RULE_NOT_FOUND");
         if(db.row("SELECT 1 FROM nx_event_quest WHERE quest_code=? AND is_deleted=1 FOR UPDATE",code)!=null)
@@ -181,13 +175,6 @@ public class H4EventRuleService {
         if(request.enabled()) {
             db.write("UPDATE nx_growth_event_rule SET activated_at=COALESCE(activated_at,UTC_TIMESTAMP(6)) WHERE event_code=?",code);
             db.write("UPDATE nx_event_quest SET starts_at=?,ends_at=?,status=1,updated_at=NOW() WHERE quest_code=? AND is_deleted=0",start,end,code);
-            if("evt-nex-holders-share".equals(code)&&number(current.get("enabled")).intValue()!=1)db.write("""
-                INSERT INTO nx_growth_event_holding(event_code,user_id,eligible_since,updated_at)
-                SELECT ?,w.user_id,GREATEST(?,UTC_TIMESTAMP(6)),UTC_TIMESTAMP(6)
-                FROM nx_user_wallet w JOIN nx_user u ON u.id=w.user_id AND u.status='ACTIVE' AND u.sandbox=0 AND u.is_deleted=0
-                WHERE w.nex_available>=? AND w.is_deleted=0 AND w.sandbox=0
-                ON DUPLICATE KEY UPDATE eligible_since=VALUES(eligible_since),updated_at=VALUES(updated_at)
-                """,code,start,number(rules.get("minNex")));
         } else {
             if(number(current.get("enabled")).intValue()==1)freezeReferral(current);
             db.write("UPDATE nx_growth_event_rule SET disabled_at=COALESCE(disabled_at,UTC_TIMESTAMP(6)) WHERE event_code=? AND activated_at IS NOT NULL",code);
@@ -215,7 +202,6 @@ public class H4EventRuleService {
         switch(code) {
             case "evt-refer-5-get-pro" -> {positive(r,missing,"targetInvites","windowDays","giftQuantity","deviceBudget");required(r,missing,"giftProductNo");}
             case "evt-onboarding-7d" -> positive(r,missing,"windowDays","minRank","rewardNex","streakSavers","budgetNex");
-            case "evt-nex-holders-share" -> {positive(r,missing,"minNex","holdDays","poolUsdt");if(!"EQUAL".equals(r.get("allocation")))missing.add("allocation");}
             case "evt-regional-pk" -> {
                 positive(r,missing,"poolUsdt");
                 if(!"PAID_ORDER_USDT".equals(r.get("metric")))missing.add("metric");
@@ -247,15 +233,14 @@ public class H4EventRuleService {
             case "evt-anniversary-spin" -> {if(end==null||end.isAfter(LocalDateTime.now(ZoneOffset.UTC)))missing.add("endsAt");}
             default -> missing.add("eventCode");
         }
-        for(String key:List.of("targetInvites","windowDays","giftQuantity","deviceBudget","minRank","streakSavers","holdDays","ticketsPerThreshold","ticketBudget","extraGenesisTickets"))
+        for(String key:List.of("targetInvites","windowDays","giftQuantity","deviceBudget","minRank","streakSavers","ticketsPerThreshold","ticketBudget","extraGenesisTickets"))
             if(r.containsKey(key)&&number(r.get(key)).stripTrailingZeros().scale()>0)missing.add(key);
         if("evt-reinvest-bonus".equals(code)&&!"REINVEST_TICKETS".equals(r.get("action")))missing.add("action");
         if(number(r.get("giftQuantity")).compareTo(BigDecimal.valueOf(100))>0)missing.add("giftQuantity");
         for(String key:List.of("ticketsPerThreshold","extraGenesisTickets"))
             if(number(r.get(key)).compareTo(BigDecimal.valueOf(1000000))>0)missing.add(key);
-        for(String key:List.of("rewardNex","poolUsdt","budgetNex","minNex"))if(number(r.get(key)).scale()>6)missing.add(key);
-        if(number(r.get("minNex")).compareTo(new BigDecimal("999999999999.999999"))>0)missing.add("minNex");
-        for(String key:List.of("targetInvites","windowDays","giftQuantity","deviceBudget","minRank","streakSavers","holdDays","ticketsPerThreshold","ticketBudget","extraGenesisTickets"))
+        for(String key:List.of("rewardNex","poolUsdt","budgetNex"))if(number(r.get(key)).scale()>6)missing.add(key);
+        for(String key:List.of("targetInvites","windowDays","giftQuantity","deviceBudget","minRank","streakSavers","ticketsPerThreshold","ticketBudget","extraGenesisTickets"))
             if(number(r.get(key)).compareTo(BigDecimal.valueOf(Integer.MAX_VALUE))>0||number(r.get(key)).signum()<0)missing.add(key);
         return missing.stream().distinct().toList();
     }
