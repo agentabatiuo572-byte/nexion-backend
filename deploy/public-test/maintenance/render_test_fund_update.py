@@ -183,7 +183,7 @@ def main():
     parser.add_argument('--rehearsal', action='store_true')
     parser.add_argument('--clone-server-uuid')
     args = parser.parse_args()
-    args.output.write_text(render(args.stage, args.clone_server_uuid, args.rehearsal), encoding='utf-8')
+    args.output.write_bytes(render(args.stage, args.clone_server_uuid, args.rehearsal).encode('utf-8'))
     print(json.dumps({'sqlFile': str(args.output), 'stage': args.stage, 'databaseWritePerformed': False, 'rehearsal': args.rehearsal}))
 
 

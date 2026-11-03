@@ -468,7 +468,9 @@ try {
   if ($LASTEXITCODE -ne 0 -or (@($supportBindingSchema) -join "`n").Trim() -ne "READY") {
     throw "Support ticket ownership requires the S3 binding schema before startup migrations. $supportBindingSchema. Follow docs/HANDOFF-support-s3.md and review/apply scripts/migrations/20260929_support_binding_s3.sql first; startup does not automatically resolve legacy assignment conflicts."
   }
-  $sources = ($migrations | ForEach-Object { "source $($_.Replace('\', '/'));" }) -join " "
+  # Repo-relative paths (Push-Location above) keep this single -e argument under the Windows command-line limit.
+  $rootPrefix = $root.Path.TrimEnd('\', '/')
+  $sources = ($migrations | ForEach-Object { "source $($_.Substring($rootPrefix.Length + 1).Replace('\', '/'));" }) -join " "
   & $MySql --default-character-set=utf8mb4 --protocol=tcp -h $databaseUri.Host -P $port -u $Username $database -e $sources
   if ($LASTEXITCODE -ne 0) {
     throw "Required startup schema migration failed with mysql exit code $LASTEXITCODE. Backend startup has been stopped."

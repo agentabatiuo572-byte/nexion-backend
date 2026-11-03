@@ -114,8 +114,8 @@ def main():
     parser.add_argument('--clone-server-uuid')
     parser.add_argument('--clone-database')
     args = parser.parse_args()
-    args.output.write_text(render(args.stage, args.reader, args.clone_server_uuid,
-        args.rehearsal, args.clone_database), encoding='utf-8')
+    args.output.write_bytes(render(args.stage, args.reader, args.clone_server_uuid,
+        args.rehearsal, args.clone_database).encode('utf-8'))
     print(json.dumps({'sqlFile': str(args.output), 'stage': args.stage, 'reader': args.reader,
                       'databaseWritePerformed': False, 'rehearsal': args.rehearsal}))
 
