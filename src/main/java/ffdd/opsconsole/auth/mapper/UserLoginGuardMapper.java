@@ -128,8 +128,9 @@ public interface UserLoginGuardMapper extends BaseMapper<UserLoginGuardRecord> {
     void addUpdatedAtIndex();
 
     @Insert("""
-            INSERT IGNORE INTO nx_user_login_guard(login_key,failed_count,window_started_at)
+            INSERT INTO nx_user_login_guard(login_key,failed_count,window_started_at)
             VALUES(#{loginKey},0,#{now})
+            ON DUPLICATE KEY UPDATE login_key=login_key
             """)
     void initialize(@Param("loginKey") String loginKey, @Param("now") LocalDateTime now);
 
