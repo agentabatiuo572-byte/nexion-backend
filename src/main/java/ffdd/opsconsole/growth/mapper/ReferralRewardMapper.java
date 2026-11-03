@@ -11,6 +11,55 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface ReferralRewardMapper extends BaseMapper<Object> {
+    String ELIGIBLE_RISK = """
+               AND NOT EXISTS (
+                 SELECT 1 FROM nx_admin_risk_arbitrage_row risk
+                  WHERE risk.is_deleted = 0
+                    AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
+                    AND (CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
+                           LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
+                      OR CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
+                           LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
+               )
+               AND NOT EXISTS (
+                 SELECT 1
+                   FROM nx_admin_risk_arbitrage_row risk
+                   JOIN nx_admin_risk_multi_account_cluster risk_cluster
+                     ON risk_cluster.cluster_id = risk.cluster_id
+                    AND risk_cluster.is_deleted = 0
+                    AND risk_cluster.nodes_json IS NOT NULL
+                    AND JSON_VALID(risk_cluster.nodes_json) = 1
+                  WHERE risk.is_deleted = 0
+                    AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
+                    AND (JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
+                      OR JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
+               )
+               AND NOT EXISTS (
+                 SELECT 1 FROM nx_admin_risk_multi_account_cluster cluster
+                  WHERE cluster.is_deleted = 0 AND cluster.status IN ('detected','flagged','frozen')
+                    AND cluster.nodes_json IS NOT NULL AND JSON_VALID(cluster.nodes_json) = 1
+                    AND (JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
+                      OR JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
+               )
+               AND (#{holdRisky} = FALSE OR (
+                 NOT EXISTS (
+                   SELECT 1 FROM nx_admin_risk_arbitrage_row review_risk
+                    WHERE review_risk.is_deleted = 0
+                      AND (CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
+                             LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
+                        OR CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
+                             LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
+                 )
+                 AND NOT EXISTS (
+                   SELECT 1 FROM nx_admin_risk_multi_account_cluster review_cluster
+                    WHERE review_cluster.is_deleted = 0 AND review_cluster.status IN ('detected','flagged')
+                      AND review_cluster.nodes_json IS NOT NULL AND JSON_VALID(review_cluster.nodes_json) = 1
+                      AND (JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
+                        OR JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
+                 )
+               ))
+            """;
+
     @Select("""
             SELECT u.referral_code AS referralCode, COALESCE(u.sandbox, 0) AS sandbox,
                    COALESCE(w.nex_available, 0) AS walletNexAvailable
@@ -330,69 +379,22 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                            @Param("idempotencyKey") String idempotencyKey, @Param("detailJson") String detailJson);
 
     @Select("""
-            SELECT u.id AS invitedUserId, u.sponsor_user_id AS inviterUserId
+            SELECT u.id AS invitedUserId, inviter.id AS inviterUserId
               FROM nx_user u
-              JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
+              LEFT JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
+               AND inviter.id<>u.id AND inviter.sandbox=u.sandbox
+               AND EXISTS (SELECT 1 FROM nx_user_wallet w WHERE w.user_id=inviter.id AND w.is_deleted=0 AND w.sandbox=u.sandbox)
               JOIN nx_user_wallet invited_wallet ON invited_wallet.user_id = u.id
                 AND invited_wallet.is_deleted = 0
                 AND invited_wallet.sandbox = #{accountSandbox}
-              JOIN nx_user_wallet inviter_wallet ON inviter_wallet.user_id = inviter.id
-                AND inviter_wallet.is_deleted = 0
-                AND inviter_wallet.sandbox = #{accountSandbox}
+
               LEFT JOIN nx_referral_reward_settlement s
                 ON s.invited_user_id = u.id AND s.is_deleted = 0
-             WHERE u.sponsor_user_id IS NOT NULL AND u.is_deleted = 0 AND u.status = 'ACTIVE'
+             WHERE u.is_deleted = 0 AND u.status = 'ACTIVE'
                AND #{sourceEnvironment} = 'PRODUCTION'
                AND COALESCE(u.sandbox, 0) = #{accountSandbox}
-               AND COALESCE(inviter.sandbox, 0) = #{accountSandbox}
-               AND u.sponsor_user_id <> u.id
                AND u.created_at >= #{effectiveAt}
-               AND NOT EXISTS (
-                 SELECT 1 FROM nx_admin_risk_arbitrage_row risk
-                  WHERE risk.is_deleted = 0
-                    AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
-                    AND (CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
-                      OR CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
-               )
-               AND NOT EXISTS (
-                 SELECT 1
-                   FROM nx_admin_risk_arbitrage_row risk
-                   JOIN nx_admin_risk_multi_account_cluster risk_cluster
-                     ON risk_cluster.cluster_id = risk.cluster_id
-                    AND risk_cluster.is_deleted = 0
-                    AND risk_cluster.nodes_json IS NOT NULL
-                    AND JSON_VALID(risk_cluster.nodes_json) = 1
-                  WHERE risk.is_deleted = 0
-                    AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
-                    AND (JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
-                      OR JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
-               )
-               AND NOT EXISTS (
-                 SELECT 1 FROM nx_admin_risk_multi_account_cluster cluster
-                  WHERE cluster.is_deleted = 0 AND cluster.status IN ('detected','flagged','frozen')
-                    AND cluster.nodes_json IS NOT NULL AND JSON_VALID(cluster.nodes_json) = 1
-                    AND (JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
-                      OR JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
-               )
-               AND (#{holdRisky} = FALSE OR (
-                 NOT EXISTS (
-                   SELECT 1 FROM nx_admin_risk_arbitrage_row review_risk
-                    WHERE review_risk.is_deleted = 0
-                      AND (CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
-                        OR CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
-                 )
-                 AND NOT EXISTS (
-                   SELECT 1 FROM nx_admin_risk_multi_account_cluster review_cluster
-                    WHERE review_cluster.is_deleted = 0 AND review_cluster.status IN ('detected','flagged')
-                      AND review_cluster.nodes_json IS NOT NULL AND JSON_VALID(review_cluster.nodes_json) = 1
-                      AND (JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
-                        OR JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
-                 )
-               ))
+            """ + ELIGIBLE_RISK + """
                AND s.id IS NULL
                AND (#{onlyInvitedUserId} IS NULL OR u.id = #{onlyInvitedUserId})
              ORDER BY u.created_at ASC, u.id ASC
@@ -406,27 +408,28 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                                            @Param("onlyInvitedUserId") Long onlyInvitedUserId);
 
     @Select("""
-            SELECT u.id AS invitedUserId, u.sponsor_user_id AS inviterUserId
+            SELECT u.id AS invitedUserId, inviter.id AS inviterUserId
               FROM nx_user u
-              JOIN nx_user inviter ON inviter.id = u.sponsor_user_id
+              LEFT JOIN nx_user inviter ON inviter.id = u.sponsor_user_id
                AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
+               AND inviter.id<>u.id AND inviter.sandbox=u.sandbox
+               AND EXISTS (SELECT 1 FROM nx_user_wallet w WHERE w.user_id=inviter.id AND w.is_deleted=0 AND w.sandbox=u.sandbox)
               JOIN nx_user_wallet invited_wallet ON invited_wallet.user_id = u.id
                AND invited_wallet.is_deleted = 0 AND invited_wallet.sandbox = 1
-              JOIN nx_user_wallet inviter_wallet ON inviter_wallet.user_id = inviter.id
-               AND inviter_wallet.is_deleted = 0 AND inviter_wallet.sandbox = 1
+
               LEFT JOIN nx_h8_sandbox_referral_settlement s
                 ON s.invited_user_id = u.id AND s.run_id = #{runId} AND s.is_deleted = 0
              WHERE (#{onlyInvitedUserId} IS NULL OR u.id = #{onlyInvitedUserId})
-               AND u.sponsor_user_id IS NOT NULL AND u.sponsor_user_id <> u.id
                AND u.is_deleted = 0 AND u.status = 'ACTIVE'
-               AND COALESCE(u.sandbox, 0) = 1 AND COALESCE(inviter.sandbox, 0) = 1
+               AND COALESCE(u.sandbox, 0) = 1
                AND u.created_at >= #{effectiveAt} AND s.id IS NULL
+            """ + ELIGIBLE_RISK + """
              ORDER BY u.created_at ASC, u.id ASC
              LIMIT 20
             """)
-    List<ReferralRow> findPendingSandboxReferral(@Param("effectiveAt") LocalDateTime effectiveAt,
+    List<ReferralRow> findEligibleSandboxReferral(@Param("effectiveAt") LocalDateTime effectiveAt,
                                                  @Param("runId") String runId,
-                                                 @Param("onlyInvitedUserId") Long onlyInvitedUserId);
+                                                 @Param("onlyInvitedUserId") Long onlyInvitedUserId,@Param("holdRisky") boolean holdRisky);
 
     @Insert("""
             INSERT IGNORE INTO nx_referral_reward_settlement (
@@ -438,65 +441,19 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                    #{inviterNex}, #{lockMode}, #{configSnapshot}, #{operator}, #{reason},
                    #{idempotencyKey}, 'SETTLED', NOW(), NOW(), 0
                FROM nx_user u
-               JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
+               LEFT JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
+               AND inviter.id<>u.id AND inviter.sandbox=u.sandbox
+               AND EXISTS (SELECT 1 FROM nx_user_wallet w WHERE w.user_id=inviter.id AND w.is_deleted=0 AND w.sandbox=u.sandbox)
                JOIN nx_user_wallet invited_wallet ON invited_wallet.user_id = u.id
                  AND invited_wallet.is_deleted = 0
                  AND invited_wallet.sandbox = #{accountSandbox}
-               JOIN nx_user_wallet inviter_wallet ON inviter_wallet.user_id = inviter.id
-                 AND inviter_wallet.is_deleted = 0
-                 AND inviter_wallet.sandbox = #{accountSandbox}
-              WHERE u.id = #{invitedUserId} AND inviter.id = #{inviterUserId}
+
+              WHERE u.id = #{invitedUserId} AND inviter.id <=> #{inviterUserId}
                  AND #{sourceEnvironment} = 'PRODUCTION'
                  AND COALESCE(u.sandbox, 0) = #{accountSandbox}
-                 AND COALESCE(inviter.sandbox, 0) = #{accountSandbox}
-                AND u.sponsor_user_id IS NOT NULL AND u.is_deleted = 0 AND u.status = 'ACTIVE'
-               AND u.sponsor_user_id <> u.id AND u.created_at >= #{effectiveAt}
-               AND NOT EXISTS (
-                 SELECT 1 FROM nx_admin_risk_arbitrage_row risk
-                  WHERE risk.is_deleted = 0
-                    AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
-                    AND (CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
-                      OR CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
-               )
-               AND NOT EXISTS (
-                 SELECT 1
-                   FROM nx_admin_risk_arbitrage_row risk
-                   JOIN nx_admin_risk_multi_account_cluster risk_cluster
-                     ON risk_cluster.cluster_id = risk.cluster_id
-                    AND risk_cluster.is_deleted = 0
-                    AND risk_cluster.nodes_json IS NOT NULL
-                    AND JSON_VALID(risk_cluster.nodes_json) = 1
-                  WHERE risk.is_deleted = 0
-                    AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
-                    AND (JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
-                      OR JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
-               )
-               AND NOT EXISTS (
-                 SELECT 1 FROM nx_admin_risk_multi_account_cluster cluster
-                  WHERE cluster.is_deleted = 0 AND cluster.status IN ('detected','flagged','frozen')
-                    AND cluster.nodes_json IS NOT NULL AND JSON_VALID(cluster.nodes_json) = 1
-                    AND (JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
-                      OR JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
-               )
-               AND (#{holdRisky} = FALSE OR (
-                 NOT EXISTS (
-                   SELECT 1 FROM nx_admin_risk_arbitrage_row review_risk
-                    WHERE review_risk.is_deleted = 0
-                      AND (CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
-                        OR CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
-                 )
-                 AND NOT EXISTS (
-                   SELECT 1 FROM nx_admin_risk_multi_account_cluster review_cluster
-                    WHERE review_cluster.is_deleted = 0 AND review_cluster.status IN ('detected','flagged')
-                      AND review_cluster.nodes_json IS NOT NULL AND JSON_VALID(review_cluster.nodes_json) = 1
-                      AND (JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
-                        OR JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
-                 )
-               ))
+                AND u.is_deleted = 0 AND u.status = 'ACTIVE'
+               AND u.created_at >= #{effectiveAt}
+            """ + ELIGIBLE_RISK + """
             """)
     int insertSettlement(@Param("settlementNo") String settlementNo,
                          @Param("invitedUserId") Long invitedUserId,
@@ -524,23 +481,24 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                    #{inviterNex}, #{lockMode}, #{configSnapshot}, #{operator}, #{reason},
                    #{idempotencyKey}, #{runId}, 'SETTLED', 'mock', 'SANDBOX', NOW(), NOW(), 0
               FROM nx_user u
-              JOIN nx_user inviter ON inviter.id = u.sponsor_user_id
+              LEFT JOIN nx_user inviter ON inviter.id = u.sponsor_user_id
                AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
+               AND inviter.id<>u.id AND inviter.sandbox=u.sandbox
+               AND EXISTS (SELECT 1 FROM nx_user_wallet w WHERE w.user_id=inviter.id AND w.is_deleted=0 AND w.sandbox=u.sandbox)
               JOIN nx_user_wallet invited_wallet ON invited_wallet.user_id = u.id
                AND invited_wallet.is_deleted = 0 AND invited_wallet.sandbox = 1
-              JOIN nx_user_wallet inviter_wallet ON inviter_wallet.user_id = inviter.id
-               AND inviter_wallet.is_deleted = 0 AND inviter_wallet.sandbox = 1
-             WHERE u.id = #{invitedUserId} AND inviter.id = #{inviterUserId}
-               AND u.sponsor_user_id IS NOT NULL AND u.sponsor_user_id <> u.id
+
+             WHERE u.id = #{invitedUserId} AND inviter.id <=> #{inviterUserId}
                AND u.is_deleted = 0 AND u.status = 'ACTIVE'
-               AND COALESCE(u.sandbox, 0) = 1 AND COALESCE(inviter.sandbox, 0) = 1
+               AND COALESCE(u.sandbox, 0) = 1
                AND u.created_at >= #{effectiveAt}
+            """ + ELIGIBLE_RISK + """
                AND NOT EXISTS (
                  SELECT 1 FROM nx_h8_sandbox_referral_settlement existing
                   WHERE existing.invited_user_id = u.id AND existing.run_id = #{runId} AND existing.is_deleted = 0
                )
             """)
-    int insertSandboxSettlement(@Param("settlementNo") String settlementNo,
+    int insertEligibleSandboxSettlement(@Param("settlementNo") String settlementNo,
                                 @Param("invitedUserId") Long invitedUserId,
                                 @Param("inviterUserId") Long inviterUserId,
                                 @Param("newcomerUsdt") BigDecimal newcomerUsdt,
@@ -552,7 +510,7 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                                 @Param("reason") String reason,
                                 @Param("idempotencyKey") String idempotencyKey,
                                 @Param("runId") String runId,
-                                @Param("effectiveAt") LocalDateTime effectiveAt);
+                                @Param("effectiveAt") LocalDateTime effectiveAt,@Param("holdRisky") boolean holdRisky);
 
     /**
      * Server-owned sandbox proof ledger. The SELECT guard makes it impossible
@@ -602,68 +560,23 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
     @Select("""
             SELECT COUNT(*) FROM nx_referral_reward_settlement s
               JOIN nx_user invited ON invited.id=s.invited_user_id
-              JOIN nx_user inviter ON inviter.id=s.inviter_user_id
+              LEFT JOIN nx_user inviter ON inviter.id=s.inviter_user_id
              WHERE s.is_deleted=0
                AND COALESCE(invited.sandbox,0)=#{accountSandbox}
-               AND COALESCE(inviter.sandbox,0)=#{accountSandbox}
+               AND (s.inviter_user_id IS NULL OR inviter.sandbox=#{accountSandbox})
             """)
     long totalSettled(@Param("accountSandbox") int accountSandbox);
 
     @Select("""
             SELECT COUNT(*) FROM nx_user u
-              JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
+              LEFT JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
+               AND inviter.id<>u.id AND inviter.sandbox=u.sandbox
+               AND EXISTS (SELECT 1 FROM nx_user_wallet w WHERE w.user_id=inviter.id AND w.is_deleted=0 AND w.sandbox=u.sandbox)
               LEFT JOIN nx_referral_reward_settlement s ON s.invited_user_id = u.id AND s.is_deleted = 0
-             WHERE u.sponsor_user_id IS NOT NULL AND u.is_deleted = 0 AND u.status = 'ACTIVE'
+             WHERE u.is_deleted = 0 AND u.status = 'ACTIVE'
                AND COALESCE(u.sandbox, 0) = #{accountSandbox}
-               AND COALESCE(inviter.sandbox, 0) = #{accountSandbox}
-               AND u.sponsor_user_id <> u.id
                AND u.created_at >= #{effectiveAt}
-               AND NOT EXISTS (
-                 SELECT 1 FROM nx_admin_risk_arbitrage_row risk
-                  WHERE risk.is_deleted = 0
-                    AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
-                    AND (CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
-                      OR CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
-               )
-               AND NOT EXISTS (
-                 SELECT 1
-                   FROM nx_admin_risk_arbitrage_row risk
-                   JOIN nx_admin_risk_multi_account_cluster risk_cluster
-                     ON risk_cluster.cluster_id = risk.cluster_id
-                    AND risk_cluster.is_deleted = 0
-                    AND risk_cluster.nodes_json IS NOT NULL
-                    AND JSON_VALID(risk_cluster.nodes_json) = 1
-                  WHERE risk.is_deleted = 0
-                    AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
-                    AND (JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
-                      OR JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
-               )
-               AND NOT EXISTS (
-                 SELECT 1 FROM nx_admin_risk_multi_account_cluster cluster
-                  WHERE cluster.is_deleted = 0 AND cluster.status IN ('detected','flagged','frozen')
-                    AND cluster.nodes_json IS NOT NULL AND JSON_VALID(cluster.nodes_json) = 1
-                    AND (JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
-                      OR JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
-               )
-               AND (#{holdRisky} = FALSE OR (
-                 NOT EXISTS (
-                   SELECT 1 FROM nx_admin_risk_arbitrage_row review_risk
-                    WHERE review_risk.is_deleted = 0
-                      AND (CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
-                        OR CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
-                 )
-                 AND NOT EXISTS (
-                   SELECT 1 FROM nx_admin_risk_multi_account_cluster review_cluster
-                    WHERE review_cluster.is_deleted = 0 AND review_cluster.status IN ('detected','flagged')
-                      AND review_cluster.nodes_json IS NOT NULL AND JSON_VALID(review_cluster.nodes_json) = 1
-                      AND (JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
-                        OR JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
-                 )
-               ))
+            """ + ELIGIBLE_RISK + """
                AND s.id IS NULL
             """)
     long totalPending(@Param("effectiveAt") LocalDateTime effectiveAt,
@@ -672,13 +585,13 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT COUNT(*) FROM nx_user u
-              JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
+              LEFT JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
+               AND inviter.id<>u.id AND inviter.sandbox=u.sandbox
+               AND EXISTS (SELECT 1 FROM nx_user_wallet w WHERE w.user_id=inviter.id AND w.is_deleted=0 AND w.sandbox=u.sandbox)
               LEFT JOIN nx_referral_reward_settlement s
                 ON s.invited_user_id = u.id AND s.is_deleted = 0
-             WHERE u.sponsor_user_id IS NOT NULL AND u.is_deleted = 0 AND u.status = 'ACTIVE'
+             WHERE u.is_deleted = 0 AND u.status = 'ACTIVE'
                AND COALESCE(u.sandbox, 0) = #{accountSandbox}
-               AND COALESCE(inviter.sandbox, 0) = #{accountSandbox}
-               AND u.sponsor_user_id <> u.id
                AND u.created_at >= #{effectiveAt}
                AND s.id IS NULL
                AND (EXISTS (
@@ -735,10 +648,10 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                    s.status AS status, s.created_at AS createdAt
               FROM nx_referral_reward_settlement s
               JOIN nx_user invited ON invited.id=s.invited_user_id
-              JOIN nx_user inviter ON inviter.id=s.inviter_user_id
+              LEFT JOIN nx_user inviter ON inviter.id=s.inviter_user_id
              WHERE s.is_deleted=0
                AND COALESCE(invited.sandbox,0)=#{accountSandbox}
-               AND COALESCE(inviter.sandbox,0)=#{accountSandbox}
+               AND (s.inviter_user_id IS NULL OR inviter.sandbox=#{accountSandbox})
              ORDER BY s.id DESC LIMIT #{limit}
             """)
     List<Map<String, Object>> recentSettlements(@Param("accountSandbox") int accountSandbox,
@@ -752,10 +665,10 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                    s.status AS status, s.created_at AS createdAt
               FROM nx_referral_reward_settlement s
               JOIN nx_user invited ON invited.id=s.invited_user_id
-              JOIN nx_user inviter ON inviter.id=s.inviter_user_id
+              LEFT JOIN nx_user inviter ON inviter.id=s.inviter_user_id
              WHERE s.is_deleted=0
                AND COALESCE(invited.sandbox,0)=#{accountSandbox}
-               AND COALESCE(inviter.sandbox,0)=#{accountSandbox}
+               AND (s.inviter_user_id IS NULL OR inviter.sandbox=#{accountSandbox})
                AND (#{beforeId} IS NULL OR s.id < #{beforeId})
              ORDER BY s.id DESC LIMIT #{limit}
             """)
@@ -763,6 +676,54 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
             @Param("accountSandbox") int accountSandbox,
             @Param("beforeId") Long beforeId,
             @Param("limit") int limit);
+
+    @Select("SELECT freeze_gift FROM nx_user_registration_origin WHERE user_id=#{id} FOR UPDATE")
+    Boolean freezeNewcomer(long id);
+
+    @Insert("""
+            INSERT INTO nx_registration_gift_hold(settlement_no,user_id,sandbox,run_id,usdt,nex,state,frozen_at)
+            VALUES (#{no},#{user},#{sandbox},#{run},#{usdt},#{nex},'FROZEN',UTC_TIMESTAMP(6))
+            """)
+    void holdGift(@Param("no") String no,@Param("user") long user,@Param("sandbox") int sandbox,
+                  @Param("run") String run,@Param("usdt") BigDecimal usdt,@Param("nex") BigDecimal nex);
+
+    record GiftHold(String settlementNo, long userId, int sandbox, String runId, BigDecimal usdt,BigDecimal nex,String lockMode) {}
+    @Select("""
+            <script>
+            SELECT h.settlement_no settlementNo,h.user_id userId,h.sandbox,h.run_id runId,h.usdt,h.nex,s.lock_mode lockMode
+              FROM nx_registration_gift_hold h
+              <choose><when test='sandbox == 1'>
+                JOIN nx_h8_sandbox_referral_settlement s ON s.settlement_no=h.settlement_no AND s.run_id=h.run_id
+              </when><otherwise>
+                JOIN nx_referral_reward_settlement s ON s.settlement_no=h.settlement_no
+              </otherwise></choose>
+             WHERE h.user_id=#{user} AND h.sandbox=#{sandbox} AND h.state='FROZEN' FOR UPDATE
+            </script>
+            """)
+    List<GiftHold> frozenForUser(@Param("user") long user,@Param("sandbox") int sandbox);
+
+    @Select("SELECT order_no FROM nx_order WHERE user_id=#{id} AND payment_status='PAID' AND paid_at IS NOT NULL AND amount_usdt>0 AND is_deleted=0 ORDER BY paid_at,id LIMIT 1 FOR SHARE")
+    String firstPaidOrder(long id);
+
+    @Select("""
+            SELECT COUNT(*) FROM nx_user u LEFT JOIN nx_user inviter ON inviter.id=u.sponsor_user_id AND inviter.sandbox=u.sandbox
+             WHERE u.id=#{id} AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=#{sandbox}
+            """ + ELIGIBLE_RISK)
+    int giftReleaseAllowed(@Param("id") long id,@Param("sandbox") int sandbox,@Param("holdRisky") boolean holdRisky);
+
+    @Update("UPDATE nx_registration_gift_hold SET state='RELEASED',paid_order_no=#{orderNo},released_at=UTC_TIMESTAMP(6) WHERE settlement_no=#{no} AND state='FROZEN'")
+    int releaseGift(@Param("no") String no,@Param("orderNo") String orderNo);
+
+    default List<ReferralRow> findPendingSandboxReferral(LocalDateTime effectiveAt,String runId,Long user) {
+        return findEligibleSandboxReferral(effectiveAt,runId,user,true);
+    }
+    default int insertSandboxSettlement(String no,Long user,Long inviter,BigDecimal usdt,BigDecimal nex,
+            BigDecimal inviterNex,String mode,String snapshot,String operator,String reason,String key,String run,
+            LocalDateTime effectiveAt) {
+        return insertEligibleSandboxSettlement(no,user,inviter,usdt,nex,inviterNex,mode,snapshot,operator,reason,key,run,effectiveAt,"risk_bucket".equals(mode));
+    }
+    @Select("SELECT user_id FROM nx_order WHERE order_no=#{no} AND payment_status='PAID' AND paid_at IS NOT NULL AND amount_usdt>0 AND is_deleted=0")
+    Long paidOrderUser(String no);
 
     record ReferralRow(Long invitedUserId, Long inviterUserId) {}
     record AppReferralAccount(String referralCode, Integer sandbox, BigDecimal walletNexAvailable) {}

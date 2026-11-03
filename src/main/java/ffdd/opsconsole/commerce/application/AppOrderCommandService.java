@@ -536,6 +536,7 @@ public class AppOrderCommandService {
         data.put("activationStatus", "ACTIVATED");
         data.put("canonicalStatus", "activated");
         data.put("amountUsdt", order.amountUsdt());
+        data.put("paidTotalUsdt",VerifiedPurchasePayment.active()?null:order.amountUsdt().setScale(2,java.math.RoundingMode.HALF_UP).toPlainString());
         data.put("walletBalanceAfterUsdt", walletBalanceAfterUsdt);
         data.put("paymentMethod", paymentMethod);
         data.put("idempotent", idempotent);
@@ -572,7 +573,8 @@ public class AppOrderCommandService {
         return ApiResult.ok(Map.of(
                 "orderNo", result.orderNo(), "paymentNo", paymentNo,
                 "paymentStatus", "PAID", "orderStatus", "PAID", "canonicalStatus", result.canonicalStatus(),
-                "amountUsdt", order.amountUsdt(), "source", "mock", "sourceEnvironment", "SANDBOX", "runId", runId));
+                "amountUsdt", order.amountUsdt(), "paidTotalUsdt",order.amountUsdt().setScale(2,java.math.RoundingMode.HALF_UP).toPlainString(),
+                "source", "mock", "sourceEnvironment", "SANDBOX", "runId", runId));
     }
 
     private ApiResult<Map<String, Object>> cancelProduction(Long userId, String orderNo) {
@@ -605,6 +607,7 @@ public class AppOrderCommandService {
                 "sourceEnvironment", "PRODUCTION", "runId", ""));
         data.put("activationStatus", "CANCELLED");
         data.put("canonicalStatus", "cancelled");
+        data.put("paidTotalUsdt",null);
         if (promotions != null) data.putAll(promotions.orderProjection(userId, orderNo));
         return ApiResult.ok(data);
     }

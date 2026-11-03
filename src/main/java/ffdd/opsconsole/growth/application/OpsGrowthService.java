@@ -591,6 +591,10 @@ public class OpsGrowthService implements AuditReplayable {
         if (questEventMapper.isEmpty()) {
             return validation("TRIAL_POLICY_BUSINESS_TABLE_UNAVAILABLE");
         }
+        if ("trialOffsetCapUSD".equals(key) && request.expectedValue()!=null &&
+                !request.expectedValue().trim().equals(questEventMapper.get().lockTrialPolicyValue(key))) {
+            return ApiResult.fail(409,"TRIAL_PARAM_CHANGED");
+        }
         questEventMapper.get().upsertTrialPolicyValue(
                 key,
                 value,
@@ -3302,9 +3306,9 @@ public class OpsGrowthService implements AuditReplayable {
 
     private Map<String, Object> trialModelA() {
         Map<String, Object> model = new LinkedHashMap<>();
-        model.put("offsetRule", "min(shadow, offsetCap)");
+        model.put("offsetRule", "min(accrued USDT, optional claim cap, price after trial discount)");
         model.put("offsetLiability", false);
-        model.put("bonusLedgerRule", "shadow above offset cap enters bonus ledger after purchase");
+        model.put("bonusLedgerRule", "settled USDT minus applied credit, and all settled UVT, enter the wallet after purchase");
         model.put("serverCanonical", "computeTrialOffset");
         return model;
     }
@@ -3603,6 +3607,7 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     private String normalizeTrialParamValue(String key, String raw) {
+        if ("trialOffsetCapUSD".equals(key) && !StringUtils.hasText(raw)) return "";
         String value = requireText(raw, "VALUE_REQUIRED");
         if (value.length() > 120) {
             throw new IllegalArgumentException("TRIAL_PARAM_VALUE_TOO_LONG");
@@ -3864,7 +3869,7 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     private String trialParamSection(String key) {
-        return Set.of("trialDays", "graceDays", "extensionDays", "autoChargeAtEnd", "trialProductId",
+        return Set.of("trialDays", "graceDays", "extensionDays", "autoChargeAtEnd", "trialProductId", "trialOffsetCapUSD",
                 "trialPriceUSD", "shadowDailyUSD", "shadowDailyNEX").contains(key) ? "newonly" : "live";
     }
 

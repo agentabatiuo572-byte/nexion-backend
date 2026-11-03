@@ -4,6 +4,7 @@ import ffdd.opsconsole.promotion.domain.PromotionRules;
 import ffdd.opsconsole.promotion.mapper.PromotionMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.canonical.mapper.OrderPaidTotalReadSql;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.*;
 import java.time.*;
@@ -152,7 +153,7 @@ public class PromotionOrderService {
         for(Map<String,Object> reward:maps(pub.get("expectedRewards"))){
             Map<String,Object> value=copy(reward);if(value.get("reward") instanceof Map<?,?>)value.put("reward",ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView.reward(map(value.get("reward"))));value.put("lineId",text(byProduct.get(text(reward.get("lineId"))).get("id")));expected.add(value);
         }
-        Map<String,Object> projection=values("promotionQuoteId",plan.quoteId(),"items",receiptItems(lines),"itemCount",lines.size(),"quantity",actual.stream().mapToInt(PromotionRules.Selection::quantity).sum(),"amountUsdt",pub.get("amountUsdt"),"payBy",payBy.toString(),"rewards",expected);
+        Map<String,Object> projection=values("promotionQuoteId",plan.quoteId(),"items",receiptItems(lines),"itemCount",lines.size(),"quantity",actual.stream().mapToInt(PromotionRules.Selection::quantity).sum(),"amountUsdt",pub.get("amountUsdt"),"paidTotalUsdt",null,"payBy",payBy.toString(),"rewards",expected);
         if(pub.containsKey("promotionDiscountUsdt")){
             for(String key:List.of("subtotalUsdt","discountUsdt","promotionDiscountUsdt"))projection.put(key,pub.get(key));
             var pricedItems=maps(projection.get("items"));
@@ -289,7 +290,8 @@ public class PromotionOrderService {
             if(!"UNLIMITED".equals(p.get("inventory_mode")))changed(db.write("UPDATE nx_product SET stock=stock+?,updated_at=NOW(6) WHERE product_no=? AND is_deleted=0",decimal(reservation.get("amount")).intValueExact(),product));}
     }
     public Map<String,Object> orderProjection(Long userId,String orderNo){
-        Map<String,Object> order=db.order(orderNo,false);require(userId!=null&&number(order.get("user_id"))==userId,"PROMOTION_ORDER_OWNER_MISMATCH");
+        Map<String,Object> order=db.requiredRow("SELECT o.*, "+OrderPaidTotalReadSql.PAID_TOTAL+" AS paid_total FROM nx_order o WHERE o.order_no=? AND o.is_deleted=0",orderNo);
+        require(userId!=null&&number(order.get("user_id"))==userId,"PROMOTION_ORDER_OWNER_MISMATCH");
         Map<String,Object> receipt=db.one("SELECT projection_json,buyer_id FROM nx_promotion_order_receipt WHERE order_no=?",orderNo);
         if(receipt!=null){
             require(number(receipt.get("buyer_id"))==userId,"PROMOTION_ORDER_OWNER_MISMATCH");var projection=parse(receipt.get("projection_json"));
@@ -308,7 +310,7 @@ public class PromotionOrderService {
                 projection.put("rewards",expected);
             }
             if(!projection.containsKey("items")||maps(projection.get("items")).stream().anyMatch(item->!item.containsKey("productName")))projection.put("items",receiptItems(db.list("SELECT * FROM nx_order_item WHERE order_no=? ORDER BY sort_order,id",orderNo)));
-            projection.put("amountUsdt",money(decimal(order.get("amount_usdt"))));return projection;
+            projection.put("amountUsdt",money(decimal(order.get("amount_usdt"))));projection.put("paidTotalUsdt",order.get("paid_total"));return projection;
         }
         List<Map<String,Object>> rows=db.reservations(orderNo,false);if(rows.isEmpty())return Map.of();
         Map<String,Object> snapshot=verifiedSnapshot(rows.get(0)),pub=map(snapshot.get("public"));
@@ -320,7 +322,7 @@ public class PromotionOrderService {
             require(item.isPresent(),"PROMOTION_ORDER_ITEMS_MISMATCH");reward.put("lineId",item.orElseThrow().get("lineId"));
             reward.put("disclosure",PromotionPublicService.disclosure(db,map(snapshot.get("contract")),map(snapshot.get("policies")),map(reward.get("reward"))));
         }
-        return values("promotionQuoteId",pub.get("quoteId"),"amountUsdt",money(decimal(order.get("amount_usdt"))),"payBy",instant(rows.get(0).get("pay_by")).toString(),
+        return values("promotionQuoteId",pub.get("quoteId"),"amountUsdt",money(decimal(order.get("amount_usdt"))),"paidTotalUsdt",order.get("paid_total"),"payBy",instant(rows.get(0).get("pay_by")).toString(),
             "items",items,"itemCount",pub.get("itemCount"),"quantity",pub.get("quantity"),"rewards",expected);
     }
     @Transactional(propagation=Propagation.MANDATORY,rollbackFor=Exception.class)

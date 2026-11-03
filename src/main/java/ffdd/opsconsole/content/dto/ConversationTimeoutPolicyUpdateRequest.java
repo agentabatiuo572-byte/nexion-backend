@@ -7,7 +7,13 @@ public record ConversationTimeoutPolicyUpdateRequest(
         BigDecimal closeMinutes,
         Long expectedVersion,
         String operator,
-        String reason) {
+        String reason,
+        com.fasterxml.jackson.databind.JsonNode sessionEndMinutes) {
+
+    public ConversationTimeoutPolicyUpdateRequest(BigDecimal warnMinutes,BigDecimal closeMinutes,Long expectedVersion,
+            String operator,String reason) {
+        this(warnMinutes,closeMinutes,expectedVersion,operator,reason,null);
+    }
 
     public ConversationTimeoutPolicyUpdateRequest(
             Integer warnMinutes,

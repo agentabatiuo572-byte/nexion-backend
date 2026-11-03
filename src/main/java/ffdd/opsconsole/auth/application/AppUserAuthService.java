@@ -525,7 +525,12 @@ public class AppUserAuthService {
         ApiResult<UserLoginResponse> failure = environmentFailure(user, false);
         if (failure != null) return failure;
         if (!phoneOrProviderIdentity(user)) throw new BizException(403, "USER_REFRESH_NOT_ALLOWED");
-        return loginReceipt(user, issued);
+        ApiResult<UserLoginResponse> session = loginReceipt(user, issued);
+        if ("REGISTRATION".equals(context.authMethod()) || "OAUTH".equals(context.authMethod())) {
+            var receipt = loginGuardMapper.registrationReceipt(user.getId(),context.loginAttemptId());
+            if (receipt != null) return ApiResult.ok(session.getData().withRegistrationReceipt(receipt));
+        }
+        return session;
     }
 
     /**

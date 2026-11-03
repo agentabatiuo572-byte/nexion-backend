@@ -10,6 +10,24 @@ import org.apache.ibatis.annotations.*;
 // Group, qualification and ownership histories use guarded cross-table statements, not generic entity CRUD.
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface SupportGroupMapper {
+    @Select("SELECT code,version,DATE_FORMAT(issued_at,'%Y-%m-%dT%H:%i:%s.%fZ') issuedAt FROM nx_support_invite_code WHERE active_owner=#{admin}")
+    ffdd.opsconsole.content.dto.SupportGroupManagementViews.InviteCodeSummary inviteCode(long admin);
+
+    @Select("SELECT COALESCE(MAX(version),0)+1 FROM nx_support_invite_code WHERE agent_admin_id=#{admin}")
+    long nextInviteVersion(long admin);
+
+    @Select("SELECT COUNT(*) FROM nx_support_invite_code WHERE code=#{code}")
+    int codeExists(String code);
+
+    @Insert("INSERT INTO nx_support_invite_code(agent_admin_id,code,version,state,issued_at,issued_by,issued_reason) VALUES(#{admin},#{code},#{version},'ACTIVE',UTC_TIMESTAMP(6),#{admin},#{reason})")
+    int issueCode(@Param("admin") long admin,@Param("code") String code,@Param("version") long version,@Param("reason") String reason);
+
+    @Update("UPDATE nx_support_invite_code SET state='REVOKED',revoked_at=UTC_TIMESTAMP(6),revoked_by=#{actor},revoked_reason=#{reason},revoke_key=#{key},revoke_type=#{type} WHERE active_owner=#{admin}")
+    int revokeCode(@Param("admin") long admin,@Param("actor") long actor,@Param("reason") String reason,@Param("key") String key,@Param("type") String type);
+
+    @Select("SELECT agent_admin_id FROM nx_support_invite_code WHERE revoked_by=#{actor} AND revoke_key=#{key} AND revoke_type='REVOKE' ORDER BY revoked_at DESC LIMIT 1")
+    Long revokedOwner(@Param("actor") long actor,@Param("key") String key);
+
     String GROUP_COLUMNS="id,name,supervisor_admin_id supervisorAdminId,status,version";
     String QUALIFICATION_COLUMNS="id,admin_id adminId,qualification_kind qualificationKind,state,version,starts_at startsAt";
     String MEMBER_COLUMNS="id,agent_admin_id agentAdminId,group_id groupId,version,starts_at startsAt";

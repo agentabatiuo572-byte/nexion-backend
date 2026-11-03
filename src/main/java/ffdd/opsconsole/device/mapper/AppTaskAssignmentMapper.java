@@ -474,6 +474,24 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     ReceiptRow receipt(@Param("userId") Long userId, @Param("receiptNo") String receiptNo);
 
     @Select("""
+            <script>
+            SELECT r.receipt_no receiptNo,
+                   (SELECT MAX(a.posted_at_utc) FROM nx_compute_v2_allocation a
+                     WHERE a.receipt_no=r.receipt_no AND a.task_no=r.task_no AND a.user_id=r.user_id
+                       AND a.user_device_id=r.user_device_id AND a.amount_micros &gt; 0) v2PostedUtc,
+                   (SELECT MAX(e.wallet_posted_at) FROM nx_earning_event e
+                     WHERE e.receipt_no=r.receipt_no AND e.user_id=r.user_id AND e.user_device_id=r.user_device_id
+                       AND e.status='POSTED' AND e.amount &gt; 0 AND e.is_deleted=0) walletPostedAt
+              FROM nx_compute_receipt r
+             WHERE r.user_id=#{userId} AND r.is_deleted=0 AND r.receipt_no IN
+               <foreach item="no" collection="receiptNos" open="(" separator="," close=")">#{no}</foreach>
+            </script>
+            """)
+    List<ReceiptPosting> receiptPostings(@Param("userId") Long userId, @Param("receiptNos") List<String> receiptNos);
+
+    record ReceiptPosting(String receiptNo, LocalDateTime v2PostedUtc, LocalDateTime walletPostedAt) {}
+
+    @Select("""
              SELECT r.id AS receiptId, r.receipt_no AS receiptNo, r.task_no AS taskNo,
                    d.id AS deviceId, d.instance_no AS deviceInstanceNo, d.name AS deviceName,
                    d.device_type AS deviceType, d.gpu_model AS deviceGpu,

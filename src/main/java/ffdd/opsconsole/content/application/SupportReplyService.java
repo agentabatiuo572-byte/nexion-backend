@@ -23,7 +23,7 @@ public class SupportReplyService {
             targets=List.of(new ConversationReplyRequest.ReplyTarget(current,request.replyThroughMessageId()));
         if(targets==null || targets.isEmpty()) return;
         if(targets.size()>100) throw new BizException(422,"SUPPORT_REPLY_TARGETS_INVALID");
-        ownership.requireWriter(customer,true);
+        ownership.requireMessageWriter(customer);
         Set<String> seen=new HashSet<>();
         for(var t:targets) {
             if(t==null || t.conversationNo()==null || !seen.add(t.conversationNo()) || t.throughMessageId()==null

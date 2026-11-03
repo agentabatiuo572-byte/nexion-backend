@@ -101,6 +101,8 @@ public class SupportCustomerProfileService {
             var data=new LinkedHashMap<>(mapper.service(customer));var assignment=bindings.current(customer);
             for(String field:List.of("lastServiceAt","conversationNo","conversationStatus","archived"))data.putIfAbsent(field,null);
             data.put("assignment",assignment);data.put("assignmentState",assignment==null?"UNBOUND":"BOUND");
+            if(assignment!=null && (ownership.supervisor(scope.actorId()) || bindings.eligibleAgent(scope.actorId())==1))
+                data.put("assignmentSource",assignment.source());
             var rules=bindings.rules();var coverage=mapper.coverage();
             data.put("activityStatus","UNKNOWN");data.put("lastEffectiveAt",null);data.put("nextMaintenanceAt",null);
             if(assignment!=null && coverage!=null) {

@@ -83,7 +83,16 @@ public class AppUserRefreshCookieService {
     }
 
     public boolean cookieMode(HttpServletRequest request) {
-        return request != null && COOKIE_MODE.equalsIgnoreCase(request.getHeader(MODE_HEADER));
+        if(request==null) return false;
+        String origin=request.getHeader("Origin");
+        // Browser-originated fetches also use the cookie rail if application code labels them APP.
+        boolean browser=StringUtils.hasText(origin) && (origin.equals(environment.getProperty("oauth.h5-origin"))
+                || Arrays.stream(environment.getProperty("nexion.cors.allowed-origins","").split(","))
+                        .anyMatch(value->origin.equals(value.trim()))
+                || (origin.startsWith("https://") || origin.startsWith("http://"))
+                    && StringUtils.hasText(request.getHeader("Sec-Fetch-Mode")));
+        return browser || COOKIE_MODE.equalsIgnoreCase(request.getHeader(MODE_HEADER))
+                || "H5".equalsIgnoreCase(request.getHeader(AppSessionSurface.APP_HEADER));
     }
 
     public void clear(HttpServletResponse response) {

@@ -8,7 +8,11 @@ public final class SupportGroupManagementViews {
     public record GroupDirectory(Long id,String name,Long supervisorAdminId,String status,Long version,
                                  String supervisorName,Long memberCount,Long boundCustomers,Long pendingCustomers) {}
     public record MemberFact(String state,String id,String groupId,Long version) {}
-    public record MemberTarget(String adminId,String name,Integer accountStatus,MemberFact currentMember,long boundCustomers) {}
+    public record InviteCodeSummary(String code,Long version,String issuedAt) {
+        public static final InviteCodeSummary EMPTY = new InviteCodeSummary(null,null,null);
+    }
+    public record InviteCodeView(String code,String link,Long version,String issuedAt) {}
+    public record MemberTarget(String adminId,String name,Integer accountStatus,MemberFact currentMember,long boundCustomers,InviteCodeSummary inviteCode) {}
     public record QualificationFact(String kind,String state,String observationState,String id,Long version) {}
     public record AccountQualifications(String adminId,String name,Integer accountStatus,String accountVersion,
                                         List<QualificationFact> qualifications) {}

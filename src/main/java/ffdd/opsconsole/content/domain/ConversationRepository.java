@@ -49,6 +49,11 @@ public interface ConversationRepository {
         throw new UnsupportedOperationException("STABLE_CONVERSATION_PEER_REQUIRED");
     }
 
+    /** Management send authority is limited to the assigned advisor's current thread. */
+    default void requireCurrentAdvisorThread(ContentConversationView row,String advisorId) {
+        throw new UnsupportedOperationException("CURRENT_ADVISOR_THREAD_REQUIRED");
+    }
+
     /** After snapshot validation, first reply may claim a never-answered, unassigned peer. */
     default boolean claimUnassignedPeerForWrite(String conversationNo, String staffId) { return false; }
 
@@ -166,6 +171,15 @@ public interface ConversationRepository {
         throw new UnsupportedOperationException("EXPLICIT_MESSAGE_ACTOR_REQUIRED");
     }
 
+    /** The owner is the assigned advisor. The speaker is the authenticated sender. */
+    record Speaker(long id,String name,String role,boolean bulk) {}
+    default Long replyAndReturnMessageId(ContentConversationView conversation,String body,Speaker speaker,LocalDateTime now) {
+        throw new UnsupportedOperationException("EXPLICIT_MESSAGE_ACTOR_REQUIRED");
+    }
+    default PersistedConversation createConversationWithMessage(String no,Long customer,String type,String owner,String ownerName,
+            String text,Speaker speaker,LocalDateTime now) {
+        throw new UnsupportedOperationException("EXPLICIT_MESSAGE_ACTOR_REQUIRED");
+    }
     record PersistedConversation(ContentConversationView conversation, Long messageId) {}
 
     /** Creates an inbound App conversation whose first message is authored by the authenticated user. */

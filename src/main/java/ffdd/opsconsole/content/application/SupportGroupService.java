@@ -72,7 +72,7 @@ public class SupportGroupService {
             fact=new MemberFact("UNKNOWN",null,null,null);
         else fact=new MemberFact("AVAILABLE",String.valueOf(current.id()),current.groupId()==null?null:String.valueOf(current.groupId()),current.version());
         return new MemberTarget(String.valueOf(admin),String.valueOf(account.get("name")),
-                ((Number)account.get("status")).intValue(),fact,mapper.boundCount(admin));
+                ((Number)account.get("status")).intValue(),fact,mapper.boundCount(admin),Objects.requireNonNullElse(mapper.inviteCode(admin),InviteCodeSummary.EMPTY));
     }
 
     @Transactional

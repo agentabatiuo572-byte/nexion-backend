@@ -11,6 +11,14 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface UserLoginGuardMapper extends BaseMapper<UserLoginGuardRecord> {
+    @Select("""
+            SELECT sponsor_code sponsorCode,sponsor_display_name sponsorDisplayName,source_environment sourceEnvironment,
+                   gift_status giftStatus,gift_usdt giftUsdt,gift_nex giftNex FROM nx_user_registration_origin
+             WHERE user_id=#{userId} AND attempt_id=#{attempt}
+            """)
+    ffdd.opsconsole.auth.dto.UserLoginResponse.RegistrationReceipt registrationReceipt(
+            @Param("userId") long userId,@Param("attempt") String attempt);
+
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_user_login_guard (
               login_key CHAR(64) PRIMARY KEY,

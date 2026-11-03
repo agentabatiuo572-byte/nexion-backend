@@ -290,7 +290,7 @@ public class SupportAttachmentService {
             return assignment == null ? null : assignment.id();
         }
         if (!SupportOwnershipService.hasAuthority("service_m3_write")) throw new BizException(403, "SUPPORT_WRITE_FORBIDDEN");
-        SupportAssignment assignment = ownership.requireWriter(customer, true);
+        SupportAssignment assignment = ownership.requireMessageWriter(customer);
         positiveId(expected);
         if (!expected.equals(assignment.id())) throw conflict();
         return assignment.id();
@@ -313,10 +313,10 @@ public class SupportAttachmentService {
         } else {
             if (!SupportOwnershipService.hasAuthority("service_m3_read")) throw new BizException(403, "SUPPORT_READ_FORBIDDEN");
             if (!ownership.canRead(actor, row.customerId())) throw missing();
-            // A supervisor who uploaded while acting as an advisor also loses the old unsent draft.
+            // Unsent uploads stay tied to their original customer assignment and the uploader's current scope.
             if (!"ATTACHED".equals(row.state()) && "ADMIN".equals(row.uploaderType())) {
                 SupportAssignment current = bindings.current(row.customerId());
-                if (current == null || !actor.equals(current.agentAdminId())
+                if (current == null || ownership.messageRole(actor,current)==null
                         || !Objects.equals(row.assignmentId(), current.id())) throw missing();
             }
         }

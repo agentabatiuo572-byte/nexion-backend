@@ -49,6 +49,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class OpsConversationController {
     private final OpsConversationService conversationService;
+    private final ffdd.opsconsole.content.application.SupportSessionService sessions;
     private final ffdd.opsconsole.content.application.SupportOwnershipService ownership;
     private final ProductionSupportPathGuard productionPathGuard;
     /**
@@ -70,6 +71,29 @@ public class OpsConversationController {
             return ApiResult.fail(ffdd.opsconsole.common.api.OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
                     ffdd.opsconsole.common.api.OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
+    }
+
+    private ApiResult<ContentConversationView> sendCommand(Long customer,String scope,String key,String hash,
+            java.util.function.Supplier<ApiResult<ContentConversationView>> action) {
+        try {
+            ownership.requireMessageWriter(customer);
+            var result=executeCommand(scope,key,hash,action);
+            if(result.getCode()!=0) sessions.rejected(customer,scope,result.getMessage());
+            return result;
+        } catch (ffdd.opsconsole.shared.exception.BizException rejected) {
+            sessions.rejected(customer,scope,rejected.getMessage());
+            throw rejected;
+        }
+    }
+
+    public record InboxRow(@com.fasterxml.jackson.annotation.JsonUnwrapped ContentConversationView conversation,
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.ALWAYS)
+            ffdd.opsconsole.content.application.SupportSessionService.Holder holder) {}
+
+    @org.springframework.web.bind.annotation.ExceptionHandler(ffdd.opsconsole.content.application.SupportSessionService.Busy.class)
+    public ApiResult<?> handleSupportBusy(ffdd.opsconsole.content.application.SupportSessionService.Busy ex,jakarta.servlet.http.HttpServletResponse response) {
+        response.setStatus(409);
+        return ApiResult.fail(409,ex.getMessage(),ex.state());
     }
 
     private String requestHash(String... values) {
@@ -102,13 +126,16 @@ public class OpsConversationController {
     // 收件箱/会话列表 — M3 即时会话台 读
     @PreAuthorize("hasAuthority('service_m3_read')")
     @GetMapping
-    public ApiResult<PageResult<ContentConversationView>> conversationsQuery(
+    public ApiResult<PageResult<InboxRow>> conversationsQuery(
             @RequestParam(required=false) String status,@RequestParam(required=false) String type,
             @RequestParam(required=false) String ownerAgentId,@RequestParam(required=false) Long userId,
             @RequestParam(required=false) String keyword,@RequestParam(required=false) Boolean unreadOnly,
             @RequestParam(required=false) Long pageNum,@RequestParam(required=false) Long pageSize,@RequestParam(required=false) Boolean archived,
             @RequestParam(required=false) ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode readMode,@RequestParam(required=false) Long groupId) {
-        return conversations(new ConversationQueryRequest(status,type,ownerAgentId,userId,keyword,unreadOnly,pageNum,pageSize,archived,readMode,groupId));
+        var page=conversations(new ConversationQueryRequest(status,type,ownerAgentId,userId,keyword,unreadOnly,pageNum,pageSize,archived,readMode,groupId)).getData();
+        var holders=sessions.holders(page.getRecords().stream().map(ContentConversationView::userId).filter(java.util.Objects::nonNull).distinct().toList());
+        return ApiResult.ok(new PageResult<>(page.getTotal(),page.getPageNum(),page.getPageSize(),page.getRecords().stream()
+                .map(row->new InboxRow(row,holders.get(row.userId()))).toList()));
     }
     public ApiResult<PageResult<ContentConversationView>> conversations(ConversationQueryRequest request) {
         return conversationService.conversations(request);
@@ -120,8 +147,8 @@ public class OpsConversationController {
     public ApiResult<ContentConversationView> initiate(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody ConversationInitiateRequest request) {
-        ownership.requireWriter(request == null ? null : request.userId(),true);
-        return executeCommand("M3_CONVERSATION_INITIATE", idempotencyKey, requestHash(String.valueOf(request)), () -> {
+        Long customer=request==null ? null : request.userId();
+        return sendCommand(customer,"M3_CONVERSATION_INITIATE", idempotencyKey, requestHash(String.valueOf(request)), () -> {
             OpsConversationService.MessageCommandResult command = conversationService.initiateWithMessageId(idempotencyKey, request);
             ApiResult<ContentConversationView> result = command.result();
             publishMessage(result.getData(), command.messageId(), ConversationMessageEvent.EventType.INITIATE, "AGENT", null);
@@ -180,8 +207,7 @@ public class OpsConversationController {
             @PathVariable String conversationNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody ConversationReplyRequest request) {
-        ownership.writeConversation(conversationNo,true);
-        return executeCommand("M3_CONVERSATION_REPLY", idempotencyKey, requestHash(conversationNo, String.valueOf(request)), () -> {
+        return sendCommand(ownership.conversationCustomer(conversationNo),"M3_CONVERSATION_REPLY", idempotencyKey, requestHash(conversationNo, String.valueOf(request)), () -> {
             OpsConversationService.MessageCommandResult command = conversationService.replyWithMessageId(conversationNo, idempotencyKey, request);
             ApiResult<ContentConversationView> result = command.result();
             publishMessage(result.getData(), command.messageId(), ConversationMessageEvent.EventType.MESSAGE, "AGENT", null);

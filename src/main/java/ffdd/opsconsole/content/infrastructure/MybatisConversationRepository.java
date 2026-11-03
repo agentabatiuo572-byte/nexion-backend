@@ -20,6 +20,7 @@ import org.springframework.stereotype.Repository;
 public class MybatisConversationRepository implements ConversationRepository {
     private final ConversationMapper mapper;
     private final ConversationMessageMapper messageMapper;
+    private final ffdd.opsconsole.content.mapper.SupportReceptionMapper reception;
     private final ffdd.opsconsole.content.application.SupportOwnershipService ownership;
 
     @Override public boolean containsCustomerMessage(String conversationNo,Long messageId) {
@@ -122,6 +123,12 @@ public class MybatisConversationRepository implements ConversationRepository {
     }
 
     @Override
+    public void requireCurrentAdvisorThread(ContentConversationView row,String advisorId) {
+        if(!row.conversationNo().equals(mapper.currentCustomerConversation(row.userId(),advisorId)))
+            throw new ffdd.opsconsole.shared.exception.BizException(409,"CONVERSATION_PEER_CHANGED");
+    }
+
+    @Override
     public boolean claimUnassignedPeerForWrite(String conversationNo, String staffId) {
         return staffId != null
                 && org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()
@@ -209,7 +216,7 @@ public class MybatisConversationRepository implements ConversationRepository {
                 reason,
                 operator,
                 now);
-        insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统",
+        insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统", null,
                 "会话转交至 " + targetName + ": " + reason, now);
         return true;
     }
@@ -226,7 +233,7 @@ public class MybatisConversationRepository implements ConversationRepository {
         if (mapper.acceptConversation(conversation.conversationNo(), ownerAgentId, ownerAgentName, conversation.version(), now) == 0) {
             throw new IllegalStateException("CONVERSATION_ACCEPT_HEADER_UPDATE_FAILED");
         }
-        insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统",
+        insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统", null,
                 operator + " 已接收转入会话", now);
         return true;
     }
@@ -245,7 +252,7 @@ public class MybatisConversationRepository implements ConversationRepository {
         if (mapper.returnConversation(conversation.conversationNo(), ownerId, ownerName, conversation.version(), now) == 0) {
             throw new IllegalStateException("CONVERSATION_RETURN_HEADER_UPDATE_FAILED");
         }
-        insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统",
+        insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统", null,
                 "转入会话已退回: " + reason, now);
         return true;
     }
@@ -256,7 +263,7 @@ public class MybatisConversationRepository implements ConversationRepository {
         if (mapper.markTransferWait(conversation.conversationNo(), message, conversation.version(), now) == 0) {
             return false;
         }
-        insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统",
+        insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统", null,
                 operator + " " + message, now);
         return true;
     }
@@ -274,10 +281,15 @@ public class MybatisConversationRepository implements ConversationRepository {
     @Override
     public Long replyAndReturnMessageId(ContentConversationView conversation,String body,Long senderAdminId,String senderName,LocalDateTime now) {
         if(senderAdminId==null || senderAdminId<=0) throw new IllegalArgumentException("EXPLICIT_MESSAGE_ACTOR_REQUIRED");
+        return replyAndReturnMessageId(conversation,body,new Speaker(senderAdminId,senderName,"ADVISOR",false),now);
+    }
+
+    @Override
+    public Long replyAndReturnMessageId(ContentConversationView conversation,String body,Speaker speaker,LocalDateTime now) {
         if (mapper.replyConversation(conversation.conversationNo(), body, conversation.status(), conversation.version(), now) == 0) {
             return null;
         }
-        return insertMessage(conversation.id(), conversation.conversationNo(), senderAdminId, "agent", senderName, body, now);
+        return insertAgentMessage(conversation.userId(),conversation.id(),conversation.conversationNo(),speaker,body,now);
     }
 
     @Override
@@ -286,7 +298,7 @@ public class MybatisConversationRepository implements ConversationRepository {
                 conversation.conversationNo(), userId, body, conversation.status(), conversation.version(), now) == 0) {
             return false;
         }
-        insertMessage(conversation.id(), conversation.conversationNo(), userId, "user", "用户", body, now);
+        insertMessage(conversation.id(), conversation.conversationNo(), userId, "user", "用户", null, body, now);
         return true;
     }
 
@@ -295,7 +307,7 @@ public class MybatisConversationRepository implements ConversationRepository {
         if (mapper.updateConversationStatus(conversation.conversationNo(), status, conversation.status(), conversation.version(), now) == 0) {
             return false;
         }
-        insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统",
+        insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统", null,
                 operator + " 将会话状态更新为" + statusLabel(status), now);
         return true;
     }
@@ -315,7 +327,7 @@ public class MybatisConversationRepository implements ConversationRepository {
         if (mapper.updateArchived(conversation.conversationNo(), archived, conversation.archived(), conversation.version(), now) == 0) {
             return false;
         }
-        insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统",
+        insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统", null,
                 operator + (archived ? " 已归档会话" : " 已撤销归档会话"), now);
         return true;
     }
@@ -335,7 +347,7 @@ public class MybatisConversationRepository implements ConversationRepository {
         if (updated == 0) {
             throw new IllegalStateException("CONVERSATION_FALLBACK_HEADER_UPDATE_FAILED");
         }
-        insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统",
+        insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统", null,
                 "转入待处理超时回落 " + targetName + ": " + reason, now);
         return true;
     }
@@ -371,9 +383,16 @@ public class MybatisConversationRepository implements ConversationRepository {
             String conversationNo,Long userId,String conversationType,String ownerAgentId,String ownerAgentName,
             String openingText,Long senderAdminId,String senderName,LocalDateTime now) {
         if(senderAdminId==null || senderAdminId<=0) throw new IllegalArgumentException("EXPLICIT_MESSAGE_ACTOR_REQUIRED");
+        return createConversationWithMessage(conversationNo,userId,conversationType,ownerAgentId,ownerAgentName,openingText,
+                new Speaker(senderAdminId,senderName,"ADVISOR",false),now);
+    }
+
+    @Override
+    public PersistedConversation createConversationWithMessage(String conversationNo,Long userId,String conversationType,
+            String ownerAgentId,String ownerAgentName,String openingText,Speaker speaker,LocalDateTime now) {
         ContentConversationView current = List.of("advisor","support").contains(conversationType) ? resumeCustomerConversation(userId, ownerAgentId, now) : null;
         if (current != null) {
-            Long messageId = replyAndReturnMessageId(current, openingText, senderAdminId, senderName, now);
+            Long messageId = replyAndReturnMessageId(current,openingText,speaker,now);
             if (messageId == null) throw new IllegalStateException("CONVERSATION_RESUME_CONFLICT");
             return new PersistedConversation(findByConversationNo(current.conversationNo()).orElseThrow(), messageId);
         }
@@ -393,7 +412,7 @@ public class MybatisConversationRepository implements ConversationRepository {
         entity.setUpdatedAt(now);
         entity.setIsDeleted(0);
         mapper.insert(entity);
-        Long messageId = insertMessage(entity.getId(), conversationNo, senderAdminId, "agent", senderName, openingText, now);
+        Long messageId = insertAgentMessage(userId,entity.getId(),conversationNo,speaker,openingText,now);
         ContentConversationView conversation = findByConversationNo(conversationNo)
                 .orElseGet(() -> new ContentConversationView(
                         entity.getId(),
@@ -452,7 +471,7 @@ public class MybatisConversationRepository implements ConversationRepository {
         entity.setUpdatedAt(now);
         entity.setIsDeleted(0);
         mapper.insert(entity);
-        insertMessage(entity.getId(), conversationNo, userId, "user", "用户", openingText, now);
+        insertMessage(entity.getId(), conversationNo, userId, "user", "用户", null, openingText, now);
         return findByConversationNo(conversationNo).orElseThrow();
     }
 
@@ -462,8 +481,12 @@ public class MybatisConversationRepository implements ConversationRepository {
         // Serialize both customer and agent entry, including the first message when no row exists.
         ownership.lockCustomer(userId);
         // Unknown staff is not an identity; never merge it by a display name or another active staff member.
-        if (!org.springframework.util.StringUtils.hasText(ownerAgentId)) return null;
-        String no = mapper.currentCustomerConversation(userId, ownerAgentId);
+        String no = ownerAgentId==null ? null : mapper.currentCustomerConversation(userId,ownerAgentId);
+        if (no==null) {
+            no=mapper.unassignedWelcome(userId);
+            if(no!=null && ownerAgentId!=null && !claimUnassignedPeerForWrite(no,ownerAgentId))
+                throw new ffdd.opsconsole.shared.exception.BizException(409,"CONVERSATION_PEER_CHANGED");
+        }
         if (no == null) return null;
         ContentConversationView current = findByConversationNoForUpdate(no).orElseThrow();
         if (mapper.resumeCustomerConversation(no, current.version(), now) != 1)
@@ -479,12 +502,21 @@ public class MybatisConversationRepository implements ConversationRepository {
             throw new ffdd.opsconsole.shared.exception.BizException(503,"M3_TIMEOUT_POLICY_NOT_CONFIGURED");
     }
 
+    private Long insertAgentMessage(long customer,long id,String no,Speaker speaker,String body,LocalDateTime now) {
+        if(!speaker.bulk()) {
+            Long previous=reception.lastHumanSender(customer);
+            if(previous!=null && previous!=speaker.id()) reception.agentSwitch(id,no,speaker.name(),speaker.role(),now);
+        }
+        return insertMessage(id,no,speaker.id(),"agent",speaker.name(),speaker.role(),body,now);
+    }
+
     private Long insertMessage(
             Long conversationId,
             String conversationNo,
             Long senderId,
             String senderType,
             String senderName,
+            String senderRole,
             String content,
             LocalDateTime now) {
         ConversationMessageEntity message = new ConversationMessageEntity();
@@ -492,6 +524,7 @@ public class MybatisConversationRepository implements ConversationRepository {
         message.setConversationNo(conversationNo);
         message.setSenderId(senderId);
         message.setSenderType(senderType);
+        message.setSenderRole(senderRole);
         if ("agent".equals(senderType) && ("admin:" + senderId).equals(senderName)) {
             String displayName = messageMapper.senderDisplayName(senderId);
             senderName = org.springframework.util.StringUtils.hasText(displayName) ? displayName : "客服";

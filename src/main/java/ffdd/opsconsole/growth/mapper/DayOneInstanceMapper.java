@@ -14,9 +14,9 @@ import org.apache.ibatis.annotations.Select;
 public interface DayOneInstanceMapper {
 
     @Select("""
-            SELECT id userId,created_at enteredAt
-              FROM nx_user
-             WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0
+            SELECT u.id userId,u.created_at enteredAt,o.surface
+              FROM nx_user u LEFT JOIN nx_user_registration_origin o ON o.user_id=u.id
+             WHERE u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0
              LIMIT 1 FOR UPDATE
             """)
     RegisteredUser lockRegisteredUser(@Param("userId") Long userId);
@@ -45,13 +45,13 @@ public interface DayOneInstanceMapper {
     String lockConfigValue(@Param("configKey") String configKey);
 
     @Select("""
-            SELECT id
+            SELECT id,mission_code code,mission_name name,action_route route
               FROM nx_mission
              WHERE mission_type='DAY_ONE' AND status=1 AND is_deleted=0
              ORDER BY id
              FOR UPDATE
             """)
-    List<Long> lockActiveDayOneDefinitionIds();
+    List<DayOneMission> lockActiveDayOneDefinitions();
 
     @Select("""
             SELECT m.id sourceMissionId,b.id sourceBindingId,m.mission_code questCode,m.mission_name name,
@@ -166,8 +166,10 @@ public interface DayOneInstanceMapper {
             """)
     List<DayOneInstanceItem> listItems(@Param("instanceId") Long instanceId);
 
-    record RegisteredUser(Long userId, LocalDateTime enteredAt) {
+    record RegisteredUser(Long userId, LocalDateTime enteredAt, String surface) {
     }
+
+    record DayOneMission(Long id, String code, String name, String route) {}
 
     record DayOneDefinitionBinding(
             Long sourceMissionId,

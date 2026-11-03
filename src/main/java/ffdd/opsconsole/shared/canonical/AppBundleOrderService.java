@@ -334,7 +334,7 @@ public class AppBundleOrderService {
                 "quantity", quantity,
                 "productNos", products.stream().map(AppBundleOrderMapper.ProductRow::productNo).toList(),
                 "subtotalUsdt", subtotal, "discountRate", discountRate, "discountUsdt", discount,
-                "amountUsdt", amount, "paymentStatus", "PENDING", "orderStatus", "PENDING_PAYMENT",
+                "amountUsdt", amount, "paidTotalUsdt", null, "paymentStatus", "PENDING", "orderStatus", "PENDING_PAYMENT",
                 "idSource", "server", "policyVersion", currentPolicyVersion);
         if (promotionPlan != null) {
             Long deadlineSeconds = mapper.orderDeadlineEpoch(orderNo, pendingOrderTtlMinutes);

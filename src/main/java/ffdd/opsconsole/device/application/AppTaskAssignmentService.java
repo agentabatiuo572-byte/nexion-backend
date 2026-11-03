@@ -320,7 +320,7 @@ public class AppTaskAssignmentService {
         row = mapper.receipt(userId, normalizedReceiptNo);
         if (row == null) throw new BizException(404, "TASK_RECEIPT_NOT_FOUND");
         var simulation=row.taskNo().startsWith("SIM-")?simulatedTasks.task(row.taskNo()):null;
-        return ApiResult.ok(receiptView(row,simulation,true));
+        return ApiResult.ok(receiptView(row,simulation,postingTimes(userId,List.of(row)).get(row.receiptNo()),true));
     }
 
     @Transactional(readOnly = true)
@@ -360,12 +360,13 @@ public class AppTaskAssignmentService {
         var simNos=rows.stream().limit(normalizedLimit).map(ReceiptRow::taskNo).filter(no->no.startsWith("SIM-")).toList();
         var simulations=new java.util.HashMap<String,ffdd.opsconsole.device.mapper.SimulatedTaskMapper.TaskRow>();
         if(!simNos.isEmpty())for(var simulation:simulatedTasks.tasksByUser(userId,simNos))simulations.put(simulation.taskNo(),simulation);
+        var posted = postingTimes(userId, rows.stream().limit(normalizedLimit).toList());
         List<AppComputeReceiptSummaryView> items = rows.stream().limit(normalizedLimit)
-                .map(row->receiptView(row,simulations.get(row.taskNo()),false))
+                .map(row->receiptView(row,simulations.get(row.taskNo()),posted.get(row.receiptNo()),false))
                 .map(view -> new AppComputeReceiptSummaryView(
                         view.receiptNo(), view.taskNo(), view.taskClass(), view.model(), view.client(),
                         view.rewardUsdt(), view.rewardNex(), view.earningStatus(), view.completedAt(),view.taskName(),
-                        view.executionMode(),view.proofKind(),view.modelExecuted(),view.displayReceiptNo()))
+                        view.executionMode(),view.proofKind(),view.modelExecuted(),view.displayReceiptNo(),view.settledAt()))
                 .toList();
         Integer nextOffset = hasMore ? normalizedOffset + normalizedLimit : null;
         String nextCursor = hasMore && !rows.isEmpty()
@@ -1030,7 +1031,21 @@ public class AppTaskAssignmentService {
                 paused ? pausedAt : null, pausedSeconds);
     }
 
-    private AppComputeReceiptView receiptView(ReceiptRow row,ffdd.opsconsole.device.mapper.SimulatedTaskMapper.TaskRow simulation,boolean detail) {
+    private Map<String, LocalDateTime> postingTimes(Long userId, List<ReceiptRow> rows) {
+        List<String> modelReceipts = rows.stream().filter(row -> !row.taskNo().startsWith("SIM-"))
+                .map(ReceiptRow::receiptNo).toList();
+        if (modelReceipts.isEmpty()) return Map.of();
+        Map<String, LocalDateTime> times = new LinkedHashMap<>();
+        for (var posting : mapper.receiptPostings(userId, modelReceipts)) {
+            LocalDateTime at = posting.v2PostedUtc() == null ? posting.walletPostedAt()
+                    : LocalDateTime.ofInstant(posting.v2PostedUtc().toInstant(ZoneOffset.UTC),
+                            ffdd.opsconsole.shared.config.BusinessCalendar.STORAGE_ZONE);
+            times.put(posting.receiptNo(), at);
+        }
+        return times;
+    }
+
+    private AppComputeReceiptView receiptView(ReceiptRow row,ffdd.opsconsole.device.mapper.SimulatedTaskMapper.TaskRow simulation,LocalDateTime modelPostedAt,boolean detail) {
         String proofHash = value(row.proofHash()).toLowerCase(Locale.ROOT);
         boolean simulated=row.taskNo().startsWith("SIM-");
         if ((simulated ? row.proofHash()!=null || simulation==null || !"COMPLETED".equals(simulation.status())
@@ -1057,7 +1072,8 @@ public class AppTaskAssignmentService {
                 simulation.deviceName(),simulation.deviceType(),value(simulation.gpuModel()),simulation.vramTotalGb(),
                 simulation.taskTypeId(),simulation.taskName(),canonicalTaskClass(simulation.taskClass()),"","UVEL",row.rewardUsdt(),
                 row.rewardNex(),row.earningStatus(),null,simulation.startedAt(),simulation.dueAt(),simulation.durationSeconds(),
-                PROVENANCE_SOURCE,PROVENANCE_ENVIRONMENT,PROVENANCE_RUN_ID,true,"SIMULATED","TASK_RECEIPT",false,simulation.postedAt(),displayNo,receiptHash);
+                PROVENANCE_SOURCE,PROVENANCE_ENVIRONMENT,PROVENANCE_RUN_ID,true,"SIMULATED","TASK_RECEIPT",false,
+                row.rewardUsdt().signum() > 0 || row.rewardNex().signum() > 0 ? simulation.postedAt() : null,displayNo,receiptHash);
         }
         return new AppComputeReceiptView(
                 row.receiptNo(), row.taskNo(), row.deviceId(), row.deviceInstanceNo(), row.deviceName(),
@@ -1066,7 +1082,7 @@ public class AppTaskAssignmentService {
                 canonicalTaskClass(row.taskClass()), TestCloudExecutorService.publicModel(value(row.modelName())), TestCloudExecutorService.publicClient(row.modelName(), row.clientName()),
                 row.rewardUsdt(), row.rewardNex(), row.earningStatus(), proofHash,
                 row.startedAt(), row.completedAt(), row.durationSec(),
-                PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true,displayNo);
+                PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true,modelPostedAt,displayNo);
     }
 
     private String canonicalTaskClass(String taskClass) {

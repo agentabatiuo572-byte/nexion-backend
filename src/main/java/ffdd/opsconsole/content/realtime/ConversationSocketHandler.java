@@ -145,7 +145,9 @@ public class ConversationSocketHandler extends TextWebSocketHandler {
             int code=e instanceof BizException b?b.getCode():e instanceof AccessDeniedException?403:
                     e instanceof org.springframework.security.core.AuthenticationException?401:500;
             String reason=e instanceof BizException?e.getMessage():"SOCKET_REQUEST_FAILED";
-            if(requestId!=null)send(c,Map.of("type","ack","requestId",requestId,"result",ApiResult.fail(code,reason)));
+            if(requestId!=null)send(c,Map.of("type","ack","requestId",requestId,"result",
+                    e instanceof ffdd.opsconsole.content.application.SupportSessionService.Busy busy
+                            ? ApiResult.fail(code,reason,busy.state()) : ApiResult.fail(code,reason)));
             else send(c,Map.of("type","error","code",code));
             if(c.auth==null || code==401 || code==403 || code==429 || code==500)close(c,code==401||code==403?4401:1013);
         }

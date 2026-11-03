@@ -1057,7 +1057,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
             return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
         trustDisclosureRepository.lockGateActions();
-        if (!StringUtils.hasText(request.expectedScope())) {
+        if (request.expectedScope() == null) {
             return ApiResult.fail(409, "DISCLOSURE_GATE_SCOPE_SNAPSHOT_REQUIRED");
         }
         Set<String> currentKeys = trustDisclosureRepository.listGateActions().stream()
@@ -1070,9 +1070,10 @@ public class OpsTrustDisclosureService implements AuditReplayable {
             return ApiResult.fail(409, "DISCLOSURE_GATE_SCOPE_SNAPSHOT_CONFLICT");
         }
         Set<String> activeKeys = resolveGateKeys(request.scope());
-        if (activeKeys.isEmpty()) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_GATE_SCOPE_EMPTY");
+        if (activeKeys.isEmpty() && StringUtils.hasText(request.scope()) && !"无".equals(request.scope().trim())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_GATE_SCOPE_INVALID");
         }
+        activeKeys.removeAll(Set.of("staking", "withdraw"));
         trustDisclosureRepository.updateGateScope(activeKeys, operator(request.operator()), now());
         syncDisclosureGateConfig(activeKeys, request.reason());
         requiredAudit("I5_DISCLOSURE_GATE_CHANGED", "DISCLOSURE_GATE", "restricted-actions", request.operator(), idempotencyKey, request.reason(), Map.of(
@@ -1652,7 +1653,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (action != null) {
             return action;
         }
-        if (request == null || !StringUtils.hasText(request.scope())) {
+        if (request == null || request.scope() == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_GATE_SCOPE_REQUIRED");
         }
         if (SUNSET_PATTERN.matcher(request.scope()).find()) {

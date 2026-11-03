@@ -9,5 +9,12 @@ public record ConversationTimeoutPolicy(
         Long version,
         String updatedBy,
         String reason,
-        LocalDateTime updatedAt) {
+        LocalDateTime updatedAt,
+        Integer sessionEndMinutes) {
+    @org.apache.ibatis.annotations.AutomapConstructor
+    public ConversationTimeoutPolicy { }
+    public ConversationTimeoutPolicy(String policyKey,Integer warnMinutes,Integer closeMinutes,Long version,
+            String updatedBy,String reason,LocalDateTime updatedAt) {
+        this(policyKey,warnMinutes,closeMinutes,version,updatedBy,reason,updatedAt,10);
+    }
 }

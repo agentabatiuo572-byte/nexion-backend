@@ -17,8 +17,16 @@ import org.springframework.transaction.event.TransactionalEventListener;
 @RequiredArgsConstructor
 public class SupportAssignmentNotifier {
     private final SupportUnboundReceiptMapper conversations;
+    private final ffdd.opsconsole.content.mapper.ConversationMapper headers;
     private final ApplicationEventPublisher events;
     private final Clock clock;
+
+    @TransactionalEventListener(phase = TransactionPhase.BEFORE_COMMIT)
+    public void claimWelcome(SupportBindingService.SupportAssignmentChanged change) {
+        if(change.current()==null || change.previous()!=null) return;
+        String no=headers.unassignedWelcome(change.customerId());
+        if(no!=null) headers.claimUnassignedPeer(no,change.current().agentAdminId().toString());
+    }
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void assigned(SupportBindingService.SupportAssignmentChanged change) {

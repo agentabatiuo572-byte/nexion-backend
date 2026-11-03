@@ -14,5 +14,6 @@ public class ConversationMessageEntity extends BaseEntity {
     private Long senderId;
     private String senderType;
     private String senderName;
+    private String senderRole;
     private String content;
 }

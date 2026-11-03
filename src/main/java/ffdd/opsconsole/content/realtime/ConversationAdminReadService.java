@@ -29,7 +29,7 @@ public class ConversationAdminReadService {
         production.requireOpsWriteAllowed();
         if (request == null || request.lastSeenMessageId() == null || request.lastSeenMessageId() <= 0)
             return ApiResult.fail(400,"LAST_SEEN_MESSAGE_ID_REQUIRED");
-        ownership.writeConversation(no,true);
+        ownership.requireMessageWriter(ownership.conversationCustomer(no));
         var c=conversations.findByConversationNoForUpdate(no).orElse(null);
         if(c==null) return ApiResult.fail(404,"CONVERSATION_NOT_FOUND");
         if(!Objects.equals(c.version(),request.expectedVersion()) || !c.status().equalsIgnoreCase(String.valueOf(request.expectedStatus())))

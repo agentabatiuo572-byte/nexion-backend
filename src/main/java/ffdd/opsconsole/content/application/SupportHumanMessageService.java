@@ -34,8 +34,8 @@ public class SupportHumanMessageService {
             throw new BizException(422,"SUPPORT_CLIENT_MESSAGE_ID_RESERVED");
         ownership.lockCustomer(customer);
         if(messages.captureFence()==null) throw new BizException(503,"SUPPORT_MESSAGE_CAPTURE_UNAVAILABLE");
-        SupportAssignment assignment="ADMIN".equals(actorType) ? ownership.requireWriter(customer,true) : bindings.current(customer);
-        if ("ADMIN".equals(actorType) && assignment != null && !Objects.equals(actor,assignment.agentAdminId())
+        SupportAssignment assignment="ADMIN".equals(actorType) ? ownership.requireMessageWriter(customer) : bindings.current(customer);
+        if ("ADMIN".equals(actorType) && assignment != null && !Objects.equals(actor,ownership.actorId())
                 || "USER".equals(actorType) && !Objects.equals(customer,actor))
             throw new BizException(403,"SUPPORT_SUBJECT_REQUIRED");
         return prepareWithAssignment(customer,actorType,actor,key,operation,payload,client,kind,intent,attachment,expectedAssignment,assignment);
@@ -172,7 +172,7 @@ public class SupportHumanMessageService {
             return text(body);
         }
     }
-    private static String sha(String value) {
+    static String sha(String value) {
         try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));}
         catch(java.security.NoSuchAlgorithmException ex){throw new IllegalStateException(ex);}
     }

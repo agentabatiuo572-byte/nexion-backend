@@ -1000,7 +1000,9 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                        AND wb.direction = 'IN' AND wb.amount > 0
                      ORDER BY wb.occurred_at DESC, wb.id DESC LIMIT 1) AS refundBillNo,
                    o.refund_reason_code AS refundReasonCode,
-                   o.close_reason_code AS closeReasonCode
+                   o.close_reason_code AS closeReasonCode,
+                   """ + OrderPaidTotalReadSql.PAID_TOTAL + """
+                   AS paidTotalUsdt
               FROM nx_order o
               LEFT JOIN nx_product p
                 ON p.id = o.product_id AND p.is_deleted = 0
@@ -1068,7 +1070,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
 
     @Select("""
             SELECT id, claim_no AS claimNo, status, price_usdt AS priceUsdt,
-                   LEAST(offset_cap_usdt, daily_usdt * duration_days) AS earnedOffsetUsdt
+                   LEAST(COALESCE(offset_cap_usdt,price_usdt), daily_usdt * duration_days) AS earnedOffsetUsdt
               FROM nx_trial_claim
              WHERE user_id = #{userId} AND is_deleted = 0
                AND UPPER(status) IN ('CLAIMED', 'ACTIVE', 'GRACE', 'EXTENDED')
@@ -1274,7 +1276,22 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
             String refundChannel,
             String refundBillNo,
             String refundReasonCode,
-            String closeReasonCode) {
+            String closeReasonCode,
+            String paidTotalUsdt) {
+
+        public UserOrder(String orderNo, Long productId, String productNo, String productName, Integer quantity,
+                  BigDecimal unitPriceUsdt, BigDecimal discountUsdt, BigDecimal amountUsdt,
+                  String paymentMethod, String paymentStatus, String orderStatus, String activationStatus,
+                  String orderType, LocalDateTime placedAt, LocalDateTime paidAt, LocalDateTime activatedAt,
+                  String dataCenter, String tradeinNo, Long sourceDeviceId, Long targetDeviceId,
+                  String targetDeviceInstanceNo, Integer itemCount, BigDecimal subtotalUsdt,
+                  LocalDateTime refundedAt, BigDecimal refundAmountUsdt, String refundChannel, String refundBillNo,
+                  String refundReasonCode, String closeReasonCode) {
+            this(orderNo,productId,productNo,productName,quantity,unitPriceUsdt,discountUsdt,amountUsdt,
+                    paymentMethod,paymentStatus,orderStatus,activationStatus,orderType,placedAt,paidAt,activatedAt,
+                    dataCenter,tradeinNo,sourceDeviceId,targetDeviceId,targetDeviceInstanceNo,itemCount,subtotalUsdt,
+                    refundedAt,refundAmountUsdt,refundChannel,refundBillNo,refundReasonCode,closeReasonCode,null);
+        }
 
         public UserOrder(String orderNo, Long productId, String productNo, String productName, Integer quantity,
                   BigDecimal unitPriceUsdt, BigDecimal discountUsdt, BigDecimal amountUsdt,

@@ -160,7 +160,7 @@ public class OAuthProviderFlowService {
         var identity = identities.findProviderIdentity(flow.getProvider(), flow.getSubject());
         if (identity == null) {
             var created = registration.registerProvider(flow.getProvider(), flow.getSubject(), flow.getDisplayName(),
-                    flow.getSponsorCode(), clientAddress, context, identities);
+                    flow.getSponsorCode(), clientAddress, context, identities, captchaTicket);
             if (flows.consume(flow.getId()) != 1) throw new BizException(409, "OAUTH_FLOW_ALREADY_USED");
             return created;
         }

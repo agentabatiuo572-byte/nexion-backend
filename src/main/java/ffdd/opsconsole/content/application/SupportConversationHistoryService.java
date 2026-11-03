@@ -16,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class SupportConversationHistoryService {
     private final ConversationRepository conversations;
     private final ConversationHistoryMapper mapper;
+    private final ffdd.opsconsole.content.mapper.SupportBindingMapper bindings;
     private final SupportOwnershipService ownership;
     private final ProductionSupportPathGuard production;
 
@@ -42,8 +43,8 @@ public class SupportConversationHistoryService {
         var reply=new ReplyContext(true,List.of());
         if(SupportOwnershipService.hasAuthority("service_m3_write")) {
             try {
-                ownership.requireWriter(customer,false);
-                reply=new ReplyContext(true,mapper.replyTargets(customer));
+                if(ownership.messageRole(ownership.actorId(),bindings.current(customer))!=null)
+                    reply=new ReplyContext(true,mapper.replyTargets(customer));
             } catch(BizException denied) {
                 if(denied.getCode()!=403 && denied.getCode()!=404)throw denied;
             } catch(DataAccessException failed) {reply=new ReplyContext(false,List.of());}

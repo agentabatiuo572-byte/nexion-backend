@@ -19,6 +19,9 @@ public interface PublicSponsorPreviewMapper extends BaseMapper<Object> {
             """)
     List<SponsorRow> findActiveByCanonicalCode(@Param("canonicalCode") String canonicalCode);
 
+    @Select("<script>"+ffdd.opsconsole.content.mapper.SupportBindingMapper.INVITED_ADVISOR+"</script>")
+    ffdd.opsconsole.content.mapper.SupportBindingMapper.Advisor advisorByCode(String code);
+
     record SponsorRow(String referralCode, String nickname, String vRank, Integer sandbox) {
     }
 }

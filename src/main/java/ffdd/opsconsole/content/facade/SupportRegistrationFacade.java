@@ -11,6 +11,12 @@ import org.springframework.stereotype.Component;
 public class SupportRegistrationFacade {
     private final SupportBindingService bindings;
     private final SupportPaymentHistoryBirthService paymentHistory;
+    private final ffdd.opsconsole.content.application.SupportWelcomeService welcome;
+    public void register(Long customer,Long inviter, String advisorCode, String language) {
+        bindings.register(customer,inviter,advisorCode);
+        welcome.register(customer,language);
+        paymentHistory.registerNewAccount(customer);
+    }
     public void register(Long customer,Long inviter) {
         bindings.register(customer,inviter);
         paymentHistory.registerNewAccount(customer);

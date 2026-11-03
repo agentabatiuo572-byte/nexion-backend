@@ -48,7 +48,8 @@ public class AppUserAuthController {
     public ApiResult<UserRegistrationOtpResponse> sendRegistrationOtp(
             @RequestBody(required = false) UserRegistrationOtpRequest request,
             HttpServletRequest servletRequest) {
-        return registrationService.sendOtp(request, servletRequest.getRemoteAddr());
+        return registrationService.sendOtp(request, servletRequest.getRemoteAddr(),surface(servletRequest),
+                servletRequest.getHeader("X-NexGrid-Installation-Id"));
     }
 
     @PostMapping("/register/otp/verify")

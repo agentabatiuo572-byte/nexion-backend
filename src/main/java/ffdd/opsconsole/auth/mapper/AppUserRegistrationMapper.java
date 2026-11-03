@@ -9,6 +9,24 @@ import org.apache.ibatis.annotations.Update;
 
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface AppUserRegistrationMapper {
+    @Insert("INSERT INTO nx_registration_h5_otp(challenge_no,installation_id,captcha_required) VALUES(#{challenge},#{installation},#{forced})")
+    void recordH5Challenge(@Param("challenge") String challenge,@Param("installation") String installation,@Param("forced") boolean forced);
+    record H5Challenge(String installationId,boolean captchaRequired) {}
+    @Select("SELECT installation_id installationId,captcha_required captchaRequired FROM nx_registration_h5_otp WHERE challenge_no=#{challenge}")
+    H5Challenge h5Challenge(String challenge);
+    @Select("SELECT COUNT(*) FROM nx_user WHERE client_ip=#{ip} AND sandbox=#{sandbox} AND created_at>=DATE_SUB(NOW(),INTERVAL 1 DAY) AND is_deleted=0 FOR SHARE")
+    int registeredByIp(@Param("ip") String ip,@Param("sandbox") int sandbox);
+    @Select("SELECT COUNT(*) FROM nx_user_registration_origin WHERE sandbox=#{sandbox} AND surface='H5' AND installation_id=#{installation} AND registered_at>=UTC_TIMESTAMP(6)-INTERVAL 1 DAY FOR SHARE")
+    int registeredByDevice(@Param("installation") String installation,@Param("sandbox") int sandbox);
+    @Insert("""
+            INSERT INTO nx_user_registration_origin(user_id,attempt_id,surface,installation_id,sandbox,registered_at,freeze_gift,
+                sponsor_code,sponsor_display_name,source_environment,gift_status,gift_usdt,gift_nex)
+            VALUES(#{id},#{attempt},#{surface},NULLIF(#{installation},''),#{sandbox},UTC_TIMESTAMP(6),#{freeze},
+                #{r.sponsorCode},#{r.sponsorDisplayName},#{r.sourceEnvironment},#{r.giftStatus},#{r.giftUsdt},#{r.giftNex})
+            """)
+    void recordOrigin(@Param("id") long id,@Param("attempt") String attempt,@Param("surface") String surface,
+            @Param("installation") String installation,@Param("sandbox") int sandbox,@Param("freeze") boolean freeze,
+            @Param("r") ffdd.opsconsole.auth.dto.UserLoginResponse.RegistrationReceipt receipt);
     @Select("SELECT COUNT(*) FROM nx_user WHERE country_code IN (#{countryCode},#{legacyCountryCode}) AND phone IN (#{phone},#{alternatePhone}) AND is_deleted=0")
     int countPhoneOwners(@Param("countryCode") String countryCode, @Param("legacyCountryCode") String legacyCountryCode,
             @Param("phone") String phone, @Param("alternatePhone") String alternatePhone);

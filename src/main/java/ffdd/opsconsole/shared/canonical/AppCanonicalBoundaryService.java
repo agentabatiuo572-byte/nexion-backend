@@ -885,6 +885,7 @@ public class AppCanonicalBoundaryService {
                 "unitPriceUsdt", zero(order.unitPriceUsdt()),
                 "discountUsdt", zero(order.discountUsdt()),
                 "amountUsdt", zero(order.amountUsdt()),
+                "paidTotalUsdt", order.paidTotalUsdt(),
                 "paymentMethod", order.paymentMethod(),
                 "paymentStatus", paymentStatus,
                 "orderStatus", orderStatus,
@@ -1309,6 +1310,7 @@ public class AppCanonicalBoundaryService {
         return linked("orderNo", order.orderNo(), "productId", order.productId(), "productNo", order.productNo(),
                 "productName", order.productNo(), "quantity", order.quantity(), "unitPriceUsdt", zero(order.unitPriceUsdt()),
                 "discountUsdt", BigDecimal.ZERO, "amountUsdt", zero(order.amountUsdt()), "paymentMethod", "SANDBOX_WALLET",
+                "paidTotalUsdt", paidState(state) ? zero(order.amountUsdt()).setScale(2,RoundingMode.HALF_UP).toPlainString() : null,
                 "paymentStatus", paymentStatus, "orderStatus", orderStatus, "activationStatus", activationStatus,
                 "canonicalStatus", canonicalOrderStatus(paymentStatus, orderStatus, activationStatus),
                 "orderType", normalizeState(order.orderType(), "SINGLE"), "itemCount", order.itemCount(),
@@ -1380,7 +1382,7 @@ public class AppCanonicalBoundaryService {
             throw new BizException(409, "COMMERCE_SANDBOX_ORDER_CREATE_CONFLICT");
         }
         return ApiResult.ok(linked("orderNo", orderNo, "subtotalUsdt", amount, "discountUsdt", BigDecimal.ZERO,
-                "amountUsdt", amount, "voucherId", null, "voucherRedemption", null, "paymentStatus", "PENDING",
+                "amountUsdt", amount, "paidTotalUsdt",null,"voucherId", null, "voucherRedemption", null, "paymentStatus", "PENDING",
                 "orderStatus", "PENDING_PAYMENT", "idSource", "sandbox-server", "source", "mock",
                 "sourceEnvironment", "SANDBOX", "runId", runId));
     }
@@ -1470,7 +1472,7 @@ public class AppCanonicalBoundaryService {
                 "quantity", qty,
                 "amountUsdt", amount));
         return ApiResult.ok(linked("orderNo", orderNo, "subtotalUsdt", subtotal,
-                "discountUsdt", discount, "amountUsdt", amount,
+                "discountUsdt", discount, "amountUsdt", amount,"paidTotalUsdt",null,
                 "voucherId", voucher.voucherId(),
                 "voucherRedemption", voucher.applied() ? linked(
                         "voucherId", voucher.voucherId(), "grantId", voucher.grantId(),
