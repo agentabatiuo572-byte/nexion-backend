@@ -38,6 +38,10 @@ public class H3WeeklyParticipationEventConsumer {
                 Long userId = positiveLong(payload.get("user_id"));
                 if (userId == null) throw new IllegalArgumentException("H3_COMPUTE_COMPLETION_USER_REQUIRED");
                 String taskNo = message.getAggregateId().trim();
+                if (taskNo.startsWith("SIM-")) {
+                    deliveryService.markSkipped(CONSUMER_GROUP, claim.eventId(), "H3_RULE_CYCLE_INELIGIBLE");
+                    return;
+                }
                 H3WeeklyParticipationMapper.VerifiedProductionCompletion completion =
                         mapper.verifiedProductionCompletedTask(userId, taskNo);
                 if (completion == null || completion.completedAt() == null) {

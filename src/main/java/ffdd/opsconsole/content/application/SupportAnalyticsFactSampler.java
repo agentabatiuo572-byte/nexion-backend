@@ -20,7 +20,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
     private static final org.slf4j.Logger LOG=org.slf4j.LoggerFactory.getLogger(SupportAnalyticsFactSampler.class);
     private static final Set<String> LOG_REASONS=Set.of("SUPPORT_ANALYTICS_NET_READ_FAILED","SUPPORT_ANALYTICS_RULES_NOT_READY",
-            "SUPPORT_ANALYTICS_CACHE_INVALID","SUPPORT_ANALYTICS_CACHE_UNAVAILABLE","SUPPORT_ANALYTICS_COMPUTATION_FAILED");
+            "SUPPORT_ANALYTICS_CACHE_INVALID","SUPPORT_ANALYTICS_CACHE_UNAVAILABLE","SUPPORT_ANALYTICS_CACHE_LEASE_LOST","SUPPORT_ANALYTICS_COMPUTATION_FAILED");
     private final SupportAnalyticsFactMapper mapper;
     private final FinanceSupportPaymentFactsFacade payments;
     private final SupportFundsReadFacade funds;
@@ -50,7 +50,7 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
             LOG.warn("Support analytics startup generation unavailable reason={}; minute retry enabled",failureReason(failure));
         } finally {started.set(true);}
     }
-    @Scheduled(initialDelay=60000,fixedRate=60000,scheduler="supportAnalyticsFactTaskScheduler")
+    @Scheduled(cron="0 * * * * *",scheduler="supportAnalyticsFactTaskScheduler")
     public void poll() {
         if(!started.get() || !guard.productionSupportAutomationAllowed())return;
         try {refresh();}
@@ -69,9 +69,12 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
                 Instant asOf=Objects.requireNonNull(mapper.nowUtc()).toInstant(ZoneOffset.UTC);
                 var ids=List.copyOf(mapper.productionCustomers());
                 var payment=ids.isEmpty()?new SupportPaymentFacts.Snapshot(List.of(),List.of(),List.of(),"Asia/Shanghai",asOf):payments.readHistory(ids);
-                var raw=new SupportAnalyticsFactSnapshot(asOf,ids,payment,funds.readNetContributions(ids),mapper.attributions(),mapper.attributionProofs());
+                store.renew(token);
+                var contributions=funds.readNetContributions(ids,()->store.renew(token));
+                var raw=new SupportAnalyticsFactSnapshot(asOf,ids,payment,contributions,mapper.attributions(),mapper.attributionProofs());
                 return compiler.getObject().compileForCache(raw);
             });
+            store.renew(token);
             String json=codec.encode(Objects.requireNonNull(next));
             boolean published=store.publish(token,json);
             LOG.info("Support analytics minute generation published={} subjects={} durationMs={} asOf={}",published,next.subjects().size(),(System.nanoTime()-startedAt)/1_000_000,next.asOf());

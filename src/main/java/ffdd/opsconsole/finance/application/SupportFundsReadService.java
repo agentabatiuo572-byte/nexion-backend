@@ -23,21 +23,25 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 /** Joins the caller's RR transaction. No transaction annotation, locks, financial writes, or totals. */
 @ApplicationService
 public class SupportFundsReadService implements SupportFundsReadFacade {
+    // Each read validates full wallet histories for its roots and any linked parties in the caller's snapshot.
+    private static final int NET_READ_BATCH_SIZE=32;
     private final SupportFundsReadMapper mapper;
     private final SupportFundReadService net;
     @org.springframework.beans.factory.annotation.Autowired
     public SupportFundsReadService(SupportFundsReadMapper mapper,SupportFundReadService net) {this.mapper=Objects.requireNonNull(mapper);this.net=Objects.requireNonNull(net);}
     public SupportFundsReadService(SupportFundsReadMapper mapper) {this.mapper=Objects.requireNonNull(mapper);this.net=null;}
-    @Override public NetSnapshot readNetContributions(Collection<Long> ids) {
+    @Override public NetSnapshot readNetContributions(Collection<Long> ids,Runnable batchRead) {
         if(net==null)throw invalid("SUPPORT_FUND_READER_NOT_CONFIGURED");
         if(ids==null || ids.stream().anyMatch(id->id==null || id<=0))throw new IllegalArgumentException("Explicit positive customer scope required");
         var roots=List.copyOf(new TreeSet<>(ids));
         if(roots.isEmpty())return net.read(roots);
         var pending=new ArrayDeque<List<Long>>();
-        for(int offset=0;offset<roots.size();offset+=1000)pending.add(roots.subList(offset,Math.min(offset+1000,roots.size())));
+        for(int offset=0;offset<roots.size();offset+=NET_READ_BATCH_SIZE)
+            pending.add(roots.subList(offset,Math.min(offset+NET_READ_BATCH_SIZE,roots.size())));
         var customers=new ArrayList<NetCustomer>();var origins=new ArrayList<ContributionOrigin>();var changes=new ArrayList<ContributionChange>();
         while(!pending.isEmpty()) {
             var batch=pending.removeFirst();var read=net.read(batch);
+            batchRead.run();
             // Unrelated roots must not push a valid connected component over its closure limit.
             if(batch.size()>1 && read.customers().size()==batch.size() && read.customers().stream()
                     .allMatch(row->row.state()==EvidenceState.UNKNOWN && row.reasons().equals(List.of("CLOSURE_LIMIT")))) {

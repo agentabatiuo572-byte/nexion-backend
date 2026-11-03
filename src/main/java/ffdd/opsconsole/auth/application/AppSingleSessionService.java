@@ -17,6 +17,7 @@ import java.util.HexFormat;
 import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -45,16 +46,23 @@ public class AppSingleSessionService {
         context.validate();
         if (sessions.lockAccount(userId) == null) throw new BizException(403, "USER_AUTH_REQUIRED");
         requireEligible(userId);
-        var existing = attempts.findLocked(context.loginAttemptId());
-        if (existing != null) {
+        String raw = refreshToken(context);
+        String sessionId = hash(raw);
+        // Claim the unique attempt before issuing a session. Locking an absent key can block unrelated logins.
+        try {
+            if (attempts.insert(new AppLoginAttemptMapper.Attempt(context.loginAttemptId(), userId,
+                    fingerprint(context), hash(context.recoveryProof()), sessionId)) != 1)
+                throw new IllegalStateException("LOGIN_ATTEMPT_INSERT_FAILED");
+        } catch (DuplicateKeyException duplicate) {
+            var existing = attempts.findLocked(context.loginAttemptId());
+            if (existing == null) throw duplicate;
             validateAttempt(existing, context);
             if (existing.userId() != userId) throw new BizException(409, "LOGIN_ATTEMPT_CONTEXT_MISMATCH");
             return receipt(existing, context);
         }
-        String raw = refreshToken(context);
         UserSessionEntity session = new UserSessionEntity();
         session.setUserId(userId);
-        session.setRefreshTokenId(hash(raw));
+        session.setRefreshTokenId(sessionId);
         session.setSessionChainId(UUID.randomUUID().toString());
         session.setSessionGroup(context.group().name());
         session.setInstallationId(context.installationId());
@@ -81,9 +89,6 @@ public class AppSingleSessionService {
         if (sessions.insert(session) != 1) throw new IllegalStateException("APP_SESSION_INSERT_FAILED");
         if (context.group() == AppSessionSurface.APP)
             phone.authenticatedApp(userId, context.installationId(), context.executionSupported());
-        if (attempts.insert(new AppLoginAttemptMapper.Attempt(context.loginAttemptId(), userId,
-                fingerprint(context), hash(context.recoveryProof()), session.getRefreshTokenId())) != 1)
-            throw new IllegalStateException("LOGIN_ATTEMPT_INSERT_FAILED");
         audit.recordRequired(AuditLogWriteRequest.builder().action("AUTH_SESSION_ISSUED")
                 .resourceType("USER_SESSION").resourceId(session.getSessionChainId()).userId(userId)
                 .actorType("USER").actorId(userId).result("SUCCESS").riskLevel("LOW")

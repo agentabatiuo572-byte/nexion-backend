@@ -9,7 +9,10 @@ import java.util.List;
 /** Internal evidence only. The caller authorizes all IDs and owns the repeatable-read snapshot. */
 public interface SupportFundsReadFacade extends DomainFacade {
     Snapshot readCurrent(Collection<Long> customerIds);
-    NetSnapshot readNetContributions(Collection<Long> customerIds);
+    default NetSnapshot readNetContributions(Collection<Long> customerIds) {
+        return readNetContributions(customerIds, () -> {});
+    }
+    NetSnapshot readNetContributions(Collection<Long> customerIds, Runnable batchRead);
 
     record NetSnapshot(List<NetCustomer> customers,List<ContributionOrigin> origins,List<ContributionChange> changes) {
         public NetSnapshot {customers=List.copyOf(customers);origins=List.copyOf(origins);changes=List.copyOf(changes);}

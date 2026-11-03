@@ -53,7 +53,7 @@ public class SupportFundReadService {
     private final SupportDirectReferralReadFacade direct;
     private final SupportFundCommissionEvidence commissionEvidence;
     private final SupportFundDirectReferralEvidence directEvidence;
-    private final ComputeV2SettlementMapper computeV2Mapper;
+    private final ComputeV2FundEvidence computeV2;
     private record TrialRefundInputs(SupportPaymentFacts.Snapshot history,List<Map<String,Object>> orders,
                                      Map<String,SupportFundEarningsEvidence.TrialRecovery> recoveries) { }
     public SupportFundReadService(SupportFundReadMapper mapper,SupportFundBirthReadFacade auth,
@@ -98,7 +98,7 @@ public class SupportFundReadService {
         this.genesisEvidence=genesisEvidence;this.exchangeEvidence=exchangeEvidence;
         this.devices=devices;this.staking=staking;this.deviceEvidence=deviceEvidence;this.stakingEvidence=stakingEvidence;
         this.commissions=commissions;this.direct=direct;this.commissionEvidence=commissionEvidence;this.directEvidence=directEvidence;
-        this.computeV2Mapper=computeV2Mapper;
+        this.computeV2=new ComputeV2FundEvidence(computeV2Mapper,new ObjectMapper().findAndRegisterModules());
     }
     public NetSnapshot read(Collection<Long> requested) {
         if(requested==null || requested.stream().anyMatch(id->id==null || id<=0))throw new IllegalArgumentException("Explicit positive customer scope required");
@@ -107,12 +107,13 @@ public class SupportFundReadService {
         Connection connection=snapshot();
         try {
             if(!Boolean.TRUE.equals(mapper.schemaReady()))return unknown(roots,List.of(Gap.RAW_HISTORY));
-            var scope=new TreeSet<Long>(roots);List<Long> opIds;List<Map<String,Object>> partyRows;
+            var scope=new TreeSet<Long>(roots);List<Long> opIds;Set<Long> opIdSet;List<Map<String,Object>> partyRows;
             do {
                 int previous=scope.size();opIds=mapper.operationIds(List.copyOf(scope));
                 if(opIds==null || opIds.stream().anyMatch(id->id==null || id<=0))throw bad(Gap.RECEIPT);
+                opIdSet=new HashSet<>(opIds);
                 partyRows=opIds.isEmpty()?List.of():mapper.parties(opIds);
-                for(var row:partyRows) {require(opIds.contains(number(row,"operationId")) &&number(row,"customerId")>0,Gap.RECEIPT);scope.add(number(row,"customerId"));}
+                for(var row:partyRows) {require(opIdSet.contains(number(row,"operationId")) &&number(row,"customerId")>0,Gap.RECEIPT);scope.add(number(row,"customerId"));}
                 if(scope.size()>MAX_COMPONENT_CUSTOMERS)return unknown(roots,List.of(Gap.CLOSURE_LIMIT));
                 if(previous==scope.size())break;
             }while(true);
@@ -122,7 +123,7 @@ public class SupportFundReadService {
             require(ops.stream().map(row->number(row,"id")).toList().equals(opIds),Gap.RECEIPT);
             var legIndex=new HashMap<Long,List<Map<String,Object>>>();
             for(var leg:legs){
-                long operationId=number(leg,"operationId");require(opIds.contains(operationId),Gap.RAW_BINDING);
+                long operationId=number(leg,"operationId");require(opIdSet.contains(operationId),Gap.RAW_BINDING);
                 legIndex.computeIfAbsent(operationId,id->new ArrayList<>()).add(leg);
             }
             legIndex.replaceAll((id,rows)->List.copyOf(rows));
@@ -188,7 +189,6 @@ public class SupportFundReadService {
                     var representedEarnings=new HashSet<String>();var earningsPhases=new HashSet<String>();var exchangePhases=new HashSet<String>();
                     var devicePhases=new HashSet<String>();var stakingPhases=new HashSet<String>();var linkedEarnings=new HashSet<String>();
                     var commissionPhases=new HashSet<String>();var directPhases=new HashSet<String>();
-                    var computeV2=new ComputeV2FundEvidence(computeV2Mapper,new ObjectMapper().findAndRegisterModules());
                     var computeV2Operations=new ArrayList<ComputeV2FundEvidence.Verified>();
                     for(var row:componentOps) {
                         long id=number(row,"id");var parties=parties(id,partyIndex);var opLegs=legs(id,legIndex);
@@ -766,7 +766,13 @@ public class SupportFundReadService {
     private static LocalDateTime parseTime(JsonNode node) {require(node.isTextual(),Gap.SOURCE);try{return LocalDateTime.parse(node.textValue());}catch(java.time.DateTimeException ex){throw bad(Gap.SOURCE);}}
     private static LocalDateTime time(Object value) {if(value instanceof LocalDateTime at)return at;if(value instanceof Timestamp at)return at.toLocalDateTime();throw bad(Gap.SOURCE);}
     private static BigDecimal decimal(Object value) {if(!(value instanceof Number))throw bad(Gap.SOURCE);return new BigDecimal(value.toString());}
-    private static long number(Map<String,Object> row,String key) {Object value=row.get(key);if(!(value instanceof Number))throw bad(Gap.RECEIPT);try{return new BigDecimal(value.toString()).longValueExact();}catch(ArithmeticException ex){throw bad(Gap.RECEIPT);}}
+    private static long number(Map<String,Object> row,String key) {
+        Object value=row.get(key);
+        if(!(value instanceof Number n))throw bad(Gap.RECEIPT);
+        if(n instanceof Long || n instanceof Integer || n instanceof Short || n instanceof Byte)return n.longValue();
+        try{return n instanceof BigDecimal decimal?decimal.longValueExact():new BigDecimal(n.toString()).longValueExact();}
+        catch(ArithmeticException ex){throw bad(Gap.RECEIPT);}
+    }
     // The hot/archive audit UNION exposes only these identity columns as numeric strings.
     private static long auditIdentity(Map<String,Object> row,String key) {
         Object value=row.get(key);
