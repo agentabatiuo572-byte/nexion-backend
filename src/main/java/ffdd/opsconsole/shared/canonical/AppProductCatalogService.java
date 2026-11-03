@@ -157,7 +157,8 @@ public class AppProductCatalogService {
                 target.unlockPhase(), target.updatedAt(), target.power(), target.datacenter(), target.uptime(), target.warranty(),
                 target.phoneDailyEarn(), target.phoneDailyEarnNex(), target.featuresJson(),
                 target.aiImageGenPerMin(), target.aiLlmTokensPerSec(), target.aiVideoMinPerHour(), target.aiFineTuneMins(), target.aiUnlocks(),
-                target.purchaseGateJson(), target.inventoryMode()), productReleasePolicy.evaluate(target.productNo(), target.unlockPhase()));
+                target.purchaseGateJson(), null, null, target.inventoryMode(), null, null, target.computePoints()),
+                productReleasePolicy.evaluate(target.productNo(), target.unlockPhase()));
     }
 
     private Map<String, Object> product(
@@ -178,6 +179,8 @@ public class AppProductCatalogService {
                 || target.dailyUsdt().signum() < 0
                 || target.dailyNex() == null
                 || target.dailyNex().signum() < 0
+                || target.computePoints() == null
+                || target.computePoints() < 0
                 || target.sold() == null
                 || target.sold() < 0) {
             throw new IllegalArgumentException("invalid purchasable product catalog row");
@@ -219,6 +222,7 @@ public class AppProductCatalogService {
         item.put("shareYieldMin", shareYieldAvailable ? shareYield.minPct() : null);
         item.put("shareYieldMax", shareYieldAvailable ? shareYield.maxPct() : null);
         item.put("price", target.priceUsdt());
+        item.put("computePoints", target.computePoints());
         item.put("sold", target.sold());
         item.put("imageUrl", approvedProductImageUrl(target));
         item.put("videoUrl", approvedProductVideoUrl(target));

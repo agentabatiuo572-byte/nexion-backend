@@ -290,7 +290,8 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                    s.ai_unlocks AS aiUnlocks,NULL AS purchaseGateJson,
                    s.image_asset_id AS imageAssetId,s.image_object_key AS imageObjectKey,
                    p.inventory_mode AS inventoryMode,
-                   s.spec_document_title AS specDocumentTitle,s.spec_document_url AS specDocumentUrl
+                   s.spec_document_title AS specDocumentTitle,s.spec_document_url AS specDocumentUrl,
+                   p.compute_points AS computePoints
               FROM nx_product p
               LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
              WHERE p.is_deleted=0 AND p.store_visible=1
@@ -639,7 +640,25 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                                 BigDecimal aiLlmTokensPerSec, BigDecimal aiVideoMinPerHour,
                                 BigDecimal aiFineTuneMins, String aiUnlocks, String purchaseGateJson,
                                 String imageAssetId, String imageObjectKey,
+                                String inventoryMode, String specDocumentTitle, String specDocumentUrl, Long computePoints) {
+        /** Existing callers without compute points keep the line hidden. */
+        public CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
+                                String deviceType, Integer generation, String gpuModel, Integer vramTotalGb,
+                                BigDecimal hashrate, BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline,
+                                String badge, Integer sold, String unlockPhase, java.time.LocalDateTime updatedAt,
+                                String power, String datacenter, String uptime, String warranty, BigDecimal phoneDailyEarn,
+                                BigDecimal phoneDailyEarnNex, String featuresJson, BigDecimal aiImageGenPerMin,
+                                BigDecimal aiLlmTokensPerSec, BigDecimal aiVideoMinPerHour,
+                                BigDecimal aiFineTuneMins, String aiUnlocks, String purchaseGateJson,
+                                String imageAssetId, String imageObjectKey,
                                 String inventoryMode, String specDocumentTitle, String specDocumentUrl) {
+            this(productNo, name, tier, priceUsdt, stock, deviceType, generation, gpuModel, vramTotalGb,
+                    hashrate, dailyUsdt, dailyNex, tagline, badge, sold, unlockPhase, updatedAt, power, datacenter,
+                    uptime, warranty, phoneDailyEarn, phoneDailyEarnNex, featuresJson, aiImageGenPerMin,
+                    aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, purchaseGateJson,
+                    imageAssetId, imageObjectKey, inventoryMode, specDocumentTitle, specDocumentUrl, 0L);
+        }
+
         /** Existing callers without a product document keep an empty document. */
         public CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
                                 String deviceType, Integer generation, String gpuModel, Integer vramTotalGb,
