@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.dto;
 
 import java.math.BigDecimal;
+import ffdd.opsconsole.content.domain.NotificationTranslation;
 import ffdd.opsconsole.content.domain.NotificationAudienceTarget;
 
 public record NotificationCampaignDraftRequest(
@@ -19,7 +20,24 @@ public record NotificationCampaignDraftRequest(
         String kind,
         String ctaLabel,
         String ctaHref,
-        Long expectedRevision) {
+        Long expectedRevision,
+        java.util.Map<String, NotificationTranslation> translations) {
+    public NotificationCampaignDraftRequest {
+        translations = ffdd.opsconsole.content.domain.MessageTranslations.ordered(translations);
+    }
+
+    public NotificationCampaignDraftRequest(
+            String name, String titleZh, String titleVi,
+            String titleEn, String bodyZh, String bodyVi,
+            String bodyEn, String tier, NotificationAudienceTarget audienceTarget,
+            BigDecimal budget, String operator, String reason,
+            String kind, String ctaLabel, String ctaHref,
+            Long expectedRevision) {
+        this(name, titleZh, titleVi, titleEn, bodyZh, bodyVi,
+                bodyEn, tier, audienceTarget, budget, operator, reason,
+                kind, ctaLabel, ctaHref, expectedRevision, null);
+    }
+
 
     public NotificationCampaignDraftRequest(
             String name, String titleZh, String titleVi, String titleEn,

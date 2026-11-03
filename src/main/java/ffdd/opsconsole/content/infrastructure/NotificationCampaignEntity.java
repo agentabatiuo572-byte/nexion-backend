@@ -23,6 +23,7 @@ public class NotificationCampaignEntity extends BaseEntity {
     private String bodyEn;
     private String bodyZh;
     private String bodyVi;
+    private String translationsJson;
     private String swipeTo;
     private String ctaLabel;
     private String ctaHref;

@@ -18,7 +18,9 @@ public class GenesisRaffleController {
     private final OpsGrowthCommandBoundary commands;
     @GetMapping("/api/events/genesis-raffle")
     @PreAuthorize("isAuthenticated()")
-    public ApiResult<Map<String,Object>> state(Authentication auth){return service.state(user(auth));}
+    public ApiResult<Map<String,Object>> state(Authentication auth, @RequestParam(required=false) String locale){
+        return service.state(user(auth), locale);
+    }
     @PostMapping("/api/events/genesis-raffle/{id}/enter")
     @PreAuthorize("isAuthenticated()")
     public ApiResult<Map<String,Object>> enter(@PathVariable String id,@RequestBody Entry request,

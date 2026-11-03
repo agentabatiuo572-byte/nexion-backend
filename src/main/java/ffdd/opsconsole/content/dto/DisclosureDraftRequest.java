@@ -1,5 +1,7 @@
 package ffdd.opsconsole.content.dto;
 
+import java.util.Map;
+
 import java.util.List;
 
 public record DisclosureDraftRequest(
@@ -15,7 +17,24 @@ public record DisclosureDraftRequest(
         Long expectedRevision,
         String expectedContentHash,
         String operator,
+        String reason,
+        Map<String, String> translations) {
+    public DisclosureDraftRequest(
+        String version,
+        String jurisdiction,
+        String languageScope,
+        String effectiveDate,
+        Boolean requiresReack,
+        String zh,
+        String vi,
+        String en,
+        List<DisclosureChapterInput> chapters,
+        Long expectedRevision,
+        String expectedContentHash,
+        String operator,
         String reason) {
+        this(version, jurisdiction, languageScope, effectiveDate, requiresReack, zh, vi, en, chapters, expectedRevision, expectedContentHash, operator, reason, null);
+    }
 
     public DisclosureDraftRequest(String version, String jurisdiction, String languageScope, String effectiveDate,
                                   Boolean requiresReack, String zh, String vi, String en,

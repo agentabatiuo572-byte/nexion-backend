@@ -15,7 +15,19 @@ public record CopyVersionRow(
         CopyAudienceTarget audienceTarget,
         String trafficSplit,
         String versionNote,
-        long estimatedAudience) {
+        long estimatedAudience,
+        java.util.Map<String, String> translations) {
+    public CopyVersionRow(
+            String copyKey, String version, String status,
+            String chain, String ts, String zh,
+            String en, String vi, String copyPosition,
+            String surface, String audience, CopyAudienceTarget audienceTarget,
+            String trafficSplit, String versionNote, long estimatedAudience) {
+        this(copyKey, version, status, chain, ts, zh,
+                en, vi, copyPosition, surface, audience, audienceTarget,
+                trafficSplit, versionNote, estimatedAudience, java.util.Map.of());
+    }
+
 
     public CopyVersionRow(
             String copyKey, String version, String status, String chain, String ts, String zh, String en,

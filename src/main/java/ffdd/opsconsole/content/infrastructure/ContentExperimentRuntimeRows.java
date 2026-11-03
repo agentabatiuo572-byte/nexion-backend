@@ -48,5 +48,6 @@ public final class ContentExperimentRuntimeRows {
         private String zhText;
         private String enText;
         private String viText;
+        private String translationsJson;
     }
 }

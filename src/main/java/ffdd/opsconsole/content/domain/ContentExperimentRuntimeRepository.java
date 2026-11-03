@@ -74,6 +74,10 @@ public interface ContentExperimentRuntimeRepository {
             String version,
             String zh,
             String en,
-            String vi) {
+            String vi,
+            java.util.Map<String, String> translations) {
+        public CopyBody(String copyKey, String version, String zh, String en, String vi) {
+            this(copyKey, version, zh, en, vi, java.util.Map.of());
+        }
     }
 }

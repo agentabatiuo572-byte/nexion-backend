@@ -155,7 +155,7 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
                  WHERE ce.event_name='app.element_clicked' AND ce.source_environment='PRODUCTION'
                    AND ce.occurred_at BETWEEN #{startAt} AND #{endAt}
                  <if test="deviceType != null">AND ce.device_type=#{deviceType}</if>
-                 <if test="locale != null">AND ce.locale=#{locale}</if>
+                 <if test="locale != null">AND (ce.locale=#{locale} OR (#{locale} IN ('id','ms','fil','ru','kk','uz') AND ce.locale LIKE CONCAT(#{locale}, '-%')))</if>
                  <if test="depth == 'L3'">AND cc.page_level=3</if>
                  GROUP BY
                        <choose>
@@ -172,7 +172,7 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
              WHERE p.event_name='app.page_viewed' AND p.source_environment='PRODUCTION'
                AND p.occurred_at BETWEEN #{startAt} AND #{endAt}
              <if test="deviceType != null">AND p.device_type=#{deviceType}</if>
-             <if test="locale != null">AND p.locale=#{locale}</if>
+             <if test="locale != null">AND (p.locale=#{locale} OR (#{locale} IN ('id','ms','fil','ru','kk','uz') AND p.locale LIKE CONCAT(#{locale}, '-%')))</if>
              <if test="depth == 'L3'">AND pc.page_level=3</if>
              GROUP BY
                    <choose>
@@ -196,7 +196,7 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
               FROM nx_behavior_event_fact
              WHERE source_environment='PRODUCTION' AND occurred_at BETWEEN #{startAt} AND #{endAt}
              <if test="deviceType != null">AND device_type=#{deviceType}</if>
-             <if test="locale != null">AND locale=#{locale}</if>
+             <if test="locale != null">AND (locale=#{locale} OR (#{locale} IN ('id','ms','fil','ru','kk','uz') AND locale LIKE CONCAT(#{locale}, '-%')))</if>
              GROUP BY 1 ORDER BY bucket
             </script>
             """)
@@ -211,7 +211,7 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
               FROM nx_behavior_event_fact
              WHERE source_environment='PRODUCTION' AND occurred_at BETWEEN #{startAt} AND #{endAt}
              <if test="deviceType != null">AND device_type=#{deviceType}</if>
-             <if test="locale != null">AND locale=#{locale}</if>
+             <if test="locale != null">AND (locale=#{locale} OR (#{locale} IN ('id','ms','fil','ru','kk','uz') AND locale LIKE CONCAT(#{locale}, '-%')))</if>
              GROUP BY DATE_FORMAT(occurred_at,'%x-W%v') ORDER BY bucket
             </script>
             """)
@@ -225,7 +225,7 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
              WHERE event_name='app.element_clicked' AND source_environment='PRODUCTION' AND route=#{route}
                AND occurred_at BETWEEN #{startAt} AND #{endAt}
              <if test="deviceType != null">AND device_type=#{deviceType}</if>
-             <if test="locale != null">AND locale=#{locale}</if>
+             <if test="locale != null">AND (locale=#{locale} OR (#{locale} IN ('id','ms','fil','ru','kk','uz') AND locale LIKE CONCAT(#{locale}, '-%')))</if>
              GROUP BY ROUND(x_norm,2),ROUND(y_norm,2) ORDER BY weight DESC LIMIT 300
             </script>
             """)
@@ -240,7 +240,7 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
              WHERE event_name='app.element_clicked' AND source_environment='PRODUCTION' AND route=#{route}
                AND occurred_at BETWEEN #{startAt} AND #{endAt}
              <if test="deviceType != null">AND device_type=#{deviceType}</if>
-             <if test="locale != null">AND locale=#{locale}</if>
+             <if test="locale != null">AND (locale=#{locale} OR (#{locale} IN ('id','ms','fil','ru','kk','uz') AND locale LIKE CONCAT(#{locale}, '-%')))</if>
              GROUP BY zone ORDER BY count DESC
             </script>
             """)

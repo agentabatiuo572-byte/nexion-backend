@@ -24,22 +24,27 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                 biz_no, user_id, type, priority, title, body, cta_label, cta_href,
                 read_flag, push_status, push_attempts, next_push_at, created_at, updated_at, is_deleted)
             SELECT #{bizNo}, u.id, 'SYSTEM', 'critical',
-                   LEFT(CASE
-                       WHEN LOWER(u.language) LIKE 'zh%' THEN '风险披露已更新，请重新确认'
-                       WHEN LOWER(u.language) LIKE 'vi%' THEN 'Công bố rủi ro đã được cập nhật'
-                       ELSE 'Risk disclosure updated'
-                   END, 128),
-                   LEFT(CASE
-                       WHEN LOWER(u.language) LIKE 'zh%' THEN CONCAT(#{jurisdiction}, ' 风险披露已更新至 ', #{version}, '，请在继续受限操作前重新阅读并确认。')
-                       WHEN LOWER(u.language) LIKE 'vi%' THEN CONCAT('Công bố rủi ro ', #{jurisdiction}, ' đã cập nhật lên ', #{version}, '. Vui lòng đọc và xác nhận lại.')
-                       ELSE CONCAT(#{jurisdiction}, ' risk disclosure is now ', #{version}, '. Please read and acknowledge it again.')
-                   END, 512),
-                   CASE WHEN LOWER(u.language) LIKE 'zh%' THEN '立即确认'
-                        WHEN LOWER(u.language) LIKE 'vi%' THEN 'Xác nhận ngay'
-                        ELSE 'Review now' END,
+                   LEFT(CASE LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))
+            WHEN 'zh' THEN COALESCE(NULLIF(title.zh_value,''), '风险披露已更新，请重新确认')
+            WHEN 'vi' THEN COALESCE(NULLIF(title.vi_value,''), 'Công bố rủi ro đã được cập nhật')
+            ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(title.translations_json,
+                     CONCAT('$.',JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1)))))),''),NULLIF(title.en_value,''),'Risk disclosure updated') END,128),
+                   LEFT(REPLACE(REPLACE(CASE LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))
+            WHEN 'zh' THEN COALESCE(NULLIF(body.zh_value,''), '{jurisdiction} 风险披露已更新至 {version}，请在继续受限操作前重新阅读并确认。')
+            WHEN 'vi' THEN COALESCE(NULLIF(body.vi_value,''), 'Công bố rủi ro {jurisdiction} đã cập nhật lên {version}. Vui lòng đọc và xác nhận lại.')
+            ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(body.translations_json,
+                     CONCAT('$.',JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1)))))),''),NULLIF(body.en_value,''),'{jurisdiction} risk disclosure is now {version}. Please read and acknowledge it again.') END,'{jurisdiction}',#{jurisdiction}),'{version}',#{version}),512),
+                   CASE LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))
+            WHEN 'zh' THEN COALESCE(NULLIF(cta.zh_value,''), '立即确认')
+            WHEN 'vi' THEN COALESCE(NULLIF(cta.vi_value,''), 'Xác nhận ngay')
+            ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(cta.translations_json,
+                     CONCAT('$.',JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1)))))),''),NULLIF(cta.en_value,''),'Review now') END,
                    '/pages/me/risk-disclosure',
                    0, 'QUEUED', 0, #{now}, #{now}, #{now}, 0
                FROM nx_user u
+              LEFT JOIN nx_i18n_message_version title ON title.message_key='notifications.disclosure.title' AND title.status='PUBLISHED' AND title.is_deleted=0
+              LEFT JOIN nx_i18n_message_version body ON body.message_key='notifications.disclosure.body' AND body.status='PUBLISHED' AND body.is_deleted=0
+              LEFT JOIN nx_i18n_message_version cta ON cta.message_key='notifications.disclosure.cta' AND cta.status='PUBLISHED' AND cta.is_deleted=0
               LEFT JOIN nx_user_preference pref
                 ON pref.user_id = u.id AND pref.is_deleted = 0
              WHERE u.is_deleted = 0 AND u.status = 'ACTIVE'
@@ -65,16 +70,18 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                    LEFT(CASE
                        WHEN LOWER(u.language) LIKE 'vi%' THEN #{titleVi}
                        WHEN LOWER(u.language) LIKE 'zh%' THEN #{titleZh}
-                       WHEN #{titleEn} <> '' THEN #{titleEn}
-                       ELSE #{titleVi}
+                       ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(#{translations}, CONCAT('$.', JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))), '.title'))),''), #{titleEn})
                    END, 128),
                    LEFT(CASE
                        WHEN LOWER(u.language) LIKE 'vi%' THEN #{bodyVi}
                        WHEN LOWER(u.language) LIKE 'zh%' THEN #{bodyZh}
-                       WHEN #{bodyEn} <> '' THEN #{bodyEn}
-                       ELSE #{bodyVi}
+                       ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(#{translations}, CONCAT('$.', JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))), '.body'))),''), #{bodyEn})
                    END, 512),
-                   #{ctaLabel}, #{ctaHref},
+                   CASE WHEN LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1)) IN ('id','ms','fil','ru','kk','uz') AND #{ctaHref} <> ''
+                        THEN COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(#{translations}, CONCAT('$.', JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))), '.ctaLabel'))),''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(#{translations}, '$.en.ctaLabel')),''), 'View details')
+                        WHEN LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1)) = 'en'
+                        THEN COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(#{translations}, '$.en.ctaLabel')),''), #{ctaLabel})
+                        ELSE #{ctaLabel} END, #{ctaHref},
                    0, 'QUEUED', 0, #{now}, #{now}, #{now}, 0
                FROM nx_user u
               LEFT JOIN nx_user_preference pref
@@ -91,12 +98,12 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                        WHEN 'genesis' THEN pref.notify_genesis
                        ELSE pref.notify_system END, 1) = 1
                )
-               AND (#{language} = 'all' OR LOWER(u.language) LIKE CONCAT(#{language}, '%'))
+               AND (#{language} = 'all' OR LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1)) = #{language})
                AND TIMESTAMPDIFF(DAY, u.created_at, #{now}) > #{registrationDaysMin}
             ON DUPLICATE KEY UPDATE
                 biz_no = VALUES(biz_no)
             """)
-    int insertCampaignNotifications(
+    int insertLocalizedCampaignNotifications(
             @Param("bizNo") String bizNo,
             @Param("kind") String kind,
             @Param("priority") String priority,
@@ -108,9 +115,17 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
             @Param("bodyVi") String bodyVi,
             @Param("titleEn") String titleEn,
             @Param("bodyEn") String bodyEn,
+            @Param("translations") String translations,
             @Param("ctaLabel") String ctaLabel,
             @Param("ctaHref") String ctaHref,
             @Param("now") LocalDateTime now);
+
+    default int insertCampaignNotifications(String bizNo, String kind, String priority, String language,
+            int registrationDaysMin, String titleZh, String bodyZh, String titleVi, String bodyVi,
+            String titleEn, String bodyEn, String ctaLabel, String ctaHref, LocalDateTime now) {
+        return insertLocalizedCampaignNotifications(bizNo, kind, priority, language, registrationDaysMin,
+                titleZh, bodyZh, titleVi, bodyVi, titleEn, bodyEn, null, ctaLabel, ctaHref, now);
+    }
 
     @Update("""
             UPDATE nx_notification n
@@ -188,7 +203,7 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
               FROM nx_user
              WHERE is_deleted = 0
                AND status = 'ACTIVE'
-               AND (#{language} = 'all' OR LOWER(language) LIKE CONCAT(#{language}, '%'))
+               AND (#{language} = 'all' OR LOWER(SUBSTRING_INDEX(REPLACE(TRIM(language),'_','-'),'-',1)) = #{language})
                AND TIMESTAMPDIFF(DAY, created_at, #{now}) > #{registrationDaysMin}
             """)
     long countAudience(
@@ -211,6 +226,7 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
             UPDATE nx_notification_campaign
                SET name = #{name}, kind = #{kind}, tier = #{tier}, audience = #{audience},
                    reach_label = #{reachLabel}, body_en = #{bodyEn}, body_zh = #{bodyZh}, body_vi = #{bodyVi},
+                   translations_json = COALESCE(#{translations}, translations_json),
                    cta_label = #{ctaLabel}, cta_href = #{ctaHref}, budget_usd = #{budgetUsd},
                    last_operator = #{operator}, revision = revision + 1, updated_at = #{now}
              WHERE campaign_no = #{campaignNo}
@@ -228,6 +244,7 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
             @Param("bodyEn") String bodyEn,
             @Param("bodyZh") String bodyZh,
             @Param("bodyVi") String bodyVi,
+            @Param("translations") String translations,
             @Param("ctaLabel") String ctaLabel,
             @Param("ctaHref") String ctaHref,
             @Param("budgetUsd") java.math.BigDecimal budgetUsd,

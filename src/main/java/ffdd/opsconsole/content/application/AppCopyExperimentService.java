@@ -13,6 +13,7 @@ import ffdd.opsconsole.content.domain.ContentExperimentRuntimeRepository.Variant
 import ffdd.opsconsole.content.domain.CopyAudienceTarget;
 import ffdd.opsconsole.content.domain.CopyAudiencePhaseProvider;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -59,23 +60,24 @@ public class AppCopyExperimentService {
         if (published == null) {
             return ApiResult.fail(404, "CONTENT_COPY_NOT_FOUND");
         }
+        UserAudienceProfile user = repository.findUserAudienceProfile(userId).orElse(null);
+        String language = InterfaceLanguages.baseCode(user == null ? null : user.language());
         RunningExperiment experiment = repository.findRunningExperimentForUpdate(normalizedCopyKey).orElse(null);
         if (experiment == null) {
-            return ApiResult.ok(view(published, null));
+            return ApiResult.ok(view(published, null, language));
         }
 
         Assignment existing = repository.findAssignment(experiment.experimentId(), userId).orElse(null);
         if (existing != null) {
-            return assignedView(normalizedCopyKey, existing);
+            return assignedView(normalizedCopyKey, existing, language);
         }
 
-        UserAudienceProfile user = repository.findUserAudienceProfile(userId).orElse(null);
         if (!matchesAudience(user, experiment.audienceSnapshotJson())) {
-            return ApiResult.ok(view(published, null));
+            return ApiResult.ok(view(published, null, language));
         }
         List<Variant> variants = validVariants(repository.listVariants(experiment.experimentId()));
         if (variants.isEmpty()) {
-            return ApiResult.ok(view(published, null));
+            return ApiResult.ok(view(published, null, language));
         }
         int bucket = stableBucket(experiment.experimentId(), userId);
         Variant selected = select(variants, bucket);
@@ -83,7 +85,7 @@ public class AppCopyExperimentService {
                 experiment.experimentId(), userId, selected.name(), selected.copyVersion(), bucket, null);
         repository.insertAssignmentIfAbsent(computed);
         Assignment persisted = repository.findAssignment(experiment.experimentId(), userId).orElse(computed);
-        return assignedView(normalizedCopyKey, persisted);
+        return assignedView(normalizedCopyKey, persisted, language);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -140,20 +142,20 @@ public class AppCopyExperimentService {
                 normalizedExperimentId, normalizedConversionKey, counted));
     }
 
-    private ApiResult<AppCopyDeliveryView> assignedView(String copyKey, Assignment assignment) {
+    private ApiResult<AppCopyDeliveryView> assignedView(String copyKey, Assignment assignment, String language) {
         CopyBody body = repository.findCopyVersion(copyKey, assignment.copyVersion()).orElse(null);
         if (body == null) {
             CopyBody published = repository.findPublishedCopy(copyKey).orElse(null);
             return published == null
                     ? ApiResult.fail(404, "CONTENT_COPY_NOT_FOUND")
-                    : ApiResult.ok(view(published, null));
+                    : ApiResult.ok(view(published, null, language));
         }
         LocalDateTime now = LocalDateTime.now(clock);
         if (assignment.exposedAt() == null
                 && repository.markExposedIfFirst(assignment.experimentId(), assignment.userId(), now)) {
             publishExposureEvent(copyKey, assignment);
         }
-        return ApiResult.ok(view(body, assignment));
+        return ApiResult.ok(view(body, assignment, language));
     }
 
     private void publishExposureEvent(String copyKey, Assignment assignment) {
@@ -200,7 +202,7 @@ public class AppCopyExperimentService {
                 registeredDate.get(iso.weekOfWeekBasedYear()));
         Map<String, Object> eventPayload = new java.util.LinkedHashMap<>(payload);
         eventPayload.put("source", "server_copy_experiment");
-        eventPayload.put("locale", normalizedLanguage(user.language()));
+        eventPayload.put("locale", InterfaceLanguages.baseCode(user.language()));
         eventOutboxService.publishUserEvent(
                 "CONTENT_EXPERIMENT",
                 experimentId,
@@ -229,8 +231,9 @@ public class AppCopyExperimentService {
             }
             List<String> locales = target.locales() == null ? List.of() : target.locales();
             if (!locales.isEmpty()) {
-                String language = normalizedLanguage(user.language());
-                if (locales.stream().noneMatch(value -> language.equals(normalizedLanguage(value)))) {
+                String language = user.language() == null ? "" : user.language().trim()
+                        .toLowerCase(Locale.ROOT).replace('_', '-').split("-", 2)[0];
+                if (!locales.contains(language)) {
                     return false;
                 }
             }
@@ -277,19 +280,16 @@ public class AppCopyExperimentService {
         }
     }
 
-    private String normalizedLanguage(String value) {
-        if (!StringUtils.hasText(value)) {
-            return "";
-        }
-        String normalized = value.trim().toLowerCase(Locale.ROOT).replace('_', '-');
-        int separator = normalized.indexOf('-');
-        return separator < 0 ? normalized : normalized.substring(0, separator);
-    }
-
-    private AppCopyDeliveryView view(CopyBody body, Assignment assignment) {
+    private AppCopyDeliveryView view(CopyBody body, Assignment assignment, String language) {
+        String localized = switch (language) {
+            case "zh" -> body.zh();
+            case "vi" -> body.vi();
+            default -> body.translations().get(language);
+        };
         return new AppCopyDeliveryView(
                 body.copyKey(), body.version(), body.zh(), body.en(), body.vi(),
                 assignment == null ? null : assignment.experimentId(),
-                assignment == null ? null : assignment.variant());
+                assignment == null ? null : assignment.variant(), language,
+                StringUtils.hasText(localized) ? localized : body.en());
     }
 }

@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.infrastructure;
 
 import ffdd.opsconsole.content.domain.SupportFaqView;
+import ffdd.opsconsole.content.domain.SupportFaqTranslation;
 import ffdd.opsconsole.content.domain.SupportKnowledgeRepository;
 import ffdd.opsconsole.content.domain.SupportSlaView;
 import ffdd.opsconsole.content.dto.SupportFaqUpsertRequest;
@@ -55,6 +56,7 @@ public class MybatisSupportKnowledgeRepository implements SupportKnowledgeReposi
         entity.setContent(request.answer().trim());
         entity.setCategory(request.category().trim().toLowerCase(Locale.ROOT));
         entity.setLevel(request.language());
+        entity.setFaqTranslationsJson(SupportFaqTranslation.json(request.translations()));
         entity.setFormat("faq");
         entity.setSurface(request.surface().trim());
         entity.setDurationMin(3);
@@ -93,7 +95,7 @@ public class MybatisSupportKnowledgeRepository implements SupportKnowledgeReposi
                 request.answer().trim(),
                 toDbStatus(request.status()),
                 request.language(),
-                request.sortOrder(),
+                request.sortOrder(), SupportFaqTranslation.json(request.translations()),
                 toDbStatus(request.expectedStatus()),
                 request.expectedVersion(),
                 now);
@@ -104,7 +106,8 @@ public class MybatisSupportKnowledgeRepository implements SupportKnowledgeReposi
         return helpArticleMapper.updateFaq(
                 faqId, request.category().trim().toLowerCase(Locale.ROOT), request.surface().trim(),
                 request.question().trim(), request.answer().trim(), toDbStatus(request.status()),
-                request.language(), request.sortOrder(), toDbStatus(expectedStatus), expectedVersion, now) == 1;
+                request.language(), request.sortOrder(), SupportFaqTranslation.json(request.translations()),
+                toDbStatus(expectedStatus), expectedVersion, now) == 1;
     }
 
     @Override

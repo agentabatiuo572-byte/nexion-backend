@@ -7,6 +7,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import ffdd.opsconsole.shared.storage.ObjectStorageService;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -39,8 +40,6 @@ public class AppUserProfileService {
             "Ranger", "Comet", "Relay", "Spark", "Drift", "Core", "Harbor", "Summit");
     private static final Set<String> ALLOWED_ADJECTIVES = Set.copyOf(ADJECTIVES);
     private static final Set<String> ALLOWED_NOUNS = Set.copyOf(NOUNS);
-    private static final Set<String> ALLOWED_LANGUAGES = Set.of(
-            "en", "vi", "zh");
     /** A user may change their nickname, and separately their avatar, once per interval. */
     static final java.time.Duration CHANGE_INTERVAL = java.time.Duration.ofDays(7);
 
@@ -60,7 +59,7 @@ public class AppUserProfileService {
         result.put("nickname", text(row.get("nickname")));
         result.put("avatarUrl", StringUtils.hasText(objectKey) ? avatarUrl(userId, objectKey) : "");
         result.put("avatarRevision", StringUtils.hasText(objectKey) ? hash(objectKey) : "");
-        result.put("language", normalizedLanguage(row.get("language")));
+        result.put("language", InterfaceLanguages.baseCode(text(row.get("language"))));
         // Epoch millis of the next allowed change; null when the user may change it now.
         result.put("profileChangeIntervalDays", CHANGE_INTERVAL.toDays());
         result.put("nicknameChangeAvailableAt", nextChangeAt((java.time.LocalDateTime) row.get("nicknameChangedAt")));
@@ -97,7 +96,7 @@ public class AppUserProfileService {
     public Map<String, Object> updateLanguage(Long userId, String language) {
         requireActiveUser(userId);
         String normalized = language == null ? "" : language.trim().toLowerCase(java.util.Locale.ROOT);
-        if (!ALLOWED_LANGUAGES.contains(normalized)) {
+        if (!InterfaceLanguages.CODES.contains(normalized)) {
             throw new BizException(422, "USER_LANGUAGE_INVALID");
         }
         if (mapper.updateLanguage(userId, normalized) != 1) {
@@ -204,13 +203,6 @@ public class AppUserProfileService {
         if (userId == null || userId <= 0 || mapper.activeUser(userId) == null) {
             throw new BizException(404, "USER_NOT_FOUND_OR_INACTIVE");
         }
-    }
-
-    private String normalizedLanguage(Object value) {
-        String language = text(value).toLowerCase(java.util.Locale.ROOT);
-        if (!language.matches("[a-z]{2,3}(?:-[a-z0-9]{2,8})*")) return "en";
-        String base = language.split("-", 2)[0];
-        return ALLOWED_LANGUAGES.contains(base) ? base : "en";
     }
 
     private boolean isCurated(String value) {

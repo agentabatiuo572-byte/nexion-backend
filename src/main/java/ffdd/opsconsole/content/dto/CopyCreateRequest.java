@@ -22,7 +22,23 @@ public record CopyCreateRequest(
         String vi,
         String copyPosition,
         String operator,
-        String reason) {
+        String reason,
+        java.util.Map<String, String> translations) {
+    public CopyCreateRequest {
+        translations = ffdd.opsconsole.content.domain.MessageTranslations.ordered(translations);
+    }
+
+    public CopyCreateRequest(
+            String copyKey, String description, String surface,
+            String i18nKey, String version, String audience,
+            CopyAudienceTarget audienceTarget, String trafficSplit, String versionNote,
+            String zh, String en, String vi,
+            String copyPosition, String operator, String reason) {
+        this(copyKey, description, surface, i18nKey, version, audience,
+                audienceTarget, trafficSplit, versionNote, zh, en, vi,
+                copyPosition, operator, reason, null);
+    }
+
 
     public CopyCreateRequest(
             String copyKey, String description, String surface, String i18nKey, String version,

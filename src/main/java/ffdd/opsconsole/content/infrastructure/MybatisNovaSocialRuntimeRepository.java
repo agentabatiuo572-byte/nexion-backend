@@ -107,8 +107,16 @@ public class MybatisNovaSocialRuntimeRepository implements NovaSocialRuntimeRepo
     public int enqueueNotifications(long eventId, String bizNo, String titleZh, String bodyZh,
                                     String titleVi, String bodyVi, String titleEn, String bodyEn,
                                     String ctaHref, LocalDateTime cooldownSince, LocalDateTime now) {
-        return mapper.enqueueNotifications(eventId, bizNo, titleZh, bodyZh, titleVi, bodyVi,
-                titleEn, bodyEn, ctaHref, cooldownSince, now);
+        return enqueueLocalizedNotifications(eventId, bizNo, titleZh, bodyZh, titleVi, bodyVi,
+                titleEn, bodyEn, ctaHref, cooldownSince, now, null);
+    }
+
+    @Override
+    public int enqueueLocalizedNotifications(long eventId, String bizNo, String titleZh, String bodyZh,
+            String titleVi, String bodyVi, String titleEn, String bodyEn, String ctaHref,
+            LocalDateTime cooldownSince, LocalDateTime now, String translations) {
+        return mapper.enqueueLocalizedNotifications(eventId, bizNo, titleZh, bodyZh, titleVi, bodyVi,
+                titleEn, bodyEn, ctaHref, cooldownSince, now, translations);
     }
 
     @Override

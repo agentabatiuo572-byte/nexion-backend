@@ -404,6 +404,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261103_handoff_support.sql")
   (Join-Path $root "scripts\migrations\20261103_l6_promotion_detail.sql")
   (Join-Path $root "scripts\migrations\20261103_l6_export_grants.sql")
+  (Join-Path $root "scripts\migrations\20261104_b26_content_translations.sql")
+  (Join-Path $root "scripts\migrations\20261104_b26_messages.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

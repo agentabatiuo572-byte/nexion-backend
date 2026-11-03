@@ -64,6 +64,10 @@ public class ItnioSmsClient {
     }
 
     DeliveryReceipt send(String countryCode, String phone, String challengeNo, String code, int ttlMinutes) {
+        return send(countryCode, phone, challengeNo, code, ttlMinutes, null);
+    }
+
+    DeliveryReceipt send(String countryCode, String phone, String challengeNo, String code, int ttlMinutes, String language) {
         if (!configuration.enabled() || !requiredConfigurationPresent()) {
             throw new IllegalStateException("USER_OTP_DELIVERY_UNAVAILABLE");
         }
@@ -71,7 +75,7 @@ public class ItnioSmsClient {
             throw new IllegalStateException("ITNIO_SMS_CONFIGURATION_INVALID");
         }
         String number = OtpPhoneCanonicalizer.toE164Digits(countryCode, phone);
-        String content = NexGridOtpMessage.render(countryCode, challengeNo, code, ttlMinutes);
+        String content = NexGridOtpMessage.render(countryCode, challengeNo, code, ttlMinutes, language);
         long epochSeconds = clock.instant().getEpochSecond();
 
         Map<String, Object> body = new LinkedHashMap<>();

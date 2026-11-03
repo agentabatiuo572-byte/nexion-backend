@@ -14,6 +14,7 @@ import ffdd.opsconsole.content.domain.CopyExperimentVariantView;
 import ffdd.opsconsole.content.domain.CopyFrameworkParamView;
 import ffdd.opsconsole.content.domain.CopyPositionView;
 import ffdd.opsconsole.content.domain.CopyVersionRow;
+import ffdd.opsconsole.content.domain.MessageTranslations;
 import ffdd.opsconsole.content.domain.CopyVersionOptionView;
 import ffdd.opsconsole.content.dto.CopyCreateRequest;
 import ffdd.opsconsole.content.dto.CopyDraftSaveRequest;
@@ -349,7 +350,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
             version.setIsDeleted(0);
         }
         fillVersion(version, request.surface(), request.audience(), request.audienceTarget(), request.trafficSplit(), request.versionNote(),
-                request.zh(), request.en(), request.vi(), request.copyPosition(), "DRAFT", operator(request.operator()), now);
+                request.zh(), request.en(), request.vi(), request.translations(), request.copyPosition(), "DRAFT", operator(request.operator()), now);
         version.setTsLabel(TS_LABEL.format(now));
         if (version.getId() == null) {
             versionMapper.insert(version);
@@ -375,7 +376,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
             version.setIsDeleted(0);
         }
         fillVersion(version, request.surface(), request.audience(), request.audienceTarget(), request.trafficSplit(), request.versionNote(),
-                request.zh(), request.en(), request.vi(), request.copyPosition(), "PUBLISHED", operator(request.operator()), now);
+                request.zh(), request.en(), request.vi(), request.translations(), request.copyPosition(), "PUBLISHED", operator(request.operator()), now);
         version.setTsLabel(TS_LABEL.format(now));
         if (version.getId() == null) {
             versionMapper.insert(version);
@@ -446,7 +447,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         version.setCreatedAt(now);
         version.setIsDeleted(0);
         fillVersion(version, request.surface(), request.audience(), request.audienceTarget(), request.trafficSplit(), request.versionNote(),
-                request.zh(), request.en(), request.vi(), request.copyPosition(), "PUBLISHED", op, now);
+                request.zh(), request.en(), request.vi(), request.translations(), request.copyPosition(), "PUBLISHED", op, now);
         version.setTsLabel(TS_LABEL.format(now));
         versionMapper.insert(version);
 
@@ -1003,7 +1004,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
                 audienceTarget,
                 entity.getTrafficSplit(),
                 entity.getVersionNote(),
-                estimateAudience(audienceTarget));
+                estimateAudience(audienceTarget), MessageTranslations.read(entity.getTranslationsJson()));
     }
 
     private CopyExperimentRow toExperimentRow(CopyExperimentEntity entity) {
@@ -1063,6 +1064,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
             String zh,
             String en,
             String vi,
+            Map<String, String> translations,
             String copyPosition,
             String status,
             String operator,
@@ -1072,6 +1074,12 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         entity.setZhText(zh.trim());
         entity.setEnText(en.trim());
         entity.setViText(vi == null ? null : vi.trim());
+        if (translations != null) entity.setTranslationsJson(MessageTranslations.json(translations));
+        else if (entity.getId() == null) {
+            CopyContentEntity copy = findCopyEntity(entity.getCopyKey());
+            CopyVersionEntity published = copy == null ? null : findVersionEntity(entity.getCopyKey(), copy.getCurrentVersion());
+            if (published != null) entity.setTranslationsJson(published.getTranslationsJson());
+        }
         entity.setCopyPosition(copyPosition == null ? null : copyPosition.trim());
         entity.setSurface(surface.trim());
         entity.setAudience(audience.trim());

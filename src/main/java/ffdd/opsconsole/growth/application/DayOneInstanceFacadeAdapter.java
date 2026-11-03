@@ -101,7 +101,7 @@ public class DayOneInstanceFacadeAdapter implements DayOneInstanceFacade {
         for (List<DayOneDefinitionBinding> itemBindings : items.values()) {
             DayOneDefinitionBinding item = itemBindings.get(0);
             if (mapper.insertItem(stored.id(), item.sourceMissionId(), item.questCode(), item.name(),
-                    item.category(), item.actionRoute(), item.rewardPoints(), ++ordinal) != 1) {
+                    item.category(), item.actionRoute(), item.rewardPoints(), ++ordinal, item.nameTranslations()) != 1) {
                 throw new IllegalStateException("DAY_ONE_SNAPSHOT_ITEM_WRITE_FAILED");
             }
             for (DayOneDefinitionBinding binding : itemBindings) {
@@ -157,7 +157,8 @@ public class DayOneInstanceFacadeAdapter implements DayOneInstanceFacade {
                         .append('|').append(binding.actionRoute()).append('|').append(binding.rewardPoints())
                         .append('|').append(binding.bindingCode()).append('|')
                         .append(binding.producer().toUpperCase(Locale.ROOT)).append('|')
-                        .append(binding.eventType()).append('|').append(binding.userIdField()));
+                        .append(binding.eventType()).append('|').append(binding.userIdField())
+                        .append(binding.nameTranslations() == null ? "" : "|" + binding.nameTranslations()));
         try {
             return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                     .digest(material.toString().getBytes(StandardCharsets.UTF_8)));

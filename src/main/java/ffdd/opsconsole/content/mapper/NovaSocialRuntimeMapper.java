@@ -247,12 +247,14 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
                    LEFT(CASE
                        WHEN LOWER(COALESCE(u.language, '')) LIKE 'vi%' THEN #{titleVi}
                        WHEN LOWER(COALESCE(u.language, '')) LIKE 'zh%' THEN #{titleZh}
-                       ELSE #{titleEn}
+                       ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(#{translations},
+                         CONCAT('$.', JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))), '.title'))),''), #{titleEn})
                    END, 128),
                    LEFT(CASE
                        WHEN LOWER(COALESCE(u.language, '')) LIKE 'vi%' THEN #{bodyVi}
                        WHEN LOWER(COALESCE(u.language, '')) LIKE 'zh%' THEN #{bodyZh}
-                       ELSE #{bodyEn}
+                       ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(#{translations},
+                         CONCAT('$.', JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))), '.body'))),''), #{bodyEn})
                    END, 512),
                    NULL, NULLIF(#{ctaHref}, ''),
                    0, 'QUEUED', 0, #{now}, #{now}, #{now}, 0
@@ -284,7 +286,7 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
                       AND previous.created_at > #{cooldownSince}
                )
             """)
-    int enqueueNotifications(
+    int enqueueLocalizedNotifications(
             @Param("eventId") long eventId,
             @Param("bizNo") String bizNo,
             @Param("titleZh") String titleZh,
@@ -295,7 +297,15 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
             @Param("bodyEn") String bodyEn,
             @Param("ctaHref") String ctaHref,
             @Param("cooldownSince") LocalDateTime cooldownSince,
-            @Param("now") LocalDateTime now);
+            @Param("now") LocalDateTime now,
+            @Param("translations") String translations);
+
+    default int enqueueNotifications(long eventId, String bizNo, String titleZh, String bodyZh,
+            String titleVi, String bodyVi, String titleEn, String bodyEn, String ctaHref,
+            LocalDateTime cooldownSince, LocalDateTime now) {
+        return enqueueLocalizedNotifications(eventId, bizNo, titleZh, bodyZh, titleVi, bodyVi,
+                titleEn, bodyEn, ctaHref, cooldownSince, now, null);
+    }
 
     @Insert("""
             INSERT IGNORE INTO nx_notification (
@@ -306,12 +316,14 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
                    LEFT(CASE
                        WHEN LOWER(COALESCE(u.language, '')) LIKE 'vi%' THEN #{titleVi}
                        WHEN LOWER(COALESCE(u.language, '')) LIKE 'zh%' THEN #{titleZh}
-                       ELSE #{titleEn}
+                       ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(t.translations_json,
+                         CONCAT('$.', JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))), '.title'))),''), #{titleEn})
                    END, 128),
                    LEFT(CASE
                        WHEN LOWER(COALESCE(u.language, '')) LIKE 'vi%' THEN #{bodyVi}
                        WHEN LOWER(COALESCE(u.language, '')) LIKE 'zh%' THEN #{bodyZh}
-                       ELSE #{bodyEn}
+                       ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(t.translations_json,
+                         CONCAT('$.', JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))), '.body'))),''), #{bodyEn})
                    END, 512),
                    NULL, NULLIF(#{ctaHref}, ''),
                    0, 'QUEUED', 0, #{now}, #{now}, #{now}, 0
@@ -369,10 +381,12 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
             SELECT #{bizNo}, u.id, #{notificationType}, 'normal',
                    LEFT(CASE WHEN LOWER(COALESCE(u.language, '')) LIKE 'vi%' THEN #{titleVi}
                              WHEN LOWER(COALESCE(u.language, '')) LIKE 'zh%' THEN #{titleZh}
-                             ELSE #{titleEn} END, 128),
+                             ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(t.translations_json,
+                         CONCAT('$.', JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))), '.title'))),''), #{titleEn}) END, 128),
                    LEFT(CASE WHEN LOWER(COALESCE(u.language, '')) LIKE 'vi%' THEN #{bodyVi}
                              WHEN LOWER(COALESCE(u.language, '')) LIKE 'zh%' THEN #{bodyZh}
-                             ELSE #{bodyEn} END, 512),
+                             ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(t.translations_json,
+                         CONCAT('$.', JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))), '.body'))),''), #{bodyEn}) END, 512),
                    NULL, NULLIF(#{ctaHref}, ''), 0, 'QUEUED', 0, #{now}, #{now}, #{now}, 0
                FROM nx_user u
               LEFT JOIN nx_user_preference pref

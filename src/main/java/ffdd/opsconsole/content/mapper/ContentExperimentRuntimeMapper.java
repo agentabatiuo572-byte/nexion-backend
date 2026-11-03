@@ -146,7 +146,7 @@ public interface ContentExperimentRuntimeMapper extends BaseMapper<Object> {
                    v.version AS version,
                    v.zh_text AS zhText,
                    v.en_text AS enText,
-                   v.vi_text AS viText
+                   v.vi_text AS viText, v.translations_json AS translationsJson
               FROM nx_content_copy c
               JOIN nx_content_copy_version v
                 ON v.copy_key = c.copy_key
@@ -165,7 +165,7 @@ public interface ContentExperimentRuntimeMapper extends BaseMapper<Object> {
                    v.version AS version,
                    v.zh_text AS zhText,
                    v.en_text AS enText,
-                   v.vi_text AS viText
+                   v.vi_text AS viText, v.translations_json AS translationsJson
               FROM nx_content_copy_position p
               JOIN nx_content_copy c
                 ON c.copy_position = p.position_key
@@ -189,7 +189,7 @@ public interface ContentExperimentRuntimeMapper extends BaseMapper<Object> {
                    version AS version,
                    zh_text AS zhText,
                    en_text AS enText,
-                   vi_text AS viText
+                   vi_text AS viText, translations_json AS translationsJson
               FROM nx_content_copy_version
              WHERE copy_key = #{copyKey}
                AND version = #{version}

@@ -125,7 +125,7 @@ public class OpsUserPaymentMethodService {
             mapper.promoteFallbackDefault(userId, sourceEnvironment);
         }
         mapper.queueNotification(userId, "PAYMENT_METHOD_UNBOUND:" + methodId + ":" + key,
-                "支付方式已解绑", "尾号 " + row.last4() + " 的支付方式已从 UVEL 账户解绑，不再用于后续扣款。",
+                "unbound", row.last4(),
                 "/pages/me/wallet/cards");
         audit("USER_PAYMENT_METHOD_UNBIND", "USER_PAYMENT_METHOD", String.valueOf(methodId), userId, request, key,
                 Map.of("last4", row.last4(), "provider", row.provider(),
@@ -148,7 +148,7 @@ public class OpsUserPaymentMethodService {
             throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "PAYMENT_METHOD_VERSION_CONFLICT");
         }
         mapper.queueNotification(userId, "PAYMENT_METHOD_REBIND:" + methodId + ":" + key,
-                "请更换试用扣款支付方式", "尾号 " + row.last4() + " 的支付方式正在被试用会话占用，请先完成换绑。",
+                "rebind", row.last4(),
                 "/pages/me/wallet/cards/new");
         audit("USER_PAYMENT_METHOD_REBIND_NOTICE", "USER_PAYMENT_METHOD", String.valueOf(methodId), userId, request, key,
                 Map.of("trialRefId", row.trialRefId() == null ? "" : row.trialRefId(), "last4", row.last4(),

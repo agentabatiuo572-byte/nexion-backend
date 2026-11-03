@@ -15,6 +15,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -317,7 +318,7 @@ public final class L2FunnelAnalytics {
                 .distinct()
                 .sorted()
                 .toList();
-        if (locales.isEmpty()) locales = List.of("en", "vi", "zh");
+        if (locales.isEmpty()) locales = InterfaceLanguages.CODES;
         Map<String, List<EventFact>> byActor = events.stream()
                 .collect(Collectors.groupingBy(EventFact::actor, LinkedHashMap::new, Collectors.toList()));
         Map<String, EventFact> claimedTrial = firstByActor(named(events, "trial.claim_sheet_shown"));
@@ -451,7 +452,7 @@ public final class L2FunnelAnalytics {
     }
 
     private static String normalizeLocale(String value) {
-        String normalized = defaultText(value, "und").toLowerCase(Locale.ROOT);
+        String normalized = defaultText(value, "und").toLowerCase(Locale.ROOT).replace('_', '-');
         int separator = normalized.indexOf('-');
         return separator > 0 ? normalized.substring(0, separator) : normalized;
     }

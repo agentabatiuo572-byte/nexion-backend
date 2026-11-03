@@ -2,6 +2,7 @@ package ffdd.opsconsole.content.domain;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 
 public record LearningCourseView(
         String id,
@@ -26,7 +27,34 @@ public record LearningCourseView(
         String rewardEvent,
         long revision,
         String titleVi,
+        String bodyVi,
+        Map<String, String> titleTranslations, Map<String, String> bodyTranslations) {
+    public LearningCourseView(
+        String id,
+        String title,
+        String category,
+        String format,
+        String level,
+        BigDecimal rewardNex,
+        boolean featured,
+        String duration,
+        String version,
+        String status,
+        String body,
+        String titleZh,
+        String titleEn,
+        String bodyZh,
+        String bodyEn,
+        List<LearningQuizQuestionView> quizQuestions,
+        Integer passScore,
+        Integer retryLimit,
+        String completionCondition,
+        String rewardEvent,
+        long revision,
+        String titleVi,
         String bodyVi) {
+        this(id, title, category, format, level, rewardNex, featured, duration, version, status, body, titleZh, titleEn, bodyZh, bodyEn, quizQuestions, passScore, retryLimit, completionCondition, rewardEvent, revision, titleVi, bodyVi, null, null);
+    }
 
     public LearningCourseView(
             String id, String title, String category, String format, String level, BigDecimal rewardNex,

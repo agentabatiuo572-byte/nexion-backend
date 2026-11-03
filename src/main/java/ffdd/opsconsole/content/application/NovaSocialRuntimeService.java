@@ -121,9 +121,14 @@ public class NovaSocialRuntimeService {
         NovaSocialMessageRenderer.RenderedMessage en = NovaSocialMessageRenderer.render(template, event, "EN");
         String ctaHref = "NONE".equalsIgnoreCase(template.cta()) ? "" : safe(template.cta());
         String bizNo = slotKey;
-        int inserted = runtimeRepository.enqueueNotifications(
+        Map<String, ffdd.opsconsole.content.domain.NotificationTranslation> translated = new LinkedHashMap<>();
+        template.translations().keySet().forEach(language -> {
+            var rendered = NovaSocialMessageRenderer.render(template, event, language);
+            translated.put(language, new ffdd.opsconsole.content.domain.NotificationTranslation(rendered.title(), rendered.body(), ""));
+        });
+        int inserted = runtimeRepository.enqueueLocalizedNotifications(
                 event.id(), bizNo, zh.title(), zh.body(), vi.title(), vi.body(), en.title(), en.body(),
-                ctaHref, now.minus(cooldown), now);
+                ctaHref, now.minus(cooldown), now, ffdd.opsconsole.content.domain.NotificationTranslation.json(translated));
         if (inserted <= 0) {
             completeClaimOrThrow(slotKey, now);
             return NovaSocialDispatchResult.skipped("NO_USER_OUTSIDE_COOLDOWN");

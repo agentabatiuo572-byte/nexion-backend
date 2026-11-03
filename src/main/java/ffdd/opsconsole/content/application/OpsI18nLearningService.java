@@ -9,6 +9,7 @@ import ffdd.opsconsole.content.domain.I18nLearningOverview;
 import ffdd.opsconsole.content.domain.I18nLearningRepository;
 import ffdd.opsconsole.content.domain.I18nLearningStats;
 import ffdd.opsconsole.content.domain.I18nMessagePairView;
+import ffdd.opsconsole.content.domain.MessageTranslations;
 import ffdd.opsconsole.content.domain.I18nNamespaceView;
 import ffdd.opsconsole.content.domain.LearningCourseView;
 import ffdd.opsconsole.content.domain.LearningCourseVersionView;
@@ -118,6 +119,10 @@ public class OpsI18nLearningService {
                 || !request.expectedVersion().trim().equals(current.version())) {
             return ApiResult.fail(409, "I18N_MESSAGE_VERSION_CONFLICT");
         }
+        Map<String, String> translations = request.translations() == null ? current.translations()
+                : MessageTranslations.clean(request.translations());
+        if (!I18nCopyQuality.placeholdersMatch(request.en(), translations))
+            return ApiResult.fail(422, "I18N_PLACEHOLDERS_MISMATCH");
         I18nMessagePairView saved;
         try {
             saved = learningRepository.saveMessageDraftCas(
@@ -125,6 +130,7 @@ public class OpsI18nLearningService {
                     request.zh().trim(),
                     request.en().trim(),
                     request.vi().trim(),
+                    translations,
                     request.expectedVersion(),
                     now());
         } catch (IllegalStateException ex) {
@@ -134,7 +140,7 @@ public class OpsI18nLearningService {
             throw ex;
         }
         audit("I6_I18N_DRAFT_SAVED", "I18N_MESSAGE", messageKey.trim(), request.operator(), idempotencyKey, request.reason(), Map.of(
-                "languages", "zh+en+vi",
+                "languages", saved.localeSet(),
                 "placeholders", String.join(",", saved.placeholders())));
         return ApiResult.ok(saved);
     }
@@ -152,19 +158,20 @@ public class OpsI18nLearningService {
         if (!StringUtils.hasText(request.expectedVersion()) || !request.expectedVersion().trim().equals(draft.version())) {
             return ApiResult.fail(409, "I18N_DRAFT_VERSION_CONFLICT");
         }
-        if (!draft.zh().equals(request.zh().trim()) || !draft.en().equals(request.en().trim()) || !draft.vi().equals(request.vi().trim())) {
+        if (!draft.zh().equals(request.zh().trim()) || !draft.en().equals(request.en().trim()) || !draft.vi().equals(request.vi().trim())
+                || request.translations() != null && !draft.translations().equals(MessageTranslations.clean(request.translations()))) {
             return ApiResult.fail(409, "I18N_DRAFT_CHANGED_SAVE_BEFORE_PUBLISH");
         }
         ApiResult<Void> quality = requirePublishableCopy(draft.zh(), draft.en(), draft.vi());
         if (quality != null) return fail(quality);
-        I18nMessagePairView published = learningRepository.saveMessagePair(messageKey.trim(), request.zh().trim(), request.en().trim(), request.vi().trim(), "published", now());
+        I18nMessagePairView published = learningRepository.saveMessagePair(messageKey.trim(), request.zh().trim(), request.en().trim(), request.vi().trim(), draft.translations(), "published", now());
         audit("I6_I18N_MESSAGE_PUBLISHED", "I18N_MESSAGE", messageKey.trim(), request.operator(), idempotencyKey, request.reason(), Map.of(
-                "languages", "zh+en+vi",
+                "languages", published.localeSet(),
                 "placeholders", String.join(",", published.placeholders())));
         eventOutboxService.publish("I18N_MESSAGE", messageKey.trim(), "admin.i18n_published", Map.of(
                 "message_key", messageKey.trim(),
                 "version", published.version(),
-                "locale_set", "zh-CN,en-US,vi-VN",
+                "locale_set", published.localeSet(),
                 "operator", operator(request.operator())));
         return ApiResult.ok(published);
     }
@@ -244,6 +251,12 @@ public class OpsI18nLearningService {
         if (request.expectedRevision() != null && request.expectedRevision() != current.revision()) {
             return ApiResult.fail(409, "LEARNING_COURSE_REVISION_CONFLICT");
         }
+        LearningCourseVersionView snapshot = learningRepository.findCourseVersion(current.id(), current.version()).orElse(null);
+        if (snapshot != null) {
+            request = request.withPreviousTranslations(snapshot.payload());
+            guard = requireCoursePayload(courseId, idempotencyKey, request);
+            if (guard != null) return fail(guard);
+        }
         LearningCourseView updated;
         try {
             updated = learningRepository.updateCourseDraft(current.id(), normalizeCourseRequest(request), now());
@@ -254,7 +267,6 @@ public class OpsI18nLearningService {
             throw ex;
         }
         try {
-            LearningCourseVersionView snapshot = learningRepository.findCourseVersion(current.id(), current.version()).orElse(null);
             learningRepository.saveCourseVersion(current.id(), current.version(), "DRAFT", normalizeCourseRequest(request),
                     snapshot == null ? null : snapshot.revision(), now());
         } catch (UnsupportedOperationException ignored) {
@@ -285,7 +297,7 @@ public class OpsI18nLearningService {
                 "message_key", messageKey.trim(),
                 "from_version", current.version(),
                 "to_status", "ARCHIVED",
-                "locale_set", "zh-CN,en-US,vi-VN",
+                "locale_set", archived.localeSet(),
                 "operator", operator(request.operator())));
         return ApiResult.ok(archived);
     }
@@ -343,7 +355,7 @@ public class OpsI18nLearningService {
                 "from_version", current.version(),
                 "to_version", target.version(),
                 "published_version", restored.version(),
-                "locale_set", "zh-CN,en-US,vi-VN",
+                "locale_set", restored.localeSet(),
                 "operator", operator(request.operator())));
         return ApiResult.ok(restored);
     }
@@ -473,6 +485,9 @@ public class OpsI18nLearningService {
         LearningCourseVersionView current = learningRepository.findCourseVersion(courseId, version).orElse(null);
         if (current == null) return ApiResult.fail(404, "LEARNING_COURSE_VERSION_NOT_FOUND");
         if (!"DRAFT".equals(current.status())) return ApiResult.fail(409, "LEARNING_COURSE_VERSION_NOT_DRAFT");
+        request = request.withPreviousTranslations(current.payload());
+        guard = requireCoursePayload(courseId, idempotencyKey, request);
+        if (guard != null) return fail(guard);
         try {
             LearningCourseVersionView updated = learningRepository.saveCourseVersion(courseId, version, "DRAFT",
                     normalizeCourseRequest(request), request.expectedRevision(), now());
@@ -729,6 +744,17 @@ public class OpsI18nLearningService {
                 || !placeholders(request.bodyZh()).equals(placeholders(request.bodyVi()))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEARNING_COURSE_PLACEHOLDERS_MISMATCH");
         }
+        for (var field : List.of(Map.entry(request.titleEn(), MessageTranslations.clean(request.titleTranslations())),
+                Map.entry(request.bodyEn(), MessageTranslations.clean(request.bodyTranslations())))) {
+            for (var translated : field.getValue().entrySet()) {
+                String value = translated.getValue();
+                if (!MessageTranslations.LOCALES.containsKey(translated.getKey()) || value.length() > 1024
+                        || containsUnsafeText(value) || containsSunsetCapability(value)
+                        || !placeholders(field.getKey()).equals(placeholders(value))
+                        || I18nCopyQuality.publishError(value, value, value) != null)
+                    return ApiResult.fail(422, "LEARNING_COURSE_TRANSLATION_INVALID");
+            }
+        }
         ApiResult<Void> quizGuard = requireQuizPayload(request);
         if (quizGuard != null) {
             return quizGuard;
@@ -750,6 +776,17 @@ public class OpsI18nLearningService {
             List<String> zhOptions = question == null || question.optionsZh() == null ? List.of() : question.optionsZh();
             List<String> enOptions = question == null || question.optionsEn() == null ? List.of() : question.optionsEn();
             List<String> viOptions = question == null || question.optionsVi() == null ? List.of() : question.optionsVi();
+            if (question != null && (MessageTranslations.clean(question.questionTranslations()).entrySet().stream()
+                    .anyMatch(entry -> !MessageTranslations.LOCALES.containsKey(entry.getKey())
+                            || entry.getValue().length() > 1024 || containsUnsafeText(entry.getValue())
+                            || containsSunsetCapability(entry.getValue()))
+                    || question.optionTranslations() != null && question.optionTranslations().entrySet().stream()
+                    .anyMatch(entry -> !MessageTranslations.LOCALES.containsKey(entry.getKey()) || entry.getValue() == null
+                            || entry.getValue().size() != enOptions.size() || entry.getValue().stream()
+                            .anyMatch(value -> !StringUtils.hasText(value) || value.length() > 1024
+                                    || containsUnsafeText(value) || containsSunsetCapability(value))))) {
+                return ApiResult.fail(422, "LEARNING_COURSE_QUIZ_TRANSLATION_INVALID");
+            }
             if (question == null || !StringUtils.hasText(question.questionId())
                     || !StringUtils.hasText(question.questionZh()) || !StringUtils.hasText(question.questionEn())
                     || !StringUtils.hasText(question.questionVi())
@@ -799,6 +836,19 @@ public class OpsI18nLearningService {
         if (!StringUtils.hasText(messageKey) || !MESSAGE_KEY_PATTERN.matcher(messageKey.trim()).matches()
                 || request == null || !StringUtils.hasText(request.zh()) || !StringUtils.hasText(request.en()) || !StringUtils.hasText(request.vi())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "I18N_COPY_REQUIRED");
+        }
+        if (request.translations() != null) {
+            for (var entry : request.translations().entrySet()) {
+                if (!MessageTranslations.LOCALES.containsKey(entry.getKey())) return ApiResult.fail(422, "I18N_LOCALE_UNSUPPORTED");
+                String value = entry.getValue();
+                if (!StringUtils.hasText(value)) continue;
+                if (value.trim().length() > 1024) return ApiResult.fail(422, "I18N_COPY_TOO_LONG");
+                if (containsUnsafeText(value)) return ApiResult.fail(422, "I18N_RAW_JSON_OR_URL_NOT_ALLOWED");
+                if (containsSunsetCapability(value)) return ApiResult.fail(422, "SUNSET_CAPABILITY_READONLY");
+                if (!placeholders(value).equals(placeholders(request.en()))) return ApiResult.fail(422, "I18N_PLACEHOLDERS_MISMATCH");
+                String qualityError = I18nCopyQuality.publishError(request.zh(), request.en(), value);
+                if (qualityError != null) return ApiResult.fail(422, qualityError);
+            }
         }
         if (containsUnsafeText(messageKey, request.zh(), request.en(), request.vi())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "I18N_RAW_JSON_OR_URL_NOT_ALLOWED");
@@ -914,10 +964,13 @@ public class OpsI18nLearningService {
                         question.questionId().trim(), question.questionZh().trim(), question.questionEn().trim(),
                         question.optionsZh().stream().map(String::trim).toList(),
                         question.optionsEn().stream().map(String::trim).toList(), question.correctOptionIndex(),
-                        question.questionVi().trim(), question.optionsVi().stream().map(String::trim).toList())).toList(),
+                        question.questionVi().trim(), question.optionsVi().stream().map(String::trim).toList(),
+                        MessageTranslations.clean(question.questionTranslations()), question.optionTranslations())).toList(),
                 request.passScore(), request.retryLimit(), trimToNull(request.completionCondition()),
                 trimToNull(request.rewardEvent()), request.expectedRevision(),
-                request.titleVi().trim(), request.bodyVi().trim(), trimToNull(request.version()));
+                request.titleVi().trim(), request.bodyVi().trim(), trimToNull(request.version()),
+                request.titleTranslations() == null ? null : MessageTranslations.clean(request.titleTranslations()),
+                request.bodyTranslations() == null ? null : MessageTranslations.clean(request.bodyTranslations()));
     }
 
     private String trimToNull(String value) {

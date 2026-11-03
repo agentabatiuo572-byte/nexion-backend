@@ -18,6 +18,8 @@ public class DisclosureChapterEntity extends BaseEntity {
     private String zhBody;
     private String viBody;
     private String enBody;
+    private String titleTranslationsJson;
+    private String bodyTranslationsJson;
     private Integer sortOrder;
     private String lastOperator;
 }

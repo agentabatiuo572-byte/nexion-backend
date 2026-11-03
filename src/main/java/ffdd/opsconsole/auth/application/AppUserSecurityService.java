@@ -1,5 +1,7 @@
 package ffdd.opsconsole.auth.application;
 
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
+
 import ffdd.opsconsole.auth.dto.AppPasswordChangeRequest;
 import ffdd.opsconsole.auth.dto.AppAccountDeletionRequest;
 import ffdd.opsconsole.auth.dto.AppAccountDeletionCancelRequest;
@@ -84,11 +86,12 @@ public class AppUserSecurityService {
             Long userId, UserRegistrationOtpRequest request, String clientAddress) {
         if (UserAuthEnvironment.resolve(environment).orElse(null) != UserAuthEnvironment.PRODUCTION)
             throw new BizException(503, "USER_PHONE_BINDING_UNAVAILABLE");
-        requireProviderAccountWithoutPhone(userId, false);
+        UserEntity user = requireProviderAccountWithoutPhone(userId, false);
         if (request == null || !SupportedUserPhonePolicy.isSupportedDestination(request.countryCode(), request.phone()))
             throw new BizException(422, "USER_PHONE_INVALID");
         if (phoneTaken(request.countryCode(), request.phone())) throw new BizException(409, "USER_PHONE_ALREADY_USED");
-        return registrationService.sendOtp(request, clientAddress);
+        return registrationService.sendOtp(new UserRegistrationOtpRequest(request.countryCode(), request.phone(),
+                request.captchaTicket(), InterfaceLanguages.baseCode(user.getLanguage())), clientAddress);
     }
 
     @Transactional(noRollbackFor = PreWriteRejection.class)
@@ -123,13 +126,14 @@ public class AppUserSecurityService {
         return ffdd.opsconsole.shared.api.ApiResult.ok(Map.of("status", "PHONE_BOUND"));
     }
 
-    private void requireProviderAccountWithoutPhone(Long userId, boolean lock) {
+    private UserEntity requireProviderAccountWithoutPhone(Long userId, boolean lock) {
         if (userId == null || userId <= 0) throw new BizException(401, "USER_AUTH_REQUIRED");
         UserEntity user = lock ? userMapper.findLoginUserForUpdate(userId) : userMapper.selectById(userId);
         if (user == null || !Integer.valueOf(0).equals(user.getSandbox()))
             throw new BizException(403, "USER_PHONE_BINDING_UNAVAILABLE");
         if (StringUtils.hasText(user.getPhone())) throw new BizException(409, "USER_PHONE_ALREADY_BOUND");
         if (userMapper.countProviderIdentities(userId) < 1) throw new BizException(403, "USER_PHONE_BINDING_UNAVAILABLE");
+        return user;
     }
 
     private boolean phoneTaken(String countryCode, String phone) {
@@ -294,7 +298,7 @@ public class AppUserSecurityService {
         }
         try {
             otpDeliveryService.deliver(user.getCountryCode(), user.getPhone(), challengeNo, code,
-                    TWO_FACTOR_OTP_TTL_MINUTES);
+                    TWO_FACTOR_OTP_TTL_MINUTES, InterfaceLanguages.baseCode(user.getLanguage()));
         } catch (RuntimeException ex) {
             userMapper.invalidateOpenSecurityOtpChallenges(userId);
             throw new PreWriteRejection(503, "USER_OTP_DELIVERY_UNAVAILABLE");

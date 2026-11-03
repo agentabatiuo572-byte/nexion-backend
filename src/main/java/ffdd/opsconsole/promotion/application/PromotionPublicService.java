@@ -1,6 +1,7 @@
 package ffdd.opsconsole.promotion.application;
 
 import ffdd.opsconsole.promotion.domain.PromotionRules;
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import ffdd.opsconsole.promotion.mapper.PromotionMapper;
 import java.time.Instant;
 import java.util.*;
@@ -75,18 +76,27 @@ public class PromotionPublicService {
             publicRules.add(visible);
         }
         return values("activityId",row.get("activity_id"),"version",number(row.get("active_version")),"template",contract.get("template"),"state",state,
-            "startsAt",contract.get("startsAt"),"endsAt",contract.get("endsAt"),"serverTime",now.toString(),"title",contract.get("title"),"terms",contract.get("terms"),
+            "startsAt",contract.get("startsAt"),"endsAt",contract.get("endsAt"),"serverTime",now.toString(),"title",publicText(contract.get("title")),"terms",publicText(contract.get("terms")),
             "placement",contract.get("placement"),"bannerImageUrl","ACTIVE".equals(state)?banners.issueUrl(text(row.get("activity_id")),number(row.get("active_version")),contract.get("bannerAssetId")):null,"target","STORE","productNos",publicRules.stream().map(r->r.get("productNo")).distinct().toList(),
             "minimumClientCapabilities",contract.get("minimumClientCapabilities"),"eligibility",eligibility,"eligibilityMessage",null,
             "repurchaseWindow",repurchase?values("minDays",interval.get("minDays"),"maxDays",interval.get("maxDays")):null,
             "lastValidPurchaseAt",lastValidPurchaseAt,"rewardRules",publicRules);
     }
+    private static Map<String,Object> publicText(Object source) {
+        Map<String,Object> text = new LinkedHashMap<>(map(source));
+        if (text.get("en") != null) for (String code : InterfaceLanguages.CODES) {
+            if (InterfaceLanguages.isAdditional(code) && (text.get(code) == null || text.get(code).toString().isBlank()))
+                text.put(code, text.get("en"));
+        }
+        return text;
+    }
+
     /** Only public benefits are projected; the supplied policy map is the original approved snapshot. */
     public static Map<String,Object> disclosure(PromotionMapper db,Map<String,Object> contract,Map<String,Object> policies,Map<String,Object> spec){
         if("DISCOUNT_USDT".equals(spec.get("type"))){
             var refund=PromotionPolicyResolver.content(policies,"refund");require(refund!=null,"PROMOTION_POLICY_SNAPSHOT_MISSING");
-            return values("title",contract.get("title"),"terms",contract.get("terms"),"refundTerms",refund.get("terms"),
-                "benefitDescription",values("zh","下单立减，不另发钱包奖励；退款按实际支付金额。","en","Deducted at checkout, with no wallet reward. Refunds use the amount paid.","vi","Giảm trực tiếp khi đặt hàng, không thưởng thêm vào ví. Hoàn tiền theo số tiền thực trả."),"deviceName",null,"deviceRights",null);
+            return values("title",publicText(contract.get("title")),"terms",publicText(contract.get("terms")),"refundTerms",publicText(refund.get("terms")),
+                "benefitDescription",publicText(values("zh","下单立减，不另发钱包奖励；退款按实际支付金额。","en","Deducted at checkout, with no wallet reward. Refunds use the amount paid.","vi","Giảm trực tiếp khi đặt hàng, không thưởng thêm vào ví. Hoàn tiền theo số tiền thực trả.")),"deviceName",null,"deviceRights",null);
         }
         boolean device="DEVICE".equals(spec.get("type"));
         var policy=PromotionPolicyResolver.resolveReference(policies,map(spec.get(device?"deviceRightsProfile":"assetPolicy")));
@@ -104,8 +114,8 @@ public class PromotionPublicService {
             require(spec.get("giftProductNo").equals(map(frozen.get("product")).get("product_no")),"PROMOTION_POLICY_SNAPSHOT_MISSING");
             deviceName=required(map(frozen.get("product")).get("name"),"deviceName");
         }
-        return values("title",contract.get("title"),"terms",contract.get("terms"),"refundTerms",refund.get("terms"),
-            "benefitDescription",content.get(device?"rightsDescription":"availabilityDescription"),"deviceName",deviceName,"deviceRights",rights);
+        return values("title",publicText(contract.get("title")),"terms",publicText(contract.get("terms")),"refundTerms",publicText(refund.get("terms")),
+            "benefitDescription",publicText(content.get(device?"rightsDescription":"availabilityDescription")),"deviceName",deviceName,"deviceRights",rights);
     }
     public Map<String,Object> referral(long owner,String activity){
         Map<String,Object> root=db.activity(activity,false);if(root.get("deleted_at")!=null)throw new ffdd.opsconsole.shared.exception.BizException(404,"PROMOTION_RESOURCE_NOT_FOUND");require("DIRECT_REFERRAL".equals(root.get("template")),"PROMOTION_NOT_REFERRAL");

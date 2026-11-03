@@ -1,5 +1,7 @@
 package ffdd.opsconsole.auth.application;
 
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
+
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import ffdd.opsconsole.auth.dto.UserOtpLoginChallengeResponse;
@@ -100,7 +102,7 @@ public class AppUserPasswordResetService {
             throw new IllegalStateException("USER_PASSWORD_RESET_CHALLENGE_CREATE_FAILED");
         }
         try {
-            otpDeliveryService.deliver(countryCode, phone, challengeNo, code, policy.ttlMinutes());
+            otpDeliveryService.deliver(countryCode, phone, challengeNo, code, policy.ttlMinutes(), InterfaceLanguages.baseCode(user.getLanguage()));
         } catch (RuntimeException exception) {
             userMapper.invalidateOpenPasswordResetChallenges(user.getId());
             return ApiResult.fail(503, "USER_OTP_DELIVERY_FAILED");

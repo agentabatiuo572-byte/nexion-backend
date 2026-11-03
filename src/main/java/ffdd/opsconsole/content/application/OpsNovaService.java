@@ -15,6 +15,8 @@ import ffdd.opsconsole.content.domain.NovaSocialRenderedEventView;
 import ffdd.opsconsole.content.domain.NovaSocialSyncResult;
 import ffdd.opsconsole.content.domain.NovaStats;
 import ffdd.opsconsole.content.domain.NovaTemplateView;
+import ffdd.opsconsole.content.domain.NotificationTranslation;
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import ffdd.opsconsole.content.domain.TrustedNovaSocialEvent;
 import ffdd.opsconsole.content.dto.NovaChannelStatusRequest;
 import ffdd.opsconsole.content.dto.NovaChannelUpsertRequest;
@@ -344,10 +346,12 @@ public class OpsNovaService {
     }
 
     public ApiResult<NovaSocialRenderedEventView> sampleSocialEvent(String language) {
-        String normalizedLanguage = StringUtils.hasText(language) ? language.trim().toUpperCase(Locale.ROOT) : "ZH";
-        if (!Set.of("ZH", "VI", "EN").contains(normalizedLanguage)) {
+        String requested = StringUtils.hasText(language) ? language.trim().toLowerCase(Locale.ROOT).replace('_', '-') : "zh";
+        String base = requested.split("-", 2)[0];
+        if (!InterfaceLanguages.CODES.contains(base) || !requested.matches("[a-z]{2,3}(?:-[a-z0-9]{2,8})*")) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_SOCIAL_EVENT_LANGUAGE_UNSUPPORTED");
         }
+        String normalizedLanguage = base.toUpperCase(Locale.ROOT);
         novaRepository.ensureTables();
         expireDueEvents();
         NovaChannelView channel = novaRepository.channel("social").orElse(null);
@@ -557,6 +561,8 @@ public class OpsNovaService {
                 trimToEmpty(request.bodyEn()),
                 operator(request.operator()),
                 request.reason().trim());
+        if (request.translations() != null) novaRepository.setTemplateTranslations(channel, null,
+                NotificationTranslation.json(request.translations()));
         novaRepository.channel(channel)
                 .filter(NovaChannelView::enabled)
                 .ifPresent(channelView -> novaRepository.updateChannelStatus(
@@ -591,6 +597,8 @@ public class OpsNovaService {
         if (!updatedInDatabase) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_TEMPLATE_CONCURRENT_MODIFICATION");
         }
+        if (request.translations() != null) novaRepository.setTemplateTranslations(normalizedChannel,
+                current.get().translationsJson(), NotificationTranslation.json(request.translations()));
         novaRepository.channel(normalizedChannel)
                 .filter(NovaChannelView::enabled)
                 .ifPresent(channelView -> novaRepository.updateChannelStatus(
@@ -958,6 +966,17 @@ public class OpsNovaService {
                 || !placeholders(request.bodyZh()).equals(placeholders(request.bodyVi()))
                 || (StringUtils.hasText(request.bodyEn()) && !placeholders(request.bodyZh()).equals(placeholders(request.bodyEn())))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDERS_MISMATCH");
+        }
+        if (request.translations() != null) for (var entry : request.translations().entrySet()) {
+            NotificationTranslation translated = entry.getValue();
+            if (!InterfaceLanguages.isAdditional(entry.getKey()) || translated == null
+                    || translated.title().length() > 255 || translated.body().length() > 4000
+                    || !translated.ctaLabel().isEmpty()
+                    || ffdd.opsconsole.shared.canonical.RetiredBrandGate.anyCarriesRetiredBrand(translated.title(), translated.body())
+                    || !translated.title().isEmpty() && !placeholders(request.titleZh()).equals(placeholders(translated.title()))
+                    || !translated.body().isEmpty() && !placeholders(request.bodyZh()).equals(placeholders(translated.body()))) {
+                return ApiResult.fail(422, "NOVA_TEMPLATE_TRANSLATIONS_INVALID");
+            }
         }
         Set<String> usedPlaceholders = new LinkedHashSet<>();
         List.of(request.titleZh(), request.bodyZh(), request.titleVi(), request.bodyVi(),

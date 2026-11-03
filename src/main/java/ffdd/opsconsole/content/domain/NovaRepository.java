@@ -61,6 +61,10 @@ public interface NovaRepository {
         return true;
     }
 
+    default void setTemplateTranslations(String channel, String previous, String translations) {
+        throw new UnsupportedOperationException("NOVA_TEMPLATE_TRANSLATIONS_UNAVAILABLE");
+    }
+
     void updateTemplateStatus(String channel, String status, String operator, String reason);
 
     default boolean updateTemplateStatusIfCurrent(

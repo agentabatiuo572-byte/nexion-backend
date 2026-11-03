@@ -77,7 +77,7 @@ public class PublishedDeveloperDocsService {
                 || reason == null || reason.trim().length() < 8 || reason.trim().length() > 500)
             return ApiResult.fail(422, "DEVELOPER_DOCS_CONTENT_INVALID");
         for (Map.Entry<String, Object> entry : locales.entrySet()) {
-            if (!entry.getKey().matches("[a-z]{2}(?:-[a-z0-9]{2,8})?")) return ApiResult.fail(422, "DEVELOPER_DOCS_CONTENT_INVALID");
+            if (!entry.getKey().matches("(?:[a-z]{2}|fil)(?:-[a-z0-9]{2,8})?")) return ApiResult.fail(422, "DEVELOPER_DOCS_CONTENT_INVALID");
             Map<String, Object> locale = map(entry.getValue());
             if (locale == null || !validLocale(locale)) return ApiResult.fail(422, "DEVELOPER_DOCS_CONTENT_INVALID");
         }

@@ -10,7 +10,7 @@ public interface PaymentPasswordMapper {
     Map<String,Object> credential(@Param("userId") long userId,@Param("lock") boolean lock);
     @Insert("INSERT IGNORE INTO nx_payment_password(user_id) VALUES(#{userId})")
     int ensure(long userId);
-    @Select("<script>SELECT id,country_code,phone FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0<if test='lock'> FOR UPDATE</if></script>")
+    @Select("<script>SELECT id,country_code,phone,language FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0<if test='lock'> FOR UPDATE</if></script>")
     Map<String,Object> user(@Param("userId") long userId,@Param("lock") boolean lock);
     @Select("SELECT COUNT(*) FROM nx_payment_password_attempt WHERE user_id=#{userId} AND counts_failure=1 AND result_message='PAYMENT_PASSWORD_INCORRECT' AND occurred_at>=#{since}")
     int failureCount(@Param("userId") long userId,@Param("since") long since);

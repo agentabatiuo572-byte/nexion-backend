@@ -21,6 +21,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -43,7 +44,7 @@ public class BehaviorAnalyticsService {
     private static final Pattern SESSION = Pattern.compile("^[a-f0-9]{32}$");
     private static final Pattern CLIENT_EVENT_ID = Pattern.compile("^[a-f0-9]{32}$");
     private static final Pattern ELEMENT = Pattern.compile("^[a-z][a-z0-9_-]{0,63}$");
-    private static final Pattern LOCALE = Pattern.compile("^[a-z]{2}(?:-[A-Z]{2})?$");
+    private static final Pattern LOCALE = Pattern.compile("^(?:[a-z]{2}|fil)(?:-[A-Z]{2})?$");
     private static final Set<String> EVENTS = Set.of("app.page_viewed", "app.element_clicked", "store.viewed");
     private static final String STORE_ROUTE = "/pages/store/store";
     private static final Set<String> DEVICES = Set.of("APP", "H5", "MP");
@@ -501,7 +502,9 @@ public class BehaviorAnalyticsService {
     }
 
     private String normalizeLocale(String value) {
-        String normalized = text(value);
+        String normalized = text(value).replace('_', '-');
+        String baseCode = InterfaceLanguages.baseCode(normalized);
+        if (InterfaceLanguages.isAdditional(baseCode) && normalized.matches("(?i)(?:[a-z]{2}|fil)(?:-[a-z]{2})?")) return baseCode;
         require("und".equals(normalized) || LOCALE.matcher(normalized).matches(), "L6_LOCALE_INVALID");
         return normalized;
     }

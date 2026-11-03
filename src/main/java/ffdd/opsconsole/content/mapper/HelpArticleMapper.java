@@ -60,10 +60,10 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
               content AS answer,
               CASE status WHEN 1 THEN 'PUBLISHED' ELSE 'DRAFT' END AS status,
               COALESCE(surface, 'Help Center') AS surface,
-              CASE WHEN level IN ('zh-CN','en-US','vi-VN') THEN level ELSE 'zh-CN' END AS language,
+              CASE WHEN level IN ('zh-CN','en-US','vi-VN','id','ms','fil','ru','kk','uz') THEN level ELSE 'zh-CN' END AS language,
               COALESCE(sort_order, 0) AS sortOrder,
               COALESCE(version_no, 1) AS version,
-              updated_at AS updatedAt
+              updated_at AS updatedAt, faq_translations_json AS translationsJson
             FROM nx_help_article
             WHERE is_deleted=0 AND format='faq'
             ORDER BY sort_order ASC, updated_at DESC, id DESC
@@ -75,7 +75,8 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
             SELECT COUNT(*)
               FROM nx_help_article
              WHERE is_deleted=0 AND format='faq' AND status=1
-               AND level=#{language} AND COALESCE(surface, 'Help Center')=#{surface}
+               AND (level=#{language} OR (#{language} IN ('id','ms','fil','ru','kk','uz') AND level='en-US'))
+               AND COALESCE(surface, 'Help Center')=#{surface}
                <if test="category != null and category != ''">AND LOWER(category)=LOWER(#{category})</if>
             </script>
             """)
@@ -87,10 +88,11 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
             SELECT article_code AS id, category, title AS question, content AS answer,
                    'PUBLISHED' AS status, COALESCE(surface, 'Help Center') AS surface,
                    level AS language, COALESCE(sort_order, 0) AS sortOrder,
-                   COALESCE(version_no, 1) AS version, updated_at AS updatedAt
+                   COALESCE(version_no, 1) AS version, updated_at AS updatedAt, faq_translations_json AS translationsJson
               FROM nx_help_article
              WHERE is_deleted=0 AND format='faq' AND status=1
-               AND level=#{language} AND COALESCE(surface, 'Help Center')=#{surface}
+               AND (level=#{language} OR (#{language} IN ('id','ms','fil','ru','kk','uz') AND level='en-US'))
+               AND COALESCE(surface, 'Help Center')=#{surface}
                <if test="category != null and category != ''">AND LOWER(category)=LOWER(#{category})</if>
              ORDER BY sort_order ASC, article_code ASC
              LIMIT #{limit} OFFSET #{offset}
@@ -108,10 +110,10 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
               content AS answer,
               CASE status WHEN 1 THEN 'PUBLISHED' ELSE 'DRAFT' END AS status,
               COALESCE(surface, 'Help Center') AS surface,
-              CASE WHEN level IN ('zh-CN','en-US','vi-VN') THEN level ELSE 'zh-CN' END AS language,
+              CASE WHEN level IN ('zh-CN','en-US','vi-VN','id','ms','fil','ru','kk','uz') THEN level ELSE 'zh-CN' END AS language,
               COALESCE(sort_order, 0) AS sortOrder,
               COALESCE(version_no, 1) AS version,
-              updated_at AS updatedAt
+              updated_at AS updatedAt, faq_translations_json AS translationsJson
             FROM nx_help_article
             WHERE is_deleted=0 AND format='faq' AND article_code=#{faqId}
             LIMIT 1
@@ -129,6 +131,7 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
                    surface=#{surface},
                    status=#{status},
                    level=#{language},
+                   faq_translations_json=IF(#{language}='en-US',COALESCE(#{translations},faq_translations_json),NULL),
                    sort_order=#{sortOrder},
                    version_no=COALESCE(version_no, 1) + 1,
                    updated_at=#{now}
@@ -144,6 +147,7 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
             @Param("status") int status,
             @Param("language") String language,
             @Param("sortOrder") int sortOrder,
+            @Param("translations") String translations,
             @Param("expectedStatus") int expectedStatus,
             @Param("expectedVersion") int expectedVersion,
             @Param("now") LocalDateTime now);

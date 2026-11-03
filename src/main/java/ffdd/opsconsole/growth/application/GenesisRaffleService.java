@@ -8,6 +8,8 @@ import ffdd.opsconsole.growth.dto.GenesisRaffleRequest;
 import ffdd.opsconsole.growth.dto.GenesisRaffleRequest.Prize;
 import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
+import ffdd.opsconsole.content.domain.MessageTranslations;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -42,6 +44,8 @@ public class GenesisRaffleService {
     @lombok.NonNull
     private final TestCloudActivationAdmission testCloudAdmission;
     private final SecureRandom random = new SecureRandom();
+    private static final String DRAW_WITH_TRANSLATIONS = "SELECT d.*, t.title_translations_json FROM nx_genesis_raffle_draw d "
+            + "LEFT JOIN nx_genesis_raffle_translation t ON t.draw_id=d.draw_id ";
     // A position-backed ticket remains valid only while its originating entitlement survives.
     static final String VALID_TICKET = """
         (t.position_no IS NULL OR (EXISTS(SELECT 1 FROM nx_staking_position p
@@ -93,7 +97,7 @@ public class GenesisRaffleService {
         catch(Exception ex){throw new BizException(503,"RAFFLE_CONFIG_INVALID");}
     }
     private String encode(Object value){try{return json.writeValueAsString(value);}catch(Exception ex){throw new IllegalArgumentException(ex);}}
-    private Map<String,Object> view(Map<String,Object> row,Long userId){
+    private Map<String,Object> view(Map<String,Object> row, Long userId, String locale){
         String id=text(row.get("draw_id"));
         long total=number(db.row("SELECT COALESCE(SUM(quantity),0) amount FROM nx_genesis_raffle_entry WHERE draw_id=?",id).get("amount")).longValue();
         long mine=userId==null?0:number(db.row("SELECT COALESCE(SUM(quantity),0) amount FROM nx_genesis_raffle_entry WHERE draw_id=? AND user_id=?",id,userId).get("amount")).longValue();
@@ -102,21 +106,44 @@ public class GenesisRaffleService {
             try{Map<String,Object> item=json.readValue(text(result.get("receipt_json")),new TypeReference<>(){});item.put("prizeId",result.get("prize_id"));item.put("status",result.get("status"));results.add(item);}
             catch(Exception ex){throw new BizException(503,"RAFFLE_RECEIPT_INVALID");}
         }
-        return values("id",id,"titleZh",row.get("title_zh"),"titleEn",row.get("title_en"),"titleVi",row.get("title_vi"),
+        var titles=MessageTranslations.read(text(row.get("title_translations_json")));
+        var prizeList=prizes(row);
+        var result=values("id",id,"titleZh",row.get("title_zh"),"titleEn",row.get("title_en"),"titleVi",row.get("title_vi"),
+                "titleTranslations", titles,
                 "revision",row.get("revision"),"startsAt",iso(row.get("starts_at")),"drawAt",iso(row.get("draw_at")),
-                "status",row.get("status"),"prizes",prizes(row),"myEntries",mine,"totalEntries",total,"myResults",results);
+                "status",row.get("status"),"prizes",prizeList,"myEntries",mine,"totalEntries",total,"myResults",results);
+        if(userId != null) {
+            String code=InterfaceLanguages.baseCode(locale);
+            result.put("title", selected(code, titles, text(row.get("title_zh")), text(row.get("title_vi")), text(row.get("title_en"))));
+            result.put("prizes", prizeList.stream().map(prize -> {
+                Map<String,Object> item=json.convertValue(prize, new TypeReference<>() {});
+                item.put("name", selected(code, prize.nameTranslations(), prize.nameZh(), prize.nameVi(), prize.nameEn()));
+                return item;
+            }).toList());
+        }
+        return result;
     }
-    public ApiResult<Map<String,Object>> state(Long userId){
+    private String selected(String code, Map<String,String> translations, String zh, String vi, String en) {
+        return switch(code) {
+            case "zh" -> zh;
+            case "vi" -> vi;
+            default -> translations == null ? en : translations.getOrDefault(code, en);
+        };
+    }
+
+    public ApiResult<Map<String,Object>> state(Long userId){return state(userId, null);}
+    public ApiResult<Map<String,Object>> state(Long userId, String locale){
         activeUser(userId);
-        return ApiResult.ok(values("availableTickets",available(userId),"draws",db.rows("SELECT * FROM nx_genesis_raffle_draw WHERE status<>'DRAFT' ORDER BY draw_at DESC LIMIT 20")
-                .stream().map(row->view(row,userId)).toList()));
+        return ApiResult.ok(values("availableTickets",available(userId),"draws",db.rows(DRAW_WITH_TRANSLATIONS + "WHERE d.status<>'DRAFT' ORDER BY d.draw_at DESC LIMIT 20")
+                .stream().map(row->view(row,userId,locale)).toList()));
     }
-    public ApiResult<Map<String,Object>> admin(){return ApiResult.ok(Map.of("draws",db.rows("SELECT * FROM nx_genesis_raffle_draw ORDER BY created_at DESC LIMIT 50").stream().map(row->view(row,null)).toList()));}
+    public ApiResult<Map<String,Object>> admin(){return ApiResult.ok(Map.of("draws",db.rows(DRAW_WITH_TRANSLATIONS + "ORDER BY d.created_at DESC LIMIT 50").stream().map(row->view(row,null,null)).toList()));}
 
     static void validate(GenesisRaffleRequest request) {
         if(request==null||request.id()==null||!request.id().matches("[A-Za-z0-9_-]{1,64}"))throw new BizException(422,"RAFFLE_ID_INVALID");
         for(String title:Arrays.asList(request.titleZh(),request.titleEn(),request.titleVi()))
             if(title==null||title.isBlank()||title.length()>160||title.matches("(?s).*<[^>]*>.*"))throw new BizException(422,"RAFFLE_TITLE_REQUIRED");
+        validateText(request.titleTranslations());
         LocalDateTime start=parseDate(request.startsAt()),draw=parseDate(request.drawAt());
         if(start==null||draw==null||!draw.isAfter(start))throw new BizException(422,"RAFFLE_DATE_INVALID");
         if(request.prizes()==null||request.prizes().isEmpty()||request.prizes().size()>20)throw new BizException(422,"RAFFLE_PRIZES_REQUIRED");
@@ -127,6 +154,7 @@ public class GenesisRaffleService {
                 throw new BizException(422,"RAFFLE_PRIZE_INVALID");
             for(String name:Arrays.asList(prize.nameZh(),prize.nameEn(),prize.nameVi()))
                 if(name==null||name.isBlank()||name.length()>160)throw new BizException(422,"RAFFLE_PRIZE_NAME_REQUIRED");
+            validateText(prize.nameTranslations());
             if(prize.amount()==null||prize.amount().signum()<=0||prize.amount().scale()>6||prize.amount().compareTo(new BigDecimal("1000000"))>0)
                 throw new BizException(422,"RAFFLE_AMOUNT_INVALID");
             if("DEVICE".equals(prize.rewardType())&&(prize.amount().compareTo(BigDecimal.ONE)!=0||prize.productNo()==null||!prize.productNo().matches("[A-Za-z0-9_-]{1,64}")))
@@ -135,6 +163,12 @@ public class GenesisRaffleService {
         }
         if(count>100)throw new BizException(422,"RAFFLE_PRIZE_LIMIT");
     }
+    private static void validateText(Map<String,String> values) {
+        if(values != null && values.entrySet().stream().anyMatch(entry -> !InterfaceLanguages.isAdditional(entry.getKey())
+                || entry.getValue() != null && (entry.getValue().length() > 160 || entry.getValue().matches("(?s).*<[^>]*>.*"))))
+            throw new BizException(422, "RAFFLE_TRANSLATION_INVALID");
+    }
+
     private void covered(){
         var snapshot=coverage.snapshot();
         if(snapshot==null||!snapshot.reliable()||snapshot.coverageRatio()==null||snapshot.redlinePct()==null
@@ -161,13 +195,27 @@ public class GenesisRaffleService {
             for(Prize prize:request.prizes())if("DEVICE".equals(prize.rewardType()))requiredStock.merge(prize.productNo(),prize.quantity(),Integer::sum);
             requiredStock.forEach(devices::validatePrize);
         }
+        Map<String,String> titles=MessageTranslations.clean(request.titleTranslations());
+        Map<String,Prize> existing = new HashMap<>();
+        if(current != null) prizes(current).forEach(prize -> existing.put(prize.id(), prize));
+        List<Prize> updatedPrizes=request.prizes().stream().map(prize -> {
+            var prior=existing.get(prize.id());
+            var names=prize.nameTranslations() == null && prior != null ? prior.nameTranslations() : prize.nameTranslations();
+            return new Prize(prize.id(), prize.nameZh(), prize.nameEn(), prize.nameVi(), prize.rewardType(), prize.amount(),
+                    prize.quantity(), prize.productNo(), MessageTranslations.clean(names));
+        }).toList();
         if(create)db.write("INSERT INTO nx_genesis_raffle_draw(draw_id,title_zh,title_en,title_vi,starts_at,draw_at,prizes_json) VALUES(?,?,?,?,?,?,?)",
-                id,request.titleZh(),request.titleEn(),request.titleVi(),parseDate(request.startsAt()),parseDate(request.drawAt()),encode(request.prizes()));
+                id,request.titleZh(),request.titleEn(),request.titleVi(),parseDate(request.startsAt()),parseDate(request.drawAt()),encode(updatedPrizes));
         else db.write("UPDATE nx_genesis_raffle_draw SET title_zh=?,title_en=?,title_vi=?,starts_at=?,draw_at=?,prizes_json=?,status=?,opened_at=?,revision=revision+1 WHERE draw_id=?",
-                request.titleZh(),request.titleEn(),request.titleVi(),parseDate(request.startsAt()),parseDate(request.drawAt()),encode(request.prizes()),enabled?"OPEN":"DRAFT",enabled?now():null,id);
+                request.titleZh(),request.titleEn(),request.titleVi(),parseDate(request.startsAt()),parseDate(request.drawAt()),encode(updatedPrizes),enabled?"OPEN":"DRAFT",enabled?now():null,id);
+        if(request.titleTranslations() != null) db.write("""
+                INSERT INTO nx_genesis_raffle_translation(draw_id,title_translations_json) VALUES(?,?)
+                ON DUPLICATE KEY UPDATE title_translations_json=VALUES(title_translations_json)
+                """, id, MessageTranslations.json(titles));
+        var saved=db.row(DRAW_WITH_TRANSLATIONS + "WHERE d.draw_id=?",id);
         audit.recordRequired(AuditLogWriteRequest.builder().action("H4_GENESIS_RAFFLE_CONFIGURED").resourceType("GENESIS_RAFFLE").resourceId(id).result("SUCCESS").riskLevel("HIGH")
-                .detail(values("reason",request.reason(),"enabled",enabled,"prizes",request.prizes())).build());
-        return ApiResult.ok(view(db.row("SELECT * FROM nx_genesis_raffle_draw WHERE draw_id=?",id),null));
+                .detail(values("reason",request.reason(),"enabled",enabled,"prizes",updatedPrizes,"titleTranslations",MessageTranslations.read(text(saved.get("title_translations_json"))))).build());
+        return ApiResult.ok(view(saved,null,null));
     }
     @SuppressWarnings({"rawtypes","unchecked"})
     public ApiResult<Map<String,Object>> enter(Long userId,String drawId,long tickets,String key){

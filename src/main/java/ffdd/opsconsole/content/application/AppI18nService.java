@@ -3,6 +3,8 @@ package ffdd.opsconsole.content.application;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.AppI18nBundle;
+import ffdd.opsconsole.content.domain.MessageTranslations;
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import ffdd.opsconsole.content.domain.I18nLearningRepository;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.LinkedHashMap;
@@ -13,6 +15,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
+@org.springframework.transaction.annotation.Transactional(readOnly = true)
 @RequiredArgsConstructor
 public class AppI18nService {
     private static final Pattern NAMESPACE = Pattern.compile("^[A-Za-z][A-Za-z0-9_-]{0,63}$");
@@ -39,8 +42,13 @@ public class AppI18nService {
         if (normalizedLocale == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "I18N_LOCALE_UNSUPPORTED");
         }
-        Map<String, String> source = repository.listPublishedMessages(namespace, normalizedLocale);
-        Map<String, String> messages = source == null ? Map.of() : new LinkedHashMap<>(source);
+        Map<String, String> messages = new LinkedHashMap<>();
+        if (MessageTranslations.LOCALES.containsValue(normalizedLocale)) {
+            messages.putAll(repository.listPublishedMessages(namespace, "en-US"));
+        }
+        repository.listPublishedMessages(namespace, normalizedLocale).forEach((key, text) -> {
+            if (StringUtils.hasText(text)) messages.put(key, text);
+        });
         return ApiResult.ok(new AppI18nBundle(namespace == null ? "*" : namespace,
                 normalizedLocale, Map.copyOf(messages), true));
     }
@@ -49,6 +57,8 @@ public class AppI18nService {
         if (!StringUtils.hasText(locale)) {
             return "en-US";
         }
-        return LOCALES.get(locale.trim().toLowerCase(Locale.ROOT));
+        String value = locale.trim().toLowerCase(Locale.ROOT).replace('_', '-');
+        String base = InterfaceLanguages.baseCode(value);
+        return InterfaceLanguages.isAdditional(base) ? MessageTranslations.LOCALES.get(base) : LOCALES.get(value);
     }
 }

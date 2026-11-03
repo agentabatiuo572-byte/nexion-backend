@@ -203,7 +203,7 @@ public class LegalTermsService {
     }
 
     private String validateDraft(LegalTermsDraftRequest r) {
-        if (r == null || !StringUtils.hasText(r.locale()) || !r.locale().matches("[a-z]{2}(?:-[a-z0-9]{2,8})?")
+        if (r == null || !StringUtils.hasText(r.locale()) || !r.locale().matches("(?:[a-z]{2}|fil)(?:-[a-z0-9]{2,8})?")
                 || !StringUtils.hasText(r.jurisdiction()) || !r.jurisdiction().matches("[A-Z][A-Z0-9_-]{1,15}")
                 || !StringUtils.hasText(r.version()) || !r.version().matches("v[1-9][0-9]{0,8}(?:\\.[0-9]{1,8})*")
                 || r.effectiveAt() == null || !StringUtils.hasText(r.title()) || !StringUtils.hasText(r.summary())

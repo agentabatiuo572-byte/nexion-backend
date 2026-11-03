@@ -210,10 +210,17 @@ public class DirectPushClient {
         }
     }
     static String message(String language) {
-        String locale=language==null?"en":language.toLowerCase(java.util.Locale.ROOT);
-        if (locale.startsWith("zh")) return "您有一条新通知，请打开 UVEL 查看。";
-        if (locale.startsWith("vi")) return "Bạn có thông báo mới. Mở UVEL để xem.";
-        return "You have a new notification. Open UVEL to view it.";
+        return switch (ffdd.opsconsole.shared.i18n.InterfaceLanguages.baseCode(language)) {
+            case "zh" -> "您有一条新通知，请打开 UVEL 查看。";
+            case "vi" -> "Bạn có thông báo mới. Mở UVEL để xem.";
+            case "id" -> "Anda memiliki notifikasi baru. Buka UVEL untuk melihatnya.";
+            case "ms" -> "Anda mempunyai pemberitahuan baharu. Buka UVEL untuk melihatnya.";
+            case "fil" -> "May bago kang abiso. Buksan ang UVEL para makita ito.";
+            case "ru" -> "У вас новое уведомление. Откройте UVEL, чтобы прочитать его.";
+            case "kk" -> "Жаңа хабарландыру бар. Оны көру үшін UVEL қолданбасын ашыңыз.";
+            case "uz" -> "Yangi bildirishnomangiz bor. Uni ko‘rish uchun UVEL ilovasini oching.";
+            default -> "You have a new notification. Open UVEL to view it.";
+        };
     }
     private static final class AuthFailure extends Exception {
         final Result result; AuthFailure(Result result) { this.result=result; }

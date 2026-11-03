@@ -37,6 +37,13 @@ public interface NovaSocialRuntimeRepository {
             int notificationCount,
             LocalDateTime now);
 
+    default int enqueueLocalizedNotifications(long eventId, String bizNo, String titleZh, String bodyZh,
+            String titleVi, String bodyVi, String titleEn, String bodyEn, String ctaHref,
+            LocalDateTime cooldownSince, LocalDateTime now, String translations) {
+        return enqueueNotifications(eventId, bizNo, titleZh, bodyZh, titleVi, bodyVi,
+                titleEn, bodyEn, ctaHref, cooldownSince, now);
+    }
+
     int enqueueNotifications(
             long eventId,
             String bizNo,

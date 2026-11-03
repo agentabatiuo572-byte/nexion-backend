@@ -11,6 +11,7 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.content.domain.I18nIntegrityIssueView;
 import ffdd.opsconsole.content.domain.I18nLearningRepository;
 import ffdd.opsconsole.content.domain.I18nMessagePairView;
+import ffdd.opsconsole.content.domain.MessageTranslations;
 import ffdd.opsconsole.content.domain.I18nNamespaceView;
 import ffdd.opsconsole.content.domain.LearningCourseView;
 import ffdd.opsconsole.content.domain.LearningCourseVersionView;
@@ -213,7 +214,18 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
 
     @Override
     public I18nMessagePairView saveMessagePair(String messageKey, String zh, String en, String vi, String status, LocalDateTime now) {
+        return saveMessagePair(messageKey, zh, en, vi, null, status, now);
+    }
+
+    @Override
+    public I18nMessagePairView saveMessagePair(String messageKey, String zh, String en, String vi,
+            Map<String, String> translations, String status, LocalDateTime now) {
         String key = messageKey.trim();
+        // Calls from older three-language editors preserve the other language values.
+        if (translations == null) translations = findMessagePair(key)
+                .map(I18nMessagePairView::translations).orElse(Map.of());
+        if (!I18nCopyQuality.placeholdersMatch(en, translations))
+            throw new ffdd.opsconsole.shared.exception.BizException(422, "I18N_PLACEHOLDERS_MISMATCH");
         boolean publish = "published".equalsIgnoreCase(status);
         I18nMessageVersionEntity version;
         if (!publish) {
@@ -244,6 +256,7 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
                 version.setIsDeleted(0);
             }
         }
+        version.setTranslationsJson(MessageTranslations.json(translations));
         version.setZhValue(zh.trim()); version.setEnValue(en.trim()); version.setViValue(vi.trim());
         version.setStatus(publish ? "PUBLISHED" : "DRAFT"); version.setUpdatedAt(now);
         if (publish) {
@@ -256,6 +269,7 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         if (version.getId() == null) messageVersionMapper.insert(version); else messageVersionMapper.updateById(version);
         if (publish) {
             upsertMessage(key, "zh-CN", zh, 1, now); upsertMessage(key, "en-US", en, 1, now); upsertMessage(key, "vi-VN", vi, 1, now);
+            publishTranslations(key, translations, now);
         }
         return toVersionPair(version);
     }
@@ -268,6 +282,12 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
             String vi,
             String expectedVersion,
             LocalDateTime now) {
+        return saveMessageDraftCas(messageKey, zh, en, vi, null, expectedVersion, now);
+    }
+
+    @Override
+    public I18nMessagePairView saveMessageDraftCas(String messageKey, String zh, String en, String vi,
+            Map<String, String> translations, String expectedVersion, LocalDateTime now) {
         String key = messageKey.trim();
         String expected = expectedVersion == null ? "" : expectedVersion.trim().toLowerCase(Locale.ROOT);
         if (expected.isEmpty()) {
@@ -277,6 +297,7 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
             initial.setZhValue(zh.trim());
             initial.setEnValue(en.trim());
             initial.setViValue(vi.trim());
+            initial.setTranslationsJson(MessageTranslations.json(translations));
             initial.setStatus("DRAFT");
             initial.setCreatedAt(now);
             initial.setUpdatedAt(now);
@@ -299,12 +320,14 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
             throw versionConflict(null);
         }
 
+        String translationsJson = translations == null
+                ? expectedRow.getTranslationsJson() : MessageTranslations.json(translations);
         if ("DRAFT".equalsIgnoreCase(expectedRow.getStatus())) {
             if (messageVersionMapper.retireDraftCas(key, expectedVersionNo, now) != 1) {
                 throw versionConflict(null);
             }
             I18nMessageVersionEntity saved = draftVersion(
-                    key, nextVersionNo, zh, en, vi, now);
+                    key, nextVersionNo, zh, en, vi, translationsJson, now);
             // Once the current DRAFT row is retired atomically, this transaction is
             // the sole writer allowed to allocate the next version. An unexpected
             // insert failure must escape so Spring rolls the retirement back.
@@ -313,20 +336,21 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         }
 
         try {
-            if (messageVersionMapper.insertDraftCas(
+            if (messageVersionMapper.insertLocalizedDraftCas(
                     key,
                     expectedVersionNo,
                     nextVersionNo,
                     zh.trim(),
                     en.trim(),
                     vi.trim(),
+                    translationsJson,
                     now) != 1) {
                 throw versionConflict(null);
             }
         } catch (DuplicateKeyException ex) {
             throw versionConflict(ex);
         }
-        return toVersionPair(draftVersion(key, nextVersionNo, zh, en, vi, now));
+        return toVersionPair(draftVersion(key, nextVersionNo, zh, en, vi, translationsJson, now));
     }
 
     @Override
@@ -379,6 +403,7 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         restored.setZhValue(target.getZhValue());
         restored.setEnValue(target.getEnValue());
         restored.setViValue(target.getViValue());
+        restored.setTranslationsJson(target.getTranslationsJson());
         restored.setStatus("PUBLISHED");
         restored.setCreatedAt(now);
         restored.setUpdatedAt(now);
@@ -387,6 +412,7 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         upsertMessage(key, "zh-CN", restored.getZhValue(), 1, now);
         upsertMessage(key, "en-US", restored.getEnValue(), 1, now);
         upsertMessage(key, "vi-VN", restored.getViValue(), 1, now);
+        publishTranslations(key, MessageTranslations.read(restored.getTranslationsJson()), now);
         return toVersionPair(restored);
     }
 
@@ -495,8 +521,8 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         entity.setUpdatedAt(now);
         entity.setIsDeleted(0);
         helpArticleMapper.insert(entity);
-        saveMessagePair("learn." + courseId + ".title", request.titleZh().trim(), request.titleEn().trim(), request.titleVi().trim(), "draft", now);
-        saveMessagePair("learn." + courseId + ".body", request.bodyZh().trim(), request.bodyEn().trim(), request.bodyVi().trim(), "draft", now);
+        saveMessagePair("learn." + courseId + ".title", request.titleZh().trim(), request.titleEn().trim(), request.titleVi().trim(), request.titleTranslations(), "draft", now);
+        saveMessagePair("learn." + courseId + ".body", request.bodyZh().trim(), request.bodyEn().trim(), request.bodyVi().trim(), request.bodyTranslations(), "draft", now);
         return findCourse(courseId).orElseGet(() -> toCourseView(entity));
     }
 
@@ -564,8 +590,8 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         if (affected != 1) {
             throw new IllegalStateException("LEARNING_COURSE_REVISION_CONFLICT");
         }
-        saveMessagePair("learn." + courseId + ".title", request.titleZh().trim(), request.titleEn().trim(), request.titleVi().trim(), "draft", now);
-        saveMessagePair("learn." + courseId + ".body", request.bodyZh().trim(), request.bodyEn().trim(), request.bodyVi().trim(), "draft", now);
+        saveMessagePair("learn." + courseId + ".title", request.titleZh().trim(), request.titleEn().trim(), request.titleVi().trim(), request.titleTranslations(), "draft", now);
+        saveMessagePair("learn." + courseId + ".body", request.bodyZh().trim(), request.bodyEn().trim(), request.bodyVi().trim(), request.bodyTranslations(), "draft", now);
         return findCourse(courseId).orElseGet(() -> toCourseView(entity));
     }
 
@@ -736,8 +762,8 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
                 courseVersionMapper.updateById(row);
             }
         }
-        saveMessagePair("learn." + courseId + ".title", request.titleZh().trim(), request.titleEn().trim(), request.titleVi().trim(), "published", now);
-        saveMessagePair("learn." + courseId + ".body", request.bodyZh().trim(), request.bodyEn().trim(), request.bodyVi().trim(), "published", now);
+        saveMessagePair("learn." + courseId + ".title", request.titleZh().trim(), request.titleEn().trim(), request.titleVi().trim(), MessageTranslations.clean(request.titleTranslations()), "published", now);
+        saveMessagePair("learn." + courseId + ".body", request.bodyZh().trim(), request.bodyEn().trim(), request.bodyVi().trim(), MessageTranslations.clean(request.bodyTranslations()), "published", now);
         return findCourse(courseId).orElseGet(() -> toCourseView(entity));
     }
 
@@ -901,6 +927,16 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         }
     }
 
+    private void publishTranslations(String key, Map<String, String> translations, LocalDateTime now) {
+        // Remove translations omitted by this revision, including when rolling back to a legacy version.
+        messageMapper.update(null, Wrappers.<I18nMessageEntity>lambdaUpdate()
+                .eq(I18nMessageEntity::getMessageKey, key)
+                .eq(I18nMessageEntity::getIsDeleted, 0)
+                .in(I18nMessageEntity::getLocale, MessageTranslations.LOCALES.values())
+                .set(I18nMessageEntity::getStatus, 0).set(I18nMessageEntity::getUpdatedAt, now));
+        translations.forEach((code, value) -> upsertMessage(key, MessageTranslations.LOCALES.get(code), value, 1, now));
+    }
+
     private I18nMessageVersionEntity latestVersion(String messageKey, String status) {
         return messageVersionMapper.selectOne(new LambdaQueryWrapper<I18nMessageVersionEntity>()
                 .eq(I18nMessageVersionEntity::getMessageKey, messageKey.trim())
@@ -921,6 +957,7 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
             String zh,
             String en,
             String vi,
+            String translationsJson,
             LocalDateTime now) {
         I18nMessageVersionEntity saved = new I18nMessageVersionEntity();
         saved.setMessageKey(messageKey);
@@ -928,6 +965,7 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         saved.setZhValue(zh.trim());
         saved.setEnValue(en.trim());
         saved.setViValue(vi.trim());
+        saved.setTranslationsJson(translationsJson);
         saved.setStatus("DRAFT");
         saved.setCreatedAt(now);
         saved.setUpdatedAt(now);
@@ -939,6 +977,7 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         String en = "";
         String zh = "";
         String vi = "";
+        Map<String, String> translations = new LinkedHashMap<>();
         int minStatus = 1;
         for (I18nMessageEntity row : rows) {
             if ("en-US".equalsIgnoreCase(row.getLocale())) {
@@ -950,6 +989,11 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
             if ("vi-VN".equalsIgnoreCase(row.getLocale())) {
                 vi = text(row.getMessageValue(), "");
             }
+            if (MessageTranslations.LOCALES.containsValue(row.getLocale())) {
+                if (Integer.valueOf(1).equals(row.getStatus())) translations.put(
+                        row.getLocale().split("-")[0], row.getMessageValue());
+                continue;
+            }
             if (row.getStatus() == null || row.getStatus() == 0) {
                 minStatus = 0;
             }
@@ -959,7 +1003,7 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         placeholders.addAll(placeholders(en));
         placeholders.addAll(placeholders(zh));
         placeholders.addAll(placeholders(vi));
-        return new I18nMessagePairView(messageKey, namespaceOf(messageKey), en, zh, vi, status, version, List.copyOf(placeholders));
+        return new I18nMessagePairView(messageKey, namespaceOf(messageKey), en, zh, vi, status, version, List.copyOf(placeholders), translations);
     }
 
     private I18nMessagePairView toVersionPair(I18nMessageVersionEntity entity) {
@@ -967,7 +1011,8 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         Set<String> all = new TreeSet<>();
         all.addAll(placeholders(zh)); all.addAll(placeholders(en)); all.addAll(placeholders(vi));
         return new I18nMessagePairView(entity.getMessageKey(), namespaceOf(entity.getMessageKey()), en, zh, vi,
-                normalizedStatus(entity.getStatus()), versionLabel(entity.getVersionNo()), List.copyOf(all));
+                normalizedStatus(entity.getStatus()), versionLabel(entity.getVersionNo()), List.copyOf(all),
+                MessageTranslations.read(entity.getTranslationsJson()));
     }
 
     private String versionLabel(Integer versionNo) {
@@ -1058,8 +1103,8 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
                 text(entity.getCompletionCondition(), ""),
                 text(entity.getRewardEvent(), ""),
                 longValue(entity.getRevision()),
-                titleVi,
-                bodyVi);
+                titleVi, bodyVi,
+                title == null ? Map.of() : title.translations(), body == null ? Map.of() : body.translations());
     }
 
     private void applyQuiz(HelpArticleEntity entity, LearningCourseUpsertRequest request) {
@@ -1084,7 +1129,7 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
             return rows.stream().map(row -> new LearningQuizQuestionView(
                     row.questionId(), row.questionZh(), row.questionEn(), row.optionsZh(), row.optionsEn(),
                     row.correctOptionIndex() == null ? 0 : row.correctOptionIndex(),
-                    row.questionVi(), row.optionsVi())).toList();
+                    row.questionVi(), row.optionsVi(), row.questionTranslations(), row.optionTranslations())).toList();
         } catch (Exception ex) {
             throw new IllegalStateException("LEARNING_COURSE_QUIZ_INVALID", ex);
         }

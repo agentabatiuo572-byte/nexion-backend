@@ -39,6 +39,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import org.springframework.util.StringUtils;
 import org.springframework.context.ApplicationEventPublisher;
 
@@ -284,8 +285,8 @@ public class AppSupportService {
         long safeSize = Math.max(1L, Math.min(50L, pageSize == null ? 20L : pageSize));
         long requestedCount = knowledgeRepository.countPublishedFaqs(
                 normalizedLanguage, normalizedSurface, normalizedCategory);
-        String effectiveLanguage = requestedCount == 0L && !"zh-CN".equalsIgnoreCase(normalizedLanguage)
-                ? "zh-CN" : normalizedLanguage;
+        String effectiveLanguage = requestedCount > 0L || InterfaceLanguages.isAdditional(normalizedLanguage)
+                ? normalizedLanguage : "zh-CN";
         long total = effectiveLanguage.equalsIgnoreCase(normalizedLanguage) ? requestedCount
                 : knowledgeRepository.countPublishedFaqs(effectiveLanguage, normalizedSurface, normalizedCategory);
         long offset;
@@ -296,7 +297,8 @@ public class AppSupportService {
         }
         if (offset > Integer.MAX_VALUE) return validation("SUPPORT_FAQ_PAGE_INVALID");
         List<SupportFaqView> records = knowledgeRepository.listPublishedFaqPage(
-                effectiveLanguage, normalizedSurface, normalizedCategory, offset, (int) safeSize);
+                effectiveLanguage, normalizedSurface, normalizedCategory, offset, (int) safeSize)
+                .stream().map(faq -> faq.forLanguage(normalizedLanguage)).toList();
         return ApiResult.ok(new PageResult<>(total, safePage, safeSize, records));
     }
 
@@ -459,11 +461,12 @@ public class AppSupportService {
     }
 
     private String normalizeLanguage(String value) {
-        if (!StringUtils.hasText(value)) return "en-US";
-        return switch (value.trim().toLowerCase(Locale.ROOT)) {
-            case "zh", "zh-cn" -> "zh-CN";
-            case "vi", "vi-vn" -> "vi-VN";
-            default -> "en-US";
+        String base = InterfaceLanguages.baseCode(value);
+        return switch (base) {
+            case "zh" -> "zh-CN";
+            case "vi" -> "vi-VN";
+            case "en" -> "en-US";
+            default -> base;
         };
     }
 

@@ -2245,9 +2245,11 @@
           "quantity": 3,
           "amountUsdt": "350.000000",
           "paymentStatus": "PENDING",
+          "paidTotalUsdt": null,
           "orderStatus": "PENDING_PAYMENT",
           "payBy": "2026-10-07T00:30:00Z",
           "promotionQuoteId": "fixture-quote",
+          "recoveredQuoteId": "fixture-equivalent-quote",
           "rewards": [
             {
               "lineId": "line-A",
@@ -2364,7 +2366,7 @@
               }
             }
           ],
-          "idempotent": false,
+          "idempotent": true,
           "items": [
             {
               "lineId": "line-A",

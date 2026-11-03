@@ -8,5 +8,15 @@ public record AppCopyDeliveryView(
         String en,
         String vi,
         String experimentId,
-        String variant) {
+        String variant,
+        String language,
+        String text) {
+    public AppCopyDeliveryView(
+            String copyKey, String version, String zh,
+            String en, String vi, String experimentId,
+            String variant) {
+        this(copyKey, version, zh, en, vi, experimentId,
+                variant, null, null);
+    }
+
 }

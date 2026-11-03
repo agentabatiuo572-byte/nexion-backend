@@ -25,6 +25,7 @@ import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.transaction.annotation.Transactional;
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
@@ -33,7 +34,7 @@ public class OpsSupportKnowledgeService {
     private static final Set<String> FAQ_CATEGORIES = Set.of("general", "account", "withdrawal", "deposit", "hardware", "earnings", "genesis", "technical", "other");
     private static final Set<String> SURFACES = Set.of("Help Center", "Nova");
     private static final Set<String> STATUSES = Set.of("PUBLISHED", "DRAFT");
-    private static final Set<String> LANGUAGES = Set.of("zh-CN", "en-US", "vi-VN");
+    private static final Set<String> LANGUAGES = Set.of("zh-CN", "en-US", "vi-VN", "id", "ms", "fil", "ru", "kk", "uz");
     private static final DateTimeFormatter FAQ_ID_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
 
     private final SupportKnowledgeRepository knowledgeRepository;
@@ -69,7 +70,7 @@ public class OpsSupportKnowledgeService {
         audit("M4_SUPPORT_FAQ_CREATED", created.id(), request.operator(), Map.of(
                 "category", created.category(),
                 "surface", created.surface(),
-                "status", created.status(),
+                "status", created.status(), "translationLanguages", created.translations().keySet(),
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         publishFaqEvent(created, "create", request.operator(), request.reason());
@@ -103,6 +104,7 @@ public class OpsSupportKnowledgeService {
         audit("M4_SUPPORT_FAQ_UPDATED", current.id(), request.operator(), Map.of(
                 "fromStatus", current.status(),
                 "toStatus", normalizeStatus(request.status()),
+                "translationLanguages", updated.translations().keySet(),
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         publishFaqEvent(updated, "update", request.operator(), request.reason());
@@ -236,6 +238,14 @@ public class OpsSupportKnowledgeService {
         if (!LANGUAGES.contains(normalizeLanguage(request.language()))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_FAQ_LANGUAGE_UNSUPPORTED");
         }
+        if (request.translations() != null && !request.translations().isEmpty()
+                && (!"en-US".equals(normalizeLanguage(request.language()))
+                || request.translations().entrySet().stream().anyMatch(entry ->
+                    !InterfaceLanguages.isAdditional(entry.getKey()) || entry.getValue() == null
+                    || !StringUtils.hasText(entry.getValue().question()) || !StringUtils.hasText(entry.getValue().answer())
+                    || entry.getValue().question().length() > 160 || entry.getValue().answer().length() > 4000))) {
+            return ApiResult.fail(422, "SUPPORT_FAQ_TRANSLATION_INVALID");
+        }
         if (request.sortOrder() == null || request.sortOrder() < 0 || request.sortOrder() > 999999) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_FAQ_SORT_ORDER_INVALID");
         }
@@ -261,7 +271,7 @@ public class OpsSupportKnowledgeService {
                 request.expectedStatus(),
                 request.expectedVersion(),
                 operator(request.operator()),
-                request.reason().trim());
+                request.reason().trim(), request.translations());
     }
 
     private String normalizeCategory(String category) {
@@ -288,6 +298,8 @@ public class OpsSupportKnowledgeService {
             return "zh-CN";
         }
         String trimmed = language.trim();
+        String base = InterfaceLanguages.baseCode(trimmed);
+        if (InterfaceLanguages.isAdditional(base)) return base;
         return LANGUAGES.stream().filter(item -> item.equalsIgnoreCase(trimmed)).findFirst().orElse(trimmed);
     }
 

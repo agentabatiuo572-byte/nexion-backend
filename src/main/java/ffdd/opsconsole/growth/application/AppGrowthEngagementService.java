@@ -35,6 +35,7 @@ import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -282,7 +283,7 @@ public class AppGrowthEngagementService {
             dayOneRequiredTaskCount = 0;
         } else if (completeDayOneSnapshot) {
             List<Map<String, Object>> snapshotRows = safeList(
-                    mapper.dayOneSnapshotState(userId, dayOneSnapshot.instanceId()));
+                    mapper.dayOneSnapshotState(userId, dayOneSnapshot.instanceId(), contentLocale(locale)));
             if (validDayOneSnapshotRows(dayOneSnapshot, snapshotRows)) {
                 dayOneSnapshotStatus = "SNAPSHOT";
                 dayOneRequiredTaskCount = dayOneSnapshot.requiredTaskCount();
@@ -300,7 +301,16 @@ public class AppGrowthEngagementService {
             }
         }
         List<Map<String, Object>> quests = rawQuests.stream()
-                .map(this::projectQuestRewardPolicy).toList();
+                .map(row -> {
+                    Map<String,Object> quest = new LinkedHashMap<>(projectQuestRewardPolicy(row));
+                    Object selected = quest.remove("requestedName");
+                    Object english = quest.remove("englishName");
+                    if (selected != null) quest.put("name", selected);
+                    else if (english != null) quest.put("name", english);
+                    // Legacy snapshots store only the original operator text, with no attested language.
+                    quest.put("nameLocale", selected != null ? contentLocale(locale) : english != null ? "en" : "und");
+                    return quest;
+                }).toList();
         BigDecimal responseMultiplier = weekly != null ? weekly.questBonusMultiplier() : liveRhythmAvailable
                 ? positiveOrOne(rhythm.questBonusMultiplier())
                 : positive(dayOneSnapshot.questBonusMultiplier());
@@ -358,8 +368,7 @@ public class AppGrowthEngagementService {
     }
 
     private String contentLocale(String locale) {
-        String normalized = locale == null ? "" : locale.trim().toLowerCase(Locale.ROOT);
-        return Set.of("en", "zh", "vi").contains(normalized) ? normalized : "en";
+        return InterfaceLanguages.baseCode(locale);
     }
 
     public ApiResult<Map<String, Object>> pointState(Long userId) {

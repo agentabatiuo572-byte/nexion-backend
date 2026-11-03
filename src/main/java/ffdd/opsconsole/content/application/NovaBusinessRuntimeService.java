@@ -167,8 +167,8 @@ public class NovaBusinessRuntimeService {
                         adapter.channel(), notificationType, batchBizNo,
                         progress.cursorUserId(), upper.get(),
                         template.titleZh(), template.bodyZh(), template.titleVi(), template.bodyVi(),
-                        fallback(template.titleEn(), template.titleZh()),
-                        fallback(template.bodyEn(), template.bodyZh()),
+                        fallback(template.titleEn(), "UVEL notification"),
+                        fallback(template.bodyEn(), "Open UVEL to view the update."),
                         "NONE".equalsIgnoreCase(template.cta()) ? "" : safe(template.cta()),
                         now.minus(cooldown), now);
                 int delivered = runtimeRepository.markNotificationsDelivered(batchBizNo, now);
@@ -197,8 +197,8 @@ public class NovaBusinessRuntimeService {
                     bizNo,
                     template.titleZh(), template.bodyZh(),
                     template.titleVi(), template.bodyVi(),
-                    fallback(template.titleEn(), template.titleZh()),
-                    fallback(template.bodyEn(), template.bodyZh()),
+                    fallback(template.titleEn(), "UVEL notification"),
+                    fallback(template.bodyEn(), "Open UVEL to view the update."),
                     "NONE".equalsIgnoreCase(template.cta()) ? "" : safe(template.cta()),
                     now.minus(cooldown), now);
             if (inserted <= 0) {

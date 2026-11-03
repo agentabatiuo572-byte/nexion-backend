@@ -9,6 +9,7 @@ import org.springframework.security.core.Authentication;
 import java.util.Map;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -20,10 +21,15 @@ import org.springframework.web.bind.annotation.RestController;
 public class AppTrustSectionController {
     private final OpsTrustDisclosureService service;
 
-    @GetMapping("/current")
-    @PreAuthorize("permitAll()")
     public ApiResult<AppTrustSectionsView> current() {
         return service.publishedSections();
+    }
+
+    @GetMapping("/current")
+    @PreAuthorize("permitAll()")
+    public ApiResult<AppTrustSectionsView> current(@RequestParam(required = false) String locale) {
+        var result = current();
+        return result.getCode() == 0 && locale != null ? ApiResult.ok(result.getData().forLanguage(locale)) : result;
     }
 
     @PostMapping("/{sectionKey}/view")
