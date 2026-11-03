@@ -654,9 +654,10 @@ public class SupportAnalyticsService {
         var query=new Query(ReadMode.ALL,null,null,Basis.PERIOD_EVENT,LocalDateTime.of(1000,1,1,0,0),LocalDateTime.of(9999,1,1,0,0),"Asia/Shanghai",null);
         var c=new QueryCapture();c.internalSampling=true;c.singleCustomer=true;c.sampledFacts=raw;
         var result=withNet(evaluate(query,scope,c),c);
+        if(raw.contributions().customers().stream().anyMatch(r->r.reasons().contains("READ_FAILED")))
+            throw new ffdd.opsconsole.shared.exception.BizException(503,"SUPPORT_ANALYTICS_NET_READ_FAILED");
         if(c.currentFailed || c.eventFailed || c.attributionFailed || c.deviceFailed || c.activityWindow.status()==Status.FAILED
-            || raw.payments().issues().stream().anyMatch(i->i.reason().contains("READ_FAILED"))
-            || raw.contributions().customers().stream().anyMatch(r->r.reasons().contains("READ_FAILED")))
+            || raw.payments().issues().stream().anyMatch(i->i.reason().contains("READ_FAILED")))
             throw new ffdd.opsconsole.shared.exception.BizException(503,"SUPPORT_ANALYTICS_COMPUTATION_FAILED");
         var perRootNet=new TreeMap<Long,NetRead>();
         for(long id:raw.subjects()) {
@@ -671,7 +672,8 @@ public class SupportAnalyticsService {
             var q=new Query(ReadMode.ALL,null,null,asset?Basis.CURRENT_ASSET:Basis.CURRENT_CUSTOMER_HISTORY,null,null,"Asia/Shanghai",currency.equals("*")?null:currency);
             views.put((asset?"ASSET:":"HISTORY:")+currency,result.currentCustomers().stream().map(old->compileCustomer(old,q,c,perRootNet.get(old.customerId()))).toList());
         }
-        var roots=c.current.keySet();var rules=Objects.requireNonNull(factMapper.queryRules());
+        var roots=c.current.keySet();var rules=factMapper.queryRules();
+        if(rules==null)throw new ffdd.opsconsole.shared.exception.BizException(503,"SUPPORT_ANALYTICS_RULES_NOT_READY");
         var profiles=factMapper.rootDisplayRows(roots);var tags=factMapper.customerTagRows(roots);
         var wallet=funds.readCurrent(roots);
         if(wallet.wallets().state()==ReadState.FAILED || wallet.withdrawals().state()==ReadState.FAILED)

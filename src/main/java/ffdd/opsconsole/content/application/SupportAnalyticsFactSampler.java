@@ -19,6 +19,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
     private static final org.slf4j.Logger LOG=org.slf4j.LoggerFactory.getLogger(SupportAnalyticsFactSampler.class);
+    private static final Set<String> LOG_REASONS=Set.of("SUPPORT_ANALYTICS_NET_READ_FAILED","SUPPORT_ANALYTICS_RULES_NOT_READY",
+            "SUPPORT_ANALYTICS_CACHE_INVALID","SUPPORT_ANALYTICS_CACHE_UNAVAILABLE","SUPPORT_ANALYTICS_COMPUTATION_FAILED");
     private final SupportAnalyticsFactMapper mapper;
     private final FinanceSupportPaymentFactsFacade payments;
     private final SupportFundsReadFacade funds;
@@ -45,14 +47,19 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
             catch(BizException failure){if(!Set.of("SUPPORT_ANALYTICS_CACHE_NOT_READY","SUPPORT_ANALYTICS_CACHE_INVALID").contains(failure.getMessage()))throw failure;}
             if(!ready)refresh();
         } catch(RuntimeException failure) {
-            LOG.warn("Support analytics startup generation unavailable type={}; minute retry enabled",failure.getClass().getSimpleName());
+            LOG.warn("Support analytics startup generation unavailable reason={}; minute retry enabled",failureReason(failure));
         } finally {started.set(true);}
     }
     @Scheduled(initialDelay=60000,fixedRate=60000,scheduler="supportAnalyticsFactTaskScheduler")
     public void poll() {
         if(!started.get() || !guard.productionSupportAutomationAllowed())return;
         try {refresh();}
-        catch(RuntimeException failure){LOG.warn("Support analytics minute computation failed type={}; previous generation retained",failure.getClass().getSimpleName());}
+        catch(RuntimeException failure){LOG.warn("Support analytics minute computation failed reason={}; previous generation retained",failureReason(failure));}
+    }
+    private static String failureReason(RuntimeException failure) {
+        String reason=failure.getMessage();
+        return failure instanceof BizException && reason!=null && LOG_REASONS.contains(reason)
+                ? reason : failure.getClass().getSimpleName();
     }
     void refresh() {
         String token=store.tryLock();if(token==null)return;
