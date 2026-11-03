@@ -6,6 +6,8 @@ import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
@@ -34,6 +36,7 @@ public class AppStorefrontActivityService {
     private final CommerceAcceptanceRun acceptanceRun;
     private final FundsSandboxProfileGuard profileGuard;
     private final Environment environment;
+    private final Clock clock;
 
     @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> activity(Long userId, String cursor, Integer requestedLimit) {
@@ -103,7 +106,8 @@ public class AppStorefrontActivityService {
         if (!developmentRuntime && sandboxRuntime != environment.sandbox()) {
             return ApiResult.fail(503, "STOREFRONT_SOCIAL_PROOF_UNAVAILABLE");
         }
-        LocalDateTime since = LocalDateTime.now(BUSINESS_ZONE).minusDays(windowDays);
+        Instant now = clock.instant();
+        LocalDateTime since = LocalDateTime.ofInstant(now, BUSINESS_ZONE).minusDays(windowDays);
         AppStorefrontActivityMapper.ProductRow product;
         String source;
         String sourceEnvironment;
@@ -131,7 +135,8 @@ public class AppStorefrontActivityService {
             source = "nx_product/nx_order/nx_order_item";
             sourceEnvironment = "PRODUCTION";
         }
-        if (cumulativeSales == null || cumulativeSales < 0 || windowSales == null || windowSales < 0) {
+        if (product.soldCount() < 0 || cumulativeSales == null || cumulativeSales < 0
+                || windowSales == null || windowSales < 0) {
             return ApiResult.fail(503, "STOREFRONT_SOCIAL_PROOF_UNAVAILABLE");
         }
         Map<String, Object> response = new LinkedHashMap<>();
@@ -143,8 +148,55 @@ public class AppStorefrontActivityService {
         response.put("cumulativeSales", cumulativeSales);
         response.put("windowDays", windowDays);
         response.put("windowSales", windowSales);
-        // No nx_* browsing/viewing fact exists, so viewing is intentionally omitted.
+        response.put("liveActivity", liveActivity(product.productNo(), product.soldCount(), now.toEpochMilli()));
         return ApiResult.ok(response);
+    }
+
+    private static Map<String, Number> liveActivity(String productNo, int sold, long nowMillis) {
+        double daily = 1.2 * Math.sqrt(sold);
+        double saleProbability = daily / 1_440;
+        long minute = Math.floorDiv(nowMillis, 60_000);
+        String saleKey = productNo + ":sale:";
+        int sales24h = 0;
+        int sales30m = 0;
+        for (long m = minute - 1_439; m <= minute; m++) {
+            if (noise(saleKey + m) < saleProbability) {
+                sales24h++;
+                if (m > minute - 30) sales30m++;
+            }
+        }
+        sales24h = Math.min(sold, sales24h);
+        sales30m = Math.min(sales24h, Math.max(1, sales30m));
+
+        long floor = 200 + Math.round(0.8 * daily) + Math.round(noise(productNo + ":viewers") * 20);
+        long viewers = Math.round(floor + curve(productNo, nowMillis, 150_000, 0, 0.25 * floor)
+                + curve(productNo, nowMillis, 15_000, -1.5, 1.5));
+        return Map.of("viewers", Math.max(200, viewers), "sales24h", sales24h, "sales30m", sales30m);
+    }
+
+    private static double curve(String productNo, long nowMillis, int period, double low, double high) {
+        double position = (double) nowMillis / period;
+        long bucket = (long) Math.floor(position);
+        double fraction = position - bucket;
+        double ease = fraction * fraction * (3 - 2 * fraction);
+        String key = productNo + ":" + period + ":";
+        double start = low + noise(key + bucket) * (high - low);
+        double end = low + noise(key + (bucket + 1)) * (high - low);
+        return start + (end - start) * ease;
+    }
+
+    private static double noise(String key) {
+        // The storefront preview uses the same 32-bit FNV-1a hash and avalanche.
+        int h = 0x811c9dc5;
+        for (int i = 0; i < key.length(); i++) {
+            h = (h ^ key.charAt(i)) * 0x01000193;
+        }
+        h ^= h >>> 16;
+        h *= 0x85ebca6b;
+        h ^= h >>> 13;
+        h *= 0xc2b2ae35;
+        h ^= h >>> 16;
+        return Integer.toUnsignedLong(h) / 4_294_967_296.0;
     }
 
     private ApiResult<Map<String, Object>> developmentUserFailure(Long userId, boolean developmentRuntime) {
