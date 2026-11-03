@@ -87,21 +87,21 @@ INSERT INTO nx_admin_menu (menu_code, menu_name, menu_name_zh, parent_id, route_
 SELECT v.code, v.name, v.name, p.id, v.path, v.sort, 1, 0
 FROM nx_admin_menu p JOIN (SELECT 'F' d) x ON p.menu_code='F'
 JOIN (SELECT 'F1' code,'V-Rank 晋升' name,'/network/v-rank' path,1 sort UNION ALL
-      SELECT 'F2','网络版税费率','/network/royalty',2 UNION ALL
-      SELECT 'F3','双轨结算引擎','/network/binary',3 UNION ALL
-      SELECT 'F4','池 / 配额 / 大使 / 榜','/network/leadership-pool',4 UNION ALL
-      SELECT 'F5','佣金事件审计','/network/commissions',5) v
+      SELECT 'F2','团队奖励设置','/network/royalty',2 UNION ALL
+      SELECT 'F3','团队平衡奖励','/network/binary',3 UNION ALL
+      SELECT 'F4','奖励池、名额与排行榜','/network/leadership-pool',4 UNION ALL
+      SELECT 'F5','奖励记录核对','/network/commissions',5) v
 ON 1=1
 ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_path), sort_order=VALUES(sort_order), status=1, is_deleted=0;
 -- G 域 (5)
 INSERT INTO nx_admin_menu (menu_code, menu_name, menu_name_zh, parent_id, route_path, sort_order, status, is_deleted)
 SELECT v.code, v.name, v.name, p.id, v.path, v.sort, 1, 0
 FROM nx_admin_menu p JOIN (SELECT 'G' d) x ON p.menu_code='G'
-JOIN (SELECT 'G1' code,'Staking 池配置' name,'/finance-products/staking' path,1 sort UNION ALL
+JOIN (SELECT 'G1' code,'质押产品配置' name,'/finance-products/staking' path,1 sort UNION ALL
       SELECT 'G2','兑换风控','/finance-products/exchange',2 UNION ALL
       SELECT 'G3','UVT 行情引擎','/finance-products/market',3 UNION ALL
-      SELECT 'G4','Genesis 经济','/finance-products/genesis',4 UNION ALL
-      SELECT 'G7','复投激励','/finance-products/repurchase',5) v
+      SELECT 'G4','创世节点销售与收益','/finance-products/genesis',4 UNION ALL
+      SELECT 'G7','锁定计划','/finance-products/repurchase',5) v
 ON 1=1
 ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_path), sort_order=VALUES(sort_order), status=1, is_deleted=0;
 -- H 域 (7 页，H6 里程碑已下线)
