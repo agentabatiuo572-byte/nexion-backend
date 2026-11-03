@@ -2569,7 +2569,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     "1000",
                     "节点总量",
                     "不得低于服务端真实持有权益数",
-                    "提高供应上限会放大未来排放负债，并触发 B1 覆盖率红线预检",
+                    "提高供应上限会放大未来释放负债，并触发 B1 覆盖率红线预检",
                     true,
                     GenesisParamKind.INTEGER);
             case "price" -> new GenesisParamDef(
@@ -2579,7 +2579,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     "9999",
                     "一级购买单价",
                     "只影响后续一级购买，历史权益保留快照",
-                    "提高单价会提高未来排放基数，并触发 B1 覆盖率红线预检",
+                    "提高单价会提高未来释放基数，并触发 B1 覆盖率红线预检",
                     true,
                     GenesisParamKind.MONEY);
             case "dividend" -> new GenesisParamDef(
@@ -2587,9 +2587,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     "nx_genesis_series.daily_dividend_rate_pct",
                     "NUMBER",
                     "0.1",
-                    "每日排放率",
+                    "每日收益比例",
                     "基准为每日 0.1%；向上偏离必须填写 PM/财务决议编号",
-                    "提高每日排放率会直接放大 USDT 流出，并触发 B1 覆盖率红线预检",
+                    "提高每日收益比例会直接放大 USDT 流出，并触发 B1 覆盖率红线预检",
                     true,
                     GenesisParamKind.PERCENT);
             case "royalty" -> new GenesisParamDef(
@@ -2597,7 +2597,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     "nx_genesis_series.royalty_bps",
                     "NUMBER",
                     "2.5",
-                    "内部转售版税",
+                    "内部转售手续费",
                     "平台内部 P2P 成交时从卖方金额中扣除",
                     "只影响后续内部转售成交",
                     false,
@@ -2607,28 +2607,28 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     "nx_genesis_series.dividend_base_formula",
                     "STRING",
                     "platform daily volume * 0.1% / 1000 slots",
-                    "排放基数公式",
-                    "控制服务端每日排放批次的基数与均分规则",
+                    "每日收益基数公式",
+                    "控制服务端每日收益发放批次的基数与均分规则",
                     "更改公式会改变每日派发并触发 B1 覆盖率红线预检",
                     true,
                     GenesisParamKind.TEXT);
             case "airdropPct" -> new GenesisParamDef(
                     key, GENESIS_AIRDROP_PCT_KEY, "NUMBER", "8",
-                    "Genesis 排放分配占比",
-                    "为 Genesis 权益与其社区范围预留的协议排放份额",
-                    "提高占比会放大未来 UVT 排放负债并触发 B1 覆盖率预检",
+                    "Genesis 释放分配占比",
+                    "为 Genesis 权益与其社区范围预留的协议释放份额",
+                    "提高占比会放大未来 UVT 释放负债并触发 B1 覆盖率预检",
                     true, GenesisParamKind.PERCENT);
             case "emissionCurve" -> new GenesisParamDef(
                     key, GENESIS_EMISSION_CURVE_KEY, "STRING", "TGE 10% · halve every 6 months",
-                    "排放释放曲线",
-                    "H1 排放开阀后的服务端释放节奏",
+                    "释放曲线",
+                    "H1 开始释放后的服务端释放节奏",
                     "修改曲线会改变负债时序并触发 B1 覆盖率预检",
                     true, GenesisParamKind.TEXT);
             case "airdropLockDays" -> new GenesisParamDef(
                     key, GENESIS_AIRDROP_LOCK_DAYS_KEY, "NUMBER", "180",
                     "OG 倍率锁仓期",
-                    "Genesis 排放优先倍率使用的锁仓时长",
-                    "缩短锁仓会提前排放资格并触发 B1 覆盖率预检",
+                    "Genesis 释放优先倍率使用的锁仓时长",
+                    "缩短锁仓会提前释放资格并触发 B1 覆盖率预检",
                     true, GenesisParamKind.DAYS);
             case "showcaseEnabled" -> new GenesisParamDef(
                     key, GENESIS_SHOWCASE_ENABLED_KEY, "BOOLEAN", "false",

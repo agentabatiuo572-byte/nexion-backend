@@ -150,7 +150,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private static final List<K2ViewSpec> K2_VIEWS = List.of(
             new K2ViewSpec("trial", "试用循环", "· 试用循环养号 · 服务器端复活计数,不信客户端状态",
                     List.of("实体 / 簇", "30 天循环次数", "关联账户", "累计套取试用收益"),
-                    "循环次数是服务器记的开试用、取消、再开的轮数。层数命中 = 多账户 / 绑上级 / 试用循环。"),
+                    "循环次数是服务器记的开试用、取消、再开的轮数。层数命中 = 多账户 / 绑邀请人 / 试用循环。"),
             new K2ViewSpec("tradein", "换新套利", "· 高频下架置换 · 礼金/返佣叠加行为证据后再判定闭环",
                     List.of("账户 / 实体", "设备链", "观察窗口", "高频下架置换", "礼金/返佣叠加"),
                     "置换抵扣阶梯归 E3；K2 只根据高频下架置换与礼金/返佣叠加证据判定异常，不使用持有月或旧残值闸门。"),

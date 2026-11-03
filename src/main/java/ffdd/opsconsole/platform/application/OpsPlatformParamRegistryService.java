@@ -509,7 +509,7 @@ public class OpsPlatformParamRegistryService {
             case "current" -> "当前阶段";
             case "current_month", "currentmonth" -> "当前运营月份";
             case "device_release_pacing_pct" -> "设备释放节奏";
-            case "genesis_emissions_open" -> "Genesis 排放开关";
+            case "genesis_emissions_open" -> "Genesis 释放开关";
             case "commissiontighteningpct" -> "月度奖励收紧比例";
             case "quest_reward_multiplier" -> "任务奖励倍率";
             case "tri_reward" -> "首日任务奖励";

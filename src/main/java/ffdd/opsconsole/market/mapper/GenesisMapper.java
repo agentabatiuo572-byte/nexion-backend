@@ -214,9 +214,9 @@ public interface GenesisMapper extends BaseMapper<GenesisSeriesEntity> {
                    END AS sourceLabel,
                    UPPER(h.status) AS status,
                    CASE UPPER(h.status)
-                     WHEN 'LISTED' THEN '二级挂单中'
+                     WHEN 'LISTED' THEN '转让挂单中'
                      WHEN 'SOLD' THEN '已转让'
-                     WHEN 'ACTIVE' THEN '持有计分红'
+                     WHEN 'ACTIVE' THEN '持有计收益'
                      ELSE UPPER(h.status)
                    END AS statusLabel,
                    CASE UPPER(h.status)

@@ -386,7 +386,7 @@ public class OpsBiService implements AuditReplayable {
                 scope,
                 "CSV",
                 scope,
-                "成员用户编码（部分脱敏）、上级用户编码（部分脱敏）、团队深度、V-Rank、团队GMV、加入时间",
+                "成员用户编码（部分脱敏）、邀请人用户编码（部分脱敏）、关系深度、V-Rank、团队GMV、加入时间",
                 (long) rows.size(),
                 true,
                 "PARTIAL",
@@ -1385,7 +1385,7 @@ public class OpsBiService implements AuditReplayable {
 
     private String networkTreeCsv(List<Map<String, Object>> rows) {
         StringBuilder csv = new StringBuilder(csvRow(List.of(
-                "成员用户编码（部分脱敏）", "上级用户编码（部分脱敏）", "团队深度", "V-Rank", "团队GMV USDT", "加入时间")));
+                "成员用户编码（部分脱敏）", "邀请人用户编码（部分脱敏）", "关系深度", "V-Rank", "团队GMV USDT", "加入时间")));
         for (Map<String, Object> row : rows) {
             csv.append(csvRow(List.of(
                     safeNetworkCsvValue(row.get("memberUserIdPartial")),

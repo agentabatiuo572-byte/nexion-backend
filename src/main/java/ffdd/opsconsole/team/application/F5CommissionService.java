@@ -889,7 +889,7 @@ public class F5CommissionService {
                 linked("kind", "peer", "days", 0, "policy", "无独立冷却"),
                 linked("kind", "cultivation", "days", 0, "policy", "UVT 即时入账"),
                 linked("kind", "leadership", "days", 0, "policy", "周结后即时入账"),
-                linked("kind", "genesis", "days", 0, "policy", "每日排放即时入账"));
+                linked("kind", "genesis", "days", 0, "policy", "每日发放即时入账"));
     }
 
     private List<Map<String, Object>> statusDistribution(List<Map<String, Object>> rows) {

@@ -300,7 +300,7 @@ public final class L2FunnelAnalytics {
             Map<String, Object> row = linked("e", name, "n", count);
             if (index > 0) {
                 row.put("arr", previous == 0 ? null : percent(count, previous) + "%");
-                row.put("arrLb", previous == 0 ? "上级数据不足" : " 上级转化");
+                row.put("arrLb", previous == 0 ? "上一步数据不足" : " 上一步转化");
             }
             result.add(row);
             previous = count;
