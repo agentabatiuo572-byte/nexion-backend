@@ -60,6 +60,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -109,7 +110,9 @@ public class OpsDeviceController {
 
     @GetMapping("/skus/phone/task-policy")
     @PreAuthorize("hasAuthority('device_e1_read')")
-    public ApiResult<Map<String,Object>> phoneTaskPolicy() { return deviceService.phoneTaskPolicy(); }
+    public ApiResult<Map<String,Object>> phoneTaskPolicy(@RequestParam(defaultValue="false") boolean classesOnly) {
+        return deviceService.phoneTaskPolicy(classesOnly);
+    }
 
     @PutMapping("/skus/phone/task-policy")
     @PreAuthorize("hasAuthority('device_e1_write')")

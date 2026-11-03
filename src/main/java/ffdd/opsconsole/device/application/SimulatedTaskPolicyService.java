@@ -20,6 +20,7 @@ import org.springframework.beans.factory.ObjectProvider;
 @Service
 @RequiredArgsConstructor
 public class SimulatedTaskPolicyService {
+    public static final List<String> TASK_CLASSES=List.of("IG","VG","LL","FT","EM","SP");
     private final SimulatedTaskPolicyMapper mapper;
     private final ObjectProvider<DeviceOpsRepository> devices;
     private final ObjectMapper json;
@@ -30,7 +31,7 @@ public class SimulatedTaskPolicyService {
             List<TaskTypeSnapshot> taskTypes,long e3Version,Map<String,String> e3Config) { }
     public record TypeView(int durationMinutes,BigDecimal baseReward,String asset,boolean enabled,
             long version,LocalDateTime effectiveAt) { }
-    public record ProductView(List<String> allowedTaskTypeIds,long productTaskPolicyVersion,
+    public record ProductView(List<String> allowedTaskTypeIds,List<String> allowedTaskClasses,long productTaskPolicyVersion,
             LocalDateTime productTaskPolicyEffectiveAt) { }
 
     public PolicyVersion policyAt(String productKey,LocalDateTime at) {
@@ -40,13 +41,16 @@ public class SimulatedTaskPolicyService {
         if(e3==null)throw new BizException(422,"SIMULATED_E3_POLICY_HISTORY_MISSING");
         var types=new ArrayList<TaskTypeSnapshot>();
         LocalDateTime effectiveAt=product.effectiveAt().isAfter(e3.effectiveAt())?product.effectiveAt():e3.effectiveAt();
-        List<String> ids=decode(product.allowedTaskTypeIdsJson(),new TypeReference<List<String>>(){});
-        var versions=ids.isEmpty()?List.<TypeVersion>of():mapper.typesAt(ids,at);
-        var byId=new HashMap<String,TypeVersion>();
-        for(var version:versions)byId.put(version.taskTypeId().toUpperCase(Locale.ROOT),version);
-        for(var id:ids) {
-            var type=byId.get(id.toUpperCase(Locale.ROOT));
-            if(type==null)throw new BizException(422,"SIMULATED_TASK_TYPE_HISTORY_MISSING");
+        List<TypeVersion> versions;
+        if(product.allowedTaskClassesJson()!=null) {
+            versions=typesInClasses(strings(product.allowedTaskClassesJson()),at);
+        } else {
+            // ID-based history remains authoritative before the class policy's effective time.
+            var ids=strings(product.allowedTaskTypeIdsJson());
+            versions=ids.isEmpty()?List.of():mapper.typesAt(ids,at);
+            if(versions.size()!=ids.size())throw new BizException(422,"SIMULATED_TASK_TYPE_HISTORY_MISSING");
+        }
+        for(var type:versions) {
             if(type.effectiveAt().isAfter(effectiveAt))effectiveAt=type.effectiveAt();
             types.add(new TaskTypeSnapshot(type.taskTypeId(),type.version(),type.name(),type.taskClass(),type.durationSeconds(),
                     type.baseReward(),type.asset(),type.enabled()));
@@ -61,9 +65,10 @@ public class SimulatedTaskPolicyService {
         var e3=mapper.nextE3(after,notAfter);
         if(e3!=null&&(next==null||e3.isBefore(next)))next=e3;
         if(product!=null) {
-            List<String> ids=decode(product.allowedTaskTypeIdsJson(),new TypeReference<List<String>>(){});
-            if(!ids.isEmpty()) {
-                var type=mapper.nextType(ids,after,notAfter);
+            boolean byClass=product.allowedTaskClassesJson()!=null;
+            var scope=strings(byClass?product.allowedTaskClassesJson():product.allowedTaskTypeIdsJson());
+            if(!scope.isEmpty()) {
+                var type=byClass?mapper.nextTypeInClasses(scope,after,notAfter):mapper.nextType(scope,after,notAfter);
                 if(type!=null&&(next==null||type.isBefore(next)))next=type;
             }
         }
@@ -87,10 +92,20 @@ public class SimulatedTaskPolicyService {
                 t.durationSeconds(),t.baseReward(),t.asset(),t.enabled())).toList();
     }
     public ProductView productView(String key) {
-        var version=mapper.productAt(key,LocalDateTime.now(clock));
-        String draft="phone".equals(key)?null:mapper.draftTypes(key);
-        List<String> ids=draft!=null?decode(draft,new TypeReference<List<String>>(){}):version==null?List.of():decode(version.allowedTaskTypeIdsJson(),new TypeReference<List<String>>(){});
-        return new ProductView(List.copyOf(ids),version==null?0:version.version(),version==null?null:version.effectiveAt());
+        var at=LocalDateTime.now(clock);
+        var version=mapper.productAt(key,at);
+        String classesJson="phone".equals(key)?null:mapper.draftClasses(key);
+        if(classesJson==null && version!=null)classesJson=version.allowedTaskClassesJson();
+        var classes=classesJson==null?List.<String>of():strings(classesJson);
+        List<String> ids;
+        if(classesJson!=null) {
+            ids=typesInClasses(classes,at).stream().map(TypeVersion::taskTypeId).toList();
+        } else {
+            String old="phone".equals(key)?null:mapper.draftTypes(key);
+            if(old==null && version!=null)old=version.allowedTaskTypeIdsJson();
+            ids=old==null?List.of():strings(old);
+        }
+        return new ProductView(ids,classes,version==null?0:version.version(),version==null?null:version.effectiveAt());
     }
     public void validateType(TaskSimulationSettings s) {
         if(s==null||s.durationMinutes()==null||s.durationMinutes()<1||s.durationMinutes()>1440)
@@ -108,30 +123,37 @@ public class SimulatedTaskPolicyService {
         mapper.insertType(new TypeVersion(id,before==null?1:before.version()+1,at,name,taskClass,
                 settings.durationMinutes()*60,settings.baseReward().setScale(6,RoundingMode.UNNECESSARY),settings.asset(),settings.enabled()));
     }
-    public List<String> validateAllowed(List<String> raw,boolean publishing) {
-        if(raw==null)throw new BizException(422,"SIMULATED_ALLOWED_TYPES_REQUIRED");
-        var ids=new LinkedHashSet<String>();
-        for(String id:raw) {
-            if(id==null||!id.matches("[A-Za-z0-9_-]{1,64}"))throw new BizException(422,"SIMULATED_TASK_TYPE_ID_INVALID");
-            var type=publishing?mapper.lockType(id):mapper.typeAt(id,LocalDateTime.now(clock));
-            if(type==null||publishing&&!type.enabled())throw new BizException(422,"SIMULATED_TASK_TYPE_NOT_AVAILABLE");
-            ids.add(type.taskTypeId());
+    public List<String> writeClasses(List<String> classes,List<String> legacyIds,List<String> previousClasses,List<String> previousIds) {
+        if(classes!=null) {
+            if(classes.stream().anyMatch(c->c==null||!TASK_CLASSES.contains(c)))throw new BizException(422,"SIMULATED_TASK_CLASS_INVALID");
+            return TASK_CLASSES.stream().filter(classes::contains).toList();
         }
-        if(ids.size()>300||publishing&&ids.isEmpty())throw new BizException(422,"SIMULATED_ALLOWED_TYPES_REQUIRED");
-        return List.copyOf(ids);
+        // An older E1 client may resubmit an unchanged product. It cannot grant a whole class by sending individual IDs.
+        if(legacyIds!=null && !new HashSet<>(legacyIds).equals(new HashSet<>(previousIds)))
+            throw new BizException(409,"SIMULATED_TASK_CLASSES_REQUIRED");
+        return previousClasses;
     }
-    public void saveProduct(String key,List<String> raw,boolean publishing,LocalDateTime at) {
-        List<String> ids=publishing?publishProduct(key,raw,null,at).allowedTaskTypeIds():validateAllowed(raw,false);
-        mapper.updateDraft(key,encode(ids));
+    private List<TypeVersion> typesInClasses(List<String> classes,LocalDateTime at) {
+        return classes.isEmpty()?List.of():mapper.typesInClassesAt(classes,at);
     }
-    public ProductView publishProduct(String key,List<String> raw,Long expectedVersion,LocalDateTime at) {
-        mapper.lockE3Configuration();List<String> ids=validateAllowed(raw,true);
+    public void saveProduct(String key,List<String> classes,boolean publishing,LocalDateTime at) {
+        var ids=publishing?publishProduct(key,classes,null,at).allowedTaskTypeIds()
+                :typesInClasses(classes,at).stream().map(TypeVersion::taskTypeId).toList();
+        mapper.updateDraft(key,encode(ids),encode(classes));
+    }
+    public ProductView publishProduct(String key,List<String> classes,Long expectedVersion,LocalDateTime at) {
+        mapper.lockE3Configuration();
         var before=mapper.lockProduct(key);
         if(expectedVersion!=null&&expectedVersion!=(before==null?0:before.version()))throw new BizException(409,"SIMULATED_PRODUCT_POLICY_VERSION_CONFLICT");
+        if(classes.isEmpty())throw new BizException(422,"SIMULATED_TASK_CLASSES_REQUIRED");
+        var types=typesInClasses(classes,at);
+        if(types.stream().noneMatch(TypeVersion::enabled))throw new BizException(422,"SIMULATED_TASK_TYPE_NOT_AVAILABLE");
+        var ids=types.stream().map(TypeVersion::taskTypeId).toList();
         initializeE3(at);
-        mapper.insertProduct(new ProductVersion(key,before==null?1:before.version()+1,at,encode(ids)));
-        return new ProductView(ids,before==null?1:before.version()+1,at);
+        mapper.insertProduct(new ProductVersion(key,before==null?1:before.version()+1,at,encode(ids),encode(classes)));
+        return new ProductView(ids,classes,before==null?1:before.version()+1,at);
     }
+    private List<String> strings(String value) { return decode(value,new TypeReference<List<String>>(){}); }
     public void lockE3Configuration() { mapper.lockE3Configuration(); }
     public void recordE3(LocalDateTime at) {
         var previous=mapper.lockE3Version();

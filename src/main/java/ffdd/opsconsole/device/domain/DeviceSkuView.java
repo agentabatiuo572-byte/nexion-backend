@@ -53,7 +53,7 @@ public record DeviceSkuView(
         @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS") LocalDateTime updatedAt,
         String productType,
         String inventoryMode,
-        Boolean trialEligible, String specDocumentTitle, String specDocumentUrl, Long computePoints, List<String> allowedTaskTypeIds,long productTaskPolicyVersion,LocalDateTime productTaskPolicyEffectiveAt) {
+        Boolean trialEligible, String specDocumentTitle, String specDocumentUrl, Long computePoints, List<String> allowedTaskTypeIds,List<String> allowedTaskClasses,long productTaskPolicyVersion,LocalDateTime productTaskPolicyEffectiveAt) {
     public DeviceSkuView(
         String skuId,
         String name,
@@ -103,7 +103,7 @@ public record DeviceSkuView(
         String productType,
         String inventoryMode,
         Boolean trialEligible, String specDocumentTitle, String specDocumentUrl, Long computePoints) {
-        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,features,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhase,purchaseGate,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,publishBlocked,publishBlockReason,createdAt,updatedAt,productType,inventoryMode,trialEligible,specDocumentTitle,specDocumentUrl,computePoints,null,0,null);
+        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,features,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhase,purchaseGate,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,publishBlocked,publishBlockReason,createdAt,updatedAt,productType,inventoryMode,trialEligible,specDocumentTitle,specDocumentUrl,computePoints,null,null,0,null);
     }
 
     /** Callers that do not set computePoints leave it unset. */
@@ -204,5 +204,5 @@ public record DeviceSkuView(
                 createdAt, updatedAt, null, null, false);
     }
 
-    public DeviceSkuView withTaskPolicy(ffdd.opsconsole.device.application.SimulatedTaskPolicyService.ProductView value) { return new DeviceSkuView(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,features,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhase,purchaseGate,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,publishBlocked,publishBlockReason,createdAt,updatedAt,productType,inventoryMode,trialEligible,specDocumentTitle,specDocumentUrl,computePoints,value.allowedTaskTypeIds(),value.productTaskPolicyVersion(),value.productTaskPolicyEffectiveAt()); }
+    public DeviceSkuView withTaskPolicy(ffdd.opsconsole.device.application.SimulatedTaskPolicyService.ProductView value) { return new DeviceSkuView(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,features,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhase,purchaseGate,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,publishBlocked,publishBlockReason,createdAt,updatedAt,productType,inventoryMode,trialEligible,specDocumentTitle,specDocumentUrl,computePoints,value.allowedTaskTypeIds(),value.allowedTaskClasses(),value.productTaskPolicyVersion(),value.productTaskPolicyEffectiveAt()); }
 }

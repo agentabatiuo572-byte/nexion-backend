@@ -49,7 +49,7 @@ public record DeviceSkuUpsertRequest(
         String reason,
         String operator,
         String inventoryMode,
-        Boolean trialEligible, String specDocumentTitle, String specDocumentUrl, Long computePoints, List<String> allowedTaskTypeIds) {
+        Boolean trialEligible, String specDocumentTitle, String specDocumentUrl, Long computePoints, List<String> allowedTaskTypeIds, List<String> allowedTaskClasses) {
     public DeviceSkuUpsertRequest(
         String skuId,
         String name,
@@ -96,7 +96,7 @@ public record DeviceSkuUpsertRequest(
         String operator,
         String inventoryMode,
         Boolean trialEligible, String specDocumentTitle, String specDocumentUrl, Long computePoints) {
-        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,features,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhase,purchaseGate,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,reason,operator,inventoryMode,trialEligible,specDocumentTitle,specDocumentUrl,computePoints,null);
+        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,features,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhase,purchaseGate,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,reason,operator,inventoryMode,trialEligible,specDocumentTitle,specDocumentUrl,computePoints,null,null);
     }
 
     /** Callers that do not set computePoints leave it unset. */
