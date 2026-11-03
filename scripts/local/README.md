@@ -19,6 +19,8 @@ scripts/local/start_backend.sh               # 每次启动前会重跑幂等迁
 
 以后启动只需 `scripts/local/start_backend.sh`。
 
+用于客服资金统计的 TEST 副本需要完整的 MySQL 备份。逻辑导出沿用受管备份的 `--routines --events --triggers`，还原时保留原执行者、触发器顺序和受限账号的授权。恢复后用应用数据库账号执行 [客服验收库前置检查](check_support_analytics_restore.sql)，`funds_ready` 和 `rules_ready` 均为 `1` 时进入业务验收。已有库从对应备份恢复 `nx_support_rules.id=1` 的原版本与运营配置。全新空库按 S3 初始化该行。首份客服统计快照发布后，用授权客服查询并核对所选客户的钱包余额。
+
 ### 空库为什么需要额外步骤（C-1）
 
 启动迁移链（`apply_startup_schema_migrations.ps1` 中的清单）默认面对一个长期存在的开发库：部分迁移依赖清单之外的历史迁移建的表、运行时才建的客服表。`scripts/fresh_db/` 补上这些前置：
