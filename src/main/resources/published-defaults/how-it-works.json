@@ -1,10 +1,10 @@
 {
-  "version": "default-2026.10.29",
+  "version": "default-2026.11.04",
   "status": "PUBLISHED",
   "revision": 0,
   "contents": {
     "genesis-how": {
-      "version": "default-2026.10.29",
+      "version": "default-2026.11.04",
       "locales": {
         "zh": {
           "blocks": [
@@ -68,7 +68,7 @@
               "id": "note",
               "kind": "callout",
               "title": "Good to know",
-              "body": "UVT release amounts and timing follow the published rules. The UVT price can go up or down, resale prices are set by buyers and sellers, and we don’t promise returns or prices."
+              "body": "UVT release amounts and timing follow the published rules. The UVT price can go up or down, resale prices are set by buyers and sellers, and we don’t promise earnings or prices."
             }
           ]
         },
@@ -101,7 +101,7 @@
               "id": "note",
               "kind": "callout",
               "title": "Lưu ý",
-              "body": "Số lượng và thời điểm phát hành UVT theo quy tắc nền tảng công bố. Giá UVT có thể biến động, giá chuyển nhượng do người mua và người bán quyết định, nền tảng không cam kết lợi nhuận hay giá."
+              "body": "Số lượng và thời điểm phát hành UVT theo quy tắc nền tảng công bố. Giá UVT có thể biến động, giá chuyển nhượng do người mua và người bán quyết định, nền tảng không cam kết thu nhập hay giá."
             }
           ]
         }
