@@ -16,7 +16,6 @@ import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -31,12 +30,10 @@ public class AppNotificationService {
     private final NovaSocialRuntimeRepository novaRuntimeRepository;
     private final ObjectProvider<BusinessNotificationService> businessNotifications;
 
-    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<AppNotificationPage> page(Long userId, String cursor, String priority, Integer limit) {
         return page(userId, cursor, priority, limit, null);
     }
 
-    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<AppNotificationPage> page(Long userId, String cursor, String priority, Integer limit, String category) {
         if (userId == null || userId <= 0) {
             return ApiResult.fail(403, "USER_AUTH_REQUIRED");
@@ -54,6 +51,7 @@ public class AppNotificationService {
             return ApiResult.fail(400, "NOTIFICATION_CATEGORY_INVALID");
         }
         int normalizedLimit = Math.max(1, Math.min(limit == null ? 30 : limit, 100));
+        // Projection commits first. Retention releases each expired row before touching the next.
         businessNotifications.ifAvailable(service -> service.collectWithdrawalAttention(userId));
         repository.applyRetentionForUser(userId);
         return ApiResult.ok(repository.pageUserNotifications(

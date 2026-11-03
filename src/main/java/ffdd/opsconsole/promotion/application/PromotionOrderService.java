@@ -5,6 +5,7 @@ import ffdd.opsconsole.promotion.mapper.PromotionMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.canonical.mapper.OrderPaidTotalReadSql;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.*;
 import java.time.*;
@@ -32,23 +33,60 @@ public class PromotionOrderService {
         public BigDecimal price(String field){return amount(map(snapshot.get("public")).get(field));}
     }
 
+    public record CreateQuote(String id, Instant expiresAt, Map<String,Object> snapshot,
+                              List<Long> participants, String recoveryId, boolean used) {}
+
+    @Transactional(propagation=Propagation.MANDATORY,rollbackFor=Exception.class)
+    public CreateQuote lockCreateQuote(Long buyerId, String quoteId) {
+        Map<String,Object> quote=db.requiredRow("SELECT * FROM nx_promotion_quote WHERE quote_id=?",quoteId);
+        require(buyerId!=null&&number(quote.get("user_id"))==buyerId,"PROMOTION_QUOTE_OWNER_MISMATCH");
+        var stored=PromotionQuoteService.verifiedQuote(quote);
+        TreeSet<Long> accounts=new TreeSet<>();accounts.add(buyerId);
+        for(Map<String,Object> award:maps(stored.get("awards")))accounts.add(number(award.get("beneficiaryId")));
+        for(Long id:accounts) {
+            var account=db.user(id,true);
+            require("ACTIVE".equals(account.get("status")),"PROMOTION_ACCOUNT_UNAVAILABLE");
+            if (id.equals(buyerId) && number(account.get("sandbox"))!=0) throw new BizException(403,"COMMERCE_SANDBOX_USER_FORBIDDEN");
+        }
+        String original = quoteId;
+        boolean used=db.count("SELECT COUNT(*) FROM nx_promotion_order_receipt WHERE quote_id=?",quoteId)>0;
+        Instant expiresAt=instant(quote.get("expires_at"));
+        if (!used) {
+            var alias=db.one("""
+                SELECT JSON_UNQUOTE(JSON_EXTRACT(response_json,'$.data.promotionQuoteId')) original_id
+                  FROM nx_admin_idempotency_record
+                 WHERE scope IN (CONCAT('APP:ORDER_CREATE:USER:',?),CONCAT('APP:BUNDLE_ORDER_CREATE:USER:',?))
+                   AND is_deleted=0 AND status='SUCCEEDED'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(response_json,'$.data.recoveredQuoteId'))=?
+                 ORDER BY id LIMIT 1
+                """,buyerId,buyerId,quoteId);
+            if (alias!=null) {
+                used=true;
+                original=text(alias.get("original_id"));
+            } else {
+                require(expiresAt.isAfter(Instant.now()),"PROMOTION_QUOTE_EXPIRED");
+                var equivalent=quotes.equivalentQuote(quotes.reusableQuotes(buyerId,false),stored);
+                if (equivalent!=null) original=text(equivalent.quote().get("quoteId"));
+            }
+        }
+        return new CreateQuote(quoteId,expiresAt,stored,List.copyOf(accounts),original,used);
+    }
+
     @Transactional(propagation=Propagation.MANDATORY,rollbackFor=Exception.class)
     public CreationPlan prepareCreate(Long buyerId,String quoteId,List<Selection> items,String voucherId,BigDecimal expectedAmount) {
         if(quoteId==null||quoteId.isBlank())return null;
-        Map<String,Object> quote=db.requiredRow("SELECT * FROM nx_promotion_quote WHERE quote_id=?",quoteId);
-        require(buyerId!=null&&number(quote.get("user_id"))==buyerId,"PROMOTION_QUOTE_OWNER_MISMATCH");
-        require(instant(quote.get("expires_at")).isAfter(Instant.now()),"PROMOTION_QUOTE_EXPIRED");
-        require(db.count("SELECT COUNT(*) FROM nx_promotion_order_receipt WHERE quote_id=?",quoteId)==0,"PROMOTION_QUOTE_ALREADY_USED");
-        Map<String,Object> stored=parse(quote.get("quote_json")),pub=map(stored.get("public")),request=map(stored.get("request"));
-        Map<String,Object> check=copy(stored);Map<String,Object> checkPublic=map(check.get("public"));checkPublic.put("quoteHash","0".repeat(64));check.put("public",checkPublic);
-        require(hash(check).equals(quote.get("quote_hash"))&&quote.get("quote_hash").equals(pub.get("quoteHash")),"PROMOTION_QUOTE_CORRUPT");
+        return prepareLockedCreate(buyerId,lockCreateQuote(buyerId,quoteId),items,voucherId,expectedAmount);
+    }
+
+    public CreationPlan prepareLockedCreate(Long buyerId,CreateQuote quote,List<Selection> items,String voucherId,BigDecimal expectedAmount) {
+        require(quote.expiresAt().isAfter(Instant.now()),"PROMOTION_QUOTE_EXPIRED");
+        require(!quote.used(),"PROMOTION_QUOTE_ALREADY_USED");
+        Map<String,Object> stored=quote.snapshot(),pub=map(stored.get("public")),request=map(stored.get("request"));
         List<PromotionRules.Selection> selections=items.stream().map(i->new PromotionRules.Selection(i.productNo(),i.quantity())).toList();
         PromotionRules.selections(selections);require(items.size()<=8,"BUNDLE_PRODUCT_COUNT_INVALID");
         require(sameItems(selections,PromotionQuoteService.selections(request))&&text(voucherId).equals(text(request.get("voucherId"))),"PROMOTION_QUOTE_INPUT_CHANGED");
         if(expectedAmount!=null)require(expectedAmount.compareTo(amount(pub.get("amountUsdt")))==0,"PROMOTION_QUOTE_AMOUNT_CHANGED");
-        TreeSet<Long> accounts=new TreeSet<>();accounts.add(buyerId);
-        for(Map<String,Object> award:maps(stored.get("awards")))accounts.add(number(award.get("beneficiaryId")));
-        for(Long id:accounts)require("ACTIVE".equals(db.user(id,true).get("status")),"PROMOTION_ACCOUNT_UNAVAILABLE");
+        List<Long> accounts=quote.participants();
         String activity=text(pub.get("activityId"));Map<String,Object> contract=map(stored.get("contract"));
         TreeSet<String> productNos=new TreeSet<>();items.forEach(i->productNos.add(i.productNo()));
         if(!activity.isEmpty()){
@@ -89,7 +127,7 @@ public class PromotionOrderService {
             if("DEVICE".equals(r.get("type")))addedSlots.merge(number(award.get("beneficiaryId")),number(r.get("quantity")),Long::sum);}
         for(var additional:addedSlots.entrySet())require(db.occupiedDeviceSlots(additional.getKey())+additional.getValue()<=db.deviceSlotCap(),"PROMOTION_DEVICE_CAPACITY_UNAVAILABLE");
         stored.put("products",productSnapshots);
-        return new CreationPlan(quoteId,buyerId,List.copyOf(accounts),List.copyOf(productNos),
+        return new CreationPlan(quote.id(),buyerId,accounts,List.copyOf(productNos),
             activity.isEmpty()?Instant.MAX:instant(contract.get("endsAt")),stored);
     }
     private boolean sameItems(List<PromotionRules.Selection> a,List<PromotionRules.Selection> b){
