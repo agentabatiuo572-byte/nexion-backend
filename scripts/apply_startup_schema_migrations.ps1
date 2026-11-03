@@ -305,6 +305,8 @@ $migrations = @(
   # Historical deposits must pass the policy snapshot preflight before PROVIDER mode starts.
   (Join-Path $root "scripts\migrations\20261028_cregis_deposit_policy.sql")
   (Join-Path $root "scripts\migrations\20261007_growth_promotions.sql")
+  # Grant H4 capabilities only after the promotion permission rows exist on a fresh database.
+  (Join-Path $root "scripts\migrations\20261022_04_h4_superadmin_permissions.sql")
   (Join-Path $root "scripts\migrations\20261007_growth_promotions_order_receipt.sql")
   (Join-Path $root "scripts\migrations\20261007_earnings_source_recovery.sql")
   (Join-Path $root "scripts\migrations\20261007_growth_promotions_list_snapshot.sql")
@@ -386,6 +388,10 @@ $migrations = @(
   # This adds schema/pool state only; enabling ERC20 still requires explicit configuration.
   (Join-Path $root "scripts\migrations\20261031_z_cregis_erc20_network.sql")
   (Join-Path $root "scripts\migrations\20261031_test_cloud_request_journal.sql")
+  # The unresolved-request index depends on the journal table above.
+  (Join-Path $root "scripts\migrations\20261101_compute_v2_resource_index.sql")
+  # Shared device readers need this evidence table; the migration writes no TEST incident data.
+  (Join-Path $root "scripts\migrations\20261101_test_cloud_zero_credit_resolution.sql")
   (Join-Path $root "scripts\migrations\20260916_l6_withdrawal_method_route.sql")
   (Join-Path $root "scripts\migrations\20261101_l6_active_route_reconciliation.sql")
   (Join-Path $root "scripts\migrations\20261101_uvt_legacy_asset_migration.sql")

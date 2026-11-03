@@ -23,17 +23,17 @@ scripts/local/start_backend.sh               # 每次启动前会重跑幂等迁
 
 ### 空库为什么需要额外步骤（C-1）
 
-Bash 直接读取 PowerShell 的 `$migrations` 清单，新增启动必需的迁移应按依赖顺序登记在该清单。订单库存占用迁移依赖基线的 `nx_order.activation_status`；Cregis 多网络迁移放在充值和直接支付建表之后，只补结构与地址池状态，不启用 ERC20 资金开关。
+Bash 直接读取 PowerShell 的 `$migrations` 清单，新增启动必需的迁移应按依赖顺序登记在该清单。
 
 启动迁移链（`apply_startup_schema_migrations.ps1` 中的清单）默认面对一个长期存在的开发库：部分迁移依赖清单之外的历史迁移建的表、运行时才建的客服表。`scripts/fresh_db/` 补上这些前置：
 
 | 文件 | 作用 |
 |---|---|
 | `prereqs.txt` | `启动迁移|前置文件`：在指定启动迁移之前先执行的结构（只建表，不含历史种子数据） |
-| `post.txt` | 启动链之后补建、应用仍在查询的表 |
+| `post.txt` | 启动链之后补建应用仍在查询的表，并执行依赖这些后置表的迁移 |
 | `skip.txt` | 业务数据还不存在时跳过的迁移：只含数据断言（如要求商品 `stellarbox-s1` 已存在）。第三列是补跑条件，在后台建好该数据后，下次运行 `bootstrap_db.sh` / `start_backend.sh` 会自动执行 |
 
-这些文件都是 `CREATE TABLE IF NOT EXISTS` 一类的幂等结构，对已有库重复执行无副作用。
+这些步骤须可重复执行；历史数据修复只处理仍满足修复条件的记录。
 
 ## 首次登录后
 
