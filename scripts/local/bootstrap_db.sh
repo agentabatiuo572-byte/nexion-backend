@@ -13,12 +13,24 @@ mkdir -p "$LOGS"
 MIG=$BACKEND/scripts/migrations
 cd "$BACKEND"  # migrations `source` repo-relative paths (the .ps1 does Push-Location $root)
 
+h4_inputs() {
+  MYSQL_PWD="$NEXION_DB_PASSWORD" python3 -B "$BACKEND/scripts/local/prepare_h4_support.py" "$1" "$LOGS/h4" \
+    mysql --default-character-set=utf8mb4 --protocol=tcp -h "$NEXION_DB_HOST" -P "$NEXION_DB_PORT" -u "$NEXION_DB_USERNAME" nexion
+}
+trap 'if [[ $? -ne 0 && -f "$LOGS/h4/recovery-token" ]]; then h4_inputs abort; fi' EXIT
+
 run_file() { # label path [db]  (schema.sql creates the database, so it passes db="")
   local label=$1 file=$2 db=${3-nexion}
+  case "${file##*/}" in
+    20261011_support_fund_journal.sql) h4_inputs journal; file="$LOGS/h4/${file##*/}" ;;
+    20261011_support_fund_schema_reader.sql) h4_inputs prepare; file="$LOGS/h4/${file##*/}" ;;
+    20261025_h4_event_rules.sql) file="$LOGS/h4/${file##*/}" ;;
+  esac
   echo "-> $label"
   if ! mysql_nexion $db < "$file" > "$LOGS/$label.log" 2>&1; then
     echo "FAILED: $label (log: $LOGS/$label.log)"; tail -5 "$LOGS/$label.log"; exit 1
   fi
+  if [[ "${file##*/}" == 20261011_support_fund_schema_reader.sql ]]; then h4_inputs finish; fi
 }
 
 scalar() { mysql_nexion -N -B nexion -e "$1"; }
@@ -77,6 +89,7 @@ check() { # name expected actual
   if [[ "$3" == "$2" ]]; then echo "OK   $1"; else echo "FAIL $1 (expected $2, got $3)"; fail=1; fi
 }
 fail=0
+check "support funds reader ready" 1 "$(scalar 'SELECT nx_support_fund_schema_ready_v1();')"
 check "withdrawal order columns" 43 "$(scalar "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_withdrawal_order' AND COLUMN_NAME IN ($wcols);")"
 check "quote expiry columns" 2 "$(scalar "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_bank_payout_quote_expiry' AND COLUMN_NAME IN ('quote_no','expired_at');")"
 check "legal terms locales" 3 "$(scalar "SELECT COUNT(DISTINCT locale) FROM nx_legal_terms_version WHERE locale IN ('vi','zh','en') AND jurisdiction='GLOBAL' AND status='PUBLISHED' AND is_deleted=0 AND JSON_LENGTH(sections_json) >= 1 AND NOT (locale='en' AND version_label='v4' AND title='Nexion Acceptance Terms seven-closures-20260817 post-fix-v4' AND summary='QA acceptance fixture') AND NOT (version_label='v5' AND last_operator='migration:formal-terms-v5');")"
