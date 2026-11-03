@@ -333,6 +333,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261008_support_payment_attribution.sql")
   (Join-Path $root "scripts\migrations\20261008_support_payment_history_birth.sql")
   # AUTH and cash writers need the canonical fund schema before API startup.
+  # Retire the historical fifth wallet trigger before replaying the four-trigger guard.
+  (Join-Path $root "scripts\migrations\20261104_h4_holding_retire.sql")
   (Join-Path $root "scripts\migrations\20261011_support_fund_journal.sql")
   (Join-Path $root "scripts\migrations\20261011_support_fund_operations.sql")
   (Join-Path $root "scripts\migrations\20261011_support_fund_operation_party.sql")
@@ -456,7 +458,6 @@ if (-not $PSCmdlet.ShouldProcess("$($databaseUri.Host):$port/$database", "apply 
 }
 
 $previousMySqlPassword = $env:MYSQL_PWD
-$h4Inputs = $null
 Push-Location -LiteralPath $root.Path
 try {
   $env:MYSQL_PWD = $Password
@@ -467,25 +468,12 @@ try {
   if ($LASTEXITCODE -ne 0 -or (@($supportBindingSchema) -join "`n").Trim() -ne "READY") {
     throw "Support ticket ownership requires the S3 binding schema before startup migrations. $supportBindingSchema. Follow docs/HANDOFF-support-s3.md and review/apply scripts/migrations/20260929_support_binding_s3.sql first; startup does not automatically resolve legacy assignment conflicts."
   }
-  $h4Inputs = Join-Path $root.Path ("target/bootstrap-logs/" + [guid]::NewGuid().ToString('N') + '/h4')
-  $h4Runner = Join-Path $PSScriptRoot 'local/prepare_h4_support.py'
-  $h4Db = @($h4Inputs,$MySql,'--default-character-set=utf8mb4','--protocol=tcp','-h',$databaseUri.Host,'-P',$port,'-u',$Username,$database)
-  $names = @($migrations | ForEach-Object { [IO.Path]::GetFileName($_) })
-  $readerIndex = [Array]::IndexOf($names,'20261011_support_fund_schema_reader.sql')
-  if ($readerIndex -lt 1) { throw 'Missing support reader in startup order.' }
-  foreach ($phase in 'journal','prepare') {
-    & python -B $h4Runner $phase @h4Db
-    if ($LASTEXITCODE -ne 0) { throw "Could not prepare the reviewed H4 support migrations." }
-    $batch = if ($phase -eq 'journal') { $migrations[0..($readerIndex-1)] } else { $migrations[$readerIndex..($migrations.Count-1)] }
-    $sources = ($batch | ForEach-Object {
-      $name = [IO.Path]::GetFileName($_)
-      $file = if ($name -in '20261011_support_fund_journal.sql','20261011_support_fund_schema_reader.sql') { Join-Path $h4Inputs $name } else { $_ }
-      "source $($file.Replace('\', '/'));"
-    }) -join "`n"
-    & $MySql --default-character-set=utf8mb4 --protocol=tcp -h $databaseUri.Host -P $port -u $Username $database -e $sources
-    if ($LASTEXITCODE -ne 0) {
-      throw "Required startup schema migration failed with mysql exit code $LASTEXITCODE. Reviewed H4 inputs: $h4Inputs. Backend startup has been stopped."
-    }
+  # Repo-relative paths (Push-Location above) keep this single -e argument under the Windows command-line limit.
+  $rootPrefix = $root.Path.TrimEnd('\', '/')
+  $sources = ($migrations | ForEach-Object { "source $($_.Substring($rootPrefix.Length + 1).Replace('\', '/'));" }) -join " "
+  & $MySql --default-character-set=utf8mb4 --protocol=tcp -h $databaseUri.Host -P $port -u $Username $database -e $sources
+  if ($LASTEXITCODE -ne 0) {
+    throw "Required startup schema migration failed with mysql exit code $LASTEXITCODE. Backend startup has been stopped."
   }
   Write-Host "Support schema installed. After the API starts, run scripts/manual_migrations/20261009_support_rules_unconfigured_upgrade.ps1 with an authorized administrator, saved operation ID and proof file. Installation is not ready until that command reads back LIMITED/UNLIMITED; it preserves existing explicit configuration and never creates a missing row."
 
@@ -493,8 +481,6 @@ try {
   if ($LASTEXITCODE -ne 0 -or (@($fundsReady) -join "`n").Trim() -ne '1') {
     throw 'Support funds reader is not ready after startup migrations.'
   }
-  & python -B $h4Runner finish @h4Db
-  if ($LASTEXITCODE -ne 0) { throw "Could not finish H4 reader recovery. Reviewed inputs: $h4Inputs" }
 
   $databaseSqlLiteral = $database.Replace("'", "''")
   $withdrawalOrderColumns = @(
@@ -530,9 +516,6 @@ try {
     throw "Both required idempotency expiry-recovery indexes with their exact column order must exist after migrations. Backend startup has been stopped."
   }
 } finally {
-  if ($h4Inputs -and (Test-Path -LiteralPath (Join-Path $h4Inputs 'recovery-token'))) {
-    & python -B $h4Runner abort @h4Db
-  }
   if ($null -eq $previousMySqlPassword) {
     Remove-Item Env:MYSQL_PWD -ErrorAction SilentlyContinue
   } else {

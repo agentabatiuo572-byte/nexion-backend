@@ -72,13 +72,6 @@ def updated_create():
     create = replace_once(create,
         "BINARY 'SIGNAL SQLSTATE ''45000'' SET MESSAGE_TEXT=''SUPPORT_FUND_RECORD_IMMUTABLE''')=2)",
         "BINARY 'SIGNAL SQLSTATE ''45000'' SET MESSAGE_TEXT=''SUPPORT_FUND_RECORD_IMMUTABLE''')=1)\n          AND\n          " + absent_trigger(UPDATE_TRIGGERS[2]))
-    # H4 is an already installed fifth wallet trigger, not a tolerated unknown.
-    create = replace_once(create, "AND EVENT_OBJECT_TABLE='nx_user_wallet')=4\n AND (SELECT COUNT(*)",
-                          "AND EVENT_OBJECT_TABLE='nx_user_wallet')=5\n AND (SELECT COUNT(*)")
-    h4 = next(t for t in SOURCE['triggers'] if t['name'] == 'nx_wallet_h4_holding_observation')
-    create = replace_once(create, "'nx_support_wallet_journal_ai_v1','nx_support_wallet_journal_bu_v1','nx_support_wallet_journal_au_v1'))=4)",
-        "'nx_support_wallet_journal_ai_v1','nx_support_wallet_journal_bu_v1','nx_support_wallet_journal_au_v1','nx_wallet_h4_holding_observation'))=5)" +
-        CONJUNCTION + '          ' + trigger_matches(h4))
     return create
 
 
@@ -190,7 +183,7 @@ def main():
     parser.add_argument('--rehearsal', action='store_true')
     parser.add_argument('--clone-server-uuid')
     args = parser.parse_args()
-    args.output.write_text(render(args.stage, args.clone_server_uuid, args.rehearsal), encoding='utf-8', newline='\n')
+    args.output.write_bytes(render(args.stage, args.clone_server_uuid, args.rehearsal).encode('utf-8'))
     print(json.dumps({'sqlFile': str(args.output), 'stage': args.stage, 'databaseWritePerformed': False, 'rehearsal': args.rehearsal}))
 
 

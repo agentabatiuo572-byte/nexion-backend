@@ -162,8 +162,7 @@ public class OpsGrowthService implements AuditReplayable {
             "earlyPurchaseDiscountUSD");
     private static final Set<String> TRIAL_TERMINAL_STATES = Set.of("cancelled", "redeemed", "failed");
     private static final Set<String> EVENT_STATES = Set.of("upcoming", "ongoing", "ended");
-    private static final Set<String> EVENT_KINDS = Set.of(
-            "discount", "referral", "wheel", "regional", "boost", "seasonal", "holding", "onboarding");
+    private static final Set<String> EVENT_KINDS = H4EventRuleService.KINDS;
     private static final Set<String> WHEEL_REWARD_KINDS = Set.of("uvt", "points", "usdt", "coupon");
     private static final Set<String> WHEEL_GUARD_KEYS = Set.of("budget", "cap", "kill");
     private static final Map<String, Set<String>> H3_BINDING_EVENT_TYPES = Map.of(

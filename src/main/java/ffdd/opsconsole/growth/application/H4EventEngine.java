@@ -80,9 +80,8 @@ public class H4EventEngine {
         }
         row.remove("authoredRewardName");
         boolean claimed=db.row("SELECT 1 FROM nx_growth_event_claim WHERE event_code=? AND user_id=? AND claim_key='ONCE' AND status='CLAIMED'",code,id)!=null;
-        boolean observed="holding".equals(rule.get("kind"))&&db.row("SELECT 1 FROM nx_growth_event_holding WHERE event_code=? AND user_id=?",code,id)!=null;
         Object previousStatus="CLAIMABLE".equals(source.get("userStatus"))?"JOINED":source.get("userStatus");
-        row.put("userStatus",claimed?"CLAIMED":trackable&&Boolean.TRUE.equals(progress.get("eligible"))?"CLAIMABLE":observed?"JOINED":previousStatus);
+        row.put("userStatus",claimed?"CLAIMED":trackable&&Boolean.TRUE.equals(progress.get("eligible"))?"CLAIMABLE":previousStatus);
         if(!newParticipationOpen(rule,false)){row.put("state","ended");row.put("href","");}
         row.put("startsAt",date(rule.get("starts_at"))==null?null:date(rule.get("starts_at")).toInstant(ZoneOffset.UTC).toString());
         row.put("endsAt",date(rule.get("ends_at"))==null?null:date(rule.get("ends_at")).toInstant(ZoneOffset.UTC).toString());
@@ -119,7 +118,7 @@ public class H4EventEngine {
         if("CLAIMABLE".equals(status)){canParticipate=true;reason="READY";}
         return ApiResult.ok(values("event",event,"rules",publicRules,"enabled",!deleted&&enabled(code),"eligible",canParticipate,"eligibilityReason",reason,
                 "progressValue",progress.getOrDefault("current",0),"targetValue",progress.getOrDefault("target",1),"rewards",rewards(r),"voucher",progress.get("voucher"),
-                "results",resultView(id,rule,r),"myRewardAmount",myPoolReward(id,rule),"userStatus",status,
+                "results",resultView(rule,r),"myRewardAmount",myPoolReward(id,rule),"userStatus",status,
                 "claimKeys",progress.getOrDefault("claimKeys",List.of("ONCE")),"reminderSubscribed",
                 db.row("SELECT 1 FROM nx_growth_event_reminder WHERE event_code=? AND user_id=?",code,id)!=null));
     }
@@ -176,12 +175,6 @@ public class H4EventEngine {
                 LIMIT 1
                 """,id,number(r.get("minRank")),effectiveEnd(rule),effectiveStart(rule),number(r.get("windowDays")).intValue())!=null;
             return values("current",earned?number(r.get("minRank")):rank,"target",number(r.get("minRank")),"eligible",earned||"IN_PROGRESS".equals(phase(rule))&&inWindow&&rank>=number(r.get("minRank")).intValue());
-        }
-        if("holding".equals(rule.get("kind"))){
-            var holding=db.row("SELECT eligible_since FROM nx_growth_event_holding WHERE event_code=? AND user_id=?",code,id);
-            LocalDateTime since=holding==null?null:date(holding.get("eligible_since"));
-            long days=since==null?0:Math.max(0,Duration.between(since,LocalDateTime.now(ZoneOffset.UTC)).toDays());
-            return values("current",days,"target",number(r.get("holdDays")),"eligible",false);
         }
         return values("current",0,"target",1,"eligible",false);
     }
@@ -330,44 +323,31 @@ public class H4EventEngine {
                 .forEach(e->result.add(values("region",e.getKey(),"rank",result.size()+1,"volume",e.getValue())));return result;
     }
     private Object myPoolReward(Long id,Map<String,Object> rule){
-        if(!Set.of("regional","holding").contains(text(rule.get("kind"))))return null;
+        if(!"regional".equals(rule.get("kind")))return null;
         var result=db.row("SELECT reward_usdt FROM nx_growth_event_pool_result WHERE event_code=? AND user_id=? AND status='PAID'",rule.get("event_code"),id);
         return result==null?null:result.get("reward_usdt");
     }
-    private List<Map<String,Object>> resultView(Long id,Map<String,Object> rule,Map<String,Object> r){
-        if(rule.get("settled_at")!=null){
-            if("regional".equals(rule.get("kind")))return db.rows("SELECT region_name region,1 AS `rank`,SUM(volume_usdt) volume,SUM(reward_usdt) rewardAmount FROM nx_growth_event_pool_result WHERE event_code=? AND status='PAID' GROUP BY region_name ORDER BY region_name",rule.get("event_code"));
-            return db.rows("SELECT reward_usdt rewardAmount FROM nx_growth_event_pool_result WHERE event_code=? AND user_id=? AND status='PAID'",rule.get("event_code"),id);
-        }
-        return "regional".equals(rule.get("kind"))?leaderboard(rule,r):List.of();
+    private List<Map<String,Object>> resultView(Map<String,Object> rule,Map<String,Object> r){
+        if(!"regional".equals(rule.get("kind")))return List.of();
+        if(rule.get("settled_at")!=null)return db.rows("SELECT region_name region,1 AS `rank`,SUM(volume_usdt) volume,SUM(reward_usdt) rewardAmount FROM nx_growth_event_pool_result WHERE event_code=? AND status='PAID' GROUP BY region_name ORDER BY region_name",rule.get("event_code"));
+        return leaderboard(rule,r);
     }
     @Transactional(rollbackFor=Exception.class,isolation=org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public void settle(String code){
         // Account -> rule -> orders is shared with award writers. Lock every member before taking
         // the rule lock, then make allocation, all wallet postings and receipts one atomic batch.
-        policies.lockHoldingWallets(code);
-        for(var member:db.rows("SELECT user_id FROM nx_growth_event_region WHERE event_code=? UNION SELECT user_id FROM nx_growth_event_holding WHERE event_code=? ORDER BY user_id",code,code))
+        for(var member:db.rows("SELECT user_id FROM nx_growth_event_region WHERE event_code=? ORDER BY user_id",code))
             db.row("SELECT id FROM nx_user WHERE id=? FOR UPDATE",member.get("user_id"));
-        var rule=policies.find(code,true);if(rule==null||rule.get("settled_at")!=null)return;
-        LocalDateTime end=date(rule.get("ends_at")),disabled=date(rule.get("disabled_at"));
+        var rule=policies.find(code,true);if(rule==null||!"regional".equals(rule.get("kind"))||rule.get("settled_at")!=null)return;
+        LocalDateTime end=date(rule.get("ends_at"));
         if(end==null||end.isAfter(LocalDateTime.now(ZoneOffset.UTC))||rule.get("activated_at")==null)return;
-        if("holding".equals(rule.get("kind")))db.rows("SELECT user_id FROM nx_growth_event_holding WHERE event_code=? ORDER BY user_id FOR UPDATE",code);
-        if("regional".equals(rule.get("kind"))) {
-            db.rows("SELECT o.order_no FROM nx_order o JOIN nx_growth_event_region er ON er.user_id=o.user_id AND er.event_code=? ORDER BY o.order_no FOR UPDATE",code);
-            db.rows("SELECT h.order_no FROM nx_promotion_refund_hold h JOIN nx_order o ON o.order_no=h.order_no JOIN nx_growth_event_region er ON er.user_id=o.user_id AND er.event_code=? ORDER BY h.order_no FOR UPDATE",code);
-        }
-        var r=policies.rules(rule);List<Map<String,Object>> members;String factsHash=null;
-        if("holding".equals(rule.get("kind")))members=db.rows("""
-            SELECT h.user_id userId,1 volume,'' region FROM nx_growth_event_holding h
-            JOIN nx_user u ON u.id=h.user_id AND u.status='ACTIVE' AND u.sandbox=0 AND u.is_deleted=0
-            WHERE h.event_code=? AND h.eligible_since IS NOT NULL AND TIMESTAMPDIFF(SECOND,h.eligible_since,?)>=?
-            """,code,date(rule.get("ends_at")),number(r.get("holdDays")).longValue()*86400);
-        else if("regional".equals(rule.get("kind"))){
-            members=regionMembers(rule,r);factsHash=factsHash(members);Map<String,BigDecimal> totals=new HashMap<>();
-            members.forEach(m->totals.merge(text(m.get("region")),number(m.get("volume")),BigDecimal::add));
-            BigDecimal max=totals.values().stream().max(BigDecimal::compareTo).orElse(BigDecimal.ZERO);
-            members=members.stream().filter(m->totals.get(text(m.get("region"))).compareTo(max)==0).toList();
-        }else return;
+        db.rows("SELECT o.order_no FROM nx_order o JOIN nx_growth_event_region er ON er.user_id=o.user_id AND er.event_code=? ORDER BY o.order_no FOR UPDATE",code);
+        db.rows("SELECT h.order_no FROM nx_promotion_refund_hold h JOIN nx_order o ON o.order_no=h.order_no JOIN nx_growth_event_region er ON er.user_id=o.user_id AND er.event_code=? ORDER BY h.order_no FOR UPDATE",code);
+        var r=policies.rules(rule);
+        var members=regionMembers(rule,r);String factsHash=factsHash(members);Map<String,BigDecimal> totals=new HashMap<>();
+        members.forEach(m->totals.merge(text(m.get("region")),number(m.get("volume")),BigDecimal::add));
+        BigDecimal max=totals.values().stream().max(BigDecimal::compareTo).orElse(BigDecimal.ZERO);
+        members=members.stream().filter(m->totals.get(text(m.get("region"))).compareTo(max)==0).toList();
         Map<Long,BigDecimal> allocations=allocatePool(members,number(r.get("poolUsdt")));
         for(var member:members){
             BigDecimal amount=allocations.get(number(member.get("userId")).longValue());
@@ -401,7 +381,7 @@ public class H4EventEngine {
     }
     @Transactional(rollbackFor=Exception.class)
     public void payPool(String code,Long id){
-        user(id,true);var rule=policies.find(code,true);if(rule==null||rule.get("settled_at")==null)return;
+        user(id,true);var rule=policies.find(code,true);if(rule==null||!"regional".equals(rule.get("kind"))||rule.get("settled_at")==null)return;
         var result=db.row("SELECT * FROM nx_growth_event_pool_result WHERE event_code=? AND user_id=? AND status='READY' FOR UPDATE",code,id);
         if(result==null)return;BigDecimal amount=number(result.get("reward_usdt"));
         spend(rule,"usdt",amount,number(policies.rules(rule).get("poolUsdt")));credit(id,code+":"+id,"USDT",amount);

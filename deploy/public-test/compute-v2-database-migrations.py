@@ -34,6 +34,9 @@ NAME = re.compile(r'[0-9]{8}_[a-z0-9_]+\.sql')
 SHA = re.compile(r'[0-9a-f]{40}')
 MAX_ARCHIVE = 100 * 1024**2
 MAX_SQL = 8 * 1024**2
+RETIRED_H4_FILE = '20261025_h4_event_rules.sql'
+RETIRED_H4_SHA256 = '921d9f1e3567dfbd049da78ba878ab2187f9c6b15ed449a748be3e2118688d5d'
+RETIRED_H4_NOTE = 'RETIRED_H4_TRIGGER_SKIPPED'
 EARNINGS_FILE = '20261007_earnings_source_recovery.sql'
 EARNINGS_SHA256 = 'f443722d71d6a9da77759e55142ddd12e15b71c8af356a5dc9cd73dd03a410e9'
 EARNINGS_TRIGGER = 'nx_wallet_earnings_debit_counter_v1'
@@ -313,104 +316,18 @@ def stored_program_text(text, *, backslash_escapes):
 
 
 
-# One reviewed H4 program. Other stored programs still use the existing rejection gate.
-H4_FILE = '20261025_h4_event_rules.sql'
-H4_SHA256 = '921d9f1e3567dfbd049da78ba878ab2187f9c6b15ed449a748be3e2118688d5d'
-H4_PREFIX = b"-- H4 executable rules. Existing presentation data is retained; new rules are opt-in.\nCREATE TABLE IF NOT EXISTS nx_growth_event_rule (\n  event_code VARCHAR(64) PRIMARY KEY, kind VARCHAR(32) NOT NULL,\n  revision BIGINT NOT NULL DEFAULT 1, enabled TINYINT NOT NULL DEFAULT 0,\n  starts_at DATETIME(6) NULL, ends_at DATETIME(6) NULL, activated_at DATETIME(6) NULL,disabled_at DATETIME(6) NULL,\n  rules_json JSON NOT NULL,\n  spent_nex DECIMAL(18,6) NOT NULL DEFAULT 0, spent_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,\n  spent_devices INT NOT NULL DEFAULT 0, spent_tickets INT NOT NULL DEFAULT 0,\n  settled_at DATETIME(6) NULL,settlement_hash VARCHAR(64) NULL,\n  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),\n  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\nCREATE TABLE IF NOT EXISTS nx_growth_event_claim (\n  event_code VARCHAR(64) NOT NULL,user_id BIGINT NOT NULL,claim_key VARCHAR(96) NOT NULL,\n  status VARCHAR(24) NOT NULL,reward_json JSON NOT NULL,\n  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),\n  PRIMARY KEY(event_code,user_id,claim_key)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\nCREATE TABLE IF NOT EXISTS nx_growth_event_holding (\n  event_code VARCHAR(64) NOT NULL,user_id BIGINT NOT NULL,eligible_since DATETIME(6) NULL,\n  qualified_at DATETIME(6) NULL,updated_at DATETIME(6) NOT NULL,\n  PRIMARY KEY(event_code,user_id)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\nCREATE TABLE IF NOT EXISTS nx_growth_event_pool_result (\n  event_code VARCHAR(64) NOT NULL,user_id BIGINT NOT NULL,region_name VARCHAR(96) NOT NULL DEFAULT '',\n  volume_usdt DECIMAL(24,6) NOT NULL DEFAULT 0,reward_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,\n  status VARCHAR(24) NOT NULL DEFAULT 'READY',created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),\n  PRIMARY KEY(event_code,user_id)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\nCREATE TABLE IF NOT EXISTS nx_growth_event_region (\n  event_code VARCHAR(64) NOT NULL,user_id BIGINT NOT NULL,region_name VARCHAR(96) NOT NULL,\n  country_iso VARCHAR(2) NOT NULL,joined_at DATETIME(6) NOT NULL,\n  PRIMARY KEY(event_code,user_id)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\nCREATE TABLE IF NOT EXISTS nx_growth_event_reminder (\n  event_code VARCHAR(64) NOT NULL,user_id BIGINT NOT NULL,notified_at DATETIME(6) NULL,\n  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),PRIMARY KEY(event_code,user_id)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\nINSERT IGNORE INTO nx_growth_event_rule(event_code,kind,rules_json) VALUES\n ('evt-pro-upgrade-7d','discount',JSON_OBJECT()),\n ('evt-refer-5-get-pro','referral',JSON_OBJECT()),\n ('evt-weekend-double-nex','boost',JSON_OBJECT()),\n ('evt-regional-pk','regional',JSON_OBJECT()),\n ('evt-spring-spin','wheel',JSON_OBJECT()),\n ('evt-reinvest-bonus','boost',JSON_OBJECT()),\n ('evt-onboarding-7d','onboarding',JSON_OBJECT()),\n ('evt-black-friday','seasonal',JSON_OBJECT()),\n ('evt-nex-holders-share','holding',JSON_OBJECT()),\n ('evt-anniversary-spin','wheel',JSON_OBJECT());\nINSERT IGNORE INTO nx_event_quest(quest_code,quest_name,description,target_type,target_value,reward_type,reward_amount,reward_name,cta_href,status,sort_order) VALUES\n ('evt-pro-upgrade-7d','Pro Flash Upgrade','Upgrade offer and Genesis raffle tickets.','discount',0,'COMPOSITE',0,'Upgrade offer','/pages/store/store',0,10),\n ('evt-refer-5-get-pro','Refer 5 \xc2\xb7 Win a Pro','Invite direct friends within the activity window for a Pro device.','referral',5,'DEVICE',0,'Pro device','',0,20),\n ('evt-weekend-double-nex','Weekend Double NEX','Weekend check-ins receive the configured reward multiplier.','boost',0,'NEX',0,'Check-in bonus','/pages/daily/daily',0,30),\n ('evt-regional-pk','Regional Race','Join your region and compete by valid paid order volume.','regional',0,'USDT',0,'Regional prize pool','',0,40),\n ('evt-spring-spin','Daily Lucky Spin','One free spin per UTC day.','wheel',0,'NEX',0,'Wheel prize pool','',0,50),\n ('evt-reinvest-bonus','Re-invest Bonus Week','Qualifying reinvestments receive additional Genesis raffle tickets.','boost',1,'GENESIS_TICKET',0,'Genesis raffle tickets','/pages/me/wallet-repurchase',0,60),\n ('evt-onboarding-7d','New Pilot \xc2\xb7 7-Day Boost','Reach the configured rank in your first week for NEX and a streak saver.','onboarding',2,'COMPOSITE',0,'NEX and streak saver','',0,70),\n ('evt-black-friday','Black Friday','Seasonal offer with published purchase conditions.','seasonal',0,'COMPOSITE',0,'Seasonal offer','/pages/store/store',0,80),\n ('evt-nex-holders-share','NEX Holders Share','Maintain the required NEX balance continuously to share the USDT pool.','holding',0,'USDT',0,'USDT prize pool','',0,90),\n ('evt-anniversary-spin','Anniversary Mega Spin','View your recorded awards from this activity.','wheel',0,'NEX',0,'Recorded wheel awards','',0,100);\n-- Initial observations begin when an operator enables a campaign. Never backfill a holding period.\n-- This trigger observes every wallet NEX change, including debit/credit in the same second.\n"
-H4_BODY = "BEGIN\n  DECLARE event_enabled TINYINT DEFAULT 0;\n  DECLARE event_activated DATETIME(6) DEFAULT NULL;\n  DECLARE event_start DATETIME(6) DEFAULT NULL;\n  DECLARE event_end DATETIME(6) DEFAULT NULL;\n  DECLARE minimum_nex DECIMAL(18,6) DEFAULT NULL;\n  DECLARE observed TINYINT DEFAULT 0;\n  DECLARE CONTINUE HANDLER FOR NOT FOUND SET observed=0;\n  IF NOT (NEW.nex_available <=> OLD.nex_available)\n     OR NOT (NEW.is_deleted <=> OLD.is_deleted) OR NOT (NEW.sandbox <=> OLD.sandbox) THEN\n    -- Current read of one immutable policy, never a scan/lock of unrelated activity rules.\n    -- Wallet row is already locked by UPDATE; all H4 policy writers acquire wallets first.\n    SELECT enabled,activated_at,starts_at,ends_at,\n           CAST(JSON_UNQUOTE(JSON_EXTRACT(rules_json,'$.minNex')) AS DECIMAL(18,6))\n      INTO event_enabled,event_activated,event_start,event_end,minimum_nex\n      FROM nx_growth_event_rule WHERE event_code='evt-nex-holders-share' FOR SHARE;\n    IF event_activated IS NOT NULL AND event_end>UTC_TIMESTAMP(6) THEN\n      IF NEW.is_deleted=0 AND NEW.sandbox=0 THEN\n        SELECT 1 INTO observed FROM nx_growth_event_holding\n          WHERE event_code='evt-nex-holders-share' AND user_id=NEW.user_id FOR UPDATE;\n        IF event_enabled=1 OR observed=1 THEN\n          INSERT INTO nx_growth_event_holding(event_code,user_id,eligible_since,updated_at)\n          VALUES('evt-nex-holders-share',NEW.user_id,\n            CASE WHEN NEW.nex_available>=minimum_nex THEN GREATEST(event_start,event_activated,UTC_TIMESTAMP(6)) ELSE NULL END,\n            UTC_TIMESTAMP(6))\n          ON DUPLICATE KEY UPDATE eligible_since=\n            CASE WHEN VALUES(eligible_since) IS NULL THEN NULL\n              ELSE COALESCE(eligible_since,VALUES(eligible_since)) END,updated_at=UTC_TIMESTAMP(6);\n        END IF;\n      ELSE\n        UPDATE nx_growth_event_holding SET eligible_since=NULL,updated_at=UTC_TIMESTAMP(6)\n          WHERE event_code='evt-nex-holders-share' AND user_id=NEW.user_id;\n      END IF;\n    END IF;\n  END IF;\nEND"
-H4_TRIGGER = 'nx_wallet_h4_holding_observation'
-H4_DEFINER = 'nexion_app@%'
-H4_METADATA_SQL = (
-    "SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT('name',TRIGGER_NAME,'body',ACTION_STATEMENT,"
-    "'definer',DEFINER,'event',EVENT_MANIPULATION,'timing',ACTION_TIMING,"
-    "'table',EVENT_OBJECT_TABLE,'orientation',ACTION_ORIENTATION)),JSON_ARRAY()) "
-    "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
-    "AND TRIGGER_NAME='nx_wallet_h4_holding_observation';")
+def retired_h4_prefix(data):
+    """The pinned historical tables/seeds are still needed; its trigger is retired."""
+    require(digest(data) == RETIRED_H4_SHA256, 'MIGRATION_H4_FIXED_SOURCE_CHANGED')
+    return data.split(b'DELIMITER $$\n', 1)[0]
 
-def h4_prepare(pending):
-    matches = [data for name, data in pending if name == H4_FILE]
-    if not matches:
-        return False
-    require(len(matches) == 1 and digest(matches[0]) == H4_SHA256,
-            'MIGRATION_H4_FIXED_SOURCE_CHANGED')
-    return True
-
-def h4_enabled():
-    trusted(HOST_CONFIG)
-    config = json.loads(HOST_CONFIG.read_bytes())
-    require(isinstance(config, dict), 'MIGRATION_HOST_CONFIG_REJECTED')
-    value = config.get('allow_fixed_h4_trigger_install', False)
-    require(type(value) is bool, 'MIGRATION_HOST_CONFIG_REJECTED')
-    return value
-
-def h4_verify(root_password, required=False):
-    rows = probe('root', root_password, H4_METADATA_SQL)
-    require(isinstance(rows, list), 'MIGRATION_H4_METADATA_REJECTED')
-    if not rows:
-        require(not required, 'MIGRATION_H4_TRIGGER_MISSING')
-        return False
-    require(len(rows) == 1 and isinstance(rows[0], dict), 'MIGRATION_H4_TRIGGER_SHAPE_CHANGED')
-    row = rows[0]
-    require(row.get('name') == H4_TRIGGER and row.get('definer') == H4_DEFINER
-            and row.get('event') == 'UPDATE' and row.get('timing') == 'AFTER'
-            and row.get('table') == 'nx_user_wallet' and row.get('orientation') == 'ROW'
-            and row.get('body', '').strip() == H4_BODY.strip(),
-            'MIGRATION_H4_TRIGGER_SHAPE_CHANGED')
-    return True
-
-def h4_preflight(user, password, root_password):
-    require(h4_enabled(), 'MIGRATION_H4_PRIVILEGED_INSTALL_NOT_APPROVED_BEFORE_HOLD')
-    app = server_context(user, password)
-    require(user == 'nexion_app' and app['principal'] == H4_DEFINER
-            and app['version'].startswith('8.4.'), 'MIGRATION_H4_APP_CONTEXT_REJECTED')
-    account_definer(app['principal'], user)
-    privileges = grant_privileges(probe(user, password, 'SHOW GRANTS FOR CURRENT_USER();',
-                                       as_json=False), '`nexion`.*')
-    require('ALL PRIVILEGES' in privileges or {'SELECT', 'INSERT', 'UPDATE', 'CREATE', 'TRIGGER'} <= privileges,
-            'MIGRATION_H4_APP_CAPABILITIES_MISSING')
-    root = server_context('root', root_password)
-    require(root['principal'].startswith('root@') and all(root[k] == app[k]
-            for k in ('version', 'mode', 'charset', 'collation', 'log_bin', 'trust')),
-            'MIGRATION_H4_ROOT_CONTEXT_REJECTED')
-    privileges = grant_privileges(probe('root', root_password, 'SHOW GRANTS FOR CURRENT_USER();',
-                                       as_json=False), '*.*')
-    require(('ALL PRIVILEGES' in privileges or {'SUPER', 'TRIGGER'} <= privileges)
-            and 'SET_ANY_DEFINER' in privileges, 'MIGRATION_H4_ROOT_CAPABILITIES_MISSING')
-    h4_verify(root_password)
-    return app
-
-def execute_h4_file(data, folder, user, password, root_password, context, journal):
-    require(digest(data) == H4_SHA256, 'MIGRATION_H4_FIXED_SOURCE_CHANGED')
-    current = h4_preflight(user, password, root_password)
-    require(current == context, 'MIGRATION_H4_CONTEXT_CHANGED')
-    journal['h4_segment'] = 'TABLES_AND_DISABLED_DRAFTS'
-    save(ROOT / 'active.json', journal)
-    execute_sql(H4_FILE + '.prefix', H4_PREFIX, folder, user, password)
-    journal['h4_segment'] = 'FIXED_TRIGGER_INSTALL'
-    save(ROOT / 'active.json', journal)
-    template = ('DELIMITER $$\nCREATE DEFINER=`nexion_app`@`%` TRIGGER IF NOT EXISTS '
-                '`nexion`.`nx_wallet_h4_holding_observation`\n'
-                'AFTER UPDATE ON `nexion`.`nx_user_wallet` FOR EACH ROW\n'
-                + H4_BODY + '$$\nDELIMITER ;\n').encode()
-    if not h4_verify(root_password):
-        with (folder / (H4_FILE + '.trigger.stdout')).open('xb') as out, \
-                (folder / (H4_FILE + '.trigger.stderr')).open('xb') as err:
-            result = subprocess.run(mysql_args('root'),
-                                    input=b'SET SESSION lock_wait_timeout=30; SET SESSION innodb_lock_wait_timeout=30;\n' + template,
-                                    stdout=out, stderr=err, timeout=180,
-                                    env={**os.environ, 'MYSQL_PWD': root_password})
-        require(result.returncode == 0, 'MIGRATION_H4_FIXED_TRIGGER_INSTALL_FAILED')
-    h4_verify(root_password, required=True)
-    journal['h4_trigger'] = {'name': H4_TRIGGER, 'definer': H4_DEFINER,
-                             'source_sha256': H4_SHA256, 'template_sha256': digest(template),
-                             'verified': True}
-    journal.pop('h4_segment', None)
-    save(ROOT / 'active.json', journal)
 
 def migration_preflight(pending, user, password, root_password):
     """Check the entire pending batch before creating a journal, hold or any DDL."""
     special = False
     for name, data in pending:
+        if name == RETIRED_H4_FILE:
+            data = retired_h4_prefix(data)
         if name == EARNINGS_FILE:
             earnings_parts(data)
             special = True
@@ -1276,15 +1193,13 @@ def apply(sha, *, rollback_check=False):
         validate_sql(data)
     support_order = support_prepare(pending)
     cregis_parts = cregis_prepare(pending)
-    h4_pending = h4_prepare(pending)
     compute_v2_parts = compute_v2_prepare(pending)
     user, password, root_password = credentials()
     scoped_account(user, password)
-    h4_context = h4_preflight(user, password, root_password) if h4_pending else None
     compute_v2_context = compute_v2_preflight(user, password, root_password, compute_v2_parts) if compute_v2_parts else None
     trigger_context = migration_preflight(
         [(name, data) for name, data in pending
-         if (not support_order or name not in SUPPORT_PROGRAMS) and (not cregis_parts or name not in CREGIS_PINS) and (not h4_pending or name != H4_FILE)
+         if (not support_order or name not in SUPPORT_PROGRAMS) and (not cregis_parts or name not in CREGIS_PINS)
          and (not compute_v2_parts or name != COMPUTE_V2_FILE)],
         user, password, root_password)
     if cregis_parts:
@@ -1325,16 +1240,22 @@ def apply(sha, *, rollback_check=False):
                 execute_support_file(name, data, folder, user, password, root_password, support_context, journal)
             elif cregis_parts and name in CREGIS_PINS:
                 execute_cregis_file(name, data, folder, user, password, root_password, cregis_context, cregis_parts, journal)
-            elif h4_pending and name == H4_FILE:
-                execute_h4_file(data, folder, user, password, root_password, h4_context, journal)
             elif compute_v2_parts and name == COMPUTE_V2_FILE:
                 execute_compute_v2_file(data, folder, user, password, root_password, compute_v2_context, journal)
+            elif name == RETIRED_H4_FILE:
+                prefix = retired_h4_prefix(data)
+                journal['retired_h4'] = {'file': name, 'note': RETIRED_H4_NOTE,
+                                         'prefix_sha256': digest(prefix)}
+                save(ROOT / 'active.json', journal)
+                execute_sql(name + '.retired-prefix', prefix, folder, user, password)
             elif name == EARNINGS_FILE and trigger_context['root_install']:
                 execute_earnings_recovery(data, folder, user, password, root_password, trigger_context, journal)
             else:
                 execute_sql(name, data, folder, user, password)
             state['scripts'][name] = {'sha256': digest(data), 'status': 'APPLIED',
                                       'sha': sha, 'backup': journal['backup']['path']}
+            if name == RETIRED_H4_FILE:
+                state['scripts'][name]['note'] = RETIRED_H4_NOTE
             save(ROOT / 'state.json', state)
             journal['completed'].append(name)
             save(ROOT / 'active.json', journal)

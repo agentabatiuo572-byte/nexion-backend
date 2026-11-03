@@ -3,15 +3,20 @@
 `compute-v2-database-migrations.py` is a candidate replacement for the installed
 trusted `database_migrations.py`. It is based on the actual 75,700-byte host file,
 SHA256 `0794fa15fb5d0aa2470bb6486dc56fad18eb6732337e471e0a15e4961b1a7221`.
-It does not replace the repository's older `database_migrations.py`. Existing H4,
-Cregis, support, ordinary SQL, backup, startup hold and recovery implementations
-are retained. Only `apply` receives the new prepare/exclude/dispatch integration.
+It does not replace the repository's older `database_migrations.py`. The H4 trigger installer is retired as of 2026-11-04. Cregis, support, ordinary
+SQL, backup, startup hold and recovery remain. First read the H4 migration registry and follow the
+[recorded/pending retirement order](maintenance/README-h4-retirement.md).
+A pending, exact-hash historical H4 file executes only its original table/seed
+prefix as the app account, records APPLIED with RETIRED_H4_TRIGGER_SKIPPED,
+and is followed by the new retirement migration. The trigger is never installed.
+Unknown historical bytes are rejected; generic stored-program checks remain.
 
 Candidate SHA256:
-`3452485f429c1d814e6e97b146fff01c692c30e9926330e2f5c5bfd048cc5ca8`.
+`8c4c28270ce7867aecb7d712a78af8999fa12f2f04e1ffb1c57d75d9b372d8db`.
 The separate reviewed updater must accept the exact installed baseline and this
 candidate, update the trusted closure and both pins together, and preserve all
-other trusted files and approval values. It may add only the explicit boolean
+other trusted files and approval values, apart from removing the retired H4
+installer opt-in. It adds the explicit boolean
 `allow_fixed_compute_v2_trigger_install=true` to the root-owned release config.
 Missing, false or nonboolean approval rejects this lane before backup or hold.
 No changes are made merely by checking out these candidate files.
@@ -58,15 +63,10 @@ Install this candidate only via the separately reviewed exact-baseline updater,
 after the maintenance budget/model restoration and removal of this task's owned
 hold have succeeded. Do not execute it as an independent migration shell. The
 verified native entry continues to load `database_migrations.py` and the backend
-broker continues to own the full backup and four pending forward migrations.
+broker continues to own the full backup and the pending forward migrations.
 
-Local validation:
-
-```sh
-python -B -m unittest scripts.ops.test_compute_v2_database_migrations -v
-```
-
-Executed evidence for this candidate:
+Historical validation of the pre-retirement candidate (not rerun or claimed for
+the 2026-11-04 candidate; no tests were run for this change):
 
 - 13 hermetic safety/failure tests passed, zero skips, including all nine physical
   DDL acknowledgement-loss positions and preservation of the original source

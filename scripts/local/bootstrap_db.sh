@@ -13,24 +13,12 @@ mkdir -p "$LOGS"
 MIG=$BACKEND/scripts/migrations
 cd "$BACKEND"  # migrations `source` repo-relative paths (the .ps1 does Push-Location $root)
 
-h4_inputs() {
-  MYSQL_PWD="$NEXION_DB_PASSWORD" python3 -B "$BACKEND/scripts/local/prepare_h4_support.py" "$1" "$LOGS/h4" \
-    mysql --default-character-set=utf8mb4 --protocol=tcp -h "$NEXION_DB_HOST" -P "$NEXION_DB_PORT" -u "$NEXION_DB_USERNAME" nexion
-}
-trap 'if [[ $? -ne 0 && -f "$LOGS/h4/recovery-token" ]]; then h4_inputs abort; fi' EXIT
-
 run_file() { # label path [db]  (schema.sql creates the database, so it passes db="")
   local label=$1 file=$2 db=${3-nexion}
-  case "${file##*/}" in
-    20261011_support_fund_journal.sql) h4_inputs journal; file="$LOGS/h4/${file##*/}" ;;
-    20261011_support_fund_schema_reader.sql) h4_inputs prepare; file="$LOGS/h4/${file##*/}" ;;
-    20261025_h4_event_rules.sql) file="$LOGS/h4/${file##*/}" ;;
-  esac
   echo "-> $label"
   if ! mysql_nexion $db < "$file" > "$LOGS/$label.log" 2>&1; then
     echo "FAILED: $label (log: $LOGS/$label.log)"; tail -5 "$LOGS/$label.log"; exit 1
   fi
-  if [[ "${file##*/}" == 20261011_support_fund_schema_reader.sql ]]; then h4_inputs finish; fi
 }
 
 scalar() { mysql_nexion -N -B nexion -e "$1"; }
