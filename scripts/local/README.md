@@ -23,6 +23,8 @@ scripts/local/start_backend.sh               # 每次启动前会重跑幂等迁
 
 ### 空库为什么需要额外步骤（C-1）
 
+Bash 直接读取 PowerShell 的 `$migrations` 清单，新增启动必需的迁移应按依赖顺序登记在该清单。订单库存占用迁移依赖基线的 `nx_order.activation_status`；Cregis 多网络迁移放在充值和直接支付建表之后，只补结构与地址池状态，不启用 ERC20 资金开关。
+
 启动迁移链（`apply_startup_schema_migrations.ps1` 中的清单）默认面对一个长期存在的开发库：部分迁移依赖清单之外的历史迁移建的表、运行时才建的客服表。`scripts/fresh_db/` 补上这些前置：
 
 | 文件 | 作用 |

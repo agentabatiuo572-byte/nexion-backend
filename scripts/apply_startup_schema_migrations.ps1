@@ -378,7 +378,13 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261030_payment_password.sql")
   (Join-Path $root "scripts\migrations\20261031_l6_payment_password_route.sql")
   (Join-Path $root "scripts\migrations\20261031_payment_password_permissions.sql")
+  # The schema baseline already owns nx_order.activation_status on both local paths.
+  # Existing orders keep their consumed-stock default before current checkout reads.
+  (Join-Path $root "scripts\migrations\20261031_order_inventory_reservation.sql")
   (Join-Path $root "scripts\migrations\20261031_purchase_direct_payments.sql")
+  # Network-aware Cregis readers require the earlier deposit and direct-payment tables.
+  # This adds schema/pool state only; enabling ERC20 still requires explicit configuration.
+  (Join-Path $root "scripts\migrations\20261031_z_cregis_erc20_network.sql")
   (Join-Path $root "scripts\migrations\20261031_test_cloud_request_journal.sql")
   (Join-Path $root "scripts\migrations\20260916_l6_withdrawal_method_route.sql")
   (Join-Path $root "scripts\migrations\20261101_l6_active_route_reconciliation.sql")
