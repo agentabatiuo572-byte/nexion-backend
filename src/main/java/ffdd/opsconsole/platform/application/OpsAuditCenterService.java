@@ -324,6 +324,16 @@ public class OpsAuditCenterService {
                     ticket.setRoleGate(normalizeRoleGate("门槛者"));
                     ticket.setBeforeValue(review.before()); ticket.setAfterValue(review.after());
                 }
+                if("E".equals(command.domain()) && java.util.Set.of("e2_task_create","e2_task_update","e2_task_status").contains(command.op())) {
+                    var rule=devices.ruleTaskReview(command);
+                    if(rule!=null) {
+                        if(request.targets()!=null && !request.targets().isEmpty())return fail(OpsErrorCode.VALIDATION_FAILED,"A2_TARGET_MISMATCH");
+                        target=new AuditLockTarget("E","device_task",rule.target());
+                        ticket.setAction("发布规则任务"); ticket.setObjectText(rule.name()); ticket.setSourceDomain("E2");
+                        ticket.setOperationType("param"); ticket.setRoleGate(normalizeRoleGate("门槛者"));
+                        ticket.setBeforeValue(rule.before()); ticket.setAfterValue(rule.after());
+                    }
+                }
                 if (A2ReplayContext.isAvatarCommand(command)) {
                     Long maker = A2ReplayContext.authenticatedAdminId();
                     if (maker == null || !A2ReplayContext.hasAuthority("platform_a1_write"))
