@@ -129,6 +129,7 @@ public class GrowthPublicStatsService {
             MEMBER_ESTIMATE_FIELDS.forEach(key -> projection.put(key, values.get(key)));
         }
         projection.put("networkPulse", networkPulse(scope, result.getData()));
+        projection.put("activeJobsBase", values.get("activeJobsBase"));
         projection.put("globeDisplay", values.get("globeDisplay"));
         return ApiResult.ok(projection);
     }
@@ -300,6 +301,7 @@ public class GrowthPublicStatsService {
         long anchor = currentBase == request.registeredUsersBase() && !memberTickChanged
                 ? longValue(before.get("registeredUsersAnchorAt")) : now;
         Map<String, Object> nextValues = requestValues(request, anchor, now, before);
+        if (!((GlobeDisplayConfig) nextValues.get("globeDisplay")).valid()) return ApiResult.fail(422, "H9_GLOBE_DISPLAY_INVALID");
         if (!scope.sandbox()) homeDisplay.ifPresent(display -> display.configure(before, nextValues, now));
         long nextVersion = lockedVersion.get() + 1L;
         try {
@@ -358,6 +360,8 @@ public class GrowthPublicStatsService {
             values.put(TICK_STEP_MAX, request.registeredUsersTickStepMax());
         }
         values.put("effectiveAt", effectiveAt);
+        var base = request.activeJobsBase();
+        values.put("activeJobsBase", base == null ? before.get("activeJobsBase") : base.isNull() ? null : base.longValue());
         values.put("virtualUserCount", request.virtualUserCount());
         List<Map<String, Object>> bands = new ArrayList<>();
         for (GrowthPublicStatsUpdateRequest.PercentileBand band : request.hashratePercentileTable()) {
@@ -375,7 +379,8 @@ public class GrowthPublicStatsService {
         }
         values.put("homeDisplayEnabled", request.homeDisplayEnabled() == null ? before.get("homeDisplayEnabled") : request.homeDisplayEnabled());
         values.put("homeDisplayAnchorAt", changed ? effectiveAt : before.get("homeDisplayAnchorAt"));
-        values.put("globeDisplay", request.globeDisplay() == null ? before.get("globeDisplay") : request.globeDisplay());
+        GlobeDisplayConfig savedGlobe = (GlobeDisplayConfig) before.get("globeDisplay");
+        values.put("globeDisplay", request.globeDisplay() == null ? savedGlobe : request.globeDisplay().withSavedFields(savedGlobe));
         return values;
     }
 
@@ -394,6 +399,7 @@ public class GrowthPublicStatsService {
         // reset it transactionally in update().
         defaults.put("registeredUsersAnchorAt", anchor);
         defaults.put("virtualUserCount", 12_000L);
+        defaults.put("activeJobsBase", null);
         defaults.put("hashratePercentileTable", List.of(
                 band("5", "20"), band("20", "55"), band("60", "82"), band("150", "96"),
                 band("700", "97.6"), band("2700", "98.7"), band("5400", "99.3"),
@@ -423,6 +429,9 @@ public class GrowthPublicStatsService {
                 || !between(request.virtualUserCount(), 0L, 10_000_000L)) {
             return "H9_VALUES_OUT_OF_RANGE";
         }
+        var base = request.activeJobsBase();
+        if (base != null && !base.isNull() && (!base.isIntegralNumber() || !base.canConvertToLong()
+                || !between(base.longValue(), 0L, 100_000_000L))) return "H9_ACTIVE_JOBS_BASE_INVALID";
         Object[] home = { request.homeOnlineCurrent(), request.homeOnlineStepMin(), request.homeOnlineStepMax(),
                 request.homePaidCurrent(), request.homePaidStepMin(), request.homePaidStepMax() };
         long supplied = java.util.Arrays.stream(home).filter(java.util.Objects::nonNull).count();
@@ -453,6 +462,8 @@ public class GrowthPublicStatsService {
                 return "invalid";
             }
             if (!(values.get("homeDisplayEnabled") instanceof Boolean)) return "invalid";
+            Object base = values.get("activeJobsBase");
+            if (base != null && (!(base instanceof Number) || !between(longValue(base), 0L, 100_000_000L))) return "invalid";
             if (!(values.get("globeDisplay") instanceof GlobeDisplayConfig globe) || !globe.valid()) return "invalid";
             long tickStored = TICK_FIELDS.stream().filter(key -> values.get(key) != null).count();
             if (tickStored != 0 && (tickStored != TICK_FIELDS.size() || !validMemberTick(intValue(values.get(TICK_INTERVAL)),
@@ -520,6 +531,7 @@ public class GrowthPublicStatsService {
                     HOME_FIELDS.forEach(key -> stored.putIfAbsent(key, 0));
                     stored.putIfAbsent("homeDisplayAnchorAt", stored.get("effectiveAt"));
                     stored.putIfAbsent("homeDisplayEnabled", false);
+                    stored.putIfAbsent("activeJobsBase", null);
                     stored.put("globeDisplay", stored.containsKey("globeDisplay")
                             ? objectMapper.convertValue(stored.get("globeDisplay"), GlobeDisplayConfig.class)
                             : GlobeDisplayConfig.defaults());
