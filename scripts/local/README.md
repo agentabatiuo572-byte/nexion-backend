@@ -4,7 +4,7 @@ Windows 用 `scripts/*.ps1`；本目录是等价的 bash 版本（问题 C-1 / C
 
 ## 前置
 
-- JDK 17、Maven、MySQL 8.4 客户端与服务、Redis（均监听 127.0.0.1）。
+- JDK 17、Maven、MySQL 8.4 客户端与服务、Redis（均监听 127.0.0.1）。本地数据库启动脚本另需 Python 3.9 或更高版本，Bash 使用 `python3`，Windows 使用 `python`。
 - 机密放在仓库外、权限 600 的文件里，默认 `~/.nexion-local.env`（可用环境变量 `NEXION_LOCAL_ENV` 指定），至少包含：
   `NEXION_DB_URL`、`NEXION_DB_USERNAME`、`NEXION_DB_PASSWORD`、`NEXION_FINANCE_DATA_KEY`、`NEXION_JWT_SECRET`、`NEXION_ADMIN_MFA_ENCRYPTION_KEY`。
 - 工具不在 PATH 上时，在同一文件里设 `JAVA_HOME`、`MYSQL_HOME`、`MAVEN_HOME`。
