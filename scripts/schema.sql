@@ -3314,6 +3314,7 @@ CREATE TABLE IF NOT EXISTS nx_admin_device_sku (
   spec_document_url VARCHAR(2048) NULL,
   features_json TEXT NULL,
   allowed_task_type_ids_json JSON NULL,
+  allowed_task_classes_json JSON NULL,
   generation INT NULL,
   lifecycle VARCHAR(32) NULL,
   superseded_by VARCHAR(64) NULL,
@@ -7527,6 +7528,7 @@ CREATE TABLE IF NOT EXISTS nx_sim_product_task_policy_version (
   version BIGINT NOT NULL,
   effective_at DATETIME(6) NOT NULL,
   allowed_task_type_ids JSON NOT NULL,
+  allowed_task_classes JSON NULL,
   PRIMARY KEY(product_key,version),
   KEY idx_sim_product_policy_effective(product_key,effective_at,version)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

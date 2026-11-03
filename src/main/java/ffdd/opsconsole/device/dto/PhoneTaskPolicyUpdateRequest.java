@@ -4,4 +4,4 @@ import java.util.List;
 
 public record PhoneTaskPolicyUpdateRequest(List<String> allowedTaskTypeIds,
         @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=TaskSimulationSettings.StrictVersion.class) Long expectedVersion,
-        String reason,String operator) { }
+        String reason,String operator,List<String> allowedTaskClasses) { }

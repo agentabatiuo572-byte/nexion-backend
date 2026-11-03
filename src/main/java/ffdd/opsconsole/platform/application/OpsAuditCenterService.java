@@ -291,10 +291,21 @@ public class OpsAuditCenterService {
         if (command != null) {
             try {
                 com.fasterxml.jackson.databind.node.ObjectNode stored = objectMapper.valueToTree(command);
+                boolean skuStatus="E".equals(command.domain()) && "e1_sku_status".equals(command.op());
+                boolean phonePolicy="E".equals(command.domain()) && "e1_phone_task_policy".equals(command.op());
+                if((skuStatus || phonePolicy || isSkuReviewCommand(command)) && request.targets()!=null && !request.targets().isEmpty())
+                    return fail(OpsErrorCode.VALIDATION_FAILED,"E1_POLICY_TARGET_INVALID");
+                if(skuStatus) {
+                    Object id=command.params().get("skuId");
+                    target=new AuditLockTarget("E","device_sku",devices.hardwarePolicyTarget(id instanceof String key?key:null));
+                    ticket.setObjectText(target.id());
+                }
                 if (isSkuReviewCommand(command)) {
                     var review = devices.skuProposalReview(command);
+                    target=new AuditLockTarget("E","device_sku",review.skuId());
                     com.fasterxml.jackson.databind.node.ObjectNode after = objectMapper.valueToTree(review.after());
-                    after.remove(List.of("reason", "operator", "imagePreviewUrl"));
+                    after.remove(List.of("reason", "operator", "imagePreviewUrl","allowedTaskTypeIds"));
+                    after.set("allowedTaskClasses",objectMapper.valueToTree(review.classes()));
                     after.put("skuId", review.skuId());
                     com.fasterxml.jackson.databind.node.ObjectNode before = objectMapper.createObjectNode();
                     if (review.before() != null) {
@@ -304,6 +315,14 @@ public class OpsAuditCenterService {
                     var metadata = stored.putObject("skuReview");
                     metadata.put("before", objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(before));
                     metadata.put("after", objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(after));
+                }
+                if(phonePolicy) {
+                    var review=devices.phoneClassReview(command);
+                    target=new AuditLockTarget("E","device_sku","phone");
+                    ticket.setAction("发布手机可跑任务"); ticket.setObjectText("phone");
+                    ticket.setSourceDomain("E1"); ticket.setOperationType("param"); ticket.setAmplifies(0); ticket.setSos(0);
+                    ticket.setRoleGate(normalizeRoleGate("门槛者"));
+                    ticket.setBeforeValue(review.before()); ticket.setAfterValue(review.after());
                 }
                 if (A2ReplayContext.isAvatarCommand(command)) {
                     Long maker = A2ReplayContext.authenticatedAdminId();
