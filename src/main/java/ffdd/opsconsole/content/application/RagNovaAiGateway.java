@@ -279,17 +279,17 @@ public class RagNovaAiGateway implements NovaAiGateway {
         String current = range;
         return switch (language == null ? "" : language.toLowerCase(Locale.ROOT)) {
             case "zh" -> current == null
-                    ? "我暂时无法核实 Cloud Share 当前参考年化区间，请以 App“商城 → Cloud Share”商品页为准；参考区间不是固定或保证收益。"
-                    : "Cloud Share 当前商品配置的参考年化区间为 " + current
-                    + "。请以 App“商城 → Cloud Share”商品页为准；这不是固定或保证收益。";
+                    ? "我暂时无法核实 Cloud Share 当前的参考年奖励率区间，请以 App“商城 → Cloud Share”商品页为准；奖励以实际到账为准。"
+                    : "Cloud Share 当前商品配置的参考年奖励率区间为 " + current
+                    + "。请以 App“商城 → Cloud Share”商品页为准；奖励以实际到账为准。";
             case "en" -> current == null
-                    ? "I cannot confirm Cloud Share's current reference annual range right now. Please check Store → Cloud Share in the App; the reference range is not a fixed or guaranteed return."
-                    : "The current Cloud Share product configuration shows a reference annual range of " + current
-                    + ". Please check Store → Cloud Share in the App; this is not a fixed or guaranteed return.";
+                    ? "I cannot confirm Cloud Share's current est. annual reward rate range right now. Please check Store → Cloud Share in the App; rewards are subject to actual payout."
+                    : "The current Cloud Share product configuration shows an est. annual reward rate range of " + current
+                    + ". Please check Store → Cloud Share in the App; rewards are subject to actual payout.";
             case "vi" -> current == null
-                    ? "Tôi chưa thể xác nhận khoảng lợi nhuận năm tham khảo hiện tại của Cloud Share. Hãy kiểm tra Cửa hàng → Cloud Share trong App; khoảng tham khảo không phải lợi nhuận cố định hoặc được bảo đảm."
-                    : "Cấu hình sản phẩm Cloud Share hiện cho thấy khoảng lợi nhuận năm tham khảo " + current
-                    + ". Hãy kiểm tra Cửa hàng → Cloud Share trong App; đây không phải lợi nhuận cố định hoặc được bảo đảm.";
+                    ? "Tôi chưa thể xác nhận khoảng tỷ lệ thưởng năm tham khảo hiện tại của Cloud Share. Vui lòng xem Cửa hàng → Cloud Share trong App; phần thưởng theo số tiền thực nhận."
+                    : "Cấu hình sản phẩm Cloud Share hiện cho thấy khoảng tỷ lệ thưởng năm tham khảo " + current
+                    + ". Vui lòng xem Cửa hàng → Cloud Share trong App; phần thưởng theo số tiền thực nhận.";
             default -> null;
         };
     }
