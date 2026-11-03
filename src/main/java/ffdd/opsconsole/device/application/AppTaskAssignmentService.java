@@ -1046,7 +1046,8 @@ public class AppTaskAssignmentService {
                 || row.rewardNex() == null || row.rewardNex().signum() < 0) {
             throw new BizException(503, "TASK_RECEIPT_DATA_INVALID");
         }
-        String displayNo="R-"+Long.toString(row.receiptId(),36).toUpperCase(Locale.ROOT);
+        String sequence = Long.toString(row.receiptId(), 36).toUpperCase(Locale.ROOT);
+        String displayNo = "UVEL-RC-" + "0".repeat(Math.max(0, 6 - sequence.length())) + sequence;
         if(simulated) {
             String receiptHash=detail ? sha256(String.join("|","UVEL:TASK_RECEIPT:1",row.receiptNo(),row.taskNo(),
                     Long.toString(simulation.userId()),Long.toString(simulation.deviceId()),simulation.taskTypeId(),
