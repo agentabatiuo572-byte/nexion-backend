@@ -37,7 +37,7 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
             SELECT SUM(r.reward_usdt) AS usdt,
                    SUM(r.reward_nex) AS nex,
                    COUNT(*) AS jobCount
-              FROM nx_compute_receipt r
+              FROM nx_visible_compute_receipt r
              WHERE r.user_id = #{userId}
                AND COALESCE(r.source_environment, 'PRODUCTION') = #{sourceEnvironment}
                AND r.is_deleted = 0
@@ -68,7 +68,7 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
                    SUM(CASE WHEN r.completed_at >= #{monthStart} THEN r.reward_nex END) AS monthNex,
                    COUNT(CASE WHEN r.completed_at >= #{monthStart} THEN 1 END) AS monthJobCount,
                    SUM(r.reward_usdt) AS allUsdt, SUM(r.reward_nex) AS allNex, COUNT(*) AS allJobCount
-              FROM nx_compute_receipt r
+              FROM nx_visible_compute_receipt r
              WHERE r.user_id = #{userId}
                AND r.source_environment = #{sourceEnvironment}
                AND r.is_deleted = 0
@@ -91,8 +91,8 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
                    COALESCE(NULLIF(CASE WHEN t.task_no LIKE 'SIM-%' THEN t.task_name ELSE t.model_name END, ''), r.task_type) AS model,
                    r.reward_usdt AS rewardUsdt,
                    r.completed_at AS completedAt
-              FROM nx_compute_receipt r
-              LEFT JOIN nx_compute_task t ON t.task_no = r.task_no
+              FROM nx_visible_compute_receipt r
+              LEFT JOIN nx_visible_compute_task t ON t.task_no = r.task_no
                                          AND t.user_id = #{userId}
                                          AND t.is_deleted = 0
              WHERE r.user_id = #{userId}
@@ -211,7 +211,7 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
             SELECT COUNT(*) AS activeJobs,
                    SUM(CASE WHEN t.required_seconds > 0
                             THEN t.reward_usdt / t.required_seconds ELSE NULL END) AS perSecUsdt
-              FROM nx_compute_task t
+              FROM nx_visible_compute_task t
               JOIN nx_user_device d ON d.id = t.user_device_id AND d.is_deleted = 0
               LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
               JOIN nx_user u ON u.id = d.user_id
@@ -263,9 +263,9 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
                             AND u.is_deleted = 0
               LEFT JOIN nx_compute_datacenter dc
                 ON dc.dc_location = d.dc_location AND dc.is_deleted = 0
-              LEFT JOIN nx_compute_task current_client ON current_client.id = (
+              LEFT JOIN nx_visible_compute_task current_client ON current_client.id = (
                 SELECT t.id
-                  FROM nx_compute_task t
+                  FROM nx_visible_compute_task t
                  WHERE t.user_device_id = d.id AND t.is_deleted = 0
                    AND NULLIF(TRIM(t.client_name), '') IS NOT NULL
                  ORDER BY t.user_device_id, t.is_deleted, t.client_observed_at DESC, t.id DESC

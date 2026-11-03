@@ -454,11 +454,11 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
             + "AND d.status IN ('ONLINE','BUSY','ACTIVE','RUNNING')")
     long countActiveUserDevices();
 
-    @Select("SELECT COUNT(*) FROM nx_compute_task t JOIN nx_user u ON u.id=t.user_id AND COALESCE(u.sandbox,0)=0 "
+    @Select("SELECT COUNT(*) FROM nx_visible_compute_task t JOIN nx_user u ON u.id=t.user_id AND COALESCE(u.sandbox,0)=0 "
             + "WHERE t.is_deleted = 0 AND t.source_environment = 'PRODUCTION'")
     long countComputeTasks();
 
-    @Select("SELECT COUNT(*) FROM nx_compute_task t JOIN nx_user u ON u.id=t.user_id AND COALESCE(u.sandbox,0)=0 "
+    @Select("SELECT COUNT(*) FROM nx_visible_compute_task t JOIN nx_user u ON u.id=t.user_id AND COALESCE(u.sandbox,0)=0 "
             + "WHERE t.is_deleted = 0 AND t.status = 'COMPLETED' AND t.source_environment = 'PRODUCTION'")
     long countCompletedComputeTasks();
 
@@ -498,10 +498,10 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
     @Select("SELECT COUNT(*) FROM nx_staking_position WHERE is_deleted = 0")
     long countStakingPositions();
 
-    @Select("SELECT COUNT(*) FROM nx_wallet_ledger WHERE is_deleted = 0")
+    @Select("SELECT COUNT(*) FROM nx_visible_wallet_ledger WHERE is_deleted = 0")
     long countWalletLedgers();
 
-    @Select("SELECT COUNT(*) FROM nx_wallet_ledger WHERE is_deleted = 0 AND created_at >= DATE_SUB(NOW(), INTERVAL #{days} DAY)")
+    @Select("SELECT COUNT(*) FROM nx_visible_wallet_ledger WHERE is_deleted = 0 AND created_at >= DATE_SUB(NOW(), INTERVAL #{days} DAY)")
     long countWalletLedgersSince(@Param("days") int days);
 
     @Select("SELECT COUNT(*) FROM nx_wallet_bill WHERE deleted = 0")

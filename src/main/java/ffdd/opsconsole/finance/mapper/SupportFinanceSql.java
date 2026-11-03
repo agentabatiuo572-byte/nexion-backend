@@ -106,7 +106,7 @@ final class SupportFinanceSql {
        UNION ALL
        SELECT CONCAT('LEDGER:',l.id),l.biz_no,l.biz_type,l.asset,l.amount,NULL,NULL,
          CASE WHEN l.biz_type IN ('CHAIN_TOPUP','DEPOSIT','TOPUP','CARD_TOPUP','VIETQR_DEPOSIT') THEN 'ABNORMAL' ELSE l.status END,l.created_at,l.created_at,NULL,NULL
-       FROM nx_wallet_ledger l WHERE l.user_id=#{userId} AND l.is_deleted=0
+       FROM nx_visible_wallet_ledger l WHERE l.user_id=#{userId} AND l.is_deleted=0
          AND (l.biz_type NOT IN ('CHAIN_TOPUP','DEPOSIT','TOPUP','CARD_TOPUP','VIETQR_DEPOSIT') OR NOT
       """+CREDIT_MATCH+"""
          )

@@ -77,7 +77,7 @@ public interface SimulatedTaskMapper {
     @Select("<script>"+TASK+"""
             WHERE user_id=#{userId} AND task_no IN (SELECT task_no FROM (
               <foreach collection='deviceIds' item='id' separator=' UNION ALL '>
-                (SELECT task_no FROM nx_simulated_task
+                (SELECT task_no FROM nx_visible_simulated_task
                  WHERE user_id=#{userId} AND user_device_id=#{id} AND status='COMPLETED'
                  ORDER BY completed_at DESC,task_no DESC LIMIT #{perDeviceLimit})
               </foreach>

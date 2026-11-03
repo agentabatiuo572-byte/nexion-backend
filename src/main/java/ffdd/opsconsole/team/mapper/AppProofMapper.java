@@ -30,7 +30,7 @@ public interface AppProofMapper extends BaseMapper<Object> {
             SELECT COALESCE(SUM(earned.amount), 0)
               FROM (
                 SELECT amount
-                  FROM nx_wallet_ledger
+                  FROM nx_visible_wallet_ledger
                  WHERE user_id = #{userId} AND is_deleted = 0
                    AND UPPER(asset) = 'USDT' AND UPPER(direction) = 'IN'
                    AND UPPER(status) IN ('SUCCESS', 'POSTED', 'CREDITED', 'SETTLED', 'AVAILABLE')
@@ -44,7 +44,7 @@ public interface AppProofMapper extends BaseMapper<Object> {
                    AND e.source_environment = 'PRODUCTION' AND e.asset = 'USDT'
                    AND e.source_type = 'staking_interest'
                    AND EXISTS (
-                     SELECT 1 FROM nx_wallet_ledger claim
+                     SELECT 1 FROM nx_visible_wallet_ledger claim
                       WHERE claim.user_id = e.user_id AND claim.is_deleted = 0
                         AND claim.biz_no = CONCAT(e.source_ref, '-CLAIM')
                         AND claim.biz_type = 'STAKING_CLAIM'
@@ -56,7 +56,7 @@ public interface AppProofMapper extends BaseMapper<Object> {
                  WHERE p.user_id = #{userId} AND p.is_deleted = 0
                    AND p.product_code = 'REPURCHASE_90D' AND UPPER(p.status) = 'CLAIMED'
                    AND EXISTS (
-                     SELECT 1 FROM nx_wallet_ledger claim
+                     SELECT 1 FROM nx_visible_wallet_ledger claim
                       WHERE claim.user_id = p.user_id AND claim.is_deleted = 0
                         AND claim.biz_no = CONCAT(p.position_no, '-CLAIM')
                         AND claim.biz_type = 'REPURCHASE_CLAIM'

@@ -369,7 +369,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                            t.task_lock_minutes, t.started_at, t.lease_expires_at, t.completed_at,
                            t.source_environment, t.completion_nonce, t.proof_expires_at,
                            t.paused_at, t.paused_seconds, t.created_at, t.id
-                      FROM nx_compute_task t
+                      FROM nx_visible_compute_task t
                       JOIN nx_user u ON u.id = t.user_id
                         AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
                      WHERE t.user_id = #{userId} AND t.user_device_id = #{deviceId}
@@ -383,7 +383,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                              t.task_lock_minutes, t.started_at, t.lease_expires_at, t.completed_at,
                            t.source_environment, t.completion_nonce, t.proof_expires_at,
                            t.paused_at, t.paused_seconds, t.created_at, t.id
-                        FROM nx_compute_task t
+                        FROM nx_visible_compute_task t
                         JOIN nx_user u ON u.id = t.user_id
                           AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
                        WHERE t.user_id = #{userId} AND t.user_device_id = #{deviceId}
@@ -396,7 +396,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                   )
                 </foreach>
               ) t
-              LEFT JOIN nx_compute_receipt r ON r.task_no = t.task_no
+              LEFT JOIN nx_visible_compute_receipt r ON r.task_no = t.task_no
                 AND r.source_environment = t.source_environment AND r.is_deleted = 0
              ORDER BY t.created_at DESC, t.id DESC
             </script>
@@ -414,7 +414,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                                     THEN 'ACTIVE' ELSE 'COMPLETED' END
                            ORDER BY t.created_at DESC, t.id DESC
                        ) AS device_rank
-                  FROM nx_compute_task t
+                  FROM nx_visible_compute_task t
                   JOIN nx_user u ON u.id = t.user_id
                     AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 1
                  WHERE t.user_id = #{userId}
@@ -432,7 +432,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    t.completion_nonce AS completionNonce, t.proof_expires_at AS proofExpiresAt,
                    t.paused_at AS pausedAt, t.paused_seconds AS pausedSeconds
               FROM ranked_tasks t
-              LEFT JOIN nx_compute_receipt r ON r.task_no = t.task_no
+              LEFT JOIN nx_visible_compute_receipt r ON r.task_no = t.task_no
                 AND r.source_environment = t.source_environment AND r.is_deleted = 0
              WHERE UPPER(t.status) IN ('CLAIMED','RUNNING')
                 OR (UPPER(t.status) = 'COMPLETED' AND t.device_rank <= 10)
@@ -452,8 +452,8 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    r.earning_status AS earningStatus, r.proof_hash AS proofHash,
                    t.started_at AS startedAt, r.completed_at AS completedAt,
                    GREATEST(TIMESTAMPDIFF(SECOND, t.started_at, r.completed_at), 0) AS durationSec
-               FROM nx_compute_receipt r
-               JOIN nx_compute_task t ON t.task_no = r.task_no
+               FROM nx_visible_compute_receipt r
+               JOIN nx_visible_compute_task t ON t.task_no = r.task_no
                 AND t.user_id = r.user_id AND t.is_deleted = 0
                 AND t.source_environment = 'PRODUCTION'
                 AND t.user_device_id = r.user_device_id
@@ -484,8 +484,8 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    r.earning_status AS earningStatus, r.proof_hash AS proofHash,
                    t.started_at AS startedAt, r.completed_at AS completedAt,
                    GREATEST(TIMESTAMPDIFF(SECOND, t.started_at, r.completed_at), 0) AS durationSec
-              FROM nx_compute_receipt r
-              JOIN nx_compute_task t ON t.task_no = r.task_no
+              FROM nx_visible_compute_receipt r
+              JOIN nx_visible_compute_task t ON t.task_no = r.task_no
                 AND t.user_id = r.user_id AND t.is_deleted = 0
                 AND t.source_environment = 'PRODUCTION'
                 AND t.user_device_id = r.user_device_id
@@ -529,6 +529,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                STRAIGHT_JOIN nx_user u ON u.id = r.user_id
                 AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
               WHERE r.user_id = #{userId}
+                AND NOT EXISTS (SELECT 1 FROM nx_compute_retired_task a WHERE a.receipt_id=r.id)
                 AND r.source_environment = 'PRODUCTION' AND r.is_deleted = 0
                 AND r.id <= #{highWaterReceiptId}
                AND UPPER(r.earning_status) IN ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')
@@ -573,6 +574,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
               STRAIGHT_JOIN nx_user u ON u.id = r.user_id
                 AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
              WHERE r.user_id = #{userId}
+                AND NOT EXISTS (SELECT 1 FROM nx_compute_retired_task a WHERE a.receipt_id=r.id)
                AND r.source_environment = 'PRODUCTION' AND r.is_deleted = 0
                AND r.id <= #{highWaterReceiptId}
                AND UPPER(r.earning_status) IN ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')
@@ -600,8 +602,8 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    r.earning_status AS earningStatus, r.proof_hash AS proofHash,
                    t.started_at AS startedAt, r.completed_at AS completedAt,
                    GREATEST(TIMESTAMPDIFF(SECOND, t.started_at, r.completed_at), 0) AS durationSec
-              FROM nx_compute_receipt r
-              JOIN nx_compute_task t ON t.task_no = r.task_no
+              FROM nx_visible_compute_receipt r
+              JOIN nx_visible_compute_task t ON t.task_no = r.task_no
                 AND t.user_id = r.user_id AND t.is_deleted = 0
                 AND t.source_environment = 'PRODUCTION'
                 AND t.user_device_id = r.user_device_id
