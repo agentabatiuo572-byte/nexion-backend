@@ -56,7 +56,7 @@ public class PromotionCommandQueryService {
             else{
                 String orderNo=required(data.get("orderNo"),"orderNo");
                 require(number(db.order(orderNo,false).get("user_id"))==owner,"PROMOTION_COMMAND_TARGET_FORBIDDEN");
-                require(creation?target.equals(data.get("promotionQuoteId")):target.equals(orderNo),"PROMOTION_COMMAND_TARGET_MISMATCH");
+                require(creation?target.equals(data.getOrDefault("recoveredQuoteId",data.get("promotionQuoteId"))):target.equals(orderNo),"PROMOTION_COMMAND_TARGET_MISMATCH");
                 order=new LinkedHashMap<>(data);order.putAll(orders.orderProjection(owner,orderNo));
             }
         }

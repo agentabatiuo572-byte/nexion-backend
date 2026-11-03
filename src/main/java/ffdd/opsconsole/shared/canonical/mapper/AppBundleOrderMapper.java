@@ -10,7 +10,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 @Mapper
-public interface AppBundleOrderMapper extends BaseMapper<Object>, TrialSlotReservationMapper {
+public interface AppBundleOrderMapper extends BaseMapper<Object>, TrialSlotReservationMapper, OrderCreateReceiptMapper {
     @Select("SELECT id,sandbox FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
     UserLock lockUser(@Param("userId") Long userId);
 

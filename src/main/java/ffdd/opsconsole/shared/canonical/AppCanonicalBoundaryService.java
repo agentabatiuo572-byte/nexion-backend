@@ -7,6 +7,7 @@ import ffdd.opsconsole.growth.application.AppGrowthLifecyclePublisher.VoucherRed
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
+import ffdd.opsconsole.shared.canonical.mapper.OrderCreateReceiptMapper;
 import ffdd.opsconsole.commerce.mapper.CommerceAcceptanceSandboxMapper;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.commerce.application.CommerceAcceptanceRun;
@@ -46,6 +47,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.TransientDataAccessException;
 import org.springframework.util.StringUtils;
@@ -667,27 +669,27 @@ public class AppCanonicalBoundaryService {
                         "/api/wallet/bills", "CLIENT_BILL_PUSH_REJECTED"));
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<Map<String, Object>> createOrder(
             Long userId, String clientOrderId, Long productId, Integer quantity, String idempotencyKey) {
         return createOrder(userId, clientOrderId, productId, null, quantity, null, idempotencyKey);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<Map<String, Object>> createOrder(
             Long userId, String clientOrderId, Long productId, String productNo,
             Integer quantity, String idempotencyKey) {
         return createOrder(userId, clientOrderId, productId, productNo, quantity, null, idempotencyKey);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<Map<String, Object>> createOrder(
             Long userId, String clientOrderId, Long productId, String productNo,
             Integer quantity, String voucherId, String idempotencyKey) {
         return createOrder(userId, clientOrderId, productId, productNo, quantity, voucherId, null, idempotencyKey);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<Map<String, Object>> createOrder(
             Long userId, String clientOrderId, Long productId, String productNo,
             Integer quantity, String voucherId, String promotionQuoteId, String idempotencyKey) {
@@ -719,18 +721,26 @@ public class AppCanonicalBoundaryService {
                 "productNo", productNo, "quantity", quantity, "voucherId", voucherId);
         if (promotionQuoteId != null) payload.put("promotionQuoteId", promotionQuoteId);
         return executeOnce("ORDER_CREATE", userId, idempotencyKey, payload, () -> {
+            if (promotionQuoteId != null && promotions == null) throw new BizException(503, "PROMOTION_UNAVAILABLE");
+            var quote = promotionQuoteId == null ? null : promotions.lockCreateQuote(userId, promotionQuoteId);
+            int units = quantity == null ? 1 : quantity;
+            Long id = productId != null && productId > 0 ? productId : null;
+            String sku = StringUtils.hasText(productNo) ? productNo.trim() : null;
+            if (!StringUtils.hasText(clientOrderId) && (id != null || sku != null) && units >= 1 && units <= 100
+                    && (quote == null || productId == null || id != null)) {
+                var recovered = OrderCreateReceiptMapper.readReceipt(mapper.pendingSingleReceipt(
+                        userId, id, sku, units, StringUtils.hasText(voucherId) ? voucherId.trim() : null,
+                        quote == null ? null : quote.recoveryId(), pendingOrderTtlMinutes()), promotionQuoteId);
+                if (recovered != null) return recovered;
+            }
             PromotionOrderService.CreationPlan plan = null;
             if (promotionQuoteId != null) {
-                if (promotions == null) throw new BizException(503, "PROMOTION_UNAVAILABLE");
-                int units = quantity == null ? 1 : quantity;
                 CanonicalStateMapper.ProductStock product = mapper.findPurchasableProduct(productId, productNo);
                 if (product == null || (productId != null && !productId.equals(product.id()))
                         || (StringUtils.hasText(productNo) && !productNo.trim().equals(product.productNo()))
                         || units < 1 || units > 100) throw new BizException(409, "PROMOTION_QUOTE_STALE");
-                plan = promotions.prepareCreate(userId, promotionQuoteId,
+                plan = promotions.prepareLockedCreate(userId, quote,
                         List.of(new PromotionOrderService.Selection(product.productNo(), units)), voucherId, null);
-                CanonicalStateMapper.UserLock user = mapper.lockUser(userId);
-                if (user == null || user.sandbox()) throw new BizException(403, "COMMERCE_SANDBOX_USER_FORBIDDEN");
             }
             ApiResult<Map<String, Object>> result = createOrderInternal(
                     userId, clientOrderId, productId, productNo, quantity, voucherId, developmentRuntime, plan);
@@ -1563,7 +1573,7 @@ public class AppCanonicalBoundaryService {
             String operation, Long userId, String idempotencyKey, Object request,
             java.util.function.Supplier<ApiResult<Map<String, Object>>> action) {
         String scope = "APP:" + operation + ":USER:" + userId;
-        if ("ORDER_CREATE".equals(operation) && request instanceof Map<?, ?> fields && fields.containsKey("promotionQuoteId")) {
+        if ("ORDER_CREATE".equals(operation)) {
             return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.executeRetained(
                     scope, idempotencyKey, sha256(String.valueOf(request)), ApiResult.class, (java.util.function.Supplier) action);
         }
@@ -1644,7 +1654,7 @@ public class AppCanonicalBoundaryService {
         }
     }
 
-    private int pendingOrderTtlMinutes() {
+    public int pendingOrderTtlMinutes() {
         String configured = environment.getProperty("nexion.commerce.pending-order-ttl-minutes");
         if (!StringUtils.hasText(configured)) return 30;
         try {

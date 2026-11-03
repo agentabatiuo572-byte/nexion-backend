@@ -19,6 +19,8 @@ import java.util.Locale;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @Repository
@@ -232,6 +234,7 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
     }
 
     @Override
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public AppNotificationPage pageUserNotifications(Long userId, Long cursorId, String priority, int limit, String category) {
         List<AppNotificationView> rows = campaignMapper.selectUserNotifications(
                 userId, cursorId, priority, Math.max(1, Math.min(limit, 100)) + 1, category);

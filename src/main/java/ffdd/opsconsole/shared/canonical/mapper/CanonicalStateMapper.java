@@ -13,7 +13,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 @Mapper
-public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, TrialSlotReservationMapper {
+public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, TrialSlotReservationMapper, OrderCreateReceiptMapper {
     // All purchase entrypoints count unfulfilled gift promises against the same account slots.
     /** Old trial conversions already fulfilled a single device but used PAID/ACTIVE.
      * Preserve history and require the exact settled claim/device/order relationship.
@@ -772,8 +772,8 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                      WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) AS datacenter
               FROM nx_product p
              WHERE p.is_deleted = 0
-               AND ((#{productId} IS NOT NULL AND p.id = #{productId})
-                 OR (#{productNo} IS NOT NULL AND p.product_no = #{productNo}))
+               AND (#{productId} IS NULL OR p.id=#{productId})
+               AND (#{productNo} IS NULL OR p.product_no=#{productNo})
                AND UPPER(p.status) IN ('ACTIVE', 'ON_SALE')
                AND COALESCE(p.store_visible, 1) = 1
                AND p.price_usdt > 0 AND (p.inventory_mode='UNLIMITED' OR p.stock >= 1)

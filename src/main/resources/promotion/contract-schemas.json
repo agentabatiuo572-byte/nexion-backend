@@ -2279,6 +2279,11 @@
           "payBy": {
             "$ref": "#/components/schemas/Time"
           },
+          "recoveredQuoteId": {
+            "$ref": "#/components/schemas/Id",
+            "readOnly": true,
+            "description": "On a recovered creation, the authenticated command's equivalent submitted quote. promotionQuoteId remains the canonical quote of the existing order."
+          },
           "promotionQuoteId": {
             "anyOf": [
               {

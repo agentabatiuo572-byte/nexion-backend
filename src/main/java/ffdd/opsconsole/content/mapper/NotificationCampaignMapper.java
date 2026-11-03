@@ -522,8 +522,44 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
             """)
     int clearReadUserNotifications(@Param("userId") Long userId);
 
+    record RetentionCandidate(long id, long userId, String priority, LocalDateTime createdAt) {}
+
+    @Select("""
+            SELECT id, user_id AS userId, priority, created_at AS createdAt
+              FROM (
+                SELECT id, user_id, priority, created_at,
+                       ROW_NUMBER() OVER (ORDER BY created_at DESC, id DESC) AS rn
+                  FROM nx_notification
+                 WHERE user_id = #{userId} AND is_deleted = 0 AND LOWER(priority) = #{priority}
+              ) ranked
+             WHERE rn > #{cap}
+             ORDER BY id
+            """)
+    List<RetentionCandidate> selectOverCap(
+            @Param("priority") String priority,
+            @Param("cap") int cap,
+            @Param("userId") Long userId);
+
+    @Select("""
+            SELECT id, user_id AS userId, priority, created_at AS createdAt
+              FROM nx_notification
+             WHERE user_id = #{userId} AND is_deleted = 0
+               AND LOWER(priority) = 'low'
+               AND created_at < #{cutoff}
+             ORDER BY id
+            """)
+    List<RetentionCandidate> selectExpiredLow(@Param("cutoff") LocalDateTime cutoff, @Param("userId") Long userId);
+
     @Update("""
-            <script>
+            UPDATE nx_notification
+               SET is_deleted = 1, updated_at = NOW()
+             WHERE id = #{id} AND user_id = #{userId} AND is_deleted = 0
+               AND priority = #{priority} AND created_at = #{createdAt}
+            """)
+    int retireNotification(RetentionCandidate candidate);
+
+    // Global writers prune against the current rows inside the dispatch or cap-change transaction.
+    @Update("""
             UPDATE nx_notification n
             JOIN (
                 SELECT id FROM (
@@ -531,26 +567,26 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                            ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at DESC, id DESC) AS rn
                       FROM nx_notification
                      WHERE is_deleted = 0 AND LOWER(priority) = #{priority}
-                     <if test='userId != null'>AND user_id = #{userId}</if>
-                ) ranked WHERE ranked.rn &gt; #{cap}
+                ) ranked WHERE ranked.rn > #{cap}
             ) overflowed ON overflowed.id = n.id
                SET n.is_deleted = 1, n.updated_at = NOW()
-            </script>
             """)
-    int pruneNotificationsOverCap(
-            @Param("priority") String priority,
-            @Param("cap") int cap,
-            @Param("userId") Long userId);
+    int pruneAllOverCap(@Param("priority") String priority, @Param("cap") int cap);
 
     @Update("""
-            <script>
             UPDATE nx_notification
                SET is_deleted = 1, updated_at = NOW()
-             WHERE is_deleted = 0
-               AND LOWER(priority) = 'low'
-               AND created_at &lt; #{cutoff}
-               <if test='userId != null'>AND user_id = #{userId}</if>
-            </script>
+             WHERE is_deleted = 0 AND LOWER(priority) = 'low' AND created_at < #{cutoff}
             """)
-    int expireLowPriorityNotifications(@Param("cutoff") LocalDateTime cutoff, @Param("userId") Long userId);
+    int expireAllLow(@Param("cutoff") LocalDateTime cutoff);
+
+    default int pruneNotificationsOverCap(String priority, int cap, Long userId) {
+        if (userId == null) return pruneAllOverCap(priority, cap);
+        return selectOverCap(priority, cap, userId).stream().mapToInt(this::retireNotification).sum();
+    }
+
+    default int expireLowPriorityNotifications(LocalDateTime cutoff, Long userId) {
+        if (userId == null) return expireAllLow(cutoff);
+        return selectExpiredLow(cutoff, userId).stream().mapToInt(this::retireNotification).sum();
+    }
 }

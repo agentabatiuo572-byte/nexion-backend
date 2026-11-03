@@ -2,6 +2,7 @@ package ffdd.opsconsole.promotion.mapper;
 
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
+import ffdd.opsconsole.shared.canonical.mapper.OrderCreateReceiptMapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.sql.Timestamp;
 import java.util.*;
@@ -13,7 +14,7 @@ import org.apache.ibatis.scripting.xmltags.XMLLanguageDriver;
 import org.apache.ibatis.session.Configuration;
 import static ffdd.opsconsole.promotion.domain.PromotionValues.*;
 
-public interface PromotionMapper extends BaseMapper<Object>, ffdd.opsconsole.shared.canonical.mapper.TrialSlotReservationMapper {
+public interface PromotionMapper extends BaseMapper<Object>, ffdd.opsconsole.shared.canonical.mapper.TrialSlotReservationMapper, OrderCreateReceiptMapper {
     /** SQL is supplied only by domain code; all data values remain bound parameters. */
     @SelectProvider(type=StatementProvider.class,method="statement")
     @Lang(PreparedSqlDriver.class) @Options(useCache=false)

@@ -5,6 +5,7 @@ import ffdd.opsconsole.commerce.mapper.CommerceAcceptanceSandboxMapper;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.canonical.mapper.AppBundleOrderMapper;
+import ffdd.opsconsole.shared.canonical.mapper.OrderCreateReceiptMapper;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.device.domain.ProductInventoryMode;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
@@ -28,6 +29,7 @@ import java.time.Instant;
 import java.util.function.Supplier;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.util.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -97,7 +99,7 @@ public class AppBundleOrderService {
                 sandboxMapper, acceptanceRun, null);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<Map<String, Object>> create(
             Long userId, List<String> productNos, Long expectedPolicyVersion,
             BigDecimal expectedAmountUsdt, String idempotencyKey) {
@@ -107,7 +109,7 @@ public class AppBundleOrderService {
 
     public record BundleItem(String productNo, Integer quantity) { }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<Map<String, Object>> create(Long userId, List<String> productNos, List<BundleItem> items,
             Long expectedPolicyVersion, BigDecimal expectedAmountUsdt, String promotionQuoteId,
             String idempotencyKey) {
@@ -156,31 +158,49 @@ public class AppBundleOrderService {
         Supplier<ApiResult<Map<String, Object>>> action = () -> {
             ApiResult<Map<String, Object>> failure = quoteValidationFailure(expectedAmountUsdt);
             if (failure != null) return failure;
-            PromotionOrderService.CreationPlan plan = promotionQuoteId == null ? null
-                    : promotions.prepareCreate(userId, promotionQuoteId, quantities.entrySet().stream()
+            var quote = promotionQuoteId == null ? null : promotions.lockCreateQuote(userId, promotionQuoteId);
+            var recovered = OrderCreateReceiptMapper.readReceipt(mapper.pendingBundleReceipt(
+                    userId, quantities, quantities.size(), expectedAmountUsdt, expectedPolicyVersion,
+                    quote == null ? null : quote.recoveryId(), pendingOrderTtlMinutes), promotionQuoteId);
+            if (recovered != null) return recovered;
+            PromotionOrderService.CreationPlan plan = quote == null ? null
+                    : promotions.prepareLockedCreate(userId, quote, quantities.entrySet().stream()
                             .map(item -> new PromotionOrderService.Selection(item.getKey(), item.getValue())).toList(),
                             null, expectedAmountUsdt);
-            if (plan != null) {
-                AppBundleOrderMapper.UserLock user = mapper.lockUser(userId);
-                if (user == null || user.sandbox()) throw new BizException(403, "COMMERCE_SANDBOX_USER_FORBIDDEN");
-            }
             return createOnce(userId, normalized, quantities, expectedPolicyVersion, expectedAmountUsdt, plan);
         };
+        String scope = "APP:BUNDLE_ORDER_CREATE:USER:" + userId;
         if (items == null && promotionQuoteId == null) {
-            return executeOnce(userId, normalized, idempotencyKey, "APP:BUNDLE_ORDER_CREATE:USER:", action);
+            // Existing productNos keys were hashed before the quote terms were included.
+            String legacyHash = sha256(userId + "|" + String.join(",", normalized));
+            var prior = idempotency.recoveryStatus(scope, idempotencyKey, legacyHash);
+            if (prior != AdminIdempotencyService.RecoveryStatus.NOT_FOUND
+                    && prior != AdminIdempotencyService.RecoveryStatus.MISMATCH) {
+                var original = executeCreateOnce(scope, idempotencyKey, legacyHash, action);
+                if (original.getCode() == 0) {
+                    var receipt = original.getData();
+                    if (receipt.get("policyVersion") != null
+                            && !receipt.get("policyVersion").toString().equals(String.valueOf(expectedPolicyVersion))
+                            || receipt.get("amountUsdt") != null && (expectedAmountUsdt == null
+                                || new BigDecimal(receipt.get("amountUsdt").toString()).compareTo(expectedAmountUsdt) != 0)) {
+                        throw new BizException(409, "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+                    }
+                }
+                return original;
+            }
         }
         String material = userId + "|" + quantities.entrySet().stream().sorted(Map.Entry.comparingByKey())
                 .map(item -> item.getKey() + ":" + item.getValue()).toList() + "|" + expectedPolicyVersion
                 + "|" + (expectedAmountUsdt == null ? "" : expectedAmountUsdt.stripTrailingZeros().toPlainString())
                 + "|" + promotionQuoteId;
-        return executeQuantityOnce(userId, idempotencyKey, material, action);
+        return executeCreateOnce(scope, idempotencyKey, sha256(material), action);
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
-    private ApiResult<Map<String, Object>> executeQuantityOnce(Long userId, String key, String material,
+    private ApiResult<Map<String, Object>> executeCreateOnce(String scope, String key, String hash,
             Supplier<ApiResult<Map<String, Object>>> action) {
         return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.executeRetained(
-                "APP:BUNDLE_ORDER_CREATE:USER:" + userId, key, sha256(material), ApiResult.class, (Supplier) action);
+                scope, key, hash, ApiResult.class, (Supplier) action);
     }
 
     /**
@@ -373,17 +393,6 @@ public class AppBundleOrderService {
             return ApiResult.fail(422, "BUNDLE_QUOTE_INVALID");
         }
         return null;
-    }
-
-    @SuppressWarnings({"rawtypes", "unchecked"})
-    private ApiResult<Map<String, Object>> executeOnce(Long userId, List<String> productNos, String key,
-                                                        String namespace, Supplier<ApiResult<Map<String, Object>>> action) {
-        // The expected amount is intentionally outside the idempotency material. A stored command key
-        // must replay its original create response after a refresh; a changed catalogue quote is rejected
-        // only when a new key is issued for the new checkout attempt.
-        String material = userId + "|" + String.join(",", productNos);
-        return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute(
-                namespace + userId, key, sha256(material), ApiResult.class, (Supplier) action);
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
