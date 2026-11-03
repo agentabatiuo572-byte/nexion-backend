@@ -238,6 +238,32 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
     OnGridSummary onGrid(@Param("sourceEnvironment") String sourceEnvironment,
                          @Param("sandbox") boolean sandbox);
 
+    @Select("""
+            SELECT COUNT(*)
+            FROM nx_simulated_device_runtime slot
+            JOIN nx_visible_simulated_task job ON job.task_no = slot.current_task_no
+                 AND job.user_id = slot.user_id AND job.user_device_id = slot.user_device_id
+                 AND job.generation = slot.generation AND BINARY job.instance_no = BINARY slot.instance_no
+            JOIN nx_user_device device ON device.id = slot.user_device_id AND device.user_id = slot.user_id
+                 AND device.is_deleted = 0 AND device.source_environment = #{sourceEnvironment} AND device.run_id = ''
+                 AND BINARY device.instance_no = BINARY slot.instance_no AND UPPER(device.ownership_status) = 'OWNED'
+            JOIN nx_user owner ON owner.id = slot.user_id AND owner.sandbox = #{sandbox}
+                 AND owner.status = 'ACTIVE' AND owner.is_deleted = 0
+            LEFT JOIN nx_user_device_runtime runtime ON runtime.user_device_id = device.id AND runtime.is_deleted = 0
+            LEFT JOIN nx_compute_dc_ops_state dc ON dc.dc_location = device.dc_location AND dc.is_deleted = 0
+            WHERE job.status = 'RUNNING' AND slot.state IN ('RUNNING','CLOSING')
+              AND job.started_at <= #{observed} AND job.due_at > #{observed}
+              AND device.activated_at IS NOT NULL AND UPPER(device.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+              AND (device.deactivated_at IS NULL OR device.deactivated_at > #{observed})
+              AND COALESCE(dc.dispatch_paused, 0) = 0
+              AND (COALESCE(TRIM(runtime.paused_reason), '') = ''
+                   OR (slot.phone = 1 AND runtime.paused_reason IN ('PHONE_OFFLINE','PHONE_LOW_BATTERY')))
+              AND (slot.stop_at IS NULL OR slot.stop_at > #{observed})
+              AND (slot.phone = 0 OR slot.phone_valid_until > #{observed})
+            """)
+    long activeRuleSlots(@Param("sourceEnvironment") String sourceEnvironment, @Param("sandbox") boolean sandbox,
+                         @Param("observed") LocalDateTime observed);
+
     // The virtual column preserves COALESCE(completed_at, updated_at, created_at).
     // Equality-bound prefix fields keep MySQL's dependent lookup in index order.
     @Select("""

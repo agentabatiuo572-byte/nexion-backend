@@ -149,9 +149,13 @@ public class AppHomeOverviewService {
                     "activeDevices", activeDevices, "slotsUsed", (long) Math.max(0, mapper.activeSlotCount(userId)) + reservedSlots + trialSlots,
                     "slotCap", Math.max(1, mapper.deviceSlotCap()), "reservedSlotCount", reservedSlots, "trialSlotCount", trialSlots));
             AppHomeOverviewMapper.OnGridSummary grid = mapper.onGrid(sourceEnvironment, accountSandbox);
+            Long activeJobs = grid == null ? null : grid.activeJobs();
+            if (activeJobs != null && runtimeEnvironment.getProperty("nexion.simulated-tasks.enabled", Boolean.class, false)) {
+                activeJobs += mapper.activeRuleSlots(sourceEnvironment, accountSandbox, now);
+            }
             result.put("onGrid", linked("clients", clients(mapper.onGridClients(accountSandbox)),
                     "activeDevices", mapper.globalActiveDevices(accountSandbox),
-                    "activeJobs", fact(grid == null ? null : grid.activeJobs(), grid == null ? null : grid.activeJobs()),
+                    "activeJobs", activeJobs,
                     "perSecUsdt", fact(grid == null ? null : grid.perSecUsdt(), grid == null ? null : grid.activeJobs())));
             result.put("source", PRODUCTION_SOURCE);
             return ApiResult.ok(result);
