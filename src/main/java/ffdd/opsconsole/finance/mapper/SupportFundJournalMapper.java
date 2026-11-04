@@ -32,11 +32,13 @@ public interface SupportFundJournalMapper {
         + "source_snapshot sourceSnapshotJson,source_proof sourceProofJson,receipt_sha256 receiptSha256,"
         + "protocol_version protocolVersion,recorded_db_utc recordedDbUtc "
         + "FROM nx_support_fund_operation WHERE op_key=#{operationKey} FOR SHARE";
-    String LEGS = "SELECT operation_id operationId,wallet_incarnation incarnation,revision "
+    String LEG_ROWS = "SELECT operation_id operationId,wallet_incarnation incarnation,revision "
         + "FROM nx_support_fund_operation_leg WHERE operation_id=#{operationId} "
-        + "ORDER BY wallet_incarnation,revision FOR SHARE";
-    String PARTIES = "SELECT operation_id operationId,customer_id customerId "
-        + "FROM nx_support_fund_operation_party WHERE operation_id=#{operationId} ORDER BY customer_id FOR SHARE";
+        + "ORDER BY wallet_incarnation,revision";
+    String LEGS = LEG_ROWS + " FOR SHARE";
+    String PARTY_ROWS = "SELECT operation_id operationId,customer_id customerId "
+        + "FROM nx_support_fund_operation_party WHERE operation_id=#{operationId} ORDER BY customer_id";
+    String PARTIES = PARTY_ROWS + " FOR SHARE";
 
     @Select(WALLET)
     @Options(useCache=false, flushCache=Options.FlushCachePolicy.TRUE)
@@ -56,6 +58,14 @@ public interface SupportFundJournalMapper {
     @Select(OPERATION)
     @Options(useCache=false, flushCache=Options.FlushCachePolicy.TRUE)
     Map<String,Object> operation(@Param("operationKey") String operationKey);
+
+    @Select(LEG_ROWS)
+    @Options(useCache=false, flushCache=Options.FlushCachePolicy.TRUE)
+    List<Map<String,Object>> newlyInsertedLegs(@Param("operationId") long operationId);
+
+    @Select(PARTY_ROWS)
+    @Options(useCache=false, flushCache=Options.FlushCachePolicy.TRUE)
+    List<Map<String,Object>> newlyInsertedParties(@Param("operationId") long operationId);
 
     @Select(LEGS)
     @Options(useCache=false, flushCache=Options.FlushCachePolicy.TRUE)

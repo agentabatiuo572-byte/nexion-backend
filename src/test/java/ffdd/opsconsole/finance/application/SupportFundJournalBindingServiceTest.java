@@ -688,6 +688,8 @@ class SupportFundJournalBindingServiceTest {
             if (corruptReceipt) copy.put("receiptSha256", "f".repeat(64));
             return copy;
         }
+        public List<Map<String,Object>> newlyInsertedLegs(long id) { return legs(id); }
+        public List<Map<String,Object>> newlyInsertedParties(long id) { return parties(id); }
         public List<Map<String,Object>> legs(long id) {
             if (corruptLeg) return List.of();
             return List.copyOf(legs);

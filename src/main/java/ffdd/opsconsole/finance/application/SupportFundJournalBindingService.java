@@ -155,6 +155,9 @@ public class SupportFundJournalBindingService implements SupportFundJournalFacad
             existing = mapper.operation(input.operationKey());
             if (existing == null) throw duplicate;
         }
+        // The new parent row and both child foreign keys exclude concurrent child inserts.
+        // Read back our own writes without taking range locks on adjacent operations.
+        boolean readOwnDeviceEarning = existing == null && "SUPPORT_DEVICE_EARNING".equals(input.businessType());
         if (existing == null) {
             existing = mapper.operation(input.operationKey());
             long id = exactReceipt(existing, receipt);
@@ -165,14 +168,14 @@ public class SupportFundJournalBindingService implements SupportFundJournalFacad
         }
         long id = exactReceipt(existing, receipt);
         if (exactReceipt(mapper.operation(input.operationKey()), receipt) != id) throw failure("FUND_OPERATION_IDENTITY_CHANGED");
-        List<Map<String,Object>> parties = mapper.parties(id);
+        List<Map<String,Object>> parties = readOwnDeviceEarning ? mapper.newlyInsertedParties(id) : mapper.parties(id);
         if (parties == null || parties.size() != token.scope.size()) throw failure("FUND_OPERATION_PARTY_MISMATCH");
         for (int i = 0; i < token.scope.size(); i++) {
             Map<String,Object> row = parties.get(i);
             if (number(row, "operationId") != id || number(row, "customerId") != token.scope.get(i))
                 throw failure("FUND_OPERATION_PARTY_MISMATCH");
         }
-        List<Map<String,Object>> actual = mapper.legs(id);
+        List<Map<String,Object>> actual = readOwnDeviceEarning ? mapper.newlyInsertedLegs(id) : mapper.legs(id);
         if (actual == null || actual.size() != legs.size()) throw failure("FUND_OPERATION_LEG_MISMATCH");
         for (int i = 0; i < legs.size(); i++) {
             Map<String,Object> row = actual.get(i);
