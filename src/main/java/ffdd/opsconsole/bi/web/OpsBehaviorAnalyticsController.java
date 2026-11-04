@@ -64,15 +64,21 @@ public class OpsBehaviorAnalyticsController {
             @RequestParam(value = "device", required = false) String device,
             @RequestParam(value = "locale", required = false) String locale,
             @RequestParam(value = "depth", required = false) String depth,
-            @RequestParam(value = "sort", required = false) String sort) {
+            @RequestParam(value = "sort", required = false) String sort,
+            @RequestParam(value = "sortDir", required = false) String sortDir) {
         requireProductionSurface();
-        byte[] body = service.exportBehavior(window, device, locale, depth, sort);
+        byte[] body = sortDir == null ? service.exportBehavior(window, device, locale, depth, sort)
+                : service.exportBehavior(window, device, locale, depth, sort, sortDir);
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType("text/csv;charset=UTF-8"))
                 .contentLength(body.length)
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                         ContentDisposition.attachment().filename("l6-behavior.csv", StandardCharsets.UTF_8).build().toString())
                 .body(body);
+    }
+
+    ResponseEntity<byte[]> export(String window, String device, String locale, String depth, String sort) {
+        return export(window, device, locale, depth, sort, null);
     }
 
     private void requireProductionSurface() {

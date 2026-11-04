@@ -28,6 +28,7 @@ import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -45,9 +46,10 @@ public class G4AdminCommandService {
     private final EarningsReleaseService earningsReleaseService;
     private final Environment environment;
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<Map<String,Object>> updateParam(String key,String idem,NexMarketValueUpdateRequest request){
         requireCommand(idem,request);
+        if("supply".equals(key.trim())) marketService.requireGenesisSupplyPermission();
         if(List.of("dividend","divBase","airdropPct","emissionCurve").contains(key)) requireDecision(request.decisionRef());
         return once("PARAM:"+key,idem,request,()->{
             ApiResult<Map<String,Object>> result=marketService.updateGenesisParam(idem,key,request);

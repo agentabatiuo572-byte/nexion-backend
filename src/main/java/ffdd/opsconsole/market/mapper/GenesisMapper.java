@@ -81,17 +81,6 @@ public interface GenesisMapper extends BaseMapper<GenesisSeriesEntity> {
 
     @Update("""
             UPDATE nx_genesis_series
-               SET total_supply = #{totalSupply},
-                   updated_at = NOW()
-             WHERE is_deleted = 0
-               AND UPPER(status) = 'ACTIVE'
-             ORDER BY id DESC
-             LIMIT 1
-            """)
-    int updateActiveTotalSupply(@Param("totalSupply") int totalSupply);
-
-    @Update("""
-            UPDATE nx_genesis_series
                SET price_usdt = #{priceUsdt},
                    updated_at = NOW()
              WHERE is_deleted = 0

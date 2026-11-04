@@ -26,8 +26,6 @@ public interface NexMarketRepository {
 
     Optional<GenesisPolicyView> activeGenesisPolicy();
 
-    boolean updateGenesisTotalSupply(int totalSupply);
-
     boolean updateGenesisPrice(BigDecimal priceUsdt);
 
     boolean updateGenesisDailyDividendRate(BigDecimal dailyDividendRatePct);

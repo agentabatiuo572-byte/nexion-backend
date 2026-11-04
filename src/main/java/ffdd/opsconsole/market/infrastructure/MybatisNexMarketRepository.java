@@ -96,12 +96,6 @@ public class MybatisNexMarketRepository implements NexMarketRepository {
     }
 
     @Override
-    public boolean updateGenesisTotalSupply(int totalSupply) {
-        ensureGenesisPolicyColumns();
-        return genesisMapper.updateActiveTotalSupply(totalSupply) > 0;
-    }
-
-    @Override
     public boolean updateGenesisPrice(BigDecimal priceUsdt) {
         ensureGenesisPolicyColumns();
         return genesisMapper.updateActivePrice(priceUsdt.setScale(6, RoundingMode.HALF_UP)) > 0;

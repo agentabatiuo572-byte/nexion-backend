@@ -28,6 +28,10 @@ import ffdd.opsconsole.market.dto.NexMarketCurveFrame;
 import ffdd.opsconsole.market.dto.NexMarketCurveUpdateRequest;
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
 import ffdd.opsconsole.market.mapper.ExchangeOrderMapper;
+import ffdd.opsconsole.market.mapper.GenesisCatalogMapper;
+import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.CatalogState;
+import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.LockedSeriesRow;
+import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.TierRow;
 import ffdd.opsconsole.market.domain.StakingPositionView;
 import ffdd.opsconsole.market.domain.StakingProductView;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
@@ -56,6 +60,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.time.temporal.ChronoUnit;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.ApplicationEventPublisherAware;
 import org.springframework.security.core.Authentication;
@@ -164,6 +169,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
     private final ExchangeOrderMapper exchangeOrderMapper;
     private final SupportExchangeFundAdapter exchangeFunds;
+    @Autowired
+    private GenesisCatalogMapper genesisCatalogMapper;
     private ApplicationEventPublisher eventPublisher;
 
     @Override
@@ -906,7 +913,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return ApiResult.ok(response);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<Map<String, Object>> updateGenesisParam(
             String idempotencyKey,
             String paramKey,
@@ -915,51 +922,110 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (guard != null) {
             return guard;
         }
-        // service 层二次校验(path variable 多态):按 paramKey 精确权限码,持任一 g4 码不应能改所有创世参数
-        String genesisPermission = GENESIS_PARAM_PERMISSION.get(paramKey);
-        if (genesisPermission != null) {
-            ApiResult<Map<String, Object>> permissionGuard = requirePermission(genesisPermission);
-            if (permissionGuard != null) {
-                return permissionGuard;
-            }
-        }
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("G", "genesis_param", paramKey) > 0) {
-            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-        }
         GenesisParamDef def = genesisParamDef(paramKey);
         if (def == null) {
             return validation("G4_GENESIS_PARAM_KEY_INVALID");
+        }
+        // 使用同一个参数键校验权限和操作锁。
+        ApiResult<Map<String, Object>> permissionGuard = requirePermission(GENESIS_PARAM_PERMISSION.get(def.key()));
+        if (permissionGuard != null) {
+            return permissionGuard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("G", "genesis_param", def.key()) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         GenesisPolicyView policy = marketRepository.activeGenesisPolicy().orElse(null);
         if (policy == null) {
             return validation("G4_GENESIS_SERIES_NOT_FOUND");
         }
-        String oldValue = genesisValue(def, policy);
-        String newValue = normalizeGenesisParamValue(def, request.value());
-        if (!StringUtils.hasText(newValue)) {
-            return validation("G4_GENESIS_PARAM_VALUE_INVALID");
-        }
-        if (genesisParamLoosens(def, oldValue, newValue)) {
-            ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
-            if (redline != null) {
-                return redline;
+        String oldValue;
+        String newValue;
+        Map<String, Object> tierAudit = Map.of();
+        if ("supply".equals(def.key())) {
+            GenesisSupplyChange change = updateGenesisSupply(request.value());
+            oldValue = Integer.toString(change.oldSupply());
+            newValue = Integer.toString(change.newSupply());
+            tierAudit = map(
+                    "tierId", change.lastTier().tierId(),
+                    "rangeToBefore", change.lastTier().rangeTo(),
+                    "rangeToAfter", change.newSupply(),
+                    "tiersVersionBefore", change.versionBefore(),
+                    "tiersVersionAfter", change.versionAfter());
+        } else {
+            oldValue = genesisValue(def, policy);
+            newValue = normalizeGenesisParamValue(def, request.value());
+            if (!StringUtils.hasText(newValue)) {
+                return validation("G4_GENESIS_PARAM_VALUE_INVALID");
+            }
+            if (genesisParamLoosens(def, oldValue, newValue)) {
+                ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
+                if (redline != null) {
+                    return redline;
+                }
+            }
+            if (!updateGenesisPolicy(def, newValue)) {
+                return validation("G4_GENESIS_SERIES_NOT_FOUND");
             }
         }
-        if (!updateGenesisPolicy(def, newValue)) {
-            return validation("G4_GENESIS_SERIES_NOT_FOUND");
-        }
-        auditRequired("G4_GENESIS_PARAM_CHANGED", "GENESIS_PARAM", def.key(), request.operator(), map(
+        Map<String, Object> detail = map(
                 "paramKey", def.key(),
                 "oldValue", oldValue,
                 "newValue", newValue,
                 "decisionRef", request.decisionRef(),
                 "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
+                "idempotencyKey", idempotencyKey.trim());
+        detail.putAll(tierAudit);
+        auditRequired("G4_GENESIS_PARAM_CHANGED", "GENESIS_PARAM", def.key(), request.operator(), detail);
         Map<String, Object> response = genesisOverview().getData();
         response.put("updated", map("key", def.key(), "oldValue", oldValue, "newValue", newValue));
         return ApiResult.ok(response);
     }
+
+    private GenesisSupplyChange updateGenesisSupply(String rawValue) {
+        BigDecimal value = parseRepurchaseNumber(rawValue, null);
+        if (value == null || value.signum() < 0 || value.compareTo(BigDecimal.valueOf(GENESIS_MAX_SUPPLY)) > 0) {
+            throw new BizException(422, "G4_GENESIS_PARAM_VALUE_INVALID");
+        }
+        // Same lock order as the tier commands. Primary purchases lock the series row.
+        CatalogState state = genesisCatalogMapper.lockState();
+        if (state == null || state.marketOpenStateVersion() == null
+                || !List.of("open", "closed").contains(state.marketOpenState())) {
+            throw new BizException(503, "GENESIS_CATALOG_UNAVAILABLE");
+        }
+        List<LockedSeriesRow> series = genesisCatalogMapper.lockActiveSeriesForSupply();
+        if (series.isEmpty()) throw new BizException(422, "G4_GENESIS_SERIES_NOT_FOUND");
+        if (series.size() != 1) throw new BizException(409, "GENESIS_ACTIVE_SERIES_AMBIGUOUS");
+        LockedSeriesRow current = series.get(0);
+        long holdings = genesisCatalogMapper.soldCount();
+        if (value.compareTo(BigDecimal.valueOf(Math.max(current.soldSupply(), holdings))) < 0) {
+            throw new BizException(422, "G4_GENESIS_PARAM_VALUE_INVALID");
+        }
+        List<TierRow> tiers = genesisCatalogMapper.activeTiers();
+        if (tiers.isEmpty()) throw new BizException(503, "GENESIS_TIERS_UNAVAILABLE");
+        GenesisCatalogService.validateTiers(tiers, holdings);
+        TierRow last = tiers.get(tiers.size() - 1);
+        int supply = value.setScale(0, RoundingMode.HALF_UP).intValueExact();
+        if (supply <= last.rangeFrom()) {
+            throw new BizException(422, "GENESIS_SUPPLY_REQUIRES_TIER_UPDATE");
+        }
+        requireGenesisSupplyCoverage(current.totalSupply(), supply);
+        long version = state.tiersVersion();
+        if (supply != last.rangeTo()) {
+            if (genesisCatalogMapper.updateTierTo(last.tierId(), supply) != 1
+                    || genesisCatalogMapper.advanceTierVersion(version, state.nextTierSeq()) != 1) {
+                throw new BizException(409, "GENESIS_TIERS_VERSION_CONFLICT");
+            }
+            version++;
+        }
+        if (supply != current.totalSupply() && genesisCatalogMapper.updateSeriesSupply(current.id(), supply) != 1) {
+            throw new BizException(409, "GENESIS_SUPPLY_CONFLICT");
+        }
+        return new GenesisSupplyChange(current.totalSupply(), supply, last, state.tiersVersion(), version);
+    }
+
+    private record GenesisSupplyChange(int oldSupply, int newSupply, TierRow lastTier,
+                                       long versionBefore, long versionAfter) { }
 
     @Transactional
     public ApiResult<Map<String, Object>> updateGenesisMarketStatus(
@@ -1195,25 +1261,31 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             return validation(ex.getMessage());
         }
         String configKey = CONTROL_PREFIX + controlKey;
+        boolean isSchedule = SCHEDULE_CONTROL_KEY.equals(configKey);
+        String expectedValue = null;
+        if (!A2ReplayContext.isReplaying()) {
+            boolean expectsUnconfigured = isSchedule && "".equals(request.expectedValue());
+            if (!expectsUnconfigured && !StringUtils.hasText(request.expectedValue())) {
+                return validation("G3_EXPECTED_VALUE_REQUIRED");
+            }
+            try {
+                expectedValue = expectsUnconfigured ? "" : normalizeControlValue(controlKey, request.expectedValue());
+            } catch (IllegalArgumentException ex) {
+                return validation("G3_EXPECTED_VALUE_INVALID");
+            }
+        }
+        // The weekly curve is required for a successful save and provides a row to lock before the schedule exists.
+        if (isSchedule && configFacade.activeValueForUpdate(WEEKLY_CURVE_KEY).isEmpty()) {
+            throw new BizException(503, "G3_WEEKLY_CURVE_INVALID");
+        }
         String currentValue = configFacade.activeValueForUpdate(configKey)
                 .or(() -> configFacade.activeValue(configKey))
                 .filter(StringUtils::hasText)
                 .orElse(controlDefaultValue(controlKey));
-        if (!A2ReplayContext.isReplaying()) {
-            if (!StringUtils.hasText(request.expectedValue())) {
-                return validation("G3_EXPECTED_VALUE_REQUIRED");
-            }
-            String expectedValue;
-            try {
-                expectedValue = normalizeControlValue(controlKey, request.expectedValue());
-            } catch (IllegalArgumentException ex) {
-                return validation("G3_EXPECTED_VALUE_INVALID");
-            }
-            if (!normalizeControlValue(controlKey, currentValue).equals(expectedValue)) {
-                return ApiResult.fail(409, "G3_STATE_CONFLICT");
-            }
+        String normalizedCurrent = currentValue.isEmpty() ? "" : normalizeControlValue(controlKey, currentValue);
+        if (expectedValue != null && !normalizedCurrent.equals(expectedValue)) {
+            return ApiResult.fail(409, "G3_STATE_CONFLICT");
         }
-        String normalizedCurrent = normalizeControlValue(controlKey, currentValue);
         if (normalizedCurrent.equals(value)) {
             return validation("G3_NO_CHANGES");
         }
@@ -1239,7 +1311,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         ApiResult<Map<String, Object>> result = overview();
-        if (SCHEDULE_CONTROL_KEY.equals(configKey) && eventPublisher != null) {
+        if (isSchedule && eventPublisher != null) {
             eventPublisher.publishEvent(new NexMarketSchedule.Changed());
         }
         return result;
@@ -1836,7 +1908,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
 
     private String controlDefaultValue(String controlKey) {
         return switch (controlKey) {
-            case "schedule" -> NexMarketSchedule.DEFAULT_DISPLAY;
             case "pin" -> "未钉住";
             case "loop" -> "循环";
             default -> "";
@@ -2694,12 +2765,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (value == null) {
             return null;
         }
-        if (def.kind() == GenesisParamKind.INTEGER) {
-            if (value.compareTo(BigDecimal.valueOf(currentGenesisSoldSupply())) < 0 || value.compareTo(BigDecimal.valueOf(GENESIS_MAX_SUPPLY)) > 0) {
-                return null;
-            }
-            return value.setScale(0, RoundingMode.HALF_UP).toPlainString();
-        }
         if (def.kind() == GenesisParamKind.DAYS) {
             if (value.stripTrailingZeros().scale() > 0
                     || value.compareTo(BigDecimal.ZERO) < 0
@@ -2723,20 +2788,13 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return value.setScale(6, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
     }
 
-    private int currentGenesisSoldSupply() {
-        GenesisSeriesView series = genesisSeriesOrEmpty();
-        return Math.max(
-                Math.max(0, series.soldSupply() == null ? 0 : series.soldSupply()),
-                Math.toIntExact(Math.min(Integer.MAX_VALUE, marketRepository.genesisHoldingCount())));
-    }
-
     private boolean genesisParamLoosens(GenesisParamDef def, String oldValue, String newValue) {
         if ("divBase".equals(def.key()) || "emissionCurve".equals(def.key())) {
             return !oldValue.trim().equals(newValue.trim());
         }
         BigDecimal oldNumber = parseRepurchaseNumber(oldValue, BigDecimal.ZERO);
         BigDecimal newNumber = parseRepurchaseNumber(newValue, BigDecimal.ZERO);
-        if ("supply".equals(def.key()) || "price".equals(def.key()) || "dividend".equals(def.key()) || "airdropPct".equals(def.key())) {
+        if ("price".equals(def.key()) || "dividend".equals(def.key()) || "airdropPct".equals(def.key())) {
             return newNumber.compareTo(oldNumber) > 0;
         }
         if ("airdropLockDays".equals(def.key())) {
@@ -2765,7 +2823,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
 
     private boolean updateGenesisPolicy(GenesisParamDef def, String value) {
         return switch (def.key()) {
-            case "supply" -> marketRepository.updateGenesisTotalSupply(parseRepurchaseNumber(value, BigDecimal.ZERO).setScale(0, RoundingMode.HALF_UP).intValue());
             case "price" -> marketRepository.updateGenesisPrice(parseRepurchaseNumber(value, BigDecimal.ZERO));
             case "dividend" -> marketRepository.updateGenesisDailyDividendRate(parseRepurchaseNumber(value, BigDecimal.ZERO));
             case "royalty" -> marketRepository.updateGenesisRoyalty(parseRepurchaseNumber(value, BigDecimal.ZERO));
@@ -3186,13 +3243,21 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return null;
     }
 
-    void requireGenesisTierSupplyChange(int currentSupply, int newSupply) {
+    void requireGenesisSupplyPermission() {
         ApiResult<Map<String, Object>> permission = requirePermission("finprod_g4_write");
         if (permission != null) throw new BizException(permission.getCode(), permission.getMessage());
+    }
+
+    void requireGenesisTierSupplyChange(int currentSupply, int newSupply) {
+        requireGenesisSupplyPermission();
         if (newSupply > GENESIS_MAX_SUPPLY) throw new BizException(422, "GENESIS_TIER_INVALID");
         if (lockMapper.countActiveByTarget("G", "genesis_param", "supply") > 0) {
             throw new BizException(409, "OBJECT_LOCKED_BY_A2");
         }
+        requireGenesisSupplyCoverage(currentSupply, newSupply);
+    }
+
+    private void requireGenesisSupplyCoverage(int currentSupply, int newSupply) {
         if (newSupply > currentSupply) {
             ApiResult<Map<String, Object>> coverage = coverageRedlineFailure();
             if (coverage != null) throw new BizException(coverage.getCode(), coverage.getMessage());
