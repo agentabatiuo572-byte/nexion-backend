@@ -32,7 +32,6 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class OpsFunnelService {
     private static final Pattern COHORT = Pattern.compile("\\d{4}-W(?:0[1-9]|[1-4]\\d|5[0-3])");
-    private static final Pattern PHASE = Pattern.compile("P[1-6]");
     private static final Pattern REF = Pattern.compile("[\\p{L}\\p{N}._:-]{1,64}");
     private static final Set<String> STAGES = Set.of("register", "purchase", "repurchase", "withdraw");
     private static final Set<String> GRANULARITIES = Set.of("WEEK", "MONTH");
@@ -198,7 +197,7 @@ public class OpsFunnelService {
         }
         if (normalizedPhase != null) {
             normalizedPhase = normalizedPhase.toUpperCase(Locale.ROOT);
-            if (!PHASE.matcher(normalizedPhase).matches()) throw new BizException(422, "B3_PHASE_INVALID");
+            if (!B3FunnelAnalytics.isSupportedPhase(normalizedPhase)) throw new BizException(422, "B3_PHASE_INVALID");
         }
         if (normalizedRef != null && !REF.matcher(normalizedRef).matches()) {
             throw new BizException(422, "B3_REF_INVALID");

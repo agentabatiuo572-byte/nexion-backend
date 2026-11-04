@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -27,6 +28,7 @@ import java.util.stream.Collectors;
  * cohorts.
  */
 public final class B3FunnelAnalytics {
+    private static final Pattern PHASE = Pattern.compile("SYSTEM|P[1-6]");
     private static final List<String> MAIN_EVENTS = List.of(
             "auth.register_completed",
             "store.viewed",
@@ -45,6 +47,10 @@ public final class B3FunnelAnalytics {
             "var(--brand)", "var(--success)", "var(--warning)", "var(--danger)");
 
     private B3FunnelAnalytics() {
+    }
+
+    public static boolean isSupportedPhase(String phase) {
+        return PHASE.matcher(phase).matches();
     }
 
     public static Map<String, Object> calculate(
@@ -77,8 +83,11 @@ public final class B3FunnelAnalytics {
 
         List<EventFact> registrations = named(allEvents, "auth.register_completed");
         List<String> cohorts = registrations.stream().map(B3FunnelAnalytics::cohortOf).distinct().sorted().toList();
-        List<String> phases = registrations.stream().map(EventFact::phase).distinct().sorted().toList();
+        List<String> phases = registrations.stream()
+                .map(event -> event.phase().toUpperCase(Locale.ROOT))
+                .filter(B3FunnelAnalytics::isSupportedPhase).distinct().sorted().toList();
         List<String> refs = registrations.stream().map(EventFact::ref).distinct().sorted().toList();
+        Map<String, Object> filterOptions = linked("cohorts", cohorts, "phases", phases, "refs", refs);
 
         List<EventFact> selectedRegistrations = registrations.stream()
                 .filter(event -> blank(cohort) || cohortOf(event).equals(cohort))
@@ -86,10 +95,12 @@ public final class B3FunnelAnalytics {
                 .filter(event -> blank(ref) || event.ref().equalsIgnoreCase(ref))
                 .toList();
         if (selectedRegistrations.isEmpty()) {
-            return unavailable(
+            Map<String, Object> result = unavailable(
                     "EMPTY_REGISTRATION_DENOMINATOR",
                     "当前筛选范围内没有注册用户，无法计算转化率；请调整筛选条件，或到「用户行为事件」检查注册事件。",
                     cohort, phase, ref, day0WindowSeconds);
+            result.put("filterOptions", filterOptions);
+            return result;
         }
         Map<String, List<EventFact>> byActor = allEvents.stream()
                 .collect(Collectors.groupingBy(EventFact::actor, LinkedHashMap::new, Collectors.toList()));
@@ -124,7 +135,7 @@ public final class B3FunnelAnalytics {
                 "module", "B3",
                 "generatedAt", LocalDateTime.now().toString(),
                 "filters", filters(cohort, phase, ref),
-                "filterOptions", linked("cohorts", cohorts, "phases", phases, "refs", refs),
+                "filterOptions", filterOptions,
                 "stages", stages,
                 "auxMetrics", aux,
                 "trend", trendFromEvents(allEvents, normalizeStage(trendStage), phase, ref),
