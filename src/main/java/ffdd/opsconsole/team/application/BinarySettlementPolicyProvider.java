@@ -98,13 +98,7 @@ public class BinarySettlementPolicyProvider {
 
     private BigDecimal rate(String raw) {
         try {
-            String value = raw.trim();
-            boolean percent = value.endsWith("%");
-            if (percent) value = value.substring(0, value.length() - 1).trim();
-            BigDecimal parsed = new BigDecimal(value);
-            if (percent || parsed.compareTo(BigDecimal.ONE) > 0) {
-                parsed = parsed.divide(new BigDecimal("100"), 12, RoundingMode.HALF_UP);
-            }
+            BigDecimal parsed = normalizeMatchRate(raw);
             if (parsed.signum() <= 0 || parsed.compareTo(BigDecimal.ONE) > 0) {
                 throw new PolicyBlocked("F3_MATCH_RATE_INVALID");
             }
@@ -114,6 +108,16 @@ public class BinarySettlementPolicyProvider {
         } catch (RuntimeException ex) {
             throw new PolicyBlocked("F3_MATCH_RATE_INVALID");
         }
+    }
+
+    static BigDecimal normalizeMatchRate(String raw) {
+        String value = raw.trim();
+        boolean percent = value.endsWith("%");
+        if (percent) value = value.substring(0, value.length() - 1).trim();
+        BigDecimal parsed = new BigDecimal(value);
+        return percent || parsed.compareTo(BigDecimal.ONE) > 0
+                ? parsed.divide(new BigDecimal("100"), 12, RoundingMode.HALF_UP)
+                : parsed;
     }
 
     private int positiveInteger(String raw, String code) {

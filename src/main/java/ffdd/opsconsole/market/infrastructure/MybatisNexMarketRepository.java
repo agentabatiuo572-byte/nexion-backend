@@ -136,6 +136,11 @@ public class MybatisNexMarketRepository implements NexMarketRepository {
     }
 
     @Override
+    public GenesisPaidEmission genesisPaidEmission(String batchNo) {
+        return genesisMapper.paidEmission(batchNo);
+    }
+
+    @Override
     public Optional<String> latestGenesisDividendRerunBatchNo() {
         String bizNo = genesisMapper.latestGenesisDividendRerunBizNo();
         if (bizNo == null || !bizNo.startsWith("G4-DIVIDEND-") || !bizNo.endsWith("-RERUN")) {

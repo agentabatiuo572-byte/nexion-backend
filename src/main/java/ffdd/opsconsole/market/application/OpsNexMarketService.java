@@ -833,6 +833,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 : BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
         BigDecimal secondaryFloor = safeBig(secondaryStats.floorUsdt());
         String todayBatch = genesisTodayBatch();
+        NexMarketRepository.GenesisPaidEmission paid = marketRepository.genesisPaidEmission(todayBatch);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "G4");
         response.put("product", "genesis");
@@ -864,6 +865,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "perSlotPerDay", perSlotPerDay.setScale(2, RoundingMode.HALF_UP),
                 "floorPerNodePerDay", floorPerNodePerDay.setScale(2, RoundingMode.HALF_UP),
                 "payoutToday", payoutToday,
+                "paidCount", paid.count(),
+                "paidAmountUsdt", paid.amountUsdt(),
                 "batchNo", todayBatch,
                 "batchStatus", StringUtils.hasText(todayBatch) && marketRepository.genesisDividendBatchRerunExists(todayBatch) ? "done" : ""));
         response.put("emissionGate", map(
@@ -899,6 +902,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "nx_genesis_series",
                 "nx_genesis_holding",
                 "nx_genesis_order",
+                "nx_genesis_emission_batch",
+                "nx_genesis_emission_item",
                 "B1 coverage facade"));
         return ApiResult.ok(response);
     }
@@ -1042,15 +1047,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             return validation("G4_RESTORE_ONLY_FROM_J1");
         }
         boolean before = genesisMarketOn();
-        if (enabled && !before) {
-            if (disclosureGateActive("genesis")) {
-                return validation("G4_DISCLOSURE_GATE_REACK_REQUIRED");
-            }
-            ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
-            if (redline != null) {
-                return redline;
-            }
-        }
         ApiResult<Map<String, Object>> gateChange = killSwitchService.changeFromLinkedDomain(
                 "genesis", enabled, request.operator(), request.reason(), "G4", idempotencyKey);
         if (gateChange.getCode() != 0) {
@@ -2021,7 +2017,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return overrides;
     }
 
-    private ApiResult<Map<String, Object>> coverageRedlineFailure() {
+    ApiResult<Map<String, Object>> coverageRedlineFailure() {
         return coverageRedlineFailure(coverageFacade.snapshot());
     }
 
