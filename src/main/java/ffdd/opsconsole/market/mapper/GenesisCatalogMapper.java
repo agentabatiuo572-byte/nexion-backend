@@ -26,6 +26,15 @@ public interface GenesisCatalogMapper {
     @Select("SELECT series_code seriesCode,name,total_supply totalSupply,price_usdt priceUsdt FROM nx_genesis_series WHERE UPPER(status)='ACTIVE' AND is_deleted=0 ORDER BY id DESC LIMIT 1")
     SeriesRow activeSeries();
 
+    @Select("""
+            SELECT id,total_supply totalSupply,sold_supply soldSupply FROM nx_genesis_series
+             WHERE UPPER(status)='ACTIVE' AND is_deleted=0 ORDER BY id DESC LIMIT 2 FOR UPDATE
+            """)
+    List<LockedSeriesRow> lockActiveSeriesForSupply();
+
+    @Update("UPDATE nx_genesis_series SET total_supply=#{totalSupply},updated_at=NOW() WHERE id=#{seriesId}")
+    int updateSeriesSupply(@Param("seriesId") long seriesId, @Param("totalSupply") int totalSupply);
+
     @Select("SELECT COUNT(*) FROM nx_genesis_series WHERE series_code=#{seriesCode}")
     long seriesCodeCount(@Param("seriesCode") String seriesCode);
 
@@ -64,6 +73,7 @@ public interface GenesisCatalogMapper {
                         String closedNoticeKey,String lastChange,Long nextTierSeq) { }
     record TierRow(String tierId,Integer rangeFrom,Integer rangeTo,BigDecimal priceUsdt) { }
     record SeriesRow(String seriesCode,String name,Integer totalSupply,BigDecimal priceUsdt) { }
+    record LockedSeriesRow(long id,int totalSupply,int soldSupply) { }
     record SeriesBootstrapRow(String seriesCode,String name,Integer totalSupply,BigDecimal priceUsdt,
                               Integer royaltyBps,BigDecimal dailyEmissionRatePct,String dividendBaseFormula) { }
 }

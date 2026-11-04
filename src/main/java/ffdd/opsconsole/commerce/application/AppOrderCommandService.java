@@ -624,7 +624,7 @@ public class AppOrderCommandService {
         if (promotions != null) promotions.lockOrderParticipants(orderNo);
     }
 
-    /** Called in the transaction that locks and expires the original direct intent. */
+    /** Called in the transaction holding the original direct intent lock. */
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY, rollbackFor = Exception.class)
     public boolean expireDirectPaymentOrder(Long userId,String orderNo) {
         return expirePendingOrder(userId,orderNo,30,true);
@@ -639,8 +639,9 @@ public class AppOrderCommandService {
         if (order == null || !userId.equals(order.userId())
                 || !"PENDING_PAYMENT".equalsIgnoreCase(order.orderStatus())
                 || !"PENDING".equalsIgnoreCase(order.paymentStatus())
-                || (!direct && mapper.countDirectPaymentIntents(normalized) > 0)
-                || mapper.countActiveDirectPaymentIntent(normalized) > 0
+                || (!direct
+                    ? mapper.countDirectPaymentIntents(normalized) > 0
+                    : mapper.countDirectPaymentIntentsBlockingExpiry(normalized) > 0)
                 || mapper.countNonCancellableHdPaySessions(normalized) > 0
                 || mapper.countExpiredPayableOrder(normalized, userId, ttlMinutes) == 0) {
             return false;

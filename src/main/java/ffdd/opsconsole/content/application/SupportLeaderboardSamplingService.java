@@ -76,7 +76,8 @@ public class SupportLeaderboardSamplingService {
             Context context=plan.contexts().get(key);
             try {
                 var previous=entries.get(key);
-                if(previous==null || !plan.now().isBefore(previous.publication().snapshot().context().evaluatedAt().plusSeconds(plan.interval()*60L)))due.add(context);
+                if(previous==null || !context.businessPeriod().equals(previous.publication().snapshot().context().businessPeriod())
+                        || !plan.now().isBefore(previous.publication().snapshot().context().evaluatedAt().plusSeconds(plan.interval()*60L)))due.add(context);
             }catch(RuntimeException failure){failed++;warn("LATEST_FAILED",key,failure);}
         }
         if(due.isEmpty())return new Result("IDLE",plan.contexts().size(),window.size(),0,0,0,failed,deferred,0);

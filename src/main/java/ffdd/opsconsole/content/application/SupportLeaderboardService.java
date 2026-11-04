@@ -7,6 +7,7 @@ import ffdd.opsconsole.content.dto.SupportLeaderboardQuery.Normalized;
 import ffdd.opsconsole.content.mapper.SupportLeaderboardAuthorizationMapper;
 import ffdd.opsconsole.content.mapper.SupportLeaderboardAuthorizationMapper.*;
 import ffdd.opsconsole.content.mapper.SupportLeaderboardAuthorizationMapper.Qualification;
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -91,7 +92,8 @@ public class SupportLeaderboardService {
     private Resolved resolve(Map<String,List<String>> raw,Authorization access) {
         SupportLeaderboardQuery query=SupportLeaderboardQuery.fromParameters(raw);
         Instant now=clock.instant();
-        YearMonth proposed=ffdd.opsconsole.shared.config.BusinessCalendar.legacy().month(now);
+        YearMonth currentMonth=BusinessCalendar.legacy().month(now);
+        YearMonth proposed=currentMonth;
         if(query.month()!=null)try {proposed=YearMonth.parse(query.month());}
         catch(DateTimeException ex){throw new BizException(422,"SUPPORT_LEADERBOARD_QUERY_INVALID");}
         Normalized preliminary=query.normalize(now,Set.of(proposed),SupportAnalyticsPrivateQueryService.CURRENCIES,"USDT",access.scopes());
@@ -100,14 +102,17 @@ public class SupportLeaderboardService {
         List<YearMonth> months=generation.months(selected);
         // Only a published month is selectable. A missing current stream is warming, never an invented empty board.
         if(preliminary.rankMonth()!=null && !months.contains(preliminary.rankMonth())) {
-            if(!preliminary.rankMonth().equals(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().month(now)))
+            if(!preliminary.rankMonth().equals(currentMonth))
                 throw new BizException(422,"SUPPORT_LEADERBOARD_MONTH_UNAVAILABLE");
             throw new BizException(503,"SUPPORT_LEADERBOARD_CACHE_NOT_READY");
         }
         var entry=generation.entries().get(SupportLeaderboardPublicationService.streamKey(selected));
         if(entry==null)throw new BizException(503,"SUPPORT_LEADERBOARD_CACHE_NOT_READY");
         Publication publication=entry.publication();
-        if(!DEFINITION.equals(publication.snapshot().context().definitionVersion()))throw unavailable();
+        Context published=publication.snapshot().context();
+        if(!DEFINITION.equals(published.definitionVersion()))throw unavailable();
+        if(selected.referenceMonth().equals(currentMonth) && !selected.businessPeriod().equals(published.businessPeriod()))
+            throw new BizException(503,"SUPPORT_LEADERBOARD_CACHE_NOT_READY");
         return new Resolved(preliminary,publication,months,now,SupportLeaderboardPolicy.REFRESH_MINUTES,entry.refreshFailed());
     }
     private static Context context(Normalized q,Authorization a,Instant now) {
@@ -149,7 +154,7 @@ public class SupportLeaderboardService {
         if(a.scopes().containsKey(Scope.managedGroups))options.add(map("scope","managedGroups","groups",a.managed().stream().map(g->map("id",g.id().toString(),"name",g.name())).toList()));
         return map("viewVersion",s.viewVersion(),"queryVersion",s.viewVersion(),"sourceVersion",s.sourceVersion(),"definitionVersion",c.definitionVersion(),
             "board",c.board().name(),"rankMonth",c.rankMonth()==null?null:c.rankMonth().toString(),"referenceMonth",c.referenceMonth().toString(),"currency",ffdd.opsconsole.common.domain.LegacyUvtProof.currency(c.currency()),
-            "scope",c.scope().name(),"businessZone",SupportLeaderboard.BUSINESS_ZONE.getId(),"asOf",c.evaluatedAt().toString(),
+            "scope",c.scope().name(),"businessZone",c.businessPeriod().zoneId(),"asOf",c.evaluatedAt().toString(),
             "publishedAt",r.publication().publishedAt().toString(),"state",s.state().name(),"candidateCoverage",s.candidateCoverage().name(),
             "stale",expired(r.publication(),r.now(),r.interval()),"refreshFailed",r.refreshFailed(),"selectableMonths",r.months().stream().map(Object::toString).toList(),
             "currencies",SupportAnalyticsPrivateQueryService.CURRENCIES.stream().sorted().toList(),"scopeOptions",options);

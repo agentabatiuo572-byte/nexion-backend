@@ -56,6 +56,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.time.temporal.ChronoUnit;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.ApplicationEventPublisherAware;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.transaction.annotation.Isolation;
@@ -64,7 +66,8 @@ import org.springframework.util.StringUtils;
 
 @ApplicationService
 @RequiredArgsConstructor
-public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.AuditReplayable {
+public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.AuditReplayable, ApplicationEventPublisherAware {
+    private static final int GENESIS_MAX_SUPPLY = 100_000;
     private static final String EXCHANGE_USER_DAILY_CAP_KEY = "wallet.exchange.user_daily_cap_usdt";
     private static final String EXCHANGE_PLATFORM_DAILY_CAP_KEY = "wallet.exchange.platform_daily_cap_usdt";
     private static final String EXCHANGE_FEE_PCT_KEY = "wallet.exchange.fee_pct";
@@ -161,6 +164,12 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
     private final ExchangeOrderMapper exchangeOrderMapper;
     private final SupportExchangeFundAdapter exchangeFunds;
+    private ApplicationEventPublisher eventPublisher;
+
+    @Override
+    public void setApplicationEventPublisher(ApplicationEventPublisher eventPublisher) {
+        this.eventPublisher = eventPublisher;
+    }
 
     public ApiResult<Map<String, Object>> exchangeOverview() {
         BigDecimal platformCap = readDecimal(EXCHANGE_PLATFORM_DAILY_CAP_KEY, new BigDecimal("20000"));
@@ -1137,7 +1146,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         if (curveRaisesLiability(before, frames)) {
-            ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
+            ApiResult<Map<String, Object>> redline = coverageRedlineFailure(
+                    coverageFacade.snapshotAtNexPrice(weekPeak(frames)));
             if (redline != null) {
                 return redline;
             }
@@ -1212,7 +1222,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         // keeps quoting the previous frame while the control claims Dn is pinned.
         NexMarketCurveFrame pinned = "pin".equals(controlKey) ? resolvePinnedFrame(loadCurve(), value) : null;
         if (pinned != null && pinned.targetPrice().compareTo(currentPrice()) > 0) {
-            ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
+            ApiResult<Map<String, Object>> redline = coverageRedlineFailure(
+                    coverageFacade.snapshotAtNexPrice(pinned.targetPrice()));
             if (redline != null) {
                 return redline;
             }
@@ -1227,7 +1238,11 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "newValue", value,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
-        return overview();
+        ApiResult<Map<String, Object>> result = overview();
+        if (SCHEDULE_CONTROL_KEY.equals(configKey) && eventPublisher != null) {
+            eventPublisher.publishEvent(new NexMarketSchedule.Changed());
+        }
+        return result;
     }
 
     /** Resolves the frame a valid pin value freezes on; {@code null} when the value is not a day pin. */
@@ -1313,7 +1328,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         int nextDayIndex = pinnedDayIndex().orElseGet(this::nextAdvanceDayIndex);
         NexMarketCurveFrame activeFrame = frameFor(frames, nextDayIndex);
         if (activeFrame.targetPrice().compareTo(currentPrice()) > 0) {
-            ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
+            ApiResult<Map<String, Object>> redline = coverageRedlineFailure(
+                    coverageFacade.snapshotAtNexPrice(activeFrame.targetPrice()));
             if (redline != null) {
                 return redline;
             }
@@ -1340,7 +1356,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         }
         NexMarketCurveFrame activeFrame = frameFor(frames, nextAdvanceDayIndex());
         if (activeFrame.targetPrice().compareTo(currentPrice()) > 0) {
-            ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
+            ApiResult<Map<String, Object>> redline = coverageRedlineFailure(
+                    coverageFacade.snapshotAtNexPrice(activeFrame.targetPrice()));
             if (redline != null) {
                 throw new BizException(redline.getCode(), redline.getMessage());
             }
@@ -1399,7 +1416,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         BigDecimal oldPrice = currentPrice();
         BigDecimal normalized = newPrice.setScale(8, RoundingMode.HALF_UP);
         if (normalized.compareTo(oldPrice) > 0) {
-            ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
+            ApiResult<Map<String, Object>> redline = coverageRedlineFailure(
+                    coverageFacade.snapshotAtNexPrice(normalized));
             if (redline != null) {
                 return redline;
             }
@@ -1943,7 +1961,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private ApiResult<Map<String, Object>> coverageRedlineFailure() {
-        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        return coverageRedlineFailure(coverageFacade.snapshot());
+    }
+
+    private ApiResult<Map<String, Object>> coverageRedlineFailure(TreasuryCoverageSnapshot coverage) {
         if (coverage == null || !coverage.reliable()
                 || coverage.coverageRatio() == null || coverage.redlinePct() == null
                 || coverage.redlinePct().signum() <= 0) {
@@ -2674,7 +2695,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             return null;
         }
         if (def.kind() == GenesisParamKind.INTEGER) {
-            if (value.compareTo(BigDecimal.valueOf(currentGenesisSoldSupply())) < 0 || value.compareTo(new BigDecimal("100000")) > 0) {
+            if (value.compareTo(BigDecimal.valueOf(currentGenesisSoldSupply())) < 0 || value.compareTo(BigDecimal.valueOf(GENESIS_MAX_SUPPLY)) > 0) {
                 return null;
             }
             return value.setScale(0, RoundingMode.HALF_UP).toPlainString();
@@ -3163,6 +3184,19 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             return ApiResult.fail(422, "REASON_LENGTH_INVALID");
         }
         return null;
+    }
+
+    void requireGenesisTierSupplyChange(int currentSupply, int newSupply) {
+        ApiResult<Map<String, Object>> permission = requirePermission("finprod_g4_write");
+        if (permission != null) throw new BizException(permission.getCode(), permission.getMessage());
+        if (newSupply > GENESIS_MAX_SUPPLY) throw new BizException(422, "GENESIS_TIER_INVALID");
+        if (lockMapper.countActiveByTarget("G", "genesis_param", "supply") > 0) {
+            throw new BizException(409, "OBJECT_LOCKED_BY_A2");
+        }
+        if (newSupply > currentSupply) {
+            ApiResult<Map<String, Object>> coverage = coverageRedlineFailure();
+            if (coverage != null) throw new BizException(coverage.getCode(), coverage.getMessage());
+        }
     }
 
     /** service 层二次校验(path variable 多态):按 paramKey/overrideKey/controlKey 精确权限码。

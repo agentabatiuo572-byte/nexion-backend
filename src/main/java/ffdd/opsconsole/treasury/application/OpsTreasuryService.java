@@ -159,6 +159,11 @@ public class OpsTreasuryService {
         return ApiResult.ok(dualLedgerSnapshot());
     }
 
+    @Transactional(readOnly = true)
+    public Map<String, Object> dualLedgerAtNexPrice(BigDecimal proposedPrice) {
+        return dualLedgerSnapshot(proposedPrice);
+    }
+
     /** B1 canonical coverage read reused by L3; no BI-side recomputation. */
     @Transactional(rollbackFor = Exception.class)
     @SuppressWarnings("unchecked")
@@ -218,12 +223,20 @@ public class OpsTreasuryService {
     /** D3 canonical nine-category liability breakdown used as B1/B2 input. */
     public ApiResult<Map<String, Object>> liabilities(boolean breakdown) {
         BigDecimal nexRate = ledgerRepository.latestNexUsdtPrice().map(this::safe).orElse(BigDecimal.ZERO);
+        return liabilities(breakdown, nexRate, nexLiabilityUnits());
+    }
+
+    private BigDecimal nexLiabilityUnits() {
+        return safe(ledgerRepository.sumActiveNexLocked()).add(safe(ledgerRepository.sumActiveNexReward()));
+    }
+
+    private ApiResult<Map<String, Object>> liabilities(boolean breakdown, BigDecimal nexRate, BigDecimal nexLiabilityUnits) {
         List<Map<String, Object>> rows = List.of(
                 liability("withdrawable_balance", "可提余额", ledgerRepository.sumUsdtAvailable(), "nx_user_wallet.usdt_available"),
                 liability("usdt_staking_principal", "USDT staking 本金", ledgerRepository.sumActiveStakingPrincipalUsdt(), "nx_staking_position.amount_usdt"),
                 liability("staking_interest", "staking 应付利息", ledgerRepository.sumActiveStakingInterestUsdt(), "nx_staking_position.estimated_interest_usdt"),
                 liability("genesis_daily_emission", "Genesis 排放承诺", ledgerRepository.genesisDailyLiabilityUsd(), "nx_genesis_holding × nx_genesis_series.daily_dividend_rate_pct"),
-                liability("nex_v2_future", "UVT v2 未来兑付", safe(ledgerRepository.sumActiveNexLocked()).add(safe(ledgerRepository.sumActiveNexReward())).multiply(nexRate), "nx_nex_lock_order active maturity"),
+                liability("nex_v2_future", "UVT v2 未来兑付", nexLiabilityUnits.multiply(nexRate), "nx_nex_lock_order active maturity"),
                 liability("withdrawal_queue", "待提现 queue", ledgerRepository.sumActiveWithdrawalQueueUsdt(), "nx_withdrawal_order active queue"),
                 liability("commission_cooling", "佣金冷却未解锁", ledgerRepository.sumPendingCommissionUsdt(), "nx_wallet_ledger pending commission"),
                 liability("lock_other", "锁仓本息其他", ledgerRepository.legacyLockOtherLiabilityUsd(), "nx_treasury_legacy_lock_liability active principal + accrued interest"),
@@ -581,22 +594,28 @@ public class OpsTreasuryService {
     }
 
     private Map<String, Object> dualLedgerSnapshot() {
+        return dualLedgerSnapshot(null);
+    }
+
+    private Map<String, Object> dualLedgerSnapshot(BigDecimal proposedNexPrice) {
         LocalDateTime now = LocalDateTime.now(clock);
         LocalDateTime current24hStart = now.minusHours(24);
         LocalDateTime prev24hStart = now.minusHours(48);
         BigDecimal reserveUsd = (BigDecimal) reserve().getData().get("reserveTotalUsdt");
-        BigDecimal nexUsdRate = ledgerRepository.latestNexUsdtPrice().map(this::safe).orElse(BigDecimal.ZERO);
+        BigDecimal currentNexPrice = ledgerRepository.latestNexUsdtPrice().map(this::safe).orElse(BigDecimal.ZERO);
+        BigDecimal nexUsdRate = proposedNexPrice == null ? currentNexPrice : proposedNexPrice;
         BigDecimal redlinePct = safetyThresholdDecimal(REDLINE_CONFIG_KEY, dualLedgerProperties.getRedlinePct());
         BigDecimal healthyPct = safetyThresholdDecimal(HEALTHY_CONFIG_KEY, dualLedgerProperties.getHealthyPct());
         BigDecimal runRiskPct = safetyThresholdDecimal(RUN_RISK_CONFIG_KEY, dualLedgerProperties.getRunRiskPct());
         String scope = configValue(SCOPE_CONFIG_KEY, "all active liabilities");
 
         BigDecimal queueBacklogUsd = safe(ledgerRepository.sumActiveWithdrawalQueueUsdt());
-        BigDecimal nexLiabilityUnits = safe(ledgerRepository.sumActiveNexLocked())
-                .add(safe(ledgerRepository.sumActiveNexReward()));
-        boolean valuationReliable = nexLiabilityUnits.signum() == 0 || nexUsdRate.signum() > 0;
+        BigDecimal nexLiabilityUnits = nexLiabilityUnits();
+        boolean valuationReliable = (nexLiabilityUnits.signum() == 0 || currentNexPrice.signum() > 0)
+                && (proposedNexPrice == null || proposedNexPrice.signum() > 0);
         @SuppressWarnings("unchecked")
-        List<Map<String, Object>> d3LiabilityRows = (List<Map<String, Object>>) liabilities(true).getData().get("breakdown");
+        List<Map<String, Object>> d3LiabilityRows = (List<Map<String, Object>>) liabilities(true, nexUsdRate, nexLiabilityUnits)
+                .getData().get("breakdown");
         List<Map<String, Object>> accounts = d3LiabilityRows.stream()
                 .map(row -> account(
                         String.valueOf(row.get("category")),
@@ -636,7 +655,7 @@ public class OpsTreasuryService {
                 "ratioLiabilitiesUsd", liabilitiesUsd,
                 "nexUsdRate", nexUsdRate,
                 "valuationReliable", valuationReliable,
-                "coverageRatio", pctScale(coverageRatio),
+                "coverageRatio", proposedNexPrice == null ? pctScale(coverageRatio) : coverageRatio,
                 "redlinePct", pctScale(redlinePct),
                 "healthyPct", pctScale(healthyPct),
                 "runRiskPct", pctScale(runRiskPct),

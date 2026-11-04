@@ -146,7 +146,7 @@ public class PurchasePaymentService {
     }
     private List<Map<String,Object>> activeIntents(Object owner,Object kind,String payload,String excluding){
         // Resolve legacy aliases with the actual order column's collation, not JSON/string equality.
-        return db.rows("SELECT p.intent_no FROM nx_purchase_payment_intent p WHERE p.user_id=? AND p.kind=? AND p.intent_no<>? AND p.status NOT IN ('DELIVERED','EXPIRED') AND ((p.kind='ORDER_PAY' AND EXISTS(SELECT 1 FROM nx_order o WHERE o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) AND o.order_no=?)) OR (p.kind<>'ORDER_PAY' AND p.payload_json=CAST(? AS JSON)))",owner,kind,excluding,text(parse(payload).get("orderNo")),payload);
+        return db.rows("SELECT p.intent_no,p.kind,p.status,p.reason,p.confirmed_at,p.receipt_json FROM nx_purchase_payment_intent p WHERE p.user_id=? AND p.kind=? AND p.intent_no<>? AND p.status NOT IN ('DELIVERED','EXPIRED') AND ((p.kind='ORDER_PAY' AND EXISTS(SELECT 1 FROM nx_order o WHERE o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) AND o.order_no=?)) OR (p.kind<>'ORDER_PAY' AND p.payload_json=CAST(? AS JSON)))",owner,kind,excluding,text(parse(payload).get("orderNo")),payload);
     }
     private Instant deadline(String kind,Map<String,Object> payload,Instant pricingAt){
         if(!"ORDER_PAY".equals(kind))return pricingAt.plusSeconds(1800);
@@ -336,8 +336,12 @@ public class PurchasePaymentService {
         }catch(RuntimeException unavailable){reconciliationUnknown(row);}
 
         var current=db.one(SELECT,row.get("intent_no"));
-        if(current.get("confirmed_at")!=null&&Set.of("FUNDS_CONFIRMED","MANUAL_REVIEW").contains(text(current.get("status"))))deliver(text(row.get("intent_no")),false);
-        else if(current.get("confirmed_at")==null&&!now().isBefore(graceEnd(current.get("payment_method"),deadline(current))))expire(current);
+        if(isLateOrderReview(current)||current.get("confirmed_at")==null&&!now().isBefore(graceEnd(current.get("payment_method"),deadline(current))))expire(current);
+        else if(current.get("confirmed_at")!=null&&Set.of("FUNDS_CONFIRMED","MANUAL_REVIEW").contains(text(current.get("status"))))deliver(text(row.get("intent_no")),false);
+    }
+    private static boolean isLateOrderReview(Map<String,Object> row){
+        return "ORDER_PAY".equals(row.get("kind"))&&"MANUAL_REVIEW".equals(row.get("status"))
+                &&"PAYMENT_LATE_REVIEW".equals(row.get("reason"))&&row.get("confirmed_at")!=null&&row.get("receipt_json")==null;
     }
     private void reconciliationUnknown(Map<String,Object> row){
         // Ending a commerce order never declares unresolved provider funds settled.
@@ -350,25 +354,32 @@ public class PurchasePaymentService {
         expiration.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
         expiration.execute(status->{
             var row=db.one(SELECT+" FOR UPDATE",snapshot.get("intent_no"));
-            if(row==null||row.get("confirmed_at")!=null||row.get("receipt_json")!=null||"MANUAL_REVIEW".equals(row.get("status")))return null;
+            if(row==null||row.get("receipt_json")!=null)return null;
+            boolean lateReview=isLateOrderReview(row);
+            if(!lateReview&&(row.get("confirmed_at")!=null||"MANUAL_REVIEW".equals(row.get("status"))))return null;
+            String orderNo="ORDER_PAY".equals(row.get("kind"))?text(parse(row.get("payload_json")).get("orderNo")):null;
             // Match issuer/pay/cancel: every ordered participant precedes the buyer mutex.
-            if("ORDER_PAY".equals(row.get("kind")))orders.lockDirectPaymentOrderParticipants(text(parse(row.get("payload_json")).get("orderNo")));
+            if(orderNo!=null)orders.lockDirectPaymentOrderParticipants(orderNo);
             db.one("SELECT id FROM nx_user WHERE id=? FOR UPDATE",row.get("user_id"));
             Instant cutoff=deadline(row);
-            if("ORDER_PAY".equals(row.get("kind"))){
+            if(orderNo!=null){
                 // The user mutex makes this a current business-state check without reversing promotion -> order locks.
-                var order=db.one("SELECT order_no,created_at,payment_status,order_status FROM nx_order WHERE order_no=? AND user_id=?",parse(row.get("payload_json")).get("orderNo"),row.get("user_id"));
+                var order=db.one("SELECT order_no,created_at,payment_status,order_status FROM nx_order WHERE order_no=? AND user_id=?",orderNo,row.get("user_id"));
                 if(order==null)throw new BizException(409,"PURCHASE_PAYMENT_TIMEOUT_ORDER_CONFLICT");
                 if(!"PENDING".equals(order.get("payment_status"))||!"PENDING_PAYMENT".equals(order.get("order_status")))return null;
                 cutoff=orderDeadline(order);
             }
-            if(now().isBefore(graceEnd(row.get("payment_method"),cutoff)))return null;
+            if(now().isBefore(lateReview?cutoff:graceEnd(row.get("payment_method"),cutoff)))return null;
             // A failed attempt can have been replaced before the order deadline. Never cancel its successor.
             var active=activeIntents(row.get("user_id"),row.get("kind"),text(row.get("payload_json")),text(row.get("intent_no")));
-            if(!active.isEmpty())return null;
-            db.write("UPDATE nx_purchase_payment_intent SET status='EXPIRED',reason='PAYMENT_TIMEOUT',expires_at=?,version=version+1,updated_at=NOW(6) WHERE intent_no=?",timestamp(cutoff),row.get("intent_no"));
-            if("ORDER_PAY".equals(row.get("kind"))&&!orders.expireDirectPaymentOrder(number(row.get("user_id")),text(parse(row.get("payload_json")).get("orderNo"))))throw new BizException(409,"PURCHASE_PAYMENT_TIMEOUT_ORDER_CONFLICT");
-            outcome(row,"PAYMENT_TIMEOUT");return null;
+            if(active.stream().anyMatch(intent->!isLateOrderReview(intent)))return null;
+            if(!lateReview){
+                db.write("UPDATE nx_purchase_payment_intent SET status='EXPIRED',reason='PAYMENT_TIMEOUT',expires_at=?,version=version+1,updated_at=NOW(6) WHERE intent_no=?",timestamp(cutoff),row.get("intent_no"));
+            }
+            if(orderNo!=null&&!orders.expireDirectPaymentOrder(number(row.get("user_id")),orderNo))throw new BizException(409,"PURCHASE_PAYMENT_TIMEOUT_ORDER_CONFLICT");
+            // A confirmed late payment keeps its evidence and review notification.
+            if(!lateReview)outcome(row,"PAYMENT_TIMEOUT");
+            return null;
         });
     }
     private boolean observeHd(Map<String,Object> row){
@@ -534,8 +545,16 @@ public class PurchasePaymentService {
     }
     @Scheduled(fixedDelayString="${nexion.finance.purchase-payment-observe-ms:30000}")
     public void scheduled(){
-        // A failed intent still owns a live commerce deadline until its canonical order closes.
-        String live="p.status IN ('CREATING','SUBMIT_UNKNOWN','AWAITING_PAYMENT','FUNDS_CONFIRMED') OR (p.kind='ORDER_PAY' AND p.status='EXPIRED' AND p.confirmed_at IS NULL AND p.receipt_json IS NULL AND EXISTS(SELECT 1 FROM nx_order o WHERE o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) AND o.user_id=p.user_id AND o.payment_status='PENDING' AND o.order_status='PENDING_PAYMENT'))";
+        // Failed and confirmed-late intents can still own a live commerce deadline.
+        String live="""
+                p.status IN ('CREATING','SUBMIT_UNKNOWN','AWAITING_PAYMENT','FUNDS_CONFIRMED') OR (
+                    p.kind='ORDER_PAY' AND p.receipt_json IS NULL
+                    AND ((p.status='EXPIRED' AND p.confirmed_at IS NULL)
+                         OR (p.status='MANUAL_REVIEW' AND p.reason='PAYMENT_LATE_REVIEW' AND p.confirmed_at IS NOT NULL))
+                    AND EXISTS(SELECT 1 FROM nx_order o WHERE o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo'))
+                        AND o.user_id=p.user_id AND o.is_deleted=0 AND o.payment_status='PENDING' AND o.order_status='PENDING_PAYMENT')
+                )
+                """;
         observeBatch(db.rows("SELECT p.* FROM nx_purchase_payment_intent p WHERE "+live+" ORDER BY COALESCE(p.observed_at,p.created_at),p.intent_no LIMIT 50"));
         // Only finished commerce results use the separate historical financial-reconciliation quota.
         observeBatch(db.rows("SELECT p.* FROM nx_purchase_payment_intent p WHERE NOT ("+live+") ORDER BY COALESCE(p.observed_at,p.created_at),p.intent_no LIMIT 10"));
