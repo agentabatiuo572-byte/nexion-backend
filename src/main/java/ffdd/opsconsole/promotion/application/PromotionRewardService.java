@@ -45,7 +45,10 @@ public class PromotionRewardService {
     public List<String> reversalsAfter(String cursor,int limit){
         return db.list("""
             SELECT r.obligation_id FROM nx_promotion_reward r
-            WHERE r.status='REVERSAL_PENDING' AND r.obligation_id>?
+            WHERE r.obligation_id>? AND (r.status='REVERSAL_PENDING' OR (
+              r.status='MANUAL_REVIEW' AND EXISTS(SELECT 1 FROM nx_promotion_reversal v
+                WHERE v.obligation_id=r.obligation_id AND v.status='MANUAL_REVIEW' AND v.outstanding>0)
+                AND EXISTS(SELECT 1 FROM nx_promotion_refund_hold h WHERE h.order_no=r.order_no AND h.status='EXECUTED')))
               AND (r.original_earnings_entry_no IS NULL OR NOT EXISTS(
                 SELECT 1 FROM nx_admin_idempotency_record i
                 WHERE i.scope=CONCAT('EARNINGS_RECOVERY:PRODUCTION:',r.beneficiary_id)
@@ -192,16 +195,82 @@ public class PromotionRewardService {
         Map<String,Object> row=lock(id);require(number(row.get("revision"))==number(request.get("expectedRevision")),"PROMOTION_REVISION_CONFLICT");
         return reverseLocked(row,map(request.get("basis")),commandId,required(request.get("reason"),"reason"));
     }
+    static Map<String,Object> partialCorrection(PromotionMapper db,Object obligationId){
+        return db.one("""
+            SELECT reversal_id,asset,amount,recovered,outstanding FROM nx_promotion_reversal
+            WHERE obligation_id=? AND basis_type='APPROVED_CORRECTION' AND status='MANUAL_REVIEW' AND outstanding>0 FOR UPDATE
+            """,obligationId);
+    }
+    // The executed refund locks the same participant rows as compute settlement before revoking the gift.
+    static int revokeRefundGifts(PromotionMapper db,Map<String,Object> reward){
+        List<Map<String,Object>> devices=db.list("""
+            SELECT d.id,d.ownership_status FROM nx_promotion_device_receipt r JOIN nx_user_device d
+              ON d.id=r.device_id AND d.instance_no=r.instance_no
+            WHERE r.obligation_id=? AND d.user_id=? AND d.source_order_no=? AND d.source_channel='PROMOTION_GIFT'
+              AND d.source_environment='PRODUCTION' AND d.run_id='' AND d.is_deleted=0
+              AND (d.ownership_status='OWNED' OR (d.ownership_status='REVOKED' AND d.status='DEACTIVATED'))
+            ORDER BY d.id FOR UPDATE
+            """,reward.get("obligation_id"),reward.get("beneficiary_id"),reward.get("order_no"));
+        for(var device:devices){
+            Object deviceId=device.get("id"),userId=reward.get("beneficiary_id");
+            db.write("""
+                UPDATE nx_compute_task t SET status='CANCELLED',last_error='PROMOTION_REFUND',updated_at=NOW(6)
+                WHERE t.user_device_id=? AND t.user_id=? AND t.source_environment='PRODUCTION' AND t.is_deleted=0
+                  AND t.status IN ('CLAIMED','RUNNING','PAUSED') AND t.completed_at IS NULL AND t.proof_consumed_at IS NULL
+                  AND NOT EXISTS(SELECT 1 FROM nx_compute_retired_task a WHERE a.task_id=t.id)
+                """,deviceId,userId);
+            db.write("""
+                UPDATE nx_simulated_task t SET status='CANCELLED',cancel_reason='PROMOTION_REFUND'
+                WHERE t.user_device_id=? AND t.user_id=? AND t.status='RUNNING'
+                  AND NOT EXISTS(SELECT 1 FROM nx_compute_retired_task a WHERE a.user_id=t.user_id AND a.task_no=t.task_no COLLATE utf8mb4_0900_ai_ci)
+                """,deviceId,userId);
+            db.write("""
+                UPDATE nx_simulated_device_runtime SET state='STOPPED',stop_at=NOW(6),stop_after_current=0,
+                  finish_after_at=NULL,current_task_no=NULL,next_action_at=NULL,last_error='PROMOTION_REFUND'
+                WHERE user_device_id=? AND user_id=?
+                  AND (state<>'STOPPED' OR NOT (last_error <=> 'PROMOTION_REFUND') OR current_task_no IS NOT NULL OR next_action_at IS NOT NULL)
+                """,deviceId,userId);
+            if("OWNED".equals(device.get("ownership_status")))
+                changed(db.write("UPDATE nx_user_device SET ownership_status='REVOKED',status='DEACTIVATED',deactivated_at=NOW(6),pending_deactivate=0,row_version=row_version+1,updated_at=NOW(6) WHERE id=? AND ownership_status='OWNED'",deviceId));
+        }
+        return devices.size();
+    }
     private Map<String,Object> reverseLocked(Map<String,Object> row,Map<String,Object> basis,String commandId,String reason){
         String id=text(row.get("obligation_id"));String basisType=text(basis.get("type"));
+        boolean wholeRefund="WHOLE_ORDER_REFUND".equals(basisType);
         String basisRef=verifyBasis(row,basis,"REVERSE");
         Map<String,Object> previous=db.one("SELECT * FROM nx_promotion_reversal WHERE obligation_id=? AND basis_type=? AND basis_ref=? FOR UPDATE",id,basisType,basisRef);
-        if(previous!=null){orders.restoreUsageAfterRefund(text(row.get("order_no")));return view(row,false,true);}
-        require(Set.of("ISSUED","REVERSAL_PENDING").contains(text(row.get("status"))),"PROMOTION_REWARD_NOT_REVERSIBLE");
+        boolean historical=previous!=null&&wholeRefund&&"MANUAL_REVIEW".equals(row.get("status"))
+            &&"MANUAL_REVIEW".equals(previous.get("status"))&&decimal(previous.get("outstanding")).signum()>0;
+        if(previous!=null&&!historical){orders.restoreUsageAfterRefund(text(row.get("order_no")));return view(row,false,true);}
+        Map<String,Object> correction=wholeRefund&&previous==null?partialCorrection(db,id):null;
+        require(historical||correction!=null||Set.of("ISSUED","REVERSAL_PENDING").contains(text(row.get("status"))),"PROMOTION_REWARD_NOT_REVERSIBLE");
         Map<String,Object> reserved=reservation(row),snapshot=verifiedSnapshot(row),spec=map(map(snapshot.get("award")).get("reward"));
-        BigDecimal amount=decimal(reserved.get("amount")),recovered=BigDecimal.ZERO;String asset=asset(spec.get("type")),posting=null;
-        Map<String,Object> evidence=new LinkedHashMap<>();
-        if("DEVICE".equals(asset)){
+        String asset=asset(spec.get("type")),posting=null;
+        BigDecimal originalAmount=decimal(reserved.get("amount"));
+        BigDecimal corrected=correction==null?BigDecimal.ZERO:decimal(correction.get("recovered"));
+        if(correction!=null)require(asset.equals(correction.get("asset"))&&originalAmount.compareTo(decimal(correction.get("amount")))==0,"PROMOTION_REVERSAL_EVIDENCE_MISMATCH");
+        BigDecimal amount=originalAmount.subtract(corrected),priorRecovered=historical?decimal(previous.get("recovered")):BigDecimal.ZERO;
+        BigDecimal priorOutstanding=historical?decimal(previous.get("outstanding")):correction!=null?decimal(correction.get("outstanding")):BigDecimal.ZERO;
+        BigDecimal recovered=priorRecovered;
+        Map<String,Object> evidence=historical?new LinkedHashMap<>(parse(previous.get("evidence_json"))):new LinkedHashMap<>();
+        Map<String,Object> platformLoss=new LinkedHashMap<>();
+        if(correction!=null)evidence.put("priorCorrectionId",correction.get("reversal_id"));
+        if("DEVICE".equals(asset)&&wholeRefund){
+            recovered=BigDecimal.valueOf(revokeRefundGifts(db,row)).subtract(corrected).max(priorRecovered);
+            Map<String,BigDecimal> posted=new LinkedHashMap<>();
+            for(var earned:db.list("""
+                SELECT e.asset,e.amount FROM nx_earning_event e
+                JOIN nx_promotion_device_receipt r ON r.device_id=e.user_device_id
+                WHERE r.obligation_id=? AND e.user_id=? AND e.status='POSTED' AND e.wallet_posted_at IS NOT NULL AND e.is_deleted=0
+                  AND NOT EXISTS(SELECT 1 FROM nx_compute_retired_task a WHERE a.user_id=e.user_id AND a.receipt_no=e.receipt_no)
+                ORDER BY e.id FOR UPDATE
+                """,id,row.get("beneficiary_id"))){
+                posted.merge(asset(earned.get("asset")),decimal(earned.get("amount")),BigDecimal::add);
+            }
+            posted.forEach((currency,earned)->{if(earned.signum()>0)platformLoss.put(currency,money(earned));});
+            evidence.put("revokedDeviceCount",recovered.intValueExact());
+        }else if("DEVICE".equals(asset)){
             List<Map<String,Object>> devices=db.list("SELECT r.*,d.user_id,d.source_channel,d.ownership_status,d.is_deleted FROM nx_promotion_device_receipt r JOIN nx_user_device d ON d.id=r.device_id WHERE r.obligation_id=? ORDER BY r.device_id FOR UPDATE",id);
             require(devices.size()==amount.intValueExact(),"PROMOTION_DEVICE_RECEIPT_INCOMPLETE");
             for(Map<String,Object> device:devices){
@@ -214,27 +283,34 @@ public class PromotionRewardService {
                 changed(db.write("UPDATE nx_user_device SET ownership_status='REVOKED',status='DEACTIVATED',deactivated_at=NOW(6),pending_deactivate=0,row_version=row_version+1,updated_at=NOW(6) WHERE id=? AND ownership_status='OWNED'",deviceId));
                 recovered=recovered.add(BigDecimal.ONE);
             }
-            if(recovered.signum()>0&&!"UNLIMITED".equals(db.product(text(reserved.get("product_no")),true).get("inventory_mode")))
-                changed(db.write("UPDATE nx_product SET stock=stock+?,updated_at=NOW(6) WHERE product_no=? AND is_deleted=0",recovered.intValueExact(),reserved.get("product_no")));
             evidence.put("revokedDeviceCount",recovered.intValueExact());
-        }else{
+        }else if(!historical){
             String recoveryKey="PROMOTION-RECOVER-"+sha256(id+":"+basisType+":"+basisRef);
-            var receipt=earnings.recoverReward(new EarningsReleaseService.RewardRecoveryRequest(number(row.get("beneficiary_id")),required(row.get("original_earnings_entry_no"),"originalEntry"),"PROMOTION_REWARD",id,asset,"PRODUCTION",amount,reason,"PROMOTION_ENGINE"),recoveryKey);
+            var request=new EarningsReleaseService.RewardRecoveryRequest(number(row.get("beneficiary_id")),required(row.get("original_earnings_entry_no"),"originalEntry"),"PROMOTION_REWARD",id,asset,"PRODUCTION",amount,reason,"PROMOTION_ENGINE");
+            var receipt=wholeRefund?earnings.recoverPromotionRefund(request,recoveryKey):earnings.recoverReward(request,recoveryKey);
             recovered=receipt.recovered();evidence.put("sourceRecovery",receipt);
-            if(recovered.signum()>0){posting="PROMOTION-REVERSE-"+id;
+            if(recovered.signum()>0){posting="PROMOTION-REVERSE-"+id+(correction==null?"":"-REFUND");
                 ledger.postLedgerEntry(posting,number(row.get("beneficiary_id")),"PROMOTION_REWARD_REVERSAL",asset,"OUT",recovered,"SUCCESS",reason);}
         }
-        BigDecimal outstanding=amount.subtract(recovered);String next=outstanding.signum()==0?"REVERSED":"MANUAL_REVIEW";
-        changed(db.write("""
+        BigDecimal recoveredDelta=recovered.subtract(priorRecovered),outstanding=amount.subtract(recovered);
+        if("DEVICE".equals(asset)&&recoveredDelta.signum()>0&&!"UNLIMITED".equals(db.product(text(reserved.get("product_no")),true).get("inventory_mode")))
+            changed(db.write("UPDATE nx_product SET stock=stock+?,updated_at=NOW(6) WHERE product_no=? AND is_deleted=0",recoveredDelta.intValueExact(),reserved.get("product_no")));
+        if(wholeRefund&&outstanding.signum()>0)platformLoss.put(asset,money(outstanding));
+        if(wholeRefund)evidence.put("platformLoss",platformLoss);
+        String next=wholeRefund||outstanding.signum()==0?"REVERSED":"MANUAL_REVIEW";
+        if(historical)changed(db.write("UPDATE nx_promotion_reversal SET recovered=?,outstanding=?,reusable=?,status=?,evidence_json=?,revision=revision+1,updated_at=NOW(6) WHERE reversal_id=?",
+            recovered,outstanding,recovered,next,json(evidence),previous.get("reversal_id")));
+        else changed(db.write("""
             INSERT INTO nx_promotion_reversal(reversal_id,obligation_id,basis_type,basis_ref,refund_no,approval_operation_id,asset,amount,
               recovered,outstanding,reusable,original_posting_no,reversal_posting_no,status,evidence_json,reason)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,id("PV"),id,basisType,basisRef,"WHOLE_ORDER_REFUND".equals(basisType)?basisRef:null,"APPROVED_CORRECTION".equals(basisType)?basisRef:null,
             asset,amount,recovered,outstanding,recovered,"DEVICE".equals(asset)?"PROMOTION-DEVICE-"+id:row.get("original_ledger_no"),posting,next,json(evidence),reason));
-        changed(db.write("UPDATE nx_promotion_budget SET reversed=reversed+?,unrecoverable=unrecoverable+?,revision=revision+1 WHERE activity_id=? AND asset=? AND product_no=?",recovered,outstanding,row.get("activity_id"),asset,reserved.get("product_no")));
+        if(!historical||recoveredDelta.signum()>0)
+            changed(db.write("UPDATE nx_promotion_budget SET reversed=reversed+?,unrecoverable=unrecoverable+?,revision=revision+1 WHERE activity_id=? AND asset=? AND product_no=?",recoveredDelta,outstanding.subtract(priorOutstanding),row.get("activity_id"),asset,reserved.get("product_no")));
         changed(db.write("UPDATE nx_promotion_reward SET status=?,last_command_id=?,revision=revision+1,updated_at=NOW(6) WHERE obligation_id=?",next,commandId,id));
         terminalAttempt(id,commandId,"REVERSE",next,values("basis",basis,"recovered",money(recovered),"outstanding",money(outstanding),"evidence",evidence));
-        audit("PROMOTION_REWARD_REVERSED",id,values("basisType",basisType,"basisRef",basisRef,"recovered",money(recovered),"outstanding",money(outstanding)));
+        audit("PROMOTION_REWARD_REVERSED",id,values("basisType",basisType,"basisRef",basisRef,"recovered",money(recovered),"outstanding",money(outstanding),"platformLoss",platformLoss,"historical",historical));
         orders.restoreUsageAfterRefund(text(row.get("order_no")));
         return currentView(id);
     }
@@ -328,8 +404,10 @@ public class PromotionRewardService {
         String lock=currentRead?" FOR UPDATE":"";
         List<Map<String,Object>> devices=db.list("SELECT device_id,instance_no,created_at FROM nx_promotion_device_receipt WHERE obligation_id=? ORDER BY device_unit_seq"+lock,id);
         List<Map<String,Object>> holds=db.list("SELECT refund_request_id FROM nx_promotion_refund_hold WHERE order_no=? AND status IN ('HELD','OUTCOME_UNKNOWN','EXECUTED') ORDER BY refund_request_id"+lock,row.get("order_no"));
-        List<Map<String,Object>> reversalRows=db.list("SELECT recovered,outstanding FROM nx_promotion_reversal WHERE obligation_id=?"+lock,id);
-        Map<String,Object> recovery=reversalRows.isEmpty()?null:values("recovered",reversalRows.stream().map(r->decimal(r.get("recovered"))).reduce(BigDecimal.ZERO,BigDecimal::add),"outstanding",reversalRows.stream().map(r->decimal(r.get("outstanding"))).reduce(BigDecimal.ZERO,BigDecimal::add));
+        List<Map<String,Object>> reversalRows=db.list("SELECT basis_type,recovered,outstanding,evidence_json FROM nx_promotion_reversal WHERE obligation_id=?"+lock,id);
+        var refund=reversalRows.stream().filter(r->"WHOLE_ORDER_REFUND".equals(r.get("basis_type"))).findFirst();
+        Map<String,Object> recovery=reversalRows.isEmpty()?null:values("recovered",reversalRows.stream().map(r->decimal(r.get("recovered"))).reduce(BigDecimal.ZERO,BigDecimal::add),
+            "outstanding",refund.map(r->decimal(r.get("outstanding"))).orElseGet(()->reversalRows.stream().map(r->decimal(r.get("outstanding"))).reduce(BigDecimal.ZERO,BigDecimal::add)));
         Object issuedAt=devices.isEmpty()?null:devices.get(0).get("created_at");
         if(devices.isEmpty()&&row.get("original_earnings_entry_no")!=null)issuedAt=db.requiredRow("SELECT created_at FROM nx_wallet_ledger WHERE biz_no=? AND user_id=? AND asset=? AND biz_type='PROMOTION_REWARD' AND direction='IN' AND status='SUCCESS'"+lock,row.get("original_ledger_no"),row.get("beneficiary_id"),spec.get("type")).get("created_at");
         Object receipt=row.get("original_earnings_entry_no")!=null||!devices.isEmpty()?values("ledgerBizNo",row.get("original_ledger_no"),"earningsEntryNo",row.get("original_earnings_entry_no"),
@@ -342,6 +420,9 @@ public class PromotionRewardService {
             "commandId",row.get("last_command_id"),"updatedAt",instant(row.get("updated_at")).toString());
         result.put("disclosure",PromotionPublicService.disclosure(db,map(snapshot.get("contract")),map(snapshot.get("policies")),spec));
         if(admin){result.put("beneficiaryId",text(row.get("beneficiary_id")));result.put("qualificationSnapshotHash",row.get("snapshot_hash"));
+            Map<String,Object> platformLoss=new LinkedHashMap<>();
+            for(var reversal:reversalRows)platformLoss.putAll(map(parse(reversal.get("evidence_json")).getOrDefault("platformLoss",Map.of())));
+            result.put("platformLoss",platformLoss);
             result.put("dispositionOptions",dispositionOptions(row));
             result.put("attempts",db.list("SELECT * FROM nx_promotion_reward_attempt WHERE obligation_id=? ORDER BY started_at,attempt_id",id).stream().map(a->values("attemptId",a.get("attempt_id"),"commandId",a.get("command_id"),"state",a.get("status"),
                 "startedAt",instant(a.get("started_at")).toString(),"finishedAt",a.get("finished_at")==null?null:instant(a.get("finished_at")).toString(),"evidenceRefs",parse(a.get("evidence_json")).getOrDefault("evidenceRefs",List.of()))).toList());}

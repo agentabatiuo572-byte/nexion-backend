@@ -72,7 +72,21 @@ public class EarningsReleaseService {
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY,
             rollbackFor = Exception.class)
     public RewardRecoveryReceipt recoverReward(RewardRecoveryRequest request, String idempotencyKey) {
+        return recoverReward(request, idempotencyKey, false);
+    }
+
+    /** Only the promotion refund service calls this after verifying the executed E4 refund. */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY,
+            rollbackFor = Exception.class)
+    public RewardRecoveryReceipt recoverPromotionRefund(RewardRecoveryRequest request, String idempotencyKey) {
+        return recoverReward(request, idempotencyKey, true);
+    }
+
+    private RewardRecoveryReceipt recoverReward(RewardRecoveryRequest request, String idempotencyKey, boolean promotionRefund) {
         RewardRecoveryRequest command = normalizeRecovery(request);
+        if (promotionRefund && !"PROMOTION_REWARD".equals(command.sourceType())) {
+            throw new BizException(422, "EARNINGS_RECOVERY_REQUEST_INVALID");
+        }
         int sandbox = expectedWalletSandbox(command.sourceEnvironment());
         String scope = "EARNINGS_RECOVERY:" + command.sourceEnvironment() + ":" + command.userId();
         // Length-prefixed fields avoid delimiter collisions without a second serialization system.
@@ -81,7 +95,7 @@ public class EarningsReleaseService {
                 command.reason(), command.actor()).stream().map(v -> v.length() + ":" + v)
                 .collect(java.util.stream.Collectors.joining());
         return idempotency.executeRetained(scope, idempotencyKey, hash(payload), RewardRecoveryReceipt.class,
-                () -> recoverRewardOnce(command, sandbox));
+                () -> recoverRewardOnce(command, sandbox, promotionRefund));
     }
 
     private RewardRecoveryRequest normalizeRecovery(RewardRecoveryRequest request) {
@@ -111,7 +125,7 @@ public class EarningsReleaseService {
         return StringUtils.hasText(value) && value.trim().length() <= max;
     }
 
-    private RewardRecoveryReceipt recoverRewardOnce(RewardRecoveryRequest command, int sandbox) {
+    private RewardRecoveryReceipt recoverRewardOnce(RewardRecoveryRequest command, int sandbox, boolean promotionRefund) {
         // Account -> wallet -> source; the same order as credit and withdrawal. Frozen accounts may
         // be recovered, but never released or made withdrawable by this primitive.
         if (mapper.lockRecoveryUser(command.userId(), sandbox) == null) {
@@ -135,13 +149,14 @@ public class EarningsReleaseService {
         BigDecimal debited = "USDT".equals(entry.asset()) ? wallet.usdtDebited() : wallet.nexDebited();
         boolean tracked = entry.debitBaseline() != null;
         if (available == null || available.signum() < 0 || debited == null || debited.signum() < 0
+                || (promotionRefund && !tracked)
                 || (tracked && (debited.compareTo(entry.debitBaseline()) < 0
                     || !wallet.walletId().equals(entry.sourceWalletId())))) {
             throw new BizException(409, "EARNINGS_RECOVERY_EVIDENCE_INVALID");
         }
         // A proven recovery from a different source is not consumption of this entry.
         // Keep this entry's earlier recoveries in the watermark; never exclude ordinary debits.
-        BigDecimal otherRecoveries = tracked
+        BigDecimal otherRecoveries = tracked && !promotionRefund
                 ? mapper.otherSourceRecoveriesSinceCredit(command.userId(), wallet.walletId(), entry.asset(),
                     entry.sourceEnvironment(), entry.entryNo(), entry.debitBaseline(), debited)
                     .stream().reduce(BigDecimal.ZERO, BigDecimal::add)
@@ -150,10 +165,13 @@ public class EarningsReleaseService {
         if (otherRecoveries.signum() < 0 || otherRecoveries.compareTo(debitDelta) > 0) {
             throw new BizException(409, "EARNINGS_RECOVERY_EVIDENCE_INVALID");
         }
-        BigDecimal provable = tracked
-                ? entry.amount().subtract(debitDelta.subtract(otherRecoveries)).max(BigDecimal.ZERO)
-                : BigDecimal.ZERO;
-        BigDecimal recovered = command.amount().min(remaining).min(provable).min(available).setScale(6);
+        BigDecimal recovered = command.amount().min(available).setScale(6);
+        if (!promotionRefund) {
+            BigDecimal provable = tracked
+                    ? entry.amount().subtract(debitDelta.subtract(otherRecoveries)).max(BigDecimal.ZERO)
+                    : BigDecimal.ZERO;
+            recovered = recovered.min(provable);
+        }
         var fundBefore=sandbox==0 && fundEarnings!=null?fundEarnings.begin(command.userId()):null;
         var fundEntry=fundBefore==null?null:fundEarnings.entry(entry.entryNo());
         if (recovered.signum() > 0) {
@@ -168,7 +186,7 @@ public class EarningsReleaseService {
         var receipt = new RewardRecoveryReceipt(recoveryNo, entry.entryNo(), command.userId(), entry.asset(),
                 command.amount(), recovered, command.amount().subtract(recovered), entry.recoveredAmount().add(recovered),
                 remaining.subtract(recovered), entry.bucket(), available.subtract(recovered),
-                tracked ? "TRACKED_CONSERVATIVE" : "LEGACY_UNPROVEN");
+                promotionRefund ? "D06_AVAILABLE_BALANCE" : tracked ? "TRACKED_CONSERVATIVE" : "LEGACY_UNPROVEN");
         if (mapper.insertRecovery(new EarningsReleaseMapper.RecoveryWrite(receipt, command.sourceType(),
                 command.sourceRef(), command.sourceEnvironment(), command.reason(), command.actor(),
                 available, debited, entry.debitBaseline())) != 1) {

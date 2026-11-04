@@ -149,6 +149,9 @@ public interface SimulatedTaskMapper {
     int completeTask(@Param("taskNo")String taskNo,@Param("postedAt")LocalDateTime postedAt);
     @Update("UPDATE nx_simulated_task SET status='CANCELLED',cancel_reason=#{reason} WHERE task_no=#{taskNo} AND status='RUNNING'")
     int cancelTask(@Param("taskNo")String taskNo,@Param("reason")String reason);
-    @Update("UPDATE nx_simulated_device_runtime SET state='ERROR',last_error=#{error},next_action_at=#{retryAt} WHERE user_device_id=#{deviceId}")
+    @Update("""
+            UPDATE nx_simulated_device_runtime SET state='ERROR',last_error=#{error},next_action_at=#{retryAt}
+            WHERE user_device_id=#{deviceId} AND NOT (state='STOPPED' AND last_error <=> 'PROMOTION_REFUND')
+            """)
     int recordError(@Param("deviceId")long deviceId,@Param("error")String error,@Param("retryAt")LocalDateTime retryAt);
 }

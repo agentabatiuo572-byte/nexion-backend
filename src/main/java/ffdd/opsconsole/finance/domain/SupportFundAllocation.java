@@ -192,22 +192,22 @@ public final class SupportFundAllocation {
             case CLAWBACK -> {
                 Event origin=receipts.get(e.reference());
                 require(origin!=null && (origin.action()==Action.EARNINGS || origin.action()==Action.PROTECTED_EARNINGS)
-                    && origin.to().equals(e.from()),"Clawback requires the original commission account");
+                    && origin.to().equals(e.from()),"Clawback requires the original earnings account");
                 BigDecimal recovered=receipts.values().stream().filter(previous->e.reference().equals(previous.reference())
                     && (previous.action()==Action.RECOVER ||previous.action()==Action.CLAWBACK))
                     .map(Event::amount).reduce(ZERO,BigDecimal::add);
-                require(recovered.add(e.amount()).compareTo(origin.amount())<=0,"Clawback exceeds the original commission");
+                require(recovered.add(e.amount()).compareTo(origin.amount())<=0,"Clawback exceeds the original earnings");
                 var remaining=new ArrayList<>(balances.getOrDefault(e.from(),List.of()));
                 remaining.sort(Comparator.comparingLong(Lot::originOrder));
                 BigDecimal needed=e.amount();
-                // Existing commission recovery may legally use later available funds; it is not a new purchase.
+                // Approved clawbacks may use later available funds in the original asset.
                 for(int priority=0;priority<2 &&needed.signum()>0;priority++)for(int i=0;i<remaining.size() &&needed.signum()>0;i++) {
                     Lot lot=remaining.get(i);boolean original=lot.originId().equals(e.reference());
                     if((priority==0)!=original ||lot.quantity().signum()==0)continue;
                     BigDecimal quantity=needed.min(lot.quantity()),basis=basisPart(lot,quantity);
                     remaining.set(i,lot.part(lot.quantity().subtract(quantity),lot.basis().subtract(basis)));needed=needed.subtract(quantity);
                 }
-                require(needed.signum()==0,"Insufficient available funds for commission clawback");
+                require(needed.signum()==0,"Insufficient available funds for earnings clawback");
                 balances.put(e.from(),remaining.stream().filter(lot->lot.quantity().signum()>0).toList());
             }
             case REORG_DEBIT -> {
