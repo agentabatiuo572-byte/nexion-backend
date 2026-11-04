@@ -6,11 +6,16 @@ import ffdd.opsconsole.device.mapper.SimulatedTaskMapper.*;
 import ffdd.opsconsole.shared.capacity.E3DeviceCapacityPolicy;
 import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import ffdd.opsconsole.shared.exception.BizException;
+import jakarta.annotation.PreDestroy;
 import java.math.BigDecimal;
 import java.security.SecureRandom;
 import java.time.*;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,6 +31,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class SimulatedTaskService implements SchedulingConfigurer {
     private static final Logger LOG=LoggerFactory.getLogger(SimulatedTaskService.class);
     private static final int BATCH_SIZE=500,CATCH_UP_LIMIT=12;
+    private static final int SETTLEMENT_THREADS = 10;
+    private static final int SLOTS_PER_BATCH = 600;
+    private static final int DUE_LIMIT = SETTLEMENT_THREADS * SLOTS_PER_BATCH;
     private final SimulatedTaskMapper mapper;
     private final AppTaskAssignmentMapper assignments;
     private final SimulatedTaskPolicyService policies;
@@ -36,6 +44,8 @@ public class SimulatedTaskService implements SchedulingConfigurer {
     private final Clock clock;
     private final SecureRandom random=new SecureRandom();
     private final AtomicLong initialCursor=new AtomicLong();
+    private final ExecutorService settlementWorkers;
+    private volatile boolean stopping;
     private boolean moreWork;
 
     public SimulatedTaskService(SimulatedTaskMapper mapper,AppTaskAssignmentMapper assignments,
@@ -43,6 +53,18 @@ public class SimulatedTaskService implements SchedulingConfigurer {
             PlatformTransactionManager transactions,Environment environment,Clock clock) {
         this.mapper=mapper;this.assignments=assignments;this.policies=policies;this.settlement=settlement;this.lifecycle=lifecycle;
         this.transaction=new TransactionTemplate(transactions);this.environment=environment;this.clock=clock;
+        AtomicInteger workerNumber = new AtomicInteger();
+        settlementWorkers = Executors.newFixedThreadPool(SETTLEMENT_THREADS,
+                job -> new Thread(job, "settlement-due-" + workerNumber.incrementAndGet()));
+    }
+
+    @PreDestroy
+    void stopSettlementWorkers() {
+        stopping = true;
+        // A tick holds this monitor until all in-flight slot transactions finish.
+        synchronized (this) {
+            settlementWorkers.shutdown();
+        }
     }
     public record PhoneOnlineResult(boolean onlineConfirmed,int retryAfterSeconds,RuntimeRow runtime) { }
     public boolean enabled(){return environment.getProperty("nexion.simulated-tasks.enabled",Boolean.class,false);}
@@ -120,18 +142,47 @@ public class SimulatedTaskService implements SchedulingConfigurer {
         });
     }
 
-    public void tick() {
+    public synchronized void tick() {
         moreWork=false;
-        if(!enabled())return;
+        if(stopping || !enabled())return;
         LocalDateTime observed=now();
-        var due=mapper.due(observed,BATCH_SIZE);
-        boolean advancedDue=false,advancedInitial=false;
-        for(var candidate:due)advancedDue|=process(candidate,observed,false);
+        var due=mapper.due(observed,DUE_LIMIT);
+        boolean advancedDue=settleDue(due,observed),advancedInitial=false;
+        if(stopping)return;
         var candidates=mapper.initialDevices(initialCursor.get(),BATCH_SIZE);
         if(candidates.isEmpty())initialCursor.set(0);
-        for(var candidate:candidates){initialCursor.set(candidate.deviceId());advancedInitial|=process(candidate,observed,true);}
-        moreWork=(due.size()==BATCH_SIZE && advancedDue) || (candidates.size()==BATCH_SIZE && advancedInitial);
+        for(var candidate:candidates){
+            if(stopping)return;
+            initialCursor.set(candidate.deviceId());advancedInitial|=process(candidate,observed,true);
+        }
+        moreWork=(due.size()==DUE_LIMIT && advancedDue) || (candidates.size()==BATCH_SIZE && advancedInitial);
         if(!moreWork && (advancedDue || advancedInitial))moreWork=!mapper.due(now(),1).isEmpty();
+    }
+    private boolean settleDue(List<Candidate> due, LocalDateTime observed) {
+        if (due.isEmpty()) return false;
+        // A user's slots can span batches. Take them in the order returned by the due query.
+        Map<Long, ArrayDeque<Candidate>> byUser = new HashMap<>();
+        for (Candidate slot : due) byUser.computeIfAbsent(slot.userId(), id -> new ArrayDeque<>()).addLast(slot);
+        List<CompletableFuture<Integer>> batches = new ArrayList<>();
+        for (int start = 0; start < due.size(); start += SLOTS_PER_BATCH) {
+            var batch = due.subList(start, Math.min(start + SLOTS_PER_BATCH, due.size()));
+            batches.add(CompletableFuture.supplyAsync(() -> {
+                int advanced = 0;
+                for (Candidate slot : batch) {
+                    var account = byUser.get(slot.userId());
+                    synchronized (account) {
+                        if (stopping) break;
+                        if (process(account.removeFirst(), observed, false)) advanced++;
+                    }
+                }
+                LOG.debug("Settlement batch worker={} slots={} advanced={}",
+                        Thread.currentThread().getName(), batch.size(), advanced);
+                return advanced;
+            }, settlementWorkers));
+        }
+        CompletableFuture.allOf(batches.toArray(CompletableFuture[]::new)).join();
+        LOG.debug("Settlement wave selected={} batches={}", due.size(), batches.size());
+        return batches.stream().anyMatch(batch -> batch.join() > 0);
     }
     private boolean process(Candidate candidate,LocalDateTime observed,boolean initial) {
         try {
