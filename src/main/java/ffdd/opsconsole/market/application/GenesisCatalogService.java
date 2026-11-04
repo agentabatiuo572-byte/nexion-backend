@@ -246,7 +246,13 @@ public class GenesisCatalogService {
                 || !request.expectedMarketOpenStateVersion().equals(state.marketOpenStateVersion())) {
             throw new BizException(409,"GENESIS_MARKET_STATE_VERSION_CONFLICT");
         }
-        if ("open".equals(request.value())) requireReadyForOpen();
+        if ("open".equals(request.value())) {
+            requireReadyForOpen();
+            if ("closed".equals(state.marketOpenState())) {
+                ApiResult<Map<String, Object>> failure = marketService.coverageRedlineFailure();
+                if (failure != null) throw new BizException(failure.getCode(), failure.getMessage());
+            }
+        }
         String actor=AdminActorResolver.resolve(request.operator());
         String change=LocalDateTime.now(clock)+" "+actor+" "+state.marketOpenState()+"->"+request.value()+":"+request.reason().trim();
         if (mapper.updateMarketState(request.value(),notice,change,state.marketOpenStateVersion())!=1) throw new BizException(409,"GENESIS_MARKET_STATE_CONFLICT");

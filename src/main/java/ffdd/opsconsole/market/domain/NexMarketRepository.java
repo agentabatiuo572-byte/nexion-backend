@@ -38,6 +38,12 @@ public interface NexMarketRepository {
 
     BigDecimal genesisAccrualUsd();
 
+    default GenesisPaidEmission genesisPaidEmission(String batchNo) {
+        return new GenesisPaidEmission(0L, BigDecimal.ZERO);
+    }
+
+    record GenesisPaidEmission(long count, BigDecimal amountUsdt) {}
+
     Optional<String> latestGenesisDividendRerunBatchNo();
 
     boolean genesisDividendBatchRerunExists(String batchNo);

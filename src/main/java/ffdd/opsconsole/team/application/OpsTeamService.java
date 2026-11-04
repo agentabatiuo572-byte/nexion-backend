@@ -901,7 +901,7 @@ public class OpsTeamService implements AuditReplayable {
             leadershipPoolService.lockLeaderboardMaintenance();
         }
         // F.cooldown 使用引擎消费者读取的单一权威键，避免 UI 镜像键与业务键双写分叉。
-        String configKey = "F.cooldown".equals(key) ? COMMISSION_COOLING_DAYS_KEY : uiConfigKey(key);
+        String configKey = uiConfigStorageKey(key);
         String oldValue = ("F.leaderboard.paused".equals(key)
                 ? configFacade.activeValueForUpdate(configKey) : configFacade.activeValue(configKey)).orElse("");
         String effectiveOldValue = projectLegacyUiValue(key, oldValue);
@@ -1032,13 +1032,9 @@ public class OpsTeamService implements AuditReplayable {
         Object businessValue = "usdtRate".equals(field)
                 ? percentRatio(value, BigDecimal.ZERO)
                 : parseDecimal(value, BigDecimal.ZERO);
-        Map<String, Object> oldRow = unilevelRates().stream()
-                .filter(row -> ("L" + layerNo).equals(row.get("level")))
-                .findFirst()
-                .orElse(Map.of());
-        String oldValue = String.valueOf(oldRow.getOrDefault("usdtRate".equals(field) ? "usdtPct" : "nexReward", ""));
+        String oldValue = unilevelRuleValue(commissionRepository, key);
         // A1 批1a 修复2:unilevel 版税费率上调放大佣金流出,B1 红线下阻断(usdtRate / nexPerUsd 上调 = 放大)。
-        if (loosensPayoutControlUiKey(key, oldValue, value) && coverageBelowRedline()) {
+        if (loosensPayoutControlUiKey(key, unilevelComparisonValue(key, oldValue), value) && coverageBelowRedline()) {
             return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
         }
         if (!commissionRepository.updateUnilevelRule(layerNo, field, businessValue)) {
@@ -1358,6 +1354,15 @@ public class OpsTeamService implements AuditReplayable {
         // Freezing and settlement/payment markers do not transfer the wallet funds again.
     }
 
+    /** Derives the A2 ticket direction from the same configuration used at execution. */
+    public static boolean uiConfigAmplifies(PlatformConfigFacade configs, TeamCommissionRepository rules,
+            String key, String proposedValue) {
+        String currentValue = isUnilevelRuleKey(key) && rules != null
+                ? unilevelComparisonValue(key, unilevelRuleValue(rules, key))
+                : configs.activeValue(uiConfigStorageKey(key)).orElse("");
+        return loosensPayoutControlUiKey(key, currentValue, proposedValue);
+    }
+
     /**
      * A1 批1a 修复2:全域 B1 资金护栏接线 — UI keys 资金放大判断。
      * 费率/比例上调 = 放大;门槛下调 = 放大。复盖:
@@ -1366,7 +1371,7 @@ public class OpsTeamService implements AuditReplayable {
      *   F4 pool.ratio/top1MaxPct/top5MaxPct/periodPrize 上调
      * 新值解析失败由 validateUiConfig 上层报错；F2 旧门槛缺失或非法值修复会恢复结算，按放宽预检。
      */
-    private boolean loosensPayoutControlUiKey(String key, String oldValue, String newValue) {
+    private static boolean loosensPayoutControlUiKey(String key, String oldValue, String newValue) {
         if (key == null) {
             return false;
         }
@@ -1381,15 +1386,19 @@ public class OpsTeamService implements AuditReplayable {
             }
             return switch (key) {
                 case "F.cooldown" -> parseDecimal(newValue.replaceAll("[^0-9].*$", ""), BigDecimal.ZERO)
-                        .intValueExact() < resolveCommissionCoolingDays();
-                case "F.promo.weekMultiplier", "F.peer.rate", "F.pool.periodPrize" ->
+                        .intValueExact() < commissionCoolingDays(oldValue);
+                case "F.promo.weekMultiplier", "F.peer.rate" ->
                         parseDecimal(newValue, BigDecimal.ZERO).compareTo(parseDecimal(oldValue, BigDecimal.ZERO)) > 0;
+                case "F.pool.periodPrize" -> periodPrizeIncreases(oldValue, newValue);
                 case "F.pool.ratio" -> LeadershipPoolConfigGuard.isConfiguredRateIncrease(oldValue, newValue);
-                case "F.binary.matchRate", "F.pool.top1MaxPct", "F.pool.top5MaxPct" ->
+                case "F.binary.matchRate" -> BinarySettlementPolicyProvider.normalizeMatchRate(newValue)
+                        .compareTo(currentBinaryMatchRate(oldValue)) > 0;
+                case "F.pool.top1MaxPct", "F.pool.top5MaxPct" ->
                         percentRatio(newValue, BigDecimal.ZERO).compareTo(percentRatio(oldValue, BigDecimal.ZERO)) > 0;
                 // 门槛下调 = 放大(更低门槛触发更多结算)
                 case "F.binary.threshold" ->
-                        parseDecimal(newValue, BigDecimal.ZERO).compareTo(parseDecimal(oldValue, BigDecimal.ZERO)) < 0;
+                        parseDecimal(newValue.replace("$", ""), BigDecimal.ZERO)
+                                .compareTo(parseDecimal(oldValue.replace("$", ""), BigDecimal.ZERO)) < 0;
                 case "F.unilevel.depthGate" -> {
                     int next = depthGateLayer(newValue);
                     try {
@@ -1415,19 +1424,43 @@ public class OpsTeamService implements AuditReplayable {
         }
     }
 
-    private int depthGateLayer(String value) {
+    private static BigDecimal currentBinaryMatchRate(String value) {
+        try {
+            return BinarySettlementPolicyProvider.normalizeMatchRate(value);
+        } catch (NumberFormatException ex) {
+            return BigDecimal.ZERO;
+        }
+    }
+
+    private static boolean periodPrizeIncreases(String oldValue, String newValue) {
+        try {
+            var reader = JSON_PROBE.reader().with(com.fasterxml.jackson.databind.DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
+            com.fasterxml.jackson.databind.JsonNode proposed = reader.readTree(newValue);
+            if (!proposed.isObject()) {
+                return parseDecimal(newValue, BigDecimal.ZERO).compareTo(parseDecimal(oldValue, BigDecimal.ZERO)) > 0;
+            }
+            com.fasterxml.jackson.databind.JsonNode current = isValidJson(oldValue) && !oldValue.isBlank()
+                    ? reader.readTree(oldValue) : JSON_PROBE.createObjectNode();
+            return List.of("today", "week", "month", "allTime").stream().anyMatch(period ->
+                    proposed.path(period).decimalValue().compareTo(current.path(period).decimalValue()) > 0);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
+            return false;
+        }
+    }
+
+    private static int depthGateLayer(String value) {
         String normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
         if (!normalized.matches("L[1-7]")) throw new IllegalArgumentException("F_TEAM_DEPTH_GATE_LAYER_INVALID");
         return Integer.parseInt(normalized.substring(1));
     }
 
-    private int existingDepthGateLayer(String value) {
+    private static int existingDepthGateLayer(String value) {
         String normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
         // The settlement engine also accepts existing bare 1..7 values.
         return normalized.matches("[1-7]") ? Integer.parseInt(normalized) : depthGateLayer(normalized);
     }
 
-    private int depthGateRank(String value) {
+    private static int depthGateRank(String value) {
         String normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
         if (!normalized.matches("V[0-8]")) throw new IllegalArgumentException("F_TEAM_DEPTH_GATE_RANK_INVALID");
         return Integer.parseInt(normalized.substring(1));
@@ -1442,7 +1475,7 @@ public class OpsTeamService implements AuditReplayable {
         return Optional.of(key.substring(prefix.length(), key.length() - suffix.length()));
     }
 
-    private boolean isUnilevelRuleKey(String key) {
+    private static boolean isUnilevelRuleKey(String key) {
         if (!key.startsWith("F.unilevel.L") && !key.startsWith("F.unilevel.nex.L")) {
             return false;
         }
@@ -1493,7 +1526,7 @@ public class OpsTeamService implements AuditReplayable {
         return "F.leaderboard.period.status".equals(key);
     }
 
-    private int unilevelLayerNo(String key) {
+    private static int unilevelLayerNo(String key) {
         String raw = key.startsWith("F.unilevel.nex.L")
                 ? key.substring("F.unilevel.nex.L".length())
                 : key.substring("F.unilevel.L".length());
@@ -1604,6 +1637,21 @@ public class OpsTeamService implements AuditReplayable {
         return commissionRepository.unilevelRates().stream()
                 .map(this::normalizeUnilevelRate)
                 .toList();
+    }
+
+    private static String unilevelRuleValue(TeamCommissionRepository rules, String key) {
+        String level = "L" + unilevelLayerNo(key);
+        String field = key.startsWith("F.unilevel.nex.") ? "nexReward" : "usdtPct";
+        return rules.unilevelRates().stream()
+                .filter(row -> level.equals(row.get("level")))
+                .findFirst()
+                .map(row -> decimalValue(row.get(field), BigDecimal.ZERO).stripTrailingZeros().toString())
+                .orElse("");
+    }
+
+    private static String unilevelComparisonValue(String key, String currentValue) {
+        // usdtPct is expressed in percentage points; nexReward is a multiplier.
+        return key.startsWith("F.unilevel.nex.") ? currentValue : currentValue + "%";
     }
 
     private Map<String, Object> normalizeUnilevelRate(Map<String, Object> raw) {
@@ -2288,7 +2336,7 @@ public class OpsTeamService implements AuditReplayable {
         return String.valueOf(value).trim();
     }
 
-    private BigDecimal decimalValue(Object raw, BigDecimal fallback) {
+    private static BigDecimal decimalValue(Object raw, BigDecimal fallback) {
         if (raw == null) {
             return fallback;
         }
@@ -2416,7 +2464,7 @@ public class OpsTeamService implements AuditReplayable {
         return trimmed;
     }
 
-    private boolean isValidJson(String raw) {
+    private static boolean isValidJson(String raw) {
         try {
             JSON_PROBE.readTree(raw);
             return true;
@@ -2577,7 +2625,7 @@ public class OpsTeamService implements AuditReplayable {
     private Map<String, String> configValues() {
         Map<String, String> values = new LinkedHashMap<>();
         for (String key : UI_CONFIG_KEYS) {
-            String canonicalKey = "F.cooldown".equals(key) ? COMMISSION_COOLING_DAYS_KEY : uiConfigKey(key);
+            String canonicalKey = uiConfigStorageKey(key);
             configFacade.activeValue(canonicalKey).ifPresent(value -> values.put(key, projectLegacyUiValue(key, value)));
         }
         return values;
@@ -2834,7 +2882,11 @@ public class OpsTeamService implements AuditReplayable {
         return configDecimal(key, BigDecimal.valueOf(fallback)).setScale(0, RoundingMode.DOWN).intValue();
     }
 
-    private String uiConfigKey(String key) {
+    private static String uiConfigStorageKey(String key) {
+        return "F.cooldown".equals(key) ? COMMISSION_COOLING_DAYS_KEY : uiConfigKey(key);
+    }
+
+    private static String uiConfigKey(String key) {
         return "team.ui." + key;
     }
 
@@ -2928,16 +2980,16 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     private int resolveCommissionCoolingDays() {
-        return configFacade.activeValue(COMMISSION_COOLING_DAYS_KEY)
-                .map(value -> {
-                    try {
-                        return Integer.parseInt(value.trim());
-                    } catch (NumberFormatException ignored) {
-                        return null;
-                    }
-                })
-                .filter(days -> days >= 0 && days <= 90)
-                .orElse(DEFAULT_COMMISSION_COOLING_DAYS);
+        return commissionCoolingDays(configFacade.activeValue(COMMISSION_COOLING_DAYS_KEY).orElse(""));
+    }
+
+    private static int commissionCoolingDays(String value) {
+        try {
+            int days = Integer.parseInt(value.trim());
+            return days >= 0 && days <= 90 ? days : DEFAULT_COMMISSION_COOLING_DAYS;
+        } catch (NumberFormatException ignored) {
+            return DEFAULT_COMMISSION_COOLING_DAYS;
+        }
     }
 
     private String configText(String key, String fallback) {
@@ -2957,11 +3009,11 @@ public class OpsTeamService implements AuditReplayable {
                 .orElse(false);
     }
 
-    private BigDecimal parseDecimal(String raw) {
+    private static BigDecimal parseDecimal(String raw) {
         return parseDecimal(raw, null);
     }
 
-    private BigDecimal parseDecimal(String raw, BigDecimal fallback) {
+    private static BigDecimal parseDecimal(String raw, BigDecimal fallback) {
         if (!StringUtils.hasText(raw)) {
             if (fallback != null) {
                 return BigDecimal.ZERO;
@@ -2978,7 +3030,7 @@ public class OpsTeamService implements AuditReplayable {
         }
     }
 
-    private BigDecimal percentRatio(String raw, BigDecimal fallback) {
+    private static BigDecimal percentRatio(String raw, BigDecimal fallback) {
         if (!StringUtils.hasText(raw)) {
             return BigDecimal.ZERO;
         }
@@ -3772,7 +3824,7 @@ public class OpsTeamService implements AuditReplayable {
                 TeamCommissionConfigUpdateRequest req = new TeamCommissionConfigUpdateRequest(str(p, "key"), str(p, "value"), reason, operator);
                 return updateConfig(idem, req);
             }
-            // f_ui_config: polymorphic UI keys,key 分发(F.binary.spillover/F.fulfillment... 等 toggle)。amplifies false。
+            // f_ui_config: polymorphic UI keys，按当前值与拟改值判定放大方向。
             case "f_ui_config" -> {
                 String key = str(p, "key");
                 TeamCommissionConfigUpdateRequest req = new TeamCommissionConfigUpdateRequest(

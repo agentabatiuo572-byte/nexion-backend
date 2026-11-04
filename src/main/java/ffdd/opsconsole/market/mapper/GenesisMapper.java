@@ -160,6 +160,15 @@ public interface GenesisMapper extends BaseMapper<GenesisSeriesEntity> {
     BigDecimal genesisAccrualUsd();
 
     @Select("""
+            SELECT COUNT(*) AS count, COALESCE(SUM(i.amount_usdt), 0) AS amountUsdt
+              FROM nx_genesis_emission_batch b
+              JOIN nx_genesis_emission_item i ON i.batch_no = b.batch_no
+             WHERE b.batch_no = #{batchNo} AND b.is_deleted = 0
+               AND i.is_deleted = 0 AND i.status = 'PAID'
+            """)
+    ffdd.opsconsole.market.domain.NexMarketRepository.GenesisPaidEmission paidEmission(@Param("batchNo") String batchNo);
+
+    @Select("""
             SELECT ledger.biz_no
               FROM nx_wallet_ledger ledger
               JOIN nx_user ledger_user ON ledger_user.id = ledger.user_id

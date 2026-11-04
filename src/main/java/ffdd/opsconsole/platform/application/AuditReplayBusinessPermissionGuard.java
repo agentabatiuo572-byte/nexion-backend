@@ -18,6 +18,8 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.PhoneReplacementException;
 import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
+import ffdd.opsconsole.team.application.OpsTeamService;
+import ffdd.opsconsole.team.domain.TeamCommissionRepository;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -108,6 +110,7 @@ public class AuditReplayBusinessPermissionGuard {
     private final PhoneReplacementContract phoneReplacement;
     private final ffdd.opsconsole.finance.cregis.CregisDepositPolicyService depositPolicies;
     private final ffdd.opsconsole.device.application.LegacyUnknownZeroCreditService legacyUnknownZeroCredit;
+    private final TeamCommissionRepository teamCommissionRepository;
 
     public AuditReplayBusinessPermissionGuard(TrustDisclosureRepository trustDisclosureRepository,
             AdminOperatorRoleResolver roleResolver, EmergencyControlRepository emergencyControlRepository,
@@ -117,7 +120,19 @@ public class AuditReplayBusinessPermissionGuard {
             PhoneReplacementContract phoneReplacement,
             ffdd.opsconsole.finance.cregis.CregisDepositPolicyService depositPolicies) {
         this(trustDisclosureRepository,roleResolver,emergencyControlRepository,directPolicies,configFacade,
-                weeklyRegionPolicies,phoneReplacement,depositPolicies,null);
+                weeklyRegionPolicies,phoneReplacement,depositPolicies,null,null);
+    }
+
+    public AuditReplayBusinessPermissionGuard(TrustDisclosureRepository trustDisclosureRepository,
+            AdminOperatorRoleResolver roleResolver, EmergencyControlRepository emergencyControlRepository,
+            org.springframework.beans.factory.ObjectProvider<ffdd.opsconsole.team.application.DirectReferralPolicyService> directPolicies,
+            PlatformConfigFacade configFacade,
+            ffdd.opsconsole.growth.application.WeeklyRegionPolicyService weeklyRegionPolicies,
+            PhoneReplacementContract phoneReplacement,
+            ffdd.opsconsole.finance.cregis.CregisDepositPolicyService depositPolicies,
+            ffdd.opsconsole.device.application.LegacyUnknownZeroCreditService legacyUnknownZeroCredit) {
+        this(trustDisclosureRepository, roleResolver, emergencyControlRepository, directPolicies, configFacade,
+                weeklyRegionPolicies, phoneReplacement, depositPolicies, legacyUnknownZeroCredit, null);
     }
 
     public AuditReplayBusinessPermissionGuard(TrustDisclosureRepository trustDisclosureRepository,
@@ -760,7 +775,8 @@ public class AuditReplayBusinessPermissionGuard {
         if (targetId.isBlank()) {
             return null;
         }
-        boolean amplifies = !"f_ui_config".equals(operation) || fUiConfigAmplifies(key);
+        boolean amplifies = !"f_ui_config".equals(operation)
+                || OpsTeamService.uiConfigAmplifies(configFacade, teamCommissionRepository, key, nextValue);
         return new DelegatedProposalDescriptor(
                 "F 域配置调整 · " + key,
                 key,
@@ -1411,16 +1427,6 @@ public class AuditReplayBusinessPermissionGuard {
             return "F4";
         }
         return "F1";
-    }
-
-    private boolean fUiConfigAmplifies(String key) {
-        return Set.of(
-                "F.cooldown",
-                "F.binary.matchRate", "F.binary.threshold",
-                "F.pool.ratio", "F.pool.top1MaxPct", "F.pool.top5MaxPct",
-                "F.pool.periodPrize", "F.promo.weekMultiplier", "F.peer.rate")
-                .contains(key)
-                || key.matches("^F\\.unilevel\\.(?:nex\\.)?L[1-7]$");
     }
 
     /**
