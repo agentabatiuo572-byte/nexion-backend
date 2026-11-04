@@ -1,0 +1,7 @@
+# Git Bash executes these scripts and reads the manifests as Unix text.
+local/start_backend.sh text eol=lf
+local/bootstrap_db.sh text eol=lf
+local/env.sh text eol=lf
+fresh_db/prereqs.txt text eol=lf
+fresh_db/skip.txt text eol=lf
+fresh_db/post.txt text eol=lf

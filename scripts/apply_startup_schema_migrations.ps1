@@ -340,6 +340,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261011_support_fund_journal.sql")
   (Join-Path $root "scripts\migrations\20261011_support_fund_operations.sql")
   (Join-Path $root "scripts\migrations\20261011_support_fund_operation_party.sql")
+  # Old local reader definitions and interrupted grants are restored at this position.
   (Join-Path $root "scripts\migrations\20261011_support_fund_schema_reader.sql")
   (Join-Path $root "scripts\migrations\20261009_support_leaderboard_publication.sql")
   (Join-Path $root "scripts\migrations\20261003_support_ticket_creation_policy.sql")
@@ -486,10 +487,29 @@ try {
   }
   # Repo-relative paths (Push-Location above) keep this single -e argument under the Windows command-line limit.
   $rootPrefix = $root.Path.TrimEnd('\', '/')
-  $sources = ($migrations | ForEach-Object { "source $($_.Substring($rootPrefix.Length + 1).Replace('\', '/'));" }) -join " "
-  & $MySql --default-character-set=utf8mb4 --protocol=tcp -h $databaseUri.Host -P $port -u $Username $database -e $sources
-  if ($LASTEXITCODE -ne 0) {
-    throw "Required startup schema migration failed with mysql exit code $LASTEXITCODE. Backend startup has been stopped."
+  $mysqlArgs = @('--default-character-set=utf8mb4', '--protocol=tcp', '-h', $databaseUri.Host, '-P', $port, '-u', $Username, $database)
+  $runMigrations = {
+    param($batch)
+    $sources = ($batch | ForEach-Object { "source $($_.Substring($rootPrefix.Length + 1).Replace('\', '/'));" }) -join "`n"
+    & $MySql @mysqlArgs -e $sources
+    if ($LASTEXITCODE -ne 0) {
+      throw "Required startup schema migration failed with mysql exit code $LASTEXITCODE. Backend startup has been stopped."
+    }
+  }
+  $readerModeSql = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'local/support_fund_reader_replay.sql')
+  $readerMode = & $MySql @mysqlArgs -N -B -e $readerModeSql
+  if ($LASTEXITCODE -ne 0 -or $readerMode -notin 'ARCHIVE','UPGRADE') {
+    throw 'Could not inspect the local support funds reader.'
+  }
+  if ($readerMode -eq 'UPGRADE') {
+    $readerIndex = [Array]::IndexOf($migrations, (Join-Path $PSScriptRoot 'migrations\20261011_support_fund_schema_reader.sql'))
+    if ($readerIndex -lt 1) { throw 'Missing support reader in startup migration order.' }
+    & $runMigrations $migrations[0..($readerIndex-1)]
+    & python -B (Join-Path $PSScriptRoot 'local/retire_h4_support_reader.py') $MySql @mysqlArgs
+    if ($LASTEXITCODE -ne 0) { throw 'Could not restore the four-wallet support reader and its original grants.' }
+    & $runMigrations $migrations[($readerIndex+1)..($migrations.Count-1)]
+  } else {
+    & $runMigrations $migrations
   }
   Write-Host "Support schema installed. After the API starts, run scripts/manual_migrations/20261009_support_rules_unconfigured_upgrade.ps1 with an authorized administrator, saved operation ID and proof file. Installation is not ready until that command reads back LIMITED/UNLIMITED; it preserves existing explicit configuration and never creates a missing row."
 

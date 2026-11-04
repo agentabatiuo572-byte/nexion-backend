@@ -32,7 +32,7 @@ migrations/20260722_i5_a4_event_closure.sql
 migrations/20260727_j4_emergency_playbook_event_schema.sql
 migrations/20260727_h5_daily_nex_canonical_closure.sql
 migrations/20260927_h3_quest_claim_event_schema.sql
-migrations/20261025_h4_event_rules.sql
+fresh_db/05_growth_event_rules.sql
 migrations/20261104_h4_holding_retire.sql
 # Repair legacy notification visibility after the reminder table exists and H4 triggers are retired.
 migrations/20261025_h4_reminder_visibility.sql
