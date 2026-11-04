@@ -6,6 +6,7 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   -- D1 充值对账中心 /finance/recon（按职责拆分）
   ('finance_d1_read',              '充值对账-读',         'API', '/finance/recon',        'READ',  0, 1, 0),
   ('finance_d1_channel_manage',    '充值渠道与费率配置',  'API', '/finance/recon',        'HIGH',  1, 1, 0),
+  ('finance_d1_fx_manage',         '订单直付费用与最低充值额配置', 'API', '/finance/recon', 'HIGH', 1, 1, 0),
   ('finance_d1_config_manage',     '银行卡风控参数配置',  'API', '/finance/recon',        'HIGH',  1, 1, 0),
   ('finance_d1_psp_switch',        '主备支付商切换',      'API', '/finance/recon',        'HIGH',  1, 1, 0),
   ('finance_d1_reconcile',         '充值差异核销',        'API', '/finance/recon',        'HIGH',  1, 1, 0),

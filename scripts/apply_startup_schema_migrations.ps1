@@ -385,6 +385,7 @@ $migrations = @(
   # Existing orders keep their consumed-stock default before current checkout reads.
   (Join-Path $root "scripts\migrations\20261031_order_inventory_reservation.sql")
   (Join-Path $root "scripts\migrations\20261031_purchase_direct_payments.sql")
+  (Join-Path $root "scripts\migrations\20261104_purchase_payment_policy_permission.sql")
   # Network-aware Cregis readers require the earlier deposit and direct-payment tables.
   # This adds schema/pool state only; enabling ERC20 still requires explicit configuration.
   (Join-Path $root "scripts\migrations\20261031_z_cregis_erc20_network.sql")

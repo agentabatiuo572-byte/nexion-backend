@@ -226,7 +226,7 @@ public interface OnboardingCalibrationMapper {
               pending_deactivate,row_version,created_at,updated_at,is_deleted)
             VALUES(#{userId},#{instanceNo},NULL,'phone',#{productTier},#{instanceNo},'Your phone','MOBILE',1,
               #{gpuModel},#{vramTotalGb},0,'User device',0,'OWNED','ONBOARDING',
-              #{sourceEnvironment},#{runId},'ACTIVE',#{tops},#{dailyUsdt},#{dailyNex},NOW(6),NOW(6),NOW(6),NULL,0,0,NOW(6),NOW(6),0)
+              #{sourceEnvironment},#{runId},'ACTIVE',#{tops},#{dailyUsdt},#{dailyNex},NOW(6),NOW(),NOW(),NULL,0,0,NOW(6),NOW(6),0)
             ON DUPLICATE KEY UPDATE
               user_id=IF(user_id=VALUES(user_id) AND source_environment=VALUES(source_environment)
                   AND run_id=VALUES(run_id),user_id,NULL),source_order_no=VALUES(source_order_no),
@@ -234,7 +234,7 @@ public interface OnboardingCalibrationMapper {
               gpu_model=VALUES(gpu_model),vram_total_gb=VALUES(vram_total_gb),base_power_w=0,
               dc_location='User device',price_usdt_snapshot=0,ownership_status='OWNED',source_channel='ONBOARDING',
               status='ACTIVE',hashrate=VALUES(hashrate),daily_usdt=VALUES(daily_usdt),daily_nex=VALUES(daily_nex),
-              last_seen_at=NOW(6),purchased_at=COALESCE(purchased_at,NOW(6)),activated_at=NOW(6),deactivated_at=NULL,
+              last_seen_at=NOW(6),purchased_at=COALESCE(purchased_at,NOW()),activated_at=NOW(),deactivated_at=NULL,
               pending_deactivate=0,row_version=row_version+1,updated_at=NOW(6),is_deleted=0
             """)
     int upsertPhoneDevice(@Param("userId") Long userId, @Param("instanceNo") String instanceNo,
