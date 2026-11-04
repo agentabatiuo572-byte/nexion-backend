@@ -66,11 +66,19 @@ public class SupportInviteCodeService {
             throw new BizException(422,"IDEMPOTENCY_KEY_INVALID");
         long actor=ownership.actorId();
         boolean revoke=target!=null;
-        if (revoke && (expected==null || reason==null || reason.trim().codePointCount(0,reason.trim().length())<8 || reason.trim().length()>200))
-            throw new BizException(422,"SUPPORT_INVITE_REVOKE_INVALID");
         long admin=revoke?target:actor;
-        if (revoke) requireManaged(admin); else requirePersonal(actor);
-        String detail=revoke?reason.trim():expected==null?"Self issue":"Self reset";
+        String detail;
+        if (revoke) {
+            detail = reason == null ? "" : reason.trim();
+            int reasonLength = detail.codePointCount(0, detail.length());
+            if (expected == null || reasonLength < 8 || reasonLength > 200) {
+                throw new BizException(422, "SUPPORT_INVITE_REVOKE_INVALID");
+            }
+            requireManaged(admin);
+        } else {
+            requirePersonal(actor);
+            detail = expected == null ? "Self issue" : "Self reset";
+        }
         String hash=SupportHumanMessageService.sha(admin+"|"+expected+"|"+detail);
         return commands.execute((revoke?REVOKE:SELF)+":"+actor,key,hash,InviteCodeView.class,()->{
             for(long id:new TreeSet<>(List.of(actor,admin)))
