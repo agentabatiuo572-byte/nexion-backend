@@ -379,15 +379,15 @@ public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
 
     @Update("""
             UPDATE nx_vietqr_config
-               SET tolerance_vnd = #{toleranceVnd}, grace_minutes = #{graceMinutes},
-                   per_tx_limit_usd = #{perTxLimitUsd},
+               SET per_tx_limit_usd = #{perTxLimitUsd},
                    trc20_confirmations = #{trc20Confirmations},
                    erc20_confirmations = #{erc20Confirmations},
                    bep20_confirmations = #{bep20Confirmations},
-                   rotation_strategy = #{rotationStrategy},
                    updated_by = #{operator}, update_reason = #{reason},
                    version = version + 1, updated_at = NOW()
              WHERE id = 1 AND version = #{expectedVersion} AND is_deleted = 0
+               AND tolerance_vnd = #{toleranceVnd} AND grace_minutes = #{graceMinutes}
+               AND rotation_strategy = #{rotationStrategy}
             """)
     int updateVietQrConfig(
             @Param("toleranceVnd") BigDecimal toleranceVnd,
