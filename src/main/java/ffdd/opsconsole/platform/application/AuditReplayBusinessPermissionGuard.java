@@ -10,6 +10,7 @@ import ffdd.opsconsole.content.domain.DisclosureDraftView;
 import ffdd.opsconsole.content.application.DisclosureContentHash;
 import ffdd.opsconsole.device.domain.ComputeConfigRegistry;
 import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
+import ffdd.opsconsole.market.facade.GenesisParamPermissions;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
@@ -302,9 +303,15 @@ public class AuditReplayBusinessPermissionGuard {
             }
             return validateJ4SnapshotCurrent(command);
         }
-        String approvalAuthority = approvalAuthority(command, operation);
+        boolean genesisParamApproval = "G".equalsIgnoreCase(text(command.domain()))
+                && "g4_genesis_param".equals(operation);
+        String approvalAuthority = genesisParamApproval
+                ? GenesisParamPermissions.forKey(value(command.params(), "paramKey"))
+                : approvalAuthority(command, operation);
         if (approvalAuthority == null) {
-            return validateProposal(command);
+            return genesisParamApproval
+                    ? ApiResult.fail(422, "G4_GENESIS_PARAM_KEY_INVALID")
+                    : validateProposal(command);
         }
         if (!hasAuthority("platform_a2_operation_approve") || !hasAuthority(approvalAuthority)) {
             return ApiResult.fail(
