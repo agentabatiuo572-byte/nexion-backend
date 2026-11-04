@@ -150,7 +150,7 @@ public class OpsRiskRadarService {
                 "source", "B1:TreasuryCoverageFacade");
 
         return section(
-                "generatedAt", LocalDateTime.now(clock).toString(),
+                "generatedAt", clock.instant().toString(),
                 "bankrun", bankrun,
                 "abnormalAccounts", section(
                         "count", abnormalCount,

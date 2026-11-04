@@ -290,7 +290,8 @@ public class GenesisCatalogService {
     private CatalogState lockVersion(Long expected){if(expected==null)throw new BizException(400,"EXPECTED_TIERS_VERSION_REQUIRED");CatalogState state=requireStateForUpdate();if(!expected.equals(state.tiersVersion()))throw new BizException(409,"GENESIS_TIERS_VERSION_CONFLICT");return state;}
     private CatalogState requireStateForUpdate(){CatalogState s=mapper.lockState();if(s==null||!Set.of("open","closed").contains(s.marketOpenState())||s.marketOpenStateVersion()==null)throw new BizException(503,"GENESIS_CATALOG_UNAVAILABLE");return s;}
     private List<TierRow> requireTiers(){List<TierRow> rows=mapper.activeTiers();if(rows==null||rows.isEmpty())throw new BizException(503,"GENESIS_TIERS_UNAVAILABLE");validateTiers(rows);return rows;}
-    private void validateTiers(List<TierRow> rows){int next=0;for(TierRow row:rows){if(row.rangeFrom()!=next||row.rangeTo()<=row.rangeFrom()||row.priceUsdt()==null||row.priceUsdt().signum()<=0)throw new BizException(503,"GENESIS_TIERS_INVALID");next=row.rangeTo();}if(next<mapper.soldCount())throw new BizException(503,"GENESIS_TIERS_BELOW_SOLD");}
+    private void validateTiers(List<TierRow> rows){validateTiers(rows,mapper.soldCount());}
+    static void validateTiers(List<TierRow> rows, long sold){int next=0;for(TierRow row:rows){if(row.rangeFrom()!=next||row.rangeTo()<=row.rangeFrom()||row.priceUsdt()==null||row.priceUsdt().signum()<=0)throw new BizException(503,"GENESIS_TIERS_INVALID");next=row.rangeTo();}if(next<sold)throw new BizException(503,"GENESIS_TIERS_BELOW_SOLD");}
     private CatalogReadiness readiness(){
         long activeCount=mapper.activeSeriesCount();
         if(activeCount==0){

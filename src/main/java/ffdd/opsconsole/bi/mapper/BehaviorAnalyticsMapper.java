@@ -127,60 +127,27 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
                    <choose>
                      <when test="depth == 'L1'">pc.parent_l1</when>
                      <when test="depth == 'L2'">pc.parent_l2</when>
-                     <otherwise>p.route</otherwise>
+                     <otherwise>e.route</otherwise>
                    </choose> AS route,
-                   COUNT(*) AS pv,
-                   COUNT(DISTINCT p.actor_hash) AS uv,
-                   COALESCE(c.clicks,0) AS clicks,
-                   ROUND(AVG(p.dwell_ms)) AS dwellMs,
-                   ROUND(SUM(CASE WHEN NOT EXISTS (
+                   SUM(e.event_name='app.page_viewed') AS pv,
+                   COUNT(DISTINCT CASE WHEN e.event_name='app.page_viewed' THEN e.actor_hash END) AS uv,
+                   SUM(e.event_name='app.element_clicked') AS clicks,
+                   COALESCE(ROUND(AVG(CASE WHEN e.event_name='app.page_viewed' THEN e.dwell_ms END)),0) AS dwellMs,
+                   COALESCE(ROUND(SUM(CASE WHEN e.event_name='app.page_viewed' AND NOT EXISTS (
                      SELECT 1 FROM nx_behavior_event_fact n
-                      WHERE n.event_name='app.page_viewed' AND n.session_hash=p.session_hash
+                      WHERE n.event_name='app.page_viewed' AND n.session_hash=e.session_hash
                         AND n.source_environment='PRODUCTION'
-                        AND n.occurred_at&gt;p.occurred_at AND n.occurred_at&lt;=#{endAt}
-                   ) THEN 1 ELSE 0 END) / COUNT(*), 4) AS bounceRate,
-                   COUNT(DISTINCT p.route) AS pageCount
-              FROM nx_behavior_event_fact p
-              JOIN nx_behavior_page_catalog pc ON pc.route=p.route AND pc.is_deleted=0
-              LEFT JOIN (
-                SELECT
-                       <choose>
-                         <when test="depth == 'L1'">cc.parent_l1</when>
-                         <when test="depth == 'L2'">cc.parent_l2</when>
-                         <otherwise>ce.route</otherwise>
-                       </choose> AS route,
-                       COUNT(*) clicks
-                  FROM nx_behavior_event_fact ce
-                  JOIN nx_behavior_page_catalog cc ON cc.route=ce.route AND cc.is_deleted=0
-                 WHERE ce.event_name='app.element_clicked' AND ce.source_environment='PRODUCTION'
-                   AND ce.occurred_at BETWEEN #{startAt} AND #{endAt}
-                 <if test="deviceType != null">AND ce.device_type=#{deviceType}</if>
-                 <if test="locale != null">AND (ce.locale=#{locale} OR (#{locale} IN ('id','ms','fil','ru','kk','uz') AND ce.locale LIKE CONCAT(#{locale}, '-%')))</if>
-                 <if test="depth == 'L3'">AND cc.page_level=3</if>
-                 GROUP BY
-                       <choose>
-                         <when test="depth == 'L1'">cc.parent_l1</when>
-                         <when test="depth == 'L2'">cc.parent_l2</when>
-                         <otherwise>ce.route</otherwise>
-                       </choose>
-              ) c ON c.route=
-                   <choose>
-                     <when test="depth == 'L1'">pc.parent_l1</when>
-                     <when test="depth == 'L2'">pc.parent_l2</when>
-                     <otherwise>p.route</otherwise>
-                   </choose>
-             WHERE p.event_name='app.page_viewed' AND p.source_environment='PRODUCTION'
-               AND p.occurred_at BETWEEN #{startAt} AND #{endAt}
-             <if test="deviceType != null">AND p.device_type=#{deviceType}</if>
-             <if test="locale != null">AND (p.locale=#{locale} OR (#{locale} IN ('id','ms','fil','ru','kk','uz') AND p.locale LIKE CONCAT(#{locale}, '-%')))</if>
+                        AND n.occurred_at&gt;e.occurred_at AND n.occurred_at&lt;=#{endAt}
+                   ) THEN 1 ELSE 0 END) / NULLIF(SUM(e.event_name='app.page_viewed'),0),4),0) AS bounceRate,
+                   COUNT(DISTINCT e.route) AS pageCount
+              FROM nx_behavior_event_fact e
+              JOIN nx_behavior_page_catalog pc ON pc.route=e.route AND pc.is_deleted=0
+             WHERE e.event_name IN ('app.page_viewed','app.element_clicked') AND e.source_environment='PRODUCTION'
+               AND e.occurred_at BETWEEN #{startAt} AND #{endAt}
+             <if test="deviceType != null">AND e.device_type=#{deviceType}</if>
+             <if test="locale != null">AND (e.locale=#{locale} OR (#{locale} IN ('id','ms','fil','ru','kk','uz') AND e.locale LIKE CONCAT(#{locale}, '-%')))</if>
              <if test="depth == 'L3'">AND pc.page_level=3</if>
-             GROUP BY
-                   <choose>
-                     <when test="depth == 'L1'">pc.parent_l1</when>
-                     <when test="depth == 'L2'">pc.parent_l2</when>
-                     <otherwise>p.route</otherwise>
-                   </choose>,c.clicks
-             ORDER BY pv DESC,route
+             GROUP BY 1
             </script>
             """)
     List<ActivityRow> activity(@Param("startAt") LocalDateTime startAt, @Param("endAt") LocalDateTime endAt,

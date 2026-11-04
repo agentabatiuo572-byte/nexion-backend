@@ -2147,19 +2147,6 @@ class OpsNexMarketServiceTest {
         }
 
         @Override
-        public boolean updateGenesisTotalSupply(int totalSupply) {
-            GenesisPolicyView current = genesisPolicy.orElse(defaultGenesisPolicy());
-            genesisPolicy = Optional.of(new GenesisPolicyView(
-                    totalSupply,
-                    current.soldSupply(),
-                    current.priceUsdt(),
-                    current.dailyDividendRatePct(),
-                    current.royaltyPct(),
-                    current.dividendBaseFormula()));
-            return true;
-        }
-
-        @Override
         public boolean updateGenesisPrice(BigDecimal priceUsdt) {
             GenesisPolicyView current = genesisPolicy.orElse(defaultGenesisPolicy());
             genesisPolicy = Optional.of(new GenesisPolicyView(
