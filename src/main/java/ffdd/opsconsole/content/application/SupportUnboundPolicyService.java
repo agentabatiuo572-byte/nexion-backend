@@ -1,10 +1,13 @@
 package ffdd.opsconsole.content.application;
 
+import ffdd.opsconsole.content.dto.SupportMessagePayload;
 import ffdd.opsconsole.content.mapper.SupportGroupMapper;
 import ffdd.opsconsole.content.mapper.SupportUnboundPolicyMapper;
+import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import jakarta.annotation.PostConstruct;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -17,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 @RequiredArgsConstructor
 public class SupportUnboundPolicyService {
+    public static final String COMMAND_SCOPE = "SUPPORT_UNBOUND_POLICY";
     public record Policy(int alertMinutes, int fallbackMinutes, Long defaultGroupId) {}
     public record UpdateRequest(Integer alertMinutes, Integer fallbackMinutes, Long defaultGroupId, Long expectedVersion, String reason) {}
 
@@ -24,6 +28,7 @@ public class SupportUnboundPolicyService {
     private final SupportGroupMapper groups;
     private final SupportOwnershipService ownership;
     private final AuditLogService audit;
+    private final AdminIdempotencyService commands;
 
     @Value("${nexion.support.unbound.alert-minutes:5}")
     private final int defaultAlert;
@@ -51,8 +56,27 @@ public class SupportUnboundPolicyService {
     }
 
     @Transactional
-    public Map<String, Object> update(UpdateRequest request) {
-        ownership.requireSuperAdminSnapshot();
+    @SuppressWarnings("unchecked")
+    public ApiResult<Map<String, Object>> update(String key, UpdateRequest request) {
+        try {
+            ownership.requireUnboundPolicyWriter();
+            if (key == null) return ApiResult.ok(save(null, request));
+            if (!key.matches("[A-Za-z0-9_-]{8,128}")) throw new BizException(422, "IDEMPOTENCY_KEY_INVALID");
+            String hash = SupportHumanMessageService.sha(SupportMessagePayload.encode(request));
+            return commands.executeRetained(COMMAND_SCOPE + ":" + ownership.actorId(), key, hash, ApiResult.class,
+                    () -> ApiResult.ok(save(key, request)));
+        } catch (BizException rejected) {
+            Map<String, Object> detail = new LinkedHashMap<>();
+            if (key != null && key.length() <= 128) detail.put("idempotencyKey", key);
+            detail.put("error", rejected.getMessage());
+            audit.recordRequiredInNewTransaction(AuditLogWriteRequest.builder().action("SUPPORT_UNBOUND_POLICY_REJECTED")
+                    .resourceType(COMMAND_SCOPE).resourceId("1").bizNo("1").actorType("ADMIN")
+                    .result("REJECTED").riskLevel("MEDIUM").detail(detail).build());
+            throw rejected;
+        }
+    }
+
+    private Map<String, Object> save(String key, UpdateRequest request) {
         if (request == null || request.alertMinutes() == null || request.fallbackMinutes() == null || request.expectedVersion() == null)
             throw new BizException(422, "SUPPORT_UNBOUND_POLICY_INVALID");
         int alert = request.alertMinutes(), fallback = request.fallbackMinutes();
@@ -70,6 +94,7 @@ public class SupportUnboundPolicyService {
         Map<String, Object> after = read();
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("before", before); detail.put("after", after); detail.put("reason", reason);
+        if (key != null) detail.put("idempotencyKey", key);
         audit.recordRequired(AuditLogWriteRequest.builder().action("SUPPORT_UNBOUND_POLICY_UPDATED").resourceType("SUPPORT_UNBOUND_POLICY")
                 .resourceId("1").bizNo("1").actorType("ADMIN").actorUsername(actor).result("SUCCESS").riskLevel("MEDIUM").detail(detail).build());
         return after;

@@ -651,7 +651,8 @@ public class OpsConversationService {
                 "idempotencyKey", idempotencyKey.trim());
         if(persistedActor==null) audit("I9_CONVERSATION_INITIATED",created.conversationNo(),actor,detail);
         else auditForActor("I9_CONVERSATION_INITIATED",created.conversationNo(),persistedActor,detail);
-        return new MessageCommandResult(ApiResult.ok(created), persisted.messageId());
+        ContentConversationView updated = conversationRepository.findByConversationNo(created.conversationNo()).orElseThrow();
+        return new MessageCommandResult(ApiResult.ok(updated), persisted.messageId());
     }
 
     private ConversationRepository.Speaker speaker(SupportHumanMessageService.Prepared message,Long bulkActor) {
