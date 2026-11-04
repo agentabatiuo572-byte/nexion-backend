@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.web;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.content.application.SupportOwnershipService;
+import ffdd.opsconsole.content.application.SupportUnboundPolicyService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper;
@@ -39,6 +40,8 @@ public class OpsSupportCommandController {
         boolean supportRead=List.of("service_m1_read","service_m3_read").stream().anyMatch(SupportOwnershipService::hasAuthority);
         List<String> scopes=new ArrayList<>(SCOPES.stream().filter(s->supportRead || s.equals("SUPPORT_INVITE_SELF") || (s.equals("SUPPORT_GROUP_QUALIFICATION") && SupportOwnershipService.hasAuthority("platform_a1_read")))
                 .map(s->s+":"+actor).toList());
+        String unboundPolicyScope = SupportUnboundPolicyService.COMMAND_SCOPE + ":" + actor;
+        if (SupportOwnershipService.hasAuthority("service_m1_write")) scopes.add(unboundPolicyScope);
         // Legacy timeout keys are global; only their existing configuration writers may recover them.
         if(supportRead && ownership.currentSuperAdmin() && !timeoutPolicy.timeoutManageGrant(actor).isEmpty())
             scopes.add("M3_CONVERSATION_TIMEOUT_POLICY");
@@ -52,6 +55,12 @@ public class OpsSupportCommandController {
         if(found.size()!=1) throw new BizException(409,"SUPPORT_COMMAND_AMBIGUOUS");
         var receipt=found.get(0);
         if(!scopes.contains(receipt.getScope())) throw new BizException(404,"SUPPORT_COMMAND_NOT_FOUND");
+        if (unboundPolicyScope.equals(receipt.getScope())) {
+            ownership.requireUnboundPolicyWriter();
+            if (!"SUCCEEDED".equals(receipt.getStatus())) return ApiResult.ok(Map.of("status", receipt.getStatus()));
+            return ApiResult.ok(Map.of("status", "SUCCEEDED", "resultType", SupportUnboundPolicyService.COMMAND_SCOPE,
+                    "result", json.readTree(receipt.getResponseJson())));
+        }
         // Ticket workflows are retired; their historical receipts (M2_*, M3_CONVERSATION_TO_TICKET) stay listed in
         // SCOPES only so a lost response resolves to 410 instead of being replayed or reported as missing.
         if(receipt.getScope().contains("TICKET")) throw new BizException(410,"SUPPORT_TICKETS_RETIRED");

@@ -20,8 +20,10 @@ public class SupportUnboundPolicyController {
     public ApiResult<Map<String, Object>> read() { return ApiResult.ok(service.read()); }
 
     @PutMapping @PreAuthorize("hasAuthority('service_m1_write')")
-    public ApiResult<Map<String, Object>> update(@RequestBody SupportUnboundPolicyService.UpdateRequest request) {
+    public ApiResult<Map<String, Object>> update(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String key,
+            @RequestBody SupportUnboundPolicyService.UpdateRequest request) {
         production.requireOpsWriteAllowed();
-        return ApiResult.ok(service.update(request));
+        return service.update(key == null ? null : key.trim(), request);
     }
 }

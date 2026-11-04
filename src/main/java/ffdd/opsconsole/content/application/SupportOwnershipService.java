@@ -188,6 +188,12 @@ public class SupportOwnershipService {
             throw new BizException(403, "SUPPORT_RULES_FORBIDDEN");
     }
 
+    public void requireUnboundPolicyWriter() {
+        requireSuperAdmin();
+        if (!hasAuthority("service_m1_write") || mapper.rulesWriteGrant(actorId()).isEmpty())
+            throw new BizException(403, "SUPPORT_RULES_FORBIDDEN");
+    }
+
     @Transactional
     public boolean canRead(Long actor, Long customer) {
         return canReadCurrent(actor,customer);

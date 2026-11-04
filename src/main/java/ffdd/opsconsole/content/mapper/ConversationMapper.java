@@ -107,6 +107,19 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
         return countConversations(status,type,owner,user,keyword,unread,null);
     }
 
+    // A transfer wait or fallback can replace the header preview with system text.
+    // Other system events leave the public preview in place.
+    String PUBLIC_PREVIEW_KIND = """
+            (SELECT CASE WHEN s.id IS NULL OR m.content=COALESCE(c.last_message,'')
+                         THEN COALESCE(m.support_kind,h.kind,'TEXT') END
+             FROM nx_conversation_message m
+             LEFT JOIN nx_support_human_message h ON h.message_id=m.id
+             LEFT JOIN nx_conversation_message s ON s.conversation_no=m.conversation_no
+               AND s.sender_type='system' AND s.is_deleted=0 AND s.id>m.id AND s.created_at=c.last_message_at
+             WHERE m.conversation_no=c.conversation_no AND m.is_deleted=0 AND m.sender_type IN ('user','agent')
+             ORDER BY m.id DESC LIMIT 1
+            """;
+
     String SCOPED_PAGE_BASE = """
             <script>
             SELECT
@@ -145,7 +158,9 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                         WHERE m.conversation_no=c.conversation_no AND m.sender_type IN ('user','agent')
                           AND m.id>sm.id)
                   )
-              ) THEN 'IDLE_TIMEOUT_CLOSE' ELSE NULL END AS lastMessageKind, c.archived,
+              ) THEN 'IDLE_TIMEOUT_CLOSE' ELSE
+            """ + PUBLIC_PREVIEW_KIND + """
+              ) END AS lastMessageKind, c.archived,
               (SELECT COUNT(*) FROM nx_conversation_message pending_message
                 LEFT JOIN nx_support_reply_cursor reply_cursor ON reply_cursor.conversation_no=pending_message.conversation_no
                 WHERE pending_message.conversation_no=c.conversation_no AND pending_message.is_deleted=0
@@ -234,7 +249,9 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                     <if test="currentRead">FOR SHARE</if>
                   )
                 <if test="currentRead">FOR SHARE</if>
-              ) THEN 'IDLE_TIMEOUT_CLOSE' ELSE NULL END AS lastMessageKind, c.archived,
+              ) THEN 'IDLE_TIMEOUT_CLOSE' ELSE
+            """ + PUBLIC_PREVIEW_KIND + """
+                <if test="currentRead">FOR SHARE</if>) END AS lastMessageKind, c.archived,
               (SELECT COUNT(*) FROM nx_conversation_message pending_message
                 LEFT JOIN nx_support_reply_cursor reply_cursor ON reply_cursor.conversation_no=pending_message.conversation_no
                 WHERE pending_message.conversation_no=c.conversation_no AND pending_message.is_deleted=0
@@ -305,7 +322,8 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               (SELECT COALESCE(MAX(m.id),0) FROM nx_conversation_message m
                 WHERE m.conversation_no=c.conversation_no AND m.is_deleted=0
                   AND m.sender_type IN ('user','agent')) AS lastPublicMessageId,
-              NULL AS lastMessageKind, c.archived,
+            """ + PUBLIC_PREVIEW_KIND + """
+              ) AS lastMessageKind, c.archived,
               (SELECT COUNT(*) FROM nx_conversation_message pending_message
                 LEFT JOIN nx_support_reply_cursor reply_cursor ON reply_cursor.conversation_no=pending_message.conversation_no
                 WHERE pending_message.conversation_no=c.conversation_no AND pending_message.is_deleted=0
