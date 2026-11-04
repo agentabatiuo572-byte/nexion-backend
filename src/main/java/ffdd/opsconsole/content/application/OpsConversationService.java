@@ -60,9 +60,6 @@ public class OpsConversationService {
     private static final Set<String> TRANSFER_TARGET_TYPES = Set.of("agent", "queue", "standby");
     private static final Set<String> CONVERSATION_TYPES = Set.of("advisor", "support");
     private static final Set<String> DIRECT_STATUS_TARGETS = Set.of("OPEN", "RESOLVED", "CLOSED");
-    private static final String TIMEOUT_FALLBACK_CONFIG_KEY = "I.session.workbench.timeoutFallback";
-    private static final int TRANSFER_TIMEOUT_MINUTES = 30;
-    private static final int AUTO_FALLBACK_BATCH_SIZE = 50;
     private static final int REASON_MIN_LENGTH = 8;
     private static final int REASON_MAX_LENGTH = 200;
 
@@ -561,21 +558,6 @@ public class OpsConversationService {
     }
 
     @Transactional(rollbackFor = Exception.class)
-    public int runTimeoutFallback() {
-        return runTimeoutFallbackConversationNos().size();
-    }
-
-    /**
-     * The scheduler receives these identifiers only after this transactional proxy has committed.
-     * Failed or stale compare-and-set attempts are deliberately absent and must not invalidate sockets.
-     */
-    @Transactional(rollbackFor = Exception.class)
-    public List<String> runTimeoutFallbackConversationNos() {
-        productionPathGuard.requireOpsWriteAllowed();
-        return List.of(); // Human assignment changes only through the formal customer transfer transaction.
-    }
-
-    @Transactional(rollbackFor = Exception.class)
     public ApiResult<ContentConversationView> initiate(
             String idempotencyKey,
             ConversationInitiateRequest request) {
@@ -886,13 +868,6 @@ public class OpsConversationService {
 
     private String assignedName(String assignedAdminName, String fallback) {
         return StringUtils.hasText(assignedAdminName) ? assignedAdminName.trim() : fallback;
-    }
-
-    private boolean timeoutFallbackEnabled() {
-        return configFacade.activeValue(TIMEOUT_FALLBACK_CONFIG_KEY)
-                .map(value -> value.trim().toLowerCase(Locale.ROOT))
-                .filter(value -> Set.of("on", "true", "1", "enabled", "yes").contains(value))
-                .isPresent();
     }
 
     private Optional<Long> parseLong(String value) {
