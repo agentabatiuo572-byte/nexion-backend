@@ -415,7 +415,10 @@ public class PromotionOrderService {
                 changed(db.write("INSERT INTO nx_promotion_reward_attempt(attempt_id,obligation_id,command_id,action,status,evidence_json,started_at,finished_at) VALUES(?,?,?,'CANCEL','CANCELLED',?,NOW(6),NOW(6))",
                     id("PA"),reward.get("obligation_id"),refundNo,json(values("basisType","WHOLE_ORDER_REFUND","refundNo",refundNo,"ledgerBizNo",refundLedgerBizNo))));
                 changed(db.write("UPDATE nx_promotion_budget SET committed=committed-?,revision=revision+1 WHERE activity_id=? AND asset=? AND product_no=? AND committed>=?",r.get("amount"),r.get("activity_id"),r.get("asset"),r.get("product_no"),r.get("amount")));returnStock(r);
-            }else if("ISSUED".equals(status))changed(db.write("UPDATE nx_promotion_reward SET status='REVERSAL_PENDING',revision=revision+1,updated_at=NOW(6) WHERE obligation_id=? AND status='ISSUED'",reward.get("obligation_id")));
+            }else if("ISSUED".equals(status)||("MANUAL_REVIEW".equals(status)&&PromotionRewardService.partialCorrection(db,reward.get("obligation_id"))!=null)){
+                if("DEVICE".equals(r.get("asset")))PromotionRewardService.revokeRefundGifts(db,reward);
+                changed(db.write("UPDATE nx_promotion_reward SET status='REVERSAL_PENDING',revision=revision+1,updated_at=NOW(6) WHERE obligation_id=? AND status=?",reward.get("obligation_id"),status));
+            }
             else if(Set.of("PROCESSING","OUTCOME_UNKNOWN").contains(status))changed(db.write("UPDATE nx_promotion_reward SET status='MANUAL_REVIEW',retry_reason='REFUND_REQUIRES_ISSUANCE_RECONCILIATION',revision=revision+1,updated_at=NOW(6) WHERE obligation_id=?",reward.get("obligation_id")));
         }
         audit("PROMOTION_REFUND_CONFIRMED",orderNo,values("refundNo",refundNo,"ledgerBizNo",refundLedgerBizNo));
@@ -444,7 +447,11 @@ public class PromotionOrderService {
                 if(db.list("""
                     SELECT v.reversal_id FROM nx_promotion_reversal v
                     JOIN nx_promotion_reservation r ON r.reservation_id=? AND v.asset=r.asset
-                    WHERE v.obligation_id=? AND v.status='REVERSED' AND v.outstanding=0 AND v.recovered=v.amount AND v.amount=r.amount FOR UPDATE
+                    LEFT JOIN nx_promotion_reversal c ON c.obligation_id=v.obligation_id AND c.asset=v.asset AND c.basis_type='APPROVED_CORRECTION'
+                      AND c.reversal_id=JSON_UNQUOTE(JSON_EXTRACT(v.evidence_json,'$.priorCorrectionId'))
+                    WHERE v.obligation_id=? AND v.status='REVERSED' AND v.outstanding=0 AND v.recovered=v.amount
+                      AND (v.amount=r.amount OR (v.basis_type='WHOLE_ORDER_REFUND' AND v.recovered+c.recovered=r.amount))
+                      AND COALESCE(JSON_LENGTH(JSON_EXTRACT(v.evidence_json,'$.platformLoss')),0)=0 FOR UPDATE
                     """,reward.get("reservation_id"),reward.get("obligation_id")).size()!=1)return;
             }else return;
         }

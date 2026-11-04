@@ -185,7 +185,12 @@ public class PromotionMetricsService {
             BigDecimal issued=BigDecimal.ZERO,reversed=BigDecimal.ZERO,loss=BigDecimal.ZERO;
             if("DEVICE".equals(asset))issued=BigDecimal.valueOf(db.count("SELECT COUNT(*) FROM nx_promotion_device_receipt x JOIN nx_user_device d ON d.id=x.device_id WHERE x.obligation_id=? AND d.source_channel='PROMOTION_GIFT' AND d.source_order_no=? AND d.user_id=? AND x.created_at<=?",reward.get("obligation_id"),reward.get("order_no"),reward.get("beneficiary_id"),timestamp(asOf)));
             else{var receipt=db.one("SELECT amount FROM nx_wallet_ledger WHERE biz_no=? AND user_id=? AND asset=? AND direction='IN' AND status='SUCCESS' AND created_at<=?",reward.get("original_ledger_no"),reward.get("beneficiary_id"),asset,timestamp(asOf));if(receipt!=null)issued=decimal(receipt.get("amount"));}
-            for(var reversal:db.list("SELECT recovered,outstanding FROM nx_promotion_reversal WHERE obligation_id=? AND created_at<=?",reward.get("obligation_id"),timestamp(asOf))){reversed=reversed.add(decimal(reversal.get("recovered")));loss=loss.add(decimal(reversal.get("outstanding")));}
+            var reversal=db.requiredRow("""
+                SELECT COALESCE(SUM(recovered),0) AS recovered,
+                  COALESCE(MAX(CASE WHEN basis_type='WHOLE_ORDER_REFUND' THEN outstanding END),SUM(outstanding),0) AS outstanding
+                FROM nx_promotion_reversal WHERE obligation_id=? AND created_at<=?
+                """,reward.get("obligation_id"),timestamp(asOf));
+            reversed=decimal(reversal.get("recovered"));loss=decimal(reversal.get("outstanding"));
             BigDecimal amount=decimal(reward.get("amount"));String state=text(reward.get("status"));
             BigDecimal pending=Set.of("ISSUED","CANCELLED","REVERSED").contains(state)?BigDecimal.ZERO:amount.subtract(issued).max(BigDecimal.ZERO);
             result.add(values("obligationId",reward.get("obligation_id"),"orderNo",reward.get("order_no"),"version",number(reward.get("version")),

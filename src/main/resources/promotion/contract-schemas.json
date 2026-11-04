@@ -2863,6 +2863,16 @@
           "beneficiaryId": {
             "$ref": "#/components/schemas/Id"
           },
+          "platformLoss": {
+            "description": "Finalized D06 platform loss in the original currency or in DEVICE units. Posted gift earnings are reported by currency. An empty object means no recorded platform loss.",
+            "type": "object",
+            "properties": {
+              "USDT": { "$ref": "#/components/schemas/Amount" },
+              "UVT": { "$ref": "#/components/schemas/Amount" },
+              "DEVICE": { "$ref": "#/components/schemas/Amount" }
+            },
+            "additionalProperties": false
+          },
           "qualificationSnapshotHash": {
             "$ref": "#/components/schemas/Hash"
           },
