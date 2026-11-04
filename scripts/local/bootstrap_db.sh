@@ -16,6 +16,20 @@ cd "$BACKEND"  # migrations `source` repo-relative paths (the .ps1 does Push-Loc
 run_file() { # label path [db]  (schema.sql creates the database, so it passes db="")
   local label=$1 file=$2 db=${3-nexion}
   echo "-> $label"
+  if [[ ${file##*/} == 20261011_support_fund_schema_reader.sql ]]; then
+    local mode
+    mode=$(mysql_nexion -N -B "$db" < "$BACKEND/scripts/local/support_fund_reader_replay.sql")
+    if [[ ${mode%$'\r'} == UPGRADE ]]; then
+      MYSQL_PWD="$NEXION_DB_PASSWORD" python3 -B "$BACKEND/scripts/local/retire_h4_support_reader.py" \
+        mysql --default-character-set=utf8mb4 --protocol=tcp -h "$NEXION_DB_HOST" -P "$NEXION_DB_PORT" \
+        -u "$NEXION_DB_USERNAME" "$db" > "$LOGS/$label.log" 2>&1 || {
+          echo "FAILED: $label (log: $LOGS/$label.log)"; tail -5 "$LOGS/$label.log"; exit 1
+        }
+      return
+    elif [[ ${mode%$'\r'} != ARCHIVE ]]; then
+      echo "FAILED: $label (unexpected reader replay mode)"; exit 1
+    fi
+  fi
   if ! mysql_nexion $db < "$file" > "$LOGS/$label.log" 2>&1; then
     echo "FAILED: $label (log: $LOGS/$label.log)"; tail -5 "$LOGS/$label.log"; exit 1
   fi

@@ -9,6 +9,8 @@ Windows 用 `scripts/*.ps1`；本目录是等价的 bash 版本（问题 C-1 / C
   `NEXION_DB_URL`、`NEXION_DB_USERNAME`、`NEXION_DB_PASSWORD`、`NEXION_FINANCE_DATA_KEY`、`NEXION_JWT_SECRET`、`NEXION_ADMIN_MFA_ENCRYPTION_KEY`。
 - 工具不在 PATH 上时，在同一文件里设 `JAVA_HOME`、`MYSQL_HOME`、`MAVEN_HOME`。
 
+曾运行旧版 `3dc5196e` 的本地库在升级客服资金读取函数时需要 Python 3.9 或以上。Bash 使用 `python3`，Windows 使用 `python`。如旧脚本执行中断，使用原安装用户和该库对应的私有回执重新运行。回执缺失或与数据库不符时，先从原安装用户的备份恢复。详见 [H4 下线 PRD](../../docs/PRD/H4-持仓类活动下线-20261104.md)。
+
 ## 从空库开始
 
 ```bash
