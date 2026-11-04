@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.application;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.SupportLeaderboard;
 import ffdd.opsconsole.content.domain.SupportLeaderboard.*;
+import ffdd.opsconsole.content.domain.SupportLeaderboard.Period;
 import ffdd.opsconsole.content.mapper.SupportLeaderboardMapper;
 import ffdd.opsconsole.content.mapper.SupportLeaderboardMapper.*;
 import ffdd.opsconsole.content.mapper.SupportAnalyticsMapper.AttributionRow;
@@ -20,6 +21,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Fact;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Kind;
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.io.*;
 import java.lang.reflect.RecordComponent;
@@ -137,7 +139,7 @@ public class SupportLeaderboardSourceService {
             throw new IllegalStateException("SUPPORT_LEADERBOARD_CAPTURE_BOUNDARY_CHANGED");
         LocalDateTime cutoff=captured.cutoff;
         Instant evaluatedAt=cutoff.toInstant(ZoneOffset.UTC);
-        YearMonth currentMonth=ffdd.opsconsole.shared.config.BusinessCalendar.legacy().month(evaluatedAt);
+        YearMonth currentMonth=BusinessCalendar.legacy().month(evaluatedAt);
         Context context=new Context(authorizedContext.board(),authorizedContext.rankMonth(),
             authorizedContext.board()==Board.customers?currentMonth:authorizedContext.referenceMonth(),authorizedContext.currency(),
             authorizedContext.scope(),authorizedContext.approvedGroupIds(),authorizedContext.definitionVersion(),evaluatedAt);
@@ -185,21 +187,20 @@ public class SupportLeaderboardSourceService {
             bound.computeIfAbsent(b.agentId(),id -> new TreeSet<>()).add(b.customerId());
             earliestOwnership.merge(b.agentId(),b.startsAt(),(left,right) -> left.isBefore(right)?left:right);
         }
-        Financial first=first(raw,customerIds,context,evaluatedFrom(context),evaluatedTo(context));
+        Period period=context.businessPeriod();
+        Financial first=first(raw,customerIds,context,period.from(),period.to());
         Net net=net(raw,customerIds,context,accounts.keySet());
         for(AttributionRow row:raw.attributions())if("KNOWN".equals(row.agentStatus()) && row.agentAdminId()!=null) {
-            LocalDateTime occurred=row.succeededAt()!=null && SupportLeaderboard.BUSINESS_ZONE.getId().equals(row.sourceBusinessZone())
-                ? LocalDateTime.ofInstant(row.succeededAt().atZone(SupportLeaderboard.BUSINESS_ZONE).toInstant(),ZoneOffset.UTC)
+            LocalDateTime occurred=row.succeededAt()!=null && BusinessCalendar.STORAGE_ZONE.getId().equals(row.sourceBusinessZone())
+                ? LocalDateTime.ofInstant(row.succeededAt().atZone(BusinessCalendar.STORAGE_ZONE).toInstant(),ZoneOffset.UTC)
                 : LocalDateTime.MIN;
             earliestOwnership.merge(row.agentAdminId(),occurred,(left,right) -> left.isBefore(right)?left:right);
         }
         List<Candidate> candidates=new ArrayList<>();
-        LocalDateTime monthFrom=LocalDateTime.ofInstant(evaluatedFrom(context),ZoneOffset.UTC);
+        LocalDateTime monthFrom=LocalDateTime.ofInstant(period.from(),ZoneOffset.UTC);
         LocalDateTime cutover=raw.qualificationCutoverUtc();
         Coverage candidateCoverage=context.board()==Board.customers || cutover!=null && !monthFrom.isBefore(cutover)
             && !cutoff.isBefore(cutover)?Coverage.COMPLETE:Coverage.PARTIAL;
-        Instant monthStart=ffdd.opsconsole.shared.config.BusinessCalendar.legacy().startOf(context.referenceMonth().atDay(1));
-        Instant monthEnd=ffdd.opsconsole.shared.config.BusinessCalendar.legacy().startOf(context.referenceMonth().plusMonths(1).atDay(1));
         for (Account a:accounts.values()) {
             List<QualificationInterval> history=qualifications.getOrDefault(a.id(),List.of());
             QualificationInterval current=history.stream().filter(q -> active(q.startsAt(),q.endsAt(),cutoff)).findFirst().orElse(null);
@@ -219,8 +220,8 @@ public class SupportLeaderboardSourceService {
                     && !completeHistory(a,history,memberHistory,groups.keySet(),monthFrom,cutoff,cutover,earliestOwnership.get(a.id())))candidateCoverage=Coverage.PARTIAL;
             boolean monthly=history.stream().anyMatch(q -> "ENABLED".equals(q.state())
                 && !q.startsAt().isAfter(cutoff)
-                && q.startsAt().toInstant(ZoneOffset.UTC).isBefore(monthEnd)
-                && (q.endsAt()==null || q.endsAt().toInstant(ZoneOffset.UTC).isAfter(monthStart))
+                && q.startsAt().toInstant(ZoneOffset.UTC).isBefore(period.to())
+                && (q.endsAt()==null || q.endsAt().toInstant(ZoneOffset.UTC).isAfter(period.from()))
                 && (q.endsAt()==null || q.endsAt().isAfter(q.startsAt())));
             if (!(context.board()==Board.customers ? serviceNow || customers>0 : monthly
                     || context.board()==Board.netContribution && net.amounts().containsKey(a.id())
@@ -327,7 +328,7 @@ public class SupportLeaderboardSourceService {
         SupportPaymentFacts.Snapshot snapshot=raw.finance();
         if (snapshot==null) return new Financial(Map.of(),ids.isEmpty(),ids.isEmpty()?Reason.NONE:Reason.HISTORY_UNKNOWN);
         try {SupportAnalyticsService.validateSnapshotBoundary(snapshot,ids);} catch(IllegalStateException | IllegalArgumentException ex) {throw failed();}
-        if (!SupportLeaderboard.BUSINESS_ZONE.getId().equals(snapshot.businessZone())) throw failed();
+        if (!BusinessCalendar.STORAGE_ZONE.getId().equals(snapshot.businessZone())) throw failed();
         Set<SupportPaymentFacts.Source> coverageSources=new HashSet<>();
         for(var c:snapshot.coverage()) {
             if(c.source()==null || c.observedStatus()==null || c.historyStatus()==null || c.refundStatus()==null
@@ -366,7 +367,7 @@ public class SupportLeaderboardSourceService {
         Reason reason=complete?Reason.NONE:Reason.HISTORY_UNKNOWN;
         Map<Long,Long> result=new HashMap<>();
         for (Fact f:SupportAnalyticsService.selectFirstFacts(facts.values()).values()) {
-            Instant occurred=f.succeededAt().atZone(SupportLeaderboard.BUSINESS_ZONE).toInstant();
+            Instant occurred=f.succeededAt().atZone(BusinessCalendar.STORAGE_ZONE).toInstant();
             if (occurred.isBefore(from) || !occurred.isBefore(to) || occurred.isAfter(context.evaluatedAt())) continue;
             AttributionRow attribution=attributions.get(f.factId());
             if (!proved(attribution,f,snapshot) || "UNKNOWN".equals(attribution.agentStatus())) {
@@ -422,7 +423,7 @@ public class SupportLeaderboardSourceService {
         }
         Map<Long,Map<Long,BigDecimal>> byCustomer=new HashMap<>();Map<String,BigDecimal> totals=new HashMap<>();
         Map<String,BigDecimal> formations=new HashMap<>();Set<Long> rejectedRoots=new HashSet<>();
-        Instant from=evaluatedFrom(context),to=evaluatedTo(context);
+        Period period=context.businessPeriod();
         for(ContributionChange change:raw.net().changes()) {
             ContributionOrigin origin=origins.get(change.contributionId());
             if(origin==null || origin.customerId()!=change.originCustomerId() || change.amount()==null
@@ -441,8 +442,8 @@ public class SupportLeaderboardSourceService {
                     formations.merge(origin.contributionId(),change.amount(),BigDecimal::add);
                 else {reason=Reason.SOURCE_INCOMPLETE;rejectedRoots.add(origin.customerId());}
             }
-            Instant occurred=change.succeededAt().atZone(SupportLeaderboard.BUSINESS_ZONE).toInstant();
-            if(!context.currency().equals(change.currency()) || occurred.isBefore(from) || !occurred.isBefore(to)
+            Instant occurred=change.succeededAt().atZone(BusinessCalendar.STORAGE_ZONE).toInstant();
+            if(!context.currency().equals(change.currency()) || occurred.isBefore(period.from()) || !occurred.isBefore(period.to())
                     || occurred.isAfter(context.evaluatedAt()))continue;
             AttributionRow attribution=attributions.get(origin.paymentFactId());
             if(!"KNOWN".equals(attribution.agentStatus()))continue;
@@ -470,7 +471,7 @@ public class SupportLeaderboardSourceService {
     }
     private static boolean token(String value) {return value!=null && !value.isBlank() && value.length()<=512;}
     private static boolean stamp(LocalDateTime at,String zone,int precision,String reference) {
-        return at!=null && SupportLeaderboard.BUSINESS_ZONE.getId().equals(zone) && precision>=0 && precision<=9
+        return at!=null && BusinessCalendar.STORAGE_ZONE.getId().equals(zone) && precision>=0 && precision<=9
             && at.getNano()%(int)Math.pow(10,9-precision)==0 && token(reference);
     }
     private static boolean savedProof(AttributionProof proof,AttributionRow attribution,Fact fact) {
@@ -509,8 +510,6 @@ public class SupportLeaderboardSourceService {
     private static boolean jsonLayer(JsonNode layer,String status,Long id) {
         return layer.isObject() && jsonText(layer,"status",status) && jsonId(layer,"id",id);
     }
-    private static Instant evaluatedFrom(Context c) {return ffdd.opsconsole.shared.config.BusinessCalendar.legacy().startOf(c.referenceMonth().atDay(1));}
-    private static Instant evaluatedTo(Context c) {return ffdd.opsconsole.shared.config.BusinessCalendar.legacy().startOf(c.referenceMonth().plusMonths(1).atDay(1));}
     private record Times(LocalDateTime start,LocalDateTime end) { }
     private static void rejectOverlaps(List<Times> intervals) {
         List<Times> sorted=intervals.stream().sorted(Comparator.comparing(Times::start)).toList();Times previous=null;
@@ -538,6 +537,8 @@ public class SupportLeaderboardSourceService {
             write(out,context.board());write(out,context.rankMonth()==null?null:context.rankMonth().toString());
             write(out,context.referenceMonth().toString());write(out,context.currency());write(out,context.scope());
             write(out,context.approvedGroupIds().stream().sorted().toList());write(out,context.definitionVersion());
+            Period period=context.businessPeriod();
+            write(out,period.zoneId());write(out,period.from());write(out,period.to());
             write(out,raw.accounts());write(out,raw.qualifications());write(out,raw.memberships());write(out,raw.groups());write(out,raw.bindings());
             write(out,raw.qualificationCutoverUtc());
             write(out,raw.productionCustomers());write(out,raw.attributions());write(out,raw.attributionProofs());

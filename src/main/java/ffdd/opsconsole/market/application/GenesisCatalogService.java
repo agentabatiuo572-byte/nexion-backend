@@ -2,6 +2,7 @@ package ffdd.opsconsole.market.application;
 
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.CatalogState;
+import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.LockedSeriesRow;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.SeriesBootstrapRow;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.SeriesRow;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.TierRow;
@@ -25,6 +26,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -40,6 +42,8 @@ public class GenesisCatalogService {
     private final AdminIdempotencyService idempotency;
     private final AuditLogService audit;
     private final Clock clock;
+    @Autowired
+    private OpsNexMarketService marketService;
 
     public ApiResult<Map<String,Object>> enrich(ApiResult<Map<String,Object>> base) {
         if (base == null || base.getCode() != 0 || base.getData() == null) return base;
@@ -141,12 +145,13 @@ public class GenesisCatalogService {
             from = tiers.get(tiers.size() - 1).rangeTo();
         }
         validateBoundary(request.to(), request.priceUSDT(), from);
+        Map<String,Object> detail = linked("from",from,"to",request.to(),"priceUSDT",request.priceUSDT());
+        syncSeriesSupply(request.to(), detail);
         String tierId = "t" + state.nextTierSeq();
         if (mapper.insertTier(new TierRow(tierId,from,request.to(),request.priceUSDT())) != 1
                 || mapper.advanceTierVersion(state.tiersVersion(), state.nextTierSeq() + 1) != 1) {
             throw new BizException(409,"GENESIS_TIERS_VERSION_CONFLICT");
         }
-        Map<String,Object> detail = linked("from",from,"to",request.to(),"priceUSDT",request.priceUSDT());
         if (firstTier) {
             String actor = AdminActorResolver.resolve(request.operator());
             String change = LocalDateTime.now(clock)+" "+actor+" "+state.marketOpenState()
@@ -182,11 +187,33 @@ public class GenesisCatalogService {
             candidate.set(index + 1, new TierRow(next.tierId(), request.to(), next.rangeTo(), next.priceUsdt()));
         }
         validateTiers(candidate);
+        Map<String,Object> detail = linked("to",request.to(),"priceUSDT",request.priceUSDT());
+        if (index == tiers.size() - 1 && !request.to().equals(current.rangeTo())) {
+            syncSeriesSupply(request.to(), detail);
+        }
         if (mapper.updateTier(tierId,request.to(),request.priceUSDT()) != 1) throw new BizException(409,"GENESIS_TIER_CONFLICT");
         if (index+1 < tiers.size() && mapper.updateTierFrom(tiers.get(index+1).tierId(),request.to()) != 1) throw new BizException(409,"GENESIS_TIER_CONFLICT");
         if (mapper.advanceTierVersion(state.tiersVersion(),state.nextTierSeq()) != 1) throw new BizException(409,"GENESIS_TIERS_VERSION_CONFLICT");
-        audit("GENESIS_TIER_UPDATED",tierId,request.operator(),request.reason(),Map.of("to",request.to(),"priceUSDT",request.priceUSDT()));
+        audit("GENESIS_TIER_UPDATED",tierId,request.operator(),request.reason(),detail);
         return ApiResult.ok();
+    }
+
+    private void syncSeriesSupply(int totalSupply, Map<String,Object> detail) {
+        // Primary purchases lock this series row before reading or updating its sold count.
+        List<LockedSeriesRow> series = mapper.lockActiveSeriesForSupply();
+        if (series.isEmpty()) return; // Initial tier setup is published separately by initializeSeries.
+        if (series.size() != 1) throw new BizException(409, "GENESIS_ACTIVE_SERIES_AMBIGUOUS");
+        LockedSeriesRow current = series.get(0);
+        if (totalSupply < Math.max(current.soldSupply(), mapper.soldCount())) {
+            throw new BizException(422, "GENESIS_TIER_BELOW_SOLD");
+        }
+        if (current.totalSupply() == totalSupply) return;
+        marketService.requireGenesisTierSupplyChange(current.totalSupply(), totalSupply);
+        if (mapper.updateSeriesSupply(current.id(), totalSupply) != 1) {
+            throw new BizException(409, "GENESIS_SUPPLY_CONFLICT");
+        }
+        detail.put("totalSupplyBefore", current.totalSupply());
+        detail.put("totalSupplyAfter", totalSupply);
     }
 
     @Transactional(rollbackFor = Exception.class)

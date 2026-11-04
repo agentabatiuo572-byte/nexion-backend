@@ -19,6 +19,15 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
     int countActiveDirectPaymentIntent(@Param("orderNo") String orderNo);
     @Select("SELECT COUNT(*) FROM nx_purchase_payment_intent p JOIN nx_order o ON o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) WHERE p.kind='ORDER_PAY' AND o.order_no=#{orderNo}")
     int countDirectPaymentIntents(@Param("orderNo") String orderNo);
+    @Select("""
+            SELECT COUNT(*) FROM nx_purchase_payment_intent p
+              JOIN nx_order o ON o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) AND o.user_id=p.user_id
+             WHERE o.order_no=#{orderNo} AND p.kind='ORDER_PAY'
+               AND p.status NOT IN ('DELIVERED','EXPIRED')
+               AND NOT (p.status='MANUAL_REVIEW' AND p.reason='PAYMENT_LATE_REVIEW'
+                        AND p.confirmed_at IS NOT NULL AND p.receipt_json IS NULL)
+            """)
+    int countDirectPaymentIntentsBlockingExpiry(@Param("orderNo") String orderNo);
     @Update("UPDATE nx_order SET paid_at=#{paidAt} WHERE order_no=#{orderNo} AND payment_status='PAID'")
     int recordVerifiedPaidAt(@Param("orderNo") String orderNo,@Param("paidAt") java.time.LocalDateTime paidAt);
     /** The pending order is already included once; do not add its quantity again at payment. */

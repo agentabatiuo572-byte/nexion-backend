@@ -14,6 +14,8 @@ record NexMarketSchedule(
         String cronExpression,
         ZoneId zoneId,
         boolean fallback) {
+    record Changed() {}
+
     static final String DEFAULT_DISPLAY = "每日 00:00 UTC 自动推进";
     private static final String DEFAULT_CRON = "0 0 0 * * *";
     private static final ZoneId DEFAULT_ZONE = ZoneId.of("UTC");

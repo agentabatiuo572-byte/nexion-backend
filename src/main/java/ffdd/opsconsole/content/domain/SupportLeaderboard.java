@@ -1,5 +1,6 @@
 package ffdd.opsconsole.content.domain;
 
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
@@ -14,8 +15,8 @@ import java.util.*;
 /** Pure projection of a full, server-authorized aggregate set; never reads or creates financial facts. */
 public final class SupportLeaderboard {
     private SupportLeaderboard() { }
-    /** Storage zone of source timestamps and the contract tag on snapshots; period cutting uses BusinessCalendar (R-1). */
-    public static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
+    /** Legacy name for the fixed source-storage zone. */
+    public static final ZoneId BUSINESS_ZONE = BusinessCalendar.STORAGE_ZONE;
     public static final String NET_DEFINITION = "support-leaderboard-v3-net-contribution";
     // Legacy values remain decodable in immutable publications; request normalization retires their algorithms.
     public enum Board { netContribution, firstPayment, deposit, purchase, customers }
@@ -58,20 +59,45 @@ public final class SupportLeaderboard {
             if (avatarUrl != null && !avatarUrl.equals(path) && !avatarUrl.startsWith(path + "?")) throw invalid();
         }
     }
-    /** Scope/groups come from current server authorization. Current labels are deliberately outside comparison identity. */
+    public record Period(String zoneId, Instant from, Instant to) {
+        public Period {
+            ZoneId.of(zoneId);
+            if (!from.isBefore(to)) throw invalid();
+        }
+        static Period at(YearMonth month, Instant evaluatedAt) {
+            var calendar = BusinessCalendar.legacy();
+            Instant from = calendar.startOf(month.atDay(1)), to = calendar.startOf(month.plusMonths(1).atDay(1));
+            Instant zoneAt = evaluatedAt.isBefore(to) ? evaluatedAt : to.minusNanos(1);
+            return new Period(calendar.zoneAt(zoneAt).getId(), from, to);
+        }
+    }
+    /** Scope/groups come from current server authorization. Period evidence is frozen with each publication. */
     public record Context(Board board, YearMonth rankMonth, YearMonth referenceMonth, String currency,
-                          Scope scope, Set<Long> approvedGroupIds, String definitionVersion, Instant evaluatedAt) {
+                          Scope scope, Set<Long> approvedGroupIds, String definitionVersion, Instant evaluatedAt,
+                          Period period) {
+        public Context(Board board, YearMonth rankMonth, YearMonth referenceMonth, String currency,
+                       Scope scope, Set<Long> approvedGroupIds, String definitionVersion, Instant evaluatedAt) {
+            this(board,rankMonth,referenceMonth,currency,scope,approvedGroupIds,definitionVersion,evaluatedAt,
+                referenceMonth == null ? null : Period.at(referenceMonth,evaluatedAt));
+        }
         public Context {
             Objects.requireNonNull(board); Objects.requireNonNull(scope); Objects.requireNonNull(evaluatedAt);
             requireToken(definitionVersion);
             approvedGroupIds = Set.copyOf(approvedGroupIds);
-            YearMonth current = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().month(evaluatedAt);
             if (currency == null || !currency.matches("[A-Z][A-Z0-9]{1,15}") || referenceMonth == null
-                    || (board == Board.customers ? rankMonth != null || !referenceMonth.equals(current)
-                        : rankMonth == null || rankMonth.isAfter(current) || !referenceMonth.equals(rankMonth))
+                    || (board == Board.customers ? rankMonth != null : !referenceMonth.equals(rankMonth))
+                    || period != null && (evaluatedAt.isBefore(period.from())
+                        || board == Board.customers && !evaluatedAt.isBefore(period.to()))
                     || (scope == Scope.all ? !approvedGroupIds.isEmpty() : approvedGroupIds.isEmpty())
                     || scope == Scope.ownGroup && approvedGroupIds.size() != 1
                     || approvedGroupIds.stream().anyMatch(id -> id <= 0)) throw invalid();
+        }
+        /** Older payloads predate period evidence. Retain their original advertised zone and checksum. */
+        public Period businessPeriod() {
+            if (period != null) return period;
+            var zone = BusinessCalendar.STORAGE_ZONE;
+            return new Period(zone.getId(),referenceMonth.atDay(1).atStartOfDay(zone).toInstant(),
+                referenceMonth.plusMonths(1).atDay(1).atStartOfDay(zone).toInstant());
         }
         public String rankCurrency() { return board == Board.netContribution || board == Board.deposit || board == Board.purchase ? currency : null; }
     }
@@ -159,20 +185,25 @@ public final class SupportLeaderboard {
 
     /** Select the previous business day's last committed COMPLETE version; never synthesize or recalculate yesterday. */
     public static Snapshot withMovement(Snapshot current, List<Publication> persistedPublications) {
-        Context c = current.context(); LocalDate today = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAt(c.evaluatedAt());
+        Context c = current.context(); LocalDate today = BusinessCalendar.legacy().dateAt(c.evaluatedAt());
         Reason blocked = current.state() != State.COMPLETE ? Reason.METRIC_INCOMPLETE
             : c.rankMonth() != null && !c.rankMonth().equals(YearMonth.from(today)) ? Reason.HISTORICAL_MONTH
             : c.rankMonth() != null && today.getDayOfMonth() == 1 ? Reason.MONTH_START : null;
         List<Publication> previousDay = persistedPublications.stream()
             .filter(p -> p.snapshot().state() == State.COMPLETE
-                && ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAt(p.publishedAt()).equals(today.minusDays(1))
+                && BusinessCalendar.legacy().dateAt(p.publishedAt()).equals(today.minusDays(1))
                 && sameBoardPeriodCurrency(c, p.snapshot().context()))
             .toList();
         Publication baseline = previousDay.stream().filter(p -> sameScope(c, p.snapshot().context()))
             .max(Comparator.comparing(Publication::publishedAt).thenComparingLong(Publication::publicationId)).orElse(null);
         if (blocked == null && baseline == null) blocked = previousDay.isEmpty() ? Reason.NO_BASELINE : Reason.SCOPE_CHANGED;
-        if (blocked == null && !c.definitionVersion().equals(baseline.snapshot().context().definitionVersion()))
-            blocked = Reason.DEFINITION_CHANGED;
+        if (blocked == null) {
+            Context prior = baseline.snapshot().context();
+            if (!c.definitionVersion().equals(prior.definitionVersion()) || c.rankMonth() != null
+                    && (!c.businessPeriod().from().equals(prior.businessPeriod().from())
+                        || !c.businessPeriod().to().equals(prior.businessPeriod().to())))
+                blocked = Reason.DEFINITION_CHANGED;
+        }
         Map<Long, Row> old = new HashMap<>();
         if (baseline != null) baseline.snapshot().rows().forEach(r -> old.put(r.agentId(), r));
         Set<Long> currentIds = new HashSet<>(); current.rows().forEach(r -> currentIds.add(r.agentId()));
@@ -298,6 +329,7 @@ public final class SupportLeaderboard {
         Set<Long> ids=new HashSet<>();rows.forEach(r -> ids.add(r.agentId()));
         List<String> view=new ArrayList<>(comparisonParts(c,ids));
         Collections.addAll(view,sourceVersion,c.referenceMonth().toString(),c.currency(),c.evaluatedAt().toString(),candidateCoverage.name());
+        if (c.period()!=null) Collections.addAll(view,c.period().zoneId(),c.period().from().toString(),c.period().to().toString());
         rows.forEach(r -> appendRow(view,r));
         births.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(e -> {view.add(e.getKey().toString());view.add(e.getValue().toString());});
         return "slb-v1:"+hash(view);
