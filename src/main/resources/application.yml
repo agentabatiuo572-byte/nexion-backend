@@ -32,6 +32,8 @@ spring:
     # D1 persists business LocalDateTime values in UTC+08. Keep every pooled
     # session's NOW()/DATE_SUB comparisons in that same clock, independent of host timezone.
     hikari:
+      minimum-idle: 10
+      maximum-pool-size: 100
       connection-init-sql: "SET time_zone = '+08:00'"
   data:
     redis:
