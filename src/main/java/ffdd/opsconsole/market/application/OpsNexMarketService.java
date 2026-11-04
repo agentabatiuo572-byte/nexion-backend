@@ -27,6 +27,7 @@ import ffdd.opsconsole.market.dto.NexMarketAdvanceRequest;
 import ffdd.opsconsole.market.dto.NexMarketCurveFrame;
 import ffdd.opsconsole.market.dto.NexMarketCurveUpdateRequest;
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
+import ffdd.opsconsole.market.facade.GenesisParamPermissions;
 import ffdd.opsconsole.market.mapper.ExchangeOrderMapper;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.CatalogState;
@@ -135,17 +136,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             Map.entry("lottery", "finprod_g7_write"),
             Map.entry("penalty", "finprod_g7_write"),
             Map.entry("presets", "finprod_g7_write"));
-    /** updateGenesisParam paramKey→精确权限码。对照 OpsNexMarketController updateGenesisParam。 */
-    private static final Map<String, String> GENESIS_PARAM_PERMISSION = Map.ofEntries(
-            Map.entry("supply", "finprod_g4_write"),
-            Map.entry("price", "finprod_g4_price_write"),
-            Map.entry("dividend", "finprod_g4_dividend_rate_write"),
-            Map.entry("royalty", "finprod_g4_royalty_write"),
-            Map.entry("airdropPct", "finprod_g4_airdrop_pct_write"),
-            Map.entry("emissionCurve", "finprod_g4_emission_curve_write"),
-            Map.entry("airdropLockDays", "finprod_g4_airdrop_lock_days_write"),
-            Map.entry("showcaseEnabled", "finprod_g4_write"),
-            Map.entry("divBase", "finprod_g4_write"));
     /** updateOverride overrideKey→精确权限码。对照 OpsNexMarketController updateOverride。 */
     private static final Map<String, String> OVERRIDE_PERMISSION = Map.ofEntries(
             Map.entry("currentPrice", "finprod_g3_override_price_write"),
@@ -927,7 +917,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             return validation("G4_GENESIS_PARAM_KEY_INVALID");
         }
         // 使用同一个参数键校验权限和操作锁。
-        ApiResult<Map<String, Object>> permissionGuard = requirePermission(GENESIS_PARAM_PERMISSION.get(def.key()));
+        ApiResult<Map<String, Object>> permissionGuard = requirePermission(GenesisParamPermissions.forKey(def.key()));
         if (permissionGuard != null) {
             return permissionGuard;
         }

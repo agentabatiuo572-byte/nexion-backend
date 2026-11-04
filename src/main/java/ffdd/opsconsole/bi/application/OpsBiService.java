@@ -1033,7 +1033,7 @@ public class OpsBiService implements AuditReplayable {
                     Map<String, Object> row = mutableObjectMap(item);
                     csv.append(csvRow(List.of(
                             "留存",
-                            stringValue(row.get("cohort")),
+                            trimOrDefault(stringValue(row.get("w")), stringValue(row.get("cohort"))),
                             stringValue(row.get("size")),
                             "",
                             stringValue(row.get("d1")),
