@@ -159,7 +159,7 @@ public class SupportAnalyticsService {
         public Status rosterStatus=Status.UNKNOWN;
         public NetSnapshot net;
         public List<AttributionProof> netAttributionProofs=List.of();
-        private NetRead netRead;
+        NetRead netRead;
     }
 
     /** Reuses evaluated facts for the filtered current-root aggregate; performs no reader call. */
@@ -285,7 +285,12 @@ public class SupportAnalyticsService {
                 return new Money(null,null,null,null,null,Status.UNKNOWN,List.of("NET_SOURCE_UNVERIFIED"));
             BigDecimal amount=BigDecimal.ZERO;
             if(period==null)for(long id:roots)amount=amount.add("USDT".equals(currency)?customers.get(id).usdt():"UVT".equals(currency)?customers.get(id).nex():BigDecimal.ZERO);
-            else for(var change:snapshot.changes()) {
+            else for(var change:periodChanges(roots,currency,period,scope,groups,group))amount=amount.add(change.amount());
+            return new Money(amount,amount,null,null,null,Status.AVAILABLE,List.of());
+        }
+        List<ContributionChange> periodChanges(Set<Long> roots,String currency,Query period,ReadScope scope,Set<Long> groups,Long group) {
+            var selected=new ArrayList<ContributionChange>();
+            for(var change:snapshot.changes()) {
                 if(!roots.contains(change.originCustomerId()) || !currency.equals(change.currency()))continue;
                 var at=change.succeededAt().atZone(ZoneId.of(change.businessZone())).withZoneSameInstant(ZoneId.of(period.businessZone())).toLocalDateTime();
                 if(at.isBefore(period.fromInclusive()) || !at.isBefore(period.toExclusive()))continue;
@@ -294,9 +299,9 @@ public class SupportAnalyticsService {
                         || scope.requestedAgentId()!=null && !Objects.equals(scope.requestedAgentId(),a.agentAdminId())
                         || scope.mode()==ReadMode.PERSONAL && !Objects.equals(scope.actorId(),a.agentAdminId())
                         || scope.mode()==ReadMode.MANAGED && !groups.contains(a.groupId()))continue;
-                amount=amount.add(change.amount());
+                selected.add(change);
             }
-            return new Money(amount,amount,null,null,null,Status.AVAILABLE,List.of());
+            return selected;
         }
     }
     private static boolean netToken(String value){return value!=null && !value.isBlank() && value.length()<=512;}
@@ -664,7 +669,9 @@ public class SupportAnalyticsService {
             var proof=new QueryCapture();proof.financialIds=Set.of(id);proof.snapshot=raw.payments(Set.of(id));
             proof.facts=raw.payments().facts().stream().filter(f->f.customerId()==id).collect(java.util.stream.Collectors.toMap(Fact::factId,f->f));
             proof.net=raw.contributions(Set.of(id));proof.validAttributions=c.validAttributions.entrySet().stream().filter(e->e.getValue().customerId()==id).collect(java.util.stream.Collectors.toMap(Map.Entry::getKey,Map.Entry::getValue));
-            proof.netAttributionProofs=raw.proofs(proof.facts.keySet(),scope,Set.of(),Set.of(id));
+            var originIds=proof.net.origins().stream().filter(Objects::nonNull).map(ContributionOrigin::paymentFactId)
+                .filter(Objects::nonNull).filter(proof.facts::containsKey).distinct().sorted().toList();
+            proof.netAttributionProofs=raw.proofs(originIds,scope,Set.of(),Set.of(id));
             perRootNet.put(id,NetRead.observe(proof,raw.asOf()));
         }
         var views=new TreeMap<String,List<Customer>>();

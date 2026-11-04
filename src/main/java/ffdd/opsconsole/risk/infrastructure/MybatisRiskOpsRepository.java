@@ -67,7 +67,10 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
             "withdrawVelocity", 15, "accountAge", 10, "anomalyBehavior", 10);
     private static final Set<String> LEGACY_K4_MAPPING_KEYS = Set.of(
             "kyc.reviewScore", "kyc.pendingScore", "kyc.rejectedScore", "kyc.sanctionedScore");
-    private static final List<RiskArbitrageParamView> RHYTHM_ARBITRAGE_PARAMS = List.of(
+    private static final List<RiskArbitrageParamView> ARBITRAGE_PARAMS = List.of(
+            new RiskArbitrageParamView("trialCycleThreshold", "试用循环异常线", ">= 3 次 / 30 天", "同一实体在统计周期内反复开启试用的次数阈值", "范围 2-10 次，统计周期 7-60 天；K2 检测时读取"),
+            new RiskArbitrageParamView("welcomeGiftAnomalyThreshold", "新人礼异常发放线", ">= 2 笔 / 实体", "同一实体重复领取新人礼的异常笔数阈值", "范围 1-5 笔；K2 检测时读取"),
+            new RiskArbitrageParamView("leaderboardVelocityMultiplier", "刷榜增速异常倍数", "> 5x 基线", "佣金增速超过基线倍数时产生刷榜信号", "范围 2x-20x；下一次检测采用"),
             new RiskArbitrageParamView("otpGate.resendSeconds", "验证码重发冷却", "60", "同一手机号两次发送的最小间隔", "单位:秒"),
             new RiskArbitrageParamView("otpGate.dayLimit", "验证码 24h 发送上限", "10", "注册、登录与找回密码共同执行", "单位:次/24h"),
             new RiskArbitrageParamView("otpGate.otpTtlSeconds", "验证码有效期", "300", "验证码签发后的有效时长", "单位:秒"),
@@ -403,7 +406,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     @Override
     public List<RiskArbitrageParamView> arbitrageParams() {
         Map<String, RiskArbitrageParamView> merged = new LinkedHashMap<>();
-        RHYTHM_ARBITRAGE_PARAMS.forEach(row -> merged.put(row.key(), row));
+        ARBITRAGE_PARAMS.forEach(row -> merged.put(row.key(), row));
         mapper.arbitrageParams().stream()
                 .filter(row -> !row.key().startsWith("rewardRisk."))
                 .forEach(row -> merged.put(row.key(), row));
@@ -415,7 +418,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         int updated = mapper.updateArbitrageParam(key, expectedVersion, value);
         if (updated == 0) {
             if (mapper.findArbitrageParam(key) != null || expectedVersion != 0L) return Optional.empty();
-            RiskArbitrageParamView definition = RHYTHM_ARBITRAGE_PARAMS.stream()
+            RiskArbitrageParamView definition = ARBITRAGE_PARAMS.stream()
                     .filter(row -> row.key().equals(key))
                     .findFirst()
                     .orElse(null);

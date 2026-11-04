@@ -53,8 +53,8 @@ public interface SupportWorkbenchMapper extends BaseMapper<SupportAgentAssignmen
             CASE WHEN #{windowCutoff} IS NOT NULL AND lastEffectiveAt &gt;= #{windowCutoff} THEN 'ACTIVE'
                  WHEN #{windowCutoff} IS NOT NULL AND #{coverageStartAt} &lt;= #{windowCutoff}
                    THEN 'INACTIVE' ELSE 'UNKNOWN' END windowStatus,
-            CASE WHEN #{maintenanceDays} IS NULL OR lastExecutionAt IS NULL THEN NULL
-                 ELSE TIMESTAMPADD(DAY,#{maintenanceDays},GREATEST(lastExecutionAt,COALESCE(lastSucceededAt,lastExecutionAt))) END nextDueAt
+        """ + SupportMaintenanceMapper.NEXT_DUE_AT + """
+            nextDueAt
           FROM facts
         ), customers AS (
           SELECT classified.*,
