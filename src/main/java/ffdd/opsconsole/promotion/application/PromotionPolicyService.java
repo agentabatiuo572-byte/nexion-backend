@@ -43,6 +43,32 @@ public class PromotionPolicyService {
         var evidence=parse(row.get("evidence_json"));
         if("approve".equals(action)){
             require("DRAFT".equals(row.get("status")),"PROMOTION_POLICY_STATE_INVALID");
+            String versionId=id+":"+version;
+            String legacyTarget=version==1?"promotion-policies":id;
+            // Older creation audits used the command target; their receipt identifies the exact version.
+            var makers=db.list("""
+                SELECT actor_id FROM nx_audit_log
+                 WHERE resource_type='PROMOTION' AND action IN ('CREATEPOLICY','CREATEPOLICYVERSION')
+                   AND result='SUCCESS' AND actor_type='ADMIN' AND actor_id>0 AND is_deleted=0
+                   AND (resource_id=? OR (resource_id=? AND JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.resource.id'))=?))
+                UNION
+                SELECT CAST(JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorId')) AS SIGNED) AS actor_id
+                  FROM nx_audit_log_archive
+                 WHERE JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceType'))='PROMOTION'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action')) IN ('CREATEPOLICY','CREATEPOLICYVERSION')
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.result'))='SUCCESS'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorType'))='ADMIN'
+                   AND content_sha256=SHA2(CAST(cold_payload AS CHAR),256)
+                   AND JSON_EXTRACT(cold_payload,'$.id')=original_audit_id
+                   AND (JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId'))=?
+                     OR (JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId'))=? AND JSON_UNQUOTE(JSON_EXTRACT(
+                            JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.detail')),'$.resource.id'))=?))
+                LIMIT 2
+                """,versionId,legacyTarget,versionId,versionId,legacyTarget,versionId);
+            require(makers.size()==1,"PROMOTION_POLICY_MAKER_UNAVAILABLE");
+            long maker=number(makers.get(0).get("actor_id"));
+            require(maker>0,"PROMOTION_POLICY_MAKER_UNAVAILABLE");
+            require(maker!=actor,"PROMOTION_MAKER_CHECKER_REQUIRED");
             natives.fixtureAllowed(row.get("fixture_run_id"));
             evidence(evidence.get("evidenceRefs"),actor);
             var content=parse(row.get("content_json"));validator.validate("PolicyContent",content);

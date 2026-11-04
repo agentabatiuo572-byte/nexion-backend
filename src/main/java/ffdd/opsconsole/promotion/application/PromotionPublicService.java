@@ -19,16 +19,29 @@ public class PromotionPublicService {
     public Map<String,Object> page(Long user,String cursor,int limit,String activity,String placement){
         require(text(placement).isEmpty()||"home.purchase-promotion".equals(placement),"PROMOTION_PLACEMENT_INVALID");
         int size=Math.min(100,Math.max(1,limit));
-        List<Map<String,Object>> rows=db.list("""
-            SELECT p.*,v.contract_json,v.resolved_policies_json,v.content_hash AS published_content_hash FROM nx_promotion p
-            JOIN nx_promotion_version v ON v.activity_id=p.activity_id AND v.version=p.active_version
-            WHERE p.deleted_at IS NULL AND p.status IN ('ACTIVE','SCHEDULED') AND v.status='PUBLISHED' AND v.starts_at<=NOW(6) AND v.ends_at>NOW(6)
-              AND (?='' OR p.activity_id>?) AND (?='' OR p.activity_id=?)
-              AND (?='' OR JSON_UNQUOTE(JSON_EXTRACT(v.contract_json,'$.placement'))=?)
-            ORDER BY p.activity_id LIMIT ?
-            """,text(cursor),text(cursor),text(activity),text(activity),text(placement),text(placement),size+1);
-        boolean more=rows.size()>size;if(more)rows=rows.subList(0,size);
-        return values("items",rows.stream().map(r->view(r,user)).toList(),"nextCursor",more?rows.get(rows.size()-1).get("activity_id"):null,"hasMore",more);
+        boolean home="home.purchase-promotion".equals(placement);
+        List<Map<String,Object>> items=new ArrayList<>();
+        String after=text(cursor);
+        while(items.size()<=size){
+            var rows=db.list("""
+                SELECT p.*,v.contract_json,v.resolved_policies_json,v.content_hash AS published_content_hash FROM nx_promotion p
+                JOIN nx_promotion_version v ON v.activity_id=p.activity_id AND v.version=p.active_version
+                WHERE p.deleted_at IS NULL AND p.status IN ('ACTIVE','SCHEDULED') AND v.status='PUBLISHED' AND v.starts_at<=NOW(6) AND v.ends_at>NOW(6)
+                  AND p.activity_id>? AND (?='' OR p.activity_id=?)
+                  AND (?='' OR JSON_UNQUOTE(JSON_EXTRACT(v.contract_json,'$.placement'))=?)
+                ORDER BY p.activity_id LIMIT ?
+                """,after,text(activity),text(activity),text(placement),text(placement),size+1);
+            for(var row:rows){
+                var item=view(row,user,true,home);
+                if(item!=null)items.add(item);
+                if(items.size()>size)break;
+            }
+            if(rows.size()<=size)break;
+            after=text(rows.get(rows.size()-1).get("activity_id"));
+        }
+        boolean more=items.size()>size;
+        if(more)items.remove(size);
+        return values("items",items,"nextCursor",more?items.get(size-1).get("activityId"):null,"hasMore",more);
     }
     public Map<String,Object> get(Long user,String activity){
         Map<String,Object> row=db.requiredRow("""
@@ -36,22 +49,24 @@ public class PromotionPublicService {
             JOIN nx_promotion_version v ON v.activity_id=p.activity_id AND v.version=p.active_version
             WHERE p.deleted_at IS NULL AND p.activity_id=? AND v.status='PUBLISHED' AND p.status<>'ARCHIVED'
             """,activity);
-        return view(row,user);
+        return view(row,user,false,false);
     }
-    private Map<String,Object> view(Map<String,Object> row,Long user){
+    private Map<String,Object> view(Map<String,Object> row,Long user,boolean listing,boolean home){
         Map<String,Object> contract=parse(row.get("contract_json"));
         require(hash(contract).equals(row.get("published_content_hash")),"PROMOTION_VERSION_INVALID");
         Instant now=Instant.now();
         String state=effectiveLifecycle(row.get("status"),contract,now);
+        var publishedRules=maps(contract.get("rules"));
         String eligibility=user==null?"SIGN_IN_REQUIRED":"UNKNOWN";
+        var policies=parse(row.get("resolved_policies_json"));
+        var first=PromotionPolicyResolver.content(policies,"firstPurchase");
+        PromotionRules.Account capacityBuyer=null;
         boolean repurchase="REPURCHASE".equals(contract.get("template"));
         Map<String,Object> audience=map(contract.get("buyerAudience"));
         Map<String,Object> interval=repurchase?map(audience.get("lastValidPurchaseAge")):null;
         String lastValidPurchaseAt=null;
         if(user!=null){
-            Map<String,Object> policies=parse(row.get("resolved_policies_json"));
             var account=evaluator.account(user,audience,policies,null);
-            Map<String,Object> first=PromotionPolicyResolver.content(policies,"firstPurchase");
             boolean restores=first!=null&&Boolean.TRUE.equals(first.get("restoreAfterRefund"));
             boolean matches=PromotionRules.eligible(audience,account,now,restores);
             if(Set.of("FIRST_PURCHASE","DIRECT_REFERRAL").contains(text(contract.get("template"))))
@@ -60,27 +75,60 @@ public class PromotionPublicService {
                 matches=matches&&account.validPaid()>0;
                 if(account.lastValidPaid()!=null)lastValidPurchaseAt=account.lastValidPaid().toString();
             }
-            if("DIRECT_REFERRAL".equals(contract.get("template")))matches=matches&&account.sponsorId()!=null&&account.sponsorId()!=user;
+            if("DIRECT_REFERRAL".equals(contract.get("template")))matches=matches&&account.sponsorId()!=null&&account.sponsorId()!=account.id();
             eligibility="ACTIVE".equals(state)&&matches?"ESTIMATE_ELIGIBLE":"INELIGIBLE";
+            if(matches)capacityBuyer=account;
         }
+        var availableRules=publishedRules;
+        boolean checksCapacity="ACTIVE".equals(state)&&"RULE_STOP".equals(contract.get("shortagePolicy"));
+        boolean all="ALL".equals(contract.get("combinationMatch"));
+        if(checksCapacity)availableRules=availableRules(row,contract,publishedRules,policies,capacityBuyer,now,all);
+        boolean exhausted=checksCapacity&&availableRules.isEmpty();
+        // Team uses the general feed to discover the campaigns whose progress it can read.
+        if(exhausted&&listing&&(home||!"DIRECT_REFERRAL".equals(contract.get("template"))))return null;
+        if(exhausted)eligibility="INELIGIBLE";
+        var rules=exhausted?publishedRules:availableRules;
         List<Map<String,Object>> publicRules=new ArrayList<>();
-        for(Map<String,Object> rule:maps(contract.get("rules"))){
+        for(Map<String,Object> rule:rules){
             Map<String,Object> visible=new LinkedHashMap<>();
             for(String key:List.of("ruleId","productNo","minBuyQty","repeatMode","maxGroups","maxGroupsPerPerson"))visible.put(key,rule.get(key));
             for(String role:List.of("buyerReward","inviterReward")){
                 if(rule.get(role)==null){visible.put(role,null);continue;}
                 Map<String,Object> spec=map(rule.get(role)),reward=ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView.reward(spec);
-                reward.put("disclosure",disclosure(db,contract,parse(row.get("resolved_policies_json")),spec));
+                reward.put("disclosure",disclosure(db,contract,policies,spec));
                 reward.remove("deviceRightsProfile");reward.remove("assetPolicy");visible.put(role,reward);
             }
             publicRules.add(visible);
         }
         return values("activityId",row.get("activity_id"),"version",number(row.get("active_version")),"template",contract.get("template"),"state",state,
             "startsAt",contract.get("startsAt"),"endsAt",contract.get("endsAt"),"serverTime",now.toString(),"title",publicText(contract.get("title")),"terms",publicText(contract.get("terms")),
-            "placement",contract.get("placement"),"bannerImageUrl","ACTIVE".equals(state)?banners.issueUrl(text(row.get("activity_id")),number(row.get("active_version")),contract.get("bannerAssetId")):null,"target","STORE","productNos",publicRules.stream().map(r->r.get("productNo")).distinct().toList(),
-            "minimumClientCapabilities",contract.get("minimumClientCapabilities"),"eligibility",eligibility,"eligibilityMessage",null,
+            "placement",contract.get("placement"),"bannerImageUrl","ACTIVE".equals(state)&&!exhausted?banners.issueUrl(text(row.get("activity_id")),number(row.get("active_version")),contract.get("bannerAssetId")):null,"target","STORE","productNos",(all?publishedRules:rules).stream().map(r->r.get("productNo")).distinct().toList(),
+            "minimumClientCapabilities",contract.get("minimumClientCapabilities"),"eligibility",eligibility,"eligibilityMessage",exhausted?publicText(values("zh","当前没有可新增领取的活动奖励。","en","This promotion’s rewards are currently unavailable.","vi","Ưu đãi này hiện không có phần thưởng khả dụng.")):null,
             "repurchaseWindow",repurchase?values("minDays",interval.get("minDays"),"maxDays",interval.get("maxDays")):null,
             "lastValidPurchaseAt",lastValidPurchaseAt,"rewardRules",publicRules);
+    }
+    private List<Map<String,Object>> availableRules(Map<String,Object> row,Map<String,Object> contract,
+            List<Map<String,Object>> rules,Map<String,Object> policies,PromotionRules.Account buyer,Instant now,boolean all){
+        var baskets=(all?List.of(rules):rules.stream().map(List::of).toList()).stream()
+            .filter(b->b.size()<=8&&b.stream().mapToLong(r->number(r.get("minBuyQty"))).sum()<=100).toList();
+        List<List<Map<String,Object>>> proposals;
+        if(buyer==null){
+            // Without an account, test the buyer's published reward for one qualifying group.
+            proposals=baskets.stream().map(basket->basket.stream()
+                .sorted(Comparator.comparingLong((Map<String,Object> r)->number(r.get("priority"))).thenComparing(r->text(r.get("ruleId"))))
+                .limit(PromotionRules.limit(contract.get("maxRewardUnitsPerOrder")))
+                .map(r->values("ruleId",r.get("ruleId"),"reward",r.get("buyerReward")==null?r.get("inviterReward"):r.get("buyerReward"))).toList()).toList();
+        }else{
+            var selections=baskets.stream().map(basket->basket.stream().map(r->new PromotionRules.Selection(
+                text(r.get("productNo")),Math.toIntExact(number(r.get("minBuyQty"))))).toList()).toList();
+            proposals=evaluator.evaluateBaskets(text(row.get("activity_id")),contract,policies,buyer,selections,now).stream()
+                .map(awards->awards.stream().map(PromotionEvaluationService::award).toList()).toList();
+        }
+        Set<String> offerable=new HashSet<>();
+        for(var awards:proposals){
+            for(var award:PromotionQuoteService.applyShortage(db,row,contract,awards))offerable.add(text(award.get("ruleId")));
+        }
+        return rules.stream().filter(r->offerable.contains(text(r.get("ruleId")))).toList();
     }
     private static Map<String,Object> publicText(Object source) {
         Map<String,Object> text = new LinkedHashMap<>(map(source));

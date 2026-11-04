@@ -307,10 +307,15 @@ public class PromotionQuoteService {
     }
     private boolean available(String activity,Map<String,Object> contract,List<Map<String,Object>> awards,boolean currentRead) {
         Map<String,Object> root=db.activity(activity,currentRead);
+        return available(db,root,contract,awards,currentRead);
+    }
+    private static boolean available(PromotionMapper db,Map<String,Object> root,Map<String,Object> contract,
+                                     List<Map<String,Object>> awards,boolean currentRead) {
         if(root.get("deleted_at")!=null)return false;
         if(number(root.get("reserved_orders"))+number(root.get("used_orders"))>=PromotionRules.limit(contract.get("activityLimit")))return false;
+        String activity=text(root.get("activity_id"));
         Map<String,BigDecimal> sums=new TreeMap<>();
-        for(Map<String,Object> award:awards){Map<String,Object> r=map(award.get("reward"));String asset=asset(r.get("type")),product="DEVICE".equals(asset)?text(r.get("giftProductNo")):"";
+        for(var award:awards){var r=map(award.get("reward"));String asset=asset(r.get("type")),product="DEVICE".equals(asset)?text(r.get("giftProductNo")):"";
             sums.merge(asset+":"+product,rewardAmount(r),BigDecimal::add);}
         for(var e:sums.entrySet()){
             String[] key=e.getKey().split(":",2);
@@ -321,14 +326,18 @@ public class PromotionQuoteService {
         return true;
     }
     private List<Map<String,Object>> applyShortage(String activity,Map<String,Object> contract,List<Map<String,Object>> awards){
-        if(available(activity,contract,awards))return awards;
+        return applyShortage(db,db.activity(activity,false),contract,awards);
+    }
+    static List<Map<String,Object>> applyShortage(PromotionMapper db,Map<String,Object> root,Map<String,Object> contract,
+                                                  List<Map<String,Object>> awards){
+        if(awards.isEmpty()||available(db,root,contract,awards,false))return awards;
         if("ACTIVITY_PAUSE".equals(contract.get("shortagePolicy")))return List.of();
         Map<String,List<Map<String,Object>>> rules=new LinkedHashMap<>();
         for(Map<String,Object> award:awards)rules.computeIfAbsent(text(award.get("ruleId")),k->new ArrayList<>()).add(award);
         List<Map<String,Object>> accepted=new ArrayList<>();
         for(List<Map<String,Object>> rule:rules.values()){
             List<Map<String,Object>> proposed=new ArrayList<>(accepted);proposed.addAll(rule);
-            if(available(activity,contract,proposed))accepted=proposed;
+            if(available(db,root,contract,proposed,false))accepted=proposed;
         }
         return accepted;
     }

@@ -2694,19 +2694,20 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         String trustedOperator = operator(request.operator());
         DeviceTradeinActionRequest trusted = new DeviceTradeinActionRequest(
                 request.deviceId(), request.reason().trim(), trustedOperator);
-        return deviceIdempotent(
-                "E3_TRADEIN_" + normalizedOperation.toUpperCase(Locale.ROOT),
-                idempotencyKey,
-                String.valueOf(request.deviceId()),
-                trusted,
+        String scope = "E3_TRADEIN_" + normalizedOperation.toUpperCase(Locale.ROOT);
+        return idempotencyService.execute(
+                scope,
+                idempotencyKey.trim(),
+                e1RequestHash(scope, String.valueOf(request.deviceId()), trusted),
+                TradeinActionResult.class,
                 () -> {
                     if (!A2ReplayContext.isReplaying()
                             && lockMapper.countActiveByTarget("E", "device", String.valueOf(trusted.deviceId())) > 0) {
-                        return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+                        return new TradeinActionResult(409, "OBJECT_LOCKED_BY_A2", null);
                     }
                     DeviceOpsView before = deviceRepository.findDevice(trusted.deviceId()).orElse(null);
                     if (before == null) {
-                        return ApiResult.fail(404, "DEVICE_NOT_FOUND");
+                        return new TradeinActionResult(404, "DEVICE_NOT_FOUND", null);
                     }
                     LocalDateTime now = LocalDateTime.now(clock);
                     String tradeInNo = "TI-" + now.format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMddHHmmss"))
@@ -2715,8 +2716,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                             .executeTradeinAction(normalizedOperation, trusted.deviceId(), tradeInNo, now)
                             .orElse(null);
                     if (updated == null) {
-                        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
-                                OpsErrorCode.INVALID_STATE_TRANSITION.name());
+                        return new TradeinActionResult(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                                OpsErrorCode.INVALID_STATE_TRANSITION.name(), null);
                     }
                     Map<String, Object> event = detail(
                             "operation", normalizedOperation,
@@ -2740,8 +2741,18 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                                     "tradeInNo", "replace".equals(normalizedOperation) ? tradeInNo : null,
                                     "reason", trusted.reason(),
                                     "idempotencyKey", idempotencyKey.trim()));
-                    return ApiResult.ok(updated);
+                    return new TradeinActionResult(0, "success", updated);
                 });
+    }
+
+    /** Keeps the existing receipt JSON while giving Jackson the data type needed by the C2 ownership check. */
+    private static final class TradeinActionResult extends ApiResult<DeviceOpsView> {
+        private TradeinActionResult() {
+        }
+
+        private TradeinActionResult(int code, String message, DeviceOpsView data) {
+            super(code, message, data);
+        }
     }
 
     /** C2 user-detail alias. The user path is an authorization boundary, not a display hint. */
