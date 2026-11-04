@@ -104,9 +104,17 @@ public class PromotionEvaluationService {
     }
     private List<Award> evaluate(String activity,Map<String,Object> contract,Map<String,Object> policies,
                                 long buyerId,List<Selection> items,Instant now,String excludedOrder,boolean currentRead) {
-        Account buyer=account(buyerId,map(contract.get("buyerAudience")),policies,excludedOrder,currentRead),inviter=null;
-        if("DIRECT_REFERRAL".equals(contract.get("template"))&&buyer.sponsorId()!=null&&buyer.sponsorId()!=buyerId)
-            inviter=account(buyer.sponsorId(),map(contract.get("inviterAudience")),policies,null,currentRead);
+        Account buyer=account(buyerId,map(contract.get("buyerAudience")),policies,excludedOrder,currentRead);
+        return evaluateBaskets(activity,contract,policies,buyer,List.of(items),now,excludedOrder,currentRead).get(0);
+    }
+    List<List<Award>> evaluateBaskets(String activity,Map<String,Object> contract,Map<String,Object> policies,
+                                     Account buyer,List<List<Selection>> baskets,Instant now) {
+        return evaluateBaskets(activity,contract,policies,buyer,baskets,now,null,false);
+    }
+    private List<List<Award>> evaluateBaskets(String activity,Map<String,Object> contract,Map<String,Object> policies,
+                                              Account buyer,List<List<Selection>> baskets,Instant now,String excludedOrder,boolean currentRead) {
+        Account inviter="DIRECT_REFERRAL".equals(contract.get("template"))&&buyer.sponsorId()!=null&&buyer.sponsorId()!=buyer.id()
+            ?account(buyer.sponsorId(),map(contract.get("inviterAudience")),policies,null,currentRead):null;
         Map<String,Long> groups=new HashMap<>(),orders=new HashMap<>();
         for(Map<String,Object> usage:db.list("SELECT * FROM nx_promotion_usage WHERE activity_id=?"+(currentRead?" FOR UPDATE":""),activity)){
             String key=number(usage.get("account_id"))+":"+text(usage.get("beneficiary_role"));
@@ -126,7 +134,8 @@ public class PromotionEvaluationService {
                 if(counted.add(key))orders.computeIfPresent(key,(k,v)->Math.max(0,v-1));
             }
         }
-        return PromotionRules.evaluate(contract,items,buyer,inviter,PromotionPolicyResolver.content(policies,"firstPurchase"),now,groups,orders);
+        var first=PromotionPolicyResolver.content(policies,"firstPurchase");
+        return baskets.stream().map(items->PromotionRules.evaluate(contract,items,buyer,inviter,first,now,groups,orders)).toList();
     }
     public static Map<String,Object> award(Award award) {
         return values("productNo",award.productNo(),"ruleId",award.ruleId(),"rewardRuleId",award.rewardRuleId(),

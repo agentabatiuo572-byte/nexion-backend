@@ -368,7 +368,7 @@ public class OpsPhaseOverviewService {
     }
 
     private static String display(Object value, String unit) {
-        return String.valueOf(value) + unit;
+        return (value instanceof BigDecimal decimal ? plain(decimal) : String.valueOf(value)) + unit;
     }
 
     private static int exactInt(Object value, String error) {

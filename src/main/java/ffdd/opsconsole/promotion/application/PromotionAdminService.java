@@ -61,7 +61,8 @@ public class PromotionAdminService {
             banners.validateEvidenceRefs(request.get("evidenceRefs"));
             String command=id("PC");Instant now=Instant.now();var before=before(target);
             attempted.set(true);var resource=action.get();var after=before(text(resource.get("id")));
-            String auditedTarget="PROMOTION".equals(resource.get("type"))?text(resource.get("id")):target;
+            String auditedTarget="PROMOTION".equals(resource.get("type"))||"POLICY".equals(resource.get("type"))
+                ?text(resource.get("id")):target;
             audit.recordRequired(AuditLogWriteRequest.builder().action(operation).resourceType("PROMOTION").resourceId(auditedTarget)
                 .actorId(actor).actorType("ADMIN").method("POST").path("/api/admin/growth").result("SUCCESS").riskLevel("HIGH")
                 .detail(values("commandId",command,"idempotencyKey",key,"reason",request.get("reason"),"evidenceRefs",request.get("evidenceRefs"),"requestHash",hash(request),"beforeHash",hash(before),"afterHash",hash(after),"resource",resource)).build());
