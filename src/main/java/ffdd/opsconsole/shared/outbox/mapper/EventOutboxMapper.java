@@ -216,31 +216,65 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
             """)
     int markPublished(@Param("eventId") String eventId, @Param("publishedStatus") String publishedStatus);
 
-    @Update("""
-            <script>
-            UPDATE nx_event_outbox
-               SET status = #{recordedStatus},
-                   next_retry_at = NULL,
-                   last_error = #{reason},
-                   updated_at = NOW()
-             WHERE is_deleted = 0
-               AND status IN (#{pendingStatus}, #{failedStatus})
-               AND event_type IN
+    String RETIREMENT_ELIGIBILITY = """
+               o.is_deleted = 0
+               AND o.status IN (#{pendingStatus}, #{failedStatus})
+               AND o.event_type IN
                <foreach item="eventType" collection="eventTypes" open="(" separator="," close=")">
                    #{eventType}
                </foreach>
-               AND created_at &lt; DATE_SUB(NOW(), INTERVAL #{graceMinutes} MINUTE)
-             ORDER BY id
+               AND o.created_at &lt; DATE_SUB(NOW(), INTERVAL #{graceMinutes} MINUTE)
+               <if test="unlinkedC1Type != null">
+                 AND BINARY o.event_type = BINARY #{unlinkedC1Type}
+                 AND NOT EXISTS (
+                     SELECT 1 FROM nx_audit_log a
+                      WHERE a.biz_no = CONCAT('C1-VIEW-', o.event_id)
+                        AND BINARY a.biz_no = BINARY CONCAT('C1-VIEW-', o.event_id)
+                        AND a.is_deleted = 0)
+               </if>
+            """;
+
+    // A separate consistent read keeps scans of ineligible rows out of the locking UPDATE.
+    @Select("""
+            <script>
+            SELECT o.id FROM nx_event_outbox o
+             WHERE
+            """ + RETIREMENT_ELIGIBILITY + """
+             ORDER BY o.id
              LIMIT #{limit}
             </script>
             """)
-    int retireRecordOnlyPending(@Param("eventTypes") List<String> eventTypes,
-                                @Param("graceMinutes") int graceMinutes,
-                                @Param("limit") int limit,
-                                @Param("reason") String reason,
-                                @Param("recordedStatus") String recordedStatus,
-                                @Param("pendingStatus") String pendingStatus,
-                                @Param("failedStatus") String failedStatus);
+    List<Long> listRetirementCandidates(@Param("eventTypes") List<String> eventTypes,
+                                         @Param("unlinkedC1Type") String unlinkedC1Type,
+                                         @Param("graceMinutes") int graceMinutes, @Param("limit") int limit,
+                                         @Param("pendingStatus") String pendingStatus, @Param("failedStatus") String failedStatus);
+
+    @Update("""
+            <script>
+            UPDATE nx_event_outbox o FORCE INDEX (PRIMARY)
+               SET status = #{recordedStatus}, next_retry_at = NULL, last_error = #{reason}, updated_at = NOW()
+             WHERE o.id IN
+               <foreach item="id" collection="ids" open="(" separator="," close=")">#{id}</foreach>
+               AND
+            """ + RETIREMENT_ELIGIBILITY + """
+            </script>
+            """)
+    int retireCandidatesById(@Param("ids") List<Long> ids, @Param("eventTypes") List<String> eventTypes,
+                             @Param("unlinkedC1Type") String unlinkedC1Type, @Param("graceMinutes") int graceMinutes,
+                             @Param("reason") String reason, @Param("recordedStatus") String recordedStatus,
+                             @Param("pendingStatus") String pendingStatus, @Param("failedStatus") String failedStatus);
+
+    private int retirePending(List<String> eventTypes, String unlinkedC1Type, int graceMinutes, int limit,
+                              String reason, String recordedStatus, String pendingStatus, String failedStatus) {
+        List<Long> ids = listRetirementCandidates(eventTypes, unlinkedC1Type, graceMinutes, limit, pendingStatus, failedStatus);
+        return ids.isEmpty() ? 0 : retireCandidatesById(ids, eventTypes, unlinkedC1Type, graceMinutes,
+                reason, recordedStatus, pendingStatus, failedStatus);
+    }
+
+    default int retireRecordOnlyPending(List<String> eventTypes, int graceMinutes, int limit, String reason,
+                                        String recordedStatus, String pendingStatus, String failedStatus) {
+        return retirePending(eventTypes, null, graceMinutes, limit, reason, recordedStatus, pendingStatus, failedStatus);
+    }
 
     /**
      * Terminal sweep for legacy C1 profile-view facts whose audit row carries no
@@ -254,33 +288,10 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
      * only historical rows can match. BINARY keeps the comparison byte-exact, the
      * same rule the A4 diagnostics use, so an alias row cannot mask a real gap.
      */
-    @Update("""
-            <script>
-            UPDATE nx_event_outbox o
-               SET status = #{recordedStatus},
-                   next_retry_at = NULL,
-                   last_error = #{reason},
-                   updated_at = NOW()
-             WHERE o.is_deleted = 0
-               AND o.status IN (#{pendingStatus}, #{failedStatus})
-               AND BINARY o.event_type = BINARY #{eventType}
-               AND o.created_at &lt; DATE_SUB(NOW(), INTERVAL #{graceMinutes} MINUTE)
-               AND NOT EXISTS (
-                   SELECT 1 FROM nx_audit_log a
-                    WHERE a.biz_no = CONCAT('C1-VIEW-', o.event_id)
-                      AND BINARY a.biz_no = BINARY CONCAT('C1-VIEW-', o.event_id)
-                      AND a.is_deleted = 0)
-             ORDER BY o.id
-             LIMIT #{limit}
-            </script>
-            """)
-    int retireUnlinkedC1ProfileEvidence(@Param("eventType") String eventType,
-                                        @Param("graceMinutes") int graceMinutes,
-                                        @Param("limit") int limit,
-                                        @Param("reason") String reason,
-                                        @Param("recordedStatus") String recordedStatus,
-                                        @Param("pendingStatus") String pendingStatus,
-                                        @Param("failedStatus") String failedStatus);
+    default int retireUnlinkedC1ProfileEvidence(String eventType, int graceMinutes, int limit, String reason,
+                                                String recordedStatus, String pendingStatus, String failedStatus) {
+        return retirePending(List.of(eventType), eventType, graceMinutes, limit, reason, recordedStatus, pendingStatus, failedStatus);
+    }
 
     /**
      * Revives only a published H3 event whose one H3 consumer is explicitly

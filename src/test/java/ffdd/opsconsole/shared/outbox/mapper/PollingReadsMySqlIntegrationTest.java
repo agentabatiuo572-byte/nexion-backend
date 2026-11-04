@@ -292,13 +292,7 @@ class PollingReadsMySqlIntegrationTest {
         migrate();
     }
 
-    /**
-     * Executes the record-only retirement against real MySQL. The render test in
-     * {@code EventOutboxRetirementSqlTest} only proves the tags are parsed; it
-     * cannot prove MySQL accepts the statement, and the coverage that existed
-     * when the backlog was reported mocked the service so the SQL never ran at
-     * all. This runs the exact mapper method the scheduler calls.
-     */
+    /** Runs the scheduler's retirement mapper against real MySQL. */
     @Test
     void recordOnlyRetirementActuallyRetiresEligibleRowsInMysql() {
         String covered = "JANUS_STRATEGY_PUBLISH";
