@@ -6,6 +6,7 @@ import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope;
 import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode;
 import ffdd.opsconsole.content.mapper.SupportBindingMapper;
 import ffdd.opsconsole.content.mapper.SupportWorkbenchMapper;
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.sql.Timestamp;
 import java.time.*;
@@ -116,11 +117,7 @@ public class SupportWorkbenchService {
         var result=new LinkedHashMap<String,Object>();
         result.put("snapshotId",UUID.randomUUID().toString()); result.put("evaluatedAt",utc(coverage.observedThroughAt()));
         result.put("rulesVersion",rules.version());
-        var scope=new LinkedHashMap<String,Object>();
-        scope.put("actorId",readScope.actorId()); scope.put("agentAdminId",readScope.requestedAgentId());
-        scope.put("groupId",readScope.requestedGroupId()); scope.put("mode",readScope.mode().name());
-        scope.put("availableModes",ownership.availableReadModes().stream().map(Enum::name).toList());
-        result.put("scope",scope);
+        result.put("scope",scopeView(readScope));
         var ruleView=new LinkedHashMap<String,Object>();
         ruleView.put("dormantDays",rules.dormantDays()); ruleView.put("maintenanceDays",rules.maintenanceDays());
         ruleView.put("activityWindowDays",rules.activityWindowDays());
@@ -128,6 +125,14 @@ public class SupportWorkbenchService {
         ruleView.put("windowActiveAvailable",rules.activityWindowDays()!=null);
         result.put("rules",ruleView);
         return result;
+    }
+
+    private Map<String,Object> scopeView(ReadScope readScope) {
+        var scope=new LinkedHashMap<String,Object>();
+        scope.put("actorId",readScope.actorId()); scope.put("agentAdminId",readScope.requestedAgentId());
+        scope.put("groupId",readScope.requestedGroupId()); scope.put("mode",readScope.mode().name());
+        scope.put("availableModes",ownership.availableReadModes().stream().map(Enum::name).toList());
+        return scope;
     }
 
     /**
@@ -171,8 +176,29 @@ public class SupportWorkbenchService {
         return row;
     }
 
-    private Map<String,Object> performance(ReadScope scope,LocalDateTime evaluatedAt,String rawFrom,String rawTo) {
-        var calendar=ffdd.opsconsole.shared.config.BusinessCalendar.legacy();
+    private record PerformanceDay(LocalDate date,Instant from,Instant to,ZoneId zone,ZoneOffset offset) {}
+
+    private record PerformancePeriod(Instant from,Instant to,ZoneId zone,String calendarKey,List<PerformanceDay> days) {
+        Map<String,Object> query(ReadScope scope,LocalDateTime evaluatedAt) {
+            var q=new HashMap<String,Object>();
+            q.put("scope",scope); q.put("evaluatedAt",evaluatedAt); q.put("calendarKey",calendarKey);
+            bindPerformanceWindow(q,from,to);
+            return q;
+        }
+    }
+
+    private static void bindPerformanceWindow(Map<String,Object> query,Instant from,Instant to) {
+        query.put("windowFrom",from.toString()); query.put("windowTo",to.toString());
+        query.put("from",databaseMicrosecondCeiling(from)); query.put("to",databaseMicrosecondCeiling(to));
+    }
+
+    // DATETIME(6) facts satisfy >= from and < to exactly when compared against the ceiling of each bound.
+    private static LocalDateTime databaseMicrosecondCeiling(Instant bound) {
+        return LocalDateTime.ofInstant(bound.plusNanos(999).truncatedTo(ChronoUnit.MICROS),ZoneOffset.UTC);
+    }
+
+    private static PerformancePeriod performancePeriod(LocalDateTime evaluatedAt,String rawFrom,String rawTo) {
+        var calendar=BusinessCalendar.legacy();
         Instant end=evaluatedAt.toInstant(ZoneOffset.UTC);
         Instant start=calendar.startOf(calendar.dateAt(end).withDayOfMonth(1));
         if((rawFrom==null)!=(rawTo==null)) throw new BizException(422,"SUPPORT_PERFORMANCE_RANGE_REQUIRED");
@@ -183,34 +209,91 @@ public class SupportWorkbenchService {
         // Technical response bound, not a maintenance policy or historical retention limit.
         if((rawFrom!=null && !start.isBefore(end)) || start.isAfter(end) || ChronoUnit.DAYS.between(start,end)>3660 || start.isBefore(Instant.parse("1000-01-01T00:00:00Z"))
                 || end.isAfter(Instant.parse("9999-12-31T00:00:00Z"))) throw new BizException(422,"SUPPORT_PERFORMANCE_RANGE_INVALID");
-        var zone=calendar.zoneAt(start);
-        var q=new HashMap<String,Object>();
-        q.put("scope",scope); q.put("from",LocalDateTime.ofInstant(start,ZoneOffset.UTC)); q.put("evaluatedAt",evaluatedAt);
-        q.put("to",LocalDateTime.ofInstant(end,ZoneOffset.UTC));
-        // Business days come from the calendar, so a day after a time-zone change uses the new zone (BUG-005).
-        // SQL buckets by one fixed offset, so days sharing an offset are queried together as one segment.
-        var days=new TreeMap<String,Map<String,Object>>();
-        var segments=new ArrayList<Map.Entry<Instant,ZoneOffset>>();
-        for(LocalDate day=calendar.dateAt(start);calendar.startOf(day).isBefore(end);day=day.plusDays(1)) {
-            var row=new LinkedHashMap<String,Object>(); row.put("day",day.toString());
-            row.put("executionCount",0L); row.put("successfulCycleCount",0L); days.put(day.toString(),row);
-            Instant dayStart=calendar.startOf(day);
-            ZoneOffset dayOffset=calendar.versionOnDate(day).zone().getRules().getOffset(dayStart);
-            if(segments.isEmpty() || !segments.get(segments.size()-1).getValue().equals(dayOffset))
-                segments.add(Map.entry(segments.isEmpty()?start:dayStart,dayOffset));
+        ZoneId zone=calendar.zoneAt(start);
+        var days=new ArrayList<PerformanceDay>();
+        var calendarKey=new StringBuilder(zone.getId());
+        for(LocalDate day=calendar.dateAt(start);;day=day.plusDays(1)) {
+            ZoneId dayZone=calendar.versionOnDate(day).zone();
+            Instant dayStart=day.atStartOfDay(dayZone).toInstant();
+            if(!dayStart.isBefore(end)) break;
+            Instant nextStart=calendar.startOf(day.plusDays(1));
+            ZoneOffset offset=dayZone.getRules().getOffset(dayStart);
+            var previous=days.isEmpty()?null:days.get(days.size()-1);
+            if(previous==null || !dayZone.equals(previous.zone()) || !offset.equals(previous.offset()))
+                calendarKey.append('|').append(day).append('/').append(dayZone).append(offset);
+            days.add(new PerformanceDay(day,dayStart.isBefore(start)?start:dayStart,nextStart.isAfter(end)?end:nextStart,dayZone,offset));
         }
-        for(int index=0;index<segments.size();index++) {
+        return new PerformancePeriod(start,end,zone,calendarKey.toString(),days);
+    }
+
+    private Map<String,Object> performance(ReadScope scope,LocalDateTime evaluatedAt,String rawFrom,String rawTo) {
+        var period=performancePeriod(evaluatedAt,rawFrom,rawTo);
+        var q=period.query(scope,evaluatedAt);
+        var days=new LinkedHashMap<String,Map<String,Object>>();
+        for(var day:period.days()) {
+            var row=new LinkedHashMap<String,Object>(); row.put("day",day.date().toString());
+            row.put("executionCount",0L); row.put("successfulCycleCount",0L); days.put(day.date().toString(),row);
+        }
+        for(int first=0;first<period.days().size();) {
+            var startDay=period.days().get(first);
+            int next=first+1;
+            while(next<period.days().size() && period.days().get(next).offset().equals(startDay.offset())) next++;
+            var lastDay=period.days().get(next-1);
             var segment=new HashMap<>(q);
-            segment.put("from",LocalDateTime.ofInstant(segments.get(index).getKey(),ZoneOffset.UTC));
-            if(index+1<segments.size()) segment.put("to",LocalDateTime.ofInstant(segments.get(index+1).getKey(),ZoneOffset.UTC));
-            segment.put("businessOffset",segments.get(index).getValue().toString());
+            bindPerformanceWindow(segment,startDay.from(),lastDay.to());
+            segment.put("businessOffset",startDay.offset().equals(ZoneOffset.UTC)?"+00:00":startDay.offset().toString());
+            segment.put("lastDay",lastDay.date().toString());
             for(var row:mapper.executionDays(segment)) { var day=days.get(row.get("day").toString()); if(day!=null) day.put("executionCount",number(row.get("executionCount"))); }
             for(var row:mapper.successDays(segment)) { var day=days.get(row.get("day").toString()); if(day!=null) day.put("successfulCycleCount",number(row.get("successfulCycleCount"))); }
+            first=next;
         }
-        return Map.of("from",start.toString(),"to",end.toString(),"timeZone",zone.toString(),"scopeBasis","CURRENT_AGENT_MEMBERSHIP","days",List.copyOf(days.values()),
+        var result=new LinkedHashMap<String,Object>(Map.of("from",period.from().toString(),"to",period.to().toString(),
+                "timeZone",period.zone().toString(),"scopeBasis","CURRENT_AGENT_MEMBERSHIP","days",List.copyOf(days.values()),
                 "executionCount",days.values().stream().mapToLong(d->number(d.get("executionCount"))).sum(),
                 "successfulCycleCount",days.values().stream().mapToLong(d->number(d.get("successfulCycleCount"))).sum(),
-                "successfulCustomerCount",mapper.successfulCustomers(q));
+                "successfulCustomerCount",mapper.successfulCustomers(q)));
+        result.put("scopeVersion",mapper.performanceScopeVersion(q));
+        return result;
+    }
+
+    public Map<String,Object> performanceDetails(ReadMode mode,Long groupId,Long agentId,String metric,String from,String to,
+            String rawEvaluatedAt,String scopeVersion,long expectedTotal,String rawDay,long page,int size,String expectedQueryVersion) {
+        validatePage(page,size);
+        if(!"EXECUTION".equals(metric) && !"SUCCESSFUL_CYCLE".equals(metric)) throw new BizException(422,"SUPPORT_PERFORMANCE_METRIC_INVALID");
+        if(expectedTotal<0 || expectedTotal>MAX_SAFE_INTEGER) throw new BizException(422,"SUPPORT_PERFORMANCE_TOTAL_INVALID");
+        if(!scopeVersion.matches("[0-9a-f]{64}") || (expectedQueryVersion!=null && !expectedQueryVersion.matches("[0-9a-f]{64}")))
+            throw new BizException(422,"SUPPORT_PERFORMANCE_VERSION_INVALID");
+        if(page>1 && expectedQueryVersion==null) throw new BizException(422,"SUPPORT_PERFORMANCE_VERSION_REQUIRED");
+        LocalDateTime evaluatedAt;
+        try { evaluatedAt=LocalDateTime.ofInstant(Instant.parse(rawEvaluatedAt),ZoneOffset.UTC); }
+        catch(DateTimeException e) { throw new BizException(422,"SUPPORT_PERFORMANCE_CUTOFF_INVALID"); }
+        if(evaluatedAt.getYear()<1000 || evaluatedAt.getYear()>9999 || evaluatedAt.getNano()%1000!=0)
+            throw new BizException(422,"SUPPORT_PERFORMANCE_CUTOFF_INVALID");
+        var period=performancePeriod(evaluatedAt,from,to);
+        var selectedDay=rawDay==null?null:period.days().stream().filter(d->d.date().toString().equals(rawDay)).findFirst()
+                .orElseThrow(()->new BizException(422,"SUPPORT_PERFORMANCE_DAY_INVALID"));
+        return transaction().execute(status -> {
+            var scope=mode==null?ownership.defaultQueryScope(groupId,agentId):ownership.queryScope(mode,groupId,agentId);
+            var q=period.query(scope,evaluatedAt);
+            if(!scopeVersion.equals(mapper.performanceScopeVersion(q))) throw new BizException(409,"SUPPORT_PERFORMANCE_VERSION_CHANGED");
+            if(selectedDay!=null) bindPerformanceWindow(q,selectedDay.from(),selectedDay.to());
+            long offset=(page-1)*size;
+            q.put("scopeVersion",scopeVersion); q.put("metric",metric); q.put("day",rawDay);
+            q.put("limit",size); q.put("offset",offset);
+            var result=new LinkedHashMap<>(mapper.performanceDetailCounts(q));
+            long total=number(result.get("total")),visible=number(result.get("visibleCount"));
+            if(total!=expectedTotal || (expectedQueryVersion!=null && !expectedQueryVersion.equals(result.get("queryVersion"))))
+                throw new BizException(409,"SUPPORT_PERFORMANCE_VERSION_CHANGED");
+            result.put("restrictedCount",total-visible);
+            result.put("metric",metric); result.put("day",rawDay); result.put("scope",scopeView(scope));
+            result.put("scopeVersion",scopeVersion); result.put("scopeBasis","CURRENT_AGENT_MEMBERSHIP");
+            result.put("from",period.from().toString()); result.put("to",period.to().toString());
+            result.put("windowFrom",q.get("windowFrom")); result.put("windowTo",q.get("windowTo"));
+            result.put("evaluatedAt",utc(evaluatedAt)); result.put("timeZone",(selectedDay==null?period.zone():selectedDay.zone()).getId());
+            result.put("pageNum",page); result.put("pageSize",size);
+            result.put("records",offset>=visible?List.of():mapper.performanceDetails(q));
+            return wire(result);
+        });
     }
 
     static boolean available(String filter,SupportRules rules) {

@@ -60,6 +60,21 @@ public class SupportWorkbenchController {
         return ApiResult.ok(workbench.snapshot(mode,groupId,agentId,filter,keyword,pageNum,pageSize,from,to));
     }
 
+    @GetMapping("/performance/details")
+    @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read')")
+    public ApiResult<Map<String,Object>> performanceDetails(@RequestParam(required=false) String metric,
+            @RequestParam(required=false) String from,@RequestParam(required=false) String to,@RequestParam(required=false) String evaluatedAt,
+            @RequestParam(required=false) String scopeVersion,@RequestParam(required=false) Long expectedTotal,@RequestParam(required=false) String day,
+            @RequestParam(required=false) ReadMode mode,@RequestParam(required=false) Long groupId,
+            @RequestParam(required=false) Long agentId,@RequestParam(defaultValue="1") long pageNum,
+            @RequestParam(defaultValue="20") int pageSize,@RequestParam(required=false) String expectedQueryVersion) {
+        productionPathGuard.requireOpsWriteAllowed();
+        if(metric==null || from==null || to==null || evaluatedAt==null || scopeVersion==null || expectedTotal==null)
+            throw new BizException(400,"REQUEST_PARAMETER_REQUIRED");
+        return ApiResult.ok(workbench.performanceDetails(mode,groupId,agentId,metric,from,to,evaluatedAt,
+                scopeVersion,expectedTotal,day,pageNum,pageSize,expectedQueryVersion));
+    }
+
     @GetMapping({"/customers/{customerId}","/customers/{customerId}/360"})
     @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read')")
     public ApiResult<Map<String,Object>> detail(@PathVariable Long customerId) {

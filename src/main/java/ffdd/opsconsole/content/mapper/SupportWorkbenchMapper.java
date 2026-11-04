@@ -102,33 +102,77 @@ public interface SupportWorkbenchMapper extends BaseMapper<SupportAgentAssignmen
         + " ORDER BY waitingReply DESC,nextDueAt IS NOT NULL,nextDueAt,customerId LIMIT #{limit} OFFSET #{offset}</script>")
     List<Map<String,Object>> customers(Map<String,Object> query);
 
-    @Select("""
-        <script>SELECT DATE(CONVERT_TZ(executed_at,'+00:00',#{businessOffset})) day,COUNT(*) executionCount
+    String EXECUTION_WINDOW = """
           FROM nx_support_maintenance_execution execution
           JOIN nx_admin scope_agent ON scope_agent.id=execution.agent_admin_id
           WHERE executed_at &gt;= #{from} AND executed_at &lt; #{to} AND executed_at &lt;= #{evaluatedAt}
-        """ + SupportGroupMapper.AGENT_SCOPE_PREDICATE + """
-          GROUP BY day ORDER BY day</script>
-        """)
-    List<Map<String,Object>> executionDays(Map<String,Object> query);
+        """ + SupportGroupMapper.AGENT_SCOPE_PREDICATE;
 
-    @Select("""
-        <script>SELECT DATE(CONVERT_TZ(closed_at,'+00:00',#{businessOffset})) day,COUNT(*) successfulCycleCount
+    String SUCCESS_WINDOW = """
           FROM nx_support_maintenance_cycle cycle
           JOIN nx_admin scope_agent ON scope_agent.id=cycle.agent_admin_id
           WHERE cycle.status='SUCCEEDED' AND closed_at &gt;= #{from} AND closed_at &lt; #{to} AND closed_at &lt;= #{evaluatedAt}
-        """ + SupportGroupMapper.AGENT_SCOPE_PREDICATE + """
-          GROUP BY day ORDER BY day</script>
-        """)
+        """ + SupportGroupMapper.AGENT_SCOPE_PREDICATE;
+
+    // A westward switch lengthens the final business date in the old-offset segment.
+    // Its extra hours still belong to that date until the next version's actual midnight.
+    @Select("<script>SELECT LEAST(#{lastDay},DATE(ADDTIME(executed_at,REPLACE(#{businessOffset},'+','')))) day,"
+        + "COUNT(*) executionCount " + EXECUTION_WINDOW + " GROUP BY day ORDER BY day</script>")
+    List<Map<String,Object>> executionDays(Map<String,Object> query);
+
+    @Select("<script>SELECT LEAST(#{lastDay},DATE(ADDTIME(closed_at,REPLACE(#{businessOffset},'+','')))) day,"
+        + "COUNT(*) successfulCycleCount " + SUCCESS_WINDOW + " GROUP BY day ORDER BY day</script>")
     List<Map<String,Object>> successDays(Map<String,Object> query);
 
-    @Select("""
-        <script>SELECT COUNT(DISTINCT customer_id) FROM nx_support_maintenance_cycle cycle
-          JOIN nx_admin scope_agent ON scope_agent.id=cycle.agent_admin_id
-          WHERE cycle.status='SUCCEEDED' AND closed_at &gt;= #{from} AND closed_at &lt; #{to} AND closed_at &lt;= #{evaluatedAt}
-        """ + SupportGroupMapper.AGENT_SCOPE_PREDICATE + """
-          </script>
-        """
-        )
+    @Select("<script>SELECT COUNT(DISTINCT customer_id) " + SUCCESS_WINDOW + "</script>")
     long successfulCustomers(Map<String,Object> query);
+
+    // Bind the workbench receipt to its current agent/group sets, original bounds and observed watermark.
+    @Select("""
+        <script>SELECT SHA2(CONCAT_WS('|','maintenance-scope-v1',#{scope.actorId},#{scope.mode},
+          COALESCE(#{scope.requestedGroupId},'-'),COALESCE(#{scope.requestedAgentId},'-'),
+          #{windowFrom},#{windowTo},#{evaluatedAt},#{calendarKey},
+          (SELECT HEX(BIT_XOR(UNHEX(SHA2(scope_agent.id,256)))) FROM nx_admin scope_agent WHERE 1=1
+        """ + SupportGroupMapper.AGENT_SCOPE_PREDICATE + """
+          ),(SELECT HEX(BIT_XOR(UNHEX(SHA2(scope_group.id,256)))) FROM nx_support_group scope_group WHERE 1=1
+        """ + SupportGroupMapper.GROUP_SCOPE_PREDICATE + """
+          )),256) FROM nx_support_activity_coverage WHERE id=1 AND #{evaluatedAt} &lt;= observed_through_at</script>
+        """)
+    String performanceScopeVersion(Map<String,Object> query);
+
+    // Historical totals belong to the executing agent. Only currently readable customers have detail rows.
+    String DETAIL_FACTS = """
+        WITH period_facts AS (<choose><when test='metric == "EXECUTION"'>
+          SELECT execution.id,execution.customer_id customerId,execution.agent_admin_id agentAdminId,
+            execution.assignment_id assignmentId,execution.cycle_id cycleId,execution.message_id sourceId,
+            execution.executed_at factAt
+        """ + EXECUTION_WINDOW + """
+          </when><otherwise>
+          SELECT cycle.id,cycle.customer_id customerId,cycle.agent_admin_id agentAdminId,
+            cycle.assignment_id assignmentId,cycle.id cycleId,cycle.success_event_id sourceId,cycle.closed_at factAt
+        """ + SUCCESS_WINDOW + """
+          </otherwise></choose>), classified AS (
+            SELECT f.*,EXISTS(SELECT 1 FROM nx_user scope_customer WHERE scope_customer.id=f.customerId
+        """ + SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE + """
+            ) detailVisible FROM period_facts f)
+        """;
+
+    // Digest every visible record before pagination. Restricted records contribute only their count.
+    @Select("<script>" + DETAIL_FACTS + """
+        SELECT COUNT(*) total,COUNT(IF(detailVisible,1,NULL)) visibleCount,
+          SHA2(CONCAT_WS('|','maintenance-details-v1',#{scopeVersion},#{metric},COALESCE(#{day},'-'),
+            #{from},#{to},#{limit},COUNT(*),COUNT(IF(detailVisible,1,NULL)),
+            HEX(BIT_XOR(IF(detailVisible,UNHEX(SHA2(CONCAT_WS('|',id,customerId,agentAdminId,assignmentId,
+              cycleId,COALESCE(sourceId,'-'),factAt),256)),NULL)))),256) queryVersion
+        FROM classified</script>
+        """)
+    Map<String,Object> performanceDetailCounts(Map<String,Object> query);
+
+    @Select("<script>" + DETAIL_FACTS + """
+        SELECT id,customerId,agentAdminId,assignmentId,cycleId,
+          <choose><when test='metric == "EXECUTION"'>sourceId messageId,factAt executedAt</when>
+            <otherwise>sourceId successEventId,factAt closedAt</otherwise></choose>
+        FROM classified WHERE detailVisible=1 ORDER BY factAt DESC,id DESC LIMIT #{limit} OFFSET #{offset}</script>
+        """)
+    List<Map<String,Object>> performanceDetails(Map<String,Object> query);
 }
