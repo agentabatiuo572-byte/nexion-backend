@@ -18,8 +18,6 @@ import ffdd.opsconsole.finance.domain.DepositChargebackView;
 import ffdd.opsconsole.finance.domain.DepositFlowView;
 import ffdd.opsconsole.finance.domain.DepositOpsRepository;
 import ffdd.opsconsole.finance.domain.DepositReconciliationRowView;
-import ffdd.opsconsole.finance.domain.TopupChargebackRecoveryCommand;
-import ffdd.opsconsole.finance.domain.TopupChargebackRecoveryResult;
 import ffdd.opsconsole.finance.domain.WithdrawalOrderRepository;
 import ffdd.opsconsole.finance.domain.WithdrawalOrderView;
 import ffdd.opsconsole.finance.dto.TopupCommandRequest;
@@ -213,12 +211,12 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (channel == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TOPUP_CHANNEL_NOT_FOUND");
         }
+        if ("card".equals(channel.code())) {
+            return ApiResult.fail(410, "CARD_TOPUP_CHANNEL_RETIRED");
+        }
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
-        }
-        if ("card".equals(channel.code()) && Boolean.TRUE.equals(request.enabled())) {
-            return ApiResult.fail(409, "CARD_TOPUP_CHANNEL_RETIRED");
         }
         if (request.enabled() == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "ENABLED_REQUIRED");
@@ -254,72 +252,11 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     }
 
     public ApiResult<Map<String, Object>> switchTopupPsp(String idempotencyKey, TopupCommandRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        if (!StringUtils.hasText(request.value())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "PSP_REQUIRED");
-        }
-        String next = request.value().trim();
-        if (!Set.of("Checkout.com", "Stripe").contains(next)) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "UNSUPPORTED_PSP");
-        }
-        if (!StringUtils.hasText(request.expectedValue())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "EXPECTED_VALUE_REQUIRED");
-        }
-        String actor = AdminActorResolver.resolve(request.operator());
-        return executeD1("D1_TOPUP_PSP_SWITCH", idempotencyKey, request, () -> {
-            String current = configValueForUpdate("finance.topup.psp.primary", "Checkout.com");
-            if (!current.equals(request.expectedValue().trim())) {
-                return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "CONFIG_VERSION_CONFLICT");
-            }
-            if (current.equals(next)) {
-                return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
-            }
-            configFacade.upsertAdminValue("finance.topup.psp.primary", next, "STRING", TOPUP_CONFIG_GROUP, "D1 primary card PSP");
-            auditRequired("D1_TOPUP_PSP_SWITCHED", "TOPUP_PSP", next, actor, Map.of(
-                    "from", current, "to", next, "reason", request.reason().trim(),
-                    "idempotencyKey", idempotencyKey.trim()));
-            return topupOverview();
-        });
+        return ApiResult.fail(410, "CARD_TOPUP_CHANNEL_RETIRED");
     }
 
     public ApiResult<Map<String, Object>> updateTopupCardRiskParam(String key, String idempotencyKey, TopupCommandRequest request) {
-        TopupCardParamDef param = TOPUP_CARD_PARAMS.stream()
-                .filter(candidate -> candidate.key().equals(key))
-                .findFirst()
-                .orElse(null);
-        if (param == null) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "CARD_PARAM_NOT_FOUND");
-        }
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        CanonicalNumeric value;
-        try {
-            value = normalizeCardRiskValue(param.key(), request);
-        } catch (IllegalArgumentException ex) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
-        }
-        String actor = AdminActorResolver.resolve(request.operator());
-        if (!StringUtils.hasText(request.expectedValue())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "EXPECTED_VALUE_REQUIRED");
-        }
-        return executeD1("D1_TOPUP_CARD_RISK_" + param.key().toUpperCase(Locale.ROOT), idempotencyKey, request, () -> {
-            String configKey = cardParamConfigKey(param.key());
-            String before = configValueForUpdate(configKey, param.defaultValue().toPlainString());
-            if (!sameDecimal(before, request.expectedValue())) {
-                return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "CONFIG_VERSION_CONFLICT");
-            }
-            configFacade.upsertAdminValue(configKey, value.value(), "NUMBER", TOPUP_CONFIG_GROUP, "D1 card risk parameter");
-            configFacade.upsertAdminValue(configKey + ".unit", value.unit(), "STRING", TOPUP_CONFIG_GROUP, "D1 card risk parameter unit");
-            auditRequired("D1_TOPUP_CARD_RISK_PARAM_CHANGED", "TOPUP_CARD_PARAM", param.key(), actor, Map.of(
-                    "key", param.key(), "before", before, "value", value.value(), "unit", value.unit(),
-                    "reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim()));
-            return topupOverview();
-        });
+        return ApiResult.fail(410, "CARD_TOPUP_CHANNEL_RETIRED");
     }
 
     public ApiResult<Map<String, Object>> writeoffTopupReconciliation(String channelCode, String idempotencyKey, TopupCommandRequest request) {
@@ -363,100 +300,15 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     }
 
     public ApiResult<Map<String, Object>> createTopupBinLock(String idempotencyKey, TopupCommandRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        if (!StringUtils.hasText(request.value())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "BIN_SEGMENT_REQUIRED");
-        }
-        String segment = request.value().trim();
-        if (!segment.matches("\\d{6,8}")) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "BIN_SEGMENT_INVALID");
-        }
-        return setTopupBinLock(segment, idempotencyKey, new TopupCommandRequest(null, true, request.reason(), request.operator()));
+        return ApiResult.fail(410, "CARD_TOPUP_CHANNEL_RETIRED");
     }
 
     public ApiResult<Map<String, Object>> setTopupBinLock(String segment, String idempotencyKey, TopupCommandRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        if (request.enabled() == null) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LOCK_STATE_REQUIRED");
-        }
-        RiskTarget target;
-        try {
-            target = normalizeRiskTarget(segment);
-        } catch (IllegalArgumentException ex) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
-        }
-        int lockHours = parseInteger(configValue("finance.topup.card.cardLockHours", "24"), 24);
-        String actor = AdminActorResolver.resolve(request.operator());
-        return executeD1("D1_TOPUP_RISK_LOCK_" + target.type() + "_" + sanitizeKey(target.value()), idempotencyKey, request, () -> {
-            depositOpsRepository.setRiskLock(
-                    target.type(), target.value(), request.enabled(), lockHours, request.reason().trim(), actor);
-            auditRequired(request.enabled() ? "D1_TOPUP_RISK_LOCKED" : "D1_TOPUP_RISK_UNLOCKED",
-                    "TOPUP_RISK_LOCK", target.type() + ":" + target.value(), actor, Map.of(
-                            "targetType", target.type(), "targetValue", target.value(), "locked", request.enabled(),
-                            "lockHours", lockHours, "reason", request.reason().trim(),
-                            "idempotencyKey", idempotencyKey.trim()));
-            return topupOverview();
-        });
+        return ApiResult.fail(410, "CARD_TOPUP_CHANNEL_RETIRED");
     }
 
     public ApiResult<Map<String, Object>> refundTopupChargeback(String caseNo, String idempotencyKey, TopupCommandRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        if (!Boolean.TRUE.equals(request.evidenceConfirmed()) || !StringUtils.hasText(request.evidenceRef())
-                || request.evidenceRef().trim().length() > 128) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "CHARGEBACK_EVIDENCE_REQUIRED");
-        }
-        if (!StringUtils.hasText(caseNo)) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "CHARGEBACK_CASE_REQUIRED");
-        }
-        String normalizedCaseNo = caseNo.trim();
-        String actor = AdminActorResolver.resolve(request.operator());
-        return executeD1("D1_TOPUP_CHARGEBACK_" + normalizedCaseNo.toUpperCase(Locale.ROOT), idempotencyKey, request, () -> {
-            DepositChargebackView chargeback = depositOpsRepository.findChargeback(normalizedCaseNo).orElse(null);
-            if (chargeback == null) {
-                return ApiResult.fail(404, "CHARGEBACK_NOT_FOUND");
-            }
-            if (Set.of("CHARGEBACK_RECOVERED", "CHARGEBACK_PARTIAL")
-                    .contains(chargeback.status().toUpperCase(Locale.ROOT))) {
-                return ApiResult.fail(
-                        OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
-                        OpsErrorCode.INVALID_STATE_TRANSITION.name());
-            }
-            if (!"已入账".equals(chargeback.enteredStatus())) {
-                return ApiResult.fail(
-                        OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
-                        "CHARGEBACK_LEDGER_ENTRY_NOT_FOUND");
-            }
-            BigDecimal requiredFee = safe(chargeback.feeBufferRequired()).setScale(6, RoundingMode.HALF_UP);
-            TopupChargebackRecoveryResult recovery = depositOpsRepository.recoverChargeback(
-                    new TopupChargebackRecoveryCommand(
-                            normalizedCaseNo, chargeback.userId(), safe(chargeback.amount()), requiredFee,
-                            request.evidenceRef().trim(), request.reason().trim(), actor, idempotencyKey.trim()));
-            Map<String, Object> detail = new LinkedHashMap<>();
-            detail.put("caseNo", normalizedCaseNo);
-            detail.put("userId", chargeback.userId());
-            detail.put("amount", chargeback.amount());
-            detail.put("recoveredAmount", recovery.recoveredAmount());
-            detail.put("walletShortfall", recovery.walletShortfall());
-            detail.put("feeBufferDeducted", recovery.feeBufferDeducted());
-            detail.put("feeBufferShortfall", recovery.feeBufferShortfall());
-            detail.put("recoveryStatus", recovery.status());
-            detail.put("ledgerBizNo", recovery.ledgerBizNo());
-            detail.put("riskSignalNo", recovery.riskSignalNo());
-            detail.put("evidenceRef", request.evidenceRef().trim());
-            detail.put("reason", request.reason().trim());
-            detail.put("idempotencyKey", idempotencyKey.trim());
-            auditRequired("D1_TOPUP_CHARGEBACK_RECOVERED", "TOPUP_CHARGEBACK", normalizedCaseNo, actor, detail);
-            return topupOverview();
-        });
+        return ApiResult.fail(410, "CARD_TOPUP_CHANNEL_RETIRED");
     }
 
     public ApiResult<Map<String, Object>> withdrawalParams() {
@@ -1293,6 +1145,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (channel == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TOPUP_CHANNEL_NOT_FOUND");
         }
+        if ("card".equals(channel.code())) {
+            return ApiResult.fail(410, "CARD_TOPUP_CHANNEL_RETIRED");
+        }
         if ("max_amount".equals(field) && channel.defaultMaxAmountValue() == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TOPUP_CHANNEL_MAX_NOT_SUPPORTED");
         }
@@ -1582,33 +1437,6 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         return "finance.topup.card." + key;
     }
 
-    private String sanitizeKey(String value) {
-        return requireText(value, "KEY_REQUIRED")
-                .toLowerCase(Locale.ROOT)
-                .replaceAll("[^a-z0-9._-]", "-")
-                .replaceAll("-+", "-");
-    }
-
-    private RiskTarget normalizeRiskTarget(String raw) {
-        String value = requireText(raw, "RISK_TARGET_REQUIRED");
-        String type = "BIN";
-        int separator = value.indexOf(':');
-        if (separator > 0) {
-            type = value.substring(0, separator).trim().toUpperCase(Locale.ROOT);
-            value = value.substring(separator + 1).trim();
-        }
-        boolean valid = switch (type) {
-            case "BIN" -> value.matches("\\d{6,8}");
-            case "IP" -> value.matches("[0-9a-fA-F:.]{3,45}");
-            case "DEVICE" -> value.matches("[A-Za-z0-9._:-]{8,128}");
-            default -> false;
-        };
-        if (!valid) {
-            throw new IllegalArgumentException("RISK_TARGET_INVALID");
-        }
-        return new RiskTarget(type, value);
-    }
-
     private String configValue(String key, String fallback) {
         return configFacade.activeValue(key)
                 .filter(StringUtils::hasText)
@@ -1751,55 +1579,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         return new CanonicalNumeric(amount.stripTrailingZeros().toPlainString(), unit);
     }
 
-    private CanonicalNumeric normalizeCardRiskValue(String key, TopupCommandRequest request) {
-        if (request == null || request.numericValue() == null || !StringUtils.hasText(request.unit())) {
-            throw new IllegalArgumentException("CARD_PARAM_STRUCTURED_VALUE_REQUIRED");
-        }
-        BigDecimal amount = request.numericValue();
-        String unit = request.unit().trim().toUpperCase(Locale.ROOT);
-        BigDecimal min;
-        BigDecimal max;
-        boolean integer;
-        String expectedUnit;
-        switch (key) {
-            case "threeDsThreshold" -> {
-                min = BigDecimal.ZERO;
-                max = new BigDecimal("500");
-                integer = false;
-                expectedUnit = "USD";
-            }
-            case "cardRetryLimit" -> {
-                min = new BigDecimal("3");
-                max = new BigDecimal("10");
-                integer = true;
-                expectedUnit = "COUNT";
-            }
-            case "cardLockHours" -> {
-                min = BigDecimal.ONE;
-                max = new BigDecimal("72");
-                integer = true;
-                expectedUnit = "HOUR";
-            }
-            default -> throw new IllegalArgumentException("CARD_PARAM_NOT_FOUND");
-        }
-        if (!expectedUnit.equals(unit)) {
-            throw new IllegalArgumentException("CARD_PARAM_UNIT_INVALID");
-        }
-        if (amount.compareTo(min) < 0 || amount.compareTo(max) > 0 || (integer && amount.stripTrailingZeros().scale() > 0)) {
-            throw new IllegalArgumentException("CARD_PARAM_OUT_OF_RANGE");
-        }
-        return new CanonicalNumeric(amount.stripTrailingZeros().toPlainString(), unit);
-    }
-
     private BigDecimal safe(BigDecimal value) {
         return value == null ? BigDecimal.ZERO : value;
-    }
-
-    private String requireText(String value, String message) {
-        if (!StringUtils.hasText(value)) {
-            throw new IllegalArgumentException(message);
-        }
-        return value.trim();
     }
 
     private record TopupChannelDef(String id, String code, BigDecimal defaultFeeValue, String defaultFeeUnit,
@@ -1812,9 +1593,6 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     }
 
     private record CanonicalNumeric(String value, String unit) {
-    }
-
-    private record RiskTarget(String type, String value) {
     }
 
     private ApiResult<Map<String, Object>> requireCommand(String idempotencyKey, String reason) {

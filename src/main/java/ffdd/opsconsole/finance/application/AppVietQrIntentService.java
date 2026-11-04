@@ -106,20 +106,14 @@ public class AppVietQrIntentService {
         return ApiResult.ok(result);
     }
 
-    @Transactional
     public ApiResult<Map<String, Object>> create(
             Long userId, String idempotencyKey, BigDecimal requestedAmount) {
-        return createIntent(userId, idempotencyKey, requestedAmount, false);
+        throw new BizException(410, "VIETQR_MANUAL_TOPUP_RETIRED");
     }
 
     @Transactional
     public ApiResult<Map<String, Object>> createHosted(
             Long userId, String idempotencyKey, BigDecimal requestedAmount) {
-        return createIntent(userId, idempotencyKey, requestedAmount, true);
-    }
-
-    private ApiResult<Map<String, Object>> createIntent(
-            Long userId, String idempotencyKey, BigDecimal requestedAmount, boolean hosted) {
         requirePaymentRuntime();
         requireVietQrChannelEnabled();
         requireUser(userId);
@@ -132,13 +126,12 @@ public class AppVietQrIntentService {
 
         Map<String, Object> replay = mapper.findIntentByCreateKey(userId, key);
         if (replay != null) {
-            requireMatchingRail(replay, hosted);
+            requireHostedRail(replay);
             ApiResult<Map<String,Object>> response = replayCreate(replay, requestHash);
             mapper.ensureInFlightReconciliation(text(replay.get("intentNo")));
             return response;
         }
 
-        if (!hosted) throw new BizException(410, "VIETQR_MANUAL_TOPUP_RETIRED");
         amount = depositAmount(amount);
         Map<String, Object> vietQr = required(mapper.findVietQrConfig(), "PAYMENT_CONFIG_UNAVAILABLE");
         BigDecimal max = decimal(vietQr.get("perTxLimitUsd")).setScale(2, RoundingMode.UNNECESSARY);
@@ -168,7 +161,7 @@ public class AppVietQrIntentService {
             mapper.ensureInFlightReconciliation(intentNo);
             Map<String, Object> concurrentReplay = mapper.findIntentByCreateKey(userId, key);
             if (concurrentReplay != null) {
-                requireMatchingRail(concurrentReplay, hosted);
+                requireHostedRail(concurrentReplay);
                 return replayCreate(concurrentReplay, requestHash);
             }
             if (inserted == 1) {
@@ -223,51 +216,23 @@ public class AppVietQrIntentService {
         return ApiResult.ok(result);
     }
 
-    @Transactional
     public ApiResult<Map<String, Object>> cancel(
             Long userId, String intentNo, String idempotencyKey, Long expectedVersion) {
-        requirePaymentRuntime();
-        requireUser(userId);
-        String normalizedIntentNo = intentNo(intentNo);
-        String key = commandKey(idempotencyKey);
+        hostedCancellationTarget(userId, intentNo);
+        commandKey(idempotencyKey);
         if (expectedVersion == null || expectedVersion < 0) {
             throw new BizException(422, "VIETQR_EXPECTED_VERSION_REQUIRED");
         }
-        String requestHash = sha256(normalizedIntentNo + "|" + expectedVersion);
-        Map<String, Object> current = required(
-                mapper.findIntentForUser(userId, normalizedIntentNo), "VIETQR_INTENT_NOT_FOUND", 404);
-        if (hostedRail(current)) {
-            throw new BizException(409, "HDPAY_PROVIDER_ORDER_NOT_CANCELLABLE");
-        }
-        mapper.expireIntentForUser(userId, normalizedIntentNo);
-        mapper.closeInactiveInFlightReconciliationsForUser(userId);
-        Map<String, Object> before = required(
-                mapper.findIntentForUser(userId, normalizedIntentNo), "VIETQR_INTENT_NOT_FOUND", 404);
-        String status = text(before.get("status"));
-        if ("CANCELLED".equals(status)) {
-            if (key.equals(text(before.get("cancelIdempotencyKey")))
-                    && requestHash.equals(text(before.get("cancelRequestHash")))) {
-                return ApiResult.ok(toView(before));
-            }
-            throw new BizException(409, "VIETQR_INTENT_ALREADY_CANCELLED");
-        }
-        if (!"AWAITING_PAYMENT".equals(status)) {
-            throw new BizException(409, "VIETQR_INTENT_NOT_CANCELLABLE");
-        }
-        if (longValue(before.get("version")) != expectedVersion) {
-            throw new BizException(409, "VIETQR_INTENT_VERSION_CONFLICT");
-        }
-        if (mapper.cancelIntent(
-                userId, normalizedIntentNo, expectedVersion, key, requestHash) != 1) {
-            throw new BizException(409, "VIETQR_INTENT_VERSION_CONFLICT");
-        }
-        mapper.closeInFlightReconciliation(normalizedIntentNo, "CANCELLED");
-        Map<String, Object> after = new LinkedHashMap<>(before);
-        after.put("status", "CANCELLED");
-        after.put("version", expectedVersion + 1);
-        after.put("cancelIdempotencyKey", key);
-        after.put("cancelRequestHash", requestHash);
-        return ApiResult.ok(toView(after));
+        throw new BizException(409, "HDPAY_PROVIDER_ORDER_NOT_CANCELLABLE");
+    }
+
+    public String hostedCancellationTarget(Long userId, String intentNo) {
+        requirePaymentRuntime();
+        requireUser(userId);
+        Map<String, Object> intent = required(
+                mapper.findIntentForUser(userId, intentNo(intentNo)), "VIETQR_INTENT_NOT_FOUND", 404);
+        requireHostedRail(intent);
+        return text(intent.get("targetOrderNo"));
     }
 
     private ApiResult<Map<String, Object>> replayCreate(
@@ -285,8 +250,8 @@ public class AppVietQrIntentService {
         throw new BizException(503, "VIETQR_PAYMENT_RAIL_INVALID");
     }
 
-    private void requireMatchingRail(Map<String, Object> row, boolean hosted) {
-        if (hostedRail(row) != hosted) throw new BizException(409, "VIETQR_PAYMENT_RAIL_CONFLICT");
+    private void requireHostedRail(Map<String, Object> row) {
+        if (!hostedRail(row)) throw new BizException(410, "VIETQR_MANUAL_TOPUP_RETIRED");
     }
 
     private Map<String, Object> toView(Map<String, Object> row) {

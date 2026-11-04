@@ -204,6 +204,7 @@ public class HdPayHostedDepositService {
     public ApiResult<Map<String, Object>> cancel(
             Long userId, String intentNo, String idempotencyKey, Long expectedVersion) {
         if (properties.providerMode()) {
+            String targetOrderNo = legacy.hostedCancellationTarget(userId, intentNo);
             Map<String, Object> provider = mapper.findByMerchantOrderId(intentNo);
             if (provider != null && Set.of("PENDING", "CREATED", "SUBMIT_UNKNOWN")
                     .contains(text(provider.get("submissionStatus")))) {
@@ -212,8 +213,7 @@ public class HdPayHostedDepositService {
                 // for reconciliation instead of creating split-brain state.
                 throw new BizException(409, "HDPAY_PROVIDER_ORDER_NOT_CANCELLABLE");
             }
-            Map<String, Object> canonical = legacy.get(userId, intentNo).getData();
-            if (canonical != null && !text(canonical.get("targetOrderNo")).isEmpty()) {
+            if (!targetOrderNo.isEmpty()) {
                 throw new BizException(409, "HDPAY_COMMERCE_INTENT_NOT_CANCELLABLE");
             }
         }
