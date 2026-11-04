@@ -15,7 +15,7 @@ public record SupportAnalyticsQueryRequest(String view, String category, String 
         String pageSize, String expectedVersion) {
     public static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private static final long MAX_SAFE_INTEGER = 9007199254740991L;
-    public enum View { OVERVIEW, AGENTS, CUSTOMERS, FINANCE, DEVICES, ACTIVITY }
+    public enum View { OVERVIEW, AGENTS, CUSTOMERS, FINANCE, NET_CONTRIBUTIONS, FIRST_DEPOSITS, FIRST_PURCHASES, DEVICES, ACTIVITY }
     public enum Category { ALL, BOUND, PENDING, ANOMALY }
     public enum First { ALL, CONFIRMED, NONE, UNKNOWN }
     public enum ServiceFilter { ALL, WINDOW_ACTIVE, ACTIVE, DORMANT, UNKNOWN, DUE, WAITING_REPLY, FIRST_CONTACT, STOPPED, TODO }
@@ -66,7 +66,8 @@ public record SupportAnalyticsQueryRequest(String view, String category, String 
                     || start.getNano() % 1000 != 0 || end.getNano() % 1000 != 0)
                 invalid("SUPPORT_PERFORMANCE_RANGE_INVALID");
         } else if (from != null || to != null) invalid("SUPPORT_ANALYTICS_WINDOW_INVALID");
-        Sort sort = enumeration(sortKey, Sort.class, v == View.AGENTS ? Sort.BOUND_CUSTOMER_COUNT : v == View.FINANCE ? Sort.SUCCEEDED_AT : defaultSort(c, f, service));
+        Sort sort = enumeration(sortKey, Sort.class, v == View.AGENTS ? Sort.BOUND_CUSTOMER_COUNT
+            : Set.of(View.FINANCE,View.NET_CONTRIBUTIONS,View.FIRST_DEPOSITS,View.FIRST_PURCHASES).contains(v) ? Sort.SUCCEEDED_AT : defaultSort(c, f, service));
         Direction d = enumeration(direction, Direction.class, defaultDirection(c, f, service));
         if (!serverSupportedSorts.contains(sort)) invalid("SUPPORT_ANALYTICS_SORT_INVALID");
         if (sort == Sort.NEXT_DUE_AT && service != ServiceFilter.DUE
