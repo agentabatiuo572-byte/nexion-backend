@@ -1741,6 +1741,27 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                                 @Param("count") long count, @Param("color") String color, @Param("tone") String tone,
                                 @Param("sortOrder") int sortOrder);
 
+    @Select("""
+            SELECT EXISTS (
+                SELECT /*+ NO_MERGE(m) */ 1
+                  FROM (
+                    SELECT user_no FROM nx_admin_risk_score_user WHERE is_deleted=0
+                    UNION
+                    SELECT user_no FROM nx_admin_risk_score_override WHERE active=1 AND is_deleted=0
+                    UNION
+                    SELECT user_no FROM nx_admin_risk_score_contribution WHERE is_deleted=0
+                  ) candidates
+                  LEFT JOIN (
+                    SELECT u.id,CAST(CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))
+                           AS CHAR(21) CHARACTER SET utf8mb4) COLLATE utf8mb4_0900_ai_ci AS canonical_no
+                      FROM nx_user u FORCE INDEX(PRIMARY)
+                     WHERE u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+                  ) m ON m.canonical_no=candidates.user_no
+                 WHERE m.id IS NULL
+            )
+            """)
+    boolean hasOrphanScoringRows();
+
     // The map can miss a later commit; all three cleanups retain the original locking matcher for absent entries.
     @Update("""
             UPDATE /*+ NO_MERGE(m) */ nx_admin_risk_score_override o
@@ -1801,7 +1822,10 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
               (user_no,model_score,model_version,row_version,as_of,updated_text,is_deleted)
             SELECT CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')),0,'pending',0,NOW(),'待首次评分',0
               FROM nx_user u
+              LEFT JOIN nx_admin_risk_score_user s
+                ON s.user_no=CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))
              WHERE u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+               AND (s.id IS NULL OR s.is_deleted<>0)
             ON DUPLICATE KEY UPDATE is_deleted=0,updated_at=NOW()
             """)
     int ensureAllActiveUsersHaveScoreRows();
@@ -1830,17 +1854,28 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     ScoreUserRecord findScoreUser(@Param("userNo") String userNo);
 
-    /** Per-user K4 mutation root. Every score/override/contribution write locks this row first. */
     @Select("""
-            SELECT s.user_no
+            SELECT u.id
               FROM nx_admin_risk_score_user s
               JOIN nx_user u
                 ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
                AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
              WHERE s.user_no = #{userNo} AND s.is_deleted = 0
+            """)
+    Long scoreUserId(@Param("userNo") String userNo);
+
+    /** Per-user K4 mutation root. Every score/override/contribution write locks this row first. */
+    @Select("""
+            SELECT s.user_no
+              FROM nx_admin_risk_score_user s
+              JOIN nx_user u
+                ON u.id=#{userId,jdbcType=BIGINT}
+               AND CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
+               AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+             WHERE s.user_no = #{userNo} AND s.is_deleted = 0
              FOR UPDATE
             """)
-    String lockScoreUserForUpdate(@Param("userNo") String userNo);
+    String lockScoreUserForUpdate(@Param("userNo") String userNo,@Param("userId") Long userId);
 
     @Select("""
             SELECT s.user_no AS userNo,s.model_score AS modelScore,s.model_version AS modelVersion,
@@ -2112,7 +2147,8 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Update("""
             UPDATE nx_admin_risk_score_user s
               JOIN nx_user u
-                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
+                ON u.id=#{userId,jdbcType=BIGINT}
+               AND CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
                AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
                SET s.model_score=#{modelScore},s.model_version=#{modelVersion},s.as_of=NOW(),s.updated_text='刚刚',
                    s.row_version=s.row_version+1,s.updated_at=NOW()
@@ -2120,7 +2156,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     int updateScoreUserModelIfVersion(
             @Param("userNo") String userNo,@Param("expectedVersion") long expectedVersion,
-            @Param("modelScore") int modelScore,@Param("modelVersion") String modelVersion);
+            @Param("modelScore") int modelScore,@Param("modelVersion") String modelVersion,@Param("userId") Long userId);
 
     /**
      * Advances K4's source watermark to the newest fact it actually observed.
@@ -2129,7 +2165,8 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
      */
     @Update("""
             UPDATE nx_admin_risk_score_user s
-              JOIN nx_user u ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
+              JOIN nx_user u ON u.id=#{userId,jdbcType=BIGINT}
+                           AND CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
                             AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
                SET s.as_of=GREATEST(COALESCE(s.as_of,'1970-01-01'),NOW(),
                    COALESCE(u.updated_at,'1970-01-01'),
@@ -2147,17 +2184,18 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                               WHERE j3.user_id=u.id),'1970-01-01'))
              WHERE s.user_no=#{userNo} AND s.is_deleted=0
             """)
-    int advanceScoreAsOfToLatestSource(@Param("userNo") String userNo);
+    int advanceScoreAsOfToLatestSource(@Param("userNo") String userNo,@Param("userId") Long userId);
 
     @Update("""
             UPDATE nx_admin_risk_score_user s
               JOIN nx_user u
-                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
+                ON u.id=#{userId,jdbcType=BIGINT}
+               AND CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
                AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
                SET s.row_version=s.row_version+1,s.as_of=NOW(),s.updated_text='刚刚',s.updated_at=NOW()
              WHERE s.user_no=#{userNo} AND s.row_version=#{expectedVersion} AND s.is_deleted=0
             """)
-    int bumpScoreUserVersion(@Param("userNo") String userNo,@Param("expectedVersion") long expectedVersion);
+    int bumpScoreUserVersion(@Param("userNo") String userNo,@Param("expectedVersion") long expectedVersion,@Param("userId") Long userId);
 
     @Insert("INSERT INTO nx_admin_risk_score_contribution (user_no,name,evidence,points,sort_order,is_deleted) VALUES (#{userNo},#{name},#{evidence},#{points},#{sortOrder},0)")
     int insertScoreContribution(@Param("userNo") String userNo, @Param("name") String name, @Param("evidence") String evidence,
