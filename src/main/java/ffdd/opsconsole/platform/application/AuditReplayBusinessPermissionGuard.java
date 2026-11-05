@@ -3,6 +3,7 @@ package ffdd.opsconsole.platform.application;
 import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.growth.application.H5GrowthApproval;
+import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
 import ffdd.opsconsole.team.application.TeamFundApproval;
@@ -125,6 +126,8 @@ public class AuditReplayBusinessPermissionGuard {
     @Autowired
     private H5GrowthApproval h5GrowthApproval;
     @Autowired
+    private K2OtpInitialApproval k2OtpInitialApproval;
+    @Autowired
     private ffdd.opsconsole.device.application.OpsDeviceService devices;
     @Autowired
     private ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper calibrationMapper;
@@ -202,6 +205,10 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     public ApiResult<Void> validateProposal(AuditReplayCommand command) {
+        if (K2OtpInitialApproval.supports(command)) {
+            return k2OtpInitialApproval.canPropose(command)
+                    ? ApiResult.ok() : ApiResult.fail(403, "K2_OTP_MAKER_FORBIDDEN");
+        }
         if (G3MarketApproval.supports(command)) {
             return g3MarketApproval.canPropose(command)
                     ? ApiResult.ok() : ApiResult.fail(403, "G3_APPROVAL_MAKER_FORBIDDEN");
@@ -326,6 +333,9 @@ public class AuditReplayBusinessPermissionGuard {
      * will later approve; it is intentionally not an input the browser can choose.
      */
     public ApiResult<AuditReplayCommand> canonicalizeProposalCommand(AuditReplayCommand command) {
+        if (K2OtpInitialApproval.supports(command)) {
+            return ApiResult.ok(k2OtpInitialApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
+        }
         if (G3MarketApproval.supports(command)) {
             return ApiResult.ok(g3MarketApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
         }
@@ -364,6 +374,9 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     ApiResult<Void> validateRejection(AuditReplayCommand command) {
+        if (K2OtpInitialApproval.supports(command)) {
+            return k2OtpInitialApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        }
         if (G3MarketApproval.supports(command)) {
             return g3MarketApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         }
@@ -396,6 +409,9 @@ public class AuditReplayBusinessPermissionGuard {
      * Other commands retain their existing replay-time business guard.
      */
     public ApiResult<Void> validateApproval(AuditReplayCommand command) {
+        if (K2OtpInitialApproval.supports(command)) {
+            return k2OtpInitialApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        }
         if (G3MarketApproval.supports(command)) {
             return g3MarketApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         }
@@ -603,6 +619,18 @@ public class AuditReplayBusinessPermissionGuard {
             AuditOperationProposalRequest request) {
         boolean delegated = delegatedProposal();
         AuditReplayCommand command = request == null ? null : request.command();
+        if (K2OtpInitialApproval.supports(command)) {
+            AuditLockTarget target = K2OtpInitialApproval.target(command);
+            if (!"K2".equals(text(request.sourceDomain())) || !target.id().equals(text(request.obj()))
+                    || !target.equals(request.target()) || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            var preview = k2OtpInitialApproval.preview(command, request.reason());
+            if (preview.getCode() != 0) return ApiResult.fail(preview.getCode(), preview.getMessage());
+            var review = preview.getData();
+            return ApiResult.ok(new DelegatedProposalDescriptor(
+                    review.action(), target.id(), review.before(), review.after(), "K2", "fund", true, target));
+        }
         if (G3MarketApproval.supports(command)) {
             if (!"G3".equals(text(request.sourceDomain())) || (request.targets() != null && !request.targets().isEmpty())) {
                 return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");

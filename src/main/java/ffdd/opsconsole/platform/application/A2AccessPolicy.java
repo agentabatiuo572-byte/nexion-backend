@@ -3,6 +3,7 @@ package ffdd.opsconsole.platform.application;
 import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.growth.application.H5GrowthApproval;
+import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.infrastructure.AuditOperationTicketEntity;
 import ffdd.opsconsole.platform.mapper.AuditOperationTicketMapper;
@@ -68,6 +69,8 @@ public class A2AccessPolicy {
                         || grants.contains(E2TaskPricingApproval.MAKER_AUTHORITY)
                         || grants.contains(H8RewardParamApproval.MAKER_AUTHORITY)
                         || grants.contains(H5GrowthApproval.MAKER_AUTHORITY)
+                        || (grants.contains(K2OtpInitialApproval.MAKER_AUTHORITY)
+                            && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write")))
                         || grants.contains("network_f1_write") || grants.contains("network_f3_write") || grants.contains("network_f4_pool_fund")
                         || grants.contains("finprod_g3_curve_target_price_write") || grants.contains("finprod_g3_curve_pump_prob_write")
                         || grants.contains("finprod_g3_override_price_write") || grants.contains("finprod_g3_write")) return id;
@@ -114,6 +117,8 @@ public class A2AccessPolicy {
             authority = H5GrowthApproval.MAKER_AUTHORITY;
         } else if (H8RewardParamApproval.supports(command)) {
             authority = H8RewardParamApproval.MAKER_AUTHORITY;
+        } else if (K2OtpInitialApproval.supports(command)) {
+            authority = K2OtpInitialApproval.MAKER_AUTHORITY;
         } else if (TeamFundApproval.supports(command)) {
             authority = TeamFundApproval.makerAuthority(command);
         } else if (G3MarketApproval.supports(command)) {

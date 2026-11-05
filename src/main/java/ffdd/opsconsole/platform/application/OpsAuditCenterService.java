@@ -44,6 +44,7 @@ import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.growth.application.H5GrowthApproval;
+import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.team.application.BinaryCommissionSettlementService.SettlementResult;
 import ffdd.opsconsole.team.application.TeamFundApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
@@ -786,6 +787,7 @@ public class OpsAuditCenterService {
                         : G3MarketApproval.supports(cmd) ? G3MarketApproval.target(cmd)
                         : H5GrowthApproval.supports(cmd) ? H5GrowthApproval.target(cmd)
                         : H8RewardParamApproval.supports(cmd) ? H8RewardParamApproval.target(cmd)
+                        : K2OtpInitialApproval.supports(cmd) ? K2OtpInitialApproval.target(cmd)
                         : E2TaskPricingApproval.supports(cmd) ? E2TaskPricingApproval.target(cmd)
                         : TreasuryThresholdApproval.supports(cmd) ? TreasuryThresholdApproval.target(cmd)
                         : WithdrawalConfigApproval.target(cmd);
@@ -871,7 +873,8 @@ public class OpsAuditCenterService {
     private static boolean superAdminProposalCommand(AuditReplayCommand command) {
         return WithdrawalConfigApproval.supports(command) || TreasuryThresholdApproval.supports(command)
                 || E2TaskPricingApproval.supports(command) || TeamFundApproval.supports(command)
-                || G3MarketApproval.supports(command) || H8RewardParamApproval.supports(command) || H5GrowthApproval.supports(command);
+                || G3MarketApproval.supports(command) || H8RewardParamApproval.supports(command)
+                || H5GrowthApproval.supports(command) || K2OtpInitialApproval.supports(command);
     }
 
     private String refundOrderNo(AuditReplayCommand command) {
@@ -910,7 +913,8 @@ public class OpsAuditCenterService {
         detail.put("reason", reason.trim());
         detail.put("idempotencyKey", idempotencyKey.trim());
         detail.put("domain", TreasuryThresholdApproval.supports(command) || E2TaskPricingApproval.supports(command)
-                || TeamFundApproval.supports(command) || G3MarketApproval.supports(command) || H8RewardParamApproval.supports(command) || H5GrowthApproval.supports(command)
+                || TeamFundApproval.supports(command) || G3MarketApproval.supports(command) || H8RewardParamApproval.supports(command)
+                || H5GrowthApproval.supports(command) || K2OtpInitialApproval.supports(command)
                 ? ticket.getSourceDomain() : inferAuditDomain(ticket.getAction(), ticket.getObjectText()));
         return detail;
     }
