@@ -114,4 +114,11 @@ public class PhoneCalibrationAdminController {
         data.put("expectedRevision", request.proposal().expectedRevision());
         return ApiResult.ok(data);
     }
+
+    @PostMapping("/direction")
+    @PreAuthorize("hasAuthority('device_e6_read')")
+    public ApiResult<PhoneCalibrationConfigService.Direction> direction(
+            @RequestBody PhoneCalibrationConfigService.Proposal proposal) {
+        return ApiResult.ok(new PhoneCalibrationConfigService(config, clock).direction(proposal, mapper.activeTiers()));
+    }
 }
