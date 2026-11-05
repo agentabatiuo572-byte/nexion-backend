@@ -2,6 +2,7 @@ package ffdd.opsconsole.platform.application;
 
 import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
+import ffdd.opsconsole.team.application.TeamFundApproval;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import org.springframework.beans.factory.annotation.Autowired;
 
@@ -127,6 +128,8 @@ public class AuditReplayBusinessPermissionGuard {
     private TreasuryThresholdApproval treasuryThresholdApproval;
     @Autowired
     private E2TaskPricingApproval e2TaskPricingApproval;
+    @Autowired
+    private TeamFundApproval teamFundApproval;
 
     public AuditReplayBusinessPermissionGuard(TrustDisclosureRepository trustDisclosureRepository,
             AdminOperatorRoleResolver roleResolver, EmergencyControlRepository emergencyControlRepository,
@@ -184,10 +187,20 @@ public class AuditReplayBusinessPermissionGuard {
             String sourceDomain,
             String operationType,
             boolean amplifies,
-            AuditLockTarget target) {
+            AuditLockTarget target,
+            TeamFundApproval.Review teamReview) {
+        public DelegatedProposalDescriptor(
+                String action, String objectId, String beforeValue, String afterValue,
+                String sourceDomain, String operationType, boolean amplifies, AuditLockTarget target) {
+            this(action, objectId, beforeValue, afterValue, sourceDomain, operationType, amplifies, target, null);
+        }
     }
 
     public ApiResult<Void> validateProposal(AuditReplayCommand command) {
+        if (TeamFundApproval.supports(command)) {
+            return teamFundApproval.canPropose(command)
+                    ? ApiResult.ok() : ApiResult.fail(403, "FUND_APPROVAL_MAKER_FORBIDDEN");
+        }
         if (E2TaskPricingApproval.supports(command)) {
             return e2TaskPricingApproval.canPropose(command)
                     ? ApiResult.ok() : ApiResult.fail(403, "E2_TASK_PRICING_MAKER_FORBIDDEN");
@@ -298,6 +311,9 @@ public class AuditReplayBusinessPermissionGuard {
      * will later approve; it is intentionally not an input the browser can choose.
      */
     public ApiResult<AuditReplayCommand> canonicalizeProposalCommand(AuditReplayCommand command) {
+        if (TeamFundApproval.supports(command)) {
+            return ApiResult.ok(teamFundApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
+        }
         if (E2TaskPricingApproval.supports(command)) {
             return ApiResult.ok(e2TaskPricingApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
         }
@@ -324,6 +340,9 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     ApiResult<Void> validateRejection(AuditReplayCommand command) {
+        if (TeamFundApproval.supports(command)) {
+            return teamFundApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        }
         if (E2TaskPricingApproval.supports(command)) {
             return e2TaskPricingApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         }
@@ -344,6 +363,9 @@ public class AuditReplayBusinessPermissionGuard {
      * Other commands retain their existing replay-time business guard.
      */
     public ApiResult<Void> validateApproval(AuditReplayCommand command) {
+        if (TeamFundApproval.supports(command)) {
+            return teamFundApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        }
         if (E2TaskPricingApproval.supports(command)) {
             return e2TaskPricingApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         }
@@ -536,6 +558,21 @@ public class AuditReplayBusinessPermissionGuard {
             AuditOperationProposalRequest request) {
         boolean delegated = delegatedProposal();
         AuditReplayCommand command = request == null ? null : request.command();
+        if (TeamFundApproval.supports(command)) {
+            String source = TeamFundApproval.source(command);
+            if (!source.equals(text(request.sourceDomain())) || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            var preview = teamFundApproval.preview(command, request.reason());
+            if (preview.getCode() != 0) return ApiResult.fail(preview.getCode(), preview.getMessage());
+            var review = preview.getData();
+            var target = review.target();
+            if (!target.id().equals(text(request.obj())) || !target.equals(request.target())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            return ApiResult.ok(new DelegatedProposalDescriptor(
+                    review.action(), target.id(), review.before(), review.after(), source, "fund", true, target, review));
+        }
         if (E2TaskPricingApproval.supports(command)) {
             if (!"E2".equals(text(request.sourceDomain())) || (request.targets() != null && !request.targets().isEmpty())) {
                 return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");

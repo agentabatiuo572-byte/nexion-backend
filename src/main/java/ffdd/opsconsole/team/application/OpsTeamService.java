@@ -10,6 +10,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.config.BusinessCalendar;
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayable;
@@ -56,11 +57,13 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -319,9 +322,25 @@ public class OpsTeamService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
+    private static final AuditLockTarget AMBASSADOR_POLICY_TARGET = new AuditLockTarget("F", "ambassador_policy", "default");
+
+    public record AmbassadorPolicyReview(AuditLockTarget target, String before, String after,
+                                         Map<String, Object> beforeFields, Map<String, Object> afterFields) { }
+
+    private record AmbassadorPolicyValues(String policyVersion, BigDecimal defaultBudgetUsdt,
+                                          List<Map<String, Object>> buckets, long revision) { }
+
     public ApiResult<Map<String, Object>> ambassadorPolicy() {
         try {
-            return ApiResult.ok(requireAmbassadorPolicy());
+            var policy = requireAmbassadorPolicy();
+            Map<String, Object> output = new LinkedHashMap<>();
+            output.put("policyVersion", policy.policyVersion());
+            output.put("revision", policy.revision());
+            output.put("defaultBudgetUsdt", policy.defaultBudgetUsdt());
+            output.put("buckets", policy.buckets());
+            output.put("source", "nx_team_ambassador_policy");
+            output.put("serverCanonical", true);
+            return ApiResult.ok(output);
         } catch (IllegalArgumentException exception) {
             return ApiResult.fail(503, "AMBASSADOR_POLICY_UNAVAILABLE");
         }
@@ -334,70 +353,183 @@ public class OpsTeamService implements AuditReplayable {
         ApiResult<Map<String, Object>> guard = requireCommand(
                 idempotencyKey, request == null ? null : request.reason());
         if (guard != null) return guard;
-        if (request.expectedRevision() == null || request.expectedRevision() <= 0) {
-            return ApiResult.fail(422, "AMBASSADOR_POLICY_REVISION_REQUIRED");
+        var values = requestedAmbassadorPolicy(request);
+        String bucketsJson = ambassadorPolicyBucketsJson(values.buckets());
+        String operator = actor(request.operator());
+        return executeIdempotent(
+                "F4_AMBASSADOR_POLICY_UPDATE",
+                idempotencyKey,
+                requestHash(values.policyVersion(), values.defaultBudgetUsdt(), bucketsJson,
+                        values.revision(), request.reason(), operator),
+                () -> updateAmbassadorPolicyInternal(idempotencyKey, request.reason(), operator, values, bucketsJson, null));
+    }
+
+    public ApiResult<AmbassadorPolicyReview> previewAmbassadorPolicyApproval(AmbassadorPolicyUpdateRequest request) {
+        var values = requestedAmbassadorPolicy(request);
+        var current = currentAmbassadorPolicyForUpdate(values);
+        if (current.getCode() != 0) return ApiResult.fail(current.getCode(), current.getMessage());
+        var before = current.getData();
+        var gate = validateAmbassadorPolicyApproval(expandsAmbassadorBudget(before, values));
+        if (gate.getCode() != 0) return ApiResult.fail(gate.getCode(), gate.getMessage());
+
+        Map<String, Object> beforeFields = new LinkedHashMap<>();
+        Map<String, Object> afterFields = new LinkedHashMap<>();
+        beforeFields.put("revision", before.revision());
+        afterFields.put("revision", before.revision() + 1);
+        addAmbassadorPolicyReviewField(beforeFields, afterFields, "policyVersion", before.policyVersion(), values.policyVersion());
+        addAmbassadorPolicyReviewField(beforeFields, afterFields, "defaultBudgetUsdt",
+                before.defaultBudgetUsdt().stripTrailingZeros(), values.defaultBudgetUsdt().stripTrailingZeros());
+        for (int index = 0; index < values.buckets().size(); index++) {
+            var oldBucket = before.buckets().get(index);
+            var newBucket = values.buckets().get(index);
+            for (String field : List.of("title", "range", "rule", "minBudgetUsdt", "maxBudgetUsdt")) {
+                addAmbassadorPolicyReviewField(beforeFields, afterFields, newBucket.get("id") + "." + field,
+                        oldBucket.get(field), newBucket.get(field));
+            }
+        }
+        return ApiResult.ok(new AmbassadorPolicyReview(AMBASSADOR_POLICY_TARGET,
+                ambassadorPolicyBudgetSummary(before), ambassadorPolicyBudgetSummary(values), beforeFields, afterFields));
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> executeApprovedAmbassadorPolicy(
+            String idempotencyKey, AmbassadorPolicyUpdateRequest request) {
+        String operationId = A2ReplayContext.operationId();
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(operationId)) {
+            return ApiResult.fail(403, "AMBASSADOR_POLICY_APPROVAL_FORBIDDEN");
+        }
+        var locks = lockMapper.selectActiveByTicketId(operationId);
+        if (locks.size() != 1 || !operationId.equals(locks.get(0).getTicketId()) || !AMBASSADOR_POLICY_TARGET.equals(
+                new AuditLockTarget(locks.get(0).getTargetDomain(), locks.get(0).getTargetType(), locks.get(0).getTargetId()))) {
+            return ApiResult.fail(403, "AMBASSADOR_POLICY_APPROVAL_FORBIDDEN");
+        }
+        var guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) return guard;
+        var values = requestedAmbassadorPolicy(request);
+        return updateAmbassadorPolicyInternal(idempotencyKey, request.reason(), actor(null), values,
+                ambassadorPolicyBucketsJson(values.buckets()), operationId);
+    }
+
+    private AmbassadorPolicyValues requestedAmbassadorPolicy(AmbassadorPolicyUpdateRequest request) {
+        if (request == null || request.expectedRevision() == null || request.expectedRevision() <= 0) {
+            throw new BizException(422, "AMBASSADOR_POLICY_REVISION_REQUIRED");
         }
         List<Map<String, Object>> buckets = normalizeAmbassadorPolicyBuckets(request.buckets());
         String version = requireText(request.policyVersion(), "AMBASSADOR_POLICY_VERSION_REQUIRED");
         if (!version.matches("[A-Za-z0-9][A-Za-z0-9._-]{2,63}")) {
-            return ApiResult.fail(422, "AMBASSADOR_POLICY_VERSION_INVALID");
+            throw new BizException(422, "AMBASSADOR_POLICY_VERSION_INVALID");
         }
         BigDecimal defaultBudget = request.defaultBudgetUsdt();
-        if (defaultBudget == null || defaultBudget.signum() <= 0
+        if (defaultBudget == null || defaultBudget.signum() <= 0 || defaultBudget.stripTrailingZeros().scale() > 6
                 || defaultBudget.compareTo(new BigDecimal("1000000")) > 0
                 || buckets.stream().noneMatch(bucket -> defaultBudget.compareTo((BigDecimal) bucket.get("minBudgetUsdt")) >= 0
                 && defaultBudget.compareTo((BigDecimal) bucket.get("maxBudgetUsdt")) <= 0)) {
-            return ApiResult.fail(422, "AMBASSADOR_POLICY_DEFAULT_BUDGET_INVALID");
+            throw new BizException(422, "AMBASSADOR_POLICY_DEFAULT_BUDGET_INVALID");
         }
-        String bucketsJson;
-        try {
-            bucketsJson = JSON_PROBE.writeValueAsString(buckets);
-        } catch (com.fasterxml.jackson.core.JsonProcessingException exception) {
-            throw new IllegalStateException("AMBASSADOR_POLICY_JSON_WRITE_FAILED", exception);
-        }
-        return executeIdempotent(
-                "F4_AMBASSADOR_POLICY_UPDATE",
-                idempotencyKey,
-                requestHash(version, defaultBudget, bucketsJson, request.expectedRevision(), request.reason(), actor(request.operator())),
-                () -> updateAmbassadorPolicyInternal(idempotencyKey, request, version, defaultBudget, buckets, bucketsJson));
+        return new AmbassadorPolicyValues(version, defaultBudget, buckets, request.expectedRevision());
     }
 
-    private ApiResult<Map<String, Object>> updateAmbassadorPolicyInternal(
-            String idempotencyKey,
-            AmbassadorPolicyUpdateRequest request,
-            String version,
-            BigDecimal defaultBudget,
-            List<Map<String, Object>> buckets,
-            String bucketsJson) {
-        Map<String, Object> before;
+    private String ambassadorPolicyBucketsJson(List<Map<String, Object>> buckets) {
+        try {
+            return JSON_PROBE.writeValueAsString(buckets);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("AMBASSADOR_POLICY_JSON_WRITE_FAILED", exception);
+        }
+    }
+
+    private ApiResult<AmbassadorPolicyValues> currentAmbassadorPolicyForUpdate(AmbassadorPolicyValues values) {
+        AmbassadorPolicyValues before;
         try {
             before = requireAmbassadorPolicy();
         } catch (IllegalArgumentException exception) {
             return ApiResult.fail(503, "AMBASSADOR_POLICY_UNAVAILABLE");
         }
-        long currentRevision = parseLongFromMap(before.get("revision"));
-        if (currentRevision != request.expectedRevision()) {
+        if (before.revision() != values.revision()) {
             return ApiResult.fail(409, "AMBASSADOR_POLICY_VERSION_CONFLICT");
         }
-        if (expandsAmbassadorBudget(before, defaultBudget, buckets) && coverageBelowRedline()) {
-            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        for (int index = 0; index < values.buckets().size(); index++) {
+            for (String field : List.of("minBudgetUsdt", "maxBudgetUsdt")) {
+                BigDecimal budget = (BigDecimal) values.buckets().get(index).get(field);
+                if (budget.scale() > 6 && !budget.equals(before.buckets().get(index).get(field))) {
+                    return ApiResult.fail(422, "AMBASSADOR_POLICY_BUCKETS_INVALID");
+                }
+            }
         }
+        return ApiResult.ok(before);
+    }
+
+    private ApiResult<Map<String, Object>> updateAmbassadorPolicyInternal(
+            String idempotencyKey, String reason, String operator, AmbassadorPolicyValues values,
+            String bucketsJson, String approvalOperationId) {
+        var current = currentAmbassadorPolicyForUpdate(values);
+        if (current.getCode() != 0) return ApiResult.fail(current.getCode(), current.getMessage());
+        var before = current.getData();
+        boolean expandsBudget = expandsAmbassadorBudget(before, values);
+        if (approvalOperationId != null) {
+            var gate = validateAmbassadorPolicyApproval(expandsBudget);
+            if (gate.getCode() != 0) return ApiResult.fail(gate.getCode(), gate.getMessage());
+        } else if (expandsBudget) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
+
+        long currentRevision = before.revision();
         if (!commissionRepository.updateAmbassadorPolicyCas(
-                currentRevision, version, defaultBudget, bucketsJson, actor(request.operator()))) {
+                currentRevision, values.policyVersion(), values.defaultBudgetUsdt(), bucketsJson, operator)) {
             return ApiResult.fail(409, "AMBASSADOR_POLICY_VERSION_CONFLICT");
         }
-        audit("F4_AMBASSADOR_POLICY_CHANGED", "nx_team_ambassador_policy:default", actor(request.operator()), Map.of(
+        Map<String, Object> detail = new LinkedHashMap<>(Map.of(
                 "oldRevision", currentRevision,
                 "newRevision", currentRevision + 1,
-                "oldPolicyVersion", String.valueOf(before.get("policyVersion")),
-                "newPolicyVersion", version,
-                "reason", request.reason().trim(),
+                "oldPolicyVersion", before.policyVersion(),
+                "newPolicyVersion", values.policyVersion(),
+                "reason", reason.trim(),
                 "idempotencyKey", idempotencyKey.trim()));
+        if (approvalOperationId != null) detail.put("a2OperationId", approvalOperationId);
+        audit("F4_AMBASSADOR_POLICY_CHANGED", "nx_team_ambassador_policy:default", operator, detail, approvalOperationId != null);
         return ambassadorPolicy();
     }
 
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> requireAmbassadorPolicy() {
+    private ApiResult<Void> validateAmbassadorPolicyApproval(boolean expandsBudget) {
+        if (!expandsBudget) return ApiResult.fail(422, "AMBASSADOR_POLICY_APPROVAL_NOT_REQUIRED");
+        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        if (coverage == null || !coverage.reliable() || coverage.redlinePct() == null
+                || coverage.ratioReserveUsd() == null || coverage.ratioLiabilitiesUsd() == null
+                || coverage.ratioLiabilitiesUsd().signum() < 0) {
+            return ApiResult.fail(OpsErrorCode.COVERAGE_UNAVAILABLE.httpStatus(), OpsErrorCode.COVERAGE_UNAVAILABLE.name());
+        }
+        BigDecimal reserve = coverage.ratioReserveUsd();
+        BigDecimal liabilities = coverage.ratioLiabilitiesUsd();
+        BigDecimal redline = coverage.redlinePct();
+        boolean belowRedline = liabilities.signum() == 0
+                ? (reserve.signum() > 0 ? BigDecimal.valueOf(100) : BigDecimal.ZERO).compareTo(redline) < 0
+                : reserve.movePointRight(2).compareTo(liabilities.multiply(redline)) < 0;
+        return belowRedline
+                ? ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name())
+                : ApiResult.ok();
+    }
+
+    private void addAmbassadorPolicyReviewField(Map<String, Object> beforeFields, Map<String, Object> afterFields,
+                                                 String field, Object before, Object after) {
+        if (!Objects.equals(before, after)) {
+            beforeFields.put(field, before);
+            afterFields.put(field, after);
+        }
+    }
+
+    private String ambassadorPolicyBudgetSummary(AmbassadorPolicyValues values) {
+        List<String> labels = List.of("场地", "KOL", "印刷", "开发");
+        StringBuilder summary = new StringBuilder("USDT 默认 ")
+                .append(values.defaultBudgetUsdt().stripTrailingZeros().toPlainString());
+        for (int index = 0; index < values.buckets().size(); index++) {
+            var bucket = values.buckets().get(index);
+            summary.append(',').append(labels.get(index)).append(' ')
+                    .append(((BigDecimal) bucket.get("minBudgetUsdt")).toPlainString()).append('–')
+                    .append(((BigDecimal) bucket.get("maxBudgetUsdt")).toPlainString());
+        }
+        return summary.length() <= 128 ? summary.toString() : "USDT 预算（完整值见审批详情）";
+    }
+
+    private AmbassadorPolicyValues requireAmbassadorPolicy() {
         Map<String, Object> row = commissionRepository.ambassadorPolicy();
         String policyVersion = textValue(row, "policyVersion", "");
         Long revision = parseLongFromMap(row.get("revision"));
@@ -409,8 +541,9 @@ public class OpsTeamService implements AuditReplayable {
         }
         List<Map<String, Object>> raw;
         try {
-            raw = JSON_PROBE.readValue(bucketsJson, new TypeReference<>() { });
-        } catch (com.fasterxml.jackson.core.JsonProcessingException exception) {
+            raw = JSON_PROBE.readerFor(new TypeReference<List<Map<String, Object>>>() { })
+                    .with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).readValue(bucketsJson);
+        } catch (JsonProcessingException exception) {
             throw new IllegalArgumentException("AMBASSADOR_POLICY_UNAVAILABLE", exception);
         }
         List<AmbassadorPolicyUpdateRequest.Bucket> typed = raw.stream().map(bucket ->
@@ -421,15 +554,7 @@ public class OpsTeamService implements AuditReplayable {
                         String.valueOf(bucket.getOrDefault("rule", "")),
                         decimalValue(bucket.get("minBudgetUsdt"), BigDecimal.valueOf(-1)),
                         decimalValue(bucket.get("maxBudgetUsdt"), BigDecimal.valueOf(-1)))).toList();
-        List<Map<String, Object>> buckets = normalizeAmbassadorPolicyBuckets(typed);
-        Map<String, Object> output = new LinkedHashMap<>();
-        output.put("policyVersion", policyVersion);
-        output.put("revision", revision);
-        output.put("defaultBudgetUsdt", defaultBudget);
-        output.put("buckets", buckets);
-        output.put("source", "nx_team_ambassador_policy");
-        output.put("serverCanonical", true);
-        return output;
+        return new AmbassadorPolicyValues(policyVersion, defaultBudget, normalizeAmbassadorPolicyBuckets(typed), revision);
     }
 
     private List<Map<String, Object>> normalizeAmbassadorPolicyBuckets(
@@ -468,18 +593,14 @@ public class OpsTeamService implements AuditReplayable {
         return List.copyOf(normalized);
     }
 
-    @SuppressWarnings("unchecked")
-    private boolean expandsAmbassadorBudget(
-            Map<String, Object> before,
-            BigDecimal nextDefault,
-            List<Map<String, Object>> nextBuckets) {
-        if (nextDefault.compareTo(decimalValue(before.get("defaultBudgetUsdt"), BigDecimal.ZERO)) > 0) return true;
-        Map<String, BigDecimal> oldMaximums = ((List<Map<String, Object>>) before.get("buckets")).stream()
-                .collect(java.util.stream.Collectors.toMap(
-                        row -> String.valueOf(row.get("id")),
-                        row -> decimalValue(row.get("maxBudgetUsdt"), BigDecimal.ZERO)));
-        return nextBuckets.stream().anyMatch(row -> decimalValue(row.get("maxBudgetUsdt"), BigDecimal.ZERO)
-                .compareTo(oldMaximums.getOrDefault(String.valueOf(row.get("id")), BigDecimal.ZERO)) > 0);
+    private boolean expandsAmbassadorBudget(AmbassadorPolicyValues before, AmbassadorPolicyValues after) {
+        if (after.defaultBudgetUsdt().compareTo(before.defaultBudgetUsdt()) > 0) return true;
+        for (int index = 0; index < after.buckets().size(); index++) {
+            BigDecimal oldMax = (BigDecimal) before.buckets().get(index).get("maxBudgetUsdt");
+            BigDecimal newMax = (BigDecimal) after.buckets().get(index).get("maxBudgetUsdt");
+            if (newMax.compareTo(oldMax) > 0) return true;
+        }
+        return false;
     }
 
     public ApiResult<Map<String, Object>> commissions() {

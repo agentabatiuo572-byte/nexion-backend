@@ -53,6 +53,11 @@ public interface TreasuryLedgerRepository {
 
     BigDecimal sumPendingCommissionUsdt();
 
+    /** Available funds and pending commissions from the same committed view. */
+    CommissionCoverageAmounts commissionCoverageAmounts();
+
+    record CommissionCoverageAmounts(BigDecimal withdrawableUsdt, BigDecimal coolingUsdt) { }
+
     BigDecimal sumNetUsdtFlowBetween(LocalDateTime startAt, LocalDateTime endAt);
 
     default List<Map<String, Object>> liquidityFlowWindows(LocalDateTime startAt, LocalDateTime endAt) {

@@ -52,6 +52,7 @@ public class OpsBinarySettlementController {
                 request.ownerUserId(), request.memberUserId(), request.leg(), actor.id(), actor.username()));
     }
 
+    /** Compatibility route for recovering an existing settlement. New manual settlements start in A2. */
     @PostMapping("/settlements")
     @PreAuthorize("hasAuthority('network_f3_write')")
     public ApiResult<SettlementResult> settle(

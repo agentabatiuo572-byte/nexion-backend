@@ -22,6 +22,7 @@ import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.risk.facade.RiskTamperSignalFacade;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
+import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository.CommissionCoverageAmounts;
 import ffdd.opsconsole.treasury.dto.TreasuryAlertAckRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryForecastConfigRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryExportRequest;
@@ -235,16 +236,13 @@ public class OpsTreasuryService {
     }
 
     private ApiResult<Map<String, Object>> liabilities(boolean breakdown, BigDecimal nexRate, BigDecimal nexLiabilityUnits) {
-        List<Map<String, Object>> rows = List.of(
-                liability("withdrawable_balance", "可提余额", ledgerRepository.sumUsdtAvailable(), "nx_user_wallet.usdt_available"),
-                liability("usdt_staking_principal", "USDT staking 本金", ledgerRepository.sumActiveStakingPrincipalUsdt(), "nx_staking_position.amount_usdt"),
-                liability("staking_interest", "staking 应付利息", ledgerRepository.sumActiveStakingInterestUsdt(), "nx_staking_position.estimated_interest_usdt"),
-                liability("genesis_daily_emission", "Genesis 排放承诺", ledgerRepository.genesisDailyLiabilityUsd(), "nx_genesis_holding × nx_genesis_series.daily_dividend_rate_pct"),
-                liability("nex_v2_future", "UVT v2 未来兑付", nexLiabilityUnits.multiply(nexRate), "nx_nex_lock_order active maturity"),
-                liability("withdrawal_queue", "待提现 queue", ledgerRepository.sumActiveWithdrawalQueueUsdt(), "nx_withdrawal_order active queue"),
-                liability("commission_cooling", "佣金冷却未解锁", ledgerRepository.sumPendingCommissionUsdt(), "nx_wallet_ledger pending commission"),
-                liability("lock_other", "锁仓本息其他", ledgerRepository.legacyLockOtherLiabilityUsd(), "nx_treasury_legacy_lock_liability active principal + accrued interest"),
-                liability("unverified_deposit", "待核实入金", ledgerRepository.pendingUnverifiedDepositUsdt(), "nx_vietqr_reconciliation open suspense rows"));
+        var commissionCoverage = new CommissionCoverageAmounts(
+                ledgerRepository.sumUsdtAvailable(), ledgerRepository.sumPendingCommissionUsdt());
+        List<Map<String, Object>> rows = liabilityRows(nexRate, nexLiabilityUnits, commissionCoverage).stream().map(row -> {
+            Map<String, Object> displayed = new LinkedHashMap<>(row);
+            displayed.put("amountUsdt", money((BigDecimal) row.get("amountUsdt")));
+            return displayed;
+        }).toList();
         BigDecimal total = rows.stream().map(row -> (BigDecimal) row.get("amountUsdt")).reduce(BigDecimal.ZERO, BigDecimal::add);
         List<Map<String, Object>> withShare = rows.stream().map(row -> {
             Map<String, Object> next = new LinkedHashMap<>(row);
@@ -262,6 +260,20 @@ public class OpsTreasuryService {
         }
         response.put("sources", List.of("nx_user_wallet", "nx_staking_position", "nx_nex_lock_order", "nx_withdrawal_order", "nx_wallet_ledger", "nx_genesis_holding", "nx_treasury_legacy_lock_liability", "nx_vietqr_reconciliation"));
         return ApiResult.ok(response);
+    }
+
+    private List<Map<String, Object>> liabilityRows(
+            BigDecimal nexRate, BigDecimal nexLiabilityUnits, CommissionCoverageAmounts commissionCoverage) {
+        return List.of(
+                liability("withdrawable_balance", "可提余额", commissionCoverage.withdrawableUsdt(), "nx_user_wallet.usdt_available"),
+                liability("usdt_staking_principal", "USDT staking 本金", ledgerRepository.sumActiveStakingPrincipalUsdt(), "nx_staking_position.amount_usdt"),
+                liability("staking_interest", "staking 应付利息", ledgerRepository.sumActiveStakingInterestUsdt(), "nx_staking_position.estimated_interest_usdt"),
+                liability("genesis_daily_emission", "Genesis 排放承诺", ledgerRepository.genesisDailyLiabilityUsd(), "nx_genesis_holding × nx_genesis_series.daily_dividend_rate_pct"),
+                liability("nex_v2_future", "UVT v2 未来兑付", nexLiabilityUnits.multiply(nexRate), "nx_nex_lock_order active maturity"),
+                liability("withdrawal_queue", "待提现 queue", ledgerRepository.sumActiveWithdrawalQueueUsdt(), "nx_withdrawal_order active queue"),
+                liability("commission_cooling", "佣金冷却未解锁", commissionCoverage.coolingUsdt(), "nx_wallet_ledger pending commission"),
+                liability("lock_other", "锁仓本息其他", ledgerRepository.legacyLockOtherLiabilityUsd(), "nx_treasury_legacy_lock_liability active principal + accrued interest"),
+                liability("unverified_deposit", "待核实入金", ledgerRepository.pendingUnverifiedDepositUsdt(), "nx_vietqr_reconciliation open suspense rows"));
     }
 
     @SuppressWarnings("unchecked")
@@ -606,7 +618,7 @@ public class OpsTreasuryService {
         LocalDateTime current24hStart = now.minusHours(24);
         LocalDateTime prev24hStart = now.minusHours(48);
         // B1 coverage needs the reserve balance, without the D3 forecast promotion used by the reserve panel.
-        BigDecimal reserveUsd = money(treasuryReserveBalance().availableUsd());
+        BigDecimal reserveUsd = treasuryReserveBalance().availableUsd();
         BigDecimal currentNexPrice = ledgerRepository.latestNexUsdtPrice().map(this::safe).orElse(BigDecimal.ZERO);
         BigDecimal nexUsdRate = proposedNexPrice == null ? currentNexPrice : proposedNexPrice;
         // A concurrent change after this read can only make this version stale.
@@ -620,10 +632,9 @@ public class OpsTreasuryService {
         BigDecimal nexLiabilityUnits = nexLiabilityUnits();
         boolean valuationReliable = (nexLiabilityUnits.signum() == 0 || currentNexPrice.signum() > 0)
                 && (proposedNexPrice == null || proposedNexPrice.signum() > 0);
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> d3LiabilityRows = (List<Map<String, Object>>) liabilities(true, nexUsdRate, nexLiabilityUnits)
-                .getData().get("breakdown");
-        List<Map<String, Object>> accounts = d3LiabilityRows.stream()
+        // F5 moves a commission from cooling to available in one transaction.
+        List<Map<String, Object>> accounts = liabilityRows(nexUsdRate, nexLiabilityUnits,
+                ledgerRepository.commissionCoverageAmounts()).stream()
                 .map(row -> account(
                         String.valueOf(row.get("category")),
                         String.valueOf(row.get("label")),
@@ -634,6 +645,8 @@ public class OpsTreasuryService {
                 .map(account -> (BigDecimal) account.get("amount"))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         BigDecimal coverageRatio = pct(reserveUsd, liabilitiesUsd);
+        boolean redlineBreached = liabilitiesUsd.signum() <= 0 ? coverageRatio.compareTo(redlinePct) < 0
+                : reserveUsd.multiply(BigDecimal.valueOf(100)).compareTo(liabilitiesUsd.multiply(redlinePct)) < 0;
         BigDecimal netFlow24hUsd = safe(ledgerRepository.sumNetUsdtFlowBetween(current24hStart, now));
         BigDecimal prevNetFlow24hUsd = safe(ledgerRepository.sumNetUsdtFlowBetween(prev24hStart, current24hStart));
         BigDecimal avgRiskScore = safe(ledgerRepository.avgActiveWithdrawalQueueRiskScore()).setScale(0, RoundingMode.HALF_UP);
@@ -666,7 +679,7 @@ public class OpsTreasuryService {
                 "redlinePct", pctScale(redlinePct),
                 "healthyPct", pctScale(healthyPct),
                 "runRiskPct", pctScale(runRiskPct),
-                "redlineBreached", coverageRatio.compareTo(redlinePct) < 0,
+                "redlineBreached", redlineBreached,
                 "netFlow24hUsd", money(netFlow24hUsd),
                 "queueBacklogCount", ledgerRepository.countActiveWithdrawalQueue(),
                 "queueBacklogUsd", money(queueBacklogUsd),
@@ -1993,7 +2006,7 @@ public class OpsTreasuryService {
     }
 
     private Map<String, Object> liability(String category, String label, BigDecimal amount, String source) {
-        return section("category", category, "label", label, "amountUsdt", money(safe(amount)), "source", source);
+        return section("category", category, "label", label, "amountUsdt", safe(amount), "source", source);
     }
 
     private Map<String, Object> waterLevel(BigDecimal reserveTotal) {

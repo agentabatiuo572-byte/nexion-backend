@@ -122,6 +122,11 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
     }
 
     @Override
+    public CommissionCoverageAmounts commissionCoverageAmounts() {
+        return mapper.commissionCoverageAmounts();
+    }
+
+    @Override
     public BigDecimal sumNetUsdtFlowBetween(LocalDateTime startAt, LocalDateTime endAt) {
         return nz(mapper.sumNetUsdtFlowBetween(startAt, endAt));
     }

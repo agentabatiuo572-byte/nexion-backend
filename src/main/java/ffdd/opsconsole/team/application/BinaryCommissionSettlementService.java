@@ -1,11 +1,12 @@
 package ffdd.opsconsole.team.application;
 
-import ffdd.opsconsole.shared.config.VietnamBusinessPeriod;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.config.VietnamBusinessPeriod;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
-import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.team.application.BinarySettlementPolicyProvider.BinarySettlementPolicy;
 import ffdd.opsconsole.team.application.BinarySettlementPolicyProvider.PolicyBlocked;
@@ -21,6 +22,7 @@ import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -32,6 +34,7 @@ import java.util.Objects;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -111,27 +114,59 @@ public class BinaryCommissionSettlementService {
 
     @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
     public SettlementResult settle(Long ownerUserId, LocalDate settlementDate) {
-        return settleTrusted(ownerUserId, settlementDate, null, "SYSTEM", "SYSTEM", "系统周期结算");
+        return settleTrusted(ownerUserId, settlementDate, null, "SYSTEM", "SYSTEM", "系统周期结算", null);
     }
 
-    @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
+    /** Legacy clients can recover a committed receipt without claiming another write. */
+    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
     public SettlementResult settleAsAdmin(
             Long ownerUserId, LocalDate settlementDate, String reason,
             Long actorAdminId, String actorUsername, String idempotencyKey) {
         requirePositive(ownerUserId, "BINARY_OWNER_REQUIRED");
         if (settlementDate == null) throw new IllegalArgumentException("BINARY_SETTLEMENT_DATE_REQUIRED");
         requirePositive(actorAdminId, "BINARY_ADMIN_ACTOR_REQUIRED");
-        String operator = text(actorUsername, "BINARY_ADMIN_ACTOR_REQUIRED");
+        text(actorUsername, "BINARY_ADMIN_ACTOR_REQUIRED");
         String normalizedReason = reason(reason);
-        String hash = requestHash(ownerUserId, settlementDate, normalizedReason);
-        return idempotencyService.execute(
-                "F3_BINARY_SETTLEMENT",
-                idempotencyKey,
-                hash,
-                SettlementResult.class,
-                () -> settleTrusted(
-                        ownerUserId, settlementDate, actorAdminId,
-                        operator, "ADMIN", normalizedReason));
+        var recovery = idempotencyService.recoveryResult("F3_BINARY_SETTLEMENT", idempotencyKey,
+                requestHash(ownerUserId, settlementDate, normalizedReason), SettlementResult.class);
+        if (recovery.status() == AdminIdempotencyService.RecoveryStatus.MISMATCH) {
+            throw new BizException(409, "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+        }
+        BinarySettlementRow existing = mapper.findSettlementReceipt(ownerUserId, settlementDate);
+        if (existing == null) throw new BizException(409, "A2_CONFIRMATION_REQUIRED");
+        SettlementResult replay = recovery.response();
+        return replay != null && existing.commissionEventId().equals(replay.commissionEventId())
+                ? replay : fromExisting(existing);
+    }
+
+    @Transactional(readOnly = true)
+    public void validateManualProposal(Long ownerUserId, LocalDate settlementDate) {
+        if (ownerUserId == null || ownerUserId <= 0) throw new BizException(422, "BINARY_OWNER_REQUIRED");
+        requireClosedSettlementDate(settlementDate);
+        if (mapper.userSandbox(ownerUserId) == null) throw new BizException(404, "BINARY_OWNER_NOT_ACTIVE");
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY, rollbackFor = Exception.class)
+    public SettlementResult settleApproved(
+            Long ownerUserId, LocalDate settlementDate, String makerReason,
+            Long checkerId, String checkerUsername, String operationId, String decisionKey) {
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(operationId)
+                || !operationId.equals(A2ReplayContext.operationId())) {
+            throw new BizException(409, "A2_CONFIRMATION_REQUIRED");
+        }
+        requireClosedSettlementDate(settlementDate);
+        requirePositive(checkerId, "BINARY_ADMIN_ACTOR_REQUIRED");
+        return settleTrusted(ownerUserId, settlementDate, checkerId,
+                text(checkerUsername, "BINARY_ADMIN_ACTOR_REQUIRED"), "ADMIN", makerReason,
+                new ManualApproval(operationId, decisionKey));
+    }
+
+    private void requireClosedSettlementDate(LocalDate settlementDate) {
+        if (settlementDate == null) throw new BizException(422, "BINARY_SETTLEMENT_DATE_REQUIRED");
+        if (settlementDate.getYear() < 1000) throw new BizException(422, "BINARY_SETTLEMENT_DATE_INVALID");
+        if (!settlementDate.isBefore(VietnamBusinessPeriod.dateAt(Instant.now()))) {
+            throw new BizException(422, "F3_SETTLEMENT_DATE_NOT_CLOSED");
+        }
     }
 
     private String requestHash(Long ownerUserId, LocalDate settlementDate, String reason) {
@@ -147,12 +182,16 @@ public class BinaryCommissionSettlementService {
 
     private SettlementResult settleTrusted(
             Long ownerUserId, LocalDate settlementDate, Long actorId, String actorUsername,
-            String actorType, String reason) {
+            String actorType, String reason, ManualApproval approval) {
         requirePositive(ownerUserId, "BINARY_OWNER_REQUIRED");
         if (settlementDate == null) throw new IllegalArgumentException("BINARY_SETTLEMENT_DATE_REQUIRED");
         mapper.ensureSettlementMutex(ownerUserId, settlementDate);
         if (mapper.lockSettlementMutex(ownerUserId, settlementDate) == null) {
             throw new IllegalStateException("BINARY_SETTLEMENT_MUTEX_UNAVAILABLE");
+        }
+        if (approval != null) {
+            BinarySettlementRow committed = mapper.findSettlementReceipt(ownerUserId, settlementDate);
+            if (committed != null) return fromExisting(committed);
         }
         if (mapper.lockActiveOwner(ownerUserId) == null) {
             return blockedWithoutRow(ownerUserId, settlementDate, "BINARY_OWNER_NOT_ACTIVE");
@@ -162,14 +201,17 @@ public class BinaryCommissionSettlementService {
             return blockedWithoutRow(ownerUserId, settlementDate, "BINARY_REFUND_REVERSAL_REQUIRED");
         }
         BinarySettlementRow existing = mapper.findSettlementForUpdate(ownerUserId, settlementDate);
-        if (existing != null && !"BLOCKED".equalsIgnoreCase(existing.status())) return fromExisting(existing);
+        if (existing != null && !"BLOCKED".equalsIgnoreCase(existing.status())) {
+            return approval == null ? fromExisting(existing)
+                    : blockedWithoutRow(ownerUserId, settlementDate, "BINARY_SETTLEMENT_RECEIPT_UNAVAILABLE");
+        }
         if (existing != null && mapper.deleteBlockedSettlement(ownerUserId, settlementDate) != 1) {
             throw new IllegalStateException("BINARY_BLOCKED_SETTLEMENT_RETRY_CONFLICT");
         }
 
         BinarySettlementPolicy policy;
         try {
-            policy = policyProvider.lockPolicy();
+            policy = approval == null ? policyProvider.lockPolicy() : policyProvider.lockPolicyForApproval();
         } catch (PolicyBlocked ex) {
             return blockedWithoutRow(ownerUserId, settlementDate, ex.getMessage());
         }
@@ -239,6 +281,13 @@ public class BinaryCommissionSettlementService {
             return blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
                     left, right, settlementCap, "BINARY_PAYABLE_AMOUNT_ZERO");
         }
+        if (approval != null) {
+            String coverageBlock = policyProvider.projectedCoverageBlock(amount);
+            if (coverageBlock != null) {
+                return blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
+                        left, right, settlementCap, coverageBlock);
+            }
+        }
         BinarySettlementRow pending = new BinarySettlementRow(
                 null, ownerUserId, settlementDate, leftRoot, rightRoot,
                 left, right, consumedMatched, amount, settlementCap, null, "PENDING");
@@ -268,20 +317,25 @@ public class BinaryCommissionSettlementService {
         ledgerFacade.postLedgerEntry(
                 billId, ownerUserId, "TEAM_COMMISSION", "USDT", "IN", amount,
                 "PENDING", "F3 binary commission cooling payout");
+        Map<String, Object> auditDetail = linked(
+                "leftVolume", left, "rightVolume", right,
+                "rawMatched", rawMatched, "consumedBefore", consumedBefore,
+                "consumedMatched", consumedMatched, "amountUsdt", amount,
+                "settlementCap", settlementCap,
+                "settlePeriod", policy.settlePeriod(),
+                "residualPolicy", policy.residualPolicy(),
+                "commissionEventId", eventId,
+                "reason", reason);
+        if (approval != null) {
+            auditDetail.put("a2OperationId", approval.operationId());
+            auditDetail.put("idempotencyKey", approval.decisionKey());
+        }
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action("F3_BINARY_SETTLED").resourceType("BINARY_SETTLEMENT")
                 .resourceId(settlementNo).bizNo(billId).userId(ownerUserId).actorId(actorId)
                 .actorType(actorType).actorUsername(actorUsername)
                 .result("SUCCESS").riskLevel("HIGH")
-                .detail(linked(
-                        "leftVolume", left, "rightVolume", right,
-                        "rawMatched", rawMatched, "consumedBefore", consumedBefore,
-                        "consumedMatched", consumedMatched, "amountUsdt", amount,
-                        "settlementCap", settlementCap,
-                        "settlePeriod", policy.settlePeriod(),
-                        "residualPolicy", policy.residualPolicy(),
-                        "commissionEventId", eventId,
-                        "reason", reason))
+                .detail(auditDetail)
                 .build());
         eventOutboxService.publish(
                 "BINARY_COMMISSION",
@@ -524,6 +578,8 @@ public class BinaryCommissionSettlementService {
             boolean pairReset,
             long fromVolumeId,
             long throughVolumeId) { }
+
+    private record ManualApproval(String operationId, String decisionKey) { }
 
     public record AssignmentResult(Long ownerUserId, Long memberUserId, String leg, boolean replayed) { }
 
