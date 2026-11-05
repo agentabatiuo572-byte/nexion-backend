@@ -38,6 +38,7 @@ import ffdd.opsconsole.team.dto.VRankOverrideRequest;
 import ffdd.opsconsole.team.dto.VRankPromotionLogQuery;
 import ffdd.opsconsole.team.dto.VRankRewardPayoutActionRequest;
 import ffdd.opsconsole.team.dto.VRankRewardRequest;
+import ffdd.opsconsole.team.dto.VRankPolicyChangeRequest;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
@@ -491,6 +492,10 @@ public class OpsTeamService implements AuditReplayable {
 
     private ApiResult<Void> validateAmbassadorPolicyApproval(boolean expandsBudget) {
         if (!expandsBudget) return ApiResult.fail(422, "AMBASSADOR_POLICY_APPROVAL_NOT_REQUIRED");
+        return validateFundPolicyCoverage();
+    }
+
+    private ApiResult<Void> validateFundPolicyCoverage() {
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
         if (coverage == null || !coverage.reliable() || coverage.redlinePct() == null
                 || coverage.ratioReserveUsd() == null || coverage.ratioLiabilitiesUsd() == null
@@ -661,6 +666,9 @@ public class OpsTeamService implements AuditReplayable {
         response.put("configValues", values);
         // B1 备付金覆盖率快照:供前端 F1 OperationConfirmModal 对资金类奖励显示覆盖率 + covBlocked 拦截。
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        BigDecimal rewardRate = coverage.nexUsdRate();
+        response.put("rewardValuationUsdtPerUvt", rewardRate == null || rewardRate.signum() <= 0
+                ? null : rewardRate.stripTrailingZeros().toPlainString());
         Map<String, Object> coverageOverview = new LinkedHashMap<>();
         coverageOverview.put("coverageRatio", coverage.coverageRatio());
         coverageOverview.put("redlinePct", coverage.redlinePct());
@@ -733,6 +741,295 @@ public class OpsTeamService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
+    public record VRankPolicyReview(AuditLockTarget target, String before, String after,
+                                    Map<String, Object> beforeFields, Map<String, Object> afterFields) { }
+
+    private record VRankPolicyMutation(String rank, String action, String field, String value,
+                                       Map<String, Object> reward, Map<String, Object> before,
+                                       Map<String, Object> after, boolean amplifies) { }
+
+    @Transactional
+    public ApiResult<VRankPolicyReview> previewVRankPolicyApproval(VRankPolicyChangeRequest request) {
+        VRankPolicyMutation change = requestedVRankPolicyMutation(request);
+        if (!change.amplifies()) return ApiResult.fail(422, "VRANK_POLICY_APPROVAL_NOT_REQUIRED");
+        var gate = validateFundPolicyCoverage();
+        if (gate.getCode() != 0) return ApiResult.fail(gate.getCode(), gate.getMessage());
+        Map<String, Object> before = vRankPolicyChangedFields(change, change.before());
+        Map<String, Object> after = vRankPolicyChangedFields(change, change.after());
+        return ApiResult.ok(new VRankPolicyReview(vRankPolicyTarget(change.rank()),
+                vRankPolicySummary(before), vRankPolicySummary(after),
+                vRankPolicyReviewFields(before), vRankPolicyReviewFields(after)));
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> executeApprovedVRankPolicy(
+            String idempotencyKey, VRankPolicyChangeRequest request, String makerReason) {
+        String operationId = A2ReplayContext.operationId();
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(operationId)) {
+            return ApiResult.fail(403, "VRANK_POLICY_APPROVAL_FORBIDDEN");
+        }
+        String rank = requireVRank(request == null ? null : request.rank()).v();
+        var locks = lockMapper.selectActiveByTicketId(operationId);
+        if (locks.size() != 1 || !operationId.equals(locks.get(0).getTicketId())
+                || !vRankPolicyTarget(rank).equals(new AuditLockTarget(locks.get(0).getTargetDomain(),
+                locks.get(0).getTargetType(), locks.get(0).getTargetId()))) {
+            return ApiResult.fail(403, "VRANK_POLICY_APPROVAL_FORBIDDEN");
+        }
+        var guard = requireCommand(idempotencyKey, makerReason);
+        if (guard != null) return guard;
+        VRankPolicyMutation change = requestedVRankPolicyMutation(request);
+        if (change.amplifies()) {
+            var gate = validateFundPolicyCoverage();
+            if (gate.getCode() != 0) return ApiResult.fail(gate.getCode(), gate.getMessage());
+        }
+        String rewardId = String.valueOf(change.reward().getOrDefault("id", ""));
+        boolean written = switch (change.action()) {
+            case "threshold" -> commissionRepository.updateVRankThreshold(change.rank(), change.field(),
+                    vRankThresholdBusinessValue(change.field(), change.value()));
+            case "reward_add" -> commissionRepository.addVRankReward(change.rank(), change.reward());
+            case "reward_update" -> commissionRepository.updateVRankReward(change.rank(), rewardId, change.reward());
+            default -> false;
+        };
+        if (!written) throw new BizException(422, "VRANK_POLICY_BUSINESS_TABLE_UPDATE_FAILED");
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("a2OperationId", operationId);
+        detail.put("rank", change.rank());
+        detail.put("action", change.action());
+        detail.put("beforeRevision", change.before().get("policyRevision"));
+        detail.put("afterRevision", change.after().get("policyRevision"));
+        detail.put("before", vRankPolicyChangedFields(change, change.before()));
+        detail.put("after", vRankPolicyChangedFields(change, change.after()));
+        detail.put("reason", makerReason.trim());
+        detail.put("idempotencyKey", idempotencyKey.trim());
+        audit("F_TEAM_VRANK_POLICY_CHANGED", "nx_v_rank_config:" + change.rank(), actor(null), detail, true);
+        Map<String, Object> response = ranks().getData();
+        response.put("updated", Map.of("rank", change.rank(), "action", change.action(), "a2OperationId", operationId));
+        return ApiResult.ok(response);
+    }
+
+    private AuditLockTarget vRankPolicyTarget(String rank) {
+        return new AuditLockTarget("F", "vrank_policy", rank);
+    }
+
+    private VRankPolicyMutation requestedVRankPolicyMutation(VRankPolicyChangeRequest request) {
+        if (request == null || request.expectedRevision() == null
+                || !request.expectedRevision().matches("[0-9a-f]{64}")) {
+            throw new BizException(422, "VRANK_POLICY_REVISION_REQUIRED");
+        }
+        String rank = requireVRank(request.rank()).v();
+        Map<String, Object> before = currentVRankPolicy(rank);
+        if (!request.expectedRevision().equals(before.get("policyRevision"))) {
+            throw new BizException(409, "VRANK_POLICY_VERSION_CONFLICT");
+        }
+        String action = requireText(request.action(), "VRANK_POLICY_ACTION_REQUIRED");
+        Map<String, Object> after = new LinkedHashMap<>(before);
+        Map<String, Object> reward = Map.of();
+        String field = request.field();
+        String value = request.value();
+        boolean amplifies;
+        if ("threshold".equals(action)) {
+            if (field == null || !VRANK_THRESHOLD_FIELDS.contains(field) || request.reward() != null
+                    || StringUtils.hasText(request.rewardId())) {
+                throw new BizException(422, "VRANK_POLICY_THRESHOLD_INVALID");
+            }
+            value = normalizeVRankThreshold(rank, field, value);
+            after.put(field, "legRank".equals(field) ? value : parseDecimal(value).stripTrailingZeros());
+            amplifies = loosensVRankCondition(before, after, field);
+        } else if ("reward_add".equals(action) || "reward_update".equals(action)) {
+            if (request.reward() == null || StringUtils.hasText(field) || StringUtils.hasText(value)) {
+                throw new BizException(422, "VRANK_POLICY_REWARD_INVALID");
+            }
+            List<Map<String, Object>> rewards = new ArrayList<>(policyRewards(before));
+            Map<String, Object> oldReward = Map.of();
+            String id;
+            if ("reward_update".equals(action)) {
+                id = requireText(request.rewardId(), "TEAM_VRANK_REWARD_ID_REQUIRED");
+                oldReward = rewards.stream().filter(item -> id.equals(item.get("id"))).findFirst()
+                        .orElseThrow(() -> new BizException(422, "TEAM_VRANK_REWARD_NOT_FOUND"));
+            } else {
+                if (StringUtils.hasText(request.rewardId())) throw new BizException(422, "VRANK_POLICY_REWARD_INVALID");
+                var candidate = request.reward();
+                id = "vr-" + rank + "-" + requestHash(rank, request.expectedRevision(), candidate.type(),
+                        candidate.amount(), candidate.voucherId(), candidate.skuId(), candidate.custom()).substring(0, 32);
+            }
+            var candidate = request.reward();
+            reward = normalizePolicyReward(id, new VRankRewardRequest(candidate.type(), candidate.amount(),
+                    candidate.voucherId(), candidate.skuId(), candidate.custom(), null, null), oldReward);
+            reward.put("sortOrder", oldReward.getOrDefault("sortOrder", 0));
+            amplifies = amplifiesVRankReward(oldReward, reward);
+            Map<String, Object> replacement = vRankPolicyRewardFields(reward);
+            if (oldReward.isEmpty()) rewards.add(replacement);
+            else rewards.set(rewards.indexOf(oldReward), replacement);
+            rewards.sort(Comparator.comparingInt(item -> intValue(item.get("sortOrder"), 0)));
+            after.put("rewards", rewards);
+        } else {
+            throw new BizException(422, "VRANK_POLICY_ACTION_INVALID");
+        }
+        after.put("policyRevision", vRankPolicyRevision(after));
+        return new VRankPolicyMutation(rank, action, field, value, reward, before, after, amplifies);
+    }
+
+    private Map<String, Object> currentVRankPolicy(String rank) {
+        Map<String, Object> row = commissionRepository.lockVRankPolicy(rank);
+        if (row.isEmpty()) throw new BizException(422, "TEAM_VRANK_NOT_FOUND");
+        return vRankPolicyFields(row, commissionRepository.vRankRewardsForUpdate(rank));
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> policyRewards(Map<String, Object> policy) {
+        return (List<Map<String, Object>>) policy.get("rewards");
+    }
+
+    private Map<String, Object> vRankPolicyFields(Map<String, Object> row, List<Map<String, Object>> rewards) {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("rank", row.get("v"));
+        for (String field : List.of("selfBuy", "teamGv", "directRefs", "legCount")) {
+            fields.put(field, decimalValue(row.get(field), BigDecimal.ZERO).stripTrailingZeros());
+        }
+        fields.put("legRank", textValue(row, "legRank", "NONE").toUpperCase(Locale.ROOT));
+        fields.put("rewards", rewards.stream().map(this::vRankPolicyRewardFields).toList());
+        fields.put("policyRevision", vRankPolicyRevision(fields));
+        return fields;
+    }
+
+    private Map<String, Object> vRankPolicyRewardFields(Map<String, Object> reward) {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        for (String key : List.of("id", "type", "amount", "voucherId", "skuId", "custom", "sortOrder")) {
+            Object value = reward.get(key);
+            fields.put(key, value instanceof BigDecimal decimal ? decimal.stripTrailingZeros() : value);
+        }
+        return fields;
+    }
+
+    private String vRankPolicyRevision(Map<String, Object> policy) {
+        Map<String, Object> fields = new LinkedHashMap<>(policy);
+        fields.remove("policyRevision");
+        try {
+            return requestHash(JSON_PROBE.writeValueAsString(fields));
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("VRANK_POLICY_JSON_WRITE_FAILED", exception);
+        }
+    }
+
+    private Map<String, Object> vRankPolicyChangedFields(VRankPolicyMutation change, Map<String, Object> policy) {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("rank", change.rank());
+        if ("threshold".equals(change.action())) {
+            if ("legCount".equals(change.field()) || "legRank".equals(change.field())) {
+                fields.put("legCount", policy.get("legCount"));
+                fields.put("legRank", policy.get("legRank"));
+            } else {
+                fields.put(change.field(), policy.get(change.field()));
+            }
+        } else {
+            fields.put("reward", policyRewards(policy).stream()
+                    .filter(reward -> change.reward().get("id").equals(reward.get("id"))).findFirst().orElse(null));
+        }
+        return fields;
+    }
+
+    private String vRankPolicySummary(Map<String, Object> policy) {
+        Map<String, Object> fields = vRankPolicyReviewFields(policy);
+        String prefix = policy.get("rank") + " · ";
+        if (policy.containsKey("reward")) {
+            if (policy.get("reward") == null) return prefix + "尚未配置该奖励";
+            return prefix + fields.get("奖励类型") + " " + fields.getOrDefault("金额(USDT)",
+                    fields.getOrDefault("数量(UVT)", fields.getOrDefault("代金券",
+                    fields.getOrDefault("商品", fields.getOrDefault("自定义内容或原始备注", "")))));
+        }
+        fields.remove("等级");
+        return prefix + fields.entrySet().stream().map(field -> field.getKey() + " " + field.getValue())
+                .collect(java.util.stream.Collectors.joining("，"));
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> vRankPolicyReviewFields(Map<String, Object> policy) {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("等级", policy.get("rank"));
+        for (String field : List.of("selfBuy", "teamGv", "directRefs", "legCount", "legRank")) {
+            if (!policy.containsKey(field)) continue;
+            String label = switch (field) {
+                case "selfBuy" -> "自购算力点";
+                case "teamGv" -> "团队算力点";
+                case "directRefs" -> "直接邀请人数";
+                case "legCount" -> "达标分支数";
+                default -> "分支最低等级";
+            };
+            Object value = policy.get(field);
+            fields.put(label, "NONE".equals(value) ? "未设置"
+                    : value instanceof BigDecimal decimal ? decimal.toPlainString() : value);
+        }
+        if (policy.containsKey("reward")) {
+            if (policy.get("reward") == null) {
+                fields.put("奖励", "尚未配置");
+                return fields;
+            }
+            Map<String, Object> reward = (Map<String, Object>) policy.get("reward");
+            String type = String.valueOf(reward.get("type")).trim().toLowerCase(Locale.ROOT);
+            fields.put("奖励编号", reward.get("id"));
+            fields.put("奖励类型", switch (type) {
+                case "usdt" -> "USDT 现金";
+                case "uvt" -> "UVT 代币";
+                case "voucher" -> "代金券";
+                case "sku" -> "商品";
+                case "custom" -> "自定义";
+                default -> type;
+            });
+            Object amount = reward.get("amount");
+            if (amount != null) fields.put("usdt".equals(type) ? "金额(USDT)" : "uvt".equals(type) ? "数量(UVT)" : "展示金额",
+                    decimalValue(amount, BigDecimal.ZERO).toPlainString());
+            if (reward.get("voucherId") != null) fields.put("代金券", reward.get("voucherId"));
+            if (reward.get("skuId") != null) fields.put("商品", reward.get("skuId"));
+            if (reward.get("custom") != null) fields.put("自定义内容或原始备注", reward.get("custom"));
+            fields.put("排序", reward.get("sortOrder"));
+            String marker = String.valueOf(reward.getOrDefault("custom", "")).toLowerCase(Locale.ROOT);
+            fields.put("受益人", "uvt".equals(type) && !marker.contains("self") && !marker.contains("direct")
+                    ? "直接邀请人；未绑定时为晋升用户本人" : "晋升用户本人");
+        }
+        return fields;
+    }
+
+    private boolean loosensVRankCondition(Map<String, Object> before, Map<String, Object> after, String field) {
+        if (!"legCount".equals(field) && !"legRank".equals(field)) {
+            return decimalValue(after.get(field), BigDecimal.ZERO).compareTo(decimalValue(before.get(field), BigDecimal.ZERO)) < 0;
+        }
+        int oldCount = intValue(before.get("legCount"), 0);
+        int newCount = intValue(after.get("legCount"), 0);
+        if (oldCount == 0) return false;
+        if (newCount == 0) return true;
+        int oldRank = VRANK_LEVELS.indexOf(before.get("legRank"));
+        int newRank = VRANK_LEVELS.indexOf(after.get("legRank"));
+        if (newRank < 0) return false;
+        if (oldRank < 0) return true;
+        return newCount < oldCount || newRank < oldRank;
+    }
+
+    private Map<String, Object> normalizePolicyReward(
+            String id, VRankRewardRequest request, Map<String, Object> before) {
+        Map<String, Object> reward = normalizeReward(id, request);
+        if (isFundRewardItem(reward) && String.valueOf(reward.get("type")).equalsIgnoreCase(String.valueOf(before.get("type")).trim())
+                && before.get("custom") != null) {
+            reward.put("custom", before.get("custom"));
+        }
+        return reward;
+    }
+
+    private boolean amplifiesVRankReward(Map<String, Object> before, Map<String, Object> after) {
+        if (!isFundRewardItem(after)) return false;
+        if (!isFundRewardItem(before)) return true;
+        BigDecimal oldAmount = decimalValue(before.get("amount"), BigDecimal.ZERO);
+        BigDecimal newAmount = decimalValue(after.get("amount"), BigDecimal.ZERO);
+        String oldType = String.valueOf(before.get("type")).trim().toLowerCase(Locale.ROOT);
+        String newType = String.valueOf(after.get("type")).trim().toLowerCase(Locale.ROOT);
+        if (oldType.equals(newType)) return newAmount.compareTo(oldAmount) > 0;
+        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        BigDecimal rate = coverage == null ? null : coverage.nexUsdRate();
+        if (rate == null || rate.signum() <= 0) throw new BizException(503, "VRANK_REWARD_VALUATION_UNAVAILABLE");
+        BigDecimal oldUsdt = "uvt".equals(oldType) ? oldAmount.multiply(rate) : oldAmount;
+        BigDecimal newUsdt = "uvt".equals(newType) ? newAmount.multiply(rate) : newAmount;
+        return newUsdt.compareTo(oldUsdt) > 0;
+    }
+
     public ApiResult<Map<String, Object>> updateVRankThreshold(
             String rank, String field, String idempotencyKey, TeamCommissionConfigUpdateRequest request) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
@@ -755,11 +1052,14 @@ public class OpsTeamService implements AuditReplayable {
         }
         String value = normalizeVRankThreshold(rankCode, normalizedField, request.value());
         Object businessValue = vRankThresholdBusinessValue(normalizedField, value);
-        Map<String, Object> before = vrankRows().stream()
-                .filter(row -> rankCode.equals(row.get("v")))
-                .findFirst()
-                .orElse(Map.of());
-        String oldValue = String.valueOf(before.getOrDefault(normalizedField, ""));
+        Map<String, Object> before = currentVRankPolicy(rankCode);
+        String oldValue = "legRank".equals(normalizedField) ? String.valueOf(before.get(normalizedField))
+                : decimalValue(before.get(normalizedField), BigDecimal.ZERO).toPlainString();
+        Map<String, Object> after = new LinkedHashMap<>(before);
+        after.put(normalizedField, "legRank".equals(normalizedField) ? value : parseDecimal(value).stripTrailingZeros());
+        if (loosensVRankCondition(before, after, normalizedField)) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
         if (!commissionRepository.updateVRankThreshold(rankCode, normalizedField, businessValue)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "VRANK_BUSINESS_TABLE_UPDATE_FAILED");
         }
@@ -793,11 +1093,9 @@ public class OpsTeamService implements AuditReplayable {
     private ApiResult<Map<String, Object>> addVRankRewardInternal(
             String rank, String idempotencyKey, VRankRewardRequest request) {
         VRankSeed seed = requireVRank(rank);
+        currentVRankPolicy(seed.v());
         Map<String, Object> item = normalizeReward(nextRewardId(seed.v()), request);
-        // 资金类奖励(USDT/UVT,金额>0)放大平台资金流出,B1 备付金覆盖率红线预检;低于红线直接拒。
-        if (isFundRewardItem(item) && coverageBelowRedline()) {
-            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-        }
+        if (isFundRewardItem(item)) return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         if (!commissionRepository.addVRankReward(seed.v(), item)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "VRANK_REWARD_BUSINESS_TABLE_INSERT_FAILED");
         }
@@ -830,16 +1128,11 @@ public class OpsTeamService implements AuditReplayable {
             String rank, String rewardId, String idempotencyKey, VRankRewardRequest request) {
         VRankSeed seed = requireVRank(rank);
         String id = requireText(rewardId, "TEAM_VRANK_REWARD_ID_REQUIRED");
-        boolean exists = activeRewards(seed.v()).stream()
-                .anyMatch(item -> id.equals(String.valueOf(item.get("id"))));
-        if (!exists) {
-            throw new IllegalArgumentException("F1 V-Rank reward not found");
-        }
-        Map<String, Object> item = normalizeReward(id, request);
-        // 资金类奖励(USDT/UVT,金额>0)放大平台资金流出,B1 备付金覆盖率红线预检;低于红线直接拒。
-        if (isFundRewardItem(item) && coverageBelowRedline()) {
-            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-        }
+        Map<String, Object> before = policyRewards(currentVRankPolicy(seed.v())).stream()
+                .filter(item -> id.equals(item.get("id"))).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("F1 V-Rank reward not found"));
+        Map<String, Object> item = normalizePolicyReward(id, request, before);
+        if (amplifiesVRankReward(before, item)) return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         if (!commissionRepository.updateVRankReward(seed.v(), id, item)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "VRANK_REWARD_BUSINESS_TABLE_UPDATE_FAILED");
         }
@@ -872,7 +1165,7 @@ public class OpsTeamService implements AuditReplayable {
             String rank, String rewardId, String idempotencyKey, VRankRewardRequest request) {
         VRankSeed seed = requireVRank(rank);
         String id = requireText(rewardId, "TEAM_VRANK_REWARD_ID_REQUIRED");
-        boolean exists = activeRewards(seed.v()).stream()
+        boolean exists = policyRewards(currentVRankPolicy(seed.v())).stream()
                 .anyMatch(item -> id.equals(String.valueOf(item.get("id"))));
         if (!exists) {
             throw new IllegalArgumentException("F1 V-Rank reward not found");
@@ -1742,7 +2035,9 @@ public class OpsTeamService implements AuditReplayable {
         row.put("votes", intValue(raw.get("votes"), 0));
         row.put("visible", boolValue(raw.get("visible"), true));
         row.put("pop", intValue(raw.get("pop"), 0));
-        row.put("rewards", activeRewards(level));
+        List<Map<String, Object>> rewards = commissionRepository.vRankRewards(level);
+        row.put("rewards", rewards.stream().map(this::normalizeRewardMap).toList());
+        row.put("policyRevision", vRankPolicyFields(row, rewards).get("policyRevision"));
         row.put("source", "nx_v_rank_config + nx_team_member");
         return row;
     }
@@ -2819,6 +3114,11 @@ public class OpsTeamService implements AuditReplayable {
         if (raw.containsKey("amount")) {
             item.put("amount", parseDecimal(String.valueOf(raw.get("amount")), BigDecimal.ZERO).stripTrailingZeros());
         }
+        String type = String.valueOf(item.get("type")).trim().toLowerCase(Locale.ROOT);
+        if ("usdt".equals(type) || "uvt".equals(type)) {
+            item.put("amountText", raw.get("amount") == null ? null
+                    : decimalValue(raw.get("amount"), BigDecimal.ZERO).stripTrailingZeros().toPlainString());
+        }
         copyText(raw, item, "voucherId");
         copyText(raw, item, "skuId");
         copyText(raw, item, "custom");
@@ -2845,8 +3145,10 @@ public class OpsTeamService implements AuditReplayable {
         item.put("id", requireText(id, "TEAM_VRANK_REWARD_ID_REQUIRED"));
         item.put("type", type);
         if ("usdt".equals(type) || "uvt".equals(type)) {
-            if (request.amount() == null || request.amount().compareTo(BigDecimal.ZERO) <= 0) {
-                throw new IllegalArgumentException("F1 V-Rank fund reward amount must be positive");
+            if (request.amount() == null || request.amount().signum() <= 0
+                    || request.amount().stripTrailingZeros().scale() > 6
+                    || request.amount().compareTo(new BigDecimal("999999999999.999999")) > 0) {
+                throw new IllegalArgumentException("F1 V-Rank fund reward amount must be positive and fit DECIMAL(18,6)");
             }
             item.put("amount", request.amount().stripTrailingZeros());
             return item;
@@ -2873,7 +3175,7 @@ public class OpsTeamService implements AuditReplayable {
 
     /** 判定为资金类奖励:USDT/UVT 且金额>0。资金类放大平台资金流出,写入受 B1 备付金覆盖率约束。 */
     private boolean isFundRewardItem(Map<String, Object> item) {
-        String type = String.valueOf(item.getOrDefault("type", ""));
+        String type = String.valueOf(item.getOrDefault("type", "")).trim().toLowerCase(Locale.ROOT);
         if (!"usdt".equals(type) && !"uvt".equals(type)) {
             return false;
         }

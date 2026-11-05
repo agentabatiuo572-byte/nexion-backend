@@ -11,6 +11,7 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.SuperAdminAuthorization;
 import ffdd.opsconsole.team.dto.AmbassadorPolicyUpdateRequest;
 import ffdd.opsconsole.team.dto.BinarySettlementRequest;
+import ffdd.opsconsole.team.dto.VRankPolicyChangeRequest;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
@@ -24,6 +25,7 @@ import org.springframework.stereotype.Component;
 public class TeamFundApproval {
     private static final String SETTLEMENT_OP = "f3_binary_settle";
     private static final String AMBASSADOR_OP = "f4_ambassador_policy_change";
+    private static final String VRANK_OP = "f1_rank_policy_change";
     private final ObjectMapper objectMapper;
     private final SuperAdminAuthorization superAdmins;
     private final BinaryCommissionSettlementService settlements;
@@ -31,19 +33,25 @@ public class TeamFundApproval {
 
     public static boolean supports(AuditReplayCommand command) {
         return command != null && "F".equals(command.domain())
-                && (SETTLEMENT_OP.equals(command.op()) || AMBASSADOR_OP.equals(command.op()));
+                && (SETTLEMENT_OP.equals(command.op()) || AMBASSADOR_OP.equals(command.op())
+                || VRANK_OP.equals(command.op()));
     }
 
     public static boolean isSettlement(AuditReplayCommand command) {
         return supports(command) && SETTLEMENT_OP.equals(command.op());
     }
 
+    public static boolean isVRank(AuditReplayCommand command) {
+        return supports(command) && VRANK_OP.equals(command.op());
+    }
+
     public static String makerAuthority(AuditReplayCommand command) {
-        return isSettlement(command) ? "network_f3_write" : "network_f4_pool_fund";
+        return isVRank(command) ? "network_f1_write"
+                : isSettlement(command) ? "network_f3_write" : "network_f4_pool_fund";
     }
 
     public static String source(AuditReplayCommand command) {
-        return isSettlement(command) ? "F3" : "F4";
+        return isVRank(command) ? "F1" : isSettlement(command) ? "F3" : "F4";
     }
 
     public boolean canPropose(AuditReplayCommand command) {
@@ -72,6 +80,17 @@ public class TeamFundApproval {
             Map<String, Object> beforeFields, Map<String, Object> afterFields) { }
 
     public ApiResult<Review> preview(AuditReplayCommand command, String reason) {
+        if (isVRank(command)) {
+            var request = vRankRequest(command);
+            var preview = teams.previewVRankPolicyApproval(request);
+            if (preview.getCode() != 0) return ApiResult.fail(preview.getCode(), preview.getMessage());
+            var review = preview.getData();
+            String action = "threshold".equals(request.action()) ? "放宽 " + request.rank() + " 晋升条件"
+                    : "reward_add".equals(request.action()) ? request.rank() + " 新增资金奖励"
+                    : request.rank() + " 增加资金奖励";
+            return ApiResult.ok(new Review(review.target(), action, review.before(), review.after(),
+                    review.beforeFields(), review.afterFields()));
+        }
         if (isSettlement(command)) {
             var request = settlementRequest(command, reason);
             settlements.validateManualProposal(request.ownerUserId(), request.settlementDate());
@@ -90,13 +109,21 @@ public class TeamFundApproval {
         if (command.params() == null || !(command.params().get("targetId") instanceof String id) || id.isBlank()) {
             return null;
         }
-        return new AuditLockTarget("F", isSettlement(command) ? "binary_settlement" : "ambassador_policy", id);
+        return new AuditLockTarget("F", isVRank(command) ? "vrank_policy"
+                : isSettlement(command) ? "binary_settlement" : "ambassador_policy", id);
     }
 
     public ApiResult<?> replay(AuditReplayCommand command, AuditReplayContext context, Long checkerId, String operationId) {
         AuditLockTarget target = target(command);
         if (target == null || !(command.params().get("proposalReason") instanceof String reason)) {
             return ApiResult.fail(422, "FUND_APPROVAL_PROPOSAL_INVALID");
+        }
+        if (isVRank(command)) {
+            var request = vRankRequest(command);
+            if (request.rank() == null || !target.id().equalsIgnoreCase(request.rank().trim())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            return teams.executeApprovedVRankPolicy(context.idempotencyKey(), request, reason);
         }
         if (isSettlement(command)) {
             var request = settlementRequest(command, reason);
@@ -139,6 +166,15 @@ public class TeamFundApproval {
         return request(command, reason, AmbassadorPolicyUpdateRequest.class);
     }
 
+    private VRankPolicyChangeRequest vRankRequest(AuditReplayCommand command) {
+        Map<?, ?> values = values(command);
+        if (values.get("reward") instanceof Map<?, ?> reward
+                && (reward.get("amount") instanceof Double || reward.get("amount") instanceof Float)) {
+            throw new BizException(422, "F1_REWARD_DECIMAL_STRING_REQUIRED");
+        }
+        return request(command, null, VRankPolicyChangeRequest.class);
+    }
+
     private static void requireExactBudget(Object value) {
         if (value instanceof Double || value instanceof Float) {
             throw new BizException(422, "AMBASSADOR_BUDGET_DECIMAL_STRING_REQUIRED");
@@ -155,7 +191,7 @@ public class TeamFundApproval {
 
     private <T> T request(AuditReplayCommand command, String reason, Class<T> type) {
         ObjectNode payload = objectMapper.valueToTree(values(command));
-        payload.put("reason", reason);
+        if (reason != null) payload.put("reason", reason);
         try {
             return objectMapper.readerFor(type).with(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
                     .without(DeserializationFeature.ACCEPT_FLOAT_AS_INT).readValue(payload);

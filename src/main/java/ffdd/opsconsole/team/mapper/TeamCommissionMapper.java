@@ -8,6 +8,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
+import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
@@ -82,6 +83,20 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
              ORDER BY c.sort_order ASC, c.id ASC
             """)
     List<Map<String, Object>> vRankRows();
+
+    @Select("""
+            SELECT rank_code AS v,
+                   self_compute_points AS selfBuy,
+                   direct_refs AS directRefs,
+                   team_compute_points AS teamGv,
+                   required_downline_count AS legCount,
+                   required_downline_rank AS legRank
+              FROM nx_v_rank_config
+             WHERE rank_code = #{rank} AND is_deleted = 0 AND status = 1
+             FOR UPDATE
+            """)
+    @Options(useCache = false, flushCache = Options.FlushCachePolicy.TRUE)
+    Map<String, Object> lockVRankPolicy(@Param("rank") String rank);
 
     @Update("""
             UPDATE nx_v_rank_config
@@ -276,6 +291,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    voucher_id AS voucherId,
                    sku_id AS skuId,
                    custom_label AS custom,
+                   sort_order AS sortOrder,
                    'nx_v_rank_reward_rule' AS source
               FROM nx_v_rank_reward_rule
              WHERE is_deleted = 0
@@ -284,6 +300,22 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
              ORDER BY sort_order ASC, id ASC
             """)
     List<Map<String, Object>> vRankRewards(@Param("rank") String rank);
+
+    @Select("""
+            SELECT reward_id AS id,
+                   reward_type AS type,
+                   amount,
+                   voucher_id AS voucherId,
+                   sku_id AS skuId,
+                   custom_label AS custom,
+                   sort_order AS sortOrder
+              FROM nx_v_rank_reward_rule
+             WHERE is_deleted = 0 AND status = 1 AND rank_code = #{rank}
+             ORDER BY sort_order ASC, id ASC
+             FOR UPDATE
+            """)
+    @Options(useCache = false, flushCache = Options.FlushCachePolicy.TRUE)
+    List<Map<String, Object>> vRankRewardsForUpdate(@Param("rank") String rank);
 
     @Insert("""
             INSERT INTO nx_v_rank_reward_rule

@@ -12,6 +12,8 @@ public interface TeamCommissionRepository {
 
     List<Map<String, Object>> vRankRows();
 
+    Map<String, Object> lockVRankPolicy(String rank);
+
     boolean updateVRankThreshold(String rank, String field, Object value);
 
     List<Map<String, Object>> f2Metrics();
@@ -23,6 +25,8 @@ public interface TeamCommissionRepository {
     List<Map<String, Object>> rateTiers();
 
     List<Map<String, Object>> vRankRewards(String rank);
+
+    List<Map<String, Object>> vRankRewardsForUpdate(String rank);
 
     default List<Map<String, Object>> vRankVoucherOptions(long nowMillis) { return List.of(); }
 
