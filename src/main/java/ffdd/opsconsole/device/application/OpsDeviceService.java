@@ -246,6 +246,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private final TestCloudActivationAdmission testCloudAdmission;
     private final LegacyUnknownZeroCreditService legacyUnknownZeroCredit;
     @org.springframework.beans.factory.annotation.Autowired
+    private ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper calibrationMapper;
+    @org.springframework.beans.factory.annotation.Autowired
     private SimulatedTaskPolicyService simulationPolicies;
     @Autowired
     private ffdd.opsconsole.shared.security.SuperAdminAuthorization superAdmins;
@@ -2731,6 +2733,20 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         response.put("restoreEndpoint", "POST /api/admin/devices/{id}/restore");
         response.put("sources", List.of("nx_compute_e3_config", "nx_tradein_application", "nx_trade_in_order", "nx_user_device"));
         return ApiResult.ok(response);
+    }
+
+    /** A2 classifies the same normalized candidate that the E3 writer checks at execution. */
+    public boolean e3ConfigAmplifies(String rawKey, String rawValue) {
+        try {
+            String key = normalizeE3Key(rawKey);
+            Map<String, String> before = deviceRepository.e3Config();
+            Map<String, String> candidate = new LinkedHashMap<>(before);
+            candidate.put(key, normalizeE3Value(key, rawValue).value());
+            validateE3Candidate(candidate);
+            return e3AmplifiesFinancialOutflow(before, candidate, Set.of(key));
+        } catch (IllegalArgumentException invalid) {
+            throw new ffdd.opsconsole.shared.exception.BizException(422, invalid.getMessage());
+        }
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -5341,8 +5357,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return deviceIdempotent("E6_PHONE_CALIBRATION", idem, "phone-calibration", proposal, () -> {
                     var config = new ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService(configFacade, clock);
                     var before = config.read();
-                    config.candidate(proposal, before);
-                    if (coverageBelowRedline()) return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                    var candidate = config.candidate(proposal, before);
+                    if (config.amplifies(before, candidate, calibrationMapper.activeTiers()) && coverageBelowRedline())
+                        return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                             OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
                     var after = config.publish(proposal);
                     auditRequired("phone.calibration_policy_published", "PHONE_CALIBRATION_POLICY", "phone-calibration",

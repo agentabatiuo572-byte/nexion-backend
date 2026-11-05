@@ -99,21 +99,6 @@ public class AuditReplayBusinessPermissionGuard {
             Map.entry("E.tradein.inventorySoftMax", "inventorySoftMax"),
             Map.entry("E.release.earlyAccess.enabled", "earlyAccessEnabled"),
             Map.entry("E.release.earlyAccess.leadDays", "earlyAccessLeadDays"));
-    private static final Set<String> E3_POTENTIALLY_AMPLIFYING_TARGET_IDS = Set.of(
-            "capacityBand1DeltaPct", "capacityBand2DeltaPct", "capacityBand3DeltaPct",
-            "capacityFloorPct",
-            "capacityApplyToPhone", "capacityApplyToCloudShare", "capacityApplyToPcGpu",
-            "capacityApplyToS1", "capacityApplyToPro", "capacityApplyToProV2",
-            "capacityApplyToRackP1", "capacityApplyToRackP2",
-            "stageEarlyEnd", "stageMidEnd",
-            "tradeinEnabled",
-            "tradeinLadderCut1", "tradeinLadderCut2", "tradeinLadderCut3", "tradeinLadderCut4",
-            "tradeinLadderCredit1", "tradeinLadderCredit2", "tradeinLadderCredit3",
-            "tradeinLadderCredit4", "tradeinLadderCredit5",
-            "tradeinRequireHigherPrice", "tradeinMaxDevicesPerOrder", "eligibility",
-            "promoMult", "promoCooldownDays", "promoMaxPerSession", "promoDelaySeconds",
-            "promoMinAgeDays", "promoRoutes");
-
     private final TrustDisclosureRepository trustDisclosureRepository;
     private final AdminOperatorRoleResolver roleResolver;
     private final EmergencyControlRepository emergencyControlRepository;
@@ -136,6 +121,10 @@ public class AuditReplayBusinessPermissionGuard {
     private G3MarketApproval g3MarketApproval;
     @Autowired
     private H8RewardParamApproval h8RewardParamApproval;
+    @Autowired
+    private ffdd.opsconsole.device.application.OpsDeviceService devices;
+    @Autowired
+    private ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper calibrationMapper;
 
     public AuditReplayBusinessPermissionGuard(TrustDisclosureRepository trustDisclosureRepository,
             AdminOperatorRoleResolver roleResolver, EmergencyControlRepository emergencyControlRepository,
@@ -286,16 +275,11 @@ public class AuditReplayBusinessPermissionGuard {
                         || proposal.effectiveAt() > System.currentTimeMillis() + 366L * 86400000) {
                     return ApiResult.fail(422, "PHONE_CALIBRATION_PROPOSAL_INVALID");
                 }
-                var iosModelRules = proposal.iosModelRules();
-                if (iosModelRules == null) {
-                    // Such a proposal publishes the latest iPhone rules, so check the policy that will actually be written.
-                    var state = new ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService(configFacade,
-                            java.time.Clock.systemUTC()).read();
-                    var latest = state.scheduled() != null ? state.scheduled() : state.current();
-                    iosModelRules = latest == null ? List.of() : latest.iosModelRules();
-                }
-                new ffdd.opsconsole.onboarding.application.PhoneCalibrationPolicy(1, System.currentTimeMillis(),
-                        proposal.thresholds(), proposal.androidSocRules(), iosModelRules, proposal.androidPresetRemovals()).validate();
+                var service = new ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService(configFacade,
+                        java.time.Clock.systemUTC());
+                service.candidate(proposal, service.read());
+            } catch (ffdd.opsconsole.shared.exception.BizException invalid) {
+                return ApiResult.fail(invalid.getCode(), invalid.getMessage());
             } catch (RuntimeException invalid) {
                 return ApiResult.fail(422, "PHONE_CALIBRATION_PROPOSAL_INVALID");
             }
@@ -1057,13 +1041,21 @@ public class AuditReplayBusinessPermissionGuard {
             case "e5_device_unbind" -> deviceDescriptor(
                     "解绑设备资产", deviceId, "UNBOUND");
             case "e6_compute_config" -> computeConfigDescriptor(params);
-            case "e6_phone_calibration" -> new DelegatedProposalDescriptor(
-                    "发布手机校准规则", "phone-calibration", "以服务器执行时版本为准",
-                    "规则匹配后自动校准；不逐人审批", "E6", "param", true,
-                    new AuditLockTarget("E", "phone_calibration_policy", "phone-calibration"));
+            case "e6_phone_calibration" -> phoneCalibrationDescriptor(params);
             case "e6_compute_config_batch" -> computeConfigBatchDescriptor(params);
             default -> null;
         };
+    }
+
+    private DelegatedProposalDescriptor phoneCalibrationDescriptor(Map<String, Object> params) {
+        var proposal = new com.fasterxml.jackson.databind.ObjectMapper().convertValue(params,
+                ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService.Proposal.class);
+        var direction = new ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService(configFacade,
+                java.time.Clock.systemUTC()).direction(proposal, calibrationMapper.activeTiers());
+        return new DelegatedProposalDescriptor(
+                "发布手机校准规则", "phone-calibration", "以服务器执行时版本为准",
+                "规则匹配后自动校准；不逐人审批", "E6", "param", direction.amplifies(),
+                new AuditLockTarget("E", "phone_calibration_policy", "phone-calibration"));
     }
 
     private DelegatedProposalDescriptor legacyUnknownDescriptor(Map<String,Object> params) {
@@ -1090,7 +1082,7 @@ public class AuditReplayBusinessPermissionGuard {
                 nextValue,
                 "E3",
                 "param",
-                E3_POTENTIALLY_AMPLIFYING_TARGET_IDS.contains(targetId),
+                devices.e3ConfigAmplifies(key, nextValue),
                 new AuditLockTarget("E", "device_e3_config", targetId));
     }
 
