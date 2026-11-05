@@ -23,6 +23,12 @@ public interface PlatformConfigFacade extends DomainFacade {
         return false;
     }
 
+    /** Inserts or reactivates a value only while there is no active row for the key. */
+    default boolean upsertAdminValueIfUnconfigured(
+            String configKey, String configValue, String valueType, String configGroup, String remark) {
+        return insertAdminValueIfMissing(configKey, configValue, valueType, configGroup, remark);
+    }
+
     default Map<String, String> activeValuesByGroup(String configGroup) {
         return Map.of();
     }

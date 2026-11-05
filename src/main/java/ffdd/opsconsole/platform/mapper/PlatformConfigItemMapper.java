@@ -1,10 +1,12 @@
 package ffdd.opsconsole.platform.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import ffdd.opsconsole.platform.domain.PlatformConfigItem;
 import ffdd.opsconsole.platform.infrastructure.PlatformConfigItemEntity;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
-import org.apache.ibatis.annotations.Insert;
+import org.apache.ibatis.annotations.Update;
 import java.util.Map;
 
 public interface PlatformConfigItemMapper extends BaseMapper<PlatformConfigItemEntity> {
@@ -24,6 +26,15 @@ public interface PlatformConfigItemMapper extends BaseMapper<PlatformConfigItemE
             @Param("visibility") String visibility,
             @Param("remark") String remark,
             @Param("status") Integer status);
+
+    @Update("""
+            UPDATE nx_config_item
+               SET config_value = #{item.configValue}, value_type = #{item.valueType}, config_group = #{item.configGroup},
+                   visibility = #{item.visibility}, remark = #{item.remark}, status = 1, is_deleted = 0,
+                   updated_at = #{item.updatedAt}
+             WHERE config_key = #{item.configKey} AND (status <> 1 OR is_deleted <> 0)
+            """)
+    int reactivateConfigIfInactive(@Param("item") PlatformConfigItem item);
 
     @Select("""
             SELECT id, config_key, config_value, value_type, config_group, visibility, remark,

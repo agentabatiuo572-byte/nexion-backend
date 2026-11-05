@@ -41,6 +41,7 @@ import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
+import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
@@ -128,7 +129,7 @@ public class OpsAuditCenterService {
         if (operationId == null) return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
         AuditOperationTicketEntity ticket = ticketMapper.selectActiveByOperationId(operationId);
         if (ticket == null || (!accessPolicy.canAccessRecoveredProposal(ticket, actorId)
-                && !accessPolicy.canAccessOwnThresholdProposal(deserializeCommand(ticket.getCommandJson()), actorId))) {
+                && !accessPolicy.canAccessOwnBusinessProposal(deserializeCommand(ticket.getCommandJson()), actorId))) {
             return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
         }
         return ApiResult.ok(toTicket(ticket));
@@ -278,8 +279,7 @@ public class OpsAuditCenterService {
             ticket.setSourceDomain(sourceDomain);
         }
         if (descriptor != null) {
-            boolean superAdminProposal = "A1".equals(descriptor.sourceDomain())
-                    || WithdrawalConfigApproval.supports(command) || TreasuryThresholdApproval.supports(command);
+            boolean superAdminProposal = "A1".equals(descriptor.sourceDomain()) || superAdminProposalCommand(command);
             ticket.setAction(descriptor.action());
             ticket.setObjectText(descriptor.objectId());
             ticket.setBeforeValue(descriptor.beforeValue());
@@ -298,8 +298,11 @@ public class OpsAuditCenterService {
         if (command != null) {
             try {
                 com.fasterxml.jackson.databind.node.ObjectNode stored = objectMapper.valueToTree(command);
-                if (WithdrawalConfigApproval.supports(command) || TreasuryThresholdApproval.supports(command)) {
+                if (superAdminProposalCommand(command)) {
                     ((com.fasterxml.jackson.databind.node.ObjectNode) stored.get("params")).put("proposalReason", reason);
+                }
+                if (E2TaskPricingApproval.supports(command)) {
+                    ((com.fasterxml.jackson.databind.node.ObjectNode) stored.get("params")).put("targetId", target.id());
                 }
                 boolean skuStatus="E".equals(command.domain()) && "e1_sku_status".equals(command.op());
                 boolean phonePolicy="E".equals(command.domain()) && "e1_phone_task_policy".equals(command.op());
@@ -757,11 +760,12 @@ public class OpsAuditCenterService {
             if (cmd == null) {
                 return fail(OpsErrorCode.VALIDATION_FAILED, "COMMAND_REQUIRED");
             }
-            if (WithdrawalConfigApproval.supports(cmd) || TreasuryThresholdApproval.supports(cmd)) {
-                var target = TreasuryThresholdApproval.supports(cmd)
-                        ? TreasuryThresholdApproval.target(cmd) : WithdrawalConfigApproval.target(cmd);
+            if (superAdminProposalCommand(cmd)) {
+                var target = E2TaskPricingApproval.supports(cmd) ? E2TaskPricingApproval.target(cmd)
+                        : TreasuryThresholdApproval.supports(cmd) ? TreasuryThresholdApproval.target(cmd)
+                        : WithdrawalConfigApproval.target(cmd);
                 var locks = lockMapper.selectActiveByTicketId(ticket.getOperationId());
-                if (!target.id().equals(ticket.getObjectText()) || !target.domain().equals(ticket.getSourceDomain())
+                if (target == null || !target.id().equals(ticket.getObjectText()) || !target.domain().equals(ticket.getSourceDomain())
                         || !"fund".equals(ticket.getOperationType()) || !Integer.valueOf(1).equals(ticket.getAmplifies())
                         || locks.size() != 1 || !target.equals(new AuditLockTarget(locks.get(0).getTargetDomain(),
                             locks.get(0).getTargetType(), locks.get(0).getTargetId()))) {
@@ -829,6 +833,11 @@ public class OpsAuditCenterService {
                 && proposer.trim().equalsIgnoreCase(checker.trim());
     }
 
+    private static boolean superAdminProposalCommand(AuditReplayCommand command) {
+        return WithdrawalConfigApproval.supports(command) || TreasuryThresholdApproval.supports(command)
+                || E2TaskPricingApproval.supports(command);
+    }
+
     private String refundOrderNo(AuditReplayCommand command) {
         if (command == null || !"E".equals(command.domain()) || !"e4_order_refund".equals(command.op())
                 || command.params() == null || !(command.params().get("orderNo") instanceof String orderNo)
@@ -860,7 +869,8 @@ public class OpsAuditCenterService {
         detail.put("sos", isTrue(ticket.getSos()));
         detail.put("reason", reason.trim());
         detail.put("idempotencyKey", idempotencyKey.trim());
-        detail.put("domain", TreasuryThresholdApproval.supports(deserializeCommand(ticket.getCommandJson()))
+        AuditReplayCommand command = deserializeCommand(ticket.getCommandJson());
+        detail.put("domain", TreasuryThresholdApproval.supports(command) || E2TaskPricingApproval.supports(command)
                 ? ticket.getSourceDomain() : inferAuditDomain(ticket.getAction(), ticket.getObjectText()));
         return detail;
     }

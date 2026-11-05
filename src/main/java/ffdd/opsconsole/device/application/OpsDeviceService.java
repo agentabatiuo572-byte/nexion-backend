@@ -82,6 +82,7 @@ import ffdd.opsconsole.device.dto.E3ConfigUpdateRequest;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.finance.facade.E4OrderRefundSettlementFacade;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -121,6 +122,7 @@ import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.promotion.application.PromotionOrderService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -145,6 +147,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             "VG", "TK-4", "FT", "TK-5", "EM", "TK-6");
     private static final Set<String> TASK_KILL_INIT_STATES = Set.of("派发中", "已 kill", "限流中");
     private static final String E2_QUEUE_SATURATION_KEY = "E.task.queueSaturation";
+    private static final String E2_PRICING_LOCK_TYPE = "e2_task_pricing";
+    private static final AuditLockTarget E2_QUEUE_PRICING_TARGET = new AuditLockTarget("E", E2_PRICING_LOCK_TYPE, "queue_saturation");
     private static final Set<String> DATACENTER_STATUSES = Set.of("active", "maintenance", "disabled");
     private static final Set<String> ORDER_TERMINAL_STATES = Set.of(
             "payment_failed", "expired", "provisioning_failed", "chargeback");
@@ -243,6 +247,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private final LegacyUnknownZeroCreditService legacyUnknownZeroCredit;
     @org.springframework.beans.factory.annotation.Autowired
     private SimulatedTaskPolicyService simulationPolicies;
+    @Autowired
+    private ffdd.opsconsole.shared.security.SuperAdminAuthorization superAdmins;
 
     public OpsDeviceService(SupportPaymentAttributionFacade paymentAttribution,
             DeviceOpsRepository deviceRepository, DeviceCatalogRepository catalogRepository,
@@ -1371,6 +1377,23 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
                         "TASK_STATUS_REQUIRES_LIFECYCLE_ACTION");
             }
+            boolean formalPricingWidens = before.simulation() == null && trusted.simulation() == null
+                    && e2TaskPricingAmplifiesFinancialOutflow(
+                            before.minReward(), before.maxReward(), parseVram(before.minVram()), false,
+                            trusted.minReward(), trusted.maxReward(), parseVram(trusted.minVram()), false);
+            if (formalPricingWidens) {
+                if (!StringUtils.hasText(A2ReplayContext.operationId())) {
+                    return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+                }
+                if (!superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())
+                        || !hasAuthority("platform_a2_operation_approve")) {
+                    return ApiResult.fail(403, "E2_TASK_PRICING_APPROVAL_FORBIDDEN");
+                }
+                if (e2TaskPricingCoverageBelowRedline()) {
+                    return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                            OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+                }
+            }
             boolean beforeEnabled = "active".equals(before.status()) && !"已 kill".equals(before.killInit());
             boolean nextEnabled = "active".equals(trusted.status()) && !"已 kill".equals(trusted.killInit());
             if ((e2TaskPricingAmplifiesFinancialOutflow(
@@ -1976,10 +1999,16 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     public ApiResult<Map<String, Object>> e2TaskPricing() {
-        BigDecimal queueSaturation = configFacade.activeValue(E2_QUEUE_SATURATION_KEY)
-                .map(this::parseDecimalOrNull)
-                .filter(value -> value.compareTo(BigDecimal.ZERO) >= 0 && value.compareTo(BigDecimal.ONE) <= 0)
-                .orElse(new BigDecimal("0.35"));
+        return e2TaskPricing(false);
+    }
+
+    public ApiResult<Map<String, Object>> e2TaskPricingForAdmin() {
+        return e2TaskPricing(true);
+    }
+
+    private ApiResult<Map<String, Object>> e2TaskPricing(boolean includeRevisions) {
+        String queueConfig = configFacade.activeValue(E2_QUEUE_SATURATION_KEY).orElse(null);
+        BigDecimal queueSaturation = e2QueueSaturation(queueConfig);
         List<Map<String, Object>> rows = new ArrayList<>();
         for (String taskClass : E2_TASK_CLASS_ORDER) {
             DeviceTaskView task = findE2TaskByClass(taskClass);
@@ -1994,7 +2023,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     .multiply(queueSaturation)
                     .multiply(averageReward)
                     .setScale(4, RoundingMode.HALF_UP);
-            rows.add(detail(
+            Map<String, Object> row = detail(
                     "taskId", task.taskId(),
                     "taskClass", task.taskClass(),
                     "taskName", task.name(),
@@ -2002,15 +2031,22 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     "minReward", task.minReward(),
                     "maxReward", task.maxReward(),
                     "minVRAM", parseVram(task.minVram()),
-                    "enabled", "active".equals(task.status()) && !"已 kill".equals(task.killInit()),
+                    "enabled", e2TaskEnabled(task),
                     "activeAssignments", 0,
                     "avgSec", avgSec,
                     "dailyPotential", dailyPotential,
-                    "effectiveAt", task.updatedAt()));
+                    "effectiveAt", task.updatedAt());
+            if (includeRevisions) {
+                row.put("pricingRevision", e2TaskPricingRevision(task));
+            }
+            rows.add(row);
         }
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("taskClasses", rows);
         response.put("queueSaturation", queueSaturation);
+        if (includeRevisions) {
+            response.put("queueSaturationRevision", e2QueueSaturationRevision(queueConfig));
+        }
         response.put("teaser", e2Teaser(rows));
         response.put("effectiveAt", rows.stream()
                 .map(row -> row.get("effectiveAt"))
@@ -2057,7 +2093,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return ApiResult.ok(response);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<Map<String, Object>> updateE2TaskPricing(
             String idempotencyKey, E2TaskPricingUpdateRequest request) {
         ApiResult<Map<String, Object>> guard = requireE1Command(
@@ -2065,117 +2101,253 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (guard != null) {
             return guard;
         }
-        String trustedOperator = operator(request.operator());
-        E2TaskPricingUpdateRequest trusted = new E2TaskPricingUpdateRequest(
-                normalizeUpper(request.taskClass()), request.minReward(), request.maxReward(), request.minVram(),
-                request.enabled(), request.queueSaturation(), request.reason().trim(), trustedOperator);
+        E2TaskPricingUpdateRequest trusted = trustedE2TaskPricingRequest(request);
         return deviceIdempotent("E2_TASK_PRICING_UPDATE", idempotencyKey, trusted.taskClass(), trusted, () -> {
-            if (trusted.queueSaturation() != null) {
-                if (StringUtils.hasText(trusted.taskClass()) || trusted.minReward() != null || trusted.maxReward() != null
-                        || trusted.minVram() != null || trusted.enabled() != null) {
-                    return ApiResult.fail(400, "E2_SINGLE_ACTION_REQUIRED");
-                }
-                if (trusted.queueSaturation().compareTo(BigDecimal.ZERO) < 0
-                        || trusted.queueSaturation().compareTo(BigDecimal.ONE) > 0) {
-                    return ApiResult.fail(400, "QUEUE_SATURATION_INVALID");
-                }
-                BigDecimal before = configFacade.activeValueForUpdate(E2_QUEUE_SATURATION_KEY)
-                        .map(this::parseDecimalOrNull).orElse(new BigDecimal("0.35"));
-                if (before.compareTo(trusted.queueSaturation()) == 0) {
-                    return ApiResult.fail(409, "E2_VALUE_UNCHANGED");
-                }
-                if (trusted.queueSaturation().compareTo(before) > 0 && coverageBelowRedline()) {
-                    return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
-                            OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-                }
-                LocalDateTime effectiveAt = LocalDateTime.now(clock);
-                configFacade.upsertAdminValue(E2_QUEUE_SATURATION_KEY,
-                        trusted.queueSaturation().stripTrailingZeros().toPlainString(), "DECIMAL", "E2",
-                        "E2 locked teaser global saturation");
-                recordE2TaskPricingChange("GLOBAL", "QUEUE_SATURATION", before, trusted.queueSaturation(),
-                        effectiveAt, trustedOperator, trusted.reason(), idempotencyKey);
-                return ApiResult.ok(detail("effectiveAt", effectiveAt, "taskPricing", e2TaskPricing().getData()));
+            var prepared = prepareE2TaskPricing(trusted, null);
+            if (prepared.getCode() != 0) {
+                return ApiResult.fail(prepared.getCode(), prepared.getMessage());
             }
-            if (!TASK_CLASSES.contains(trusted.taskClass())) {
-                return ApiResult.fail(400, "TASK_CLASS_INVALID");
+            E2TaskPricingChange change = prepared.getData();
+            if (change.requiresApproval()) {
+                return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
             }
-            int changedFields = (trusted.minReward() == null ? 0 : 1)
-                    + (trusted.maxReward() == null ? 0 : 1)
-                    + (trusted.minVram() == null ? 0 : 1)
-                    + (trusted.enabled() == null ? 0 : 1);
-            if (changedFields == 0 || (trusted.enabled() != null && changedFields > 1)) {
-                return ApiResult.fail(400, "E2_SINGLE_ACTION_REQUIRED");
-            }
-            DeviceTaskView candidate = findE2TaskByClass(trusted.taskClass());
-            if (candidate == null) {
-                boolean simulatedClass = catalogRepository.pageTasks(new DeviceTaskQueryRequest(null, null, trusted.taskClass(), 1L, 500L))
-                        .getRecords().stream().anyMatch(task -> task.simulation() != null);
-                return ApiResult.fail(simulatedClass ? 422 : 404,
-                        simulatedClass ? "SIMULATED_TASK_FIXED_REWARD_REQUIRES_EDIT" : "TASK_CLASS_NOT_FOUND");
-            }
-            DeviceTaskView before = catalogRepository.findTaskForUpdate(candidate.taskId()).orElse(null);
-            if (before == null || !trusted.taskClass().equals(before.taskClass())) {
-                return ApiResult.fail(409, "TASK_CLASS_CHANGED");
-            }
-            if (before.simulation() != null) {
-                return ApiResult.fail(422, "SIMULATED_TASK_FIXED_REWARD_REQUIRES_EDIT");
-            }
-            if (!A2ReplayContext.isReplaying()
-                    && lockMapper.countActiveByTarget("E", "device_task", before.taskId()) > 0) {
-                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-            }
-            BigDecimal nextMin = trusted.minReward() == null ? before.minReward() : trusted.minReward();
-            BigDecimal nextMax = trusted.maxReward() == null ? before.maxReward() : trusted.maxReward();
-            int nextVram = trusted.minVram() == null ? parseVram(before.minVram()) : trusted.minVram();
-            boolean nextEnabled = trusted.enabled() == null
-                    ? "active".equals(before.status()) && !"已 kill".equals(before.killInit())
-                    : trusted.enabled();
-            if (nextMin == null || nextMax == null || nextMin.compareTo(BigDecimal.ZERO) < 0
-                    || nextMax.compareTo(BigDecimal.ZERO) < 0 || nextMin.compareTo(nextMax) > 0) {
-                return ApiResult.fail(400, "TASK_REWARD_RANGE_INVALID");
-            }
-            if (!taskRewardPrecisionValid(nextMin) || !taskRewardPrecisionValid(nextMax)) {
-                return ApiResult.fail(422, "TASK_REWARD_PRECISION_INVALID");
-            }
-            if (nextVram < 0) {
-                return ApiResult.fail(400, "TASK_MIN_VRAM_INVALID");
-            }
-            String field = trusted.minReward() != null ? "minReward"
-                    : trusted.maxReward() != null ? "maxReward"
-                    : trusted.minVram() != null ? "minVRAM" : "enabled";
-            Object beforeValue = switch (field) {
-                case "minReward" -> before.minReward();
-                case "maxReward" -> before.maxReward();
-                case "minVRAM" -> parseVram(before.minVram());
-                default -> "active".equals(before.status()) && !"已 kill".equals(before.killInit());
-            };
-            Object afterValue = switch (field) {
-                case "minReward" -> nextMin;
-                case "maxReward" -> nextMax;
-                case "minVRAM" -> nextVram;
-                default -> nextEnabled;
-            };
-            if (String.valueOf(beforeValue).equals(String.valueOf(afterValue))) {
-                return ApiResult.fail(409, "E2_VALUE_UNCHANGED");
-            }
-            if (e2TaskPricingAmplifiesFinancialOutflow(
-                    before.minReward(), before.maxReward(), parseVram(before.minVram()),
-                    "active".equals(before.status()) && !"已 kill".equals(before.killInit()),
-                    nextMin, nextMax, nextVram, nextEnabled)
-                    && coverageBelowRedline()) {
+            if (change.resumesDispatch() && e2TaskPricingCoverageBelowRedline()) {
                 return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                         OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
             }
-            DeviceTaskUpsertRequest write = new DeviceTaskUpsertRequest(
-                    before.name(), before.price(), before.unit(), before.requirement(), before.saturation(),
-                    nextEnabled ? "active" : "paused", before.taskClass(), before.model(), nextMin, nextMax,
-                    nextVram + "GB", nextEnabled ? "派发中" : "已 kill", trusted.reason(), trustedOperator);
-            LocalDateTime effectiveAt = LocalDateTime.now(clock);
-            catalogRepository.updateTask(before.taskId(), write, effectiveAt);
-            recordE2TaskPricingChange(trusted.taskClass(), field, beforeValue, afterValue,
-                    effectiveAt, trustedOperator, trusted.reason(), idempotencyKey);
-            return ApiResult.ok(detail("effectiveAt", effectiveAt, "taskPricing", e2TaskPricing().getData()));
+            return applyE2TaskPricing(change, trusted, idempotencyKey);
         });
+    }
+
+    public record E2TaskPricingReview(AuditLockTarget target, String before, String after) {}
+
+    private record E2TaskPricingChange(
+            AuditLockTarget target, String taskClass, Map<String, Object> before, Map<String, Object> after,
+            DeviceTaskUpsertRequest taskWrite, boolean requiresApproval, boolean resumesDispatch,
+            boolean queueWasUnconfigured) {}
+
+    public ApiResult<E2TaskPricingReview> previewTaskPricingApproval(E2TaskPricingUpdateRequest request) {
+        var prepared = prepareE2TaskPricingApproval(request, null);
+        if (prepared.getCode() != 0) {
+            return ApiResult.fail(prepared.getCode(), prepared.getMessage());
+        }
+        E2TaskPricingChange change = prepared.getData();
+        String before = change.before().toString();
+        String after = change.after().toString();
+        if (before.length() > 128 || after.length() > 128) {
+            return ApiResult.fail(422, "E2_TASK_PRICING_PROPOSAL_INVALID");
+        }
+        return ApiResult.ok(new E2TaskPricingReview(change.target(), before, after));
+    }
+
+    public ApiResult<Map<String, Object>> executeApprovedTaskPricing(
+            String idempotencyKey, E2TaskPricingUpdateRequest request, AuditLockTarget expectedTarget) {
+        String operationId = A2ReplayContext.operationId();
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(operationId) || expectedTarget == null) {
+            return ApiResult.fail(403, "E2_TASK_PRICING_APPROVAL_FORBIDDEN");
+        }
+        var locks = lockMapper.selectActiveByTicketId(operationId);
+        if (locks.size() != 1 || !expectedTarget.equals(new AuditLockTarget(
+                locks.get(0).getTargetDomain(), locks.get(0).getTargetType(), locks.get(0).getTargetId()))) {
+            return ApiResult.fail(403, "E2_TASK_PRICING_APPROVAL_FORBIDDEN");
+        }
+        var prepared = prepareE2TaskPricingApproval(request, expectedTarget);
+        if (prepared.getCode() != 0) {
+            return ApiResult.fail(prepared.getCode(), prepared.getMessage());
+        }
+        return applyE2TaskPricing(prepared.getData(), trustedE2TaskPricingRequest(request), idempotencyKey);
+    }
+
+    private ApiResult<E2TaskPricingChange> prepareE2TaskPricingApproval(
+            E2TaskPricingUpdateRequest request, AuditLockTarget expectedTarget) {
+        if (request == null || !StringUtils.hasText(request.expectedRevision())) {
+            return ApiResult.fail(422, "E2_TASK_PRICING_REVISION_REQUIRED");
+        }
+        var prepared = prepareE2TaskPricing(trustedE2TaskPricingRequest(request), expectedTarget);
+        if (prepared.getCode() != 0) {
+            return prepared;
+        }
+        if (!prepared.getData().requiresApproval()) {
+            return ApiResult.fail(422, "E2_TASK_PRICING_APPROVAL_NOT_REQUIRED");
+        }
+        if (e2TaskPricingCoverageBelowRedline()) {
+            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                    OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        }
+        return prepared;
+    }
+
+    private E2TaskPricingUpdateRequest trustedE2TaskPricingRequest(E2TaskPricingUpdateRequest request) {
+        return new E2TaskPricingUpdateRequest(
+                normalizeUpper(request.taskClass()), request.minReward(), request.maxReward(), request.minVram(),
+                request.enabled(), request.queueSaturation(), normalizeText(request.reason()), operator(request.operator()),
+                request.expectedRevision());
+    }
+
+    private ApiResult<E2TaskPricingChange> prepareE2TaskPricing(
+            E2TaskPricingUpdateRequest request, AuditLockTarget expectedTarget) {
+        if (request.queueSaturation() != null) {
+            if (StringUtils.hasText(request.taskClass()) || request.minReward() != null || request.maxReward() != null
+                    || request.minVram() != null || request.enabled() != null) {
+                return ApiResult.fail(400, "E2_SINGLE_ACTION_REQUIRED");
+            }
+            BigDecimal next = request.queueSaturation().stripTrailingZeros();
+            if (next.signum() < 0 || next.compareTo(BigDecimal.ONE) > 0) {
+                return ApiResult.fail(400, "QUEUE_SATURATION_INVALID");
+            }
+            String queueConfig = configFacade.activeValueForUpdate(E2_QUEUE_SATURATION_KEY).orElse(null);
+            if (e2TaskPricingStale(request, expectedTarget, E2_QUEUE_PRICING_TARGET, e2QueueSaturationRevision(queueConfig))) {
+                return ApiResult.fail(409, "E2_TASK_PRICING_STALE");
+            }
+            BigDecimal before = e2QueueSaturation(queueConfig);
+            int direction = next.compareTo(before);
+            if (direction == 0) {
+                return ApiResult.fail(409, "E2_VALUE_UNCHANGED");
+            }
+            return ApiResult.ok(new E2TaskPricingChange(E2_QUEUE_PRICING_TARGET, "GLOBAL",
+                    Map.of("QUEUE_SATURATION", before.stripTrailingZeros()), Map.of("QUEUE_SATURATION", next), null,
+                    direction > 0, false, queueConfig == null));
+        }
+
+        if (!TASK_CLASSES.contains(request.taskClass())) {
+            return ApiResult.fail(400, "TASK_CLASS_INVALID");
+        }
+        int pricingFields = (request.minReward() == null ? 0 : 1)
+                + (request.maxReward() == null ? 0 : 1) + (request.minVram() == null ? 0 : 1);
+        if ((request.enabled() == null && pricingFields == 0) || (request.enabled() != null && pricingFields > 0)) {
+            return ApiResult.fail(400, "E2_SINGLE_ACTION_REQUIRED");
+        }
+        DeviceTaskView candidate = findE2TaskByClass(request.taskClass());
+        if (candidate == null) {
+            if (expectedTarget != null) {
+                return ApiResult.fail(409, "E2_TASK_PRICING_STALE");
+            }
+            boolean simulatedClass = catalogRepository.pageTasks(new DeviceTaskQueryRequest(null, null, request.taskClass(), 1L, 500L))
+                    .getRecords().stream().anyMatch(task -> task.simulation() != null);
+            return ApiResult.fail(simulatedClass ? 422 : 404,
+                    simulatedClass ? "SIMULATED_TASK_FIXED_REWARD_REQUIRES_EDIT" : "TASK_CLASS_NOT_FOUND");
+        }
+        DeviceTaskView before = catalogRepository.findTaskForUpdate(candidate.taskId()).orElse(null);
+        if (before == null || !request.taskClass().equals(before.taskClass())) {
+            return ApiResult.fail(409, expectedTarget == null ? "TASK_CLASS_CHANGED" : "E2_TASK_PRICING_STALE");
+        }
+        if (before.simulation() != null) {
+            return expectedTarget == null ? ApiResult.fail(422, "SIMULATED_TASK_FIXED_REWARD_REQUIRES_EDIT")
+                    : ApiResult.fail(409, "E2_TASK_PRICING_STALE");
+        }
+        AuditLockTarget target = new AuditLockTarget("E", E2_PRICING_LOCK_TYPE, before.taskId());
+        if (e2TaskPricingStale(request, expectedTarget, target, e2TaskPricingRevision(before))) {
+            return ApiResult.fail(409, "E2_TASK_PRICING_STALE");
+        }
+        if (lockMapper.countActiveByTarget("E", "device_task", before.taskId()) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
+
+        int beforeVram = parseVram(before.minVram());
+        boolean beforeEnabled = e2TaskEnabled(before);
+        BigDecimal nextMin = request.minReward() == null ? before.minReward() : request.minReward();
+        BigDecimal nextMax = request.maxReward() == null ? before.maxReward() : request.maxReward();
+        int nextVram = request.minVram() == null ? beforeVram : request.minVram();
+        boolean nextEnabled = request.enabled() == null ? beforeEnabled : request.enabled();
+        if (nextMin == null || nextMax == null || nextMin.signum() < 0 || nextMax.signum() < 0 || nextMin.compareTo(nextMax) > 0) {
+            return ApiResult.fail(400, "TASK_REWARD_RANGE_INVALID");
+        }
+        if (!taskRewardPrecisionValid(nextMin) || !taskRewardPrecisionValid(nextMax)) {
+            return ApiResult.fail(422, "TASK_REWARD_PRECISION_INVALID");
+        }
+        if (nextVram < 0 || nextVram > 9999) {
+            return ApiResult.fail(400, "TASK_MIN_VRAM_INVALID");
+        }
+        Map<String, Object> beforeValues = e2TaskPricingValues(before);
+        Map<String, Object> afterValues = detail("minReward", nextMin.stripTrailingZeros(), "maxReward",
+                nextMax.stripTrailingZeros(), "minVRAM", nextVram, "enabled", nextEnabled);
+        beforeValues.entrySet().removeIf(entry -> e2PricingValueEquals(entry.getValue(), afterValues.get(entry.getKey())));
+        afterValues.keySet().retainAll(beforeValues.keySet());
+        if (afterValues.isEmpty()) {
+            return ApiResult.fail(409, "E2_VALUE_UNCHANGED");
+        }
+        boolean resumesDispatch = !beforeEnabled && nextEnabled;
+        boolean requiresApproval = !resumesDispatch && e2TaskPricingAmplifiesFinancialOutflow(
+                before.minReward(), before.maxReward(), beforeVram, beforeEnabled, nextMin, nextMax, nextVram, nextEnabled);
+        String nextStatus = request.enabled() == null ? before.status() : (nextEnabled ? "active" : "paused");
+        String nextKillInit = request.enabled() == null ? before.killInit() : (nextEnabled ? "派发中" : "已 kill");
+        DeviceTaskUpsertRequest write = new DeviceTaskUpsertRequest(
+                before.name(), before.price(), before.unit(), before.requirement(), before.saturation(), nextStatus,
+                before.taskClass(), before.model(), nextMin, nextMax, request.minVram() == null ? before.minVram() : nextVram + "GB",
+                nextKillInit, request.reason(), request.operator());
+        return ApiResult.ok(new E2TaskPricingChange(target, request.taskClass(), beforeValues, afterValues,
+                write, requiresApproval, resumesDispatch, false));
+    }
+
+    private ApiResult<Map<String, Object>> applyE2TaskPricing(
+            E2TaskPricingChange change, E2TaskPricingUpdateRequest request, String idempotencyKey) {
+        LocalDateTime effectiveAt = LocalDateTime.now(clock);
+        if (change.taskWrite() == null) {
+            BigDecimal next = request.queueSaturation();
+            String value = next.stripTrailingZeros().toString();
+            String remark = "E2 locked teaser global saturation";
+            if (change.queueWasUnconfigured()) {
+                // A missing active row cannot be fenced by SELECT FOR UPDATE at READ_COMMITTED.
+                if (!configFacade.upsertAdminValueIfUnconfigured(E2_QUEUE_SATURATION_KEY, value, "DECIMAL", "E2", remark)) {
+                    throw new BizException(409, "E2_TASK_PRICING_STALE");
+                }
+            } else {
+                configFacade.upsertAdminValue(E2_QUEUE_SATURATION_KEY, value, "DECIMAL", "E2", remark);
+            }
+            BigDecimal saved = configFacade.activeValueForUpdate(E2_QUEUE_SATURATION_KEY).map(this::parseDecimalOrNull).orElse(null);
+            if (!e2PricingValueEquals(next, saved)) {
+                throw new BizException(409, "E2_TASK_PRICING_WRITE_CONFLICT");
+            }
+        } else {
+            DeviceTaskView saved = catalogRepository.updateTask(change.target().id(), change.taskWrite(), effectiveAt)
+                    .orElseThrow(() -> new BizException(409, "E2_TASK_PRICING_WRITE_CONFLICT"));
+            Map<String, Object> savedValues = e2TaskPricingValues(saved);
+            if (change.after().entrySet().stream().anyMatch(entry -> !e2PricingValueEquals(entry.getValue(), savedValues.get(entry.getKey())))) {
+                throw new BizException(409, "E2_TASK_PRICING_WRITE_CONFLICT");
+            }
+        }
+        recordE2TaskPricingChange(change, effectiveAt, request, idempotencyKey);
+        return ApiResult.ok(detail("effectiveAt", effectiveAt, "taskPricing", e2TaskPricingForAdmin().getData()));
+    }
+
+    private Map<String, Object> e2TaskPricingValues(DeviceTaskView task) {
+        return detail("minReward", task.minReward(), "maxReward", task.maxReward(),
+                "minVRAM", parseVram(task.minVram()), "enabled", e2TaskEnabled(task));
+    }
+
+    private boolean e2TaskEnabled(DeviceTaskView task) {
+        return "active".equals(task.status()) && !"已 kill".equals(task.killInit());
+    }
+
+    private boolean e2PricingValueEquals(Object left, Object right) {
+        return left instanceof BigDecimal a && right instanceof BigDecimal b ? a.compareTo(b) == 0 : Objects.equals(left, right);
+    }
+
+    private BigDecimal e2QueueSaturation(String raw) {
+        BigDecimal value = parseDecimalOrNull(raw);
+        return value != null && value.signum() >= 0 && value.compareTo(BigDecimal.ONE) <= 0 ? value : new BigDecimal("0.35");
+    }
+
+    private boolean e2TaskPricingStale(E2TaskPricingUpdateRequest request, AuditLockTarget expectedTarget,
+            AuditLockTarget currentTarget, String currentRevision) {
+        return (expectedTarget != null && !expectedTarget.equals(currentTarget))
+                || (request.expectedRevision() != null && !request.expectedRevision().equals(currentRevision));
+    }
+
+    private String e2TaskPricingRevision(DeviceTaskView task) {
+        return e1RequestHash("E2_TASK_PRICING_REVISION", task.taskId(), detail(
+                "taskClass", task.taskClass(), "minReward", task.minReward(), "maxReward", task.maxReward(),
+                "minVram", task.minVram(), "status", task.status(), "killInit", task.killInit(), "updatedAt", task.updatedAt()));
+    }
+
+    private String e2QueueSaturationRevision(String raw) {
+        return e1RequestHash("E2_TASK_PRICING_REVISION", E2_QUEUE_PRICING_TARGET.id(), detail("configuredValue", raw));
+    }
+
+    private boolean e2TaskPricingCoverageBelowRedline() {
+        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        return coverage == null || !coverage.reliable() || coverage.coverageRatio() == null
+                || coverage.redlinePct() == null || coverage.redlineBreached();
     }
 
     public ApiResult<Map<String, Object>> e2PhoneTiers() {
@@ -5022,28 +5194,21 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                         "reason", reason, "source", source, "idempotencyKey", idempotencyKey.trim()));
     }
 
-    private void recordE2TaskPricingChange(
-            String taskClass,
-            String field,
-            Object before,
-            Object after,
-            LocalDateTime effectiveAt,
-            String trustedOperator,
-            String reason,
-            String idempotencyKey) {
-        Map<String, Object> payload = detail(
-                "taskClass", taskClass,
-                "field", field,
-                "before", before,
-                "after", after,
-                "effective_at", effectiveAt.toString(),
-                "operator", trustedOperator,
-                "reason", reason,
-                "ts", clock.millis());
-        outboxService.publish("E2_TASK_PRICING", taskClass, "admin.task_pricing_changed", payload);
-        auditRequired("admin.task_pricing_changed", "E2_TASK_PRICING", taskClass, trustedOperator,
-                detail("taskClass", taskClass, "field", field, "before", before, "after", after,
-                        "effectiveAt", effectiveAt, "reason", reason, "idempotencyKey", idempotencyKey.trim()));
+    private void recordE2TaskPricingChange(E2TaskPricingChange change, LocalDateTime effectiveAt,
+            E2TaskPricingUpdateRequest request, String idempotencyKey) {
+        long timestamp = clock.millis();
+        change.after().forEach((field, value) -> outboxService.publish(
+                "E2_TASK_PRICING", change.taskClass(), "admin.task_pricing_changed", detail(
+                        "taskClass", change.taskClass(), "field", field, "before", change.before().get(field), "after", value,
+                        "effective_at", effectiveAt.toString(), "operator", request.operator(),
+                        "reason", request.reason(), "ts", timestamp)));
+        String field = change.after().size() == 1 ? change.after().keySet().iterator().next() : null;
+        auditRequired("admin.task_pricing_changed", "E2_TASK_PRICING", change.taskClass(), request.operator(),
+                detail("taskClass", change.taskClass(), "field", field,
+                        "before", field == null ? change.before() : change.before().get(field),
+                        "after", field == null ? change.after() : change.after().get(field),
+                        "effectiveAt", effectiveAt, "reason", request.reason(), "idempotencyKey", idempotencyKey.trim(),
+                        "operationId", A2ReplayContext.operationId()));
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -5076,6 +5241,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             // A retry of an already recorded ID-based request must hash exactly as before the new field existed.
             String record=dto.toString();
             payload=payload.replace(record,record.substring(0,record.length()-", allowedTaskClasses=null]".length())+"]");
+        }
+        if (request instanceof E2TaskPricingUpdateRequest pricing && pricing.expectedRevision() == null) {
+            // The existing PUT receipt must remain recoverable when older clients omit the new revision.
+            payload = payload.substring(0, payload.length() - ", expectedRevision=null]".length()) + "]";
         }
         String canonical = scope + "\n" + normalizeText(resourceId) + "\n" + payload;
         try {

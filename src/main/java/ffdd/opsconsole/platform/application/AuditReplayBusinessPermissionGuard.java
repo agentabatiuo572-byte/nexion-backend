@@ -1,5 +1,6 @@
 package ffdd.opsconsole.platform.application;
 
+import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -124,6 +125,8 @@ public class AuditReplayBusinessPermissionGuard {
     private WithdrawalConfigApproval withdrawalConfigApproval;
     @Autowired
     private TreasuryThresholdApproval treasuryThresholdApproval;
+    @Autowired
+    private E2TaskPricingApproval e2TaskPricingApproval;
 
     public AuditReplayBusinessPermissionGuard(TrustDisclosureRepository trustDisclosureRepository,
             AdminOperatorRoleResolver roleResolver, EmergencyControlRepository emergencyControlRepository,
@@ -185,6 +188,10 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     public ApiResult<Void> validateProposal(AuditReplayCommand command) {
+        if (E2TaskPricingApproval.supports(command)) {
+            return e2TaskPricingApproval.canPropose(command)
+                    ? ApiResult.ok() : ApiResult.fail(403, "E2_TASK_PRICING_MAKER_FORBIDDEN");
+        }
         if (TreasuryThresholdApproval.supports(command)) {
             return treasuryThresholdApproval.validateMaker(command);
         }
@@ -291,6 +298,9 @@ public class AuditReplayBusinessPermissionGuard {
      * will later approve; it is intentionally not an input the browser can choose.
      */
     public ApiResult<AuditReplayCommand> canonicalizeProposalCommand(AuditReplayCommand command) {
+        if (E2TaskPricingApproval.supports(command)) {
+            return ApiResult.ok(e2TaskPricingApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
+        }
         if (TreasuryThresholdApproval.supports(command)) {
             return ApiResult.ok(treasuryThresholdApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
         }
@@ -314,6 +324,9 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     ApiResult<Void> validateRejection(AuditReplayCommand command) {
+        if (E2TaskPricingApproval.supports(command)) {
+            return e2TaskPricingApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        }
         if (TreasuryThresholdApproval.supports(command)) {
             return treasuryThresholdApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         }
@@ -331,6 +344,9 @@ public class AuditReplayBusinessPermissionGuard {
      * Other commands retain their existing replay-time business guard.
      */
     public ApiResult<Void> validateApproval(AuditReplayCommand command) {
+        if (E2TaskPricingApproval.supports(command)) {
+            return e2TaskPricingApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        }
         if (TreasuryThresholdApproval.supports(command)) {
             return treasuryThresholdApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         }
@@ -520,6 +536,20 @@ public class AuditReplayBusinessPermissionGuard {
             AuditOperationProposalRequest request) {
         boolean delegated = delegatedProposal();
         AuditReplayCommand command = request == null ? null : request.command();
+        if (E2TaskPricingApproval.supports(command)) {
+            if (!"E2".equals(text(request.sourceDomain())) || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            var preview = e2TaskPricingApproval.preview(command, request.reason());
+            if (preview.getCode() != 0) return ApiResult.fail(preview.getCode(), preview.getMessage());
+            var review = preview.getData();
+            var target = review.target();
+            if (!target.id().equals(text(request.obj())) || !target.equals(request.target())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            return ApiResult.ok(new DelegatedProposalDescriptor(
+                    "放宽任务定价", target.id(), review.before(), review.after(), "E2", "fund", true, target));
+        }
         if (TreasuryThresholdApproval.supports(command)) {
             String source = TreasuryThresholdApproval.source(command);
             AuditLockTarget target = TreasuryThresholdApproval.target(command);
