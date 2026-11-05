@@ -1,5 +1,6 @@
 package ffdd.opsconsole.platform.application;
 
+import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.infrastructure.AuditOperationTicketEntity;
 import ffdd.opsconsole.platform.mapper.AuditOperationTicketMapper;
@@ -59,7 +60,8 @@ public class A2AccessPolicy {
             if (roleResolver.isActiveAdministrator(id)) {
                 Set<String> grants = permissions.getPermissionCodes(id);
                 if (grants.contains("platform_a2_read") || grants.contains("overview_b1_redline_write")
-                        || grants.contains("overview_b5_threshold_write")) return id;
+                        || grants.contains("overview_b5_threshold_write")
+                        || grants.contains(E2TaskPricingApproval.MAKER_AUTHORITY)) return id;
             }
         } catch (NumberFormatException ignored) { }
         throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");
@@ -93,11 +95,19 @@ public class A2AccessPolicy {
         return domain.matches("[A-M]") && (scope.ownActorOnly() || scope.canSee(domain, ticket.getOperatorName()));
     }
 
-    boolean canAccessOwnThresholdProposal(AuditReplayCommand command, long actorId) {
-        if (!TreasuryThresholdApproval.supports(command) || command.params() == null) return false;
+    boolean canAccessOwnBusinessProposal(AuditReplayCommand command, long actorId) {
+        String authority;
+        if (TreasuryThresholdApproval.supports(command)) {
+            authority = TreasuryThresholdApproval.makerAuthority(command);
+        } else if (E2TaskPricingApproval.supports(command)) {
+            authority = E2TaskPricingApproval.MAKER_AUTHORITY;
+        } else {
+            return false;
+        }
+        if (command.params() == null) return false;
         Object makerId = command.params().get("makerAdminId");
         return makerId instanceof Number && Long.toString(actorId).equals(makerId.toString())
-                && permissions.getPermissionCodes(actorId).contains(TreasuryThresholdApproval.makerAuthority(command));
+                && permissions.getPermissionCodes(actorId).contains(authority);
     }
 
     public AuditLogQueryRequest constrain(AuditLogQueryRequest request) {

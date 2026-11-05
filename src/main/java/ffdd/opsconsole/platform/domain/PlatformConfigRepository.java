@@ -23,4 +23,8 @@ public interface PlatformConfigRepository {
     default boolean insertIfAbsent(PlatformConfigItem item) {
         return false;
     }
+
+    default boolean reactivateIfInactive(PlatformConfigItem item) {
+        return false;
+    }
 }

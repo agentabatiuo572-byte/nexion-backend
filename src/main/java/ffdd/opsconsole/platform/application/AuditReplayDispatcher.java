@@ -1,4 +1,5 @@
 package ffdd.opsconsole.platform.application;
+import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
@@ -18,8 +19,13 @@ public class AuditReplayDispatcher {
     private WithdrawalConfigApproval withdrawalConfigApproval;
     @Autowired
     private TreasuryThresholdApproval treasuryThresholdApproval;
+    @Autowired
+    private E2TaskPricingApproval e2TaskPricingApproval;
 
     public ApiResult<?> dispatch(AuditReplayCommand cmd, AuditReplayContext ctx) {
+        if (E2TaskPricingApproval.supports(cmd)) {
+            return e2TaskPricingApproval.replay(cmd, ctx);
+        }
         if (TreasuryThresholdApproval.supports(cmd)) {
             return treasuryThresholdApproval.replay(cmd, ctx);
         }

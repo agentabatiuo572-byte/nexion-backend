@@ -58,7 +58,20 @@ public class PlatformConfigFacadeAdapter implements PlatformConfigFacade {
     @Override
     public boolean insertAdminValueIfMissing(
             String configKey, String configValue, String valueType, String configGroup, String remark) {
-        return configRepository.insertIfAbsent(new PlatformConfigItem(
+        return configRepository.insertIfAbsent(newAdminValue(configKey, configValue, valueType, configGroup, remark));
+    }
+
+    @Override
+    public boolean upsertAdminValueIfUnconfigured(
+            String configKey, String configValue, String valueType, String configGroup, String remark) {
+        PlatformConfigItem value = newAdminValue(configKey, configValue, valueType, configGroup, remark);
+        return configRepository.reactivateIfInactive(value) || configRepository.insertIfAbsent(value);
+    }
+
+    private PlatformConfigItem newAdminValue(
+            String configKey, String configValue, String valueType, String configGroup, String remark) {
+        LocalDateTime now = LocalDateTime.now();
+        return new PlatformConfigItem(
                 null,
                 configKey,
                 configValue,
@@ -67,8 +80,8 @@ public class PlatformConfigFacadeAdapter implements PlatformConfigFacade {
                 "ADMIN",
                 remark,
                 1,
-                LocalDateTime.now(),
-                LocalDateTime.now()));
+                now,
+                now);
     }
 
     @Override

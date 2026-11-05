@@ -78,6 +78,11 @@ public class MybatisPlatformConfigRepository implements PlatformConfigRepository
                 item.status()) == 1;
     }
 
+    @Override
+    public boolean reactivateIfInactive(PlatformConfigItem item) {
+        return mapper.reactivateConfigIfInactive(item) == 1;
+    }
+
     private PlatformConfigItem toDomain(PlatformConfigItemEntity entity) {
         return new PlatformConfigItem(
                 entity.getId(),

@@ -281,13 +281,14 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         if (read && pathMatcher.match("/api/admin/users/profiles/*/phone-replacement-verifications/by-idempotency-key",path)) {
             return RequiredAuthority.exact("user_c5_phone_replacement_exception_grant");
         }
-        // The controller binds the two treasury grants to their exact A2 command.
+        // The controller binds business grants to their exact A2 commands.
         if (HttpMethod.POST.matches(method) && path.equals("/api/admin/platform/audit/operations")) {
             return RequiredAuthority.exact("platform_a2_write", "platform_a2_proposal_create",
-                    "overview_b1_redline_write", "overview_b5_threshold_write");
+                    "overview_b1_redline_write", "overview_b5_threshold_write", "device_e2_write");
         }
         if (read && path.equals("/api/admin/platform/audit/operations/proposals/by-idempotency-key")) {
-            return RequiredAuthority.exact("platform_a2_read", "overview_b1_redline_write", "overview_b5_threshold_write");
+            return RequiredAuthority.exact("platform_a2_read", "overview_b1_redline_write", "overview_b5_threshold_write",
+                    "device_e2_write");
         }
         // Method security additionally binds these grants to the requested media namespace.
         if (HttpMethod.POST.matches(method) && path.equals("/api/admin/media/uploads")) {

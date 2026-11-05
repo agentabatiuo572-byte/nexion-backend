@@ -26,7 +26,7 @@ public class OpsDeviceConfigController {
     @GetMapping("/task-pricing")
     @PreAuthorize("hasAuthority('device_e2_read')")
     public ApiResult<Map<String, Object>> taskPricing() {
-        return deviceService.e2TaskPricing();
+        return deviceService.e2TaskPricingForAdmin();
     }
 
     @PutMapping("/task-pricing")
