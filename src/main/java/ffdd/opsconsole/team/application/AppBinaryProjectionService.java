@@ -240,9 +240,7 @@ public class AppBinaryProjectionService {
 
     private BigDecimal positiveMoney(String raw) {
         try {
-            BigDecimal value = new BigDecimal(raw.replace("$", "").replace(",", "").trim());
-            if (value.signum() <= 0) throw new NumberFormatException();
-            return money(value);
+            return BinarySettlementPolicyProvider.normalizeThreshold(raw);
         } catch (RuntimeException ex) {
             throw new IllegalStateException("F3_APP_MONEY_CONFIG_INVALID");
         }
@@ -250,17 +248,7 @@ public class AppBinaryProjectionService {
 
     private BigDecimal rate(String raw) {
         try {
-            String value = raw.trim();
-            boolean percent = value.endsWith("%");
-            if (percent) value = value.substring(0, value.length() - 1).trim();
-            BigDecimal parsed = new BigDecimal(value);
-            if (percent || parsed.compareTo(BigDecimal.ONE) > 0) {
-                parsed = parsed.divide(new BigDecimal("100"), 12, RoundingMode.HALF_UP);
-            }
-            if (parsed.signum() <= 0 || parsed.compareTo(BigDecimal.ONE) > 0) {
-                throw new NumberFormatException();
-            }
-            return parsed.stripTrailingZeros();
+            return BinarySettlementPolicyProvider.normalizeMatchRate(raw);
         } catch (RuntimeException ex) {
             throw new IllegalStateException("F3_APP_MATCH_RATE_INVALID");
         }

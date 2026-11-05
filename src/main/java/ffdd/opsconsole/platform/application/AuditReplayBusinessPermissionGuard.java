@@ -256,6 +256,9 @@ public class AuditReplayBusinessPermissionGuard {
                 && !scopedMakerMayPropose(command, operation)) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_PERMISSION_DENIED:" + requiredAuthority);
         }
+        if ("F".equalsIgnoreCase(command.domain()) && "f_ui_config".equals(operation)) {
+            OpsTeamService.validateBinaryUiConfig(value(command.params(), "key"), value(command.params(), "value"));
+        }
         if (ffdd.opsconsole.device.application.LegacyUnknownZeroCreditCases.OP.equals(operation)) {
             if (legacyUnknownZeroCredit==null) return ApiResult.fail(503,"LEGACY_UNKNOWN_RESOLUTION_UNAVAILABLE");
             try { legacyUnknownZeroCredit.validateProposal(ffdd.opsconsole.device.application.LegacyUnknownZeroCreditService.command(command.params())); }
@@ -433,6 +436,9 @@ public class AuditReplayBusinessPermissionGuard {
             return ApiResult.fail(
                     OpsErrorCode.FORBIDDEN.httpStatus(),
                     "A2_BUSINESS_PERMISSION_DENIED:" + approvalAuthority);
+        }
+        if ("F".equalsIgnoreCase(command.domain()) && "f_ui_config".equals(operation)) {
+            OpsTeamService.validateBinaryUiConfig(value(command.params(), "key"), value(command.params(), "value"));
         }
         return ApiResult.ok();
     }

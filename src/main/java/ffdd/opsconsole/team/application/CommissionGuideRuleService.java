@@ -92,7 +92,13 @@ public class CommissionGuideRuleService {
     }
 
     private Map<String, Object> binary() {
-        BigDecimal threshold = active(BinarySettlementPolicyProvider.THRESHOLD_KEY).flatMap(this::positiveMoney).orElse(null);
+        BigDecimal threshold;
+        try {
+            threshold = active(BinarySettlementPolicyProvider.THRESHOLD_KEY)
+                    .map(BinarySettlementPolicyProvider::normalizeThreshold).orElse(null);
+        } catch (IllegalArgumentException invalid) {
+            threshold = null;
+        }
         BigDecimal matchRate = active(BinarySettlementPolicyProvider.MATCH_RATE_KEY).flatMap(this::positiveRate).orElse(null);
         Boolean paused = active(BinarySettlementPolicyProvider.PAUSED_KEY).flatMap(this::strictBoolean).orElse(null);
         boolean spilloverValid = active(BinarySettlementPolicyProvider.SPILLOVER_KEY).flatMap(this::strictEnabled).isPresent();
@@ -191,13 +197,7 @@ public class CommissionGuideRuleService {
 
     private Optional<BigDecimal> positiveRate(String raw) {
         try {
-            String value = raw.trim();
-            boolean percent = value.endsWith("%");
-            if (percent) value = value.substring(0, value.length() - 1).trim();
-            BigDecimal rate = new BigDecimal(value);
-            if (percent || rate.compareTo(BigDecimal.ONE) > 0) rate = rate.divide(ONE_HUNDRED, 12, RoundingMode.HALF_UP);
-            return rate.signum() > 0 && rate.compareTo(BigDecimal.ONE) <= 0
-                    ? Optional.of(rate.stripTrailingZeros()) : Optional.empty();
+            return Optional.of(BinarySettlementPolicyProvider.normalizeMatchRate(raw));
         } catch (RuntimeException ignored) {
             return Optional.empty();
         }
