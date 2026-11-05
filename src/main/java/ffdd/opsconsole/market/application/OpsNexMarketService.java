@@ -3410,13 +3410,12 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (permission != null) throw new BizException(permission.getCode(), permission.getMessage());
     }
 
-    void requireGenesisTierSupplyChange(int currentSupply, int newSupply) {
+    void requireGenesisTierSupplyChange(int newSupply) {
         requireGenesisSupplyPermission();
         if (newSupply > GENESIS_MAX_SUPPLY) throw new BizException(422, "GENESIS_TIER_INVALID");
         if (lockMapper.countActiveByTarget("G", "genesis_param", "supply") > 0) {
             throw new BizException(409, "OBJECT_LOCKED_BY_A2");
         }
-        requireGenesisSupplyCoverage(currentSupply, newSupply);
     }
 
     private void requireGenesisSupplyCoverage(int currentSupply, int newSupply) {

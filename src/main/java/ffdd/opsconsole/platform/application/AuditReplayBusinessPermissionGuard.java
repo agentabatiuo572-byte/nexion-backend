@@ -8,6 +8,7 @@ import ffdd.opsconsole.growth.application.H4GrowthApproval;
 import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
+import ffdd.opsconsole.market.application.G4CatalogApproval;
 import ffdd.opsconsole.market.application.G4DividendApproval;
 import ffdd.opsconsole.team.application.TeamFundApproval;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
@@ -126,6 +127,8 @@ public class AuditReplayBusinessPermissionGuard {
     @Autowired
     private G3MarketApproval g3MarketApproval;
     @Autowired
+    private G4CatalogApproval g4CatalogApproval;
+    @Autowired
     private G4DividendApproval g4DividendApproval;
     @Autowired
     private H8RewardParamApproval h8RewardParamApproval;
@@ -217,6 +220,10 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     public ApiResult<Void> validateProposal(AuditReplayCommand command) {
+        if (G4CatalogApproval.supports(command)) {
+            return g4CatalogApproval.canPropose(command)
+                    ? ApiResult.ok() : ApiResult.fail(403, "G4_CATALOG_MAKER_FORBIDDEN");
+        }
         if (LearningCourseActivationApproval.supports(command)) {
             return learningCourseActivationApproval.canPropose(command)
                     ? ApiResult.ok() : ApiResult.fail(403, "LEARNING_ACTIVATION_MAKER_FORBIDDEN");
@@ -362,6 +369,14 @@ public class AuditReplayBusinessPermissionGuard {
      */
     ApiResult<AuditReplayCommand> bindProposalCommand(AuditOperationProposalRequest request) {
         AuditReplayCommand command = request.command();
+        if (G4CatalogApproval.isOperation(command)) {
+            if (!G4CatalogApproval.supports(command)) return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            return ApiResult.ok(g4CatalogApproval.prepare(request, A2ReplayContext.authenticatedAdminId()));
+        }
+        if (G4CatalogApproval.isCatalogTarget(request.target()) || (request.targets() != null
+                && request.targets().stream().anyMatch(G4CatalogApproval::isCatalogTarget))) {
+            return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+        }
         if (!LearningCourseActivationApproval.isOperation(command)) return canonicalizeProposalCommand(command);
         if (!LearningCourseActivationApproval.supports(command)) {
             return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
@@ -420,6 +435,9 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     ApiResult<Void> validateRejection(AuditReplayCommand command) {
+        if (G4CatalogApproval.supports(command)) {
+            return g4CatalogApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId(), false);
+        }
         if (LearningCourseActivationApproval.supports(command)) {
             return learningCourseActivationApproval.validateDecision(command, A2ReplayContext.authenticatedAdminId(), false);
         }
@@ -467,6 +485,9 @@ public class AuditReplayBusinessPermissionGuard {
      * Other commands retain their existing replay-time business guard.
      */
     public ApiResult<Void> validateApproval(AuditReplayCommand command) {
+        if (G4CatalogApproval.supports(command)) {
+            return g4CatalogApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId(), true);
+        }
         if (LearningCourseActivationApproval.supports(command)) {
             return learningCourseActivationApproval.validateDecision(command, A2ReplayContext.authenticatedAdminId(), true);
         }
@@ -687,6 +708,12 @@ public class AuditReplayBusinessPermissionGuard {
      */
     ApiResult<DelegatedProposalDescriptor> validateProposalContext(
             AuditOperationProposalRequest request, AuditReplayCommand boundCommand) {
+        if (G4CatalogApproval.supports(boundCommand)) {
+            var target = G4CatalogApproval.TARGET;
+            return ApiResult.ok(new DelegatedProposalDescriptor("调整创世节点价格档位", target.id(),
+                    (String) boundCommand.params().get("beforeSummary"), (String) boundCommand.params().get("afterSummary"),
+                    "G4", "fund", true, target));
+        }
         if (LearningCourseActivationApproval.supports(boundCommand)) {
             var target = LearningCourseActivationApproval.target(boundCommand);
             return ApiResult.ok(new DelegatedProposalDescriptor(LearningCourseActivationApproval.action(boundCommand), target.id(),

@@ -17,6 +17,7 @@ import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import ffdd.opsconsole.team.application.TeamFundApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
+import ffdd.opsconsole.market.application.G4CatalogApproval;
 import ffdd.opsconsole.market.application.G4DividendApproval;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -82,7 +83,8 @@ public class A2AccessPolicy {
                         || grants.contains("network_f1_write") || grants.contains("network_f3_write") || grants.contains("network_f4_pool_fund")
                         || grants.contains("finprod_g3_curve_target_price_write") || grants.contains("finprod_g3_curve_pump_prob_write")
                         || grants.contains("finprod_g3_override_price_write") || grants.contains("finprod_g3_write")
-                        || grants.contains("finprod_g4_dividend_rate_write") || grants.contains("finprod_g4_write")) return id;
+                        || grants.contains("finprod_g4_dividend_rate_write") || grants.contains("finprod_g4_write")
+                        || grants.contains(G4CatalogApproval.PRICE_AUTHORITY)) return id;
             }
         } catch (NumberFormatException ignored) { }
         throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");
@@ -117,6 +119,9 @@ public class A2AccessPolicy {
     }
 
     boolean canAccessOwnBusinessProposal(AuditReplayCommand command, long actorId) {
+        if (G4CatalogApproval.supports(command)) {
+            return G4CatalogApproval.canReadOwnProposal(command, actorId, permissions.getPermissionCodes(actorId));
+        }
         if (LearningCourseActivationApproval.supports(command)) {
             return Long.valueOf(actorId).equals(LearningCourseActivationApproval.makerId(command))
                     && LearningCourseActivationApproval.hasMakerAuthorities(permissions.getPermissionCodes(actorId));

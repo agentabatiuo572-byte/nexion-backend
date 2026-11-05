@@ -297,7 +297,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
                     "overview_b1_redline_write", "overview_b5_threshold_write", "device_e2_write",
                     "network_f1_write", "network_f3_write", "network_f4_pool_fund", "growth_h8_write", "growth_h5_write", "growth_h3_write", "growth_h4_write", "growth_h4_wheel_pool_write", "finprod_g3_curve_target_price_write",
                     "finprod_g3_curve_pump_prob_write", "finprod_g3_override_price_write", "finprod_g3_write",
-                    "finprod_g4_dividend_rate_write", "finprod_g4_write");
+                    "finprod_g4_dividend_rate_write", "finprod_g4_write", "finprod_g4_price_write");
         }
         if (read && path.equals("/api/admin/platform/audit/operations/proposals/by-idempotency-key")) {
             return RequiredAuthority.exactOrAll(LearningCourseActivationApproval.MAKER_AUTHORITIES,
@@ -305,7 +305,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
                     "risk_k2_write",
                     "device_e2_write", "network_f1_write", "network_f3_write", "network_f4_pool_fund", "growth_h8_write", "growth_h5_write", "growth_h3_write", "growth_h4_write", "growth_h4_wheel_pool_write", "finprod_g3_curve_target_price_write",
                     "finprod_g3_curve_pump_prob_write", "finprod_g3_override_price_write", "finprod_g3_write",
-                    "finprod_g4_dividend_rate_write", "finprod_g4_write");
+                    "finprod_g4_dividend_rate_write", "finprod_g4_write", "finprod_g4_price_write");
         }
         if (read && path.equals("/api/admin/market/nex/genesis/dividend-approval-state")) {
             return RequiredAuthority.exact("finprod_g4_dividend_rate_write", "finprod_g4_write");

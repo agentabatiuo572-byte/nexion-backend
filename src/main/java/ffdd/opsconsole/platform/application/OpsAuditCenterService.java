@@ -52,6 +52,7 @@ import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.team.application.BinaryCommissionSettlementService.SettlementResult;
 import ffdd.opsconsole.team.application.TeamFundApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
+import ffdd.opsconsole.market.application.G4CatalogApproval;
 import ffdd.opsconsole.market.application.G4DividendApproval;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -139,8 +140,10 @@ public class OpsAuditCenterService {
         String operationId = auditLogService.findA2ProposalId(actorId, key);
         if (operationId == null) return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
         AuditOperationTicketEntity ticket = ticketMapper.selectActiveByOperationId(operationId);
-        if (ticket == null || (!accessPolicy.canAccessRecoveredProposal(ticket, actorId)
-                && !accessPolicy.canAccessOwnBusinessProposal(deserializeCommand(ticket.getCommandJson()), actorId))) {
+        if (ticket == null) return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
+        AuditReplayCommand command = deserializeCommand(ticket.getCommandJson());
+        if ((G4CatalogApproval.supports(command) || !accessPolicy.canAccessRecoveredProposal(ticket, actorId))
+                && !accessPolicy.canAccessOwnBusinessProposal(command, actorId)) {
             return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
         }
         return ApiResult.ok(toTicket(ticket));
@@ -666,10 +669,29 @@ public class OpsAuditCenterService {
             return fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED, OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
         try {
-            AuditOperationTicket result = idempotencyService.execute(
-                    "A2_COMMAND", idempotencyKey, commandHash(actor, operation, request), AuditOperationTicket.class,
-                    () -> requireSuccess(action.get()));
-            return ApiResult.ok(result);
+            boolean catalogProposal = "PROPOSE".equals(operation) && request instanceof AuditOperationProposalRequest proposal
+                    && G4CatalogApproval.supports(proposal.command());
+            boolean catalogReceipt = catalogProposal;
+            if (request instanceof AuditOperationDecisionRequest || request instanceof AuditOperationWithdrawRequest) {
+                String operationId = operation.substring(operation.indexOf(':') + 1).trim().toUpperCase(Locale.ROOT);
+                AuditOperationTicketEntity ticket = ticketMapper.selectActiveByOperationId(operationId);
+                catalogReceipt = ticket != null && G4CatalogApproval.supports(deserializeCommand(ticket.getCommandJson()));
+            }
+            String requestActor = catalogReceipt ? "admin:" + A2ReplayContext.authenticatedAdminId() : actor;
+            Object fingerprintRequest = request;
+            if (catalogReceipt) {
+                com.fasterxml.jackson.databind.node.ObjectNode fields = objectMapper.valueToTree(request);
+                fields.remove(List.of("operator", "operatorRole"));
+                fingerprintRequest = fields;
+            }
+            String requestHash = commandHash(requestActor, operation, fingerprintRequest);
+            java.util.function.Supplier<AuditOperationTicket> mutation = () -> requireSuccess(action.get());
+            if (catalogProposal) {
+                idempotencyService.executeRetained("A2_COMMAND", idempotencyKey, requestHash, AuditOperationTicket.class, mutation);
+                return proposalByIdempotencyKey(idempotencyKey);
+            }
+            return ApiResult.ok(idempotencyService.execute(
+                    "A2_COMMAND", idempotencyKey, requestHash, AuditOperationTicket.class, mutation));
         } catch (ffdd.opsconsole.shared.exception.PhoneReplacementException ex) {
             // Preserve the phone command conflict contract through A2 and roll back its approval transaction.
             throw ex;
@@ -759,10 +781,14 @@ public class OpsAuditCenterService {
         if (!STATUS_PENDING.equals(status(ticket.getStatus()))) {
             return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A2_OPERATION_ALREADY_TERMINAL");
         }
-        if (makerOnly && !sameActor(ticket.getOperatorName(), authenticatedOperator)) {
+        AuditReplayCommand ticketCommand = deserializeCommand(ticket.getCommandJson());
+        boolean makerMatches = G4CatalogApproval.supports(ticketCommand)
+                ? G4CatalogApproval.isMaker(ticketCommand, A2ReplayContext.authenticatedAdminId())
+                : sameActor(ticket.getOperatorName(), authenticatedOperator);
+        if (makerOnly && !makerMatches) {
             return fail(OpsErrorCode.FORBIDDEN, "A2_WITHDRAW_MAKER_ONLY");
         }
-        AuditReplayCommand cmd = STATUS_APPROVED.equals(nextStatus) ? deserializeCommand(ticket.getCommandJson()) : null;
+        AuditReplayCommand cmd = STATUS_APPROVED.equals(nextStatus) ? ticketCommand : null;
         Long avatarMaker = A2ReplayContext.isAvatarCommand(cmd) ? avatarMakerId(ticket.getCommandJson()) : null;
         if (STATUS_APPROVED.equals(nextStatus) && A2ReplayContext.isAvatarCommand(cmd)) {
             var expectedTarget = A2ReplayContext.avatarTarget(cmd);
@@ -778,7 +804,7 @@ public class OpsAuditCenterService {
                     || !A2ReplayContext.hasAuthority("platform_a1_write"))
                 return fail(OpsErrorCode.FORBIDDEN, "A2_AVATAR_APPROVAL_REQUIRED");
             if (avatarMaker.equals(checker)) return fail(OpsErrorCode.FORBIDDEN, "A2_MAKER_CHECKER_REQUIRED");
-        } else if (STATUS_APPROVED.equals(nextStatus) && sameActor(ticket.getOperatorName(), authenticatedOperator)) {
+        } else if (STATUS_APPROVED.equals(nextStatus) && makerMatches) {
             return fail(OpsErrorCode.FORBIDDEN, "A2_MAKER_CHECKER_REQUIRED");
         }
         // approve 才回放目标域;reject/withdrawn 只删锁不回放(原值天然保持)
@@ -788,6 +814,7 @@ public class OpsAuditCenterService {
             }
             if (superAdminProposalCommand(cmd)) {
                 var target = LearningCourseActivationApproval.supports(cmd) ? LearningCourseActivationApproval.target(cmd)
+                        : G4CatalogApproval.supports(cmd) ? G4CatalogApproval.TARGET
                         : TeamFundApproval.supports(cmd) ? TeamFundApproval.target(cmd)
                         : G3MarketApproval.supports(cmd) ? G3MarketApproval.target(cmd)
                         : H5GrowthApproval.supports(cmd) ? H5GrowthApproval.target(cmd)
@@ -825,6 +852,8 @@ public class OpsAuditCenterService {
                         A2ReplayContext.authenticatedAdminId(), deserializeCommand(ticket.getCommandJson()));
             } else if (LearningCourseActivationApproval.supports(cmd)) {
                 A2ReplayContext.enterCourseActivationApproval(ticket.getOperationId(), cmd);
+            } else if (G4CatalogApproval.supports(cmd)) {
+                A2ReplayContext.enterGenesisCatalogApproval(ticket.getOperationId(), cmd);
             } else {
                 A2ReplayContext.enterReplay(ticket.getOperationId());
             }
@@ -845,8 +874,7 @@ public class OpsAuditCenterService {
             releaseLock(ticket.getOperationId());
         } else {
             if (STATUS_REJECTED.equals(nextStatus)) {
-                ApiResult<Void> businessPermission = replayBusinessPermissionGuard.validateRejection(
-                        deserializeCommand(ticket.getCommandJson()));
+                ApiResult<Void> businessPermission = replayBusinessPermissionGuard.validateRejection(ticketCommand);
                 if (businessPermission.getCode() != 0) {
                     return ApiResult.fail(businessPermission.getCode(), businessPermission.getMessage());
                 }
@@ -887,7 +915,8 @@ public class OpsAuditCenterService {
                 || LearningCourseActivationApproval.supports(command)
                 || E2TaskPricingApproval.supports(command) || TeamFundApproval.supports(command)
                 || G3MarketApproval.supports(command) || H8RewardParamApproval.supports(command)
-                || G4DividendApproval.supports(command) || H5GrowthApproval.supports(command) || H3GrowthApproval.supports(command)
+                || G4CatalogApproval.supports(command) || G4DividendApproval.supports(command) || H5GrowthApproval.supports(command)
+                || H3GrowthApproval.supports(command)
                 || H4GrowthApproval.supports(command) || K2OtpInitialApproval.supports(command);
     }
 
@@ -929,7 +958,8 @@ public class OpsAuditCenterService {
         detail.put("domain", TreasuryThresholdApproval.supports(command) || E2TaskPricingApproval.supports(command)
                 || LearningCourseActivationApproval.supports(command)
                 || TeamFundApproval.supports(command) || G3MarketApproval.supports(command) || H8RewardParamApproval.supports(command)
-                || G4DividendApproval.supports(command) || H5GrowthApproval.supports(command) || H3GrowthApproval.supports(command)
+                || G4CatalogApproval.supports(command) || G4DividendApproval.supports(command) || H5GrowthApproval.supports(command)
+                || H3GrowthApproval.supports(command)
                 || H4GrowthApproval.supports(command) || K2OtpInitialApproval.supports(command)
                 ? ticket.getSourceDomain() : inferAuditDomain(ticket.getAction(), ticket.getObjectText()));
         return detail;

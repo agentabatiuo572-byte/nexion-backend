@@ -8,6 +8,7 @@ import ffdd.opsconsole.growth.application.H4GrowthApproval;
 import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
+import ffdd.opsconsole.market.application.G4CatalogApproval;
 import ffdd.opsconsole.market.application.G4DividendApproval;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
@@ -35,6 +36,8 @@ public class AuditReplayDispatcher {
     @Autowired
     private G3MarketApproval g3MarketApproval;
     @Autowired
+    private G4CatalogApproval g4CatalogApproval;
+    @Autowired
     private G4DividendApproval g4DividendApproval;
     @Autowired
     private H8RewardParamApproval h8RewardParamApproval;
@@ -50,6 +53,9 @@ public class AuditReplayDispatcher {
     private LearningCourseActivationApproval learningCourseActivationApproval;
 
     public ApiResult<?> dispatch(AuditReplayCommand cmd, AuditReplayContext ctx) {
+        if (G4CatalogApproval.supports(cmd)) {
+            return g4CatalogApproval.replay(cmd, ctx);
+        }
         if (LearningCourseActivationApproval.supports(cmd)) {
             return learningCourseActivationApproval.replay(cmd, ctx);
         }

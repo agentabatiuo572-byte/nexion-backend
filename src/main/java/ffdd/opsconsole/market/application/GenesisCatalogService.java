@@ -1,5 +1,6 @@
 package ffdd.opsconsole.market.application;
 
+import ffdd.opsconsole.market.mapper.AppGenesisMapper;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.CatalogState;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.LockedSeriesRow;
@@ -38,12 +39,15 @@ public class GenesisCatalogService {
     private static final int SAFE_INITIAL_ROYALTY_BPS = 0;
     private static final BigDecimal SAFE_INITIAL_DAILY_EMISSION_RATE_PCT = BigDecimal.ZERO;
     private static final String SAFE_INITIAL_DIVIDEND_BASE_FORMULA = "";
+    private static final BigDecimal TIER_PRICE_LIMIT = new BigDecimal("1000000000000");
     private final GenesisCatalogMapper mapper;
     private final AdminIdempotencyService idempotency;
     private final AuditLogService audit;
     private final Clock clock;
     @Autowired
     private OpsNexMarketService marketService;
+    @Autowired
+    private AppGenesisMapper appGenesisMapper;
 
     public ApiResult<Map<String,Object>> enrich(ApiResult<Map<String,Object>> base) {
         if (base == null || base.getCode() != 0 || base.getData() == null) return base;
@@ -131,89 +135,154 @@ public class GenesisCatalogService {
 
     @Transactional(rollbackFor = Exception.class)
     protected ApiResult<Void> createTierOnce(TierRequest request) {
-        requireReason(request == null ? null : request.reason());
-        CatalogState state = lockVersion(request == null ? null : request.expectedTiersVersion());
-        List<TierRow> tiers = mapper.activeTiers();
-        if (tiers == null) tiers = List.of();
-        boolean firstTier = tiers.isEmpty();
-        final int from;
-        if (firstTier) {
-            if (mapper.soldCount() != 0) throw new BizException(409,"GENESIS_SERIES_RECOVERY_REQUIRED");
-            from = 0;
-        } else {
-            validateTiers(tiers);
-            from = tiers.get(tiers.size() - 1).rangeTo();
-        }
-        validateBoundary(request.to(), request.priceUSDT(), from);
-        Map<String,Object> detail = linked("from",from,"to",request.to(),"priceUSDT",request.priceUSDT());
-        syncSeriesSupply(request.to(), detail);
-        String tierId = "t" + state.nextTierSeq();
-        if (mapper.insertTier(new TierRow(tierId,from,request.to(),request.priceUSDT())) != 1
-                || mapper.advanceTierVersion(state.tiersVersion(), state.nextTierSeq() + 1) != 1) {
-            throw new BizException(409,"GENESIS_TIERS_VERSION_CONFLICT");
-        }
-        if (firstTier) {
-            String actor = AdminActorResolver.resolve(request.operator());
-            String change = LocalDateTime.now(clock)+" "+actor+" "+state.marketOpenState()
-                    +"->closed:first tier created; explicit reopen required";
-            if (mapper.updateMarketState("closed","default",change,state.marketOpenStateVersion()) != 1) {
-                throw new BizException(409,"GENESIS_MARKET_STATE_CONFLICT");
-            }
-            detail.put("marketStateBefore",state.marketOpenState());
-            detail.put("marketState","closed");
-            detail.put("marketOpenStateVersion",state.marketOpenStateVersion() + 1);
-            detail.put("marketForcedClosed",true);
-        }
-        audit("GENESIS_TIER_CREATED",tierId,request.operator(),request.reason(),detail);
-        return ApiResult.ok();
+        return changeTierDirectly(null, request);
     }
 
     @Transactional(rollbackFor = Exception.class)
     protected ApiResult<Void> updateTierOnce(String tierId, TierRequest request) {
-        requireReason(request == null ? null : request.reason());
-        CatalogState state = lockVersion(request == null ? null : request.expectedTiersVersion());
-        List<TierRow> tiers = requireTiers();
-        int index = indexOf(tiers,tierId);
-        TierRow current = tiers.get(index);
-        validateBoundary(request.to(),request.priceUSDT(),current.rangeFrom());
-        if (index + 1 < tiers.size() && request.to() >= tiers.get(index + 1).rangeTo()) {
-            throw new BizException(422,"GENESIS_TIER_CROSSES_NEXT_RANGE");
-        }
-        if (index == tiers.size()-1 && request.to() < mapper.soldCount()) throw new BizException(422,"GENESIS_TIER_BELOW_SOLD");
-        List<TierRow> candidate = new ArrayList<>(tiers);
-        candidate.set(index, new TierRow(current.tierId(), current.rangeFrom(), request.to(), request.priceUSDT()));
-        if (index + 1 < candidate.size()) {
-            TierRow next = candidate.get(index + 1);
-            candidate.set(index + 1, new TierRow(next.tierId(), request.to(), next.rangeTo(), next.priceUsdt()));
-        }
-        validateTiers(candidate);
-        Map<String,Object> detail = linked("to",request.to(),"priceUSDT",request.priceUSDT());
-        if (index == tiers.size() - 1 && !request.to().equals(current.rangeTo())) {
-            syncSeriesSupply(request.to(), detail);
-        }
-        if (mapper.updateTier(tierId,request.to(),request.priceUSDT()) != 1) throw new BizException(409,"GENESIS_TIER_CONFLICT");
-        if (index+1 < tiers.size() && mapper.updateTierFrom(tiers.get(index+1).tierId(),request.to()) != 1) throw new BizException(409,"GENESIS_TIER_CONFLICT");
-        if (mapper.advanceTierVersion(state.tiersVersion(),state.nextTierSeq()) != 1) throw new BizException(409,"GENESIS_TIERS_VERSION_CONFLICT");
-        audit("GENESIS_TIER_UPDATED",tierId,request.operator(),request.reason(),detail);
-        return ApiResult.ok();
+        if (tierId == null) throw new BizException(404, "GENESIS_TIER_NOT_FOUND");
+        return changeTierDirectly(tierId, request);
     }
 
-    private void syncSeriesSupply(int totalSupply, Map<String,Object> detail) {
-        // Primary purchases lock this series row before reading or updating its sold count.
-        List<LockedSeriesRow> series = mapper.lockActiveSeriesForSupply();
-        if (series.isEmpty()) return; // Initial tier setup is published separately by initializeSeries.
-        if (series.size() != 1) throw new BizException(409, "GENESIS_ACTIVE_SERIES_AMBIGUOUS");
-        LockedSeriesRow current = series.get(0);
-        if (totalSupply < Math.max(current.soldSupply(), mapper.soldCount())) {
-            throw new BizException(422, "GENESIS_TIER_BELOW_SOLD");
+    private ApiResult<Void> changeTierDirectly(String tierId, TierRequest request) {
+        TierChange change = prepareTierChange(tierId, request);
+        if (change.amplifies()) throw new BizException(409, "G4_CATALOG_APPROVAL_REQUIRED");
+        return applyTierChange(change, request, null);
+    }
+
+    // The direct command and A2 both run in their READ_COMMITTED idempotency transaction.
+    TierChange prepareTierChange(String tierId, TierRequest request) {
+        requireReason(request == null ? null : request.reason());
+        CatalogState state = lockVersion(request.expectedTiersVersion());
+        // Primary purchases take the same series row lock before advancing their holding count.
+        List<LockedSeriesRow> seriesRows = mapper.lockActiveSeriesForSupply();
+        if (seriesRows.size() > 1) throw new BizException(409, "GENESIS_ACTIVE_SERIES_AMBIGUOUS");
+        LockedSeriesRow series = seriesRows.isEmpty() ? null : seriesRows.get(0);
+        List<TierRow> before = mapper.activeTiers();
+        long sold = mapper.soldCount();
+        boolean create = tierId == null;
+        if (before.isEmpty()) {
+            if (!create) throw new BizException(503, "GENESIS_TIERS_UNAVAILABLE");
+            if (sold != 0) throw new BizException(409, "GENESIS_SERIES_RECOVERY_REQUIRED");
+        } else {
+            validateTiers(before, sold);
         }
-        if (current.totalSupply() == totalSupply) return;
-        marketService.requireGenesisTierSupplyChange(current.totalSupply(), totalSupply);
-        if (mapper.updateSeriesSupply(current.id(), totalSupply) != 1) {
-            throw new BizException(409, "GENESIS_SUPPLY_CONFLICT");
+
+        int index = create ? before.size() : indexOf(before, tierId);
+        TierRow current = create ? null : before.get(index);
+        int from = create ? (before.isEmpty() ? 0 : before.get(index - 1).rangeTo()) : current.rangeFrom();
+        validateBoundary(request.to(), request.priceUSDT(), from);
+        TierRow next = index + 1 < before.size() ? before.get(index + 1) : null;
+        if (next != null && request.to() >= next.rangeTo()) {
+            throw new BizException(422,"GENESIS_TIER_CROSSES_NEXT_RANGE");
         }
-        detail.put("totalSupplyBefore", current.totalSupply());
-        detail.put("totalSupplyAfter", totalSupply);
+        if (next == null && request.to() < sold) throw new BizException(422, "GENESIS_TIER_BELOW_SOLD");
+        TierRow proposed = new TierRow(create ? "t" + state.nextTierSeq() : tierId, from, request.to(), request.priceUSDT());
+        List<TierRow> after = new ArrayList<>(before);
+        if (create) {
+            after.add(proposed);
+        } else {
+            after.set(index, proposed);
+            if (next != null) after.set(index + 1, new TierRow(next.tierId(), request.to(), next.rangeTo(), next.priceUsdt()));
+        }
+        validateTiers(after, sold);
+
+        Integer newSupply = null;
+        if (series != null && next == null && (create || !request.to().equals(current.rangeTo()))) {
+            if (request.to() < Math.max(series.soldSupply(), sold)) {
+                throw new BizException(422, "GENESIS_TIER_BELOW_SOLD");
+            }
+            if (request.to() != series.totalSupply()) {
+                marketService.requireGenesisTierSupplyChange(request.to());
+                newSupply = request.to();
+            }
+        }
+        boolean amplifies = false;
+        if (series != null) {
+            if (newSupply != null && newSupply > series.totalSupply()) {
+                amplifies = true;
+            } else if (!create) {
+                long quotePosition = appGenesisMapper.holdingCount(series.seriesCode());
+                int commonSupply = newSupply == null ? series.totalSupply() : newSupply;
+                amplifies = raisesUnsoldPrice(before, after, quotePosition, commonSupply);
+            }
+        }
+        return new TierChange(state, series, before, after, index, newSupply, amplifies);
+    }
+
+    private static boolean raisesUnsoldPrice(List<TierRow> before, List<TierRow> after, long sold, int commonSupply) {
+        int oldIndex = 0;
+        int newIndex = 0;
+        while (oldIndex < before.size() && newIndex < after.size()) {
+            TierRow oldTier = before.get(oldIndex);
+            TierRow newTier = after.get(newIndex);
+            long from = Math.max(sold, Math.max(oldTier.rangeFrom(), newTier.rangeFrom()));
+            int to = Math.min(oldTier.rangeTo(), newTier.rangeTo());
+            if (from < Math.min(to, commonSupply) && newTier.priceUsdt().compareTo(oldTier.priceUsdt()) > 0) return true;
+            if (to >= commonSupply) break;
+            if (oldTier.rangeTo() == to) oldIndex++;
+            if (newTier.rangeTo() == to) newIndex++;
+        }
+        return false;
+    }
+
+    String tierSourceRevision(TierChange change) {
+        CatalogState state = change.state();
+        LockedSeriesRow series = change.series();
+        StringBuilder source = new StringBuilder().append(state.tiersVersion()).append('/').append(state.nextTierSeq());
+        if (series != null) {
+            source.append('/').append(series.id()).append('/').append(series.totalSupply()).append('/').append(series.seriesCode());
+        }
+        for (TierRow tier : change.before()) {
+            source.append('|').append(tier.tierId().length()).append(':').append(tier.tierId()).append(':')
+                    .append(tier.rangeFrom()).append(':').append(tier.rangeTo()).append(':').append(tier.priceUsdt());
+        }
+        return hash(source.toString());
+    }
+
+    ApiResult<Void> applyTierChange(TierChange change, TierRequest request, String operationId) {
+        CatalogState state = change.state();
+        TierRow tier = change.after().get(change.index());
+        Map<String,Object> detail = linked("from", tier.rangeFrom(), "to", tier.rangeTo(), "priceUSDT", tier.priceUsdt());
+        if (change.newSupply() != null) {
+            if (mapper.updateSeriesSupply(change.series().id(), change.newSupply()) != 1) {
+                throw new BizException(409, "GENESIS_SUPPLY_CONFLICT");
+            }
+            detail.put("totalSupplyBefore", change.series().totalSupply());
+            detail.put("totalSupplyAfter", change.newSupply());
+        }
+        boolean create = change.createsTier();
+        if (create) {
+            if (mapper.insertTier(tier) != 1) throw new BizException(409, "GENESIS_TIERS_VERSION_CONFLICT");
+        } else {
+            if (mapper.updateTier(tier.tierId(), tier.rangeTo(), tier.priceUsdt()) != 1) {
+                throw new BizException(409, "GENESIS_TIER_CONFLICT");
+            }
+            if (change.index() + 1 < change.after().size()) {
+                TierRow next = change.after().get(change.index() + 1);
+                if (mapper.updateTierFrom(next.tierId(), next.rangeFrom()) != 1) {
+                    throw new BizException(409, "GENESIS_TIER_CONFLICT");
+                }
+            }
+        }
+        if (mapper.advanceTierVersion(state.tiersVersion(), state.nextTierSeq() + (create ? 1 : 0)) != 1) {
+            throw new BizException(409, "GENESIS_TIERS_VERSION_CONFLICT");
+        }
+        if (change.before().isEmpty()) {
+            String actor = AdminActorResolver.resolve(request.operator());
+            String description = LocalDateTime.now(clock)+" "+actor+" "+state.marketOpenState()
+                    +"->closed:first tier created; explicit reopen required";
+            if (mapper.updateMarketState("closed", "default", description, state.marketOpenStateVersion()) != 1) {
+                throw new BizException(409, "GENESIS_MARKET_STATE_CONFLICT");
+            }
+            detail.put("marketStateBefore", state.marketOpenState());
+            detail.put("marketState", "closed");
+            detail.put("marketOpenStateVersion", state.marketOpenStateVersion() + 1);
+            detail.put("marketForcedClosed", true);
+        }
+        if (operationId != null) detail.put("operationId", operationId);
+        audit(create ? "GENESIS_TIER_CREATED" : "GENESIS_TIER_UPDATED", tier.tierId(), request.operator(), request.reason(), detail);
+        return ApiResult.ok();
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -320,7 +389,12 @@ public class GenesisCatalogService {
         }catch(BizException ex){return new CatalogReadiness(false,ex.getMessage(),false,false,false);}
     }
     private void requireReadyForOpen(){CatalogReadiness readiness=readiness();if(!readiness.available())throw new BizException(409,readiness.reason());}
-    private void validateBoundary(Integer to,BigDecimal price,int from){if(to==null||to<=from||price==null||price.signum()<=0||price.stripTrailingZeros().scale()>0)throw new BizException(422,"GENESIS_TIER_INVALID");}
+    private void validateBoundary(Integer to, BigDecimal price, int from) {
+        if (to == null || to <= from || price == null || price.signum() <= 0
+                || price.compareTo(TIER_PRICE_LIMIT) >= 0 || price.stripTrailingZeros().scale() > 0) {
+            throw new BizException(422, "GENESIS_TIER_INVALID");
+        }
+    }
     private int indexOf(List<TierRow> rows,String id){for(int i=0;i<rows.size();i++)if(rows.get(i).tierId().equals(id))return i;throw new BizException(404,"GENESIS_TIER_NOT_FOUND");}
     private List<Map<String,Object>> tierViews(List<TierRow> rows){return rows.stream().map(r->Map.<String,Object>of("id",r.tierId(),"from",r.rangeFrom(),"to",r.rangeTo(),"priceUSDT",r.priceUsdt())).toList();}
     private void requireReason(String reason){if(!StringUtils.hasText(reason)||reason.trim().length()<8||reason.trim().length()>200)throw new BizException(422,"REASON_INVALID");}
@@ -347,6 +421,10 @@ public class GenesisCatalogService {
     }
 
     public record TierRequest(Integer to,BigDecimal priceUSDT,Long expectedTiersVersion,String reason,String operator){}
+    record TierChange(CatalogState state, LockedSeriesRow series, List<TierRow> before, List<TierRow> after,
+                      int index, Integer newSupply, boolean amplifies) {
+        boolean createsTier() { return index == before.size(); }
+    }
     public record DeleteTierRequest(Long expectedTiersVersion,String reason,String operator){}
     public record MarketStateRequest(String value,String reason,String operator,String noticeKey,
                                      Long expectedMarketOpenStateVersion){}
