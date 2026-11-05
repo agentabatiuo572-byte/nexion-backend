@@ -1,10 +1,12 @@
 package ffdd.opsconsole.platform.application;
 
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.infrastructure.AuditOperationTicketEntity;
 import ffdd.opsconsole.platform.mapper.AuditOperationTicketMapper;
 import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
+import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -54,8 +56,11 @@ public class A2AccessPolicy {
             throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");
         try {
             long id = Long.parseLong(auth.getName());
-            if (roleResolver.isActiveAdministrator(id)
-                    && permissions.getPermissionCodes(id).contains("platform_a2_read")) return id;
+            if (roleResolver.isActiveAdministrator(id)) {
+                Set<String> grants = permissions.getPermissionCodes(id);
+                if (grants.contains("platform_a2_read") || grants.contains("overview_b1_redline_write")
+                        || grants.contains("overview_b5_threshold_write")) return id;
+            }
         } catch (NumberFormatException ignored) { }
         throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");
     }
@@ -80,11 +85,19 @@ public class A2AccessPolicy {
 
     public boolean canAccessRecoveredProposal(AuditOperationTicketEntity ticket, long actorId) {
         if (ticket == null || !StringUtils.hasText(ticket.getSourceDomain())) return false;
-        var scope = scope(roleResolver.resolveCode(), AdminActorResolver.resolve(null),
-                authorityDomains(permissions.getPermissionCodes(actorId)));
+        Set<String> grants = permissions.getPermissionCodes(actorId);
+        if (!grants.contains("platform_a2_read")) return false;
+        var scope = scope(roleResolver.resolveCode(), AdminActorResolver.resolve(null), authorityDomains(grants));
         String domain = ticket.getSourceDomain().trim().substring(0, 1).toUpperCase(Locale.ROOT);
         // Exact maker ID was already matched by the durable proposal lookup.
         return domain.matches("[A-M]") && (scope.ownActorOnly() || scope.canSee(domain, ticket.getOperatorName()));
+    }
+
+    boolean canAccessOwnThresholdProposal(AuditReplayCommand command, long actorId) {
+        if (!TreasuryThresholdApproval.supports(command) || command.params() == null) return false;
+        Object makerId = command.params().get("makerAdminId");
+        return makerId instanceof Number && Long.toString(actorId).equals(makerId.toString())
+                && permissions.getPermissionCodes(actorId).contains(TreasuryThresholdApproval.makerAuthority(command));
     }
 
     public AuditLogQueryRequest constrain(AuditLogQueryRequest request) {

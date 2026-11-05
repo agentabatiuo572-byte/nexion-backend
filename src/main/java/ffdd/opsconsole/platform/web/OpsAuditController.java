@@ -164,6 +164,7 @@ public class OpsAuditController {
     }
 
     @GetMapping("/operations/proposals/by-idempotency-key")
+    @PreAuthorize("hasAnyAuthority('platform_a2_read','overview_b1_redline_write','overview_b5_threshold_write')")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> proposalByIdempotencyKey(
             @org.springframework.web.bind.annotation.RequestParam String idempotencyKey) {
         return auditCenterService.proposalByIdempotencyKey(idempotencyKey);
@@ -371,7 +372,8 @@ public class OpsAuditController {
     }
 
     @PostMapping("/operations")
-    @PreAuthorize("hasAnyAuthority('platform_a2_write','platform_a2_proposal_create')")
+    @PreAuthorize("hasAnyAuthority('platform_a2_write','platform_a2_proposal_create')"
+            + " || (#request != null && @treasuryThresholdApproval.canPropose(#request.command()))")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> createOperation(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) AuditOperationProposalRequest request) {

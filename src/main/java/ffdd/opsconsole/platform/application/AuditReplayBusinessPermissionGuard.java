@@ -1,6 +1,7 @@
 package ffdd.opsconsole.platform.application;
 
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
+import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import org.springframework.beans.factory.annotation.Autowired;
 
 import ffdd.opsconsole.common.api.OpsErrorCode;
@@ -121,6 +122,8 @@ public class AuditReplayBusinessPermissionGuard {
     private final TeamCommissionRepository teamCommissionRepository;
     @Autowired
     private WithdrawalConfigApproval withdrawalConfigApproval;
+    @Autowired
+    private TreasuryThresholdApproval treasuryThresholdApproval;
 
     public AuditReplayBusinessPermissionGuard(TrustDisclosureRepository trustDisclosureRepository,
             AdminOperatorRoleResolver roleResolver, EmergencyControlRepository emergencyControlRepository,
@@ -182,6 +185,9 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     public ApiResult<Void> validateProposal(AuditReplayCommand command) {
+        if (TreasuryThresholdApproval.supports(command)) {
+            return treasuryThresholdApproval.validateMaker(command);
+        }
         if (WithdrawalConfigApproval.supports(command)) {
             return withdrawalConfigApproval.validateMaker(command);
         }
@@ -285,6 +291,9 @@ public class AuditReplayBusinessPermissionGuard {
      * will later approve; it is intentionally not an input the browser can choose.
      */
     public ApiResult<AuditReplayCommand> canonicalizeProposalCommand(AuditReplayCommand command) {
+        if (TreasuryThresholdApproval.supports(command)) {
+            return ApiResult.ok(treasuryThresholdApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
+        }
         if (WithdrawalConfigApproval.supports(command)) {
             return ApiResult.ok(withdrawalConfigApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
         }
@@ -305,6 +314,9 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     ApiResult<Void> validateRejection(AuditReplayCommand command) {
+        if (TreasuryThresholdApproval.supports(command)) {
+            return treasuryThresholdApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        }
         return WithdrawalConfigApproval.supports(command)
                 ? withdrawalConfigApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId(), false)
                 : ApiResult.ok();
@@ -319,6 +331,9 @@ public class AuditReplayBusinessPermissionGuard {
      * Other commands retain their existing replay-time business guard.
      */
     public ApiResult<Void> validateApproval(AuditReplayCommand command) {
+        if (TreasuryThresholdApproval.supports(command)) {
+            return treasuryThresholdApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        }
         if (WithdrawalConfigApproval.supports(command)) {
             return withdrawalConfigApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId(), true);
         }
@@ -505,6 +520,20 @@ public class AuditReplayBusinessPermissionGuard {
             AuditOperationProposalRequest request) {
         boolean delegated = delegatedProposal();
         AuditReplayCommand command = request == null ? null : request.command();
+        if (TreasuryThresholdApproval.supports(command)) {
+            String source = TreasuryThresholdApproval.source(command);
+            AuditLockTarget target = TreasuryThresholdApproval.target(command);
+            if (!source.equals(text(request.sourceDomain())) || !target.id().equals(text(request.obj()))
+                    || !target.equals(request.target()) || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            var preview = treasuryThresholdApproval.preview(command, request.reason());
+            if (preview.getCode() != 0) return ApiResult.fail(preview.getCode(), preview.getMessage());
+            var values = preview.getData();
+            return ApiResult.ok(new DelegatedProposalDescriptor(
+                    "B1".equals(source) ? "降低兑付覆盖率红线" : "提高提现压力红线", target.id(),
+                    (String) values.get("before"), (String) values.get("after"), source, "fund", true, target));
+        }
         if (WithdrawalConfigApproval.supports(command)) {
             String source = WithdrawalConfigApproval.source(command);
             AuditLockTarget target = WithdrawalConfigApproval.target(command);
