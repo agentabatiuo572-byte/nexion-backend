@@ -27,7 +27,7 @@ public interface GenesisCatalogMapper {
     SeriesRow activeSeries();
 
     @Select("""
-            SELECT id,total_supply totalSupply,sold_supply soldSupply FROM nx_genesis_series
+            SELECT id,total_supply totalSupply,sold_supply soldSupply,series_code seriesCode FROM nx_genesis_series
              WHERE UPPER(status)='ACTIVE' AND is_deleted=0 ORDER BY id DESC LIMIT 2 FOR UPDATE
             """)
     List<LockedSeriesRow> lockActiveSeriesForSupply();
@@ -73,7 +73,7 @@ public interface GenesisCatalogMapper {
                         String closedNoticeKey,String lastChange,Long nextTierSeq) { }
     record TierRow(String tierId,Integer rangeFrom,Integer rangeTo,BigDecimal priceUsdt) { }
     record SeriesRow(String seriesCode,String name,Integer totalSupply,BigDecimal priceUsdt) { }
-    record LockedSeriesRow(long id,int totalSupply,int soldSupply) { }
+    record LockedSeriesRow(long id,int totalSupply,int soldSupply,String seriesCode) { }
     record SeriesBootstrapRow(String seriesCode,String name,Integer totalSupply,BigDecimal priceUsdt,
                               Integer royaltyBps,BigDecimal dailyEmissionRatePct,String dividendBaseFormula) { }
 }
