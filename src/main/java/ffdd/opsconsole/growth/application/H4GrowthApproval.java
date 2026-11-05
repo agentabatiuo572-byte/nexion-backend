@@ -31,6 +31,8 @@ public class H4GrowthApproval {
     public static final String GUARD_AUTHORITY = "growth_h4_wheel_pool_write";
     private static final String RULE = "h4_event_rule_enable";
     private static final String RAFFLE = "h4_genesis_raffle_open";
+    private static final String LEGACY_REWARD = "h4_legacy_event_reward_update";
+    private static final String LEGACY_OPEN = "h4_legacy_event_open";
     private static final String GUARD_CREATE = "h4_wheel_guard_create";
     private static final String GUARD_UPDATE = "h4_wheel_guard_update";
     private static final String TIER_CREATE = "h4_wheel_tier_create";
@@ -38,8 +40,9 @@ public class H4GrowthApproval {
     private static final String PROBABILITIES_UPDATE = "h4_wheel_probabilities_update";
     private static final AuditLockTarget WHEEL_POOL = new AuditLockTarget("H", "h4_wheel_pool", "ACTIVE_POOL");
     private static final Set<String> WHEEL_POOL_OPERATIONS = Set.of(TIER_CREATE, TIER_UPDATE, PROBABILITIES_UPDATE);
+    private static final Set<String> LEGACY_EVENT_OPERATIONS = Set.of(LEGACY_REWARD, LEGACY_OPEN);
     private static final Set<String> OPERATIONS = Set.of(RULE, RAFFLE, GUARD_CREATE, GUARD_UPDATE,
-            TIER_CREATE, TIER_UPDATE, PROBABILITIES_UPDATE);
+            TIER_CREATE, TIER_UPDATE, PROBABILITIES_UPDATE, LEGACY_REWARD, LEGACY_OPEN);
     private final H4EventRuleService rules;
     private final GenesisRaffleService raffles;
     private final OpsGrowthService growth;
@@ -63,6 +66,8 @@ public class H4GrowthApproval {
 
     public static String proposalAction(AuditReplayCommand command) {
         return switch (command.op()) {
+            case LEGACY_REWARD -> "提高旧活动奖励";
+            case LEGACY_OPEN -> "开放旧活动资金奖励";
             case TIER_CREATE -> "新增转盘奖项";
             case TIER_UPDATE -> "放宽转盘奖项配置";
             case PROBABILITIES_UPDATE -> "提高转盘奖项概率";
@@ -78,10 +83,23 @@ public class H4GrowthApproval {
     public AuditReplayCommand bindMaker(AuditReplayCommand command, Long adminId) {
         if (adminId == null || adminId <= 0 || !canPropose(command)) throw new BizException(403, "H4_MAKER_FORBIDDEN");
         Map<String, Object> values = values(command);
-        if (WHEEL_POOL_OPERATIONS.contains(command.op()) && !command.params().keySet().equals(Set.of("values")))
+        boolean legacyEvent = LEGACY_EVENT_OPERATIONS.contains(command.op());
+        if ((legacyEvent || WHEEL_POOL_OPERATIONS.contains(command.op())) && !command.params().keySet().equals(Set.of("values")))
             throw new BizException(422, "H4_PROPOSAL_INVALID");
+        Map<String, String> expectedState = state(target(command), command.op());
+        if (legacyEvent && "true".equals(expectedState.get("exists")) && "false".equals(expectedState.get("hasRule"))) {
+            values = new LinkedHashMap<>(values);
+            if (LEGACY_REWARD.equals(command.op())) {
+                var reward = growth.legacyEventReward(legacyEventUpdate(command, null).value());
+                values.put("rewardType", reward.type());
+                values.put("rewardAmount", reward.amount().toPlainString());
+            } else {
+                values.put("rewardType", expectedState.get("rewardType"));
+                values.put("rewardAmount", expectedState.get("rewardAmount"));
+            }
+        }
         return new AuditReplayCommand("H", command.op(), Map.of("values", values, "makerAdminId", adminId,
-                "expectedState", state(target(command))));
+                "expectedState", expectedState));
     }
 
     public ApiResult<Void> validateChecker(AuditReplayCommand command, Long checkerId) {
@@ -98,6 +116,11 @@ public class H4GrowthApproval {
     public static AuditLockTarget target(AuditReplayCommand command) {
         Map<String, Object> values = values(command);
         if (WHEEL_POOL_OPERATIONS.contains(command.op())) return WHEEL_POOL;
+        if (LEGACY_EVENT_OPERATIONS.contains(command.op())) {
+            String code = text(values, "eventCode");
+            if (!OpsGrowthService.legacyEventCode(code)) throw new BizException(422, "H4_PROPOSAL_INVALID");
+            return new AuditLockTarget("H", "h4_legacy_event", code);
+        }
         if (RULE.equals(command.op())) {
             String code = text(values, "eventCode");
             if (!H4EventRuleService.CODES.contains(code)) throw new BizException(422, "EVENT_RULE_NOT_FOUND");
@@ -119,6 +142,8 @@ public class H4GrowthApproval {
         ApiResult<Map<String, Object>> result = switch (command.op()) {
             case RULE -> rules.previewEnable(target.id(), rule(command, reason));
             case RAFFLE -> raffles.previewOpen(target.id(), raffle(command, reason));
+            case LEGACY_REWARD, LEGACY_OPEN -> growth.previewH4LegacyEvent(target.id(), legacyEventUpdate(command, reason),
+                    LEGACY_OPEN.equals(command.op()));
             case GUARD_CREATE -> growth.previewH4GuardCreate(guardCreate(command, reason));
             case GUARD_UPDATE -> growth.previewH4GuardUpdate(target.id(), guardUpdate(command, reason));
             case TIER_CREATE -> growth.previewH4WheelTierCreate(wheelTier(command, reason));
@@ -127,7 +152,7 @@ public class H4GrowthApproval {
             default -> throw new BizException(422, "H4_PROPOSAL_INVALID");
         };
         if (result.getCode() != 0) return result;
-        return ApiResult.ok(Map.of("before", rules.encode(state(target)), "after", rules.encode(values(command))));
+        return ApiResult.ok(Map.of("before", rules.encode(state(target, command.op())), "after", rules.encode(values(command))));
     }
 
     public ApiResult<?> replay(AuditReplayCommand command, AuditReplayContext context, Long checkerId, String operationId) {
@@ -140,7 +165,7 @@ public class H4GrowthApproval {
         if (locks.size() != 1 || !operationId.equals(locks.get(0).getTicketId()) || !target.equals(
                 new AuditLockTarget(locks.get(0).getTargetDomain(), locks.get(0).getTargetType(), locks.get(0).getTargetId())))
             return ApiResult.fail(403, "H4_APPROVAL_FORBIDDEN");
-        if (!state(target).equals(command.params().get("expectedState"))) return ApiResult.fail(409, "H4_CONFIG_STALE");
+        if (!state(target, command.op()).equals(command.params().get("expectedState"))) return ApiResult.fail(409, "H4_CONFIG_STALE");
         if (!(command.params().get("proposalReason") instanceof String reason)) return ApiResult.fail(422, "H4_PROPOSAL_INVALID");
         return switch (command.op()) {
             case RULE -> {
@@ -152,6 +177,13 @@ public class H4GrowthApproval {
                 var request = raffle(command, reason);
                 yield commands.execute("H4", "GENESIS_RAFFLE_UPDATE", target.id(), context.idempotencyKey(), request,
                         () -> raffles.executeApprovedOpen(target.id(), request));
+            }
+            case LEGACY_REWARD, LEGACY_OPEN -> {
+                boolean opening = LEGACY_OPEN.equals(command.op());
+                var request = legacyEventUpdate(command, reason);
+                yield commands.execute("H4", opening ? "EVENT_STATUS_UPDATE" : "EVENT_REWARD_UPDATE", target.id(),
+                        context.idempotencyKey(), request,
+                        () -> growth.executeApprovedH4LegacyEvent(context.idempotencyKey(), target.id(), request, opening));
             }
             case GUARD_CREATE -> {
                 var request = guardCreate(command, reason);
@@ -182,7 +214,10 @@ public class H4GrowthApproval {
         };
     }
 
-    private Map<String, String> state(AuditLockTarget target) {
+    private Map<String, String> state(AuditLockTarget target, String operation) {
+        if (LEGACY_EVENT_OPERATIONS.contains(operation)) {
+            return growth.lockH4LegacyEventState(target.id(), LEGACY_OPEN.equals(operation));
+        }
         if (WHEEL_POOL.equals(target)) {
             var tiers = growth.lockH4WheelPool();
             return Map.of("wheelSignature", growth.wheelPoolSignature(tiers),
@@ -219,6 +254,7 @@ public class H4GrowthApproval {
         Set<String> required = switch (command.op()) {
             case RULE -> Set.of("eventCode", "expectedRevision", "enabled", "startsAt", "endsAt", "rules");
             case RAFFLE -> Set.of("id", "expectedRevision", "enabled", "titleZh", "titleEn", "titleVi", "startsAt", "drawAt", "prizes");
+            case LEGACY_REWARD, LEGACY_OPEN -> Set.of("eventCode", "value", "expectedValue");
             case GUARD_CREATE -> Set.of("guardKey", "guardLabel", "guardValue", "note");
             case GUARD_UPDATE -> Set.of("guardKey", "value", "expectedValue");
             case TIER_CREATE, TIER_UPDATE -> Set.of("tierName", "rewardName", "expectedSignature");
@@ -227,6 +263,8 @@ public class H4GrowthApproval {
         };
         var allowed = new HashSet<>(required);
         if (RAFFLE.equals(command.op())) allowed.add("titleTranslations");
+        if (LEGACY_EVENT_OPERATIONS.contains(command.op()) && command.params().containsKey("makerAdminId"))
+            allowed.addAll(Set.of("rewardType", "rewardAmount"));
         if (TIER_CREATE.equals(command.op()) || TIER_UPDATE.equals(command.op()))
             allowed.addAll(Set.of("probabilityPct", "realOutflow", "rewardKind", "rewardAmount", "voucherId", "dailyStock"));
         if (!raw.keySet().containsAll(required) || !allowed.containsAll(raw.keySet())) throw new BizException(422, "H4_PROPOSAL_INVALID");
@@ -263,6 +301,13 @@ public class H4GrowthApproval {
     private GrowthConfigUpdateRequest guardUpdate(AuditReplayCommand command, String reason) {
         var values = values(command);
         return new GrowthConfigUpdateRequest(null, text(values, "value"), reason, null, text(values, "expectedValue"));
+    }
+
+    private GrowthConfigUpdateRequest legacyEventUpdate(AuditReplayCommand command, String reason) {
+        var values = values(command);
+        if (!(values.get("value") instanceof String value) || !(values.get("expectedValue") instanceof String expected))
+            throw new BizException(422, "H4_PROPOSAL_INVALID");
+        return new GrowthConfigUpdateRequest(null, value, reason, null, expected);
     }
 
     private GrowthWheelTierRequest wheelTier(AuditReplayCommand command, String reason) {

@@ -57,6 +57,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.function.Function;
@@ -2356,6 +2357,22 @@ public class OpsGrowthService implements AuditReplayable {
             String idempotencyKey,
             String eventId,
             GrowthConfigUpdateRequest request) {
+        return updateQuestEventReward(idempotencyKey, eventId, request, false, false);
+    }
+
+    ApiResult<Map<String, Object>> previewH4LegacyEvent(String eventId, GrowthConfigUpdateRequest request, boolean opening) {
+        return opening ? updateQuestEventStatus("H4_PREVIEW", eventId, request, true, true)
+                : updateQuestEventReward("H4_PREVIEW", eventId, request, true, true);
+    }
+
+    ApiResult<Map<String, Object>> executeApprovedH4LegacyEvent(
+            String key, String eventId, GrowthConfigUpdateRequest request, boolean opening) {
+        return opening ? updateQuestEventStatus(key, eventId, request, true, false)
+                : updateQuestEventReward(key, eventId, request, true, false);
+    }
+
+    private ApiResult<Map<String, Object>> updateQuestEventReward(
+            String idempotencyKey, String eventId, GrowthConfigUpdateRequest request, boolean approved, boolean preview) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
@@ -2364,36 +2381,49 @@ public class OpsGrowthService implements AuditReplayable {
         if (trialGate != null) {
             return trialGate;
         }
-        ensureQuestEventSeedData();
-        if (questEventMapper.isEmpty()
-                || !"H4_EVENT".equals(questEventMapper.get().lockGrowthMutation("H4_EVENT"))) {
+        if (!lockH4Event()) {
             return validation("H4_EVENT_MUTEX_UNAVAILABLE");
         }
-        String id = normalizeEventId(eventId);
-        if ("wheel".equalsIgnoreCase(String.valueOf(eventRow(id).get("kind")))) {
+        String id = requireText(eventId, "Event id is required");
+        var current = requireEventForMutation(id);
+        if ("wheel".equalsIgnoreCase(String.valueOf(current.get("targetType")))) {
             return validation("EVENT_WHEEL_REWARD_MANAGED_BY_POOL");
         }
-        boolean ruleManaged = supportsH4EventRules(id) && h4EventRules.find(id, false) != null;
+        boolean hasRule = hasEventRule(id, false);
+        boolean copyOnly = supportsH4EventRules(id) && hasRule;
         String value;
+        LegacyEventReward reward;
         try {
-            value = normalizePlainText(request.value(), 160);
-            if (!ruleManaged) {
-                eventRewardAsset(value);
-                if (rewardFlow(value).signum() <= 0) {
-                    return validation("EVENT_REWARD_INVALID");
-                }
+            if (copyOnly) {
+                value = normalizePlainText(request.value(), 160);
+                reward = null;
+            } else {
+                reward = legacyEventReward(request.value());
+                value = reward.name();
             }
         } catch (IllegalArgumentException ex) {
             return validation(ex.getMessage());
         }
-        String oldValue = eventReward(id);
+        String oldValue = stringValue(current.get("rewardName"), "0 UVT");
         if (!expectedTextMatches(request.expectedValue(), oldValue)) {
             return validation("EVENT_CONFIG_STALE");
         }
         if (oldValue.equalsIgnoreCase(value)) {
             return validation("EVENT_CONFIG_NO_CHANGE");
         }
-        if (!ruleManaged) {
+        boolean canPay = !hasRule && ((Number) current.get("status")).intValue() == 1 && legacyEventRewardWindow(id, current);
+        BigDecimal oldAmount = legacyEventCashAmount(current);
+        boolean comparable = reward != null && (oldAmount.signum() <= 0 || reward.type().equals(legacyEventAsset(current)));
+        boolean amplifies = canPay && comparable && reward.amount().compareTo(oldAmount.max(BigDecimal.ZERO)) > 0;
+        // A proposal must fit the original reward_amount and reward_name columns.
+        if (amplifies && (reward.amount().precision() > 18 || value.codePointCount(0, value.length()) > 128)) {
+            return validation("EVENT_REWARD_INVALID");
+        }
+        var approval = h4ApprovalGate(amplifies, approved);
+        if (approval != null) return approval;
+        if (preview) return ApiResult.ok(Map.of());
+        // Preserve the former coverage check on branches outside the agreed economic comparison.
+        if (!copyOnly && (!canPay || !comparable)) {
             String oldAsset;
             try {
                 oldAsset = eventRewardAsset(oldValue);
@@ -2401,14 +2431,14 @@ public class OpsGrowthService implements AuditReplayable {
                 oldAsset = "";
             }
             boolean amplifiesOutflow = rewardFlow(value).compareTo(rewardFlow(oldValue)) > 0
-                    || ("USDT".equals(eventRewardAsset(value)) && !"USDT".equals(oldAsset));
+                    || ("USDT".equals(reward.type()) && !"USDT".equals(oldAsset));
             if (amplifiesOutflow && coverageBelowRedline()) {
                 return coverageRedline();
             }
         }
-        boolean updated = ruleManaged
+        boolean updated = copyOnly
                 ? questEventMapper.get().updateRewardName(id, value, LocalDateTime.now()) > 0
-                : updateBusinessEventReward(id, value);
+                : questEventMapper.get().updateReward(id, value, reward.type(), reward.amount(), LocalDateTime.now()) > 0;
         if (!updated) {
             return validation("QUEST_EVENT_BUSINESS_TABLE_UPDATE_FAILED");
         }
@@ -2428,6 +2458,11 @@ public class OpsGrowthService implements AuditReplayable {
             String idempotencyKey,
             String eventId,
             GrowthConfigUpdateRequest request) {
+        return updateQuestEventStatus(idempotencyKey, eventId, request, false, false);
+    }
+
+    private ApiResult<Map<String, Object>> updateQuestEventStatus(
+            String idempotencyKey, String eventId, GrowthConfigUpdateRequest request, boolean approved, boolean preview) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
@@ -2436,17 +2471,22 @@ public class OpsGrowthService implements AuditReplayable {
         if (trialGate != null) {
             return trialGate;
         }
-        ensureQuestEventSeedData();
-        if (questEventMapper.isEmpty()
-                || !"H4_EVENT".equals(questEventMapper.get().lockGrowthMutation("H4_EVENT"))) {
+        if (!lockH4Event()) {
             return validation("H4_EVENT_MUTEX_UNAVAILABLE");
         }
-        String id = normalizeEventId(eventId);
+        String id = requireText(eventId, "Event id is required");
+        // Rule updates lock the rule before the quest. Closing keeps the same order.
+        boolean hasRule = hasEventRule(id, true);
+        var current = requireEventForMutation(id);
         String status = requireText(request.value(), "Event status is required").toLowerCase(Locale.ROOT);
         if (!EVENT_STATES.contains(status)) {
             return validation("EVENT_STATUS_INVALID");
         }
-        String oldStatus = eventStatus(id);
+        String oldStatus = switch (((Number) current.get("status")).intValue()) {
+            case 0 -> "upcoming";
+            case 2 -> "ended";
+            default -> "ongoing";
+        };
         if (!expectedTextMatches(request.expectedValue(), oldStatus)) {
             return validation("EVENT_CONFIG_STALE");
         }
@@ -2473,11 +2513,16 @@ public class OpsGrowthService implements AuditReplayable {
                         "EVENT_LOCALIZED_CONTENT_INCOMPLETE", Map.of("missing", missing));
             }
         }
-        if ("ongoing".equals(status) && rewardFlow(eventReward(id)).signum() > 0
+        boolean amplifies = "ongoing".equals(status) && !hasRule
+                && legacyEventRewardWindow(id, current) && legacyEventCashAmount(current).signum() > 0;
+        var approval = h4ApprovalGate(amplifies, approved);
+        if (approval != null) return approval;
+        if (preview) return ApiResult.ok(Map.of());
+        if (!amplifies && "ongoing".equals(status) && rewardFlow(stringValue(current.get("rewardName"), "0 UVT")).signum() > 0
                 && coverageBelowRedline()) {
             return coverageRedline();
         }
-        if (!"ongoing".equals(status) && h4EventRules != null) h4EventRules.stop(id);
+        if (!"ongoing".equals(status) && hasRule) h4EventRules.stop(id);
         if (!updateBusinessEventStatus(id, status)) {
             return validation("QUEST_EVENT_BUSINESS_TABLE_UPDATE_FAILED");
         }
@@ -5468,10 +5513,66 @@ public class OpsGrowthService implements AuditReplayable {
         return h4EventRules != null && H4EventRuleService.CODES.contains(eventId);
     }
 
-    private boolean updateBusinessEventReward(String eventId, String reward) {
-        return questEventMapper.isPresent()
-                && questEventMapper.get().updateReward(
-                        eventId, reward, eventRewardAsset(reward), rewardFlow(reward), LocalDateTime.now()) > 0;
+    private boolean lockH4Event() {
+        return questEventMapper.isPresent() && "H4_EVENT".equals(questEventMapper.get().lockGrowthMutation("H4_EVENT"));
+    }
+
+    private boolean hasEventRule(String eventId, boolean lock) {
+        return h4EventRules != null && h4EventRules.find(eventId, lock) != null;
+    }
+
+    private Map<String, Object> requireEventForMutation(String eventId) {
+        var current = questEventMapper.get().lockEventForMutation(eventId);
+        if (current == null || !eventId.equals(current.get("eventCode")) || truthy(current.get("deleted"))) {
+            throw new IllegalArgumentException("EVENT_NOT_FOUND");
+        }
+        return current;
+    }
+
+    Map<String, String> lockH4LegacyEventState(String eventId, boolean opening) {
+        if (!lockH4Event()) throw new BizException(409, "H4_EVENT_MUTEX_UNAVAILABLE");
+        boolean hasRule = hasEventRule(eventId, opening);
+        var current = questEventMapper.get().lockEventForMutation(eventId);
+        boolean exists = current != null && eventId.equals(current.get("eventCode"));
+        Map<String, String> state = new TreeMap<>();
+        state.put("hasRule", String.valueOf(hasRule));
+        state.put("exists", String.valueOf(exists));
+        if (exists) {
+            current.forEach((field, value) -> state.put(field, String.valueOf(value)));
+            if (opening) state.put("localized", h4EventRules.encode(eventLocalizedContent(eventId)));
+        }
+        return state;
+    }
+
+    private boolean legacyEventRewardWindow(String eventId, Map<String, Object> current) {
+        return legacyEventCode(eventId) && truthy(current.get("rewardWindow"));
+    }
+
+    static boolean legacyEventCode(String eventId) {
+        // The same event codes are accepted by AppGrowthEngagementService.reference.
+        return eventId.matches("[A-Za-z0-9._:-]{1,64}");
+    }
+
+    private String legacyEventAsset(Map<String, Object> current) {
+        return ((String) current.get("rewardType")).trim().toUpperCase(Locale.ROOT);
+    }
+
+    private BigDecimal legacyEventCashAmount(Map<String, Object> current) {
+        return switch (legacyEventAsset(current)) {
+            case "UVT", "USDT" -> (BigDecimal) current.get("rewardAmount");
+            default -> BigDecimal.ZERO;
+        };
+    }
+
+    record LegacyEventReward(String name, String type, BigDecimal amount) {}
+
+    LegacyEventReward legacyEventReward(String raw) {
+        String value = normalizePlainText(raw, 160);
+        String type = eventRewardAsset(value);
+        BigDecimal amount = rewardFlow(value);
+        if (amount.signum() <= 0) throw new IllegalArgumentException("EVENT_REWARD_INVALID");
+        // MySQL exact DECIMAL(18,6) assignments round half away from zero.
+        return new LegacyEventReward(value, type, amount.setScale(6, RoundingMode.HALF_UP));
     }
 
     private String eventRewardAsset(String reward) {
@@ -5735,8 +5836,7 @@ public class OpsGrowthService implements AuditReplayable {
      * 两侧读同一份 growth.content.localized,不存在第二套真相。</p>
      */
     private List<Map<String, Object>> eventLocalizedContentGaps(String eventCode) {
-        Map<String, Object> eventContent = localizedBranch(localizedContent(), "event");
-        Map<String, Object> item = localizedBranch(eventContent, eventCode);
+        Map<String, Object> item = eventLocalizedContent(eventCode);
         List<Map<String, Object>> missing = new ArrayList<>();
         for (String locale : REQUIRED_EVENT_LOCALES) {
             Map<String, Object> languages = localizedBranch(item, locale);
@@ -5748,6 +5848,10 @@ public class OpsGrowthService implements AuditReplayable {
             }
         }
         return missing;
+    }
+
+    private Map<String, Object> eventLocalizedContent(String eventCode) {
+        return localizedBranch(localizedBranch(localizedContent(), "event"), eventCode);
     }
 
     private ApiResult<Map<String, Object>> updateLocalizedContent(
