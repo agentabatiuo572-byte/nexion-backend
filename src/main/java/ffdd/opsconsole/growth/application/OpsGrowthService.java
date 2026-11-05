@@ -36,6 +36,8 @@ import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayable;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
+import ffdd.opsconsole.platform.domain.AuditLockTarget;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
@@ -2548,15 +2550,16 @@ public class OpsGrowthService implements AuditReplayable {
         int updated;
         if ("day".equals(key)) {
             BigDecimal oldDay = rowDecimal(current.get(), "day");
-            BigDecimal newDay = bounded(parseDecimal(value), BigDecimal.ONE, new BigDecimal("365"));
+            BigDecimal parsedDay = parseDecimal(value);
+            if (parsedDay.stripTrailingZeros().scale() > 0) return validation("POWER_UP_DAY_INTEGER_REQUIRED");
+            BigDecimal newDay = bounded(parsedDay, BigDecimal.ONE, new BigDecimal("365"));
             // Unlocking earlier increases reward exposure; delaying the unlock is restrictive.
-            if (newDay.compareTo(oldDay) < 0 && coverageBelowRedline()) {
-                return coverageRedline();
-            }
-            value = newDay.setScale(0, RoundingMode.DOWN).toPlainString();
+            if (newDay.compareTo(oldDay) < 0) return ApiResult.fail(409, "H5_APPROVAL_REQUIRED");
+            value = newDay.toBigIntegerExact().toString();
             updated = questEventMapper.isEmpty() ? 0 : questEventMapper.get().updatePowerUpDayCas(
                     powerUpId, Integer.parseInt(value), Integer.parseInt(persistedValue));
         } else {
+            if (powerUpNoteAmplifies(current.get(), value)) return ApiResult.fail(409, "H5_APPROVAL_REQUIRED");
             updated = questEventMapper.isEmpty() ? 0 : questEventMapper.get().updatePowerUpNoteCas(
                     powerUpId, value, persistedValue);
         }
@@ -2579,11 +2582,27 @@ public class OpsGrowthService implements AuditReplayable {
             String idempotencyKey,
             String milestoneKey,
             GrowthEarnMilestoneUpdateRequest request) {
+        return updateEarnMilestone(idempotencyKey, milestoneKey, request, null, null, false);
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> executeApprovedEarnMilestone(
+            String idempotencyKey, String milestoneKey, GrowthEarnMilestoneUpdateRequest request,
+            BigDecimal expectedThreshold, BigDecimal expectedReward, AuditLockTarget target) {
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(A2ReplayContext.operationId())
+                || !new AuditLockTarget("H", "h5_earn_milestone", milestoneKey).equals(target)) {
+            return ApiResult.fail(403, "H5_APPROVAL_FORBIDDEN");
+        }
+        return updateEarnMilestone(idempotencyKey, milestoneKey, request, expectedThreshold, expectedReward, true);
+    }
+
+    private ApiResult<Map<String, Object>> updateEarnMilestone(
+            String idempotencyKey, String milestoneKey, GrowthEarnMilestoneUpdateRequest request,
+            BigDecimal expectedThreshold, BigDecimal expectedReward, boolean approved) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
         }
-        ensureGrowthBusinessTables();
         if (questEventMapper.isEmpty()
                 || !"H5_MILESTONE".equals(questEventMapper.get().lockGrowthMutation("H5_MILESTONE"))) {
             return validation("H5_MILESTONE_MUTEX_UNAVAILABLE");
@@ -2596,18 +2615,28 @@ public class OpsGrowthService implements AuditReplayable {
         }
         BigDecimal oldThreshold = earnMilestoneThreshold(current.get());
         BigDecimal oldReward = earnMilestoneReward(current.get());
+        if (approved && (expectedThreshold == null || expectedReward == null
+                || oldThreshold.compareTo(expectedThreshold) != 0 || oldReward.compareTo(expectedReward) != 0)) {
+            return ApiResult.fail(409, "H5_CONFIG_STALE");
+        }
+        if (request.thresholdUsd() == null || request.rewardNex() == null) {
+            return validation("EARN_MILESTONE_AMOUNTS_REQUIRED");
+        }
+        if (request.thresholdUsd().stripTrailingZeros().scale() > 6 || request.rewardNex().stripTrailingZeros().scale() > 6) {
+            return validation("EARN_MILESTONE_AMOUNT_PRECISION_INVALID");
+        }
         BigDecimal newThreshold = bounded(request.thresholdUsd(), BigDecimal.ONE, new BigDecimal("100000000"));
         BigDecimal newReward = bounded(request.rewardNex(), BigDecimal.ZERO, new BigDecimal("100000000"));
         if (!earnMilestonesRemainOrdered(rows, key, newThreshold)) {
             return validation("EARN_MILESTONE_THRESHOLD_ORDER_INVALID");
         }
-        if ((newReward.compareTo(oldReward) > 0 || newThreshold.compareTo(oldThreshold) < 0) && coverageBelowRedline()) {
-            return coverageRedline();
+        if (newReward.compareTo(oldReward) > 0 || newThreshold.compareTo(oldThreshold) < 0) {
+            if (!approved) return ApiResult.fail(409, "H5_APPROVAL_REQUIRED");
+            requireH5Coverage();
         }
-        ensureGrowthBusinessTables();
         if (questEventMapper.isEmpty()
-                || questEventMapper.get().updateEarnMilestoneRule(key, newThreshold, newReward) <= 0) {
-            return validation("EARN_MILESTONE_BUSINESS_TABLE_UPDATE_FAILED");
+                || questEventMapper.get().updateEarnMilestoneRuleCas(key, newThreshold, newReward, oldThreshold, oldReward) <= 0) {
+            return ApiResult.fail(409, "H5_CONFIG_STALE");
         }
         audit("H5_EARN_MILESTONE_CHANGED", "EARN_MILESTONE", key, request.operator(), Map.of(
                 "key", key,
@@ -2985,6 +3014,21 @@ public class OpsGrowthService implements AuditReplayable {
             String idempotencyKey,
             int powerUpId,
             GrowthPowerUpUpdateRequest request) {
+        return updatePowerUpConfig(idempotencyKey, powerUpId, request, false);
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> executeApprovedPowerUp(
+            String idempotencyKey, int powerUpId, GrowthPowerUpUpdateRequest request, AuditLockTarget target) {
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(A2ReplayContext.operationId())
+                || !new AuditLockTarget("H", "h5_power_up", String.valueOf(powerUpId)).equals(target)) {
+            return ApiResult.fail(403, "H5_APPROVAL_FORBIDDEN");
+        }
+        return updatePowerUpConfig(idempotencyKey, powerUpId, request, true);
+    }
+
+    private ApiResult<Map<String, Object>> updatePowerUpConfig(
+            String idempotencyKey, int powerUpId, GrowthPowerUpUpdateRequest request, boolean approved) {
         ApiResult<Map<String, Object>> guard = requireCommand(
                 idempotencyKey, request == null ? null : request.reason());
         if (guard != null) return guard;
@@ -3003,7 +3047,11 @@ public class OpsGrowthService implements AuditReplayable {
         }
         int day = bounded(new BigDecimal(request.day()), BigDecimal.ONE, new BigDecimal("365"))
                 .setScale(0, RoundingMode.DOWN).intValueExact();
-        if (day < persistedDay && coverageBelowRedline()) return coverageRedline();
+        boolean multiplierIncreased = powerUpNoteAmplifies(current.get(), request.note());
+        if (day < persistedDay || multiplierIncreased) {
+            if (!approved) return ApiResult.fail(409, "H5_APPROVAL_REQUIRED");
+            requireH5Coverage();
+        }
         int updated = questEventMapper.isEmpty()
                 ? 0
                 : questEventMapper.get().updatePowerUpConfigCas(
@@ -3024,6 +3072,87 @@ public class OpsGrowthService implements AuditReplayable {
                 "day", day,
                 "note", request.note()));
         return ApiResult.ok(response);
+    }
+
+    public record H5ConfigReview(AuditLockTarget target, String action, String before, String after) {}
+
+    @Transactional
+    public ApiResult<H5ConfigReview> previewPowerUpApproval(int powerUpId, GrowthPowerUpUpdateRequest request) {
+        var guard = requireCommand("H5_PREVIEW", request == null ? null : request.reason());
+        if (guard != null) return ApiResult.fail(guard.getCode(), guard.getMessage());
+        if (request.day() == null || request.expectedDay() == null || request.note() == null || request.expectedNote() == null) {
+            return ApiResult.fail(422, "POWER_UP_EXPECTED_STATE_REQUIRED");
+        }
+        var current = indexedBusinessRow(powerUps(), powerUpId);
+        if (current.isEmpty()) return ApiResult.fail(422, "POWER_UP_ID_INVALID");
+        int oldDay = rowDecimal(current.get(), "day").intValueExact();
+        String oldNote = String.valueOf(current.get().getOrDefault("note", ""));
+        if (oldDay != request.expectedDay() || !oldNote.equals(request.expectedNote())) {
+            return ApiResult.fail(409, "H5_CONFIG_STALE");
+        }
+        int day = bounded(new BigDecimal(request.day()), BigDecimal.ONE, new BigDecimal("365")).intValueExact();
+        boolean multiplierIncreased = powerUpNoteAmplifies(current.get(), request.note());
+        if (day >= oldDay && !multiplierIncreased) {
+            return ApiResult.fail(422, "H5_APPROVAL_NOT_REQUIRED");
+        }
+        requireH5Coverage();
+        return ApiResult.ok(new H5ConfigReview(new AuditLockTarget("H", "h5_power_up", String.valueOf(powerUpId)),
+                "放宽连签权益", "连签 " + oldDay + " 天；"
+                        + ("CHECKIN_MULTIPLIER".equals(current.get().get("effectType")) ? "签到倍率：" : "备注：") + oldNote,
+                "连签 " + day + " 天；"
+                        + ("CHECKIN_MULTIPLIER".equals(current.get().get("effectType")) ? "签到倍率：" : "备注：") + request.note()));
+    }
+
+    @Transactional
+    public ApiResult<H5ConfigReview> previewEarnMilestoneApproval(
+            String milestoneKey, GrowthEarnMilestoneUpdateRequest request,
+            BigDecimal expectedThreshold, BigDecimal expectedReward) {
+        var guard = requireCommand("H5_PREVIEW", request == null ? null : request.reason());
+        if (guard != null) return ApiResult.fail(guard.getCode(), guard.getMessage());
+        var rows = earnMilestones();
+        var current = earnMilestoneRow(rows, milestoneKey);
+        if (current.isEmpty()) return ApiResult.fail(422, "EARN_MILESTONE_BUSINESS_ROW_NOT_FOUND");
+        BigDecimal oldThreshold = earnMilestoneThreshold(current.get());
+        BigDecimal oldReward = earnMilestoneReward(current.get());
+        if (expectedThreshold == null || expectedReward == null || oldThreshold.compareTo(expectedThreshold) != 0
+                || oldReward.compareTo(expectedReward) != 0) return ApiResult.fail(409, "H5_CONFIG_STALE");
+        BigDecimal threshold = bounded(request.thresholdUsd(), BigDecimal.ONE, new BigDecimal("100000000"));
+        BigDecimal reward = bounded(request.rewardNex(), BigDecimal.ZERO, new BigDecimal("100000000"));
+        if (threshold.stripTrailingZeros().scale() > 6 || reward.stripTrailingZeros().scale() > 6) {
+            return ApiResult.fail(422, "EARN_MILESTONE_AMOUNT_PRECISION_INVALID");
+        }
+        if (!earnMilestonesRemainOrdered(rows, milestoneKey, threshold)) {
+            return ApiResult.fail(422, "EARN_MILESTONE_THRESHOLD_ORDER_INVALID");
+        }
+        if (reward.compareTo(oldReward) <= 0 && threshold.compareTo(oldThreshold) >= 0) {
+            return ApiResult.fail(422, "H5_APPROVAL_NOT_REQUIRED");
+        }
+        requireH5Coverage();
+        return ApiResult.ok(new H5ConfigReview(new AuditLockTarget("H", "h5_earn_milestone", milestoneKey),
+                "放宽收益里程碑", "累计收益 " + oldThreshold.toPlainString() + " USDT；奖励 " + oldReward.toPlainString() + " UVT",
+                "累计收益 " + threshold.toPlainString() + " USDT；奖励 " + reward.toPlainString() + " UVT"));
+    }
+
+    private void requireH5Coverage() {
+        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        if (coverage == null || !coverage.reliable() || coverage.coverageRatio() == null || coverage.redlinePct() == null
+                || coverage.coverageRatio().signum() <= 0 || coverage.redlinePct().signum() <= 0) {
+            throw new BizException(422, "B1_COVERAGE_DATA_UNAVAILABLE");
+        }
+        if (coverage.redlineBreached()) throw new BizException(422, "B1_COVERAGE_BELOW_REDLINE");
+    }
+
+    private boolean powerUpNoteAmplifies(Map<String, Object> current, String note) {
+        if (!"CHECKIN_MULTIPLIER".equals(current.get("effectType"))) return false;
+        // The App reads this field as DECIMAL(12,4), not as display copy.
+        if (note == null || !note.matches("[0-9]+(?:\\.[0-9]{1,4})?")) {
+            throw new BizException(422, "POWER_UP_MULTIPLIER_INVALID");
+        }
+        BigDecimal multiplier = new BigDecimal(note);
+        if (multiplier.signum() <= 0 || multiplier.setScale(4).precision() > 12) {
+            throw new BizException(422, "POWER_UP_MULTIPLIER_INVALID");
+        }
+        return multiplier.compareTo(new BigDecimal(String.valueOf(current.get("note")))) > 0;
     }
 
     private List<Map<String, Object>> dayOneTaskRows() {
