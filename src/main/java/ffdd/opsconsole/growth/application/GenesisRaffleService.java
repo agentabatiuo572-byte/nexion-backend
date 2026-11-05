@@ -172,10 +172,20 @@ public class GenesisRaffleService {
     private void covered(){
         var snapshot=coverage.snapshot();
         if(snapshot==null||!snapshot.reliable()||snapshot.coverageRatio()==null||snapshot.redlinePct()==null
-                ||snapshot.coverageRatio().compareTo(snapshot.redlinePct())<0)throw new BizException(409,"COVERAGE_REDLINE");
+                ||snapshot.redlineBreached())throw new BizException(409,"COVERAGE_REDLINE");
     }
     @Transactional(rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> save(String id,GenesisRaffleRequest request,boolean create){
+        return save(id,request,create,false,false);
+    }
+    @Transactional(rollbackFor=Exception.class)
+    public ApiResult<Map<String,Object>> previewOpen(String id,GenesisRaffleRequest request){
+        return save(id,request,false,true,true);
+    }
+    ApiResult<Map<String,Object>> executeApprovedOpen(String id,GenesisRaffleRequest request){
+        return save(id,request,false,true,false);
+    }
+    private ApiResult<Map<String,Object>> save(String id,GenesisRaffleRequest request,boolean create,boolean approved,boolean preview){
         validate(request);
         if(!id.equals(request.id())||request.reason()==null||request.reason().trim().length()<a2.reasonMinChars()||request.reason().length()>200)
             throw new BizException(422,"REASON_REQUIRED");
@@ -195,6 +205,9 @@ public class GenesisRaffleService {
             for(Prize prize:request.prizes())if("DEVICE".equals(prize.rewardType()))requiredStock.merge(prize.productNo(),prize.quantity(),Integer::sum);
             requiredStock.forEach(devices::validatePrize);
         }
+        if(preview)return enabled?ApiResult.ok(values("before",current,"after",request))
+                :ApiResult.fail(422,"H4_APPROVAL_NOT_REQUIRED");
+        if(enabled&&!approved)throw new BizException(409,"H4_APPROVAL_REQUIRED");
         Map<String,String> titles=MessageTranslations.clean(request.titleTranslations());
         Map<String,Prize> existing = new HashMap<>();
         if(current != null) prizes(current).forEach(prize -> existing.put(prize.id(), prize));

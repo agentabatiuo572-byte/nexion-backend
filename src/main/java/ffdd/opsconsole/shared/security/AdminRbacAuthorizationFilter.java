@@ -292,13 +292,13 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         if (HttpMethod.POST.matches(method) && path.equals("/api/admin/platform/audit/operations")) {
             return RequiredAuthority.exact("platform_a2_write", "platform_a2_proposal_create",
                     "overview_b1_redline_write", "overview_b5_threshold_write", "device_e2_write",
-                    "network_f1_write", "network_f3_write", "network_f4_pool_fund", "growth_h8_write", "growth_h5_write", "growth_h3_write", "finprod_g3_curve_target_price_write",
+                    "network_f1_write", "network_f3_write", "network_f4_pool_fund", "growth_h8_write", "growth_h5_write", "growth_h3_write", "growth_h4_write", "growth_h4_wheel_pool_write", "finprod_g3_curve_target_price_write",
                     "finprod_g3_curve_pump_prob_write", "finprod_g3_override_price_write", "finprod_g3_write");
         }
         if (read && path.equals("/api/admin/platform/audit/operations/proposals/by-idempotency-key")) {
             return RequiredAuthority.exact("platform_a2_read", "overview_b1_redline_write", "overview_b5_threshold_write",
                     "risk_k2_write",
-                    "device_e2_write", "network_f1_write", "network_f3_write", "network_f4_pool_fund", "growth_h8_write", "growth_h5_write", "growth_h3_write", "finprod_g3_curve_target_price_write",
+                    "device_e2_write", "network_f1_write", "network_f3_write", "network_f4_pool_fund", "growth_h8_write", "growth_h5_write", "growth_h3_write", "growth_h4_write", "growth_h4_wheel_pool_write", "finprod_g3_curve_target_price_write",
                     "finprod_g3_curve_pump_prob_write", "finprod_g3_override_price_write", "finprod_g3_write");
         }
         // Method security additionally binds these grants to the requested media namespace.
