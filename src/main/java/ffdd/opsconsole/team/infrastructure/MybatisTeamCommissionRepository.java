@@ -45,6 +45,12 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     }
 
     @Override
+    public Map<String, Object> lockVRankPolicy(String rank) {
+        Map<String, Object> row = mapper.lockVRankPolicy(rank);
+        return row == null ? Map.of() : row;
+    }
+
+    @Override
     public boolean updateVRankThreshold(String rank, String field, Object value) {
         return switch (field) {
             case "selfBuy" -> mapper.updateVRankSelfBuy(rank, value) > 0;
@@ -83,6 +89,11 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     @Override
     public List<Map<String, Object>> vRankRewards(String rank) {
         return mapper.vRankRewards(rank);
+    }
+
+    @Override
+    public List<Map<String, Object>> vRankRewardsForUpdate(String rank) {
+        return mapper.vRankRewardsForUpdate(rank);
     }
 
     @Override

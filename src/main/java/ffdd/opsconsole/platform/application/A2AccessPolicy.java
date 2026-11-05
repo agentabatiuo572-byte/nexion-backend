@@ -65,7 +65,8 @@ public class A2AccessPolicy {
                         || grants.contains("overview_b5_threshold_write")
                         || grants.contains(E2TaskPricingApproval.MAKER_AUTHORITY)
                         || grants.contains(H8RewardParamApproval.MAKER_AUTHORITY)
-                        || grants.contains("network_f3_write") || grants.contains("network_f4_pool_fund")) return id;
+                        || grants.contains("network_f1_write") || grants.contains("network_f3_write")
+                        || grants.contains("network_f4_pool_fund")) return id;
             }
         } catch (NumberFormatException ignored) { }
         throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");

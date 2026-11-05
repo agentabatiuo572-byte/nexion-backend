@@ -308,7 +308,8 @@ public class OpsAuditCenterService {
                     ((com.fasterxml.jackson.databind.node.ObjectNode) stored.get("params")).put("targetId", target.id());
                 }
                 if (descriptor != null && descriptor.teamReview() != null && descriptor.teamReview().beforeFields() != null) {
-                    var review = stored.putObject("ambassadorPolicyReview");
+                    var review = stored.putObject(TeamFundApproval.isVRank(command)
+                            ? "vrankPolicyReview" : "ambassadorPolicyReview");
                     var writer = objectMapper.writerWithDefaultPrettyPrinter()
                             .with(com.fasterxml.jackson.core.JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN);
                     review.put("before", writer.writeValueAsString(descriptor.teamReview().beforeFields()));
@@ -994,6 +995,7 @@ public class OpsAuditCenterService {
     private String reviewValue(AuditOperationTicketEntity ticket, String side) {
         var command = deserializeCommand(ticket.getCommandJson());
         String reviewKey = isSkuReviewCommand(command) ? "skuReview"
+                : TeamFundApproval.isVRank(command) ? "vrankPolicyReview"
                 : TeamFundApproval.supports(command) && !TeamFundApproval.isSettlement(command) ? "ambassadorPolicyReview" : null;
         if (reviewKey != null) {
             try {
