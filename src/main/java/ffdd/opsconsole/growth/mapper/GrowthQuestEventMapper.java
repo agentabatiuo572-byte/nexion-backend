@@ -548,6 +548,12 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
     @Select("SELECT lock_key FROM nx_admin_operation_mutex WHERE lock_key='H3_CONFIG' FOR UPDATE")
     String lockH3ConfigMutex();
 
+    @Select("SELECT id, mission_type AS kind, status FROM nx_mission WHERE mission_code=#{code} AND is_deleted=0 LIMIT 1 FOR UPDATE")
+    Map<String, Object> lockH3MissionApprovalState(@Param("code") String code);
+
+    @Select("SELECT id, reward_type AS kind, status FROM nx_monthly_challenge WHERE challenge_code=#{code} AND is_deleted=0 LIMIT 1 FOR UPDATE")
+    Map<String, Object> lockH3MonthlyApprovalState(@Param("code") String code);
+
     @Select("""
             SELECT reward_points
               FROM nx_mission

@@ -1114,13 +1114,36 @@ public class OpsGrowthService implements AuditReplayable {
     public ApiResult<Map<String, Object>> createMission(
             String idempotencyKey,
             GrowthMissionRequest request) {
+        return createMission(idempotencyKey, request, false, false);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> previewH3Mission(GrowthMissionRequest request) {
+        return createMission("H3_PREVIEW", request, true, true);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> executeApprovedH3Mission(
+            String idempotencyKey, GrowthMissionRequest request, AuditLockTarget target) {
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(A2ReplayContext.operationId())
+                || !new AuditLockTarget("H", "h3_mission", request.missionCode()).equals(target)) {
+            return ApiResult.fail(403, "H3_APPROVAL_FORBIDDEN");
+        }
+        return createMission(idempotencyKey, request, true, false);
+    }
+
+    private ApiResult<Map<String, Object>> createMission(
+            String idempotencyKey, GrowthMissionRequest request, boolean approved, boolean preview) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
         }
-        if (weeklySnapshots != null) weeklySnapshots.beforeConfigurationChange();
         if (questEventMapper.isEmpty()) {
             return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
+        }
+        questEventMapper.get().ensureH3ConfigMutex();
+        if (!"H3_CONFIG".equals(questEventMapper.get().lockH3ConfigMutex())) {
+            return validation("H3_CONFIG_LOCK_UNAVAILABLE");
         }
         try {
             String code = normalizePlainText(request.missionCode(), 64);
@@ -1145,9 +1168,12 @@ public class OpsGrowthService implements AuditReplayable {
             if (rewardPoints < 0) {
                 throw new IllegalArgumentException("MISSION_REWARD_INVALID");
             }
-            if (rewardPoints > 0 && coverageBelowRedline()) {
-                return coverageRedline();
-            }
+            ApiResult<Map<String, Object>> approval = h3ApprovalGate(rewardPoints > 0, approved, preview,
+                    "任务不存在：" + code,
+                    code + "；" + name + "；" + type + "；奖励 " + rewardPoints + " UVT；"
+                            + category + "；" + actionRoute + "；paused");
+            if (approval != null) return approval;
+            if (weeklySnapshots != null) weeklySnapshots.beforeConfigurationChange();
             // A mission cannot become user-visible until a trusted canonical event is bound.
             // Current H3 storage has no executable visit/manual completion type, so every
             // newly created mission starts paused and is activated only after a binding exists.
@@ -1857,11 +1883,31 @@ public class OpsGrowthService implements AuditReplayable {
             String idempotencyKey,
             String configKey,
             GrowthConfigUpdateRequest request) {
+        return updateQuestConfig(idempotencyKey, configKey, request, false, false);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> previewH3Config(String key, GrowthConfigUpdateRequest request) {
+        return updateQuestConfig("H3_PREVIEW", key, request, true, true);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> executeApprovedH3Config(
+            String idempotencyKey, String key, GrowthConfigUpdateRequest request, AuditLockTarget target) {
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(A2ReplayContext.operationId())
+                || !new AuditLockTarget("H", "h3_quest_config", key).equals(target)) {
+            return ApiResult.fail(403, "H3_APPROVAL_FORBIDDEN");
+        }
+        return updateQuestConfig(idempotencyKey, key, request, true, false);
+    }
+
+    private ApiResult<Map<String, Object>> updateQuestConfig(
+            String idempotencyKey, String configKey, GrowthConfigUpdateRequest request,
+            boolean approved, boolean preview) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
         }
-        if (weeklySnapshots != null) weeklySnapshots.beforeConfigurationChange();
         if (questEventMapper.isEmpty()) {
             return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
         }
@@ -1870,14 +1916,13 @@ public class OpsGrowthService implements AuditReplayable {
         if (!"H3_CONFIG".equals(mapper.lockH3ConfigMutex())) {
             return validation("H3_CONFIG_LOCK_UNAVAILABLE");
         }
-        ensureQuestEventSeedData();
         Matcher taskReward = Pattern.compile("^mission\\.([A-Za-z0-9_-]{2,64})\\.reward$")
                 .matcher(configKey == null ? "" : configKey);
         if (taskReward.matches()) {
             String missionCode = taskReward.group(1);
             int newReward;
             try {
-                newReward = bounded(parseDecimal(request.value()), BigDecimal.ZERO, new BigDecimal("100000"))
+                newReward = bounded(h3Decimal(request.value(), 0), BigDecimal.ZERO, new BigDecimal("100000"))
                         .setScale(0, RoundingMode.UNNECESSARY).intValueExact();
             } catch (RuntimeException ex) {
                 return validation("QUEST_REWARD_INVALID");
@@ -1895,9 +1940,10 @@ public class OpsGrowthService implements AuditReplayable {
             if (newReward == oldReward) {
                 return validation("QUEST_CONFIG_NO_CHANGE");
             }
-            if (newReward > oldReward && coverageBelowRedline()) {
-                return coverageRedline();
-            }
+            ApiResult<Map<String, Object>> approval = h3ApprovalGate(newReward > oldReward, approved, preview,
+                    oldReward + " UVT", newReward + " UVT");
+            if (approval != null) return approval;
+            if (weeklySnapshots != null) weeklySnapshots.beforeConfigurationChange();
             int updated = mapper.updateMissionRewardByCode(missionCode, oldReward, newReward);
             if (updated != 1) {
                 return validation("QUEST_CONFIG_STALE");
@@ -1915,8 +1961,8 @@ public class OpsGrowthService implements AuditReplayable {
             String challengeCode = monthlyReward.group(1);
             BigDecimal newReward;
             try {
-                newReward = bounded(parseDecimal(request.value()), BigDecimal.ZERO, new BigDecimal("100000"))
-                        .setScale(6, RoundingMode.DOWN);
+                newReward = bounded(h3Decimal(request.value(), 6), BigDecimal.ZERO, new BigDecimal("100000"))
+                        .setScale(6, RoundingMode.UNNECESSARY);
             } catch (RuntimeException ex) {
                 return validation("MONTHLY_REWARD_INVALID");
             }
@@ -1930,9 +1976,10 @@ public class OpsGrowthService implements AuditReplayable {
             if (newReward.compareTo(oldReward) == 0) {
                 return validation("QUEST_CONFIG_NO_CHANGE");
             }
-            if (newReward.compareTo(oldReward) > 0 && coverageBelowRedline()) {
-                return coverageRedline();
-            }
+            ApiResult<Map<String, Object>> approval = h3ApprovalGate(newReward.compareTo(oldReward) > 0,
+                    approved, preview, oldReward.toPlainString(), newReward.toPlainString());
+            if (approval != null) return approval;
+            if (weeklySnapshots != null) weeklySnapshots.beforeConfigurationChange();
             if (mapper.updateMonthlyRewardByCode(challengeCode, oldReward, newReward) != 1) {
                 return validation("QUEST_CONFIG_STALE");
             }
@@ -1946,7 +1993,7 @@ public class OpsGrowthService implements AuditReplayable {
         Matcher promoConfig = Pattern.compile("^promoBanner\\.(baseReward|multiplier|countdownDays|countdownHours|targetDevice|targetDaily|status)$")
                 .matcher(configKey == null ? "" : configKey);
         if (promoConfig.matches()) {
-            return updatePromoBannerConfig(mapper, promoConfig.group(1), configKey, idempotencyKey, request);
+            return updatePromoBannerConfig(mapper, promoConfig.group(1), configKey, idempotencyKey, request, approved, preview);
         }
         Matcher localizedContent = Pattern.compile("^content\\.mission\\.([A-Za-z0-9_-]{2,64})\\.name\\.(" + String.join("|", InterfaceLanguages.CODES) + ")$")
                 .matcher(configKey == null ? "" : configKey);
@@ -1954,6 +2001,7 @@ public class OpsGrowthService implements AuditReplayable {
             if (mapper.countByMissionCode(localizedContent.group(1)) != 1L) {
                 return validation("MISSION_NOT_FOUND");
             }
+            if (weeklySnapshots != null) weeklySnapshots.beforeConfigurationChange();
             return updateLocalizedContent("mission", localizedContent.group(1), "name",
                     localizedContent.group(2), configKey, idempotencyKey, request);
         }
@@ -1977,9 +2025,15 @@ public class OpsGrowthService implements AuditReplayable {
         if (oldValue.equals(value)) {
             return validation("QUEST_CONFIG_NO_CHANGE");
         }
-        if (amplifiesQuestValue(normalizedKey, oldValue, value) && coverageBelowRedline()) {
+        if ("dayOne.triReward".equals(normalizedKey) || normalizedKey.startsWith("weekly.mult.")) {
+            ApiResult<Map<String, Object>> approval = h3ApprovalGate(
+                    amplifiesQuestValue(normalizedKey, oldValue, value), approved, preview, oldValue, value);
+            if (approval != null) return approval;
+        } else if (amplifiesQuestValue(normalizedKey, oldValue, value) && coverageBelowRedline()) {
             return coverageRedline();
         }
+        if (weeklySnapshots != null) weeklySnapshots.beforeConfigurationChange();
+        ensureQuestEventSeedData();
         configFacade.upsertAdminValue(storageKey, value, questValueType(normalizedKey), "growth", "H3/H4 quest and event config");
         audit(questAuditAction(normalizedKey), questResourceType(normalizedKey), storageKey, request.operator(), Map.of(
                 "key", normalizedKey,
@@ -2052,12 +2106,60 @@ public class OpsGrowthService implements AuditReplayable {
         }
     }
 
+    private BigDecimal h3Decimal(String raw, int scale) {
+        BigDecimal value = parseDecimal(raw);
+        if (value.stripTrailingZeros().scale() > scale) throw new IllegalArgumentException("H3_VALUE_PRECISION_INVALID");
+        return value;
+    }
+
+    private ApiResult<Map<String, Object>> h3ApprovalGate(
+            boolean amplifies, boolean approved, boolean preview, String before, String after) {
+        if (preview && !amplifies) return validation("H3_APPROVAL_NOT_REQUIRED");
+        if (amplifies) {
+            if (!approved) return ApiResult.fail(409, "H3_APPROVAL_REQUIRED");
+            TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+            if (coverage == null || !coverage.reliable() || coverage.coverageRatio() == null
+                    || coverage.redlinePct() == null || coverage.coverageRatio().signum() <= 0
+                    || coverage.redlinePct().signum() <= 0 || coverage.nexUsdRate() == null
+                    || coverage.nexUsdRate().signum() <= 0) {
+                throw new BizException(422, "B1_COVERAGE_DATA_UNAVAILABLE");
+            }
+            if (coverage.redlineBreached()) throw new BizException(422, "B1_COVERAGE_BELOW_REDLINE");
+        }
+        return preview ? ApiResult.ok(Map.of("before", before, "after", after)) : null;
+    }
+
+    /** Bind the real object and lifecycle; reward/config CAS is rechecked by the original mutation. */
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, String> h3ApprovalState(AuditLockTarget target) {
+        GrowthQuestEventMapper mapper = questEventMapper.orElseThrow(
+                () -> new BizException(503, "GROWTH_BUSINESS_TABLE_UNAVAILABLE"));
+        mapper.ensureH3ConfigMutex();
+        if (!"H3_CONFIG".equals(mapper.lockH3ConfigMutex())) throw new BizException(409, "H3_CONFIG_LOCK_UNAVAILABLE");
+        Map<String, Object> state;
+        String key = target.id();
+        if ("h3_mission".equals(target.type())) {
+            state = mapper.lockH3MissionApprovalState(key);
+        } else if (key.startsWith("mission.")) {
+            state = mapper.lockH3MissionApprovalState(key.substring(8, key.length() - 7));
+        } else if (key.startsWith("monthly.")) {
+            state = mapper.lockH3MonthlyApprovalState(key.substring(8, key.length() - 7));
+        } else if (key.startsWith("promoBanner.")) {
+            state = mapper.lockPromoBanner();
+        } else {
+            state = Map.of("value", questConfig(key));
+        }
+        Map<String, String> snapshot = new java.util.TreeMap<>();
+        if (state != null) state.forEach((name, value) -> snapshot.put(name, String.valueOf(value)));
+        return snapshot;
+    }
+
     private ApiResult<Map<String, Object>> updatePromoBannerConfig(
             GrowthQuestEventMapper mapper,
             String field,
             String configKey,
             String idempotencyKey,
-            GrowthConfigUpdateRequest request) {
+            GrowthConfigUpdateRequest request, boolean approved, boolean preview) {
         Map<String, Object> current = mapper.lockPromoBanner();
         if (current == null || current.get("id") == null) {
             return validation("PROMO_BANNER_NOT_CONFIGURED");
@@ -2081,9 +2183,10 @@ public class OpsGrowthService implements AuditReplayable {
                 : oldValue.equalsIgnoreCase(value)) {
             return validation("QUEST_CONFIG_NO_CHANGE");
         }
-        if (promoAmplifiesOutflow(field, oldValue, value) && coverageBelowRedline()) {
-            return coverageRedline();
-        }
+        ApiResult<Map<String, Object>> approval = h3ApprovalGate(promoAmplifiesOutflow(field, oldValue, value),
+                approved, preview, oldValue, value);
+        if (approval != null) return approval;
+        if (weeklySnapshots != null) weeklySnapshots.beforeConfigurationChange();
         long id = Long.parseLong(String.valueOf(current.get("id")));
         if (mapper.updatePromoBannerField(id, field, value) != 1) {
             return validation("QUEST_CONFIG_STALE");
@@ -2098,9 +2201,9 @@ public class OpsGrowthService implements AuditReplayable {
 
     private String normalizePromoBannerValue(String field, String raw) {
         return switch (field) {
-            case "baseReward" -> bounded(parseDecimal(raw), BigDecimal.ZERO, new BigDecimal("100000"))
+            case "baseReward" -> bounded(h3Decimal(raw, 0), BigDecimal.ZERO, new BigDecimal("100000"))
                     .stripTrailingZeros().toPlainString();
-            case "multiplier" -> bounded(parseDecimal(raw), new BigDecimal("0.1"), new BigDecimal("5"))
+            case "multiplier" -> bounded(h3Decimal(raw, 6), new BigDecimal("0.1"), new BigDecimal("5"))
                     .stripTrailingZeros().toPlainString();
             case "countdownDays" -> wholeDays(parseDecimal(raw), 0, 365).toPlainString();
             case "countdownHours" -> wholeDays(parseDecimal(raw), 0, 23).toPlainString();
@@ -5055,7 +5158,7 @@ public class OpsGrowthService implements AuditReplayable {
             }
         }
         if (key.startsWith("weekly.mult.")) {
-            BigDecimal multiplier = bounded(parseDecimal(value.replace("×", "").replace("x", "")),
+            BigDecimal multiplier = bounded(h3Decimal(value.replace("×", "").replace("x", ""), 6),
                     new BigDecimal("0.1"), new BigDecimal("5"));
             return multiplier.stripTrailingZeros().toPlainString() + "×";
         }
@@ -5153,8 +5256,12 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     private boolean amplifiesQuestValue(String key, String oldValue, String newValue) {
+        if (key.equals("dayOne.triReward")) {
+            return DayOneTriRewardPolicy.increases(oldValue, newValue);
+        }
         if (key.startsWith("weekly.mult.")) {
-            return numericToken(newValue).compareTo(numericToken(oldValue)) > 0;
+            return oldValue.isBlank() || parseDecimal(newValue.replace("×", "")).compareTo(
+                    parseDecimal(oldValue.replace("×", "").replace("x", ""))) > 0;
         }
         if (key.equals("wheel.pool")) {
             return !oldValue.equals(newValue);
