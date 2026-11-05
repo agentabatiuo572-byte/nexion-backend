@@ -42,6 +42,8 @@ import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import ffdd.opsconsole.device.application.E2TaskPricingApproval;
+import ffdd.opsconsole.team.application.BinaryCommissionSettlementService.SettlementResult;
+import ffdd.opsconsole.team.application.TeamFundApproval;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
@@ -301,8 +303,15 @@ public class OpsAuditCenterService {
                 if (superAdminProposalCommand(command)) {
                     ((com.fasterxml.jackson.databind.node.ObjectNode) stored.get("params")).put("proposalReason", reason);
                 }
-                if (E2TaskPricingApproval.supports(command)) {
+                if (E2TaskPricingApproval.supports(command) || TeamFundApproval.supports(command)) {
                     ((com.fasterxml.jackson.databind.node.ObjectNode) stored.get("params")).put("targetId", target.id());
+                }
+                if (descriptor != null && descriptor.teamReview() != null && descriptor.teamReview().beforeFields() != null) {
+                    var review = stored.putObject("ambassadorPolicyReview");
+                    var writer = objectMapper.writerWithDefaultPrettyPrinter()
+                            .with(com.fasterxml.jackson.core.JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN);
+                    review.put("before", writer.writeValueAsString(descriptor.teamReview().beforeFields()));
+                    review.put("after", writer.writeValueAsString(descriptor.teamReview().afterFields()));
                 }
                 boolean skuStatus="E".equals(command.domain()) && "e1_sku_status".equals(command.op());
                 boolean phonePolicy="E".equals(command.domain()) && "e1_phone_task_policy".equals(command.op());
@@ -427,8 +436,8 @@ public class OpsAuditCenterService {
                         "operationId", ticket.getOperationId(),
                         "action", ticket.getAction(),
                         "resource", ticket.getObjectText(),
-                        "before", reviewValue(ticket, "before"),
-                        "after", reviewValue(ticket, "after"),
+                        "before", TeamFundApproval.supports(command) ? ticket.getBeforeValue() : reviewValue(ticket, "before"),
+                        "after", TeamFundApproval.supports(command) ? ticket.getAfterValue() : reviewValue(ticket, "after"),
                         "type", ticket.getOperationType(),
                         "sourceDomain", sourceDomain,
                         "reason", ticket.getReason(),
@@ -761,7 +770,8 @@ public class OpsAuditCenterService {
                 return fail(OpsErrorCode.VALIDATION_FAILED, "COMMAND_REQUIRED");
             }
             if (superAdminProposalCommand(cmd)) {
-                var target = E2TaskPricingApproval.supports(cmd) ? E2TaskPricingApproval.target(cmd)
+                var target = TeamFundApproval.supports(cmd) ? TeamFundApproval.target(cmd)
+                        : E2TaskPricingApproval.supports(cmd) ? E2TaskPricingApproval.target(cmd)
                         : TreasuryThresholdApproval.supports(cmd) ? TreasuryThresholdApproval.target(cmd)
                         : WithdrawalConfigApproval.target(cmd);
                 var locks = lockMapper.selectActiveByTicketId(ticket.getOperationId());
@@ -789,6 +799,11 @@ public class OpsAuditCenterService {
                 if (replayResult.getCode() != 0) {
                     // 回放失败:不删锁、不改状态、目标域域方法已 return fail 未写入 → ticket 保持 pending,原值保持
                     return ApiResult.fail(replayResult.getCode(), replayResult.getMessage());
+                }
+                if (TeamFundApproval.isSettlement(cmd) && replayResult.getData() instanceof SettlementResult settlement) {
+                    ticket.setAfterValue((settlement.replayed() ? "此结算日已有结果" :
+                            "已结算 " + settlement.amountUsdt().stripTrailingZeros().toPlainString() + " USDT")
+                            + " · 奖励记录 " + settlement.commissionEventId());
                 }
             } finally {
                 A2ReplayContext.exitReplay();
@@ -835,7 +850,7 @@ public class OpsAuditCenterService {
 
     private static boolean superAdminProposalCommand(AuditReplayCommand command) {
         return WithdrawalConfigApproval.supports(command) || TreasuryThresholdApproval.supports(command)
-                || E2TaskPricingApproval.supports(command);
+                || E2TaskPricingApproval.supports(command) || TeamFundApproval.supports(command);
     }
 
     private String refundOrderNo(AuditReplayCommand command) {
@@ -856,21 +871,25 @@ public class OpsAuditCenterService {
 
     private Map<String, Object> decisionDetail(
             AuditOperationTicketEntity ticket, String status, String idempotencyKey, String reason) {
+        AuditReplayCommand command = deserializeCommand(ticket.getCommandJson());
+        // Keep the recovery key and domain in the bounded audit entry. The ticket retains the full review.
+        String before = TeamFundApproval.supports(command) ? ticket.getBeforeValue() : reviewValue(ticket, "before");
+        String after = TeamFundApproval.supports(command) ? ticket.getAfterValue() : reviewValue(ticket, "after");
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("operationId", ticket.getOperationId());
         detail.put("status", status);
         detail.put("action", ticket.getAction());
         detail.put("resource", ticket.getObjectText());
-        detail.put("before", reviewValue(ticket, "before"));
-        detail.put("after", reviewValue(ticket, "after"));
-        detail.put("delta", reviewValue(ticket, "before") + " -> " + reviewValue(ticket, "after"));
+        detail.put("before", before);
+        detail.put("after", after);
+        detail.put("delta", before + " -> " + after);
         detail.put("type", ticket.getOperationType());
         detail.put("amplifies", isTrue(ticket.getAmplifies()));
         detail.put("sos", isTrue(ticket.getSos()));
         detail.put("reason", reason.trim());
         detail.put("idempotencyKey", idempotencyKey.trim());
-        AuditReplayCommand command = deserializeCommand(ticket.getCommandJson());
         detail.put("domain", TreasuryThresholdApproval.supports(command) || E2TaskPricingApproval.supports(command)
+                || TeamFundApproval.supports(command)
                 ? ticket.getSourceDomain() : inferAuditDomain(ticket.getAction(), ticket.getObjectText()));
         return detail;
     }
@@ -951,6 +970,7 @@ public class OpsAuditCenterService {
             com.fasterxml.jackson.databind.node.ObjectNode stored = (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(commandJson);
             stored.remove("avatarMakerAdminId");
             stored.remove("skuReview");
+            stored.remove("ambassadorPolicyReview");
             var version=stored.remove("ruleStatusReviewVersion");
             if("E".equals(stored.path("domain").asText()) && "e2_task_status".equals(stored.path("op").asText())
                     && stored.path("params") instanceof com.fasterxml.jackson.databind.node.ObjectNode params) {
@@ -969,9 +989,12 @@ public class OpsAuditCenterService {
     }
 
     private String reviewValue(AuditOperationTicketEntity ticket, String side) {
-        if (isSkuReviewCommand(deserializeCommand(ticket.getCommandJson()))) {
+        var command = deserializeCommand(ticket.getCommandJson());
+        String reviewKey = isSkuReviewCommand(command) ? "skuReview"
+                : TeamFundApproval.supports(command) && !TeamFundApproval.isSettlement(command) ? "ambassadorPolicyReview" : null;
+        if (reviewKey != null) {
             try {
-                var value = objectMapper.readTree(ticket.getCommandJson()).path("skuReview").path(side);
+                var value = objectMapper.readTree(ticket.getCommandJson()).path(reviewKey).path(side);
                 if (value.isTextual()) return value.textValue();
             } catch (Exception ignored) {
                 // Historical tickets without review metadata retain their original summaries.

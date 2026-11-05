@@ -32,6 +32,14 @@ public class BinarySettlementPolicyProvider {
     private final TreasuryCoverageFacade coverageFacade;
 
     public BinarySettlementPolicy lockPolicy() {
+        return lockPolicy(true);
+    }
+
+    BinarySettlementPolicy lockPolicyForApproval() {
+        return lockPolicy(false);
+    }
+
+    private BinarySettlementPolicy lockPolicy(boolean checkCurrentCoverage) {
         BigDecimal threshold = positiveMoney(require(THRESHOLD_KEY, "F3_THRESHOLD_MISSING"),
                 "F3_THRESHOLD_INVALID");
         BigDecimal matchRate = rate(require(MATCH_RATE_KEY, "F3_MATCH_RATE_MISSING"));
@@ -63,18 +71,36 @@ public class BinarySettlementPolicyProvider {
             throw new PolicyBlocked("H1_GROWTH_RHYTHM_UNAVAILABLE");
         }
 
-        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        if (coverage == null || !coverage.reliable()
-                || coverage.coverageRatio() == null || coverage.redlinePct() == null) {
-            throw new PolicyBlocked("B1_COVERAGE_UNRELIABLE");
-        }
-        if (coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
-            throw new PolicyBlocked("COVERAGE_BELOW_REDLINE");
+        TreasuryCoverageSnapshot coverage = null;
+        if (checkCurrentCoverage) {
+            coverage = coverageFacade.snapshot();
+            if (coverage == null || !coverage.reliable()
+                    || coverage.coverageRatio() == null || coverage.redlinePct() == null) {
+                throw new PolicyBlocked("B1_COVERAGE_UNRELIABLE");
+            }
+            if (coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
+                throw new PolicyBlocked("COVERAGE_BELOW_REDLINE");
+            }
         }
         return new BinarySettlementPolicy(
                 threshold, matchRate, rhythm.binaryDailyCap(), paused,
                 spilloverEnabled, settlePeriod, residualPolicy, gvResetCron,
-                coverage.coverageRatio(), coverage.redlinePct());
+                coverage == null ? null : coverage.coverageRatio(),
+                coverage == null ? null : coverage.redlinePct());
+    }
+
+    String projectedCoverageBlock(BigDecimal amountUsdt) {
+        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        if (coverage == null || !coverage.reliable() || coverage.redlinePct() == null
+                || coverage.redlinePct().signum() <= 0
+                || coverage.ratioReserveUsd() == null || coverage.ratioLiabilitiesUsd() == null) {
+            return "B1_COVERAGE_UNRELIABLE";
+        }
+        // B1 already sums pending commission ledger rows. This payout has yet to post.
+        BigDecimal projectedLiabilities = coverage.ratioLiabilitiesUsd().add(amountUsdt);
+        return coverage.ratioReserveUsd().multiply(BigDecimal.valueOf(100))
+                .compareTo(projectedLiabilities.multiply(coverage.redlinePct())) < 0
+                ? "COVERAGE_BELOW_REDLINE" : null;
     }
 
     private String require(String key, String code) {

@@ -8,6 +8,7 @@ import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
+import ffdd.opsconsole.team.application.TeamFundApproval;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -61,7 +62,8 @@ public class A2AccessPolicy {
                 Set<String> grants = permissions.getPermissionCodes(id);
                 if (grants.contains("platform_a2_read") || grants.contains("overview_b1_redline_write")
                         || grants.contains("overview_b5_threshold_write")
-                        || grants.contains(E2TaskPricingApproval.MAKER_AUTHORITY)) return id;
+                        || grants.contains(E2TaskPricingApproval.MAKER_AUTHORITY)
+                        || grants.contains("network_f3_write") || grants.contains("network_f4_pool_fund")) return id;
             }
         } catch (NumberFormatException ignored) { }
         throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");
@@ -101,6 +103,8 @@ public class A2AccessPolicy {
             authority = TreasuryThresholdApproval.makerAuthority(command);
         } else if (E2TaskPricingApproval.supports(command)) {
             authority = E2TaskPricingApproval.MAKER_AUTHORITY;
+        } else if (TeamFundApproval.supports(command)) {
+            authority = TeamFundApproval.makerAuthority(command);
         } else {
             return false;
         }

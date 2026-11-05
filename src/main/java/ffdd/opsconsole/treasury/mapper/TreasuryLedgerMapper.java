@@ -2,6 +2,7 @@ package ffdd.opsconsole.treasury.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
+import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository.CommissionCoverageAmounts;
 import ffdd.opsconsole.treasury.infrastructure.WalletLedgerEntity;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -83,7 +84,9 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             """)
     long countLedgers(@Param("since") LocalDateTime since, @Param("direction") String direction);
 
-    @Select("SELECT COALESCE(SUM(usdt_available), 0) FROM nx_user_wallet WHERE is_deleted = 0")
+    String SUM_USDT_AVAILABLE = "SELECT COALESCE(SUM(usdt_available), 0) FROM nx_user_wallet WHERE is_deleted = 0";
+
+    @Select(SUM_USDT_AVAILABLE)
     BigDecimal sumUsdtAvailable();
 
     @Select("SELECT COALESCE(SUM(pending_withdraw), 0) FROM nx_user_wallet WHERE is_deleted = 0")
@@ -169,7 +172,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             """)
     BigDecimal avgActiveWithdrawalQueueRiskScore();
 
-    @Select("""
+    String SUM_PENDING_COMMISSION_USDT = """
             SELECT COALESCE(SUM(amount), 0)
               FROM nx_wallet_ledger
              WHERE is_deleted = 0
@@ -177,8 +180,14 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
                AND direction = 'IN'
                AND status = 'PENDING'
                AND biz_type IN ('REFERRAL_COMMISSION', 'COMMISSION', 'TEAM_COMMISSION')
-            """)
+            """;
+
+    @Select(SUM_PENDING_COMMISSION_USDT)
     BigDecimal sumPendingCommissionUsdt();
+
+    @Select("SELECT (" + SUM_USDT_AVAILABLE + ") AS withdrawableUsdt, ("
+            + SUM_PENDING_COMMISSION_USDT + ") AS coolingUsdt")
+    CommissionCoverageAmounts commissionCoverageAmounts();
 
     @Select("""
             <script>

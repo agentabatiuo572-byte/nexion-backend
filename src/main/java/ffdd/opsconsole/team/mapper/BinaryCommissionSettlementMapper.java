@@ -377,7 +377,7 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
     Long lockSettlementMutex(@Param("ownerUserId") Long ownerUserId,
                              @Param("settlementDate") LocalDate settlementDate);
 
-    @Select("""
+    String SETTLEMENT_BY_OWNER_DATE = """
             SELECT id,user_id userId,settlement_date settlementDate,
                    left_user_id leftUserId,right_user_id rightUserId,
                    left_volume leftVolume,right_volume rightVolume,matched_volume matchedVolume,
@@ -385,9 +385,15 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
                    commission_event_id commissionEventId,status
               FROM nx_binary_commission_settlement
              WHERE user_id=#{ownerUserId} AND settlement_date=#{settlementDate} AND is_deleted=0
-             LIMIT 1 FOR UPDATE
-            """)
+            """;
+
+    @Select(SETTLEMENT_BY_OWNER_DATE + " LIMIT 1 FOR UPDATE")
     BinarySettlementRow findSettlementForUpdate(
+            @Param("ownerUserId") Long ownerUserId,
+            @Param("settlementDate") LocalDate settlementDate);
+
+    @Select(SETTLEMENT_BY_OWNER_DATE + " AND status<>'BLOCKED' AND amount_usdt>0 AND commission_event_id>0")
+    BinarySettlementRow findSettlementReceipt(
             @Param("ownerUserId") Long ownerUserId,
             @Param("settlementDate") LocalDate settlementDate);
 

@@ -5,6 +5,7 @@ import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayable;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.team.application.TeamFundApproval;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -21,8 +22,13 @@ public class AuditReplayDispatcher {
     private TreasuryThresholdApproval treasuryThresholdApproval;
     @Autowired
     private E2TaskPricingApproval e2TaskPricingApproval;
+    @Autowired
+    private TeamFundApproval teamFundApproval;
 
     public ApiResult<?> dispatch(AuditReplayCommand cmd, AuditReplayContext ctx) {
+        if (TeamFundApproval.supports(cmd)) {
+            return teamFundApproval.replay(cmd, ctx, A2ReplayContext.authenticatedAdminId(), A2ReplayContext.operationId());
+        }
         if (E2TaskPricingApproval.supports(cmd)) {
             return e2TaskPricingApproval.replay(cmd, ctx);
         }
