@@ -125,9 +125,11 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         tryAlter(mapper::addScoreOverrideActiveKeyColumn);
         mapper.deactivateDuplicateActiveScoreOverrides();
         tryAlter(mapper::addScoreOverrideActiveUniqueKey);
-        mapper.deactivateOrphanScoreOverrides();
-        mapper.retireOrphanScoreContributions();
-        mapper.retireOrphanScoreUsers();
+        if (mapper.hasOrphanScoringRows()) {
+            mapper.deactivateOrphanScoreOverrides();
+            mapper.retireOrphanScoreContributions();
+            mapper.retireOrphanScoreUsers();
+        }
         mapper.ensureAllActiveUsersHaveScoreRows();
         if (mapper.countScoreModels() == 0) {
             mapper.insertInitialScoreModel(
@@ -723,7 +725,8 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
 
     @Override
     public Optional<RiskScoreOverrideView> overrideScore(String userNo, int score, String reason, String operator) {
-        mapper.lockScoreUserForUpdate(userNo);
+        Long userId = mapper.scoreUserId(userNo);
+        mapper.lockScoreUserForUpdate(userNo, userId);
         Optional<RiskScoreUserView> user = findScoreUser(userNo);
         if (user.isEmpty()) {
             return Optional.empty();
@@ -736,9 +739,10 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     @Override
     public Optional<RiskScoreOverrideView> overrideScore(
             String userNo, long expectedVersion, int score, String reason, String operator) {
-        mapper.lockScoreUserForUpdate(userNo);
+        Long userId = mapper.scoreUserId(userNo);
+        mapper.lockScoreUserForUpdate(userNo, userId);
         Optional<RiskScoreUserView> user = findScoreUser(userNo);
-        if (user.isEmpty() || mapper.bumpScoreUserVersion(userNo, expectedVersion) == 0) {
+        if (user.isEmpty() || mapper.bumpScoreUserVersion(userNo, expectedVersion, userId) == 0) {
             return Optional.empty();
         }
         mapper.deactivateScoreOverrides(userNo);
@@ -754,7 +758,8 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
 
     @Override
     public Optional<RiskScoreUserView> recomputeScore(String userNo) {
-        mapper.lockScoreUserForUpdate(userNo);
+        Long userId = mapper.scoreUserId(userNo);
+        mapper.lockScoreUserForUpdate(userNo, userId);
         mapper.deactivateScoreOverrides(userNo);
         return findScoreUser(userNo);
     }
@@ -788,10 +793,11 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     private Optional<RiskScoreUserView> updateScoreProjection(
             String userNo, long expectedVersion, RiskScoreModelView model, int modelScore,
             List<RiskScoreContributionView> contributions, boolean clearManualOverride) {
-        mapper.lockScoreUserForUpdate(userNo);
+        Long userId = mapper.scoreUserId(userNo);
+        mapper.lockScoreUserForUpdate(userNo, userId);
         RiskScoreOverrideView activeOverride = mapper.activeScoreOverride(userNo);
         if (mapper.updateScoreUserModelIfVersion(
-                userNo, expectedVersion, modelScore, "k4-v" + model.version()) == 0) {
+                userNo, expectedVersion, modelScore, "k4-v" + model.version(), userId) == 0) {
             return Optional.empty();
         }
         if (clearManualOverride) {
@@ -814,7 +820,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                 json(contributions),
                 overridePreserved ? "事实源刷新（保留人工覆盖）" : "模型重算",
                 "system:k4");
-        mapper.advanceScoreAsOfToLatestSource(userNo);
+        mapper.advanceScoreAsOfToLatestSource(userNo, userId);
         return findScoreUser(userNo);
     }
 
@@ -835,10 +841,13 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
 
     @Override
     public int synchronizeScoringUsers() {
-        mapper.retireOrphanScoreUsers();
+        boolean hasOrphans = mapper.hasOrphanScoringRows();
+        if (hasOrphans) mapper.retireOrphanScoreUsers();
         int synchronizedUsers = mapper.ensureAllActiveUsersHaveScoreRows();
-        mapper.deactivateOrphanScoreOverrides();
-        mapper.retireOrphanScoreContributions();
+        if (hasOrphans) {
+            mapper.deactivateOrphanScoreOverrides();
+            mapper.retireOrphanScoreContributions();
+        }
         return synchronizedUsers;
     }
 
