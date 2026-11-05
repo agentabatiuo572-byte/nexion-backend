@@ -43,6 +43,11 @@ public class AuditReplayBusinessPermissionGuard {
 
     private static final Set<String> SENSITIVE_TRUST_SECTIONS = Set.of(
             "financials", "nexnarrative", "nexstory", "auditsreserves", "compliancebadges");
+    private static final Map<String, String> A1_ACCOUNT_PROPOSAL_AUTHORITIES = Map.of(
+            "a1_account_update_profile", "platform_a1_write",
+            "a1_account_change_role", "platform_a1_account_role_change",
+            "a1_account_reset_2fa", "platform_a1_account_2fa_reset",
+            "a1_account_status_update", "platform_a1_account_disable");
     private static final Set<String> I3_CAP_TIERS = Set.of("critical", "high", "normal", "low");
     private static final Map<String, String> E3_CONFIG_TARGET_IDS = Map.ofEntries(
             Map.entry("E.device.capacity.band1DeltaPct", "capacityBand1DeltaPct"),
@@ -480,6 +485,10 @@ public class AuditReplayBusinessPermissionGuard {
             AuditOperationProposalRequest request) {
         boolean delegated = delegatedProposal();
         AuditReplayCommand command = request == null ? null : request.command();
+        if (command != null && "A".equals(command.domain())
+                && A1_ACCOUNT_PROPOSAL_AUTHORITIES.containsKey(text(command.op()))) {
+            return validateA1AccountProposalContext(request, command, delegated);
+        }
         if (command != null && Set.of("f_direct_referral_policy","f_seven_layer_activation").contains(command.op())
                 && (request.reason() == null || request.reason().trim().length() < 8 || request.reason().trim().length() > 200)) {
             return ApiResult.fail(422, "DIRECT_REFERRAL_POLICY_REQUEST_INVALID");
@@ -510,6 +519,43 @@ public class AuditReplayBusinessPermissionGuard {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_CONTEXT_MISMATCH");
         }
         return ApiResult.ok(descriptor);
+    }
+
+    private ApiResult<DelegatedProposalDescriptor> validateA1AccountProposalContext(
+            AuditOperationProposalRequest request, AuditReplayCommand command, boolean delegated) {
+        if (!delegated && A2ReplayContext.isAvatarCommand(command)) {
+            return ApiResult.ok(null); // The avatar proposal path verifies its own canonical lock.
+        }
+        Map<String, Object> params = command.params();
+        String accountId = value(params, "accountId");
+        String sourceDomain = text(request.sourceDomain());
+        if (!A1_ACCOUNT_PROPOSAL_AUTHORITIES.containsKey(command.op())
+                || accountId.isEmpty() || !accountId.equals(positiveIdentifier(accountId))
+                || !accountId.equals(text(request.obj()))
+                || !new AuditLockTarget("A", "account", accountId).equals(request.target())
+                || (request.targets() != null && !request.targets().isEmpty())
+                || !("A".equalsIgnoreCase(sourceDomain) || "A1".equalsIgnoreCase(sourceDomain))) {
+            return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+        }
+        if (!delegated) {
+            return ApiResult.ok(null);
+        }
+        String action = switch (command.op()) {
+            case "a1_account_update_profile" -> "编辑账号资料";
+            case "a1_account_change_role" -> "变更角色";
+            case "a1_account_reset_2fa" -> "重置两步验证";
+            default -> "启用/禁用账号";
+        };
+        String afterValue = switch (command.op()) {
+            case "a1_account_update_profile" -> value(params, "username");
+            case "a1_account_change_role" -> value(params, "role");
+            case "a1_account_reset_2fa" -> "待重新绑定";
+            default -> value(params, "status");
+        };
+        if (afterValue.length() > 128) {
+            return ApiResult.fail(422, "A2_A1_PROPOSAL_VALUE_TOO_LONG");
+        }
+        return ApiResult.ok(descriptor(action, accountId, afterValue, false, "A1", "A", "account", accountId));
     }
 
     private DelegatedProposalDescriptor delegatedDescriptor(AuditReplayCommand command) {
@@ -1196,7 +1242,7 @@ public class AuditReplayBusinessPermissionGuard {
             case "A" -> switch (operation) {
                 case "a6_role_status_update", "a6_role_disable", "a6_role_delete" -> "platform_a6_write";
                 case "a6_role_grants_update" -> "platform_a6_role_grants_update";
-                default -> null;
+                default -> A1_ACCOUNT_PROPOSAL_AUTHORITIES.get(operation);
             };
             case "D" -> switch (operation) {
                 case "d_cregis_deposit_policy" -> "finance_d1_channel_manage";

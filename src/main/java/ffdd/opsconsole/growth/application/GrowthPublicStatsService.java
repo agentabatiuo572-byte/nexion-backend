@@ -216,7 +216,7 @@ public class GrowthPublicStatsService {
         verified.put("onlineDevices", aggregate(deviceOps.countOnlineDevices(),
                 "nx_user_device OWNED+ACTIVATED 且 runtime.online_status=ONLINE、有效心跳在服务端最近10分钟内", "COUNT"));
         verified.put("completedPayoutUsdt", aggregate(deviceOps.completedWithdrawalTotal(),
-                "nx_withdrawal_order.status=COMPLETED 的 amount 合计", "SUM_USDT"));
+                "未删除、已记录完成时间且状态为 CONFIRMED 或 SUCCESS 的正式 USDT 提现本金合计", "SUM_USDT"));
         verified.put("capturedAt", Instant.ofEpochMilli(clock.millis()).toString());
         return verified;
     }

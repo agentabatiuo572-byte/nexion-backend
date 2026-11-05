@@ -1287,12 +1287,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 "reason", reason,
                 "idempotencyKey", idempotencyKey.trim());
         c2RequiredAudit("C2_USER_SESSIONS_REVOKED", "USER_SESSION", String.valueOf(userId), userId, operator, detail);
-        outboxService.publish("USER_SECURITY", String.valueOf(userId), "admin.session_revoked", Map.of(
-                "targetUserId", userId,
-                "operator", operator,
-                "reason", reason,
-                "revokedCount", activeSessionCount,
-                "occurredAt", LocalDateTime.now().toString()));
+        publishUserSecurityEvent("admin.session_revoked", userId, operator, reason, Map.of("scope", "all"));
         return ApiResult.ok(response);
     }
 
@@ -1505,7 +1500,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         detail.put("fromTwoFactorEnabled", true);
         detail.put("toTwoFactorEnabled", false);
         c5RequiredAudit("C5_TWO_FACTOR_DISABLED", "USER_SECURITY", String.valueOf(userId), userId, actor, detail);
-        publishC5Event("admin.2fa_disabled", userId, actor, request.reason().trim(), detail);
+        publishUserSecurityEvent("admin.2fa_disabled", userId, actor, request.reason().trim(), detail);
         return ApiResult.ok(updated);
     }
 
@@ -1544,7 +1539,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         detail.put("passwordResetRequired", true);
         detail.put("sessionsRevoked", true);
         c5RequiredAudit("C5_PASSWORD_RESET_REQUESTED", "USER_SECURITY", String.valueOf(userId), userId, actor, detail);
-        publishC5Event("admin.password_reset_requested", userId, actor, request.reason().trim(), detail);
+        publishUserSecurityEvent("admin.password_reset_requested", userId, actor, request.reason().trim(), detail);
         return ApiResult.ok(updated);
     }
 
@@ -1598,7 +1593,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         detail.put("fromLoginFailCount", before.loginFailCount());
         detail.put("toLoginFailCount", 0);
         c5RequiredAudit("C5_USER_UNLOCKED", "USER_SECURITY", String.valueOf(userId), userId, actor, detail);
-        publishC5Event("admin.user_unlocked", userId, actor, request.reason().trim(), detail);
+        publishUserSecurityEvent("admin.user_unlocked", userId, actor, request.reason().trim(), detail);
         return ApiResult.ok(updated);
     }
 
@@ -1767,7 +1762,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         detail.put("reason", request.reason().trim());
         detail.put("idempotencyKey", idempotencyKey);
         c5RequiredAudit("C5_SESSION_REVOKED", "USER_SESSION", refreshTokenId, session.userId(), actor, detail);
-        publishC5Event("admin.session_revoked", session.userId(), actor, request.reason().trim(), detail);
+        publishUserSecurityEvent("admin.session_revoked", session.userId(), actor, request.reason().trim(), detail);
         return ApiResult.ok(updated);
     }
 
@@ -1808,7 +1803,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         detail.put("reason", request.reason().trim());
         detail.put("idempotencyKey", idempotencyKey);
         c5RequiredAudit("C5_ALL_SESSIONS_REVOKED", "USER_SESSION", String.valueOf(userId), userId, actor, detail);
-        publishC5Event("admin.session_revoked", userId, actor, request.reason().trim(), detail);
+        publishUserSecurityEvent("admin.session_revoked", userId, actor, request.reason().trim(), detail);
         return ApiResult.ok(Map.of("userId", userId, "revokedSessionCount", activeBefore));
     }
 
@@ -2929,18 +2924,18 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         return ApiResult.fail(status, failureReason);
     }
 
-    private void publishC5Event(
-            String eventType, Long userId, String actor, String reason, Map<String, Object> auditDetail) {
+    private void publishUserSecurityEvent(
+            String eventType, Long userId, String actor, String reason, Map<String, Object> detail) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("targetUserId", userId);
         payload.put("operator", actor);
         payload.put("role", normalizeRole(roleResolver.resolveCode()));
         payload.put("reason", reason);
-        if (auditDetail.containsKey("lockKind")) {
-            payload.put("lockKind", auditDetail.get("lockKind"));
+        if (detail.containsKey("lockKind")) {
+            payload.put("lockKind", detail.get("lockKind"));
         }
-        if (auditDetail.containsKey("scope")) {
-            payload.put("scope", auditDetail.get("scope"));
+        if (detail.containsKey("scope")) {
+            payload.put("scope", detail.get("scope"));
         }
         payload.put("occurredAt", LocalDateTime.now().toString());
         outboxService.publish("USER_SECURITY", String.valueOf(userId), eventType, payload);

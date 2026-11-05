@@ -273,17 +273,18 @@ public class OpsAuditCenterService {
             ticket.setSourceDomain(sourceDomain);
         }
         if (descriptor != null) {
+            boolean a1AccountProposal = "A1".equals(descriptor.sourceDomain());
             ticket.setAction(descriptor.action());
             ticket.setObjectText(descriptor.objectId());
             ticket.setBeforeValue(descriptor.beforeValue());
             ticket.setAfterValue(descriptor.afterValue());
-            if (replayBusinessPermissionGuard.delegatedProposal()) {
+            if (!a1AccountProposal && replayBusinessPermissionGuard.delegatedProposal()) {
                 ticket.setOperatorRole("风控");
             }
             ticket.setOperationType(descriptor.operationType());
             ticket.setAmplifies(descriptor.amplifies() ? 1 : 0);
             ticket.setSos(0);
-            ticket.setRoleGate("门槛者");
+            ticket.setRoleGate(a1AccountProposal ? "超管" : "门槛者");
             sourceDomain = descriptor.sourceDomain();
             ticket.setSourceDomain(normalizeDomain(sourceDomain));
             target = descriptor.target();

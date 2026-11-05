@@ -3301,7 +3301,20 @@ public class OpsGrowthService implements AuditReplayable {
         stats.put("inTrial", intValue(row.get("inTrial"), 0));
         stats.put("inGrace", intValue(row.get("inGrace"), 0));
         stats.put("inExtended", intValue(row.get("inExtended"), 0));
+        long started = longValue(row.get("started"));
+        long redeemed = longValue(row.get("redeemed"));
+        long classifiedRedeemed = longValue(row.get("classifiedRedeemed"));
+        stats.put("trialBuyRate", trialRate(redeemed, started));
+        stats.put("earlyBuyRate", classifiedRedeemed == redeemed ? trialRate(longValue(row.get("earlyRedeemed")), started) : null);
+        // The current trial claim does not have a card-binding step.
+        stats.put("bindCardRate", null);
+        stats.put("k2Blocked", longValue(row.get("k2Blocked")));
         return stats;
+    }
+
+    private String trialRate(long conversions, long started) {
+        return started == 0 ? null : formatPercentNumber(BigDecimal.valueOf(conversions).movePointRight(2)
+                .divide(BigDecimal.valueOf(started), 2, RoundingMode.HALF_UP));
     }
 
     private Map<String, Object> trialModelA() {

@@ -19,9 +19,11 @@ public class WithdrawalAttemptSchemaInitializer implements SmartInitializingSing
             "d5_policy_version", "d5_use_nex_fee_offset", "d2_lifecycle_owner", "d2_freeze_period",
             "d2_routing_priority", "d2_k3_risk_route", "d2_k4_risk_score", "d2_k4_model_version", "d2_k4_as_of",
             "d2_k4_band_low_max", "d2_k4_band_high_min", "d2_k4_auto_escalate_score", "failure_reason",
-            "d2_previous_status", "terminal_reason", "retriable", "created_at", "updated_at", "is_deleted");
+            "d2_previous_status", "d2_pre_freeze_reason", "terminal_reason", "retriable", "created_at", "updated_at",
+            "is_deleted");
     private static final String MIGRATION_GUIDANCE = "apply scripts/apply_startup_schema_migrations.ps1 "
-            + "(including scripts/migrations/20261015_withdrawal_order_schema_readiness.sql) before startup";
+            + "(including 20261015_withdrawal_order_schema_readiness.sql and 20261105_d2_preserve_review_reason.sql) "
+            + "before startup";
     private static final String QUOTE_EXPIRY_MIGRATION_GUIDANCE = "apply "
             + "scripts/migrations/20260916_bank_beneficiary_verification.sql before startup";
     private final AppWithdrawalMapper mapper;

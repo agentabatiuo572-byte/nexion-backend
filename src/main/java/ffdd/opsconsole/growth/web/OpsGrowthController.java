@@ -92,7 +92,11 @@ public class OpsGrowthController {
     public ApiResult<Map<String, Object>> trials(
             @RequestParam(defaultValue = "1") int pageNum,
             @RequestParam(defaultValue = "20") int pageSize) {
-        return growthService.trials(pageNum, pageSize);
+        ApiResult<Map<String, Object>> result = growthService.trials(pageNum, pageSize);
+        if (result.getCode() == 0 && result.getData().get("stats") instanceof Map<?, ?> stats && stats.isEmpty()) {
+            return ApiResult.fail(503, "TRIAL_STATS_UNAVAILABLE");
+        }
+        return result;
     }
 
     @PatchMapping("/trials/params/{paramKey}")
