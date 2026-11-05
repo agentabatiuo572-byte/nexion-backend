@@ -10,6 +10,7 @@ import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import ffdd.opsconsole.team.application.TeamFundApproval;
+import ffdd.opsconsole.market.application.G3MarketApproval;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -65,8 +66,9 @@ public class A2AccessPolicy {
                         || grants.contains("overview_b5_threshold_write")
                         || grants.contains(E2TaskPricingApproval.MAKER_AUTHORITY)
                         || grants.contains(H8RewardParamApproval.MAKER_AUTHORITY)
-                        || grants.contains("network_f1_write") || grants.contains("network_f3_write")
-                        || grants.contains("network_f4_pool_fund")) return id;
+                        || grants.contains("network_f1_write") || grants.contains("network_f3_write") || grants.contains("network_f4_pool_fund")
+                        || grants.contains("finprod_g3_curve_target_price_write") || grants.contains("finprod_g3_curve_pump_prob_write")
+                        || grants.contains("finprod_g3_override_price_write") || grants.contains("finprod_g3_write")) return id;
             }
         } catch (NumberFormatException ignored) { }
         throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");
@@ -110,6 +112,8 @@ public class A2AccessPolicy {
             authority = H8RewardParamApproval.MAKER_AUTHORITY;
         } else if (TeamFundApproval.supports(command)) {
             authority = TeamFundApproval.makerAuthority(command);
+        } else if (G3MarketApproval.supports(command)) {
+            authority = G3MarketApproval.makerAuthority(command);
         } else {
             return false;
         }

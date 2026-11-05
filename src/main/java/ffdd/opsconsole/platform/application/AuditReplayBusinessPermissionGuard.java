@@ -3,6 +3,7 @@ package ffdd.opsconsole.platform.application;
 import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
+import ffdd.opsconsole.market.application.G3MarketApproval;
 import ffdd.opsconsole.team.application.TeamFundApproval;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -132,6 +133,8 @@ public class AuditReplayBusinessPermissionGuard {
     @Autowired
     private TeamFundApproval teamFundApproval;
     @Autowired
+    private G3MarketApproval g3MarketApproval;
+    @Autowired
     private H8RewardParamApproval h8RewardParamApproval;
 
     public AuditReplayBusinessPermissionGuard(TrustDisclosureRepository trustDisclosureRepository,
@@ -191,7 +194,14 @@ public class AuditReplayBusinessPermissionGuard {
             String operationType,
             boolean amplifies,
             AuditLockTarget target,
-            TeamFundApproval.Review teamReview) {
+            TeamFundApproval.Review teamReview,
+            G3MarketApproval.Review marketReview) {
+        public DelegatedProposalDescriptor(
+                String action, String objectId, String beforeValue, String afterValue,
+                String sourceDomain, String operationType, boolean amplifies, AuditLockTarget target,
+                TeamFundApproval.Review teamReview) {
+            this(action, objectId, beforeValue, afterValue, sourceDomain, operationType, amplifies, target, teamReview, null);
+        }
         public DelegatedProposalDescriptor(
                 String action, String objectId, String beforeValue, String afterValue,
                 String sourceDomain, String operationType, boolean amplifies, AuditLockTarget target) {
@@ -200,6 +210,10 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     public ApiResult<Void> validateProposal(AuditReplayCommand command) {
+        if (G3MarketApproval.supports(command)) {
+            return g3MarketApproval.canPropose(command)
+                    ? ApiResult.ok() : ApiResult.fail(403, "G3_APPROVAL_MAKER_FORBIDDEN");
+        }
         if (H8RewardParamApproval.supports(command)) {
             return h8RewardParamApproval.canPropose(command)
                     ? ApiResult.ok() : ApiResult.fail(403, "H8_REWARD_PARAM_MAKER_FORBIDDEN");
@@ -318,6 +332,9 @@ public class AuditReplayBusinessPermissionGuard {
      * will later approve; it is intentionally not an input the browser can choose.
      */
     public ApiResult<AuditReplayCommand> canonicalizeProposalCommand(AuditReplayCommand command) {
+        if (G3MarketApproval.supports(command)) {
+            return ApiResult.ok(g3MarketApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
+        }
         if (H8RewardParamApproval.supports(command)) {
             return ApiResult.ok(h8RewardParamApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
         }
@@ -350,6 +367,9 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     ApiResult<Void> validateRejection(AuditReplayCommand command) {
+        if (G3MarketApproval.supports(command)) {
+            return g3MarketApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        }
         if (H8RewardParamApproval.supports(command)) {
             return h8RewardParamApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         }
@@ -376,6 +396,9 @@ public class AuditReplayBusinessPermissionGuard {
      * Other commands retain their existing replay-time business guard.
      */
     public ApiResult<Void> validateApproval(AuditReplayCommand command) {
+        if (G3MarketApproval.supports(command)) {
+            return g3MarketApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        }
         if (H8RewardParamApproval.supports(command)) {
             return h8RewardParamApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         }
@@ -574,6 +597,20 @@ public class AuditReplayBusinessPermissionGuard {
             AuditOperationProposalRequest request) {
         boolean delegated = delegatedProposal();
         AuditReplayCommand command = request == null ? null : request.command();
+        if (G3MarketApproval.supports(command)) {
+            if (!"G3".equals(text(request.sourceDomain())) || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            var preview = g3MarketApproval.preview(command, request.reason());
+            if (preview.getCode() != 0) return ApiResult.fail(preview.getCode(), preview.getMessage());
+            var review = preview.getData();
+            var target = review.target();
+            if (!target.id().equals(text(request.obj())) || !target.equals(request.target())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            return ApiResult.ok(new DelegatedProposalDescriptor(review.action(), target.id(), review.before(), review.after(),
+                    "G3", review.operationType(), review.amplifies(), target, null, review));
+        }
         if (H8RewardParamApproval.supports(command)) {
             AuditLockTarget target = H8RewardParamApproval.target(command);
             if (!"H8".equals(text(request.sourceDomain())) || !target.id().equals(text(request.obj()))

@@ -7,6 +7,7 @@ import ffdd.opsconsole.market.dto.ExchangeSwapStatusRequest;
 import ffdd.opsconsole.market.dto.NexMarketAdvanceRequest;
 import ffdd.opsconsole.market.dto.NexMarketCurveUpdateRequest;
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
+import ffdd.opsconsole.market.dto.G3MarketPolicyChangeRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -105,9 +106,7 @@ public class G2G3AdminCommandService {
         requireReason(request == null ? null : request.reason());
         return once("G3:CURVE",key,request,() -> {
             ApiResult<Map<String,Object>> result = success(market.updateWeeklyCurve(key,request));
-            outbox.publish("NEX_MARKET","weekly","admin.nex_price_curve_changed",linked(
-                    "frameCount",request.frames() == null ? 0 : request.frames().size(),
-                    "reason",request.reason().trim(),"operator",actor(request.operator())));
+            publishWeeklyCurve(request.frames() == null ? 0 : request.frames().size(), request.reason(), request.operator());
             return result;
         });
     }
@@ -128,9 +127,7 @@ public class G2G3AdminCommandService {
         requireReason(request == null ? null : request.reason());
         return once("G3:CONTROL:" + controlKey,key,request,() -> {
             ApiResult<Map<String,Object>> result = success(market.updateControl(key,controlKey,request));
-            outbox.publish("NEX_MARKET","weekly","admin.market_schedule_changed",linked(
-                    "field",controlKey,"value",request.value(),"reason",request.reason().trim(),
-                    "operator",actor(request.operator())));
+            publishControl(controlKey, request.value(), request.reason(), request.operator());
             return result;
         });
     }
@@ -140,16 +137,48 @@ public class G2G3AdminCommandService {
         requireReason(request == null ? null : request.reason());
         return once("G3:OVERRIDE:" + overrideKey,key,request,() -> {
             ApiResult<Map<String,Object>> result = success(market.updateOverride(key,overrideKey,request));
-            String event = switch (overrideKey) {
-                case "oracle" -> "admin.nex_oracle_source_changed";
-                case "currentPrice" -> "admin.nex_price_overridden";
-                case "paused" -> parseBoolean(request.value()) ? "admin.market_paused" : "admin.market_resumed";
-                default -> "admin.nex_market_override_changed";
-            };
-            outbox.publish("NEX_MARKET","weekly",event,linked("field",overrideKey,"value",request.value(),
-                    "reason",request.reason().trim(),"operator",actor(request.operator())));
+            publishOverride(overrideKey, request.value(), request.reason(), request.operator());
             return result;
         });
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String,Object>> approvedMarketPolicy(String key, G3MarketPolicyChangeRequest request,
+                                                              String reason, String operator, String operationId) {
+        requireReason(reason);
+        return once("G3:APPROVED_POLICY", key, linked("values", request, "reason", reason,
+                "operator", actor(operator), "operationId", operationId), () -> {
+            ApiResult<Map<String,Object>> result = success(
+                    market.applyApprovedMarketPolicy(key, request, reason, actor(operator), operationId));
+            switch (request.action()) {
+                case "curve-cell" -> publishWeeklyCurve(7, reason, operator);
+                case "current-price" -> publishOverride("currentPrice", request.value(), reason, operator);
+                case "initial-schedule" -> publishControl("schedule", request.value(), reason, operator);
+                default -> throw new BizException(422, "G3_POLICY_PROPOSAL_INVALID");
+            }
+            return result;
+        });
+    }
+
+    private void publishWeeklyCurve(int frameCount, String reason, String operator) {
+        outbox.publish("NEX_MARKET", "weekly", "admin.nex_price_curve_changed", linked(
+                "frameCount", frameCount, "reason", reason.trim(), "operator", actor(operator)));
+    }
+
+    private void publishControl(String key, String value, String reason, String operator) {
+        outbox.publish("NEX_MARKET", "weekly", "admin.market_schedule_changed", linked(
+                "field", key, "value", value, "reason", reason.trim(), "operator", actor(operator)));
+    }
+
+    private void publishOverride(String key, String value, String reason, String operator) {
+        String event = switch (key) {
+            case "oracle" -> "admin.nex_oracle_source_changed";
+            case "currentPrice" -> "admin.nex_price_overridden";
+            case "paused" -> parseBoolean(value) ? "admin.market_paused" : "admin.market_resumed";
+            default -> "admin.nex_market_override_changed";
+        };
+        outbox.publish("NEX_MARKET", "weekly", event, linked("field", key, "value", value,
+                "reason", reason.trim(), "operator", actor(operator)));
     }
 
     private void requireReason(String reason) {
