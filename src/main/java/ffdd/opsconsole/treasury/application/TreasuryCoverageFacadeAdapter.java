@@ -15,12 +15,12 @@ public class TreasuryCoverageFacadeAdapter implements TreasuryCoverageFacade {
 
     @Override
     public TreasuryCoverageSnapshot snapshot() {
-        return readSnapshot(treasuryService.dualLedger().getData());
+        return readSnapshot(treasuryService.dualLedgerCoverageSnapshot(null));
     }
 
     @Override
     public TreasuryCoverageSnapshot snapshotAtNexPrice(BigDecimal proposedPrice) {
-        return readSnapshot(treasuryService.dualLedgerAtNexPrice(proposedPrice));
+        return readSnapshot(treasuryService.dualLedgerCoverageSnapshot(proposedPrice));
     }
 
     private TreasuryCoverageSnapshot readSnapshot(Map<String, Object> dualLedger) {
@@ -50,7 +50,8 @@ public class TreasuryCoverageFacadeAdapter implements TreasuryCoverageFacade {
                 nexUsdRate == null ? BigDecimal.ZERO : nexUsdRate,
                 ratioReserveUsd == null ? (reserveUsd == null ? BigDecimal.ZERO : reserveUsd) : ratioReserveUsd,
                 ratioLiabilitiesUsd == null ? (liabilitiesUsd == null ? BigDecimal.ZERO : liabilitiesUsd) : ratioLiabilitiesUsd,
-                healthyPct);
+                healthyPct,
+                Boolean.TRUE.equals(values.get("redlineBreached")));
     }
 
     private BigDecimal decimal(Object value) {
