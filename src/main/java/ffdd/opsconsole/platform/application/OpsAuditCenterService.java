@@ -45,6 +45,7 @@ import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.team.application.BinaryCommissionSettlementService.SettlementResult;
 import ffdd.opsconsole.team.application.TeamFundApproval;
+import ffdd.opsconsole.market.application.G3MarketApproval;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
@@ -304,7 +305,8 @@ public class OpsAuditCenterService {
                 if (superAdminProposalCommand(command)) {
                     ((com.fasterxml.jackson.databind.node.ObjectNode) stored.get("params")).put("proposalReason", reason);
                 }
-                if (E2TaskPricingApproval.supports(command) || TeamFundApproval.supports(command)) {
+                if (E2TaskPricingApproval.supports(command) || TeamFundApproval.supports(command)
+                        || G3MarketApproval.supports(command)) {
                     ((com.fasterxml.jackson.databind.node.ObjectNode) stored.get("params")).put("targetId", target.id());
                 }
                 if (descriptor != null && descriptor.teamReview() != null && descriptor.teamReview().beforeFields() != null) {
@@ -314,6 +316,13 @@ public class OpsAuditCenterService {
                             .with(com.fasterxml.jackson.core.JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN);
                     review.put("before", writer.writeValueAsString(descriptor.teamReview().beforeFields()));
                     review.put("after", writer.writeValueAsString(descriptor.teamReview().afterFields()));
+                }
+                if (descriptor != null && descriptor.marketReview() != null) {
+                    var review = stored.putObject("marketPolicyReview");
+                    var writer = objectMapper.writerWithDefaultPrettyPrinter()
+                            .with(com.fasterxml.jackson.core.JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN);
+                    review.put("before", writer.writeValueAsString(descriptor.marketReview().beforeFields()));
+                    review.put("after", writer.writeValueAsString(descriptor.marketReview().afterFields()));
                 }
                 boolean skuStatus="E".equals(command.domain()) && "e1_sku_status".equals(command.op());
                 boolean phonePolicy="E".equals(command.domain()) && "e1_phone_task_policy".equals(command.op());
@@ -438,8 +447,8 @@ public class OpsAuditCenterService {
                         "operationId", ticket.getOperationId(),
                         "action", ticket.getAction(),
                         "resource", ticket.getObjectText(),
-                        "before", TeamFundApproval.supports(command) ? ticket.getBeforeValue() : reviewValue(ticket, "before"),
-                        "after", TeamFundApproval.supports(command) ? ticket.getAfterValue() : reviewValue(ticket, "after"),
+                        "before", TeamFundApproval.supports(command) || G3MarketApproval.supports(command) ? ticket.getBeforeValue() : reviewValue(ticket, "before"),
+                        "after", TeamFundApproval.supports(command) || G3MarketApproval.supports(command) ? ticket.getAfterValue() : reviewValue(ticket, "after"),
                         "type", ticket.getOperationType(),
                         "sourceDomain", sourceDomain,
                         "reason", ticket.getReason(),
@@ -773,13 +782,19 @@ public class OpsAuditCenterService {
             }
             if (superAdminProposalCommand(cmd)) {
                 var target = TeamFundApproval.supports(cmd) ? TeamFundApproval.target(cmd)
+                        : G3MarketApproval.supports(cmd) ? G3MarketApproval.target(cmd)
                         : H8RewardParamApproval.supports(cmd) ? H8RewardParamApproval.target(cmd)
                         : E2TaskPricingApproval.supports(cmd) ? E2TaskPricingApproval.target(cmd)
                         : TreasuryThresholdApproval.supports(cmd) ? TreasuryThresholdApproval.target(cmd)
                         : WithdrawalConfigApproval.target(cmd);
                 var locks = lockMapper.selectActiveByTicketId(ticket.getOperationId());
+                boolean initialSchedule = G3MarketApproval.supports(cmd) && target != null
+                        && "nex_market_control".equals(target.type()) && "schedule".equals(target.id());
+                boolean classificationMatches = initialSchedule
+                        ? "param".equals(ticket.getOperationType()) && Integer.valueOf(0).equals(ticket.getAmplifies())
+                        : "fund".equals(ticket.getOperationType()) && Integer.valueOf(1).equals(ticket.getAmplifies());
                 if (target == null || !target.id().equals(ticket.getObjectText()) || !target.domain().equals(ticket.getSourceDomain())
-                        || !"fund".equals(ticket.getOperationType()) || !Integer.valueOf(1).equals(ticket.getAmplifies())
+                        || !classificationMatches
                         || locks.size() != 1 || !target.equals(new AuditLockTarget(locks.get(0).getTargetDomain(),
                             locks.get(0).getTargetType(), locks.get(0).getTargetId()))) {
                     return fail(OpsErrorCode.FORBIDDEN, "A2_BUSINESS_CONTEXT_MISMATCH");
@@ -854,7 +869,7 @@ public class OpsAuditCenterService {
     private static boolean superAdminProposalCommand(AuditReplayCommand command) {
         return WithdrawalConfigApproval.supports(command) || TreasuryThresholdApproval.supports(command)
                 || E2TaskPricingApproval.supports(command) || TeamFundApproval.supports(command)
-                || H8RewardParamApproval.supports(command);
+                || G3MarketApproval.supports(command) || H8RewardParamApproval.supports(command);
     }
 
     private String refundOrderNo(AuditReplayCommand command) {
@@ -877,8 +892,8 @@ public class OpsAuditCenterService {
             AuditOperationTicketEntity ticket, String status, String idempotencyKey, String reason) {
         AuditReplayCommand command = deserializeCommand(ticket.getCommandJson());
         // Keep the recovery key and domain in the bounded audit entry. The ticket retains the full review.
-        String before = TeamFundApproval.supports(command) ? ticket.getBeforeValue() : reviewValue(ticket, "before");
-        String after = TeamFundApproval.supports(command) ? ticket.getAfterValue() : reviewValue(ticket, "after");
+        String before = TeamFundApproval.supports(command) || G3MarketApproval.supports(command) ? ticket.getBeforeValue() : reviewValue(ticket, "before");
+        String after = TeamFundApproval.supports(command) || G3MarketApproval.supports(command) ? ticket.getAfterValue() : reviewValue(ticket, "after");
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("operationId", ticket.getOperationId());
         detail.put("status", status);
@@ -893,7 +908,7 @@ public class OpsAuditCenterService {
         detail.put("reason", reason.trim());
         detail.put("idempotencyKey", idempotencyKey.trim());
         detail.put("domain", TreasuryThresholdApproval.supports(command) || E2TaskPricingApproval.supports(command)
-                || TeamFundApproval.supports(command) || H8RewardParamApproval.supports(command)
+                || TeamFundApproval.supports(command) || G3MarketApproval.supports(command) || H8RewardParamApproval.supports(command)
                 ? ticket.getSourceDomain() : inferAuditDomain(ticket.getAction(), ticket.getObjectText()));
         return detail;
     }
@@ -995,6 +1010,7 @@ public class OpsAuditCenterService {
     private String reviewValue(AuditOperationTicketEntity ticket, String side) {
         var command = deserializeCommand(ticket.getCommandJson());
         String reviewKey = isSkuReviewCommand(command) ? "skuReview"
+                : G3MarketApproval.supports(command) ? "marketPolicyReview"
                 : TeamFundApproval.isVRank(command) ? "vrankPolicyReview"
                 : TeamFundApproval.supports(command) && !TeamFundApproval.isSettlement(command) ? "ambassadorPolicyReview" : null;
         if (reviewKey != null) {

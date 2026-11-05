@@ -2,6 +2,7 @@ package ffdd.opsconsole.platform.application;
 import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
+import ffdd.opsconsole.market.application.G3MarketApproval;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayable;
@@ -26,9 +27,14 @@ public class AuditReplayDispatcher {
     @Autowired
     private TeamFundApproval teamFundApproval;
     @Autowired
+    private G3MarketApproval g3MarketApproval;
+    @Autowired
     private H8RewardParamApproval h8RewardParamApproval;
 
     public ApiResult<?> dispatch(AuditReplayCommand cmd, AuditReplayContext ctx) {
+        if (G3MarketApproval.supports(cmd)) {
+            return g3MarketApproval.replay(cmd, ctx, A2ReplayContext.authenticatedAdminId(), A2ReplayContext.operationId());
+        }
         if (H8RewardParamApproval.supports(cmd)) {
             return h8RewardParamApproval.replay(cmd, ctx,
                     A2ReplayContext.authenticatedAdminId(), A2ReplayContext.operationId());
