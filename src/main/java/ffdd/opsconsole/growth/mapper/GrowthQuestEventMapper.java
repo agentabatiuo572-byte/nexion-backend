@@ -193,6 +193,20 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
     List<Map<String, Object>> listEvents();
 
     @Select("""
+            SELECT id AS rowId, quest_code AS eventCode, target_type AS targetType, target_value AS targetValue,
+                   CAST(status AS SIGNED) AS status, is_deleted AS deleted, starts_at AS startsAt, ends_at AS endsAt,
+                   reward_name AS rewardName, reward_type AS rewardType, reward_amount AS rewardAmount,
+                   (target_value > 0 AND LOWER(target_type) <> 'wheel'
+                    AND (ends_at IS NULL OR (ends_at > UTC_TIMESTAMP()
+                         AND (starts_at IS NULL OR starts_at < ends_at)))) AS rewardWindow
+              FROM nx_event_quest
+             WHERE quest_code = #{eventId}
+               AND target_type IN ('discount','referral','wheel','regional','boost','seasonal','onboarding')
+             FOR UPDATE
+            """)
+    Map<String, Object> lockEventForMutation(@Param("eventId") String eventId);
+
+    @Select("""
             SELECT policy_key AS `key`,
                    policy_name AS name,
                    COALESCE(description, '') AS sub,
