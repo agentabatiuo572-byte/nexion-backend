@@ -1,5 +1,7 @@
 package ffdd.opsconsole.platform.application;
 
+import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
+
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
@@ -257,19 +259,18 @@ public class OpsAuditCenterService {
         ticket.setSourceDomain(normalizeDomain(sourceDomain));
         ticket.setIsDeleted(0);
         // 存回放指令(供 approve 时回放执行)
-        AuditReplayCommand command = request.command();
         ApiResult<AuditReplayCommand> canonicalCommand =
-                replayBusinessPermissionGuard.canonicalizeProposalCommand(command);
+                replayBusinessPermissionGuard.bindProposalCommand(request);
         if (canonicalCommand.getCode() != 0) {
             return ApiResult.fail(canonicalCommand.getCode(), canonicalCommand.getMessage());
         }
-        command = canonicalCommand.getData();
+        AuditReplayCommand command = canonicalCommand.getData();
         ApiResult<Void> businessPermission = replayBusinessPermissionGuard.validateProposal(command);
         if (businessPermission.getCode() != 0) {
             return ApiResult.fail(businessPermission.getCode(), businessPermission.getMessage());
         }
         ApiResult<AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor> proposalContext =
-                replayBusinessPermissionGuard.validateProposalContext(request);
+                replayBusinessPermissionGuard.validateProposalContext(request, command);
         if (proposalContext.getCode() != 0) {
             return ApiResult.fail(proposalContext.getCode(), proposalContext.getMessage());
         }
@@ -786,7 +787,8 @@ public class OpsAuditCenterService {
                 return fail(OpsErrorCode.VALIDATION_FAILED, "COMMAND_REQUIRED");
             }
             if (superAdminProposalCommand(cmd)) {
-                var target = TeamFundApproval.supports(cmd) ? TeamFundApproval.target(cmd)
+                var target = LearningCourseActivationApproval.supports(cmd) ? LearningCourseActivationApproval.target(cmd)
+                        : TeamFundApproval.supports(cmd) ? TeamFundApproval.target(cmd)
                         : G3MarketApproval.supports(cmd) ? G3MarketApproval.target(cmd)
                         : H5GrowthApproval.supports(cmd) ? H5GrowthApproval.target(cmd)
                         : G4DividendApproval.supports(cmd) ? G4DividendApproval.target(cmd)
@@ -821,6 +823,8 @@ public class OpsAuditCenterService {
             if (avatarMaker != null) {
                 A2ReplayContext.enterAvatarApproval(ticket.getOperationId(), avatarMaker,
                         A2ReplayContext.authenticatedAdminId(), deserializeCommand(ticket.getCommandJson()));
+            } else if (LearningCourseActivationApproval.supports(cmd)) {
+                A2ReplayContext.enterCourseActivationApproval(ticket.getOperationId(), cmd);
             } else {
                 A2ReplayContext.enterReplay(ticket.getOperationId());
             }
@@ -880,6 +884,7 @@ public class OpsAuditCenterService {
 
     private static boolean superAdminProposalCommand(AuditReplayCommand command) {
         return WithdrawalConfigApproval.supports(command) || TreasuryThresholdApproval.supports(command)
+                || LearningCourseActivationApproval.supports(command)
                 || E2TaskPricingApproval.supports(command) || TeamFundApproval.supports(command)
                 || G3MarketApproval.supports(command) || H8RewardParamApproval.supports(command)
                 || G4DividendApproval.supports(command) || H5GrowthApproval.supports(command) || H3GrowthApproval.supports(command)
@@ -922,6 +927,7 @@ public class OpsAuditCenterService {
         detail.put("reason", reason.trim());
         detail.put("idempotencyKey", idempotencyKey.trim());
         detail.put("domain", TreasuryThresholdApproval.supports(command) || E2TaskPricingApproval.supports(command)
+                || LearningCourseActivationApproval.supports(command)
                 || TeamFundApproval.supports(command) || G3MarketApproval.supports(command) || H8RewardParamApproval.supports(command)
                 || G4DividendApproval.supports(command) || H5GrowthApproval.supports(command) || H3GrowthApproval.supports(command)
                 || H4GrowthApproval.supports(command) || K2OtpInitialApproval.supports(command)
@@ -1025,7 +1031,8 @@ public class OpsAuditCenterService {
 
     // H4 keeps complete review data in its bound command; audit summaries keep the recovery key structured.
     private String auditReviewValue(AuditOperationTicketEntity ticket, String side) {
-        if (H4GrowthApproval.supports(deserializeCommand(ticket.getCommandJson()))) {
+        var command = deserializeCommand(ticket.getCommandJson());
+        if (H4GrowthApproval.supports(command) || LearningCourseActivationApproval.supports(command)) {
             return "before".equals(side) ? ticket.getBeforeValue() : ticket.getAfterValue();
         }
         return reviewValue(ticket, side);
@@ -1033,6 +1040,10 @@ public class OpsAuditCenterService {
 
     private String reviewValue(AuditOperationTicketEntity ticket, String side) {
         var command = deserializeCommand(ticket.getCommandJson());
+        if (LearningCourseActivationApproval.supports(command) && command.params() != null
+                && command.params().get(side + "Review") instanceof String review) {
+            return review;
+        }
         if (H4GrowthApproval.supports(command)) {
             try {
                 return objectMapper.writeValueAsString(command.params().get("before".equals(side) ? "expectedState" : "values"));

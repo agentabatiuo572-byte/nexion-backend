@@ -11,6 +11,7 @@ public final class A2ReplayContext {
     private static final ThreadLocal<Boolean> REPLAYING = ThreadLocal.withInitial(() -> false);
     private static final ThreadLocal<String> OPERATION_ID = new ThreadLocal<>();
     private static final ThreadLocal<AvatarApproval> AVATAR = new ThreadLocal<>();
+    private static final ThreadLocal<AuditReplayCommand> COURSE_ACTIVATION = new ThreadLocal<>();
 
     public static void enterReplay() {
         enterReplay(null);
@@ -19,6 +20,7 @@ public final class A2ReplayContext {
     /** Binds the durable A2 ticket to the replay transaction for downstream audit/outbox correlation. */
     public static void enterReplay(String operationId) {
         AVATAR.remove();
+        COURSE_ACTIVATION.remove();
         REPLAYING.set(true);
         if (operationId == null || operationId.isBlank()) {
             OPERATION_ID.remove();
@@ -29,12 +31,22 @@ public final class A2ReplayContext {
 
     public static void exitReplay() {
         AVATAR.remove();
+        COURSE_ACTIVATION.remove();
         REPLAYING.remove();
         OPERATION_ID.remove();
     }
 
     public static boolean isReplaying() { return REPLAYING.get(); }
     public static String operationId() { return OPERATION_ID.get(); }
+
+    static void enterCourseActivationApproval(String operationId, AuditReplayCommand command) {
+        enterReplay(operationId);
+        COURSE_ACTIVATION.set(command);
+    }
+
+    public static String approvedCourseActivationId(AuditReplayCommand command) {
+        return command.equals(COURSE_ACTIVATION.get()) ? operationId() : null;
+    }
 
     static boolean isAvatarCommand(AuditReplayCommand command) {
         return command != null && "A".equals(command.domain()) && command.params() != null

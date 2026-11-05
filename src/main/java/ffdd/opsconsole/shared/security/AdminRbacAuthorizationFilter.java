@@ -1,5 +1,7 @@
 package ffdd.opsconsole.shared.security;
 
+import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
+
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -290,14 +292,16 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         }
         // The controller binds business grants to their exact A2 commands.
         if (HttpMethod.POST.matches(method) && path.equals("/api/admin/platform/audit/operations")) {
-            return RequiredAuthority.exact("platform_a2_write", "platform_a2_proposal_create",
+            return RequiredAuthority.exactOrAll(LearningCourseActivationApproval.MAKER_AUTHORITIES,
+                    "platform_a2_write", "platform_a2_proposal_create",
                     "overview_b1_redline_write", "overview_b5_threshold_write", "device_e2_write",
                     "network_f1_write", "network_f3_write", "network_f4_pool_fund", "growth_h8_write", "growth_h5_write", "growth_h3_write", "growth_h4_write", "growth_h4_wheel_pool_write", "finprod_g3_curve_target_price_write",
                     "finprod_g3_curve_pump_prob_write", "finprod_g3_override_price_write", "finprod_g3_write",
                     "finprod_g4_dividend_rate_write", "finprod_g4_write");
         }
         if (read && path.equals("/api/admin/platform/audit/operations/proposals/by-idempotency-key")) {
-            return RequiredAuthority.exact("platform_a2_read", "overview_b1_redline_write", "overview_b5_threshold_write",
+            return RequiredAuthority.exactOrAll(LearningCourseActivationApproval.MAKER_AUTHORITIES,
+                    "platform_a2_read", "overview_b1_redline_write", "overview_b5_threshold_write",
                     "risk_k2_write",
                     "device_e2_write", "network_f1_write", "network_f3_write", "network_f4_pool_fund", "growth_h8_write", "growth_h5_write", "growth_h3_write", "growth_h4_write", "growth_h4_wheel_pool_write", "finprod_g3_curve_target_price_write",
                     "finprod_g3_curve_pump_prob_write", "finprod_g3_override_price_write", "finprod_g3_write",
@@ -401,21 +405,26 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             String domainPrefix,
             boolean read,
             boolean authenticatedOnly,
-            Set<String> exactAuthorities) {
+            Set<String> exactAuthorities,
+            Set<String> allOfAlternative) {
         static RequiredAuthority domainRead(String prefix) {
-            return new RequiredAuthority(prefix, true, false, null);
+            return new RequiredAuthority(prefix, true, false, null, null);
         }
 
         static RequiredAuthority domainWrite(String prefix) {
-            return new RequiredAuthority(prefix, false, false, null);
+            return new RequiredAuthority(prefix, false, false, null, null);
         }
 
         static RequiredAuthority authenticated() {
-            return new RequiredAuthority(null, false, true, null);
+            return new RequiredAuthority(null, false, true, null, null);
         }
 
         static RequiredAuthority exact(String... authorities) {
-            return new RequiredAuthority(null, false, false, Set.of(authorities));
+            return exactOrAll(null, authorities);
+        }
+
+        static RequiredAuthority exactOrAll(Set<String> allOfAlternative, String... authorities) {
+            return new RequiredAuthority(null, false, false, Set.of(authorities), allOfAlternative);
         }
 
         String describe() {
@@ -423,7 +432,8 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
                 return "AUTHENTICATED";
             }
             if (exactAuthorities != null) {
-                return String.join(" OR ", exactAuthorities);
+                String exact = String.join(" OR ", exactAuthorities);
+                return allOfAlternative == null ? exact : exact + " OR (" + String.join(" AND ", allOfAlternative) + ")";
             }
             return domainPrefix + (read ? "*_read" : "*_(write/high)");
         }
@@ -433,7 +443,8 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
                 return true;
             }
             if (exactAuthorities != null) {
-                return actualAuthorities.stream().anyMatch(exactAuthorities::contains);
+                return actualAuthorities.stream().anyMatch(exactAuthorities::contains)
+                        || (allOfAlternative != null && actualAuthorities.containsAll(allOfAlternative));
             }
             if (domainPrefix == null) {
                 return false;

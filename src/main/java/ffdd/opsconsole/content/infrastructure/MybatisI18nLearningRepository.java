@@ -474,6 +474,25 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
     }
 
     @Override
+    public Optional<LearningCourseView> findLegacyCourseDraftForActivation(String courseId) {
+        return Optional.ofNullable(helpArticleMapper.lockLearningCourse(courseId))
+                .map(entity -> {
+                    String key = "learn." + courseId(entity.getArticleCode());
+                    return toCourseView(entity, lockCourseCopy(key + ".title"), lockCourseCopy(key + ".body"));
+                });
+    }
+
+    private I18nMessagePairView lockCourseCopy(String key) {
+        return findMessagePairForUpdate(key).orElseGet(() -> {
+            var rows = messageMapper.selectList(new LambdaQueryWrapper<I18nMessageEntity>()
+                    .eq(I18nMessageEntity::getMessageKey, key)
+                    .eq(I18nMessageEntity::getIsDeleted, 0)
+                    .last("FOR UPDATE"));
+            return rows.isEmpty() ? null : toPair(key, rows, "v1", "published");
+        });
+    }
+
+    @Override
     public List<LearningCourseView> listPublishedCourses() {
         return learningCourseEntities().stream()
                 .filter(entity -> Integer.valueOf(1).equals(entity.getStatus()))
@@ -600,6 +619,14 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
     }
 
     @Override
+    public LearningCourseView publishLegacyCourseDraft(LearningCourseView course, LocalDateTime now) {
+        String key = "learn." + course.id();
+        saveMessagePair(key + ".title", course.titleZh(), course.titleEn(), course.titleVi(), course.titleTranslations(), "published", now);
+        saveMessagePair(key + ".body", course.bodyZh(), course.bodyEn(), course.bodyVi(), course.bodyTranslations(), "published", now);
+        return updateCourseStatus(course.id(), "published", now);
+    }
+
+    @Override
     public LearningCourseView updateCourseReward(String courseId, BigDecimal rewardNex, LocalDateTime now) {
         HelpArticleEntity entity = Optional.ofNullable(helpArticleMapper.lockLearningCourse(courseId)).orElseThrow();
         entity.setRewardNex(rewardNex);
@@ -632,6 +659,14 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
                         .eq(LearningCourseVersionEntity::getVersionLabel, version)
                         .eq(LearningCourseVersionEntity::getIsDeleted, 0)
                         .last("LIMIT 1")))
+                .map(this::toCourseVersionView);
+    }
+
+    @Override
+    public Optional<LearningCourseVersionView> findCourseVersionForActivation(String courseId, String version) {
+        return courseVersionMapper.lockCourseVersions(courseId).stream()
+                .filter(row -> version == null ? "DRAFT".equals(row.getStatus()) : version.equals(row.getVersionLabel()))
+                .findFirst()
                 .map(this::toCourseVersionView);
     }
 
@@ -689,10 +724,14 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
                 .eq(LearningCourseVersionEntity::getVersionLabel, version)
                 .eq(LearningCourseVersionEntity::getStatus, "DRAFT")
                 .eq(LearningCourseVersionEntity::getIsDeleted, 0).last("LIMIT 1"));
-        if (entity == null) throw new IllegalStateException("LEARNING_COURSE_VERSION_NOT_DRAFT");
-        entity.setIsDeleted(1);
-        entity.setUpdatedAt(now);
-        courseVersionMapper.updateById(entity);
+        if (entity == null) throw new BizException(409, "LEARNING_COURSE_VERSION_NOT_DRAFT");
+        int affected = courseVersionMapper.update(null, Wrappers.<LearningCourseVersionEntity>lambdaUpdate()
+                .set(LearningCourseVersionEntity::getIsDeleted, 1)
+                .set(LearningCourseVersionEntity::getUpdatedAt, now)
+                .eq(LearningCourseVersionEntity::getId, entity.getId())
+                .eq(LearningCourseVersionEntity::getStatus, "DRAFT")
+                .eq(LearningCourseVersionEntity::getIsDeleted, 0));
+        if (affected != 1) throw new BizException(409, "LEARNING_COURSE_VERSION_NOT_DRAFT");
     }
 
     @Override
@@ -1060,6 +1099,11 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         String bodyKey = "learn." + id + ".body";
         I18nMessagePairView title = (publishedOnly ? findPublishedMessagePair(titleKey) : findMessagePair(titleKey)).orElse(null);
         I18nMessagePairView body = (publishedOnly ? findPublishedMessagePair(bodyKey) : findMessagePair(bodyKey)).orElse(null);
+        return toCourseView(entity, title, body);
+    }
+
+    private LearningCourseView toCourseView(HelpArticleEntity entity, I18nMessagePairView title, I18nMessagePairView body) {
+        String id = courseId(entity.getArticleCode());
         String titleZh = title == null ? text(entity.getTitle(), "") : text(title.zh(), text(entity.getTitle(), ""));
         String titleEn = title == null ? "" : text(title.en(), "");
         String titleVi = title == null ? "" : text(title.vi(), "");

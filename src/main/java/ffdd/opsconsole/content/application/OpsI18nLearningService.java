@@ -29,6 +29,7 @@ import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -247,7 +248,7 @@ public class OpsI18nLearningService {
         if (guard != null) {
             return fail(guard);
         }
-        LearningCourseView current = findCourse(courseId);
+        LearningCourseView current = findCourseForUpdate(courseId);
         if (current == null) {
             return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
         }
@@ -372,7 +373,7 @@ public class OpsI18nLearningService {
         if (guard != null) {
             return fail(guard);
         }
-        LearningCourseView current = findCourse(courseId);
+        LearningCourseView current = findCourseForUpdate(courseId);
         if (current == null) {
             return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
         }
@@ -392,48 +393,7 @@ public class OpsI18nLearningService {
 
     @Transactional
     public ApiResult<LearningCourseView> publishCourse(String courseId, String idempotencyKey, I18nActionRequest request) {
-        ApiResult<Void> guard = requireAction(idempotencyKey, request);
-        if (guard != null) {
-            return fail(guard);
-        }
-        LearningCourseView current = findCourse(courseId);
-        if (current == null) {
-            return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
-        }
-        if (!"draft".equals(current.status())) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
-        }
-        if (!hasCompleteQuiz(current)) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEARNING_COURSE_QUIZ_INCOMPLETE");
-        }
-        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        if (current.rewardNex().signum() > 0
-                && coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
-            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-        }
-        LearningCourseView updated;
-        LearningCourseVersionView draft = learningRepository.listCourseVersions(current.id()).stream()
-                .filter(version -> "DRAFT".equals(version.status()))
-                .findFirst().orElse(null);
-        ApiResult<Void> copyQuality = draft == null
-                ? requireCoursePublishable(current.titleZh(), current.titleEn(), current.titleVi(),
-                        current.bodyZh(), current.bodyEn(), current.bodyVi())
-                : requireCoursePublishable(draft.payload());
-        if (copyQuality != null) return fail(copyQuality);
-        if (draft == null) {
-            updated = learningRepository.updateCourseStatus(current.id(), "published", now());
-        } else {
-            try {
-                updated = learningRepository.activateCourseVersion(
-                        current.id(), draft.version(), "DRAFT", current.version(), current.revision(), now());
-            } catch (IllegalStateException ex) {
-                return ApiResult.fail(409, ex.getMessage());
-            }
-        }
-        audit("I7_LEARNING_COURSE_PUBLISHED", "LEARNING_COURSE", current.id(), request.operator(), idempotencyKey, request.reason(), Map.of(
-                "from", current.status(),
-                "to", updated.status()));
-        return ApiResult.ok(updated);
+        return directCourseActivation(CourseActivationKind.FIRST_PUBLISH, courseId, null, idempotencyKey, request);
     }
 
     public ApiResult<List<LearningCourseVersionView>> courseVersions(String courseId) {
@@ -451,7 +411,7 @@ public class OpsI18nLearningService {
         if (!StringUtils.hasText(request.version()) || !COURSE_VERSION_PATTERN.matcher(request.version().trim()).matches()) {
             return ApiResult.fail(422, "LEARNING_COURSE_VERSION_INVALID");
         }
-        LearningCourseView current = findCourse(courseId);
+        LearningCourseView current = findCourseForUpdate(courseId);
         if (current == null) return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
         List<LearningCourseVersionView> versions = learningRepository.listCourseVersions(courseId.trim());
         if (versions.stream().anyMatch(version -> "DRAFT".equals(version.status()))) {
@@ -521,72 +481,121 @@ public class OpsI18nLearningService {
     @Transactional
     public ApiResult<LearningCourseView> publishCourseVersion(String courseId, String version,
             String idempotencyKey, I18nActionRequest request) {
-        ApiResult<Void> guard = requireAction(idempotencyKey, request);
-        if (guard != null) return fail(guard);
-        LearningCourseVersionView target = learningRepository.findCourseVersion(courseId, version).orElse(null);
-        if (target == null) return ApiResult.fail(404, "LEARNING_COURSE_VERSION_NOT_FOUND");
-        if (!"DRAFT".equals(target.status())) return ApiResult.fail(409, "LEARNING_COURSE_VERSION_NOT_DRAFT");
-        LearningCourseView current = findCourse(courseId);
-        if (current == null) return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
-        if (!hasCompleteQuizPayload(target.payload())) return ApiResult.fail(422, "LEARNING_COURSE_QUIZ_INCOMPLETE");
-        ApiResult<Void> copyQuality = requireCoursePublishable(target.payload());
-        if (copyQuality != null) return fail(copyQuality);
-        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        if (target.payload().rewardNex().signum() > 0 && coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
-            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-        }
-        LearningCourseView published;
-        try {
-            published = learningRepository.activateCourseVersion(
-                    courseId, version, "DRAFT", current.version(), current.revision(), now());
-        } catch (IllegalStateException ex) {
-            return ApiResult.fail(409, ex.getMessage());
-        }
-        audit("I7_LEARNING_COURSE_VERSION_PUBLISHED", "LEARNING_COURSE_VERSION", courseId + ":" + version,
-                request.operator(), idempotencyKey, request.reason(), Map.of("version", version));
-        return ApiResult.ok(published);
+        return directCourseActivation(CourseActivationKind.PUBLISH, courseId, version, idempotencyKey, request);
     }
 
     @Transactional
     public ApiResult<LearningCourseView> rollbackCourseVersion(String courseId, String version,
             String idempotencyKey, I18nActionRequest request) {
+        return directCourseActivation(CourseActivationKind.ROLLBACK, courseId, version, idempotencyKey, request);
+    }
+
+    private ApiResult<LearningCourseView> directCourseActivation(CourseActivationKind kind, String courseId, String version,
+            String idempotencyKey, I18nActionRequest request) {
         ApiResult<Void> guard = requireAction(idempotencyKey, request);
         if (guard != null) return fail(guard);
-        LearningCourseView current = findCourse(courseId);
-        LearningCourseVersionView target = learningRepository.findCourseVersion(courseId, version).orElse(null);
-        if (current == null || target == null) return ApiResult.fail(404, "LEARNING_COURSE_VERSION_NOT_FOUND");
-        if (!"SUPERSEDED".equals(target.status()) || version.equals(current.version())) {
-            return ApiResult.fail(409, "LEARNING_COURSE_ROLLBACK_TARGET_INVALID");
+        CourseActivation activation = lockCourseActivation(kind, courseId, version);
+        if (activation == null) {
+            return ApiResult.fail(404, kind == CourseActivationKind.FIRST_PUBLISH
+                    ? "LEARNING_COURSE_NOT_FOUND" : "LEARNING_COURSE_VERSION_NOT_FOUND");
         }
-        ApiResult<Void> copyQuality = requireCoursePublishable(target.payload());
-        if (copyQuality != null) return fail(copyQuality);
-        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        if (target.payload().rewardNex().compareTo(current.rewardNex()) > 0
-                && coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
-            auditRejected("I7_LEARNING_COURSE_VERSION_ROLLBACK_REJECTED", "LEARNING_COURSE_VERSION",
-                    courseId + ":" + version, request.operator(), idempotencyKey, request.reason(), Map.of(
-                            "targetVersion", version,
-                            "rewardNex", target.payload().rewardNex(),
-                            "coverageRatio", coverage.coverageRatio(),
-                            "redlinePct", coverage.redlinePct()));
-            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
-                    OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-        }
-        LearningCourseView rolledBack;
         try {
-            rolledBack = learningRepository.activateCourseVersion(
-                    courseId, version, "SUPERSEDED", current.version(), current.revision(), now());
-        } catch (IllegalStateException ex) {
-            return ApiResult.fail(409, ex.getMessage());
+            requireCourseActivation(activation);
+        } catch (BizException ex) {
+            return ApiResult.fail(ex.getCode(), ex.getMessage());
         }
-        audit("I7_LEARNING_COURSE_VERSION_ROLLED_BACK", "LEARNING_COURSE_VERSION", courseId + ":" + version,
-                request.operator(), idempotencyKey, request.reason(), Map.of(
-                        "from", current.version(),
-                        "to", version,
-                        "rewardNex", target.payload().rewardNex(),
-                        "coverageRatio", coverage.coverageRatio(),
-                        "redlinePct", coverage.redlinePct()));
-        return ApiResult.ok(rolledBack);
+        if (activation.amplifies()) {
+            return ApiResult.fail(409, "LEARNING_COURSE_ACTIVATION_APPROVAL_REQUIRED");
+        }
+        TreasuryCoverageSnapshot coverage = kind == CourseActivationKind.ROLLBACK ? coverageFacade.snapshot() : null;
+        return activateCourse(activation, idempotencyKey, request, coverage, null);
+    }
+
+    enum CourseActivationKind { FIRST_PUBLISH, PUBLISH, ROLLBACK }
+
+    record CourseActivation(CourseActivationKind kind, LearningCourseView current, LearningCourseVersionView target) {
+        String targetVersion() { return target == null ? current.version() : target.version(); }
+
+        BigDecimal targetReward() { return target == null ? current.rewardNex() : target.payload().rewardNex(); }
+
+        boolean amplifies() {
+            return kind == CourseActivationKind.ROLLBACK
+                    ? targetReward().compareTo(current.rewardNex()) > 0 : targetReward().signum() > 0;
+        }
+    }
+
+    CourseActivation lockCourseActivation(CourseActivationKind kind, String courseId, String version) {
+        LearningCourseView current = findCourseForUpdate(courseId);
+        if (current == null) return null;
+        var target = learningRepository.findCourseVersionForActivation(current.id(),
+                kind == CourseActivationKind.FIRST_PUBLISH ? null : version).orElse(null);
+        if (target == null && kind == CourseActivationKind.FIRST_PUBLISH && "draft".equals(current.status())) {
+            current = learningRepository.findLegacyCourseDraftForActivation(current.id()).orElseThrow();
+        }
+        return new CourseActivation(kind, current, target);
+    }
+
+    void requireCourseActivation(CourseActivation activation) {
+        var current = activation.current();
+        var target = activation.target();
+        if (activation.kind() == CourseActivationKind.FIRST_PUBLISH) {
+            if (!"draft".equals(current.status())) {
+                throw new BizException(409, OpsErrorCode.INVALID_STATE_TRANSITION.name());
+            }
+        } else if (target == null) {
+            throw new BizException(404, "LEARNING_COURSE_VERSION_NOT_FOUND");
+        }
+        if (activation.kind() == CourseActivationKind.ROLLBACK) {
+            if (!"SUPERSEDED".equals(target.status()) || target.version().equals(current.version())) {
+                throw new BizException(409, "LEARNING_COURSE_ROLLBACK_TARGET_INVALID");
+            }
+        } else {
+            if (target != null && !"DRAFT".equals(target.status())) {
+                throw new BizException(409, "LEARNING_COURSE_VERSION_NOT_DRAFT");
+            }
+            if (!(target == null ? hasCompleteQuiz(current) : hasCompleteQuizPayload(target.payload()))) {
+                throw new BizException(422, "LEARNING_COURSE_QUIZ_INCOMPLETE");
+            }
+        }
+        ApiResult<Void> quality = target == null
+                ? requireCoursePublishable(current.titleZh(), current.titleEn(), current.titleVi(),
+                        current.bodyZh(), current.bodyEn(), current.bodyVi())
+                : requireCoursePublishable(target.payload());
+        if (quality != null) throw new BizException(quality.getCode(), quality.getMessage());
+    }
+
+    ApiResult<LearningCourseView> activateCourse(CourseActivation activation, String idempotencyKey,
+            I18nActionRequest request, TreasuryCoverageSnapshot coverage, String operationId) {
+        var current = activation.current();
+        var target = activation.target();
+        LocalDateTime now = now();
+        LearningCourseView updated = target != null
+                ? learningRepository.activateCourseVersion(current.id(), target.version(), target.status(),
+                        current.version(), current.revision(), now)
+                : operationId != null ? learningRepository.publishLegacyCourseDraft(current, now)
+                        : learningRepository.updateCourseStatus(current.id(), "published", now);
+        Map<String, Object> detail = new LinkedHashMap<>();
+        if (operationId != null) detail.put("a2OperationId", operationId);
+        switch (activation.kind()) {
+            case FIRST_PUBLISH -> {
+                detail.put("from", current.status());
+                detail.put("to", updated.status());
+                audit("I7_LEARNING_COURSE_PUBLISHED", "LEARNING_COURSE", current.id(),
+                        request.operator(), idempotencyKey, request.reason(), detail);
+            }
+            case PUBLISH -> {
+                detail.put("version", target.version());
+                audit("I7_LEARNING_COURSE_VERSION_PUBLISHED", "LEARNING_COURSE_VERSION", current.id() + ":" + target.version(),
+                        request.operator(), idempotencyKey, request.reason(), detail);
+            }
+            case ROLLBACK -> {
+                detail.putAll(Map.of("from", current.version(), "to", target.version(), "rewardNex", activation.targetReward(),
+                        "coverageRatio", coverage.coverageRatio(), "redlinePct", coverage.redlinePct()));
+                audit("I7_LEARNING_COURSE_VERSION_ROLLED_BACK", "LEARNING_COURSE_VERSION", current.id() + ":" + target.version(),
+                        request.operator(), idempotencyKey, request.reason(), detail);
+            }
+        }
+        return ApiResult.ok(updated);
     }
 
     @Transactional
@@ -822,6 +831,9 @@ public class OpsI18nLearningService {
                     || question.optionsZh().size() < 2
                     || question.optionsZh().size() != question.optionsEn().size()
                     || question.optionsZh().size() != question.optionsVi().size()
+                    || question.optionsZh().stream().anyMatch(value -> !StringUtils.hasText(value))
+                    || question.optionsEn().stream().anyMatch(value -> !StringUtils.hasText(value))
+                    || question.optionsVi().stream().anyMatch(value -> !StringUtils.hasText(value))
                     || question.correctOptionIndex() < 0 || question.correctOptionIndex() >= question.optionsZh().size()) {
                 return false;
             }
@@ -1073,22 +1085,4 @@ public class OpsI18nLearningService {
                 .build());
     }
 
-    private void auditRejected(String action, String resourceType, String resourceId, String operator,
-            String idempotencyKey, String reason, Map<String, Object> extra) {
-        Map<String, Object> detail = new LinkedHashMap<>();
-        detail.put("idempotencyKey", idempotencyKey.trim());
-        detail.put("reason", reason.trim());
-        detail.putAll(extra);
-        auditLogService.recordRequired(AuditLogWriteRequest.builder()
-                .action(action)
-                .resourceType(resourceType)
-                .resourceId(resourceId)
-                .bizNo(resourceId)
-                .actorType("ADMIN")
-                .actorUsername(operator(operator))
-                .result("REJECTED")
-                .riskLevel("HIGH")
-                .detail(detail)
-                .build());
-    }
 }

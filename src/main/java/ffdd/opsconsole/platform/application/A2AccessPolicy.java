@@ -1,5 +1,7 @@
 package ffdd.opsconsole.platform.application;
 
+import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
+
 import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.growth.application.H5GrowthApproval;
@@ -68,6 +70,7 @@ public class A2AccessPolicy {
             if (roleResolver.isActiveAdministrator(id)) {
                 Set<String> grants = permissions.getPermissionCodes(id);
                 if (grants.contains("platform_a2_read") || grants.contains("overview_b1_redline_write")
+                        || LearningCourseActivationApproval.hasMakerAuthorities(grants)
                         || grants.contains("overview_b5_threshold_write")
                         || grants.contains(E2TaskPricingApproval.MAKER_AUTHORITY)
                         || grants.contains(H8RewardParamApproval.MAKER_AUTHORITY)
@@ -114,6 +117,10 @@ public class A2AccessPolicy {
     }
 
     boolean canAccessOwnBusinessProposal(AuditReplayCommand command, long actorId) {
+        if (LearningCourseActivationApproval.supports(command)) {
+            return Long.valueOf(actorId).equals(LearningCourseActivationApproval.makerId(command))
+                    && LearningCourseActivationApproval.hasMakerAuthorities(permissions.getPermissionCodes(actorId));
+        }
         String authority;
         if (TreasuryThresholdApproval.supports(command)) {
             authority = TreasuryThresholdApproval.makerAuthority(command);
