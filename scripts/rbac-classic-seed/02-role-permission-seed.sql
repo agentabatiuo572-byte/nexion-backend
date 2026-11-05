@@ -7,7 +7,8 @@
 -- 超管：全部权限
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p WHERE r.role_code='SUPER_ADMIN'
-  AND LEFT(p.permission_code,17) <> 'growth_promotion_';
+  AND LEFT(p.permission_code,17) <> 'growth_promotion_'
+  AND (p.permission_code <> 'overview_b0_export' OR (r.status=1 AND r.is_deleted=0));
 
 -- H4 新促销：补齐超管细项，并恢复此前被软删除的超管绑定。
 INSERT INTO nx_admin_role_permission (role_id, permission_id)
@@ -22,7 +23,8 @@ ON DUPLICATE KEY UPDATE is_deleted = 0, updated_at = NOW();
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
 WHERE r.role_code='AUDITOR' AND p.perm_type='READ' AND p.status=1 AND p.is_deleted=0
-  AND LEFT(p.permission_code,17) <> 'growth_promotion_';
+  AND LEFT(p.permission_code,17) <> 'growth_promotion_'
+  AND p.permission_code <> 'overview_b0_export';
 
 -- A 域(platform_)：config 延伸→仅超管(上面已给)+审计读(上面已给)。运营账号治理高敏不放开。
 -- 风控仅补 A2 读和“按自身业务权限创建提案”；业务指令仍由 AuditReplayBusinessPermissionGuard 二次校验。
@@ -37,6 +39,7 @@ SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permissio
 WHERE r.role_code IN ('FINANCE','RISK','CONTENT','GROWTH','CONFIG_ADMIN')
   AND p.permission_code NOT LIKE 'overview_b1_%'
   AND p.permission_code NOT LIKE 'overview_b2_%'
+  AND p.permission_code <> 'overview_b0_export'
   AND p.permission_code NOT IN ('overview_b3_view_write','overview_b3_export')
   AND p.status=1 AND p.is_deleted=0;
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)

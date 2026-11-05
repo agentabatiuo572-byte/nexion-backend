@@ -428,6 +428,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261104_console_menu_permission_neutral_names.sql")
   (Join-Path $root "scripts\migrations\20261104_console_page_catalog_remark_neutral_names.sql")
   (Join-Path $root "scripts\migrations\20261105_d2_preserve_review_reason.sql")
+  (Join-Path $root "scripts\migrations\20261105_b0_snapshot_export_permission.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

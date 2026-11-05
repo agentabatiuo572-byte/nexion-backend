@@ -175,7 +175,10 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
                 && (HttpMethod.GET.matches(request.getMethod()) || HttpMethod.POST.matches(request.getMethod()));
         boolean supportCommandRead = HttpMethod.GET.matches(request.getMethod())
                 && pathMatcher.match("/api/admin/content/support-workbench/commands/*",path);
-        if ((reasonPolicyRead || businessCalendarRead || selfAvatarRequest || selfInviteRequest || supportCommandRead || "/api/admin/auth/activity".equals(path))
+        boolean dashboardExportRequest = HttpMethod.POST.matches(request.getMethod())
+                && "/api/admin/ops-dashboard/exports".equals(path);
+        if ((reasonPolicyRead || businessCalendarRead || selfAvatarRequest || selfInviteRequest || supportCommandRead
+                || dashboardExportRequest || "/api/admin/auth/activity".equals(path))
                 && !isTrustedAuthenticatedAdmin(authentication)) {
             auditDenial(request, authentication, "ADMIN_SUBJECT_REQUIRED", null);
             reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_SUBJECT_REQUIRED");
@@ -274,6 +277,9 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
     // POST exact so the conversations/** write gate cannot turn an M3 observer into a writer.
     private RequiredAuthority requiredAuthority(String path, String method) {
         boolean read = HttpMethod.GET.matches(method) || HttpMethod.HEAD.matches(method);
+        if (HttpMethod.POST.matches(method) && path.equals("/api/admin/ops-dashboard/exports")) {
+            return RequiredAuthority.exact("overview_b0_export");
+        }
         if (read && (path.equals("/api/admin/developer/docs")
                 || path.equals("/api/admin/content/how-it-works"))) {
             return RequiredAuthority.exact("platform_a3_read");
