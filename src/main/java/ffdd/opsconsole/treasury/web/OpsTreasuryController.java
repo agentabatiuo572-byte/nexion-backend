@@ -4,7 +4,9 @@ package ffdd.opsconsole.treasury.web;
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.common.api.OpsAdminApi;
+import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.treasury.application.OpsTreasuryService;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.dto.TreasuryAlertAckRequest;
@@ -17,6 +19,7 @@ import ffdd.opsconsole.treasury.dto.TreasuryThresholdRequest;
 import ffdd.opsconsole.treasury.dto.BankRunThresholdRequest;
 import java.util.Map;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -152,10 +155,12 @@ public class OpsTreasuryController {
         return treasuryService.updateThresholds(idempotencyKey, request);
     }
 
-    @GetMapping(value = "/b2/liabilities/export", produces = "text/csv")
+    @GetMapping("/b2/liabilities/export")
     @PreAuthorize("hasAuthority('overview_b2_export')")
-    public ResponseEntity<byte[]> b2LiabilitiesExport() {
-        return csv("d3-liabilities.csv", treasuryService.liabilitiesCsv());
+    public ResponseEntity<ApiResult<Void>> b2LiabilitiesExport() {
+        return ResponseEntity.status(410)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(ApiResult.fail(410, "B2_LIABILITIES_EXPORT_RETIRED"));
     }
 
     @PostMapping(value = "/reconciliation/export", produces = "text/csv")
@@ -168,12 +173,20 @@ public class OpsTreasuryController {
     }
 
     @PostMapping(value = "/liabilities/export", produces = "text/csv")
-    @PreAuthorize("hasAuthority('finance_d3_export')")
+    @PreAuthorize("hasAnyAuthority('overview_b2_export','finance_d3_export')")
     public ResponseEntity<byte[]> sensitiveLiabilitiesExport(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) TreasuryExportRequest request) {
         return csv("d3-liabilities.csv",
                 treasuryService.sensitiveExportCsv("liabilities", idempotencyKey, request));
+    }
+
+    @ExceptionHandler(BizException.class)
+    public ResponseEntity<ApiResult<Void>> handleBiz(BizException failure) {
+        int code = failure.getCode();
+        return ResponseEntity.status(code >= 100 && code <= 599 ? code : OpsErrorCode.INTERNAL_ERROR.httpStatus())
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(ApiResult.fail(code, failure.getMessage()));
     }
 
     private ResponseEntity<byte[]> csv(String fileName, byte[] body) {

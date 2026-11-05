@@ -2026,7 +2026,7 @@ public class OpsTreasuryService {
         } else if (coverDays.compareTo(BigDecimal.valueOf(15)) >= 0) {
             tier = "WATCH"; color = "cyan"; action = "加强监控到期金额和资金缺口"; notification = "在财务日报中标注";
         } else if (coverDays.compareTo(BigDecimal.valueOf(7)) >= 0) {
-            tier = "WARNING"; color = "yellow"; action = "建议在「提现参数配置」收紧提现节奏，并在「待审核提现」延后处理大额提现"; notification = "实时告警，值班人员跟进";
+            tier = "WARNING"; color = "yellow"; action = "建议在「提现参数配置」收紧提现节奏，并在「提现审核」延后处理大额提现"; notification = "实时告警，值班人员跟进";
         } else {
             tier = "DANGER"; color = "red"; action = "建议评估是否在「紧急停用开关」暂停提现，并上报超级管理员"; notification = "立即上报超级管理员，并在「风险提醒」跟进";
         }
@@ -2176,6 +2176,8 @@ public class OpsTreasuryService {
     }
 
     private void validateStoredForecastConfig(Map<String, Object> config) {
+        // Legacy 90-day policies remain readable until operators explicitly replace them.
+        // Dropping them here would silently reset unrelated stored forecast switches.
         d3WindowDays(String.valueOf(config.get("forecastWindow")), Set.of(7, 30, 90));
         String mode = String.valueOf(config.get("stakingInterestMode")).toUpperCase(Locale.ROOT);
         if (!Set.of("LINEAR", "AT_MATURITY").contains(mode)
@@ -2211,7 +2213,7 @@ public class OpsTreasuryService {
             throw new BizException(400, "D3_FORECAST_CONFIG_REQUIRED");
         }
         String window = StringUtils.hasText(request.forecastWindow()) ? request.forecastWindow().trim().toLowerCase(Locale.ROOT) : String.valueOf(before.get("forecastWindow"));
-        d3WindowDays(window, Set.of(7, 30, 90));
+        d3WindowDays(window, Set.of(7, 30));
         String mode = StringUtils.hasText(request.stakingInterestMode()) ? request.stakingInterestMode().trim().toUpperCase(Locale.ROOT) : String.valueOf(before.get("stakingInterestMode"));
         if (!Set.of("LINEAR", "AT_MATURITY").contains(mode)) {
             throw new BizException(400, "D3_STAKING_INTEREST_MODE_INVALID");
