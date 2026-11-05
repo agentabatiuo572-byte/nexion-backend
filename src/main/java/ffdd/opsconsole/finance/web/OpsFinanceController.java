@@ -12,6 +12,7 @@ import ffdd.opsconsole.finance.dto.TopupCommandRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalParamUpdateRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalQueryRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalReviewRequest;
+import ffdd.opsconsole.finance.dto.WithdrawalReviewView;
 import ffdd.opsconsole.finance.dto.WithdrawalConfirmationRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalBatchReviewRequest;
 import java.math.BigDecimal;
@@ -158,7 +159,7 @@ public class OpsFinanceController {
 
     @GetMapping("/withdrawals")
     @PreAuthorize("hasAuthority('finance_d2_read')")
-    public ApiResult<PageResult<WithdrawalOrderView>> withdrawals(
+    public ApiResult<PageResult<WithdrawalReviewView>> withdrawals(
             @RequestParam(required = false) String status,
             @RequestParam(required = false) Long userId,
             @RequestParam(required = false) String keyword,
@@ -170,7 +171,7 @@ public class OpsFinanceController {
             @RequestParam(required = false) String ipSegment,
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDirection) {
-        return financeService.withdrawals(new WithdrawalQueryRequest(
+        return financeService.withdrawalsForReview(new WithdrawalQueryRequest(
                 status, userId, keyword, pageNum, pageSize, minAmount, maxAmount, minRiskScore,
                 ipSegment, sortBy, sortDirection));
     }
@@ -185,13 +186,13 @@ public class OpsFinanceController {
             BigDecimal minAmount,
             BigDecimal maxAmount,
             Integer minRiskScore) {
-        return withdrawals(status, userId, keyword, pageNum, pageSize, minAmount, maxAmount,
-                minRiskScore, null, null, null);
+        return financeService.withdrawals(new WithdrawalQueryRequest(
+                status, userId, keyword, pageNum, pageSize, minAmount, maxAmount, minRiskScore));
     }
 
     @GetMapping("/withdrawals/{withdrawalNo}")
     @PreAuthorize("hasAuthority('finance_d2_read')")
-    public ApiResult<WithdrawalOrderView> withdrawalDetail(@PathVariable String withdrawalNo) {
+    public ApiResult<WithdrawalReviewView> withdrawalDetail(@PathVariable String withdrawalNo) {
         return financeService.withdrawalDetail(withdrawalNo);
     }
 

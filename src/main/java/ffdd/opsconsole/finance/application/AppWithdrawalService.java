@@ -51,7 +51,6 @@ public class AppWithdrawalService {
     private static final BigDecimal MIN_WITHDRAWAL = new BigDecimal("20.000000");
     private static final String WITHDRAW_KILLSWITCH_KEY = "killswitch.withdraw";
     private static final String WITHDRAW_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.withdraw";
-    private static final String STRONG_REVIEW_THRESHOLD_KEY = "withdrawal.strong_review_threshold_usdt";
 
     private final AppWithdrawalMapper mapper;
     private final PlatformConfigFacade config;
@@ -123,7 +122,7 @@ public class AppWithdrawalService {
             throw new BizException(503, "WITHDRAWAL_POLICY_UNAVAILABLE");
         }
         boolean withdrawalEnabled = withdrawGateEnabled();
-        BigDecimal strongReviewThreshold = strongReviewThreshold();
+        BigDecimal strongReviewThreshold = D2WithdrawalReviewThreshold.require(config);
         return ApiResult.ok(linked(
                 "minAmount", MIN_WITHDRAWAL, "dailyLimitCount", dailyLimit,
                 "balanceMaxRatio", balanceMaxRatio,
@@ -192,8 +191,8 @@ public class AppWithdrawalService {
             throw new BizException(503, "K3_WITHDRAWAL_DECISION_UNAVAILABLE");
         }
         int score = facts.k4RiskScore();
-        BigDecimal strongThreshold = strongReviewThreshold();
-        boolean strong = requested.compareTo(strongThreshold) >= 0;
+        BigDecimal strongThreshold = D2WithdrawalReviewThreshold.require(config);
+        boolean strong = D2WithdrawalReviewThreshold.applies(strongThreshold, requested);
         boolean small = requested.compareTo(policy.smallAmountThresholdUsd()) <= 0;
         boolean fast = small && !strong && score < facts.k4BandLowMax() && "pass".equals(decision.action());
         String route = strong ? "manual" : toClientRiskRoute(finalRiskRoute(score, facts, decision));
@@ -485,11 +484,10 @@ public class AppWithdrawalService {
         String k4Priority = k4Priority(k4Score, riskFacts);
         boolean frozen = "freeze".equals(riskDecision.action());
         boolean delayed = "delay".equals(riskDecision.action());
-        BigDecimal strongReviewThreshold = strongReviewThreshold();
-        boolean strongReview = amount.compareTo(strongReviewThreshold) >= 0;
+        BigDecimal strongReviewThreshold = D2WithdrawalReviewThreshold.require(config);
+        boolean strongReview = D2WithdrawalReviewThreshold.applies(strongReviewThreshold, amount);
         boolean smallAmountEligible = amount.compareTo(policy.smallAmountThresholdUsd()) <= 0;
-        boolean zeroDayAutoReview = rhythm.withdrawCooldownDays() == 0
-                && amount.compareTo(new BigDecimal("1000")) < 0;
+        boolean zeroDayAutoReview = rhythm.withdrawCooldownDays() == 0;
         boolean fastTrack = ((bankQuote == null && smallAmountEligible) || zeroDayAutoReview)
                 && !strongReview && k4Score < riskFacts.k4BandLowMax()
                 && "pass".equals(riskDecision.action());
@@ -627,19 +625,6 @@ public class AppWithdrawalService {
 
     private boolean isProductionOrDefaultProfile(String... profiles) {
         return FundsSandboxProfileGuard.isStrictProductionProfile(profiles);
-    }
-
-    private BigDecimal strongReviewThreshold() {
-        String raw = config.activeValue(STRONG_REVIEW_THRESHOLD_KEY).orElse(null);
-        try {
-            BigDecimal value = new BigDecimal(raw == null ? "" : raw.trim());
-            if (value.compareTo(MIN_WITHDRAWAL) < 0 || value.compareTo(new BigDecimal("10000000")) > 0) {
-                throw new IllegalArgumentException("range");
-            }
-            return value.setScale(6, RoundingMode.UNNECESSARY);
-        } catch (RuntimeException ex) {
-            throw new BizException(503, "A3_STRONG_REVIEW_THRESHOLD_UNAVAILABLE");
-        }
     }
 
     private int validatedDailyLimit() {
