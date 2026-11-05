@@ -61,6 +61,7 @@ public class OpsPlatformParamRegistryService {
             if (key != null && (key.equals("E.compute.computeShareEnabled")
                     || key.equals("platform.compute.download.allowedTargets")
                     || key.startsWith("E.compute.gpuTier.") || key.startsWith("E.compute.download.")
+                    || key.equals("wallet.dual-ledger.thresholds.version")
                     || key.equals("risk.k1.release.appAttestationReleaseHours"))) continue;
             // H9 acceptance runs store payloads here, not operational parameters.
             // Keep those payloads private without hiding unknown config families.

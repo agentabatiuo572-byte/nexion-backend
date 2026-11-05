@@ -17,6 +17,7 @@ import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.risk.facade.RiskTamperSignalFacade;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
@@ -51,6 +52,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.dao.DuplicateKeyException;
@@ -91,6 +94,8 @@ public class OpsTreasuryService {
     private static final String B_ALERT_ACK_IDEMPOTENCY_SCOPE = "TREASURY_B_ALERT_ACK";
     private static final String B_SCOPE_IDEMPOTENCY_SCOPE = "TREASURY_B_SCOPE_UPDATE";
     private static final String B_THRESHOLD_IDEMPOTENCY_SCOPE = "TREASURY_B_THRESHOLD_UPDATE";
+    private static final String B1_THRESHOLD_MUTEX = "B1_DUAL_LEDGER_THRESHOLDS";
+    private static final String B1_THRESHOLD_VERSION_KEY = "wallet.dual-ledger.thresholds.version";
     private static final String B_BANK_RUN_THRESHOLD_IDEMPOTENCY_SCOPE = "TREASURY_B_BANKRUN_THRESHOLD";
     private static final BigDecimal B_GROWTH_OUTFLOW_HEALTHY_RATIO = new BigDecimal("1.2");
     private static final List<BudgetSeed> B4_OPERATION_BUDGETS = List.of(
@@ -604,6 +609,8 @@ public class OpsTreasuryService {
         BigDecimal reserveUsd = money(treasuryReserveBalance().availableUsd());
         BigDecimal currentNexPrice = ledgerRepository.latestNexUsdtPrice().map(this::safe).orElse(BigDecimal.ZERO);
         BigDecimal nexUsdRate = proposedNexPrice == null ? currentNexPrice : proposedNexPrice;
+        // A concurrent change after this read can only make this version stale.
+        long thresholdVersion = fullView ? b1ThresholdVersion() : 0;
         BigDecimal redlinePct = safetyThresholdDecimal(REDLINE_CONFIG_KEY, dualLedgerProperties.getRedlinePct());
         BigDecimal healthyPct = safetyThresholdDecimal(HEALTHY_CONFIG_KEY, dualLedgerProperties.getHealthyPct());
         BigDecimal runRiskPct = safetyThresholdDecimal(RUN_RISK_CONFIG_KEY, dualLedgerProperties.getRunRiskPct());
@@ -648,7 +655,7 @@ public class OpsTreasuryService {
                         "nx_config_item:wallet.dual-ledger.safety-thresholds",
                         "H1 growth rhythm facade"));
         response.put("h1Rhythm", bRhythmSummary());
-        response.put("snapshot", section(
+        Map<String, Object> snapshot = section(
                 "reserveUsd", money(reserveUsd),
                 "liabilitiesUsd", money(liabilitiesUsd),
                 "ratioReserveUsd", reserveUsd,
@@ -665,10 +672,12 @@ public class OpsTreasuryService {
                 "queueBacklogUsd", money(queueBacklogUsd),
                 "avgRiskScore", avgRiskScore.longValue(),
                 "coverageSeries", coverageSeries(now, reserveUsd, liabilitiesUsd),
-                "scope", scope));
+                "scope", scope);
+        response.put("snapshot", snapshot);
         if (!fullView) {
             return response;
         }
+        snapshot.put("thresholdVersion", thresholdVersion);
         response.put("accounts", accounts.stream().map(this::scaleAccount).toList());
         response.put("maturity7d", maturity7d());
         response.put("prev", section(
@@ -937,88 +946,182 @@ public class OpsTreasuryService {
         return ApiResult.ok(response);
     }
 
+    @SuppressWarnings({"unchecked", "rawtypes"})
     public ApiResult<Map<String, Object>> updateThresholds(String idempotencyKey, TreasuryThresholdRequest request) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
         }
-        boolean hasRedline = request.redlinePct() != null;
-        boolean hasHealthy = request.healthyPct() != null;
-        boolean hasRunRisk = request.runRiskPct() != null;
-        if (!hasRedline && !hasHealthy && !hasRunRisk) {
+        if (request.redlinePct() == null && request.healthyPct() == null && request.runRiskPct() == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "THRESHOLD_REQUIRED");
         }
-
-        BigDecimal redline = hasRedline
-                ? threshold(request.redlinePct(), "redlinePct", new BigDecimal("79.9"), BigDecimal.valueOf(150))
-                : safetyThresholdDecimal(REDLINE_CONFIG_KEY, dualLedgerProperties.getRedlinePct());
-        BigDecimal healthy = hasHealthy
-                ? threshold(request.healthyPct(), "healthyPct", new BigDecimal("99.9"), BigDecimal.valueOf(200))
-                : safetyThresholdDecimal(HEALTHY_CONFIG_KEY, dualLedgerProperties.getHealthyPct());
-        BigDecimal runRisk = hasRunRisk
-                ? threshold(request.runRiskPct(), "runRiskPct", BigDecimal.ZERO, BigDecimal.valueOf(100))
-                : safetyThresholdDecimal(RUN_RISK_CONFIG_KEY, dualLedgerProperties.getRunRiskPct());
-        if (redline.compareTo(healthy) >= 0) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REDLINE_MUST_BE_BELOW_HEALTHY");
-        }
-
-        String reason = request.reason().trim();
-        String operator = trimToNull(request.operator());
+        TreasuryThresholdRequest values = normalizeThresholds(request);
+        String operator = trimToNull(values.operator());
         if (operator == null) {
             return ApiResult.fail(OpsErrorCode.OPERATOR_REQUIRED.httpStatus(), OpsErrorCode.OPERATOR_REQUIRED.name());
         }
-        String requestHash = structuredRequestHash(section(
-                "redlinePct", hasRedline ? redline : null,
-                "healthyPct", hasHealthy ? healthy : null,
-                "runRiskPct", hasRunRisk ? runRisk : null,
-                "reason", reason,
-                "operator", operator), "B_THRESHOLD_UPDATE_HASH_FAILED");
-        @SuppressWarnings({"unchecked", "rawtypes"})
-        ApiResult<Map<String, Object>> result = (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
+        Map<String, Object> payload = section(
+                "redlinePct", values.redlinePct(),
+                "healthyPct", values.healthyPct(),
+                "runRiskPct", values.runRiskPct(),
+                "reason", values.reason().trim(),
+                "operator", operator);
+        if (values.expectedVersion() != null) {
+            payload.put("expectedVersion", values.expectedVersion());
+        }
+        String requestHash = structuredRequestHash(payload, "B_THRESHOLD_UPDATE_HASH_FAILED");
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
                 B_THRESHOLD_IDEMPOTENCY_SCOPE,
                 idempotencyKey,
                 requestHash,
                 ApiResult.class,
-                () -> updateThresholdsNew(
-                        idempotencyKey.trim(), redline, healthy, runRisk,
-                        hasRedline, hasHealthy, hasRunRisk, reason, operator));
-        return result;
+                () -> updateThresholdsNew(idempotencyKey.trim(), values, values.expectedVersion(), operator, null));
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ, propagation = Propagation.REQUIRES_NEW)
+    public ApiResult<Map<String, Object>> previewThresholdApproval(TreasuryThresholdRequest request, long expectedVersion) {
+        if (request == null || request.redlinePct() == null || request.runRiskPct() != null) {
+            return ApiResult.fail(422, "B1_THRESHOLDS_PROPOSAL_INVALID");
+        }
+        B1ThresholdChange change = thresholdChange(normalizeThresholds(request));
+        ApiResult<Void> validation = validateThresholdChange(change, expectedVersion, true);
+        if (validation.getCode() != 0) {
+            return ApiResult.fail(validation.getCode(), validation.getMessage());
+        }
+        return ApiResult.ok(Map.of("before", change.before().summary(), "after", change.after().summary()));
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY, rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> executeApprovedThresholds(
+            String idempotencyKey, TreasuryThresholdRequest request, long expectedVersion) {
+        String operationId = A2ReplayContext.operationId();
+        if (!A2ReplayContext.isReplaying() || operationId == null) {
+            return ApiResult.fail(409, "B1_THRESHOLDS_APPROVAL_REQUIRED");
+        }
+        if (request == null || request.redlinePct() == null || request.runRiskPct() != null) {
+            return ApiResult.fail(422, "B1_THRESHOLDS_PROPOSAL_INVALID");
+        }
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        return updateThresholdsNew(idempotencyKey.trim(), normalizeThresholds(request), expectedVersion,
+                AdminActorResolver.resolve(null), operationId);
     }
 
     private ApiResult<Map<String, Object>> updateThresholdsNew(
             String idempotencyKey,
-            BigDecimal redline,
-            BigDecimal healthy,
-            BigDecimal runRisk,
-            boolean hasRedline,
-            boolean hasHealthy,
-            boolean hasRunRisk,
-            String reason,
-            String operator) {
+            TreasuryThresholdRequest values,
+            Long expectedVersion,
+            String operator,
+            String approvalOperationId) {
+        ledgerRepository.lockOperationMutex(B1_THRESHOLD_MUTEX);
+        B1ThresholdChange change = thresholdChange(values);
+        ApiResult<Void> validation = validateThresholdChange(change, expectedVersion, approvalOperationId != null);
+        if (validation.getCode() != 0) {
+            return ApiResult.fail(validation.getCode(), validation.getMessage());
+        }
         Map<String, Object> changed = new LinkedHashMap<>();
-        if (hasRedline) {
-            configFacade.upsertAdminValue(REDLINE_CONFIG_KEY, redline.toPlainString(), "NUMBER", "wallet", "B1 coverage redline threshold");
-            changed.put("redlinePct", redline);
+        if (values.redlinePct() != null) {
+            configFacade.upsertAdminValue(REDLINE_CONFIG_KEY, values.redlinePct().toPlainString(), "NUMBER", "wallet", "B1 coverage redline threshold");
+            changed.put("redlinePct", values.redlinePct());
         }
-        if (hasHealthy) {
-            configFacade.upsertAdminValue(HEALTHY_CONFIG_KEY, healthy.toPlainString(), "NUMBER", "wallet", "B1 coverage healthy threshold");
-            changed.put("healthyPct", healthy);
+        if (values.healthyPct() != null) {
+            configFacade.upsertAdminValue(HEALTHY_CONFIG_KEY, values.healthyPct().toPlainString(), "NUMBER", "wallet", "B1 coverage healthy threshold");
+            changed.put("healthyPct", values.healthyPct());
         }
-        if (hasRunRisk) {
-            configFacade.upsertAdminValue(RUN_RISK_CONFIG_KEY, runRisk.toPlainString(), "NUMBER", "wallet", "B1 run-risk threshold");
-            changed.put("runRiskPct", runRisk);
+        if (values.runRiskPct() != null) {
+            configFacade.upsertAdminValue(RUN_RISK_CONFIG_KEY, values.runRiskPct().toPlainString(), "NUMBER", "wallet", "B1 run-risk threshold");
+            changed.put("runRiskPct", values.runRiskPct());
+        }
+        long version = change.version();
+        if (change.redlineDirection() != 0 || change.before().healthyPct().compareTo(change.after().healthyPct()) != 0) {
+            version++;
+            configFacade.upsertAdminValue(B1_THRESHOLD_VERSION_KEY, Long.toString(version),
+                    "NUMBER", "wallet", "B1 coverage thresholds version");
         }
 
-        audit("B1_DUAL_LEDGER_THRESHOLDS_CHANGED", "DUAL_LEDGER_THRESHOLDS", "B1", operator, section(
-                "changed", changed,
-                "reason", reason,
-                "idempotencyKey", idempotencyKey));
+        Map<String, Object> auditDetail = section("changed", changed, "reason", values.reason().trim(),
+                "idempotencyKey", idempotencyKey);
+        if (approvalOperationId != null) {
+            auditDetail.put("operationId", approvalOperationId);
+            auditDetail.put("before", change.before().summary());
+            auditDetail.put("after", change.after().summary());
+            auditRequired("B1_DUAL_LEDGER_THRESHOLDS_CHANGED", "DUAL_LEDGER_THRESHOLDS", "B1", operator, auditDetail);
+            return ApiResult.ok(section("redlinePct", change.after().redlinePct(),
+                    "healthyPct", change.after().healthyPct(), "thresholdVersion", version));
+        }
+        audit("B1_DUAL_LEDGER_THRESHOLDS_CHANGED", "DUAL_LEDGER_THRESHOLDS", "B1", operator, auditDetail);
         Map<String, Object> response = dualLedger().getData();
         response.put("thresholdUpdate", changed);
         return ApiResult.ok(response);
     }
 
-    @Transactional
+    private TreasuryThresholdRequest normalizeThresholds(TreasuryThresholdRequest request) {
+        return new TreasuryThresholdRequest(
+                request.redlinePct() == null ? null
+                        : threshold(request.redlinePct(), "redlinePct", new BigDecimal("79.9"), BigDecimal.valueOf(150)),
+                request.healthyPct() == null ? null
+                        : threshold(request.healthyPct(), "healthyPct", new BigDecimal("99.9"), BigDecimal.valueOf(200)),
+                request.runRiskPct() == null ? null
+                        : threshold(request.runRiskPct(), "runRiskPct", BigDecimal.ZERO, BigDecimal.valueOf(100)),
+                request.reason(), request.operator(), request.expectedVersion());
+    }
+
+    private long b1ThresholdVersion() {
+        return configFacade.activeValue(B1_THRESHOLD_VERSION_KEY).map(Long::parseLong).orElse(0L);
+    }
+
+    private B1ThresholdChange thresholdChange(TreasuryThresholdRequest values) {
+        long version = b1ThresholdVersion();
+        B1CoverageThresholds before = new B1CoverageThresholds(
+                safetyThresholdDecimal(REDLINE_CONFIG_KEY, dualLedgerProperties.getRedlinePct()),
+                safetyThresholdDecimal(HEALTHY_CONFIG_KEY, dualLedgerProperties.getHealthyPct()));
+        B1CoverageThresholds after = new B1CoverageThresholds(
+                values.redlinePct() == null ? before.redlinePct() : values.redlinePct(),
+                values.healthyPct() == null ? before.healthyPct() : values.healthyPct());
+        return new B1ThresholdChange(version, before, after);
+    }
+
+    private ApiResult<Void> validateThresholdChange(B1ThresholdChange change, Long expectedVersion, boolean approval) {
+        if (expectedVersion != null && expectedVersion != change.version()) {
+            return ApiResult.fail(409, "CONFIG_VERSION_CONFLICT");
+        }
+        if (change.after().redlinePct().compareTo(change.after().healthyPct()) >= 0) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REDLINE_MUST_BE_BELOW_HEALTHY");
+        }
+        if (!approval) {
+            return change.redlineDirection() < 0 ? ApiResult.fail(409, "B1_THRESHOLDS_APPROVAL_REQUIRED") : ApiResult.ok();
+        }
+        if (change.redlineDirection() >= 0) {
+            return ApiResult.fail(422, "B1_THRESHOLDS_AMPLIFICATION_REQUIRED");
+        }
+        Map<?, ?> snapshot = (Map<?, ?>) dualLedgerSnapshot(null, false).get("snapshot");
+        if (!Boolean.TRUE.equals(snapshot.get("valuationReliable"))) {
+            return ApiResult.fail(OpsErrorCode.COVERAGE_UNAVAILABLE.httpStatus(), OpsErrorCode.COVERAGE_UNAVAILABLE.name());
+        }
+        BigDecimal reserve = decimal(snapshot.get("ratioReserveUsd"));
+        BigDecimal liabilities = decimal(snapshot.get("ratioLiabilitiesUsd"));
+        BigDecimal redline = change.after().redlinePct();
+        boolean belowRedline = liabilities.signum() == 0 ? pct(reserve, liabilities).compareTo(redline) < 0
+                : reserve.multiply(ONE_HUNDRED).compareTo(liabilities.multiply(redline)) < 0;
+        return belowRedline ? ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                OpsErrorCode.COVERAGE_BELOW_REDLINE.name()) : ApiResult.ok();
+    }
+
+    private record B1ThresholdChange(long version, B1CoverageThresholds before, B1CoverageThresholds after) {
+        int redlineDirection() {
+            return after.redlinePct().compareTo(before.redlinePct());
+        }
+    }
+
+    private record B1CoverageThresholds(BigDecimal redlinePct, BigDecimal healthyPct) {
+        String summary() {
+            return "红线 " + redlinePct.stripTrailingZeros().toPlainString()
+                    + "% / 健康线 " + healthyPct.stripTrailingZeros().toPlainString() + "%";
+        }
+    }
+
     @SuppressWarnings({"unchecked", "rawtypes"})
     public ApiResult<Map<String, Object>> updateBankRunThresholds(
             String idempotencyKey,
@@ -1040,10 +1143,6 @@ public class OpsTreasuryService {
         BigDecimal redline = hasRedline
                 ? bankRunThreshold(request.redlinePct(), "redlinePct", new BigDecimal("10"), new BigDecimal("80"))
                 : currentBands.redlinePct();
-        if (redline.compareTo(yellow) <= 0) {
-            return ApiResult.fail(
-                    OpsErrorCode.VALIDATION_FAILED.httpStatus(), "BANKRUN_REDLINE_MUST_EXCEED_YELLOW");
-        }
         String operator = AdminActorResolver.resolve(request.operator());
         if (!StringUtils.hasText(operator)) {
             return ApiResult.fail(OpsErrorCode.OPERATOR_REQUIRED.httpStatus(), OpsErrorCode.OPERATOR_REQUIRED.name());
@@ -1062,31 +1161,20 @@ public class OpsTreasuryService {
                 requestHash,
                 ApiResult.class,
                 () -> updateBankRunThresholdsNew(
-                        idempotencyKey.trim(), yellow, redline, hasYellow, hasRedline, reason, operator));
+                        idempotencyKey.trim(), hasYellow ? yellow : null, hasRedline ? redline : null, reason, operator));
     }
 
     private ApiResult<Map<String, Object>> updateBankRunThresholdsNew(
             String idempotencyKey,
             BigDecimal yellow,
             BigDecimal redline,
-            boolean hasYellow,
-            boolean hasRedline,
             String reason,
             String operator) {
-        if (hasYellow) {
-            configFacade.upsertAdminValue(
-                    BANK_RUN_YELLOW_CONFIG_KEY, yellow.stripTrailingZeros().toPlainString(),
-                    "NUMBER", "risk", "B5 bank-run warning threshold");
-        }
-        if (hasRedline) {
-            configFacade.upsertAdminValue(
-                    TreasuryEmergencySignalFacadeAdapter.BANK_RUN_REDLINE_CONFIG_KEY,
-                    redline.stripTrailingZeros().toPlainString(),
-                    "NUMBER", "risk", "B5 bank-run automatic stop threshold used by J1 R1");
-        }
+        var change = BankRunThresholdPolicy.applyDirect(configFacade, yellow, redline, null);
         audit("B5_BANKRUN_THRESHOLDS_CHANGED", "RISK_THRESHOLD", "bankrun", operator, section(
-                "yellowPct", yellow,
-                "redlinePct", redline,
+                "yellowPct", change.after().yellowPct(),
+                "redlinePct", change.after().redlinePct(),
+                "version", change.newVersion(),
                 "reason", reason,
                 "idempotencyKey", idempotencyKey,
                 "linkedDomain", "J1:R1"));

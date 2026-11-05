@@ -4,6 +4,7 @@ import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayable;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,8 +16,13 @@ public class AuditReplayDispatcher {
     private final List<AuditReplayable> replayables;
     @Autowired
     private WithdrawalConfigApproval withdrawalConfigApproval;
+    @Autowired
+    private TreasuryThresholdApproval treasuryThresholdApproval;
 
     public ApiResult<?> dispatch(AuditReplayCommand cmd, AuditReplayContext ctx) {
+        if (TreasuryThresholdApproval.supports(cmd)) {
+            return treasuryThresholdApproval.replay(cmd, ctx);
+        }
         if (WithdrawalConfigApproval.supports(cmd)) {
             return withdrawalConfigApproval.replay(cmd, ctx);
         }

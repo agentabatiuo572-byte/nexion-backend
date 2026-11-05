@@ -1,6 +1,7 @@
 package ffdd.opsconsole.risk.application;
 
 import ffdd.opsconsole.emergency.domain.KillSwitchState;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.dto.B5AlertSubscriptionRequest;
 import ffdd.opsconsole.risk.dto.B5BankRunThresholdRequest;
@@ -34,6 +35,8 @@ import java.util.Optional;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -41,7 +44,6 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class OpsRiskRadarService {
     public static final BigDecimal PRESSURE_RED_LINE = new BigDecimal("0.7");
-    private static final String THRESHOLD_VERSION_KEY = "risk.bankrun-threshold-version";
     private static final String SUBSCRIPTION_CHANNELS_KEY = "risk.alert-subscription.channels";
     private static final String SUBSCRIPTION_WEBHOOK_KEY = "risk.alert-subscription.webhook-url";
     private static final String SUBSCRIPTION_VERSION_KEY = "risk.alert-subscription.version";
@@ -66,10 +68,12 @@ public class OpsRiskRadarService {
     private final AdminOperatorRoleResolver roleResolver;
     private final Clock clock;
 
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public ApiResult<Map<String, Object>> radar() {
         return ApiResult.ok(radarView());
     }
 
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public Map<String, Object> radarView() {
         Map<String, Object> money = mapper.moneySnapshot();
         if (money == null || !money.keySet().containsAll(Set.of(
@@ -86,8 +90,8 @@ public class OpsRiskRadarService {
         BigDecimal pressureNumerator = payout.add(commission);
         boolean pressureCalculable = grossInflow.signum() > 0;
         BigDecimal pressureRatio = pressureCalculable ? ratio(pressureNumerator, grossInflow) : null;
+        long version = BankRunThresholdPolicy.version(configFacade);
         BankRunThresholdPolicy.Bands bands = BankRunThresholdPolicy.resolve(configFacade);
-        long version = configVersion(THRESHOLD_VERSION_KEY, false);
 
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
         if (coverage == null || !coverage.reliable() || coverage.healthyPct() == null) {
@@ -239,12 +243,13 @@ public class OpsRiskRadarService {
         return result;
     }
 
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public ApiResult<Map<String, Object>> preview(B5ThresholdPreviewRequest request) {
         if (request == null) {
             throw new BizException(400, "BANKRUN_THRESHOLD_REQUIRED");
         }
-        Thresholds thresholds = validateThresholds(request.yellowPct(), request.redPct());
-        long currentVersion = configVersion(THRESHOLD_VERSION_KEY, false);
+        long currentVersion = BankRunThresholdPolicy.version(configFacade);
+        Thresholds thresholds = resolveThresholds(parseThresholds(request.yellowPct(), request.redPct()));
         requireExpectedVersion(request.expectedVersion(), currentVersion);
         Map<String, Object> money = mapper.moneySnapshot();
         if (money == null) {
@@ -272,39 +277,66 @@ public class OpsRiskRadarService {
             throw new BizException(400, "BANKRUN_THRESHOLD_REQUIRED");
         }
         String reason = requireReason(request.reason());
-        Thresholds thresholds = validateThresholds(request.yellowPct(), request.redPct());
+        Thresholds requested = parseThresholds(request.yellowPct(), request.redPct());
+        Thresholds thresholds = resolveThresholds(requested);
         String actor = AdminActorResolver.resolve(request.operator());
         requireActor(actor);
         String hash = hash(thresholds.yellow() + "|" + thresholds.red() + "|"
                 + request.expectedVersion() + "|" + reason + "|" + actor);
         return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
                 THRESHOLD_SCOPE, idempotencyKey, hash, ApiResult.class,
-                () -> updateThresholdsNew(thresholds, request.expectedVersion(), reason, actor));
+                () -> updateThresholdsNew(requested, expectedThresholdVersion(request), reason, actor));
     }
 
-    @Transactional
-    ApiResult<Map<String, Object>> updateThresholdsNew(
-            Thresholds thresholds, Long expectedVersion, String reason, String actor) {
-        long currentVersion = configVersion(THRESHOLD_VERSION_KEY, true);
-        requireExpectedVersion(expectedVersion, currentVersion);
-        BankRunThresholdPolicy.Bands before = BankRunThresholdPolicy.resolve(configFacade);
-        configFacade.upsertAdminValue(
-                BankRunThresholdPolicy.YELLOW_CONFIG_KEY, plain(thresholds.yellow()),
-                "NUMBER", "risk", "B5 bank-run warning threshold");
-        configFacade.upsertAdminValue(
-                BankRunThresholdPolicy.REDLINE_CONFIG_KEY, plain(thresholds.red()),
-                "NUMBER", "risk", "B5/J1 R1 shared bank-run redline");
-        configFacade.upsertAdminValue(
-                THRESHOLD_VERSION_KEY, String.valueOf(currentVersion + 1),
-                "NUMBER", "risk", "B5 optimistic concurrency version");
-        auditRequired("B5_BANKRUN_THRESHOLDS_CHANGED", "B5_THRESHOLD", "bankrun", actor, section(
-                "role", roleResolver.resolve(),
-                "before", section("yellowPct", before.yellowPct(), "redPct", before.redlinePct()),
-                "after", section("yellowPct", thresholds.yellow(), "redPct", thresholds.red()),
-                "reason", reason,
-                "version", currentVersion + 1,
-                "linkedDomain", "J1:R1"));
+    private ApiResult<Map<String, Object>> updateThresholdsNew(
+            Thresholds thresholds, long expectedVersion, String reason, String actor) {
+        var change = BankRunThresholdPolicy.applyDirect(configFacade, thresholds.yellow(), thresholds.red(), expectedVersion);
+        auditThresholdChange(change, reason, actor, null);
         return radar();
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ, propagation = Propagation.REQUIRES_NEW)
+    public ApiResult<Map<String, Object>> previewThresholdApproval(B5BankRunThresholdRequest request) {
+        requireReason(request.reason());
+        Thresholds thresholds = parseThresholds(request.yellowPct(), request.redPct());
+        long expectedVersion = expectedThresholdVersion(request);
+        var change = BankRunThresholdPolicy.previewApproval(
+                configFacade, thresholds.yellow(), thresholds.red(), expectedVersion);
+        return ApiResult.ok(section(
+                "before", thresholdSummary(change.before()),
+                "after", thresholdSummary(change.after()),
+                "expectedVersion", expectedVersion));
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY, rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> replayThresholdApproval(B5BankRunThresholdRequest request) {
+        String approvalOperationId = A2ReplayContext.operationId();
+        if (!A2ReplayContext.isReplaying() || approvalOperationId == null) {
+            throw new BizException(409, BankRunThresholdPolicy.APPROVAL_REQUIRED);
+        }
+        String reason = requireReason(request.reason());
+        String actor = AdminActorResolver.resolve(null);
+        requireActor(actor);
+        Thresholds thresholds = parseThresholds(request.yellowPct(), request.redPct());
+        var change = BankRunThresholdPolicy.applyApproved(
+                configFacade, thresholds.yellow(), thresholds.red(), expectedThresholdVersion(request));
+        auditThresholdChange(change, reason, actor, approvalOperationId);
+        return ApiResult.ok(section(
+                "yellowPct", change.after().yellowPct(), "redPct", change.after().redlinePct(),
+                "version", change.newVersion()));
+    }
+
+    private void auditThresholdChange(
+            BankRunThresholdPolicy.Change change, String reason, String actor, String approvalOperationId) {
+        var detail = section(
+                "role", roleResolver.resolve(),
+                "before", section("yellowPct", change.before().yellowPct(), "redPct", change.before().redlinePct()),
+                "after", section("yellowPct", change.after().yellowPct(), "redPct", change.after().redlinePct()),
+                "reason", reason,
+                "version", change.newVersion(),
+                "linkedDomain", "J1:R1");
+        if (approvalOperationId != null) detail.put("approvalOperationId", approvalOperationId);
+        auditRequired("B5_BANKRUN_THRESHOLDS_CHANGED", "B5_THRESHOLD", "bankrun", actor, detail);
     }
 
     public ApiResult<Map<String, Object>> subscription() {
@@ -607,16 +639,20 @@ public class OpsRiskRadarService {
         return result;
     }
 
-    private Thresholds validateThresholds(String yellowValue, String redValue) {
-        BankRunThresholdPolicy.Bands current = BankRunThresholdPolicy.resolve(configFacade);
-        BigDecimal yellow = parseThreshold(
-                yellowValue, current.yellowPct(),
+    private Thresholds parseThresholds(String yellowValue, String redValue) {
+        BigDecimal yellow = parseThreshold(yellowValue,
                 BankRunThresholdPolicy.MIN_YELLOW_PCT, BankRunThresholdPolicy.MAX_YELLOW_PCT,
                 "BANKRUN_YELLOW_INVALID");
-        BigDecimal red = parseThreshold(
-                redValue, current.redlinePct(),
+        BigDecimal red = parseThreshold(redValue,
                 BankRunThresholdPolicy.MIN_REDLINE_PCT, BankRunThresholdPolicy.MAX_REDLINE_PCT,
                 "BANKRUN_RED_INVALID");
+        return new Thresholds(yellow, red);
+    }
+
+    private Thresholds resolveThresholds(Thresholds requested) {
+        BankRunThresholdPolicy.Bands current = BankRunThresholdPolicy.resolve(configFacade);
+        BigDecimal yellow = requested.yellow() == null ? current.yellowPct() : requested.yellow();
+        BigDecimal red = requested.red() == null ? current.redlinePct() : requested.red();
         if (red.compareTo(yellow) <= 0) {
             throw new BizException(400, "BANKRUN_REDLINE_MUST_EXCEED_YELLOW");
         }
@@ -624,9 +660,9 @@ public class OpsRiskRadarService {
     }
 
     private BigDecimal parseThreshold(
-            String value, BigDecimal fallback, BigDecimal min, BigDecimal max, String error) {
+            String value, BigDecimal min, BigDecimal max, String error) {
         if (!StringUtils.hasText(value)) {
-            return fallback;
+            return null;
         }
         try {
             BigDecimal parsed = new BigDecimal(value.trim());
@@ -637,6 +673,13 @@ public class OpsRiskRadarService {
         } catch (NumberFormatException ex) {
             throw new BizException(400, error);
         }
+    }
+
+    private long expectedThresholdVersion(B5BankRunThresholdRequest request) {
+        if (request.expectedVersion() == null) {
+            throw new BizException(409, "B5_THRESHOLD_VERSION_CONFLICT");
+        }
+        return request.expectedVersion();
     }
 
     private void requireExpectedVersion(Long expectedVersion, long currentVersion) {
@@ -723,8 +766,8 @@ public class OpsRiskRadarService {
         return safe(value).setScale(2, RoundingMode.HALF_UP);
     }
 
-    private String plain(BigDecimal value) {
-        return value.stripTrailingZeros().toPlainString();
+    private String thresholdSummary(BankRunThresholdPolicy.Bands bands) {
+        return "{yellowPct=" + bands.yellowPct().toPlainString() + ", redPct=" + bands.redlinePct().toPlainString() + "}";
     }
 
     private String text(Object value) {
