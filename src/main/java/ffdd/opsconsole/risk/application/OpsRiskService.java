@@ -175,6 +175,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             Map.entry("地址信誉", new DimensionMeta("addressReputationSource", "地址信誉", "由 nx_admin_risk_withdraw_rule 配置", "shield", 3)));
 
     private final RiskOpsRepository riskRepository;
+    private final ffdd.opsconsole.risk.mapper.RiskOpsMapper riskMapper;
     private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
@@ -944,6 +945,10 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         response.put("domain", "K2");
         response.put("stats", canonicalK2Stats(rows));
         response.put("params", params);
+        Map<String, Boolean> otpInitializationRequired = new LinkedHashMap<>();
+        OTP_CANONICAL_CONFIG_KEYS.forEach((key, canonicalKey) -> otpInitializationRequired.put(key,
+                !activeOtpSource(riskMapper.otpCanonicalSource(canonicalKey, false))));
+        response.put("otpInitializationRequired", otpInitializationRequired);
         response.put("views", views);
         response.put("sources", List.of(
                 "nx_tradein_application:E3",
@@ -1030,6 +1035,13 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     // Otherwise OTP-backed parameters would re-read the newly written config
                     // and make the audit before/after snapshots identical.
                     RiskArbitrageParamView beforeCanonical = withCanonicalOtpValue(before);
+                    if (OTP_CANONICAL_CONFIG_KEYS.containsKey(normalizedKey)) {
+                        var canonical = riskMapper.otpCanonicalSource(OTP_CANONICAL_CONFIG_KEYS.get(normalizedKey), true);
+                        if (!activeOtpSource(canonical)) {
+                            return ApiResult.fail(409, "K2_OTP_INITIAL_APPROVAL_REQUIRED");
+                        }
+                        canonicalOtpValue(normalizedKey, canonical.value());
+                    }
                     if (before.version() != request.expectedVersion()) {
                         return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K2_PARAM_CONCURRENT_UPDATE");
                     }
@@ -1049,6 +1061,84 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                             "idempotencyKey", idempotencyKey.trim()));
                     return ApiResult.ok(after);
                 });
+    }
+
+    public record K2OtpReview(ffdd.opsconsole.platform.domain.AuditLockTarget target, String action,
+                              String before, String after, Map<String, Object> sources) {}
+
+    @Transactional
+    public K2OtpReview previewOtpInitialization(String key, RiskArbitrageParamUpdateRequest request) {
+        if (!OTP_CANONICAL_CONFIG_KEYS.containsKey(key) || request == null || request.expectedVersion() == null
+                || request.expectedVersion() < 0 || request.value() == null || request.value().length() > 128) {
+            throw new BizException(422, "K2_OTP_PROPOSAL_INVALID");
+        }
+        String value = normalizeArbitrageParam(key, request.value());
+        if (!StringUtils.hasText(value)) throw new BizException(422, "K2_PARAM_VALUE_INVALID");
+        var risk = riskMapper.otpRiskSource(key, true);
+        var canonical = riskMapper.otpCanonicalSource(OTP_CANONICAL_CONFIG_KEYS.get(key), true);
+        if (activeOtpSource(canonical)) {
+            canonicalOtpValue(key, canonical.value());
+            throw new BizException(409, "K2_OTP_ALREADY_CONFIGURED");
+        }
+        long visibleVersion = risk == null || risk.deleted() != 0 ? 0L : risk.version();
+        if (visibleVersion != request.expectedVersion()) throw new BizException(409, "K2_PARAM_CONCURRENT_UPDATE");
+        return new K2OtpReview(K2OtpInitialApproval.target(key), "首次配置验证码设置 · " + key,
+                "auth 未配置；risk " + (risk == null ? "不存在" : risk.value() + " v" + risk.version()),
+                value, otpSourceSnapshot(risk, canonical));
+    }
+
+    @Transactional
+    public ApiResult<RiskArbitrageParamView> executeApprovedOtpInitialization(
+            String key, String idempotencyKey, RiskArbitrageParamUpdateRequest request,
+            Map<?, ?> expectedSources, long makerAdminId) {
+        ApiResult<RiskArbitrageParamView> guard = requireK2Command(idempotencyKey, request.reason());
+        if (guard != null) return guard;
+        return idempotentCommand("K2_PARAM:" + key, idempotencyKey,
+                requestHash(key, request.value(), String.valueOf(request.expectedVersion()), request.reason()), () -> {
+                    var risk = riskMapper.otpRiskSource(key, true);
+                    var canonical = riskMapper.otpCanonicalSource(OTP_CANONICAL_CONFIG_KEYS.get(key), true);
+                    Map<String, Object> before = otpSourceSnapshot(risk, canonical);
+                    if (!before.equals(expectedSources)) throw new BizException(409, "K2_OTP_SOURCE_CHANGED");
+                    previewOtpInitialization(key, request);
+                    String value = normalizeArbitrageParam(key, request.value());
+                    RiskArbitrageParamView definition = riskRepository.arbitrageParams().stream()
+                            .filter(param -> key.equals(param.key())).findFirst().orElseThrow();
+                    int changed = risk == null ? riskMapper.insertArbitrageParam(key, definition.name(), value,
+                            definition.sub(), definition.note(), 1L) : riskMapper.initializeOtpRiskSource(risk, value);
+                    if (changed != 1) throw new BizException(409, "K2_OTP_SOURCE_CHANGED");
+                    String canonicalValue = "otpGate.otpTtlSeconds".equals(key)
+                            ? String.valueOf(Integer.parseInt(value) / 60) : value;
+                    String valueType = "captchaGate.alwaysScenes".equals(key) ? "STRING" : "NUMBER";
+                    boolean saved = canonical == null ? configFacade.insertAdminValueIfMissing(
+                            OTP_CANONICAL_CONFIG_KEYS.get(key), canonicalValue, valueType, "auth-risk",
+                            "K2 OTP gate canonical configuration")
+                            : riskMapper.initializeOtpCanonicalSource(canonical, canonicalValue, valueType) == 1;
+                    if (!saved) throw new BizException(409, "K2_OTP_SOURCE_CHANGED");
+                    RiskArbitrageParamView after = riskMapper.findArbitrageParam(key);
+                    auditRequired("K2_PARAM_CHANGED", "RISK_ARBITRAGE_PARAM", key, authenticatedOperator(), Map.of(
+                            "key", key, "before", before,
+                            "after", otpSourceSnapshot(riskMapper.otpRiskSource(key, false),
+                                    riskMapper.otpCanonicalSource(OTP_CANONICAL_CONFIG_KEYS.get(key), false)),
+                            "reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim(),
+                            "initialConfiguration", true, "makerAdminId", makerAdminId,
+                            "operationId", A2ReplayContext.operationId()));
+                    return ApiResult.ok(after);
+                });
+    }
+
+    private static boolean activeOtpSource(ffdd.opsconsole.risk.mapper.RiskOpsMapper.K2OtpCanonicalSource source) {
+        return source != null && source.status() == 1 && source.deleted() == 0;
+    }
+
+    private static Map<String, Object> otpSourceSnapshot(
+            ffdd.opsconsole.risk.mapper.RiskOpsMapper.K2OtpRiskSource risk,
+            ffdd.opsconsole.risk.mapper.RiskOpsMapper.K2OtpCanonicalSource canonical) {
+        return Map.of("risk", risk == null ? Map.of("exists", false) : Map.of("exists", true,
+                        "id", risk.id().toString(), "value", risk.value(),
+                        "version", Long.toString(risk.version()), "deleted", Integer.toString(risk.deleted())),
+                "canonical", canonical == null ? Map.of("exists", false) : Map.of("exists", true,
+                        "id", canonical.id().toString(), "value", canonical.value(),
+                        "status", Integer.toString(canonical.status()), "deleted", Integer.toString(canonical.deleted())));
     }
 
     @Transactional
@@ -2130,19 +2220,23 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (configKey == null) {
             return param;
         }
-        Optional<String> configured = configFacade.activeValue(configKey).filter(StringUtils::hasText);
+        Optional<String> configured = configFacade.activeValue(configKey);
         if (configured.isEmpty()) {
             return param;
         }
-        String value = configured.get();
-        if ("otpGate.otpTtlSeconds".equals(param.key())) {
-            try {
-                value = normalizeBoundedInteger(String.valueOf(Integer.parseInt(value) * 60), 60, 900);
-            } catch (NumberFormatException ex) {
-                return param;
-            }
-        }
+        String value = canonicalOtpValue(param.key(), configured.get());
         return new RiskArbitrageParamView(param.key(), param.name(), value, param.sub(), param.note(), param.version());
+    }
+
+    private String canonicalOtpValue(String key, String value) {
+        if ("otpGate.otpTtlSeconds".equals(key)) {
+            String minutes = normalizeBoundedInteger(value, 1, 15);
+            if (!StringUtils.hasText(minutes)) throw new BizException(503, "K2_OTP_CANONICAL_INVALID");
+            value = String.valueOf(Integer.parseInt(minutes) * 60);
+        }
+        String normalized = normalizeArbitrageParam(key, value);
+        if (!StringUtils.hasText(normalized)) throw new BizException(503, "K2_OTP_CANONICAL_INVALID");
+        return normalized;
     }
 
     private void persistCanonicalOtpValue(String key, String value) {

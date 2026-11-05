@@ -999,6 +999,46 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     RiskArbitrageParamView findArbitrageParam(@Param("key") String key);
 
+    @Select("""
+            <script>
+            SELECT id,value_text AS value,version,is_deleted AS deleted
+              FROM nx_admin_risk_arbitrage_param WHERE param_key = #{key}
+            <if test="lock">FOR UPDATE</if>
+            </script>
+            """)
+    K2OtpRiskSource otpRiskSource(@Param("key") String key, @Param("lock") boolean lock);
+
+    @Select("""
+            <script>
+            SELECT id,config_value AS value,status,is_deleted AS deleted
+              FROM nx_config_item WHERE config_key = #{key}
+            <if test="lock">FOR UPDATE</if>
+            </script>
+            """)
+    K2OtpCanonicalSource otpCanonicalSource(@Param("key") String key, @Param("lock") boolean lock);
+
+    @Update("""
+            UPDATE nx_admin_risk_arbitrage_param
+               SET value_text = #{value},version = version + 1,is_deleted = 0,updated_at = NOW()
+             WHERE id = #{before.id} AND version = #{before.version} AND is_deleted = #{before.deleted}
+               AND BINARY value_text = BINARY #{before.value}
+            """)
+    int initializeOtpRiskSource(@Param("before") K2OtpRiskSource before, @Param("value") String value);
+
+    @Update("""
+            UPDATE nx_config_item
+               SET config_value = #{value},value_type = #{valueType},config_group = 'auth-risk',
+                   visibility = 'ADMIN',remark = 'K2 OTP gate canonical configuration',
+                   status = 1,is_deleted = 0,updated_at = NOW()
+             WHERE id = #{before.id} AND status = #{before.status} AND is_deleted = #{before.deleted}
+               AND BINARY config_value = BINARY #{before.value}
+            """)
+    int initializeOtpCanonicalSource(@Param("before") K2OtpCanonicalSource before,
+                                     @Param("value") String value, @Param("valueType") String valueType);
+
+    record K2OtpRiskSource(Long id, String value, long version, int deleted) {}
+    record K2OtpCanonicalSource(Long id, String value, int status, int deleted) {}
+
     @Insert("""
             INSERT INTO nx_admin_risk_arbitrage_param (param_key,name,value_text,sub_text,note_text,version,is_deleted)
             VALUES (#{key},#{name},#{value},#{sub},#{note},#{version},0)
