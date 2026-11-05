@@ -303,6 +303,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261022_02_cregis_exception_refund.sql")
   (Join-Path $root "scripts\migrations\20261022_03_cregis_reorg_resolution.sql")
   # Historical deposits must pass the policy snapshot preflight before PROVIDER mode starts.
+  # Complete the retry-compatible install before replaying the immutable historical file.
+  (Join-Path $root "scripts\migrations\20261028_00_cregis_deposit_policy_retry_compat.sql")
   (Join-Path $root "scripts\migrations\20261028_cregis_deposit_policy.sql")
   (Join-Path $root "scripts\migrations\20261007_growth_promotions.sql")
   # Grant H4 capabilities only after the promotion permission rows exist on a fresh database.
