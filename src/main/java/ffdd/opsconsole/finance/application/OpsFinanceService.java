@@ -20,6 +20,7 @@ import ffdd.opsconsole.finance.domain.DepositOpsRepository;
 import ffdd.opsconsole.finance.domain.DepositReconciliationRowView;
 import ffdd.opsconsole.finance.domain.WithdrawalOrderRepository;
 import ffdd.opsconsole.finance.domain.WithdrawalOrderView;
+import ffdd.opsconsole.finance.dto.WithdrawalReviewView;
 import ffdd.opsconsole.finance.dto.TopupCommandRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalParamUpdateRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalLimitsUpdateRequest;
@@ -575,6 +576,13 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 ipSegment, sortBy, sortDirection, pageNum, pageSize));
     }
 
+    public ApiResult<PageResult<WithdrawalReviewView>> withdrawalsForReview(WithdrawalQueryRequest request) {
+        PageResult<WithdrawalOrderView> page = withdrawals(request).getData();
+        BigDecimal threshold = D2WithdrawalReviewThreshold.read(configFacade);
+        return ApiResult.ok(new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(),
+                page.getRecords().stream().map(order -> withD2ReviewThreshold(order, threshold)).toList()));
+    }
+
     @Transactional(rollbackFor = Exception.class)
     @SuppressWarnings({"rawtypes", "unchecked"})
     public ApiResult<Map<String, Object>> updateWithdrawalParam(String idempotencyKey, WithdrawalParamUpdateRequest request) {
@@ -636,14 +644,20 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         return ApiResult.ok(response);
     }
 
-    public ApiResult<WithdrawalOrderView> withdrawalDetail(String withdrawalNo) {
+    public ApiResult<WithdrawalReviewView> withdrawalDetail(String withdrawalNo) {
         if (!StringUtils.hasText(withdrawalNo)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "WITHDRAWAL_NO_REQUIRED");
         }
         ensureD2FallbackSeedData();
         return withdrawalRepository.findByWithdrawalNo(withdrawalNo.trim())
-                .map(ApiResult::ok)
+                .map(order -> ApiResult.ok(withD2ReviewThreshold(order, D2WithdrawalReviewThreshold.read(configFacade))))
                 .orElseGet(() -> ApiResult.fail(404, "WITHDRAWAL_NOT_FOUND"));
+    }
+
+    private WithdrawalReviewView withD2ReviewThreshold(WithdrawalOrderView order, BigDecimal threshold) {
+        Boolean verificationRequired = threshold == null || order.amount() == null
+                ? null : D2WithdrawalReviewThreshold.applies(threshold, order.amount());
+        return new WithdrawalReviewView(order, threshold, verificationRequired);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -659,7 +673,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         ensureD2FallbackSeedData();
-        return executeD2Review(withdrawalNo.trim(), idempotencyKey.trim(), request);
+        return executeD2Review(withdrawalNo.trim(), idempotencyKey.trim(), request, null);
     }
 
     /**
@@ -803,6 +817,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             WithdrawalBatchReviewRequest request,
             String action,
             List<String> canonicalIds) {
+        BigDecimal threshold = "APPROVE".equals(action) ? D2WithdrawalReviewThreshold.require(configFacade) : null;
         List<String> accepted = new java.util.ArrayList<>();
         List<String> rejected = new java.util.ArrayList<>();
         List<Map<String, Object>> conflicts = new java.util.ArrayList<>();
@@ -816,15 +831,14 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 conflicts.add(Map.of("withdrawalId", withdrawalId, "reason", "WITHDRAWAL_NOT_FOUND"));
                 continue;
             }
-            if ("APPROVE".equals(action) && order.amount() != null
-                    && order.amount().compareTo(new BigDecimal("1000")) >= 0) {
+            if (threshold != null && D2WithdrawalReviewThreshold.applies(threshold, order.amount())) {
                 rejected.add(withdrawalId);
                 continue;
             }
             ApiResult<WithdrawalOrderView> item = executeD2Review(
                     withdrawalId,
                     sha256("D2_ITEM|" + idempotencyKey + "|" + withdrawalId),
-                    request.toSingleRequest());
+                    request.toSingleRequest(), threshold);
             if (item.getCode() == 0) {
                 accepted.add(withdrawalId);
             } else {
@@ -854,13 +868,14 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private ApiResult<WithdrawalOrderView> executeD2Review(
             String withdrawalNo,
             String idempotencyKey,
-            WithdrawalReviewRequest request) {
+            WithdrawalReviewRequest request,
+            BigDecimal batchThreshold) {
         ApiResult<WithdrawalOrderView> result = (ApiResult<WithdrawalOrderView>) (ApiResult) idempotencyService.execute(
                 "D2_REVIEW_" + withdrawalNo,
                 idempotencyKey,
                 d2RequestHash(withdrawalNo, request),
                 ApiResult.class,
-                () -> executeD2ReviewOnce(withdrawalNo, idempotencyKey, request));
+                () -> executeD2ReviewOnce(withdrawalNo, idempotencyKey, request, batchThreshold));
         // These exact replies occur before any withdrawal/reserve mutation. Older
         // durable receipts used 503; project their known rejection as 409 even on
         // replay, without deleting a receipt or weakening unknown-outcome handling.
@@ -874,13 +889,15 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private ApiResult<WithdrawalOrderView> executeD2ReviewOnce(
             String withdrawalNo,
             String idempotencyKey,
-            WithdrawalReviewRequest request) {
+            WithdrawalReviewRequest request,
+            BigDecimal batchThreshold) {
         WithdrawalOrderView order = withdrawalRepository.findByWithdrawalNo(withdrawalNo).orElse(null);
         if (order == null) {
             return ApiResult.fail(404, "WITHDRAWAL_NOT_FOUND");
         }
         String action = request.action().trim().toUpperCase(Locale.ROOT);
         D2CurrentRisk currentRisk = null;
+        boolean strongReview = false;
         if (withdrawalPayoutFinalizer.providerDispatchStarted(withdrawalNo,order.userId()))
             return ApiResult.fail(409,"CREGIS_PAYOUT_ALREADY_DISPATCHED");
         // A bank failure is already atomically refunded by its provider finalizer. An unknown
@@ -898,6 +915,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             if (recipientBlock != null) return ApiResult.fail(409, recipientBlock);
         }
         if ("APPROVE".equals(action)) {
+            BigDecimal threshold = batchThreshold == null ? D2WithdrawalReviewThreshold.require(configFacade) : batchThreshold;
+            strongReview = D2WithdrawalReviewThreshold.applies(threshold, order.amount());
             currentRisk = currentD2Risk(order, LocalDateTime.now(clock));
             if (currentRisk.failureReason() != null) {
                 return ApiResult.fail(409, currentRisk.failureReason());
@@ -909,11 +928,11 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K3_CURRENT_ROUTE_REQUIRES_DELAY");
             }
         }
-        ApiResult<WithdrawalOrderView> formGuard = validateD2ActionFields(action, request, order);
+        ApiResult<WithdrawalOrderView> formGuard = validateD2ActionFields(action, request, strongReview);
         if (formGuard != null) {
             return formGuard;
         }
-        if (!isD2RoleAllowed(action, order.amount())) {
+        if (!isD2RoleAllowed(action, strongReview)) {
             return ApiResult.fail(403, "WITHDRAWAL_ROLE_NOT_ALLOWED");
         }
         if (withdrawalRepository.isFrozenByUserStatus(order.withdrawalNo())) {
@@ -1629,7 +1648,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     }
 
     private ApiResult<WithdrawalOrderView> validateD2ActionFields(
-            String action, WithdrawalReviewRequest request, WithdrawalOrderView order) {
+            String action, WithdrawalReviewRequest request, boolean strongReview) {
         if ("REJECT".equals(action) && !D2_REASON_CODES.contains(
                 trimToEmpty(request.reasonCode()).toUpperCase(Locale.ROOT))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "WITHDRAWAL_REASON_CODE_REQUIRED");
@@ -1657,9 +1676,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "WITHDRAWAL_FREEZE_LIFECYCLE_REQUIRED");
             }
         }
-        if ("APPROVE".equals(action) && order.amount() != null
-                && order.amount().compareTo(new BigDecimal("1000")) >= 0
-                && !Boolean.TRUE.equals(request.addressVerified())) {
+        if (strongReview && !Boolean.TRUE.equals(request.addressVerified())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "WITHDRAWAL_ADDRESS_CONFIRMATION_REQUIRED");
         }
         if ("REFUND".equals(action) && !Boolean.TRUE.equals(request.fundsVerified())) {
@@ -1668,7 +1685,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         return null;
     }
 
-    private boolean isD2RoleAllowed(String action, BigDecimal amount) {
+    private boolean isD2RoleAllowed(String action, boolean strongReview) {
         String role = trimToEmpty(operatorRoleResolver.resolveCode()).toUpperCase(Locale.ROOT);
         if (!StringUtils.hasText(role)) {
             // Endpoint authorization remains the first gate. Blank role is only expected for direct-construction
@@ -1682,7 +1699,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if ("REFUND".equals(action) || "FREEZE".equals(action) || "UNFREEZE".equals(action)) {
             return lead;
         }
-        if ("APPROVE".equals(action) && amount != null && amount.compareTo(new BigDecimal("1000")) >= 0) {
+        if (strongReview) {
             return "FINANCE_LEAD".equals(role);
         }
         return true;
@@ -1788,17 +1805,18 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (rhythm == null || !rhythm.reliable() || rhythm.withdrawCooldownDays() < 0)
             return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
                     "H1_WITHDRAWAL_DIAL_UNAVAILABLE", "withdraw.review_due", null);
-        if ("H1_ZERO_DAY_AUTO_REVIEW".equals(order.lifecycleOwner())) {
-            BigDecimal strongThreshold = configDecimal("withdrawal.strong_review_threshold_usdt", BigDecimal.ZERO);
-            if (rhythm.withdrawCooldownDays() != 0 || strongThreshold.compareTo(new BigDecimal("20")) < 0
-                    || order.amount() == null || order.amount().compareTo(strongThreshold) >= 0)
-                return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
-                        "WITHDRAWAL_AUTO_REVIEW_POLICY_CHANGED", "withdraw.review_due", null);
-        }
+        BigDecimal threshold = D2WithdrawalReviewThreshold.read(configFacade);
+        if (threshold == null)
+            return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
+                    D2WithdrawalReviewThreshold.UNAVAILABLE, "withdraw.review_due", null);
+        boolean zeroDayAutoReview = "H1_ZERO_DAY_AUTO_REVIEW".equals(order.lifecycleOwner());
+        if ((zeroDayAutoReview && rhythm.withdrawCooldownDays() != 0) || order.amount() == null
+                || D2WithdrawalReviewThreshold.applies(threshold, order.amount()))
+            return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
+                    "WITHDRAWAL_AUTO_REVIEW_POLICY_CHANGED", "withdraw.review_due", null);
         boolean bankOrder = "BANK-VND".equals(order.chain());
         if (bankOrder) {
-            if (!"H1_ZERO_DAY_AUTO_REVIEW".equals(order.lifecycleOwner()) || order.amount() == null
-                    || order.amount().compareTo(new BigDecimal("1000")) >= 0)
+            if (!zeroDayAutoReview)
                 return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
                         "BANK_PAYOUT_MANUAL_REVIEW_REQUIRED", "withdraw.review_due", null);
             if (appWithdrawalMapper.lockActiveUser(order.userId()) == null)
