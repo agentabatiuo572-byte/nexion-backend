@@ -1355,6 +1355,10 @@ public class OpsTeamService implements AuditReplayable {
             persistedValue = LeadershipPoolSettleScheduler.normalizeCron(value);
         } else if ("F.pool.ratio".equals(key)) {
             persistedValue = LeadershipPoolConfigGuard.canonicalConfiguredPercent(value);
+        } else if ("F.binary.matchRate".equals(key)) {
+            persistedValue = BinarySettlementPolicyProvider.normalizeMatchRate(value).movePointRight(2).toPlainString() + "%";
+        } else if ("F.binary.threshold".equals(key)) {
+            persistedValue = BinarySettlementPolicyProvider.normalizeThreshold(value).toPlainString();
         } else {
             persistedValue = value;
         }
@@ -1821,9 +1825,15 @@ public class OpsTeamService implements AuditReplayable {
                 case "F.pool.top1MaxPct", "F.pool.top5MaxPct" ->
                         percentRatio(newValue, BigDecimal.ZERO).compareTo(percentRatio(oldValue, BigDecimal.ZERO)) > 0;
                 // 门槛下调 = 放大(更低门槛触发更多结算)
-                case "F.binary.threshold" ->
-                        parseDecimal(newValue.replace("$", ""), BigDecimal.ZERO)
-                                .compareTo(parseDecimal(oldValue.replace("$", ""), BigDecimal.ZERO)) < 0;
+                case "F.binary.threshold" -> {
+                    BigDecimal next = BinarySettlementPolicyProvider.normalizeThreshold(newValue);
+                    try {
+                        yield next.compareTo(BinarySettlementPolicyProvider.normalizeThreshold(oldValue)) < 0;
+                    } catch (IllegalArgumentException invalidCurrent) {
+                        // Repairing an invalid/missing threshold re-enables settlement.
+                        yield true;
+                    }
+                }
                 case "F.unilevel.depthGate" -> {
                     int next = depthGateLayer(newValue);
                     try {
@@ -1852,7 +1862,7 @@ public class OpsTeamService implements AuditReplayable {
     private static BigDecimal currentBinaryMatchRate(String value) {
         try {
             return BinarySettlementPolicyProvider.normalizeMatchRate(value);
-        } catch (NumberFormatException ex) {
+        } catch (IllegalArgumentException ex) {
             return BigDecimal.ZERO;
         }
     }
@@ -2917,8 +2927,17 @@ public class OpsTeamService implements AuditReplayable {
         }
     }
 
+    public static void validateBinaryUiConfig(String key, String value) {
+        switch (key) {
+            case "F.binary.threshold" -> BinarySettlementPolicyProvider.normalizeThreshold(value);
+            case "F.binary.matchRate" -> BinarySettlementPolicyProvider.normalizeMatchRate(value);
+            default -> { }
+        }
+    }
+
     // key-specific 校验:开关 / 数字范围 / JSON schema / 动态调度表达式。
     private void validateUiConfig(String key, String value) {
+        validateBinaryUiConfig(key, value);
         switch (key) {
             case "F.vrank.permanent", "F.leaderboard.paused", "F.binary.paused" -> {
                 if (!"on".equalsIgnoreCase(value) && !"off".equalsIgnoreCase(value)) {

@@ -40,8 +40,12 @@ public class BinarySettlementPolicyProvider {
     }
 
     private BinarySettlementPolicy lockPolicy(boolean checkCurrentCoverage) {
-        BigDecimal threshold = positiveMoney(require(THRESHOLD_KEY, "F3_THRESHOLD_MISSING"),
-                "F3_THRESHOLD_INVALID");
+        BigDecimal threshold;
+        try {
+            threshold = normalizeThreshold(require(THRESHOLD_KEY, "F3_THRESHOLD_MISSING"));
+        } catch (IllegalArgumentException invalid) {
+            throw new PolicyBlocked("F3_THRESHOLD_INVALID");
+        }
         BigDecimal matchRate = rate(require(MATCH_RATE_KEY, "F3_MATCH_RATE_MISSING"));
         boolean paused = strictBoolean(require(PAUSED_KEY, "F3_PAUSED_CONFIG_MISSING"));
         boolean spilloverEnabled = strictEnabled(require(SPILLOVER_KEY, "F3_SPILLOVER_CONFIG_MISSING"));
@@ -124,26 +128,36 @@ public class BinarySettlementPolicyProvider {
 
     private BigDecimal rate(String raw) {
         try {
-            BigDecimal parsed = normalizeMatchRate(raw);
-            if (parsed.signum() <= 0 || parsed.compareTo(BigDecimal.ONE) > 0) {
-                throw new PolicyBlocked("F3_MATCH_RATE_INVALID");
-            }
-            return parsed.stripTrailingZeros();
-        } catch (PolicyBlocked ex) {
-            throw ex;
-        } catch (RuntimeException ex) {
+            return normalizeMatchRate(raw);
+        } catch (IllegalArgumentException ex) {
             throw new PolicyBlocked("F3_MATCH_RATE_INVALID");
         }
     }
 
-    static BigDecimal normalizeMatchRate(String raw) {
+    public static BigDecimal normalizeThreshold(String raw) {
+        try {
+            BigDecimal value = new BigDecimal(raw.trim());
+            if (value.signum() <= 0 || value.compareTo(new BigDecimal("5000")) > 0 || value.scale() > 6) {
+                throw new IllegalArgumentException("F3_THRESHOLD_INVALID");
+            }
+            return value;
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException("F3_THRESHOLD_INVALID");
+        }
+    }
+
+    public static BigDecimal normalizeMatchRate(String raw) {
         String value = raw.trim();
-        boolean percent = value.endsWith("%");
-        if (percent) value = value.substring(0, value.length() - 1).trim();
-        BigDecimal parsed = new BigDecimal(value);
-        return percent || parsed.compareTo(BigDecimal.ONE) > 0
-                ? parsed.divide(new BigDecimal("100"), 12, RoundingMode.HALF_UP)
-                : parsed;
+        if (value.endsWith("%")) value = value.substring(0, value.length() - 1).trim();
+        try {
+            BigDecimal percent = new BigDecimal(value);
+            if (percent.signum() <= 0 || percent.compareTo(new BigDecimal("20")) > 0 || percent.scale() > 10) {
+                throw new IllegalArgumentException("F3_MATCH_RATE_INVALID");
+            }
+            return percent.movePointLeft(2).stripTrailingZeros();
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException("F3_MATCH_RATE_INVALID");
+        }
     }
 
     private int positiveInteger(String raw, String code) {
