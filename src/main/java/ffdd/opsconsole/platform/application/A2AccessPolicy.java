@@ -15,6 +15,7 @@ import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import ffdd.opsconsole.team.application.TeamFundApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
+import ffdd.opsconsole.market.application.G4DividendApproval;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -77,7 +78,8 @@ public class A2AccessPolicy {
                             && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write")))
                         || grants.contains("network_f1_write") || grants.contains("network_f3_write") || grants.contains("network_f4_pool_fund")
                         || grants.contains("finprod_g3_curve_target_price_write") || grants.contains("finprod_g3_curve_pump_prob_write")
-                        || grants.contains("finprod_g3_override_price_write") || grants.contains("finprod_g3_write")) return id;
+                        || grants.contains("finprod_g3_override_price_write") || grants.contains("finprod_g3_write")
+                        || grants.contains("finprod_g4_dividend_rate_write") || grants.contains("finprod_g4_write")) return id;
             }
         } catch (NumberFormatException ignored) { }
         throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");
@@ -129,6 +131,8 @@ public class A2AccessPolicy {
             authority = K2OtpInitialApproval.MAKER_AUTHORITY;
         } else if (TeamFundApproval.supports(command)) {
             authority = TeamFundApproval.makerAuthority(command);
+        } else if (G4DividendApproval.supports(command)) {
+            authority = G4DividendApproval.makerAuthority(command);
         } else if (G3MarketApproval.supports(command)) {
             authority = G3MarketApproval.makerAuthority(command);
         } else {

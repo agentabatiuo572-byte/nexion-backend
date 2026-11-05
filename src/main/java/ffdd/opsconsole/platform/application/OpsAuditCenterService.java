@@ -50,6 +50,7 @@ import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.team.application.BinaryCommissionSettlementService.SettlementResult;
 import ffdd.opsconsole.team.application.TeamFundApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
+import ffdd.opsconsole.market.application.G4DividendApproval;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
@@ -788,6 +789,7 @@ public class OpsAuditCenterService {
                 var target = TeamFundApproval.supports(cmd) ? TeamFundApproval.target(cmd)
                         : G3MarketApproval.supports(cmd) ? G3MarketApproval.target(cmd)
                         : H5GrowthApproval.supports(cmd) ? H5GrowthApproval.target(cmd)
+                        : G4DividendApproval.supports(cmd) ? G4DividendApproval.target(cmd)
                         : H3GrowthApproval.supports(cmd) ? H3GrowthApproval.target(cmd)
                         : H4GrowthApproval.supports(cmd) ? H4GrowthApproval.target(cmd)
                         : H8RewardParamApproval.supports(cmd) ? H8RewardParamApproval.target(cmd)
@@ -880,7 +882,8 @@ public class OpsAuditCenterService {
         return WithdrawalConfigApproval.supports(command) || TreasuryThresholdApproval.supports(command)
                 || E2TaskPricingApproval.supports(command) || TeamFundApproval.supports(command)
                 || G3MarketApproval.supports(command) || H8RewardParamApproval.supports(command)
-                || H5GrowthApproval.supports(command) || H3GrowthApproval.supports(command) || H4GrowthApproval.supports(command) || K2OtpInitialApproval.supports(command);
+                || G4DividendApproval.supports(command) || H5GrowthApproval.supports(command) || H3GrowthApproval.supports(command)
+                || H4GrowthApproval.supports(command) || K2OtpInitialApproval.supports(command);
     }
 
     private String refundOrderNo(AuditReplayCommand command) {
@@ -920,7 +923,8 @@ public class OpsAuditCenterService {
         detail.put("idempotencyKey", idempotencyKey.trim());
         detail.put("domain", TreasuryThresholdApproval.supports(command) || E2TaskPricingApproval.supports(command)
                 || TeamFundApproval.supports(command) || G3MarketApproval.supports(command) || H8RewardParamApproval.supports(command)
-                || H5GrowthApproval.supports(command) || H3GrowthApproval.supports(command) || H4GrowthApproval.supports(command) || K2OtpInitialApproval.supports(command)
+                || G4DividendApproval.supports(command) || H5GrowthApproval.supports(command) || H3GrowthApproval.supports(command)
+                || H4GrowthApproval.supports(command) || K2OtpInitialApproval.supports(command)
                 ? ticket.getSourceDomain() : inferAuditDomain(ticket.getAction(), ticket.getObjectText()));
         return detail;
     }

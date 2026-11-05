@@ -35,6 +35,13 @@ public class OpsNexMarketController {
     private final G4AdminCommandService g4CommandService;
     private final OpsRepurchaseAdminService repurchaseAdminService;
     private final GenesisCatalogService genesisCatalogService;
+    private final ffdd.opsconsole.market.application.G4DividendApproval g4DividendApproval;
+
+    @GetMapping("/genesis/dividend-approval-state")
+    @PreAuthorize("(#batchNo == null && hasAuthority('finprod_g4_dividend_rate_write')) || (#batchNo != null && hasAuthority('finprod_g4_write'))")
+    public ApiResult<Map<String,Object>> genesisDividendApprovalState(@RequestParam(required=false) String batchNo) {
+        return ApiResult.ok(g4DividendApproval.state(batchNo));
+    }
 
     @GetMapping("/curve")
     @PreAuthorize("hasAuthority('finprod_g3_read')")
