@@ -86,6 +86,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             rule("/api/admin/treasury/liquidity-history", null),
             rule("/api/admin/treasury/growth-flow-history", null),
             rule("/api/admin/treasury/forecast-config", null),
+            rule("/api/admin/treasury/forecast-config/preview", null),
             rule("/api/admin/treasury/b2/liabilities/export", null),
             rule("/api/admin/treasury/dual-ledger/scope", null),
             rule("/api/admin/treasury/dual-ledger/thresholds", null),

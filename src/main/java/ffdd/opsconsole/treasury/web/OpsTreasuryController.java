@@ -11,6 +11,7 @@ import ffdd.opsconsole.treasury.application.OpsTreasuryService;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.dto.TreasuryAlertAckRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryForecastConfigRequest;
+import ffdd.opsconsole.treasury.dto.TreasuryForecastPreviewRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryExportRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryInjectionRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryLedgerQueryRequest;
@@ -98,6 +99,13 @@ public class OpsTreasuryController {
     @PreAuthorize("hasAnyAuthority('finance_d3_read', 'overview_b2_read')")
     public ApiResult<Map<String, Object>> forecastConfig() {
         return treasuryService.forecastConfig();
+    }
+
+    @PostMapping("/forecast-config/preview")
+    @PreAuthorize("hasAnyAuthority('finance_d3_write', 'overview_b2_write')")
+    public ApiResult<Map<String, Object>> previewForecastConfig(
+            @RequestBody(required = false) TreasuryForecastPreviewRequest request) {
+        return treasuryService.previewForecastConfig(request);
     }
 
     @PutMapping("/forecast-config")
