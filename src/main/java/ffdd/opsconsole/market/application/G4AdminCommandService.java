@@ -45,16 +45,18 @@ public class G4AdminCommandService {
     private final Clock clock;
     private final EarningsReleaseService earningsReleaseService;
     private final Environment environment;
+    private final G4DividendPolicy dividendPolicy;
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
-    public ApiResult<Map<String,Object>> updateParam(String key,String idem,NexMarketValueUpdateRequest request){
+    public ApiResult<Map<String,Object>> updateParam(String rawKey,String idem,NexMarketValueUpdateRequest request){
+        String key=rawKey==null?"":rawKey.trim();
         requireCommand(idem,request);
         if("supply".equals(key.trim())) marketService.requireGenesisSupplyPermission();
         if(List.of("dividend","divBase","airdropPct","emissionCurve").contains(key)) requireDecision(request.decisionRef());
         return once("PARAM:"+key,idem,request,()->{
             ApiResult<Map<String,Object>> result=marketService.updateGenesisParam(idem,key,request);
             requireSuccess(result);
-            outbox.publish("GENESIS_PARAM",key,"admin.genesis_param_changed",linked(
+            if (!"dividend".equals(key)) outbox.publish("GENESIS_PARAM",key,"admin.genesis_param_changed",linked(
                     "paramKey",key,"newValue",request.value(),"decisionRef",text(request.decisionRef(),"NOT_REQUIRED")));
             return result;
         });
@@ -90,6 +92,7 @@ public class G4AdminCommandService {
         boolean open=config.activeValue("growth.phase.genesis_emissions_open")
                 .map(v->List.of("1","true","on","enabled","open").contains(v.trim().toLowerCase())).orElse(false);
         if(!open) throw new BizException(409,"G4_GENESIS_EMISSION_GATE_CLOSED");
+        dividendPolicy.requireEmission(batchNo);
         AppGenesisMapper.SeriesRow series=mapper.lockActiveSeries();
         if(series==null) throw new BizException(409,"G4_GENESIS_SERIES_NOT_FOUND");
         AppGenesisMapper.EmissionBatchRow existing=mapper.lockEmissionBatch(batchNo);
@@ -187,7 +190,7 @@ public class G4AdminCommandService {
         if(r==null) throw new BizException(422,"REQUEST_REQUIRED");
         requireText(r.reason(),"REASON_LENGTH_INVALID",8,200);
     }
-    private void requireDecision(String value){requireText(value,"G4_DECISION_REF_REQUIRED",3,128);}
+    private void requireDecision(String value){G4DividendPolicy.requireDecision(value);}
     private void requireText(String value,String code,int min,int max){if(!StringUtils.hasText(value)||value.trim().length()<min||value.trim().length()>max)throw new BizException(422,code);}
     private void requireSuccess(ApiResult<?> result){if(result==null||result.getCode()!=0)throw new BizException(result==null?500:result.getCode(),result==null?"G4_COMMAND_FAILED":result.getMessage());}
     @SuppressWarnings({"rawtypes","unchecked"}) private ApiResult<Map<String,Object>> once(String scope,String key,Object request,Supplier<ApiResult<Map<String,Object>>> action){return (ApiResult<Map<String,Object>>)(ApiResult)idempotency.execute("ADMIN:G4_"+scope,key,sha256(String.valueOf(request)),ApiResult.class,(Supplier)action);}

@@ -167,6 +167,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private final SupportExchangeFundAdapter exchangeFunds;
     @Autowired
     private GenesisCatalogMapper genesisCatalogMapper;
+    @Autowired
+    private G4DividendPolicy dividendPolicy;
+    @Autowired
+    private ffdd.opsconsole.shared.outbox.EventOutboxService genesisOutbox;
     private ApplicationEventPublisher eventPublisher;
 
     @Override
@@ -932,7 +936,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (permissionGuard != null) {
             return permissionGuard;
         }
-        if (!A2ReplayContext.isReplaying()
+        if (!"dividend".equals(def.key()) && !A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("G", "genesis_param", def.key()) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
@@ -959,14 +963,21 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             if (!StringUtils.hasText(newValue)) {
                 return validation("G4_GENESIS_PARAM_VALUE_INVALID");
             }
-            if (genesisParamLoosens(def, oldValue, newValue)) {
-                ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
-                if (redline != null) {
-                    return redline;
+            if ("dividend".equals(def.key())) {
+                G4DividendPolicy.requireDecision(request.decisionRef());
+                G4DividendPolicy.Change change = dividendPolicy.updateDividend(new BigDecimal(newValue));
+                oldValue = change.before();
+                newValue = change.after();
+            } else {
+                if (genesisParamLoosens(def, oldValue, newValue)) {
+                    ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
+                    if (redline != null) {
+                        return redline;
+                    }
                 }
-            }
-            if (!updateGenesisPolicy(def, newValue)) {
-                return validation("G4_GENESIS_SERIES_NOT_FOUND");
+                if (!updateGenesisPolicy(def, newValue)) {
+                    return validation("G4_GENESIS_SERIES_NOT_FOUND");
+                }
             }
         }
         Map<String, Object> detail = map(
@@ -978,6 +989,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "idempotencyKey", idempotencyKey.trim());
         detail.putAll(tierAudit);
         auditRequired("G4_GENESIS_PARAM_CHANGED", "GENESIS_PARAM", def.key(), request.operator(), detail);
+        if ("dividend".equals(def.key())) genesisOutbox.publish("GENESIS_PARAM", "dividend", "admin.genesis_param_changed",
+                map("paramKey", "dividend", "newValue", newValue, "decisionRef", request.decisionRef().trim()));
         Map<String, Object> response = genesisOverview().getData();
         response.put("updated", map("key", def.key(), "oldValue", oldValue, "newValue", newValue));
         return ApiResult.ok(response);
@@ -1068,44 +1081,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             String idempotencyKey,
             String batchNo,
             NexMarketValueUpdateRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("G", "genesis_dividend_batch", batchNo) > 0) {
-            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-        }
-        String normalizedBatch = batchNo == null ? "" : batchNo.trim();
-        if (!normalizedBatch.matches("[A-Za-z0-9-]{3,32}")) {
-            return validation("G4_GENESIS_BATCH_NO_INVALID");
-        }
-        if (!genesisEmissionGateOpen()) {
-            return validation("G4_GENESIS_EMISSION_GATE_CLOSED");
-        }
-        String before = marketRepository.genesisDividendBatchRerunExists(normalizedBatch) ? "done" : "ready";
-        BigDecimal rerunAmount = genesisDividendRerunAmount();
-        if (rerunAmount.compareTo(BigDecimal.ZERO) <= 0) {
-            return validation("G4_GENESIS_DIVIDEND_RERUN_AMOUNT_UNAVAILABLE");
-        }
-        ledgerPostingFacade.postLedgerEntry(
-                "G4-DIVIDEND-" + normalizedBatch + "-RERUN",
-                0L,
-                "GENESIS_DIVIDEND",
-                "USDT",
-                "IN",
-                rerunAmount,
-                "PENDING",
-                "G4 Genesis dividend batch rerun pending ledger | batchNo=" + normalizedBatch);
-        audit("G4_GENESIS_DIVIDEND_BATCH_RERUN", "GENESIS_DIVIDEND_BATCH", normalizedBatch, request.operator(), map(
-                "batchNo", normalizedBatch,
-                "before", before,
-                "after", "done",
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        Map<String, Object> response = genesisOverview().getData();
-        response.put("updated", map("key", "batchRerun", "batchNo", normalizedBatch, "before", before, "after", "done"));
-        return ApiResult.ok(response);
+        return ApiResult.fail(409, "G4_EMISSION_REAL_COMMAND_REQUIRED");
     }
 
     public ApiResult<Map<String, Object>> overview() {

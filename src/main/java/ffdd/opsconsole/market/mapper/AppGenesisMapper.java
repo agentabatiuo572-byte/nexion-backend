@@ -14,6 +14,17 @@ import org.apache.ibatis.annotations.Update;
 // Statement-only SQL boundary: Genesis spans series, holdings, orders, wallets and ledgers.
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface AppGenesisMapper {
+    @Select("SELECT COUNT(*) FROM nx_genesis_series WHERE is_deleted=0 AND UPPER(status)='ACTIVE'")
+    long activeSeriesCount();
+
+    @Update("UPDATE nx_genesis_series SET daily_dividend_rate_pct=#{value},updated_at=NOW() WHERE id=#{id} AND is_deleted=0 AND UPPER(status)='ACTIVE' AND daily_dividend_rate_pct=#{before}")
+    int updateDividend(@Param("id") Long id,@Param("before") BigDecimal before,@Param("value") BigDecimal value);
+
+    @Select("SELECT COALESCE(SUM(h.acquired_price_usdt * #{rate} / 100),0) FROM nx_genesis_holding h JOIN nx_genesis_series s ON s.series_code=h.series_code AND s.is_deleted=0 WHERE h.is_deleted=0 AND UPPER(h.status) IN ('ACTIVE','HELD','LISTED') AND s.series_code=#{seriesCode}")
+    BigDecimal genesisLiabilityAtRate(@Param("seriesCode") String seriesCode,@Param("rate") BigDecimal rate);
+
+    @Select("SELECT CONCAT_WS('|',id,batch_no,snapshot_at,daily_rate_pct,holder_count,total_amount_usdt,status,operator,reason,decision_ref) FROM nx_genesis_emission_batch WHERE batch_no=#{batchNo} AND is_deleted=0")
+    String emissionBatchSnapshot(@Param("batchNo") String batchNo);
     @Select("""
             SELECT id,series_code AS seriesCode,name,total_supply AS totalSupply,
                    price_usdt AS priceUsdt,royalty_bps AS royaltyBps,

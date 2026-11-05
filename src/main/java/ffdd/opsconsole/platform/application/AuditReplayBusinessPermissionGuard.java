@@ -8,6 +8,7 @@ import ffdd.opsconsole.growth.application.H4GrowthApproval;
 import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
+import ffdd.opsconsole.market.application.G4DividendApproval;
 import ffdd.opsconsole.team.application.TeamFundApproval;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -124,6 +125,8 @@ public class AuditReplayBusinessPermissionGuard {
     @Autowired
     private G3MarketApproval g3MarketApproval;
     @Autowired
+    private G4DividendApproval g4DividendApproval;
+    @Autowired
     private H8RewardParamApproval h8RewardParamApproval;
     @Autowired
     private H5GrowthApproval h5GrowthApproval;
@@ -214,6 +217,10 @@ public class AuditReplayBusinessPermissionGuard {
         if (H4GrowthApproval.supports(command)) {
             return h4GrowthApproval.canPropose(command)
                     ? ApiResult.ok() : ApiResult.fail(403, "H4_MAKER_FORBIDDEN");
+        }
+        if (G4DividendApproval.supports(command)) {
+            return g4DividendApproval.canPropose(command)
+                    ? ApiResult.ok() : ApiResult.fail(403, "G4_MAKER_FORBIDDEN");
         }
         if (H3GrowthApproval.supports(command)) {
             return h3GrowthApproval.canPropose(command)
@@ -350,6 +357,9 @@ public class AuditReplayBusinessPermissionGuard {
         if (H4GrowthApproval.supports(command)) {
             return ApiResult.ok(h4GrowthApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
         }
+        if (G4DividendApproval.supports(command)) {
+            return ApiResult.ok(g4DividendApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
+        }
         if (H3GrowthApproval.supports(command)) {
             return ApiResult.ok(h3GrowthApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
         }
@@ -397,6 +407,9 @@ public class AuditReplayBusinessPermissionGuard {
         if (H4GrowthApproval.supports(command)) {
             return h4GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         }
+        if (G4DividendApproval.supports(command)) {
+            return g4DividendApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        }
         if (H3GrowthApproval.supports(command)) {
             return h3GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         }
@@ -437,6 +450,9 @@ public class AuditReplayBusinessPermissionGuard {
     public ApiResult<Void> validateApproval(AuditReplayCommand command) {
         if (H4GrowthApproval.supports(command)) {
             return h4GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        }
+        if (G4DividendApproval.supports(command)) {
+            return g4DividendApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         }
         if (H3GrowthApproval.supports(command)) {
             return h3GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
@@ -651,6 +667,12 @@ public class AuditReplayBusinessPermissionGuard {
             AuditOperationProposalRequest request) {
         boolean delegated = delegatedProposal();
         AuditReplayCommand command = request == null ? null : request.command();
+        if (G4DividendApproval.supports(command)) {
+            var target=G4DividendApproval.target(command);
+            if (!"G4".equals(text(request.sourceDomain())) || !target.id().equals(text(request.obj())) || !target.equals(request.target()) || (request.targets()!=null && !request.targets().isEmpty())) return ApiResult.fail(403,"A2_BUSINESS_CONTEXT_MISMATCH");
+            var review=g4DividendApproval.preview(command,request.reason());
+            return ApiResult.ok(new DelegatedProposalDescriptor("批准创世分红操作",target.id(),String.valueOf(review.get("before")),String.valueOf(review.get("after")),"G4","fund",true,target));
+        }
         if (K2OtpInitialApproval.supports(command)) {
             AuditLockTarget target = K2OtpInitialApproval.target(command);
             if (!"K2".equals(text(request.sourceDomain())) || !target.id().equals(text(request.obj()))
