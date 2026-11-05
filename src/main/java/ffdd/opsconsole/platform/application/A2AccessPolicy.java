@@ -4,6 +4,7 @@ import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.growth.application.H5GrowthApproval;
 import ffdd.opsconsole.growth.application.H3GrowthApproval;
+import ffdd.opsconsole.growth.application.H4GrowthApproval;
 import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.infrastructure.AuditOperationTicketEntity;
@@ -71,6 +72,7 @@ public class A2AccessPolicy {
                         || grants.contains(H8RewardParamApproval.MAKER_AUTHORITY)
                         || grants.contains(H5GrowthApproval.MAKER_AUTHORITY)
                         || grants.contains(H3GrowthApproval.MAKER_AUTHORITY)
+                        || grants.contains(H4GrowthApproval.MAKER_AUTHORITY) || grants.contains(H4GrowthApproval.GUARD_AUTHORITY)
                         || (grants.contains(K2OtpInitialApproval.MAKER_AUTHORITY)
                             && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write")))
                         || grants.contains("network_f1_write") || grants.contains("network_f3_write") || grants.contains("network_f4_pool_fund")
@@ -115,6 +117,8 @@ public class A2AccessPolicy {
             authority = TreasuryThresholdApproval.makerAuthority(command);
         } else if (E2TaskPricingApproval.supports(command)) {
             authority = E2TaskPricingApproval.MAKER_AUTHORITY;
+        } else if (H4GrowthApproval.supports(command)) {
+            authority = H4GrowthApproval.makerAuthority(command);
         } else if (H3GrowthApproval.supports(command)) {
             authority = H3GrowthApproval.MAKER_AUTHORITY;
         } else if (H5GrowthApproval.supports(command)) {

@@ -1833,6 +1833,20 @@ public class OpsGrowthService implements AuditReplayable {
     public ApiResult<Map<String, Object>> createWheelGuard(
             String idempotencyKey,
             GrowthWheelGuardRequest request) {
+        return createWheelGuard(idempotencyKey, request, false, false);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> previewH4GuardCreate(GrowthWheelGuardRequest request) {
+        return createWheelGuard("H4_PREVIEW", request, true, true);
+    }
+
+    ApiResult<Map<String, Object>> executeApprovedH4GuardCreate(String key, GrowthWheelGuardRequest request) {
+        return createWheelGuard(key, request, true, false);
+    }
+
+    private ApiResult<Map<String, Object>> createWheelGuard(
+            String idempotencyKey, GrowthWheelGuardRequest request, boolean approved, boolean preview) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
@@ -1857,12 +1871,11 @@ public class OpsGrowthService implements AuditReplayable {
             String label = normalizePlainText(request.guardLabel(), 128);
             String value = normalizeWheelGuardValue(key, request.guardValue());
             String note = request.note() == null ? "" : request.note().trim();
-            boolean opensRealPayout = "kill".equals(key)
-                    && Set.of("开", "on", "true").contains(value.toLowerCase(Locale.ROOT));
+            boolean opensRealPayout = "kill".equals(key) && h4RealPrizeEnabled(value);
             boolean addsBudget = "budget".equals(key) && numericToken(value).signum() > 0;
-            if ((opensRealPayout || addsBudget) && coverageBelowRedline()) {
-                return coverageRedline();
-            }
+            ApiResult<Map<String, Object>> approval = h4GuardApprovalGate(
+                    opensRealPayout || addsBudget, approved, preview, "missing", value);
+            if (approval != null) return approval;
             int sortOrder = Math.toIntExact(Math.min(Integer.MAX_VALUE, growthRows(GrowthQuestEventMapper::wheelGuards).size() * 10L + 10L));
             questEventMapper.get().insertWheelGuard(key, label, value, note, sortOrder, 1, LocalDateTime.now());
             audit("H4_WHEEL_GUARD_CREATED", "WHEEL_CONFIG", key, request.operator(), Map.of(
@@ -2051,6 +2064,21 @@ public class OpsGrowthService implements AuditReplayable {
             String idempotencyKey,
             String guardKey,
             GrowthConfigUpdateRequest request) {
+        return updateWheelGuard(idempotencyKey, guardKey, request, false, false);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> previewH4GuardUpdate(String key, GrowthConfigUpdateRequest request) {
+        return updateWheelGuard("H4_PREVIEW", key, request, true, true);
+    }
+
+    ApiResult<Map<String, Object>> executeApprovedH4GuardUpdate(
+            String commandKey, String key, GrowthConfigUpdateRequest request) {
+        return updateWheelGuard(commandKey, key, request, true, false);
+    }
+
+    private ApiResult<Map<String, Object>> updateWheelGuard(
+            String idempotencyKey, String guardKey, GrowthConfigUpdateRequest request, boolean approved, boolean preview) {
         ApiResult<Map<String, Object>> guard = requireCommand(
                 idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
@@ -2082,14 +2110,12 @@ public class OpsGrowthService implements AuditReplayable {
             if (oldValue.equalsIgnoreCase(value)) {
                 return validation("WHEEL_GUARD_NO_CHANGE");
             }
-            boolean enablesRealPrize = "kill".equals(key)
-                    && Set.of("关", "off", "false").contains(oldValue.toLowerCase(Locale.ROOT))
-                    && Set.of("开", "on", "true").contains(value.toLowerCase(Locale.ROOT));
+            boolean enablesRealPrize = "kill".equals(key) && !h4RealPrizeEnabled(oldValue) && h4RealPrizeEnabled(value);
             boolean increasesBudget = "budget".equals(key)
                     && numericToken(value).compareTo(numericToken(oldValue)) > 0;
-            if ((enablesRealPrize || increasesBudget) && coverageBelowRedline()) {
-                return coverageRedline();
-            }
+            ApiResult<Map<String, Object>> approval = h4GuardApprovalGate(
+                    enablesRealPrize || increasesBudget, approved, preview, oldValue, value);
+            if (approval != null) return approval;
             if (questEventMapper.get().updateWheelGuardValue(key, oldValue, value) != 1) {
                 return validation("WHEEL_GUARD_STALE");
             }
@@ -2104,6 +2130,24 @@ public class OpsGrowthService implements AuditReplayable {
         } catch (IllegalArgumentException ex) {
             return validation(ex.getMessage());
         }
+    }
+
+    private boolean h4RealPrizeEnabled(String value) {
+        return value != null && Set.of("1", "true", "on", "enabled", "open", "开")
+                .contains(value.trim().toLowerCase(Locale.ROOT));
+    }
+
+    private ApiResult<Map<String, Object>> h4GuardApprovalGate(
+            boolean amplifies, boolean approved, boolean preview, String before, String after) {
+        if (preview && !amplifies) return validation("H4_APPROVAL_NOT_REQUIRED");
+        if (amplifies) {
+            if (!approved) return ApiResult.fail(409, "H4_APPROVAL_REQUIRED");
+            TreasuryCoverageSnapshot snapshot = coverageFacade.snapshot();
+            if (snapshot == null || !snapshot.reliable() || snapshot.coverageRatio() == null
+                    || snapshot.redlinePct() == null || snapshot.coverageRatio().signum() <= 0
+                    || snapshot.redlinePct().signum() <= 0 || snapshot.redlineBreached()) return coverageRedline();
+        }
+        return preview ? ApiResult.ok(Map.of("before", before, "after", after)) : null;
     }
 
     private BigDecimal h3Decimal(String raw, int scale) {

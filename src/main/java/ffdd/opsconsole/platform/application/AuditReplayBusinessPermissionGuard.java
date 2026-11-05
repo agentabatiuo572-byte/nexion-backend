@@ -4,6 +4,7 @@ import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.growth.application.H5GrowthApproval;
 import ffdd.opsconsole.growth.application.H3GrowthApproval;
+import ffdd.opsconsole.growth.application.H4GrowthApproval;
 import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
@@ -129,6 +130,8 @@ public class AuditReplayBusinessPermissionGuard {
     @Autowired
     private H3GrowthApproval h3GrowthApproval;
     @Autowired
+    private H4GrowthApproval h4GrowthApproval;
+    @Autowired
     private K2OtpInitialApproval k2OtpInitialApproval;
     @Autowired
     private ffdd.opsconsole.device.application.OpsDeviceService devices;
@@ -208,6 +211,10 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     public ApiResult<Void> validateProposal(AuditReplayCommand command) {
+        if (H4GrowthApproval.supports(command)) {
+            return h4GrowthApproval.canPropose(command)
+                    ? ApiResult.ok() : ApiResult.fail(403, "H4_MAKER_FORBIDDEN");
+        }
         if (H3GrowthApproval.supports(command)) {
             return h3GrowthApproval.canPropose(command)
                     ? ApiResult.ok() : ApiResult.fail(403, "H3_MAKER_FORBIDDEN");
@@ -340,6 +347,9 @@ public class AuditReplayBusinessPermissionGuard {
      * will later approve; it is intentionally not an input the browser can choose.
      */
     public ApiResult<AuditReplayCommand> canonicalizeProposalCommand(AuditReplayCommand command) {
+        if (H4GrowthApproval.supports(command)) {
+            return ApiResult.ok(h4GrowthApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
+        }
         if (H3GrowthApproval.supports(command)) {
             return ApiResult.ok(h3GrowthApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
         }
@@ -384,6 +394,9 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     ApiResult<Void> validateRejection(AuditReplayCommand command) {
+        if (H4GrowthApproval.supports(command)) {
+            return h4GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        }
         if (H3GrowthApproval.supports(command)) {
             return h3GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         }
@@ -422,6 +435,9 @@ public class AuditReplayBusinessPermissionGuard {
      * Other commands retain their existing replay-time business guard.
      */
     public ApiResult<Void> validateApproval(AuditReplayCommand command) {
+        if (H4GrowthApproval.supports(command)) {
+            return h4GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        }
         if (H3GrowthApproval.supports(command)) {
             return h3GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         }
@@ -660,6 +676,19 @@ public class AuditReplayBusinessPermissionGuard {
             }
             return ApiResult.ok(new DelegatedProposalDescriptor(review.action(), target.id(), review.before(), review.after(),
                     "G3", review.operationType(), review.amplifies(), target, null, review));
+        }
+        if (H4GrowthApproval.supports(command)) {
+            AuditLockTarget target = H4GrowthApproval.target(command);
+            if (!"H4".equals(text(request.sourceDomain())) || !target.id().equals(text(request.obj()))
+                    || !target.equals(request.target()) || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            var preview = h4GrowthApproval.preview(command, request.reason());
+            if (preview.getCode() != 0) return ApiResult.fail(preview.getCode(), preview.getMessage());
+            var review = preview.getData();
+            boolean historical = "h4_event_rule".equals(target.type()) && "evt-anniversary-spin".equals(target.id());
+            return ApiResult.ok(new DelegatedProposalDescriptor(historical ? "发布历史活动只读记录" : "启用活动或放宽转盘资金护栏", target.id(),
+                    String.valueOf(review.get("before")), String.valueOf(review.get("after")), "H4", historical ? "param" : "fund", !historical, target));
         }
         if (H3GrowthApproval.supports(command)) {
             AuditLockTarget target = H3GrowthApproval.target(command);

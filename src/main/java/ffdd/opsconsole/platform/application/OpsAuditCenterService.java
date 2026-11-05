@@ -45,6 +45,7 @@ import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.growth.application.H5GrowthApproval;
 import ffdd.opsconsole.growth.application.H3GrowthApproval;
+import ffdd.opsconsole.growth.application.H4GrowthApproval;
 import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.team.application.BinaryCommissionSettlementService.SettlementResult;
 import ffdd.opsconsole.team.application.TeamFundApproval;
@@ -289,8 +290,8 @@ public class OpsAuditCenterService {
             boolean superAdminProposal = "A1".equals(descriptor.sourceDomain()) || superAdminProposalCommand(command);
             ticket.setAction(descriptor.action());
             ticket.setObjectText(descriptor.objectId());
-            ticket.setBeforeValue(descriptor.beforeValue());
-            ticket.setAfterValue(descriptor.afterValue());
+            ticket.setBeforeValue(H4GrowthApproval.supports(command) ? "H4 original configuration: " + descriptor.objectId() : descriptor.beforeValue());
+            ticket.setAfterValue(H4GrowthApproval.supports(command) ? "H4 proposed configuration: " + command.op() : descriptor.afterValue());
             if (!superAdminProposal && replayBusinessPermissionGuard.delegatedProposal()) {
                 ticket.setOperatorRole("风控");
             }
@@ -450,8 +451,8 @@ public class OpsAuditCenterService {
                         "operationId", ticket.getOperationId(),
                         "action", ticket.getAction(),
                         "resource", ticket.getObjectText(),
-                        "before", TeamFundApproval.supports(command) || G3MarketApproval.supports(command) ? ticket.getBeforeValue() : reviewValue(ticket, "before"),
-                        "after", TeamFundApproval.supports(command) || G3MarketApproval.supports(command) ? ticket.getAfterValue() : reviewValue(ticket, "after"),
+                        "before", TeamFundApproval.supports(command) || G3MarketApproval.supports(command) ? ticket.getBeforeValue() : auditReviewValue(ticket, "before"),
+                        "after", TeamFundApproval.supports(command) || G3MarketApproval.supports(command) ? ticket.getAfterValue() : auditReviewValue(ticket, "after"),
                         "type", ticket.getOperationType(),
                         "sourceDomain", sourceDomain,
                         "reason", ticket.getReason(),
@@ -537,8 +538,8 @@ public class OpsAuditCenterService {
                         "operationId", ticket.getOperationId(),
                         "action", ticket.getAction(),
                         "resource", ticket.getObjectText(),
-                        "before", reviewValue(ticket, "before"),
-                        "after", reviewValue(ticket, "after"),
+                        "before", auditReviewValue(ticket, "before"),
+                        "after", auditReviewValue(ticket, "after"),
                         "type", ticket.getOperationType(),
                         "sourceDomain", sourceDomain,
                         "reason", ticket.getReason(),
@@ -788,6 +789,7 @@ public class OpsAuditCenterService {
                         : G3MarketApproval.supports(cmd) ? G3MarketApproval.target(cmd)
                         : H5GrowthApproval.supports(cmd) ? H5GrowthApproval.target(cmd)
                         : H3GrowthApproval.supports(cmd) ? H3GrowthApproval.target(cmd)
+                        : H4GrowthApproval.supports(cmd) ? H4GrowthApproval.target(cmd)
                         : H8RewardParamApproval.supports(cmd) ? H8RewardParamApproval.target(cmd)
                         : K2OtpInitialApproval.supports(cmd) ? K2OtpInitialApproval.target(cmd)
                         : E2TaskPricingApproval.supports(cmd) ? E2TaskPricingApproval.target(cmd)
@@ -796,7 +798,9 @@ public class OpsAuditCenterService {
                 var locks = lockMapper.selectActiveByTicketId(ticket.getOperationId());
                 boolean initialSchedule = G3MarketApproval.supports(cmd) && target != null
                         && "nex_market_control".equals(target.type()) && "schedule".equals(target.id());
-                boolean classificationMatches = initialSchedule
+                boolean historicalH4 = H4GrowthApproval.supports(cmd) && target != null
+                        && "h4_event_rule".equals(target.type()) && "evt-anniversary-spin".equals(target.id());
+                boolean classificationMatches = initialSchedule || historicalH4
                         ? "param".equals(ticket.getOperationType()) && Integer.valueOf(0).equals(ticket.getAmplifies())
                         : "fund".equals(ticket.getOperationType()) && Integer.valueOf(1).equals(ticket.getAmplifies());
                 if (target == null || !target.id().equals(ticket.getObjectText()) || !target.domain().equals(ticket.getSourceDomain())
@@ -876,7 +880,7 @@ public class OpsAuditCenterService {
         return WithdrawalConfigApproval.supports(command) || TreasuryThresholdApproval.supports(command)
                 || E2TaskPricingApproval.supports(command) || TeamFundApproval.supports(command)
                 || G3MarketApproval.supports(command) || H8RewardParamApproval.supports(command)
-                || H5GrowthApproval.supports(command) || H3GrowthApproval.supports(command) || K2OtpInitialApproval.supports(command);
+                || H5GrowthApproval.supports(command) || H3GrowthApproval.supports(command) || H4GrowthApproval.supports(command) || K2OtpInitialApproval.supports(command);
     }
 
     private String refundOrderNo(AuditReplayCommand command) {
@@ -899,8 +903,8 @@ public class OpsAuditCenterService {
             AuditOperationTicketEntity ticket, String status, String idempotencyKey, String reason) {
         AuditReplayCommand command = deserializeCommand(ticket.getCommandJson());
         // Keep the recovery key and domain in the bounded audit entry. The ticket retains the full review.
-        String before = TeamFundApproval.supports(command) || G3MarketApproval.supports(command) ? ticket.getBeforeValue() : reviewValue(ticket, "before");
-        String after = TeamFundApproval.supports(command) || G3MarketApproval.supports(command) ? ticket.getAfterValue() : reviewValue(ticket, "after");
+        String before = TeamFundApproval.supports(command) || G3MarketApproval.supports(command) ? ticket.getBeforeValue() : auditReviewValue(ticket, "before");
+        String after = TeamFundApproval.supports(command) || G3MarketApproval.supports(command) ? ticket.getAfterValue() : auditReviewValue(ticket, "after");
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("operationId", ticket.getOperationId());
         detail.put("status", status);
@@ -916,7 +920,7 @@ public class OpsAuditCenterService {
         detail.put("idempotencyKey", idempotencyKey.trim());
         detail.put("domain", TreasuryThresholdApproval.supports(command) || E2TaskPricingApproval.supports(command)
                 || TeamFundApproval.supports(command) || G3MarketApproval.supports(command) || H8RewardParamApproval.supports(command)
-                || H5GrowthApproval.supports(command) || H3GrowthApproval.supports(command) || K2OtpInitialApproval.supports(command)
+                || H5GrowthApproval.supports(command) || H3GrowthApproval.supports(command) || H4GrowthApproval.supports(command) || K2OtpInitialApproval.supports(command)
                 ? ticket.getSourceDomain() : inferAuditDomain(ticket.getAction(), ticket.getObjectText()));
         return detail;
     }
@@ -1015,8 +1019,23 @@ public class OpsAuditCenterService {
                 && ("e1_sku_create".equals(command.op()) || "e1_sku_update".equals(command.op()));
     }
 
+    // H4 keeps complete review data in its bound command; audit summaries keep the recovery key structured.
+    private String auditReviewValue(AuditOperationTicketEntity ticket, String side) {
+        if (H4GrowthApproval.supports(deserializeCommand(ticket.getCommandJson()))) {
+            return "before".equals(side) ? ticket.getBeforeValue() : ticket.getAfterValue();
+        }
+        return reviewValue(ticket, side);
+    }
+
     private String reviewValue(AuditOperationTicketEntity ticket, String side) {
         var command = deserializeCommand(ticket.getCommandJson());
+        if (H4GrowthApproval.supports(command)) {
+            try {
+                return objectMapper.writeValueAsString(command.params().get("before".equals(side) ? "expectedState" : "values"));
+            } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
+                throw new BizException(422, "H4_PROPOSAL_INVALID");
+            }
+        }
         String reviewKey = isSkuReviewCommand(command) ? "skuReview"
                 : G3MarketApproval.supports(command) ? "marketPolicyReview"
                 : TeamFundApproval.isVRank(command) ? "vrankPolicyReview"

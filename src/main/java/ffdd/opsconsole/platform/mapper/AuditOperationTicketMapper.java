@@ -27,7 +27,7 @@ public interface AuditOperationTicketMapper extends BaseMapper<AuditOperationTic
               status VARCHAR(32) NOT NULL DEFAULT 'pending',
               decision_reason VARCHAR(512) NULL,
               decided_at DATETIME NULL,
-              command_json TEXT NULL COMMENT '结构化回放指令 {domain,op,params}',
+              command_json MEDIUMTEXT NULL COMMENT '结构化回放指令 {domain,op,params}',
               source_domain VARCHAR(8) NOT NULL DEFAULT 'A',
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
               updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

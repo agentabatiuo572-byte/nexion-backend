@@ -3,6 +3,7 @@ import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.growth.application.H5GrowthApproval;
 import ffdd.opsconsole.growth.application.H3GrowthApproval;
+import ffdd.opsconsole.growth.application.H4GrowthApproval;
 import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
@@ -38,9 +39,15 @@ public class AuditReplayDispatcher {
     @Autowired
     private H3GrowthApproval h3GrowthApproval;
     @Autowired
+    private H4GrowthApproval h4GrowthApproval;
+    @Autowired
     private K2OtpInitialApproval k2OtpInitialApproval;
 
     public ApiResult<?> dispatch(AuditReplayCommand cmd, AuditReplayContext ctx) {
+        if (H4GrowthApproval.supports(cmd)) {
+            return h4GrowthApproval.replay(cmd, ctx,
+                    A2ReplayContext.authenticatedAdminId(), A2ReplayContext.operationId());
+        }
         if (H3GrowthApproval.supports(cmd)) {
             return h3GrowthApproval.replay(cmd, ctx,
                     A2ReplayContext.authenticatedAdminId(), A2ReplayContext.operationId());

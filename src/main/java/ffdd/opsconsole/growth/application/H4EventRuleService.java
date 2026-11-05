@@ -144,6 +144,16 @@ public class H4EventRuleService {
     }
     @Transactional(rollbackFor=Exception.class,isolation=org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public ApiResult<Map<String,Object>> update(String code,H4EventRuleRequest request) {
+        return update(code,request,false,false);
+    }
+    @Transactional(rollbackFor=Exception.class,isolation=org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
+    public ApiResult<Map<String,Object>> previewEnable(String code,H4EventRuleRequest request) {
+        return update(code,request,true,true);
+    }
+    ApiResult<Map<String,Object>> executeApprovedEnable(String code,H4EventRuleRequest request) {
+        return update(code,request,true,false);
+    }
+    private ApiResult<Map<String,Object>> update(String code,H4EventRuleRequest request,boolean approved,boolean preview) {
         if(request==null||request.reason()==null||request.reason().trim().length()<a2.reasonMinChars())throw new BizException(422,"REASON_REQUIRED");
         var current=find(code,true);
         if(current==null)throw new BizException(404,"EVENT_RULE_NOT_FOUND");
@@ -165,11 +175,15 @@ public class H4EventRuleService {
             if(!domainMissing.isEmpty())return ApiResult.fail(422,"EVENT_RULE_INCOMPLETE",Map.of("missing",domainMissing));
             var snapshot=coverage.snapshot();
             if(!"evt-anniversary-spin".equals(code)&&(snapshot==null||!snapshot.reliable()||snapshot.coverageRatio()==null||snapshot.redlinePct()==null
-                    ||snapshot.coverageRatio().compareTo(snapshot.redlinePct())<0))throw new BizException(409,"COVERAGE_REDLINE");
+                    ||snapshot.redlineBreached()))throw new BizException(409,"COVERAGE_REDLINE");
             if(current.get("activated_at")!=null&&number(current.get("enabled")).intValue()!=1)
                 throw new BizException(409,"EVENT_RULE_REOPEN_NOT_ALLOWED");
         }
         if(request.enabled()&&!"evt-anniversary-spin".equals(code)&&end!=null&&!end.isAfter(LocalDateTime.now(ZoneOffset.UTC)))throw new BizException(422,"EVENT_WINDOW_ENDED");
+        boolean firstEnable=request.enabled()&&number(current.get("enabled")).intValue()!=1&&current.get("activated_at")==null;
+        if(preview)return firstEnable?ApiResult.ok(Map.of("before",view(current),"after",request))
+                :ApiResult.fail(422,"H4_APPROVAL_NOT_REQUIRED");
+        if(firstEnable&&!approved)throw new BizException(409,"H4_APPROVAL_REQUIRED");
         db.write("UPDATE nx_growth_event_rule SET rules_json=?,starts_at=?,ends_at=?,enabled=?,revision=revision+1,updated_at=UTC_TIMESTAMP(6) WHERE event_code=?",
                 encode(rules),start,end,request.enabled(),code);
         if(request.enabled()) {
