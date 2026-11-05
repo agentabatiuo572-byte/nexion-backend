@@ -160,8 +160,8 @@ public class OpsTreasuryService {
     }
 
     @Transactional(readOnly = true)
-    public Map<String, Object> dualLedgerAtNexPrice(BigDecimal proposedPrice) {
-        return dualLedgerSnapshot(proposedPrice);
+    public Map<String, Object> dualLedgerCoverageSnapshot(BigDecimal proposedPrice) {
+        return dualLedgerSnapshot(proposedPrice, false);
     }
 
     /** B1 canonical coverage read reused by L3; no BI-side recomputation. */
@@ -201,15 +201,14 @@ public class OpsTreasuryService {
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> reserve() {
         LocalDateTime now = LocalDateTime.now(clock);
-        BigDecimal ledgerReserve = currentReserveWithVietQr();
-        BigDecimal lockedPrincipal = safe(ledgerRepository.sumActiveStakingPrincipalUsdt());
+        TreasuryReserveBalance reserve = treasuryReserveBalance();
         BigDecimal injected = safe(ledgerRepository.injectedCumulativeUsd());
-        BigDecimal reserveTotal = ledgerReserve.subtract(lockedPrincipal).max(BigDecimal.ZERO);
+        BigDecimal reserveTotal = reserve.availableUsd();
         Map<String, Object> response = section(
                 "usdtReserveUsdt", money(reserveTotal),
                 "otherLiquidUsdt", money(BigDecimal.ZERO),
                 "injectedCumulativeUsdt", money(injected),
-                "lockedStakingPrincipalDeductedUsdt", money(lockedPrincipal),
+                "lockedStakingPrincipalDeductedUsdt", money(reserve.lockedStakingPrincipal()),
                 "reserveTotalUsdt", money(reserveTotal),
                 "asOf", now,
                 "waterLevel", waterLevel(reserveTotal));
@@ -594,14 +593,15 @@ public class OpsTreasuryService {
     }
 
     private Map<String, Object> dualLedgerSnapshot() {
-        return dualLedgerSnapshot(null);
+        return dualLedgerSnapshot(null, true);
     }
 
-    private Map<String, Object> dualLedgerSnapshot(BigDecimal proposedNexPrice) {
+    private Map<String, Object> dualLedgerSnapshot(BigDecimal proposedNexPrice, boolean fullView) {
         LocalDateTime now = LocalDateTime.now(clock);
         LocalDateTime current24hStart = now.minusHours(24);
         LocalDateTime prev24hStart = now.minusHours(48);
-        BigDecimal reserveUsd = (BigDecimal) reserve().getData().get("reserveTotalUsdt");
+        // B1 coverage needs the reserve balance, without the D3 forecast promotion used by the reserve panel.
+        BigDecimal reserveUsd = money(treasuryReserveBalance().availableUsd());
         BigDecimal currentNexPrice = ledgerRepository.latestNexUsdtPrice().map(this::safe).orElse(BigDecimal.ZERO);
         BigDecimal nexUsdRate = proposedNexPrice == null ? currentNexPrice : proposedNexPrice;
         BigDecimal redlinePct = safetyThresholdDecimal(REDLINE_CONFIG_KEY, dualLedgerProperties.getRedlinePct());
@@ -666,6 +666,9 @@ public class OpsTreasuryService {
                 "avgRiskScore", avgRiskScore.longValue(),
                 "coverageSeries", coverageSeries(now, reserveUsd, liabilitiesUsd),
                 "scope", scope));
+        if (!fullView) {
+            return response;
+        }
         response.put("accounts", accounts.stream().map(this::scaleAccount).toList());
         response.put("maturity7d", maturity7d());
         response.put("prev", section(
@@ -1945,6 +1948,14 @@ public class OpsTreasuryService {
     private BigDecimal currentReserveWithVietQr() {
         return safe(ledgerRepository.currentReserveUsd()).add(safe(ledgerRepository.vietQrHeldReserveUsdt()));
     }
+
+    private TreasuryReserveBalance treasuryReserveBalance() {
+        BigDecimal ledgerReserve = currentReserveWithVietQr();
+        BigDecimal lockedPrincipal = safe(ledgerRepository.sumActiveStakingPrincipalUsdt());
+        return new TreasuryReserveBalance(ledgerReserve.subtract(lockedPrincipal).max(BigDecimal.ZERO), lockedPrincipal);
+    }
+
+    private record TreasuryReserveBalance(BigDecimal availableUsd, BigDecimal lockedStakingPrincipal) {}
 
     private int d3WindowDays(String window, Set<Integer> allowed) {
         String normalized = StringUtils.hasText(window) ? window.trim().toLowerCase(Locale.ROOT) : "7d";

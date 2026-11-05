@@ -68,6 +68,8 @@ import java.util.Set;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -350,32 +352,16 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         }
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     @SuppressWarnings({"rawtypes", "unchecked"})
     public ApiResult<Map<String, Object>> updateWithdrawalLimits(
             String idempotencyKey,
             WithdrawalLimitsUpdateRequest request) {
-        if (request != null && request.hasPhaseFields()) {
-            return new ApiResult<>(OpsErrorCode.PHASE_PARAM_READONLY.httpStatus(),
-                    OpsErrorCode.PHASE_PARAM_READONLY.name(),
-                    Map.of("redirect", "/admin/phase/h1"));
-        }
-        ApiResult<Map<String, Object>> guard = requireCommand(
-                idempotencyKey, request == null ? null : request.getReason());
-        if (guard != null) {
-            return guard;
-        }
-        if (request.getExpectedVersion() == null || request.getExpectedVersion() < 0) {
-            return ApiResult.fail(400, "EXPECTED_VERSION_REQUIRED");
-        }
-        Set<String> changedFields = request.changedD5Fields();
-        if (changedFields.isEmpty()) {
-            return ApiResult.fail(400, "D5_CHANGE_REQUIRED");
-        }
-        ApiResult<Map<String, Object>> validation = validateWithdrawalLimitsRequest(request, changedFields);
+        ApiResult<Map<String, Object>> validation = validateWithdrawalLimitsCommand(request, idempotencyKey, false);
         if (validation != null) {
             return validation;
         }
+        Set<String> changedFields = request.changedD5Fields();
         String actor = AdminActorResolver.resolve(request.getOperator());
         String requestHash = sha256(String.join("|",
                 "D5_WITHDRAWAL_LIMITS_UPDATE",
@@ -397,17 +383,69 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 idempotencyKey.trim(),
                 requestHash,
                 ApiResult.class,
-                () -> updateWithdrawalLimitsNew(idempotencyKey.trim(), request, changedFields, actor));
+                () -> updateWithdrawalLimitsNew(idempotencyKey.trim(), request, changedFields, actor, null));
     }
 
-    private ApiResult<Map<String, Object>> updateWithdrawalLimitsNew(
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ, propagation = Propagation.REQUIRES_NEW)
+    public ApiResult<Map<String, Object>> previewWithdrawalLimits(WithdrawalLimitsUpdateRequest request) {
+        ApiResult<Map<String, Object>> validation = validateWithdrawalLimitsCommand(request, null, true);
+        if (validation != null) {
+            return validation;
+        }
+        Set<String> changedFields = request.changedD5Fields();
+        ApiResult<D5WithdrawalChange> result = readWithdrawalLimitsChange(request, changedFields, false);
+        if (result.getCode() != 0) {
+            return ApiResult.fail(result.getCode(), result.getMessage());
+        }
+        D5WithdrawalChange change = result.getData();
+        ApiResult<Map<String, Object>> guard = requireWithdrawalLimitsAmplification(change);
+        if (guard != null) {
+            return guard;
+        }
+        Map<String, String> before = new LinkedHashMap<>();
+        Map<String, String> after = new LinkedHashMap<>();
+        for (String field : changedFields.stream().sorted().toList()) {
+            switch (field) {
+                case "networkConfirmFeeUsd" -> {
+                    before.put(field, d5NetworkSummary(d5NetworkFees(change.before())));
+                    after.put(field, d5NetworkSummary(request.getNetworkConfirmFeeUsd()));
+                }
+                case "networkEnabled" -> {
+                    before.put(field, d5NetworkSummary(change.beforeNetworkEnabled()));
+                    after.put(field, d5NetworkSummary(request.getNetworkEnabled()));
+                }
+                default -> {
+                    before.put(field, d5SummaryValue(change.before().get(field)));
+                    after.put(field, d5SummaryValue(requestedWithdrawalLimitValue(field, request)));
+                }
+            }
+        }
+        return ApiResult.ok(Map.of("before", before.toString(), "after", after.toString()));
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY, rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> replayWithdrawalLimits(
             String idempotencyKey,
-            WithdrawalLimitsUpdateRequest request,
-            Set<String> changedFields,
-            String actor) {
+            WithdrawalLimitsUpdateRequest request) {
+        String approvalOperationId = A2ReplayContext.operationId();
+        if (!A2ReplayContext.isReplaying() || approvalOperationId == null) {
+            return ApiResult.fail(409, "D5_WITHDRAWAL_LIMITS_APPROVAL_REQUIRED");
+        }
+        ApiResult<Map<String, Object>> validation = validateWithdrawalLimitsCommand(request, idempotencyKey, false);
+        if (validation != null) {
+            return validation;
+        }
+        // A2 owns the transaction and idempotency key. A failed replay leaves the ticket retryable.
+        return updateWithdrawalLimitsNew(idempotencyKey.trim(), request, request.changedD5Fields(),
+                AdminActorResolver.resolve(request.getOperator()), approvalOperationId);
+    }
+
+    private ApiResult<D5WithdrawalChange> readWithdrawalLimitsChange(
+            WithdrawalLimitsUpdateRequest request, Set<String> changedFields, boolean lock) {
         long currentVersion;
         try {
-            currentVersion = configFacade.activeValueForUpdate("withdrawal.d5.version")
+            currentVersion = (lock ? configFacade.activeValueForUpdate("withdrawal.d5.version")
+                    : configFacade.activeValue("withdrawal.d5.version"))
                     .filter(StringUtils::hasText)
                     .map(String::trim)
                     .map(Long::parseLong)
@@ -420,13 +458,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         }
 
         Map<String, BigDecimal> before;
-        try {
-            before = currentD5OwnedValues();
-        } catch (IllegalStateException ex) {
-            return ApiResult.fail(503, "D5_CONFIG_UNAVAILABLE");
-        }
         Map<String, Boolean> beforeNetworkEnabled;
         try {
+            before = currentD5OwnedValues();
             beforeNetworkEnabled = currentD5NetworkEnabledValues();
         } catch (IllegalStateException ex) {
             return ApiResult.fail(503, "D5_CONFIG_UNAVAILABLE");
@@ -449,47 +483,83 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             }
             return loosensWithdrawalLimit(field, before.get(field), requestedWithdrawalLimitValue(field, request));
         });
-        if (amplifies) {
-            TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-            if (!coverage.reliable()) {
-                return ApiResult.fail(422, "COVERAGE_UNAVAILABLE");
-            }
-            if (coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
-                return new ApiResult<>(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
-                        OpsErrorCode.COVERAGE_BELOW_REDLINE.name(),
-                        Map.of("coverageRatio", coverage.coverageRatio(), "redlinePct", coverage.redlinePct()));
+        return ApiResult.ok(new D5WithdrawalChange(currentVersion, before, beforeNetworkEnabled, amplifies));
+    }
+
+    private ApiResult<Map<String, Object>> requireWithdrawalLimitsAmplification(D5WithdrawalChange change) {
+        if (!change.amplifies()) {
+            return ApiResult.fail(422, "D5_WITHDRAWAL_LIMITS_AMPLIFICATION_REQUIRED");
+        }
+        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        if (!coverage.reliable()) {
+            return ApiResult.fail(422, "COVERAGE_UNAVAILABLE");
+        }
+        if (coverage.redlineBreached()) {
+            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                    OpsErrorCode.COVERAGE_BELOW_REDLINE.name(),
+                    Map.of("coverageRatio", coverage.coverageRatio(), "redlinePct", coverage.redlinePct()));
+        }
+        return null;
+    }
+
+    private ApiResult<Map<String, Object>> updateWithdrawalLimitsNew(
+            String idempotencyKey,
+            WithdrawalLimitsUpdateRequest request,
+            Set<String> changedFields,
+            String actor,
+            String approvalOperationId) {
+        ApiResult<D5WithdrawalChange> result = readWithdrawalLimitsChange(request, changedFields, true);
+        if (result.getCode() != 0) {
+            return ApiResult.fail(result.getCode(), result.getMessage());
+        }
+        D5WithdrawalChange change = result.getData();
+        if (approvalOperationId == null && change.amplifies()) {
+            return ApiResult.fail(409, "D5_WITHDRAWAL_LIMITS_APPROVAL_REQUIRED");
+        }
+        if (approvalOperationId != null) {
+            ApiResult<Map<String, Object>> guard = requireWithdrawalLimitsAmplification(change);
+            if (guard != null) {
+                return guard;
             }
         }
 
+        long currentVersion = change.version();
+        Map<String, BigDecimal> before = change.before();
         String reason = request.getReason().trim();
         String role = operatorRoleResolver.resolve();
         for (String field : changedFields.stream().sorted().toList()) {
+            Map<String, Object> detail = new LinkedHashMap<>();
+            detail.put("field", field);
+            detail.put("operator", trimToEmpty(actor));
+            detail.put("role", role);
+            detail.put("reason", reason);
+            detail.put("versionBefore", currentVersion);
+            detail.put("versionAfter", currentVersion + 1);
+            detail.put("idempotencyKey", idempotencyKey);
+            if (approvalOperationId != null) {
+                detail.put("operationId", approvalOperationId);
+            }
             if ("networkConfirmFeeUsd".equals(field)) {
                 Map<String, BigDecimal> fees = request.getNetworkConfirmFeeUsd();
-                Map<String, BigDecimal> previous = Map.of(
-                        "trc20", before.get("networkConfirmFeeUsd.trc20"),
-                        "bep20", before.get("networkConfirmFeeUsd.bep20"),
-                        "erc20", before.get("networkConfirmFeeUsd.erc20"));
+                Map<String, BigDecimal> previous = d5NetworkFees(before);
                 fees.forEach((network, nextFee) -> configFacade.upsertAdminValue(
                         "withdrawal.network_confirm_fee_usd." + network,
                         nextFee.toPlainString(), "NUMBER", "wallet",
                         "D5 fixed network confirmation fee in USD"));
-                Map<String, Object> detail = new LinkedHashMap<>();
-                detail.put("field", field);
                 detail.put("before", previous);
                 detail.put("after", fees);
-                detail.put("operator", trimToEmpty(actor));
-                detail.put("role", role);
-                detail.put("reason", reason);
-                detail.put("versionBefore", currentVersion);
-                detail.put("versionAfter", currentVersion + 1);
-                detail.put("idempotencyKey", idempotencyKey);
                 auditRequired("D5_WITHDRAWAL_PARAM_CHANGED", "WITHDRAWAL_PARAM", field, actor, detail);
-                eventOutboxService.publish("WITHDRAWAL_PARAM", field, "admin.withdraw_limit_changed", detail);
+                fees.forEach((network, nextFee) -> {
+                    BigDecimal previousFee = previous.get(network);
+                    if (previousFee.compareTo(nextFee) != 0) {
+                        publishWithdrawalLimitChange(field, field + "." + network, previousFee, nextFee, actor, reason);
+                    }
+                });
                 continue;
             }
             if ("networkEnabled".equals(field)) {
                 Map<String, Boolean> enabled = request.getNetworkEnabled();
+                Map<String, Boolean> previous = change.beforeNetworkEnabled();
                 enabled.forEach((network, nextEnabled) -> {
                     String value = String.valueOf(nextEnabled);
                     configFacade.upsertAdminValue("withdrawal." + network + ".enabled", value,
@@ -497,18 +567,17 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                     configFacade.upsertAdminValue("wallet.withdrawal." + network + ".enabled", value,
                             "BOOLEAN", "wallet", "D5 withdrawal network enabled mirror");
                 });
-                Map<String, Object> detail = new LinkedHashMap<>();
-                detail.put("field", field);
-                detail.put("before", beforeNetworkEnabled);
+                detail.put("before", previous);
                 detail.put("after", enabled);
-                detail.put("operator", trimToEmpty(actor));
-                detail.put("role", role);
-                detail.put("reason", reason);
-                detail.put("versionBefore", currentVersion);
-                detail.put("versionAfter", currentVersion + 1);
-                detail.put("idempotencyKey", idempotencyKey);
                 auditRequired("D5_WITHDRAWAL_PARAM_CHANGED", "WITHDRAWAL_PARAM", field, actor, detail);
-                eventOutboxService.publish("WITHDRAWAL_PARAM", field, "admin.withdraw_limit_changed", detail);
+                enabled.forEach((network, nextEnabled) -> {
+                    boolean previousEnabled = previous.get(network);
+                    if (previousEnabled != nextEnabled) {
+                        publishWithdrawalLimitChange(field, field + "." + network,
+                                previousEnabled ? BigDecimal.ONE : BigDecimal.ZERO,
+                                nextEnabled ? BigDecimal.ONE : BigDecimal.ZERO, actor, reason);
+                    }
+                });
                 continue;
             }
             BigDecimal nextValue = requestedWithdrawalLimitValue(field, request);
@@ -517,29 +586,26 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                     "D5 canonical withdrawal limit");
             configFacade.upsertAdminValue(walletD5ConfigKey(field), nextValue.toPlainString(), "NUMBER", "wallet",
                     "D5 withdrawal limit mirror");
-            Map<String, Object> detail = new LinkedHashMap<>();
-            detail.put("field", field);
             detail.put("before", before.get(field));
             detail.put("after", nextValue);
-            detail.put("operator", trimToEmpty(actor));
-            detail.put("role", role);
-            detail.put("reason", reason);
-            detail.put("versionBefore", currentVersion);
-            detail.put("versionAfter", currentVersion + 1);
-            detail.put("idempotencyKey", idempotencyKey);
             auditRequired("D5_WITHDRAWAL_PARAM_CHANGED", "WITHDRAWAL_PARAM", configKey, actor, detail);
-            eventOutboxService.publish("WITHDRAWAL_PARAM", configKey, "admin.withdraw_limit_changed", Map.of(
-                    "field", field,
-                    "before", before.get(field),
-                    "after", nextValue,
-                    "operator", trimToEmpty(actor),
-                    "reason", reason));
+            publishWithdrawalLimitChange(configKey, field, before.get(field), nextValue, actor, reason);
         }
         configFacade.upsertAdminValue("withdrawal.d5.version", String.valueOf(currentVersion + 1),
                 "NUMBER", "wallet", "D5 aggregate config version");
         Map<String, Object> response = withdrawalLimitsData();
         response.put("updatedFields", changedFields.stream().sorted().toList());
         return ApiResult.ok(response);
+    }
+
+    private void publishWithdrawalLimitChange(String resourceId, String field,
+            BigDecimal before, BigDecimal after, String actor, String reason) {
+        eventOutboxService.publish("WITHDRAWAL_PARAM", resourceId, "admin.withdraw_limit_changed", Map.of(
+                "field", field,
+                "before", before,
+                "after", after,
+                "operator", trimToEmpty(actor),
+                "reason", reason));
     }
 
     public ApiResult<PageResult<WithdrawalOrderView>> withdrawals(WithdrawalQueryRequest request) {
@@ -1618,6 +1684,10 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
+        return requireCommandReason(reason);
+    }
+
+    private ApiResult<Map<String, Object>> requireCommandReason(String reason) {
         if (!StringUtils.hasText(reason) || reason.trim().length() < 8 || reason.trim().length() > 200) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
@@ -2203,10 +2273,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         // Wire contract stays aligned with the existing PC flat request/response key.
         // The PC view model renames this to maxBalanceRatio after validation.
         response.put("balanceMaxRatio", owned.get("balanceMaxRatio"));
-        response.put("networkConfirmFeeUsd", Map.of(
-                "trc20", owned.get("networkConfirmFeeUsd.trc20"),
-                "bep20", owned.get("networkConfirmFeeUsd.bep20"),
-                "erc20", owned.get("networkConfirmFeeUsd.erc20")));
+        response.put("networkConfirmFeeUsd", d5NetworkFees(owned));
         response.put("networkEnabled", currentD5NetworkEnabledValues());
         response.put("nexFeeOffsetRate", owned.get("nexFeeOffsetRate"));
         response.put("smallAmountThresholdUsd", owned.get("smallAmountThresholdUsd"));
@@ -2268,9 +2335,46 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 "erc20", requiredConfigBoolean("withdrawal.erc20.enabled"));
     }
 
-    private ApiResult<Map<String, Object>> validateWithdrawalLimitsRequest(
-            WithdrawalLimitsUpdateRequest request,
-            Set<String> changedFields) {
+    private Map<String, BigDecimal> d5NetworkFees(Map<String, BigDecimal> values) {
+        return Map.of(
+                "trc20", values.get("networkConfirmFeeUsd.trc20"),
+                "bep20", values.get("networkConfirmFeeUsd.bep20"),
+                "erc20", values.get("networkConfirmFeeUsd.erc20"));
+    }
+
+    private String d5NetworkSummary(Map<String, ?> values) {
+        return "[TRC20=" + d5SummaryValue(values.get("trc20"))
+                + ", BEP20=" + d5SummaryValue(values.get("bep20"))
+                + ", ERC20=" + d5SummaryValue(values.get("erc20")) + "]";
+    }
+
+    private String d5SummaryValue(Object value) {
+        String text = value.toString();
+        return text.length() > 48 ? text.substring(0, 47) + "…" : text;
+    }
+
+    private record D5WithdrawalChange(long version, Map<String, BigDecimal> before,
+            Map<String, Boolean> beforeNetworkEnabled, boolean amplifies) {}
+
+    private ApiResult<Map<String, Object>> validateWithdrawalLimitsCommand(
+            WithdrawalLimitsUpdateRequest request, String idempotencyKey, boolean preview) {
+        if (request != null && request.hasPhaseFields()) {
+            return ApiResult.fail(OpsErrorCode.PHASE_PARAM_READONLY.httpStatus(),
+                    OpsErrorCode.PHASE_PARAM_READONLY.name(), Map.of("redirect", "/admin/phase/h1"));
+        }
+        String reason = request == null ? null : request.getReason();
+        ApiResult<Map<String, Object>> guard = preview
+                ? requireCommandReason(reason) : requireCommand(idempotencyKey, reason);
+        if (guard != null) {
+            return guard;
+        }
+        if (request.getExpectedVersion() == null || request.getExpectedVersion() < 0) {
+            return ApiResult.fail(400, "EXPECTED_VERSION_REQUIRED");
+        }
+        Set<String> changedFields = request.changedD5Fields();
+        if (changedFields.isEmpty()) {
+            return ApiResult.fail(400, "D5_CHANGE_REQUIRED");
+        }
         if (changedFields.contains("dailyLimitCount")
                 && (request.getDailyLimitCount() == null
                 || request.getDailyLimitCount() < 1 || request.getDailyLimitCount() > 10)) {

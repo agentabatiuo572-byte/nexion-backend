@@ -1,5 +1,8 @@
 package ffdd.opsconsole.platform.application;
 
+import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
+import org.springframework.beans.factory.annotation.Autowired;
+
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.common.boundary.PhoneReplacementContract;
@@ -116,6 +119,8 @@ public class AuditReplayBusinessPermissionGuard {
     private final ffdd.opsconsole.finance.cregis.CregisDepositPolicyService depositPolicies;
     private final ffdd.opsconsole.device.application.LegacyUnknownZeroCreditService legacyUnknownZeroCredit;
     private final TeamCommissionRepository teamCommissionRepository;
+    @Autowired
+    private WithdrawalConfigApproval withdrawalConfigApproval;
 
     public AuditReplayBusinessPermissionGuard(TrustDisclosureRepository trustDisclosureRepository,
             AdminOperatorRoleResolver roleResolver, EmergencyControlRepository emergencyControlRepository,
@@ -177,6 +182,9 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     public ApiResult<Void> validateProposal(AuditReplayCommand command) {
+        if (WithdrawalConfigApproval.supports(command)) {
+            return withdrawalConfigApproval.validateMaker(command);
+        }
         if (command == null || command.op() == null) {
             return delegatedProposal()
                     ? ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_COMMAND_REQUIRED")
@@ -277,6 +285,9 @@ public class AuditReplayBusinessPermissionGuard {
      * will later approve; it is intentionally not an input the browser can choose.
      */
     public ApiResult<AuditReplayCommand> canonicalizeProposalCommand(AuditReplayCommand command) {
+        if (WithdrawalConfigApproval.supports(command)) {
+            return ApiResult.ok(withdrawalConfigApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
+        }
         if (command == null || !isJ4Execution(command, text(command.op()).toLowerCase(Locale.ROOT))) {
             return ApiResult.ok(command);
         }
@@ -293,6 +304,12 @@ public class AuditReplayBusinessPermissionGuard {
         return ApiResult.ok(new AuditReplayCommand(command.domain(), command.op(), params));
     }
 
+    ApiResult<Void> validateRejection(AuditReplayCommand command) {
+        return WithdrawalConfigApproval.supports(command)
+                ? withdrawalConfigApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId(), false)
+                : ApiResult.ok();
+    }
+
     /**
      * Approval is intentionally not a second direct-write permission check.
      * A2 already requires {@code platform_a2_operation_approve}; for the two
@@ -302,6 +319,9 @@ public class AuditReplayBusinessPermissionGuard {
      * Other commands retain their existing replay-time business guard.
      */
     public ApiResult<Void> validateApproval(AuditReplayCommand command) {
+        if (WithdrawalConfigApproval.supports(command)) {
+            return withdrawalConfigApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId(), true);
+        }
         if (command == null || command.op() == null) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_COMMAND_REQUIRED");
         }
@@ -485,6 +505,20 @@ public class AuditReplayBusinessPermissionGuard {
             AuditOperationProposalRequest request) {
         boolean delegated = delegatedProposal();
         AuditReplayCommand command = request == null ? null : request.command();
+        if (WithdrawalConfigApproval.supports(command)) {
+            String source = WithdrawalConfigApproval.source(command);
+            AuditLockTarget target = WithdrawalConfigApproval.target(command);
+            if (!source.equals(text(request.sourceDomain())) || !target.id().equals(text(request.obj()))
+                    || !target.equals(request.target()) || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            ApiResult<Map<String, Object>> preview = withdrawalConfigApproval.preview(command, request.reason());
+            if (preview.getCode() != 0) return ApiResult.fail(preview.getCode(), preview.getMessage());
+            var values = preview.getData();
+            return ApiResult.ok(new DelegatedProposalDescriptor(
+                    "D5".equals(source) ? "放宽提现参数" : "放宽越南盾提现参数", target.id(),
+                    (String) values.get("before"), (String) values.get("after"), source, "fund", true, target));
+        }
         if (command != null && "A".equals(command.domain())
                 && A1_ACCOUNT_PROPOSAL_AUTHORITIES.containsKey(text(command.op()))) {
             return validateA1AccountProposalContext(request, command, delegated);

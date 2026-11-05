@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.finance.dto.PayoutVndChannelUpdateRequest;
 import ffdd.opsconsole.finance.dto.PayoutVndConfigUpdateRequest;
 import ffdd.opsconsole.finance.mapper.VietnamPaymentMapper;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -30,6 +31,7 @@ public class PayoutVndConfigService {
     public static final String VERSION_KEY = "finance.payout_vnd.version";
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() { };
     private static final BigDecimal HUNDRED = new BigDecimal("100");
+    private static final String APPROVAL_REQUIRED = "D7_PAYOUT_VND_CONFIG_APPROVAL_REQUIRED";
 
     private final PlatformConfigFacade config;
     private final VietnamPaymentMapper vietnam;
@@ -54,9 +56,26 @@ public class PayoutVndConfigService {
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> update(PayoutVndConfigUpdateRequest request) {
+        return evaluateUpdate(request, UpdateMode.DIRECT);
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> previewUpdate(PayoutVndConfigUpdateRequest request) {
+        return evaluateUpdate(request, UpdateMode.PREVIEW);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> replayUpdate(PayoutVndConfigUpdateRequest request) {
+        if (!A2ReplayContext.isReplaying() || A2ReplayContext.operationId() == null) {
+            return ApiResult.fail(409, APPROVAL_REQUIRED);
+        }
+        return evaluateUpdate(request, UpdateMode.REPLAY);
+    }
+
+    private ApiResult<Map<String, Object>> evaluateUpdate(PayoutVndConfigUpdateRequest request, UpdateMode mode) {
         String requestError = validateUpdateRequest(request);
         if (requestError != null) return ApiResult.fail(422, requestError);
-        State current = readState(true);
+        State current = readState(mode != UpdateMode.PREVIEW);
         if (current == null || validateStored(current.values()) != null) {
             return ApiResult.fail(503, "D7_CONFIG_UNAVAILABLE");
         }
@@ -71,10 +90,19 @@ public class PayoutVndConfigService {
         if (isInverted(fx, decimal(next.get("sellSpreadPct"))) && !Boolean.TRUE.equals(request.forceInverted())) {
             return ApiResult.fail(422, "D7_PRICE_SPREAD_INVERTED");
         }
-        if (amplifies(current.values(), next) && !coverageHealthy()) {
-            return ApiResult.fail(409, "D7_TREASURY_COVERAGE_BLOCKED");
+        boolean amplifies = amplifies(current.values(), next);
+        if (mode == UpdateMode.DIRECT) {
+            if (amplifies) return ApiResult.fail(409, APPROVAL_REQUIRED);
+        } else {
+            if (!amplifies) return ApiResult.fail(422, "D7_PAYOUT_VND_CONFIG_NOT_AMPLIFYING");
+            if (!coverageHealthy()) return ApiResult.fail(409, "D7_TREASURY_COVERAGE_BLOCKED");
+            if (mode == UpdateMode.PREVIEW) {
+                return ApiResult.ok(Map.of(
+                        "before", previewValues(current.version(), current.values(), false),
+                        "after", previewValues(current.version() + 1L, next, Boolean.TRUE.equals(request.forceInverted()))));
+            }
         }
-        return persist(current, next, "D7_PAYOUT_VND_CONFIG_UPDATED", request.reason(), request.forceInverted());
+        return persist(current, next, request, mode == UpdateMode.REPLAY ? A2ReplayContext.operationId() : null);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -86,10 +114,11 @@ public class PayoutVndConfigService {
     private ApiResult<Map<String, Object>> persist(
             State current,
             Map<String, Object> next,
-            String action,
-            String reason,
-            Boolean forced) {
+            PayoutVndConfigUpdateRequest request,
+            String operationId) {
         long nextVersion = current.version() + 1L;
+        next.put("effectiveAt", clock.millis());
+        next.put("lastUpdatedBy", AdminActorResolver.resolve("system"));
         try {
             config.upsertAdminValue(VALUES_KEY, objectMapper.writeValueAsString(next), "JSON", "finance",
                     "D7 payout VND config aggregate");
@@ -99,9 +128,10 @@ public class PayoutVndConfigService {
         config.upsertAdminValue(VERSION_KEY, String.valueOf(nextVersion), "NUMBER", "finance",
                 "D7 payout VND config version");
         audit.recordRequired(AuditLogWriteRequest.builder()
-                .action(action)
+                .action("D7_PAYOUT_VND_CONFIG_UPDATED")
                 .resourceType("PAYOUT_VND_CONFIG")
                 .resourceId("D7")
+                .bizNo(operationId)
                 .actorType("ADMIN")
                 .actorUsername(AdminActorResolver.resolve("system"))
                 .riskLevel("CRITICAL")
@@ -110,8 +140,8 @@ public class PayoutVndConfigService {
                         "after", auditValues(next),
                         "beforeVersion", current.version(),
                         "version", nextVersion,
-                        "reason", reason.trim(),
-                        "forceInverted", Boolean.TRUE.equals(forced)))
+                        "reason", request.reason().trim(),
+                        "forceInverted", Boolean.TRUE.equals(request.forceInverted())))
                 .build());
         FxSource fx = readFx();
         if (fx == null) throw new IllegalStateException("D7_D6_SOURCE_UNAVAILABLE_AFTER_WRITE");
@@ -187,9 +217,24 @@ public class PayoutVndConfigService {
         values.put("feeMaxUsd", request.feeMaxUsd());
         values.put("minAmountUsd", request.minAmountUsd());
         values.put("maxAmountUsd", request.maxAmountUsd());
-        values.put("effectiveAt", clock.millis());
-        values.put("lastUpdatedBy", AdminActorResolver.resolve("system"));
         return values;
+    }
+
+    private String previewValues(long version, Map<String, Object> values, boolean forced) {
+        return "v" + version
+                + " spread=" + canonicalNumber(values, "sellSpreadPct")
+                + " ttl=" + canonicalNumber(values, "quoteTtlMinWithdraw")
+                + " tol=" + canonicalNumber(values, "requoteTolerancePct")
+                + " rate=" + canonicalNumber(values, "feeRatePct")
+                + " minFee=" + canonicalNumber(values, "feeMinUsd")
+                + " maxFee=" + canonicalNumber(values, "feeMaxUsd")
+                + " minAmt=" + canonicalNumber(values, "minAmountUsd")
+                + " maxAmt=" + canonicalNumber(values, "maxAmountUsd")
+                + (forced ? " forceInverted" : "");
+    }
+
+    private String canonicalNumber(Map<String, Object> values, String key) {
+        return decimal(values.get(key)).stripTrailingZeros().toPlainString();
     }
 
     private String validateUpdateRequest(PayoutVndConfigUpdateRequest request) {
@@ -266,7 +311,7 @@ public class PayoutVndConfigService {
                     && snapshot.ratioLiabilitiesUsd().signum() > 0
                     && snapshot.ratioReserveUsd() != null
                     && snapshot.ratioReserveUsd().signum() >= 0
-                    && snapshot.coverageRatio().compareTo(snapshot.redlinePct()) >= 0;
+                    && !snapshot.redlineBreached();
         } catch (RuntimeException ex) {
             return false;
         }
@@ -351,4 +396,5 @@ public class PayoutVndConfigService {
             boolean providerReady,
             boolean providerStatusAvailable) { }
     private record FxSource(BigDecimal baseRateVndPerUsdt, BigDecimal buySpreadPct) { }
+    private enum UpdateMode { DIRECT, PREVIEW, REPLAY }
 }

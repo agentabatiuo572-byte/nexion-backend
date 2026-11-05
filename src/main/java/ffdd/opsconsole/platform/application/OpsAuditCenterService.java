@@ -273,18 +273,19 @@ public class OpsAuditCenterService {
             ticket.setSourceDomain(sourceDomain);
         }
         if (descriptor != null) {
-            boolean a1AccountProposal = "A1".equals(descriptor.sourceDomain());
+            boolean superAdminProposal = "A1".equals(descriptor.sourceDomain())
+                    || ffdd.opsconsole.finance.application.WithdrawalConfigApproval.supports(command);
             ticket.setAction(descriptor.action());
             ticket.setObjectText(descriptor.objectId());
             ticket.setBeforeValue(descriptor.beforeValue());
             ticket.setAfterValue(descriptor.afterValue());
-            if (!a1AccountProposal && replayBusinessPermissionGuard.delegatedProposal()) {
+            if (!superAdminProposal && replayBusinessPermissionGuard.delegatedProposal()) {
                 ticket.setOperatorRole("风控");
             }
             ticket.setOperationType(descriptor.operationType());
             ticket.setAmplifies(descriptor.amplifies() ? 1 : 0);
             ticket.setSos(0);
-            ticket.setRoleGate(a1AccountProposal ? "超管" : "门槛者");
+            ticket.setRoleGate(superAdminProposal ? "超管" : "门槛者");
             sourceDomain = descriptor.sourceDomain();
             ticket.setSourceDomain(normalizeDomain(sourceDomain));
             target = descriptor.target();
@@ -292,6 +293,9 @@ public class OpsAuditCenterService {
         if (command != null) {
             try {
                 com.fasterxml.jackson.databind.node.ObjectNode stored = objectMapper.valueToTree(command);
+                if (ffdd.opsconsole.finance.application.WithdrawalConfigApproval.supports(command)) {
+                    ((com.fasterxml.jackson.databind.node.ObjectNode) stored.get("params")).put("proposalReason", reason);
+                }
                 boolean skuStatus="E".equals(command.domain()) && "e1_sku_status".equals(command.op());
                 boolean phonePolicy="E".equals(command.domain()) && "e1_phone_task_policy".equals(command.op());
                 if((skuStatus || phonePolicy || isSkuReviewCommand(command)) && request.targets()!=null && !request.targets().isEmpty())
@@ -748,6 +752,16 @@ public class OpsAuditCenterService {
             if (cmd == null) {
                 return fail(OpsErrorCode.VALIDATION_FAILED, "COMMAND_REQUIRED");
             }
+            if (ffdd.opsconsole.finance.application.WithdrawalConfigApproval.supports(cmd)) {
+                var target = ffdd.opsconsole.finance.application.WithdrawalConfigApproval.target(cmd);
+                var locks = lockMapper.selectActiveByTicketId(ticket.getOperationId());
+                if (!target.id().equals(ticket.getObjectText()) || !"D".equals(ticket.getSourceDomain())
+                        || !"fund".equals(ticket.getOperationType()) || !Integer.valueOf(1).equals(ticket.getAmplifies())
+                        || locks.size() != 1 || !target.equals(new AuditLockTarget(locks.get(0).getTargetDomain(),
+                            locks.get(0).getTargetType(), locks.get(0).getTargetId()))) {
+                    return fail(OpsErrorCode.FORBIDDEN, "A2_BUSINESS_CONTEXT_MISMATCH");
+                }
+            }
             ApiResult<Void> businessPermission = replayBusinessPermissionGuard.validateApproval(cmd);
             if (businessPermission.getCode() != 0) {
                 return ApiResult.fail(businessPermission.getCode(), businessPermission.getMessage());
@@ -771,6 +785,13 @@ public class OpsAuditCenterService {
             }
             releaseLock(ticket.getOperationId());
         } else {
+            if (STATUS_REJECTED.equals(nextStatus)) {
+                ApiResult<Void> businessPermission = replayBusinessPermissionGuard.validateRejection(
+                        deserializeCommand(ticket.getCommandJson()));
+                if (businessPermission.getCode() != 0) {
+                    return ApiResult.fail(businessPermission.getCode(), businessPermission.getMessage());
+                }
+            }
             // reject / withdrawn:删锁,目标域不动(原值恢复)
             releaseLock(ticket.getOperationId());
         }

@@ -1,5 +1,6 @@
 package ffdd.opsconsole.treasury.facade;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.math.BigDecimal;
 
 public record TreasuryCoverageSnapshot(
@@ -11,7 +12,23 @@ public record TreasuryCoverageSnapshot(
         BigDecimal nexUsdRate,
         BigDecimal ratioReserveUsd,
         BigDecimal ratioLiabilitiesUsd,
-        BigDecimal healthyPct) {
+        BigDecimal healthyPct,
+        @JsonIgnore boolean redlineBreached) {
+
+    public TreasuryCoverageSnapshot(
+            BigDecimal coverageRatio,
+            BigDecimal redlinePct,
+            boolean reliable,
+            BigDecimal reserveUsd,
+            BigDecimal liabilitiesUsd,
+            BigDecimal nexUsdRate,
+            BigDecimal ratioReserveUsd,
+            BigDecimal ratioLiabilitiesUsd,
+            BigDecimal healthyPct) {
+        this(coverageRatio, redlinePct, reliable, reserveUsd, liabilitiesUsd, nexUsdRate,
+                ratioReserveUsd, ratioLiabilitiesUsd, healthyPct,
+                coverageRatio != null && redlinePct != null && coverageRatio.compareTo(redlinePct) < 0);
+    }
 
     public TreasuryCoverageSnapshot(
             BigDecimal coverageRatio,
