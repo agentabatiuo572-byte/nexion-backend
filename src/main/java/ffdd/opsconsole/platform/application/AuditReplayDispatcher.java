@@ -1,4 +1,5 @@
 package ffdd.opsconsole.platform.application;
+import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
 import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.growth.application.H5GrowthApproval;
@@ -45,8 +46,13 @@ public class AuditReplayDispatcher {
     private H4GrowthApproval h4GrowthApproval;
     @Autowired
     private K2OtpInitialApproval k2OtpInitialApproval;
+    @Autowired
+    private LearningCourseActivationApproval learningCourseActivationApproval;
 
     public ApiResult<?> dispatch(AuditReplayCommand cmd, AuditReplayContext ctx) {
+        if (LearningCourseActivationApproval.supports(cmd)) {
+            return learningCourseActivationApproval.replay(cmd, ctx);
+        }
         if (H4GrowthApproval.supports(cmd)) {
             return h4GrowthApproval.replay(cmd, ctx,
                     A2ReplayContext.authenticatedAdminId(), A2ReplayContext.operationId());

@@ -21,6 +21,7 @@ import ffdd.opsconsole.content.domain.TrustDisclosureRepository;
 import ffdd.opsconsole.content.domain.TrustSectionView;
 import ffdd.opsconsole.content.domain.DisclosureDraftView;
 import ffdd.opsconsole.content.application.DisclosureContentHash;
+import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
 import ffdd.opsconsole.device.domain.ComputeConfigRegistry;
 import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.market.facade.GenesisParamPermissions;
@@ -137,6 +138,8 @@ public class AuditReplayBusinessPermissionGuard {
     @Autowired
     private K2OtpInitialApproval k2OtpInitialApproval;
     @Autowired
+    private LearningCourseActivationApproval learningCourseActivationApproval;
+    @Autowired
     private ffdd.opsconsole.device.application.OpsDeviceService devices;
     @Autowired
     private ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper calibrationMapper;
@@ -214,6 +217,10 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     public ApiResult<Void> validateProposal(AuditReplayCommand command) {
+        if (LearningCourseActivationApproval.supports(command)) {
+            return learningCourseActivationApproval.canPropose(command)
+                    ? ApiResult.ok() : ApiResult.fail(403, "LEARNING_ACTIVATION_MAKER_FORBIDDEN");
+        }
         if (H4GrowthApproval.supports(command)) {
             return h4GrowthApproval.canPropose(command)
                     ? ApiResult.ok() : ApiResult.fail(403, "H4_MAKER_FORBIDDEN");
@@ -353,6 +360,15 @@ public class AuditReplayBusinessPermissionGuard {
      * serialized.  The snapshot binds the maker's target-domain grants to exactly the playbook that the checker
      * will later approve; it is intentionally not an input the browser can choose.
      */
+    ApiResult<AuditReplayCommand> bindProposalCommand(AuditOperationProposalRequest request) {
+        AuditReplayCommand command = request.command();
+        if (!LearningCourseActivationApproval.isOperation(command)) return canonicalizeProposalCommand(command);
+        if (!LearningCourseActivationApproval.supports(command)) {
+            return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+        }
+        return ApiResult.ok(learningCourseActivationApproval.prepare(request, A2ReplayContext.authenticatedAdminId()));
+    }
+
     public ApiResult<AuditReplayCommand> canonicalizeProposalCommand(AuditReplayCommand command) {
         if (H4GrowthApproval.supports(command)) {
             return ApiResult.ok(h4GrowthApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
@@ -404,6 +420,9 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     ApiResult<Void> validateRejection(AuditReplayCommand command) {
+        if (LearningCourseActivationApproval.supports(command)) {
+            return learningCourseActivationApproval.validateDecision(command, A2ReplayContext.authenticatedAdminId(), false);
+        }
         if (H4GrowthApproval.supports(command)) {
             return h4GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         }
@@ -448,6 +467,9 @@ public class AuditReplayBusinessPermissionGuard {
      * Other commands retain their existing replay-time business guard.
      */
     public ApiResult<Void> validateApproval(AuditReplayCommand command) {
+        if (LearningCourseActivationApproval.supports(command)) {
+            return learningCourseActivationApproval.validateDecision(command, A2ReplayContext.authenticatedAdminId(), true);
+        }
         if (H4GrowthApproval.supports(command)) {
             return h4GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         }
@@ -663,6 +685,17 @@ public class AuditReplayBusinessPermissionGuard {
      * Canonical fields are derived from the executable command and replace the
      * client-supplied ticket description before persistence.
      */
+    ApiResult<DelegatedProposalDescriptor> validateProposalContext(
+            AuditOperationProposalRequest request, AuditReplayCommand boundCommand) {
+        if (LearningCourseActivationApproval.supports(boundCommand)) {
+            var target = LearningCourseActivationApproval.target(boundCommand);
+            return ApiResult.ok(new DelegatedProposalDescriptor(LearningCourseActivationApproval.action(boundCommand), target.id(),
+                    (String) boundCommand.params().get("beforeSummary"), (String) boundCommand.params().get("afterSummary"),
+                    "I", "fund", true, target));
+        }
+        return validateProposalContext(request);
+    }
+
     public ApiResult<DelegatedProposalDescriptor> validateProposalContext(
             AuditOperationProposalRequest request) {
         boolean delegated = delegatedProposal();
