@@ -742,7 +742,7 @@ public class AuditReplayBusinessPermissionGuard {
             if (preview.getCode() != 0) return ApiResult.fail(preview.getCode(), preview.getMessage());
             var review = preview.getData();
             boolean historical = "h4_event_rule".equals(target.type()) && "evt-anniversary-spin".equals(target.id());
-            return ApiResult.ok(new DelegatedProposalDescriptor(historical ? "发布历史活动只读记录" : "启用活动或放宽转盘资金护栏", target.id(),
+            return ApiResult.ok(new DelegatedProposalDescriptor(historical ? "发布历史活动只读记录" : H4GrowthApproval.proposalAction(command), target.id(),
                     String.valueOf(review.get("before")), String.valueOf(review.get("after")), "H4", historical ? "param" : "fund", !historical, target));
         }
         if (H3GrowthApproval.supports(command)) {

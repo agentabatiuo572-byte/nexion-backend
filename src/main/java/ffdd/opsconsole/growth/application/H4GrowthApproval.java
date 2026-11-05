@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.growth.dto.GenesisRaffleRequest;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelGuardRequest;
+import ffdd.opsconsole.growth.dto.GrowthWheelProbabilityBatchRequest;
+import ffdd.opsconsole.growth.dto.GrowthWheelTierRequest;
 import ffdd.opsconsole.growth.dto.H4EventRuleRequest;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.domain.AuditLockTarget;
@@ -21,7 +23,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-/** Only the four existing H4 commands below can be proposed or replayed. */
+/** Only the listed H4 commands can be proposed or replayed. */
 @Component
 @RequiredArgsConstructor
 public class H4GrowthApproval {
@@ -31,6 +33,13 @@ public class H4GrowthApproval {
     private static final String RAFFLE = "h4_genesis_raffle_open";
     private static final String GUARD_CREATE = "h4_wheel_guard_create";
     private static final String GUARD_UPDATE = "h4_wheel_guard_update";
+    private static final String TIER_CREATE = "h4_wheel_tier_create";
+    private static final String TIER_UPDATE = "h4_wheel_tier_update";
+    private static final String PROBABILITIES_UPDATE = "h4_wheel_probabilities_update";
+    private static final AuditLockTarget WHEEL_POOL = new AuditLockTarget("H", "h4_wheel_pool", "ACTIVE_POOL");
+    private static final Set<String> WHEEL_POOL_OPERATIONS = Set.of(TIER_CREATE, TIER_UPDATE, PROBABILITIES_UPDATE);
+    private static final Set<String> OPERATIONS = Set.of(RULE, RAFFLE, GUARD_CREATE, GUARD_UPDATE,
+            TIER_CREATE, TIER_UPDATE, PROBABILITIES_UPDATE);
     private final H4EventRuleService rules;
     private final GenesisRaffleService raffles;
     private final OpsGrowthService growth;
@@ -42,11 +51,23 @@ public class H4GrowthApproval {
 
     public static boolean supports(AuditReplayCommand command) {
         return command != null && "H".equals(command.domain())
-                && Set.of(RULE, RAFFLE, GUARD_CREATE, GUARD_UPDATE).contains(command.op());
+                && command.op() != null && OPERATIONS.contains(command.op());
     }
 
     public static String makerAuthority(AuditReplayCommand command) {
-        return GUARD_CREATE.equals(command.op()) || GUARD_UPDATE.equals(command.op()) ? GUARD_AUTHORITY : MAKER_AUTHORITY;
+        return switch (command.op()) {
+            case GUARD_CREATE, GUARD_UPDATE, TIER_CREATE, TIER_UPDATE, PROBABILITIES_UPDATE -> GUARD_AUTHORITY;
+            default -> MAKER_AUTHORITY;
+        };
+    }
+
+    public static String proposalAction(AuditReplayCommand command) {
+        return switch (command.op()) {
+            case TIER_CREATE -> "新增转盘奖项";
+            case TIER_UPDATE -> "放宽转盘奖项配置";
+            case PROBABILITIES_UPDATE -> "提高转盘奖项概率";
+            default -> "启用活动或放宽转盘资金护栏";
+        };
     }
 
     public boolean canPropose(AuditReplayCommand command) {
@@ -56,7 +77,10 @@ public class H4GrowthApproval {
     @Transactional(rollbackFor = Exception.class)
     public AuditReplayCommand bindMaker(AuditReplayCommand command, Long adminId) {
         if (adminId == null || adminId <= 0 || !canPropose(command)) throw new BizException(403, "H4_MAKER_FORBIDDEN");
-        return new AuditReplayCommand("H", command.op(), Map.of("values", values(command), "makerAdminId", adminId,
+        Map<String, Object> values = values(command);
+        if (WHEEL_POOL_OPERATIONS.contains(command.op()) && !command.params().keySet().equals(Set.of("values")))
+            throw new BizException(422, "H4_PROPOSAL_INVALID");
+        return new AuditReplayCommand("H", command.op(), Map.of("values", values, "makerAdminId", adminId,
                 "expectedState", state(target(command))));
     }
 
@@ -73,6 +97,7 @@ public class H4GrowthApproval {
 
     public static AuditLockTarget target(AuditReplayCommand command) {
         Map<String, Object> values = values(command);
+        if (WHEEL_POOL_OPERATIONS.contains(command.op())) return WHEEL_POOL;
         if (RULE.equals(command.op())) {
             String code = text(values, "eventCode");
             if (!H4EventRuleService.CODES.contains(code)) throw new BizException(422, "EVENT_RULE_NOT_FOUND");
@@ -96,6 +121,9 @@ public class H4GrowthApproval {
             case RAFFLE -> raffles.previewOpen(target.id(), raffle(command, reason));
             case GUARD_CREATE -> growth.previewH4GuardCreate(guardCreate(command, reason));
             case GUARD_UPDATE -> growth.previewH4GuardUpdate(target.id(), guardUpdate(command, reason));
+            case TIER_CREATE -> growth.previewH4WheelTierCreate(wheelTier(command, reason));
+            case TIER_UPDATE -> growth.previewH4WheelTierUpdate(wheelTier(command, reason));
+            case PROBABILITIES_UPDATE -> growth.previewH4WheelProbabilities(wheelProbabilities(command, reason));
             default -> throw new BizException(422, "H4_PROPOSAL_INVALID");
         };
         if (result.getCode() != 0) return result;
@@ -135,11 +163,31 @@ public class H4GrowthApproval {
                 yield commands.execute("H4", "WHEEL_GUARD_UPDATE", target.id(), context.idempotencyKey(), request,
                         () -> growth.executeApprovedH4GuardUpdate(context.idempotencyKey(), target.id(), request));
             }
+            case TIER_CREATE -> {
+                var request = wheelTier(command, reason);
+                yield commands.execute("H4", "WHEEL_TIER_CREATE", request.tierName(), context.idempotencyKey(), request,
+                        () -> growth.executeApprovedH4WheelTierCreate(context.idempotencyKey(), request));
+            }
+            case TIER_UPDATE -> {
+                var request = wheelTier(command, reason);
+                yield commands.execute("H4", "WHEEL_TIER_UPDATE", request.tierName(), context.idempotencyKey(), request,
+                        () -> growth.executeApprovedH4WheelTierUpdate(context.idempotencyKey(), request));
+            }
+            case PROBABILITIES_UPDATE -> {
+                var request = wheelProbabilities(command, reason);
+                yield commands.execute("H4", "WHEEL_PROBABILITIES_UPDATE", target.id(), context.idempotencyKey(), request,
+                        () -> growth.executeApprovedH4WheelProbabilities(context.idempotencyKey(), request));
+            }
             default -> ApiResult.fail(422, "H4_PROPOSAL_INVALID");
         };
     }
 
     private Map<String, String> state(AuditLockTarget target) {
+        if (WHEEL_POOL.equals(target)) {
+            var tiers = growth.lockH4WheelPool();
+            return Map.of("wheelSignature", growth.wheelPoolSignature(tiers),
+                    "tiers", rules.encode(tiers.stream().map(TreeMap::new).toList()));
+        }
         Map<String, Object> row;
         if ("h4_event_rule".equals(target.type())) {
             row = db.row("""
@@ -172,10 +220,15 @@ public class H4GrowthApproval {
             case RULE -> Set.of("eventCode", "expectedRevision", "enabled", "startsAt", "endsAt", "rules");
             case RAFFLE -> Set.of("id", "expectedRevision", "enabled", "titleZh", "titleEn", "titleVi", "startsAt", "drawAt", "prizes");
             case GUARD_CREATE -> Set.of("guardKey", "guardLabel", "guardValue", "note");
-            default -> Set.of("guardKey", "value", "expectedValue");
+            case GUARD_UPDATE -> Set.of("guardKey", "value", "expectedValue");
+            case TIER_CREATE, TIER_UPDATE -> Set.of("tierName", "rewardName", "expectedSignature");
+            case PROBABILITIES_UPDATE -> Set.of("probabilities", "expectedSignature");
+            default -> throw new BizException(422, "H4_PROPOSAL_INVALID");
         };
         var allowed = new HashSet<>(required);
         if (RAFFLE.equals(command.op())) allowed.add("titleTranslations");
+        if (TIER_CREATE.equals(command.op()) || TIER_UPDATE.equals(command.op()))
+            allowed.addAll(Set.of("probabilityPct", "realOutflow", "rewardKind", "rewardAmount", "voucherId", "dailyStock"));
         if (!raw.keySet().containsAll(required) || !allowed.containsAll(raw.keySet())) throw new BizException(422, "H4_PROPOSAL_INVALID");
         Map<String, Object> values = (Map<String, Object>) raw;
         if (RULE.equals(command.op()) || RAFFLE.equals(command.op())) {
@@ -211,6 +264,45 @@ public class H4GrowthApproval {
         var values = values(command);
         return new GrowthConfigUpdateRequest(null, text(values, "value"), reason, null, text(values, "expectedValue"));
     }
+
+    private GrowthWheelTierRequest wheelTier(AuditReplayCommand command, String reason) {
+        var values = values(command);
+        return new GrowthWheelTierRequest(text(values, "tierName"), text(values, "rewardName"),
+                wheelDecimal(values.get("probabilityPct")), wheelInteger(values.get("realOutflow")),
+                wheelText(values.get("rewardKind")), wheelDecimal(values.get("rewardAmount")),
+                wheelText(values.get("voucherId")), wheelInteger(values.get("dailyStock")),
+                reason, null, text(values, "expectedSignature"));
+    }
+
+    private GrowthWheelProbabilityBatchRequest wheelProbabilities(AuditReplayCommand command, String reason) {
+        var values = values(command);
+        if (!(values.get("probabilities") instanceof Map<?, ?> raw)) throw new BizException(422, "H4_PROPOSAL_INVALID");
+        Map<String, BigDecimal> probabilities = new LinkedHashMap<>();
+        for (var entry : raw.entrySet()) {
+            if (!(entry.getKey() instanceof String tier)) throw new BizException(422, "H4_PROPOSAL_INVALID");
+            probabilities.put(tier, wheelDecimal(entry.getValue()));
+        }
+        return new GrowthWheelProbabilityBatchRequest(probabilities, reason, null, text(values, "expectedSignature"));
+    }
+
+    private static BigDecimal wheelDecimal(Object value) {
+        if (value == null) return null;
+        // A2 uses untyped JSON values. Decimal strings preserve all digits without a Double round trip.
+        if (value instanceof Integer || value instanceof Long) return BigDecimal.valueOf(((Number) value).longValue());
+        if (value instanceof String text && text.matches("-?[0-9]+(?:\\.[0-9]+)?")) return new BigDecimal(text);
+        throw new BizException(422, "H4_PROPOSAL_DECIMAL_INVALID");
+    }
+
+    private static Integer wheelInteger(Object value) {
+        if (value == null || value instanceof Integer) return (Integer) value;
+        throw new BizException(422, "H4_PROPOSAL_INVALID");
+    }
+
+    private static String wheelText(Object value) {
+        if (value == null || value instanceof String) return (String) value;
+        throw new BizException(422, "H4_PROPOSAL_INVALID");
+    }
+
     private <T> T convert(Object value, Class<T> type) {
         try { return json.convertValue(value, type); }
         catch (IllegalArgumentException ex) { throw new BizException(422, "H4_PROPOSAL_INVALID"); }

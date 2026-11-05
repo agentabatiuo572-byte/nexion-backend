@@ -166,6 +166,7 @@ public class OpsGrowthService implements AuditReplayable {
     private static final Set<String> EVENT_STATES = Set.of("upcoming", "ongoing", "ended");
     private static final Set<String> EVENT_KINDS = H4EventRuleService.KINDS;
     private static final Set<String> WHEEL_REWARD_KINDS = Set.of("uvt", "points", "usdt", "coupon");
+    private static final Set<String> WHEEL_REDEEMABLE_KINDS = Set.of("uvt", "usdt", "coupon");
     private static final Set<String> WHEEL_GUARD_KEYS = Set.of("budget", "cap", "kill");
     private static final Map<String, Set<String>> H3_BINDING_EVENT_TYPES = Map.of(
             "ORDER", Set.of("checkout.started"),
@@ -1528,6 +1529,19 @@ public class OpsGrowthService implements AuditReplayable {
     public ApiResult<Map<String, Object>> createWheelTier(
             String idempotencyKey,
             GrowthWheelTierRequest request) {
+        return createWheelTier(idempotencyKey, request, false, false);
+    }
+
+    ApiResult<Map<String, Object>> previewH4WheelTierCreate(GrowthWheelTierRequest request) {
+        return createWheelTier("H4_PREVIEW", request, true, true);
+    }
+
+    ApiResult<Map<String, Object>> executeApprovedH4WheelTierCreate(String key, GrowthWheelTierRequest request) {
+        return createWheelTier(key, request, true, false);
+    }
+
+    private ApiResult<Map<String, Object>> createWheelTier(
+            String idempotencyKey, GrowthWheelTierRequest request, boolean approved, boolean preview) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
@@ -1539,8 +1553,8 @@ public class OpsGrowthService implements AuditReplayable {
             if (!"H4_WHEEL".equals(questEventMapper.get().lockWheelMutation())) {
                 return validation("H4_WHEEL_MUTEX_UNAVAILABLE");
             }
-            List<Map<String, Object>> currentPool = growthRows(GrowthQuestEventMapper::wheelTiers);
-            if (!expectedTextMatches(request.expectedSignature(), wheelPoolSignature(currentPool))) {
+            List<Map<String, Object>> currentPool = questEventMapper.get().wheelTiers();
+            if (!wheelSignatureMatches(request.expectedSignature(), currentPool, approved)) {
                 return validation("WHEEL_CONFIG_STALE");
             }
             String tierName = normalizePlainText(request.tierName(), 128);
@@ -1574,11 +1588,17 @@ public class OpsGrowthService implements AuditReplayable {
             if (tierValueGuard != null) {
                 return tierValueGuard;
             }
-            // 真实出金档位会放大资金流出,过 B1 备付金红线
-            if (realOutflow == 1 && coverageBelowRedline()) {
+            // UVT is also eligible for the fallback prize, even at zero draw probability.
+            // Tier creation keeps the original four-decimal storage rounding.
+            boolean amplifies = "uvt".equals(rewardKind) || (WHEEL_REDEEMABLE_KINDS.contains(rewardKind)
+                    && probability.setScale(4, RoundingMode.HALF_UP).signum() > 0);
+            var approval = h4ApprovalGate(amplifies, approved);
+            if (approval != null) return approval;
+            if (preview) return ApiResult.ok(Map.of());
+            if (!amplifies && realOutflow == 1 && coverageBelowRedline()) {
                 return coverageRedline();
             }
-            int sortOrder = Math.toIntExact(Math.min(Integer.MAX_VALUE, growthRows(GrowthQuestEventMapper::wheelTiers).size() * 10L + 10L));
+            int sortOrder = Math.toIntExact(Math.min(Integer.MAX_VALUE, currentPool.size() * 10L + 10L));
             questEventMapper.get().insertWheelTier(
                     tierName, rewardName, probability, realOutflow, rewardKind,
                     rewardAmount, voucherId, dailyStock, sortOrder, 1, LocalDateTime.now());
@@ -1605,6 +1625,19 @@ public class OpsGrowthService implements AuditReplayable {
             String idempotencyKey,
             String existingTierName,
             GrowthWheelTierRequest request) {
+        return updateWheelTier(idempotencyKey, existingTierName, request, false, false);
+    }
+
+    ApiResult<Map<String, Object>> previewH4WheelTierUpdate(GrowthWheelTierRequest request) {
+        return updateWheelTier("H4_PREVIEW", request.tierName(), request, true, true);
+    }
+
+    ApiResult<Map<String, Object>> executeApprovedH4WheelTierUpdate(String key, GrowthWheelTierRequest request) {
+        return updateWheelTier(key, request.tierName(), request, true, false);
+    }
+
+    private ApiResult<Map<String, Object>> updateWheelTier(
+            String idempotencyKey, String existingTierName, GrowthWheelTierRequest request, boolean approved, boolean preview) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
@@ -1617,8 +1650,8 @@ public class OpsGrowthService implements AuditReplayable {
                 return validation("H4_WHEEL_MUTEX_UNAVAILABLE");
             }
             String tierName = normalizePlainText(existingTierName, 128);
-            List<Map<String, Object>> currentPool = growthRows(GrowthQuestEventMapper::wheelTiers);
-            if (!expectedTextMatches(request.expectedSignature(), wheelPoolSignature(currentPool))) {
+            List<Map<String, Object>> currentPool = questEventMapper.get().wheelTiers();
+            if (!wheelSignatureMatches(request.expectedSignature(), currentPool, approved)) {
                 return validation("WHEEL_CONFIG_STALE");
             }
             Map<String, Object> before = currentPool.stream()
@@ -1651,12 +1684,10 @@ public class OpsGrowthService implements AuditReplayable {
             if (!WHEEL_REWARD_KINDS.contains(rewardKind)) {
                 return validation("WHEEL_TIER_KIND_INVALID");
             }
-            BigDecimal rewardAmount = request.rewardAmount() == null
-                    ? parseDecimal(String.valueOf(before.get("amount")), BigDecimal.ZERO)
-                    : request.rewardAmount();
-            int dailyStock = request.dailyStock() == null
-                    ? intValue(before.get("dailyStock"), 0)
-                    : request.dailyStock();
+            BigDecimal previousAmount = parseDecimal(String.valueOf(before.get("amount")), BigDecimal.ZERO);
+            BigDecimal rewardAmount = request.rewardAmount() == null ? previousAmount : request.rewardAmount();
+            int previousStock = intValue(before.get("dailyStock"), 0);
+            int dailyStock = request.dailyStock() == null ? previousStock : request.dailyStock();
             String voucherId = request.voucherId() == null
                     ? String.valueOf(before.getOrDefault("voucherId", ""))
                     : request.voucherId().trim();
@@ -1668,20 +1699,33 @@ public class OpsGrowthService implements AuditReplayable {
             if (tierValueGuard != null) {
                 return tierValueGuard;
             }
+            boolean sameKind = rewardKind.equalsIgnoreCase(String.valueOf(before.get("kind")));
             if (rewardName.equals(String.valueOf(before.get("reward")))
                     && probability.compareTo(previousProbability) == 0
                     && realOutflow == (truthy(before.get("real")) ? 1 : 0)
-                    && rewardKind.equalsIgnoreCase(String.valueOf(before.get("kind")))
-                    && rewardAmount.compareTo(parseDecimal(String.valueOf(before.get("amount")), BigDecimal.ZERO)) == 0
-                    && dailyStock == intValue(before.get("dailyStock"), 0)
+                    && sameKind
+                    && rewardAmount.compareTo(previousAmount) == 0
+                    && dailyStock == previousStock
                     && java.util.Objects.equals(
                             voucherId == null ? "" : voucherId,
                             String.valueOf(before.getOrDefault("voucherId", "")))) {
                 return validation("WHEEL_CONFIG_NO_CHANGE");
             }
-            boolean amplifiesRealOutflow = realOutflow == 1
-                    && (!truthy(before.get("real")) || probability.compareTo(previousProbability) > 0);
-            if (amplifiesRealOutflow && coverageBelowRedline()) {
+            // Voucher amount is display-only. Comparing currency amounts requires the same asset.
+            boolean increasesAmount = ("uvt".equals(rewardKind) || "usdt".equals(rewardKind))
+                    && sameKind && rewardAmount.compareTo(previousAmount) > 0;
+            boolean increasesProbability = probability.compareTo(previousProbability) > 0;
+            boolean increasesStock = previousStock > 0 && (dailyStock == 0 || dailyStock > previousStock);
+            boolean reducesUvtStock = sameKind && "uvt".equals(rewardKind) && dailyStock > 0
+                    && (previousStock == 0 || dailyStock < previousStock);
+            boolean directlyDrawn = previousProbability.signum() > 0 && probability.signum() > 0;
+            boolean amplifies = WHEEL_REDEEMABLE_KINDS.contains(rewardKind)
+                    && (increasesAmount || increasesProbability || increasesStock || (reducesUvtStock
+                    && increasesUvtFallback(currentPool, before, previousAmount, directlyDrawn)));
+            var approval = h4ApprovalGate(amplifies, approved);
+            if (approval != null) return approval;
+            if (preview) return ApiResult.ok(Map.of());
+            if (!amplifies && realOutflow == 1 && !truthy(before.get("real")) && coverageBelowRedline()) {
                 return coverageRedline();
             }
             if (questEventMapper.get().updateWheelTier(
@@ -1761,6 +1805,19 @@ public class OpsGrowthService implements AuditReplayable {
     public ApiResult<Map<String, Object>> updateWheelProbabilities(
             String idempotencyKey,
             GrowthWheelProbabilityBatchRequest request) {
+        return updateWheelProbabilities(idempotencyKey, request, false, false);
+    }
+
+    ApiResult<Map<String, Object>> previewH4WheelProbabilities(GrowthWheelProbabilityBatchRequest request) {
+        return updateWheelProbabilities("H4_PREVIEW", request, true, true);
+    }
+
+    ApiResult<Map<String, Object>> executeApprovedH4WheelProbabilities(String key, GrowthWheelProbabilityBatchRequest request) {
+        return updateWheelProbabilities(key, request, true, false);
+    }
+
+    private ApiResult<Map<String, Object>> updateWheelProbabilities(
+            String idempotencyKey, GrowthWheelProbabilityBatchRequest request, boolean approved, boolean preview) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
@@ -1772,8 +1829,8 @@ public class OpsGrowthService implements AuditReplayable {
             if (!"H4_WHEEL".equals(questEventMapper.get().lockWheelMutation())) {
                 return validation("H4_WHEEL_MUTEX_UNAVAILABLE");
             }
-            List<Map<String, Object>> rows = growthRows(GrowthQuestEventMapper::wheelTiers);
-            if (!expectedTextMatches(request.expectedSignature(), wheelPoolSignature(rows))) {
+            List<Map<String, Object>> rows = questEventMapper.get().wheelTiers();
+            if (!wheelSignatureMatches(request.expectedSignature(), rows, approved)) {
                 return validation("WHEEL_CONFIG_STALE");
             }
             Map<String, BigDecimal> requested = request.probabilities() == null
@@ -1785,7 +1842,7 @@ public class OpsGrowthService implements AuditReplayable {
                 return validation("WHEEL_TIER_SET_CHANGED");
             }
             BigDecimal total = BigDecimal.ZERO;
-            boolean amplifiesRealOutflow = false;
+            boolean amplifies = false;
             boolean changed = false;
             for (Map<String, Object> row : rows) {
                 String tierName = String.valueOf(row.get("tier"));
@@ -1798,8 +1855,9 @@ public class OpsGrowthService implements AuditReplayable {
                 total = total.add(probability);
                 BigDecimal before = parseDecimal(String.valueOf(row.get("prob")), BigDecimal.ZERO);
                 changed = changed || probability.compareTo(before) != 0;
-                if (truthy(row.get("real")) && probability.compareTo(before) > 0) {
-                    amplifiesRealOutflow = true;
+                if (probability.compareTo(before) > 0
+                        && WHEEL_REDEEMABLE_KINDS.contains(String.valueOf(row.get("kind")).toLowerCase(Locale.ROOT))) {
+                    amplifies = true;
                 }
             }
             if (total.compareTo(new BigDecimal("100")) != 0) {
@@ -1808,9 +1866,9 @@ public class OpsGrowthService implements AuditReplayable {
             if (!changed) {
                 return validation("WHEEL_CONFIG_NO_CHANGE");
             }
-            if (amplifiesRealOutflow && coverageBelowRedline()) {
-                return coverageRedline();
-            }
+            var approval = h4ApprovalGate(amplifies, approved);
+            if (approval != null) return approval;
+            if (preview) return ApiResult.ok(Map.of());
             for (Map.Entry<String, BigDecimal> entry : requested.entrySet()) {
                 if (questEventMapper.get().updateWheelTierProbability(entry.getKey(), entry.getValue()) != 1) {
                     throw new IllegalStateException("WHEEL_TIER_UPDATE_FAILED");
@@ -1873,9 +1931,9 @@ public class OpsGrowthService implements AuditReplayable {
             String note = request.note() == null ? "" : request.note().trim();
             boolean opensRealPayout = "kill".equals(key) && h4RealPrizeEnabled(value);
             boolean addsBudget = "budget".equals(key) && numericToken(value).signum() > 0;
-            ApiResult<Map<String, Object>> approval = h4GuardApprovalGate(
-                    opensRealPayout || addsBudget, approved, preview, "missing", value);
+            var approval = h4ApprovalGate(opensRealPayout || addsBudget, approved);
             if (approval != null) return approval;
+            if (preview) return ApiResult.ok(Map.of("before", "missing", "after", value));
             int sortOrder = Math.toIntExact(Math.min(Integer.MAX_VALUE, growthRows(GrowthQuestEventMapper::wheelGuards).size() * 10L + 10L));
             questEventMapper.get().insertWheelGuard(key, label, value, note, sortOrder, 1, LocalDateTime.now());
             audit("H4_WHEEL_GUARD_CREATED", "WHEEL_CONFIG", key, request.operator(), Map.of(
@@ -2113,9 +2171,9 @@ public class OpsGrowthService implements AuditReplayable {
             boolean enablesRealPrize = "kill".equals(key) && !h4RealPrizeEnabled(oldValue) && h4RealPrizeEnabled(value);
             boolean increasesBudget = "budget".equals(key)
                     && numericToken(value).compareTo(numericToken(oldValue)) > 0;
-            ApiResult<Map<String, Object>> approval = h4GuardApprovalGate(
-                    enablesRealPrize || increasesBudget, approved, preview, oldValue, value);
+            var approval = h4ApprovalGate(enablesRealPrize || increasesBudget, approved);
             if (approval != null) return approval;
+            if (preview) return ApiResult.ok(Map.of("before", oldValue, "after", value));
             if (questEventMapper.get().updateWheelGuardValue(key, oldValue, value) != 1) {
                 return validation("WHEEL_GUARD_STALE");
             }
@@ -2137,17 +2195,14 @@ public class OpsGrowthService implements AuditReplayable {
                 .contains(value.trim().toLowerCase(Locale.ROOT));
     }
 
-    private ApiResult<Map<String, Object>> h4GuardApprovalGate(
-            boolean amplifies, boolean approved, boolean preview, String before, String after) {
-        if (preview && !amplifies) return validation("H4_APPROVAL_NOT_REQUIRED");
-        if (amplifies) {
-            if (!approved) return ApiResult.fail(409, "H4_APPROVAL_REQUIRED");
-            TreasuryCoverageSnapshot snapshot = coverageFacade.snapshot();
-            if (snapshot == null || !snapshot.reliable() || snapshot.coverageRatio() == null
-                    || snapshot.redlinePct() == null || snapshot.coverageRatio().signum() <= 0
-                    || snapshot.redlinePct().signum() <= 0 || snapshot.redlineBreached()) return coverageRedline();
-        }
-        return preview ? ApiResult.ok(Map.of("before", before, "after", after)) : null;
+    private ApiResult<Map<String, Object>> h4ApprovalGate(boolean amplifies, boolean approved) {
+        if (!amplifies) return approved ? validation("H4_APPROVAL_NOT_REQUIRED") : null;
+        if (!approved) return ApiResult.fail(409, "H4_APPROVAL_REQUIRED");
+        TreasuryCoverageSnapshot snapshot = coverageFacade.snapshot();
+        if (snapshot == null || !snapshot.reliable() || snapshot.coverageRatio() == null
+                || snapshot.redlinePct() == null || snapshot.coverageRatio().signum() <= 0
+                || snapshot.redlinePct().signum() <= 0 || snapshot.redlineBreached()) return coverageRedline();
+        return null;
     }
 
     private BigDecimal h3Decimal(String raw, int scale) {
@@ -3506,7 +3561,41 @@ public class OpsGrowthService implements AuditReplayable {
         return wheelPoolSignature(tiers);
     }
 
-    private String wheelPoolSignature(List<Map<String, Object>> tiers) {
+    List<Map<String, Object>> lockH4WheelPool() {
+        GrowthQuestEventMapper mapper = questEventMapper.orElseThrow(
+                () -> new BizException(422, "GROWTH_BUSINESS_TABLE_UNAVAILABLE"));
+        if (!"H4_WHEEL".equals(mapper.lockWheelMutation())) {
+            throw new BizException(409, "H4_WHEEL_MUTEX_UNAVAILABLE");
+        }
+        return mapper.wheelTiers();
+    }
+
+    private boolean wheelSignatureMatches(String expected, List<Map<String, Object>> tiers, boolean approved) {
+        String current = wheelPoolSignature(tiers);
+        return approved ? current.equals(expected) : expectedTextMatches(expected, current);
+    }
+
+    private boolean increasesUvtFallback(List<Map<String, Object>> tiers, Map<String, Object> changedTier,
+            BigDecimal previousAmount, boolean directlyDrawn) {
+        boolean afterChangedTier = false;
+        // Follow the same ordered UVT pool as AppGrowthWheelService.comfortTier.
+        for (Map<String, Object> tier : tiers) {
+            if (truthy(tier.get("real")) || !"uvt".equalsIgnoreCase(String.valueOf(tier.get("kind")))) continue;
+            if (tier == changedTier) {
+                afterChangedTier = true;
+                continue;
+            }
+            boolean higherFallback = (directlyDrawn || afterChangedTier)
+                    && parseDecimal(String.valueOf(tier.get("amount")), BigDecimal.ZERO).compareTo(previousAmount) > 0;
+            if (higherFallback && (directlyDrawn || tiers.stream().anyMatch(draw -> draw != changedTier && draw != tier
+                    && parseDecimal(String.valueOf(draw.get("prob")), BigDecimal.ZERO).signum() > 0
+                    && (truthy(draw.get("real")) || intValue(draw.get("dailyStock"), 0) > 0)))) return true;
+            if (intValue(tier.get("dailyStock"), 0) <= 0) return false;
+        }
+        return false;
+    }
+
+    String wheelPoolSignature(List<Map<String, Object>> tiers) {
         if (tiers.isEmpty()) {
             return "__EMPTY__";
         }
