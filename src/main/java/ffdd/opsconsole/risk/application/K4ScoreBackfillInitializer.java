@@ -32,8 +32,11 @@ public class K4ScoreBackfillInitializer implements ApplicationRunner {
     }
 
     public synchronized void backfillCanonicalScores() {
-        BackfillBatch batch = transactionExecutor.execute(() -> {
+        transactionExecutor.execute(() -> {
             riskRepository.synchronizeScoringUsers();
+            return null;
+        });
+        BackfillBatch batch = transactionExecutor.execute(() -> {
             RiskScoreModelView model = riskRepository.activeScoringModel()
                     .orElseThrow(() -> new BizException(500, "K4_ACTIVE_MODEL_REQUIRED"));
             if (!K4RiskScorer.isCurrentModelSnapshot(model)) {
@@ -79,7 +82,7 @@ public class K4ScoreBackfillInitializer implements ApplicationRunner {
     }
 
     /** Keeps newly registered and retired users aligned without requiring a service restart. */
-    @Scheduled(fixedDelayString = "${nexion.risk.k4.sync-delay-ms:1000}")
+    @Scheduled(fixedDelayString = "${nexion.risk.k4.sync-delay-ms:5000}", scheduler = "k4ScoreTaskScheduler")
     public void synchronizeRuntimeUsers() {
         backfillCanonicalScores();
     }
