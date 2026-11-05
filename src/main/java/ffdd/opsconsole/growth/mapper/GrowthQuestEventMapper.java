@@ -408,15 +408,26 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                                 @Param("sessionId") String sessionId);
 
     @Select("""
-            SELECT COUNT(1) AS activeSessions,
-                   SUM(CASE WHEN UPPER(status) IN ('CLAIMED', 'ACTIVE') AND expires_at > NOW() THEN 1 ELSE 0 END) AS inTrial,
-                   SUM(CASE WHEN UPPER(status) = 'GRACE'
-                                  OR (UPPER(status) IN ('CLAIMED', 'ACTIVE') AND expires_at <= NOW())
-                            THEN 1 ELSE 0 END) AS inGrace,
-                   SUM(CASE WHEN UPPER(status) = 'EXTENDED' THEN 1 ELSE 0 END) AS inExtended
+            SELECT COUNT(CASE WHEN UPPER(status) IN ('CLAIMED', 'ACTIVE', 'GRACE', 'EXTENDED') THEN 1 END) AS activeSessions,
+                   COUNT(CASE WHEN UPPER(status) IN ('CLAIMED', 'ACTIVE') AND expires_at > NOW() THEN 1 END) AS inTrial,
+                   COUNT(CASE WHEN UPPER(status) = 'GRACE'
+                                   OR (UPPER(status) IN ('CLAIMED', 'ACTIVE') AND expires_at <= NOW())
+                              THEN 1 END) AS inGrace,
+                   COUNT(CASE WHEN UPPER(status) = 'EXTENDED' THEN 1 END) AS inExtended,
+                   COUNT(*) AS started,
+                   COUNT(CASE WHEN UPPER(status) = 'REDEEMED' THEN 1 END) AS redeemed,
+                   COUNT(CASE WHEN UPPER(status) = 'REDEEMED'
+                                   AND LOCATE(',settlementPolicy=FULL_TERM_ON_CONVERSION,', settlement_snapshot) > 0
+                              THEN 1 END) AS earlyRedeemed,
+                   COUNT(CASE WHEN UPPER(status) = 'REDEEMED'
+                                   AND (LOCATE(',settlementPolicy=FULL_TERM_ON_CONVERSION,', settlement_snapshot) > 0
+                                     OR LOCATE(',settlementPolicy=ACCRUED_ON_CONVERSION,', settlement_snapshot) > 0)
+                              THEN 1 END) AS classifiedRedeemed,
+                   (SELECT COUNT(DISTINCT user_id) FROM nx_risk_signal
+                     WHERE signal_type = 'risk.trial_cycle_detected' AND is_deleted = 0) AS k2Blocked
               FROM nx_trial_claim
              WHERE is_deleted = 0
-               AND UPPER(status) IN ('CLAIMED', 'ACTIVE', 'GRACE', 'EXTENDED')
+               AND UPPER(status) IN ('CLAIMED', 'ACTIVE', 'GRACE', 'EXTENDED', 'REDEEMED', 'FAILED', 'CANCELLED')
             """)
     Map<String, Object> trialStats();
 
