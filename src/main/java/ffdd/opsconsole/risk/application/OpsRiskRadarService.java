@@ -90,7 +90,7 @@ public class OpsRiskRadarService {
         long version = configVersion(THRESHOLD_VERSION_KEY, false);
 
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        if (coverage == null || !coverage.reliable()) {
+        if (coverage == null || !coverage.reliable() || coverage.healthyPct() == null) {
             throw new BizException(500, "B5_COVERAGE_SOURCE_UNAVAILABLE");
         }
 
@@ -143,6 +143,7 @@ public class OpsRiskRadarService {
                 "ratio", coverageCalculable ? safe(coverage.coverageRatio()) : null,
                 "light", coverageCalculable ? coverageLight(coverage) : "unavailable",
                 "redlinePct", safe(coverage.redlinePct()),
+                "healthyPct", coverage.healthyPct(),
                 "reserveUsdt", money(coverage.reserveUsd()),
                 "liabilitiesUsdt", money(coverage.liabilitiesUsd()),
                 "ratioReserveUsdt", safe(coverage.ratioReserveUsd()),
@@ -680,7 +681,7 @@ public class OpsRiskRadarService {
         BigDecimal ratio = safe(coverage.coverageRatio());
         BigDecimal redline = safe(coverage.redlinePct());
         if (ratio.compareTo(redline) < 0) return "red";
-        if (ratio.compareTo(redline.add(new BigDecimal("10"))) < 0) return "yellow";
+        if (ratio.compareTo(coverage.healthyPct()) < 0) return "yellow";
         return "green";
     }
 

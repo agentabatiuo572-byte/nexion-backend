@@ -4,6 +4,7 @@ import ffdd.opsconsole.shared.config.VietnamBusinessPeriodSql;
 import ffdd.opsconsole.shared.config.HardwareQuotaPeriod;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
@@ -1538,6 +1539,16 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                            @Param("cohort") String cohort,
                            @Param("from") String from,
                            @Param("to") String to);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_user_level_log
+             WHERE is_deleted = 0 AND level_type = 'VRANK'
+               AND created_at >= #{from} AND created_at < #{until}
+               AND from_code REGEXP '^[Vv][0-9]+$' AND to_code REGEXP '^[Vv][0-9]+$'
+               AND CAST(SUBSTRING(to_code, 2) AS UNSIGNED) > CAST(SUBSTRING(from_code, 2) AS UNSIGNED)
+            """)
+    long countUpwardPromotions(@Param("from") LocalDateTime from, @Param("until") LocalDateTime until);
 
     // ============================================================
     // F1 V-Rank 派发流水查询/补发/撤销(Sprint 6):3 端点

@@ -1,5 +1,7 @@
 package ffdd.opsconsole.content.domain;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.TreeSet;
@@ -23,6 +25,29 @@ public final class I18nCopyQuality {
     public static boolean placeholdersMatch(String english, java.util.Map<String, String> translations) {
         var expected = placeholders(english);
         return translations.values().stream().allMatch(value -> expected.equals(placeholders(value)));
+    }
+
+    public static List<String> integrityIssueCodes(I18nMessagePairView message) {
+        var issues = new ArrayList<String>();
+        boolean hasZh = StringUtils.hasText(message.zh());
+        boolean hasEn = StringUtils.hasText(message.en());
+        boolean hasVi = StringUtils.hasText(message.vi());
+        if (!hasZh) issues.add("missing-zh");
+        if (!hasEn) issues.add("missing-en");
+        if (!hasVi) issues.add("missing-vi");
+        if (hasZh && hasEn && hasVi) {
+            Set<String> zh = placeholders(message.zh());
+            if (!zh.equals(placeholders(message.en())) || !zh.equals(placeholders(message.vi()))) {
+                issues.add("placeholder");
+            }
+        }
+        if (isPlaceholderText(message.zh()) || isPlaceholderText(message.en()) || isPlaceholderText(message.vi())) {
+            issues.add("placeholder-text");
+        }
+        if (RetiredBrandGate.anyCarriesRetiredBrand(message.zh(), message.en(), message.vi())) {
+            issues.add("retired-brand");
+        }
+        return issues;
     }
 
     private static Set<String> placeholders(String value) {
