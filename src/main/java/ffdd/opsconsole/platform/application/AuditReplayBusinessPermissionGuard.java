@@ -1,6 +1,7 @@
 package ffdd.opsconsole.platform.application;
 
 import ffdd.opsconsole.device.application.E2TaskPricingApproval;
+import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
 import ffdd.opsconsole.team.application.TeamFundApproval;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
@@ -130,6 +131,8 @@ public class AuditReplayBusinessPermissionGuard {
     private E2TaskPricingApproval e2TaskPricingApproval;
     @Autowired
     private TeamFundApproval teamFundApproval;
+    @Autowired
+    private H8RewardParamApproval h8RewardParamApproval;
 
     public AuditReplayBusinessPermissionGuard(TrustDisclosureRepository trustDisclosureRepository,
             AdminOperatorRoleResolver roleResolver, EmergencyControlRepository emergencyControlRepository,
@@ -197,6 +200,10 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     public ApiResult<Void> validateProposal(AuditReplayCommand command) {
+        if (H8RewardParamApproval.supports(command)) {
+            return h8RewardParamApproval.canPropose(command)
+                    ? ApiResult.ok() : ApiResult.fail(403, "H8_REWARD_PARAM_MAKER_FORBIDDEN");
+        }
         if (TeamFundApproval.supports(command)) {
             return teamFundApproval.canPropose(command)
                     ? ApiResult.ok() : ApiResult.fail(403, "FUND_APPROVAL_MAKER_FORBIDDEN");
@@ -311,6 +318,9 @@ public class AuditReplayBusinessPermissionGuard {
      * will later approve; it is intentionally not an input the browser can choose.
      */
     public ApiResult<AuditReplayCommand> canonicalizeProposalCommand(AuditReplayCommand command) {
+        if (H8RewardParamApproval.supports(command)) {
+            return ApiResult.ok(h8RewardParamApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
+        }
         if (TeamFundApproval.supports(command)) {
             return ApiResult.ok(teamFundApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
         }
@@ -340,6 +350,9 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     ApiResult<Void> validateRejection(AuditReplayCommand command) {
+        if (H8RewardParamApproval.supports(command)) {
+            return h8RewardParamApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        }
         if (TeamFundApproval.supports(command)) {
             return teamFundApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         }
@@ -363,6 +376,9 @@ public class AuditReplayBusinessPermissionGuard {
      * Other commands retain their existing replay-time business guard.
      */
     public ApiResult<Void> validateApproval(AuditReplayCommand command) {
+        if (H8RewardParamApproval.supports(command)) {
+            return h8RewardParamApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        }
         if (TeamFundApproval.supports(command)) {
             return teamFundApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         }
@@ -558,6 +574,18 @@ public class AuditReplayBusinessPermissionGuard {
             AuditOperationProposalRequest request) {
         boolean delegated = delegatedProposal();
         AuditReplayCommand command = request == null ? null : request.command();
+        if (H8RewardParamApproval.supports(command)) {
+            AuditLockTarget target = H8RewardParamApproval.target(command);
+            if (!"H8".equals(text(request.sourceDomain())) || !target.id().equals(text(request.obj()))
+                    || !target.equals(request.target()) || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            var preview = h8RewardParamApproval.preview(command, request.reason());
+            if (preview.getCode() != 0) return ApiResult.fail(preview.getCode(), preview.getMessage());
+            var review = preview.getData();
+            return ApiResult.ok(new DelegatedProposalDescriptor(
+                    review.action(), target.id(), review.before(), review.after(), "H8", "fund", true, target));
+        }
         if (TeamFundApproval.supports(command)) {
             String source = TeamFundApproval.source(command);
             if (!source.equals(text(request.sourceDomain())) || (request.targets() != null && !request.targets().isEmpty())) {

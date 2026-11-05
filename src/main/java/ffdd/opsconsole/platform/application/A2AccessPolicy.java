@@ -1,6 +1,7 @@
 package ffdd.opsconsole.platform.application;
 
 import ffdd.opsconsole.device.application.E2TaskPricingApproval;
+import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.infrastructure.AuditOperationTicketEntity;
 import ffdd.opsconsole.platform.mapper.AuditOperationTicketMapper;
@@ -63,6 +64,7 @@ public class A2AccessPolicy {
                 if (grants.contains("platform_a2_read") || grants.contains("overview_b1_redline_write")
                         || grants.contains("overview_b5_threshold_write")
                         || grants.contains(E2TaskPricingApproval.MAKER_AUTHORITY)
+                        || grants.contains(H8RewardParamApproval.MAKER_AUTHORITY)
                         || grants.contains("network_f3_write") || grants.contains("network_f4_pool_fund")) return id;
             }
         } catch (NumberFormatException ignored) { }
@@ -103,6 +105,8 @@ public class A2AccessPolicy {
             authority = TreasuryThresholdApproval.makerAuthority(command);
         } else if (E2TaskPricingApproval.supports(command)) {
             authority = E2TaskPricingApproval.MAKER_AUTHORITY;
+        } else if (H8RewardParamApproval.supports(command)) {
+            authority = H8RewardParamApproval.MAKER_AUTHORITY;
         } else if (TeamFundApproval.supports(command)) {
             authority = TeamFundApproval.makerAuthority(command);
         } else {

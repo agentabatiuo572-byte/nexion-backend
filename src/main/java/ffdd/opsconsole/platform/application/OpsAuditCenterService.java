@@ -42,6 +42,7 @@ import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import ffdd.opsconsole.device.application.E2TaskPricingApproval;
+import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.team.application.BinaryCommissionSettlementService.SettlementResult;
 import ffdd.opsconsole.team.application.TeamFundApproval;
 import java.nio.charset.StandardCharsets;
@@ -771,6 +772,7 @@ public class OpsAuditCenterService {
             }
             if (superAdminProposalCommand(cmd)) {
                 var target = TeamFundApproval.supports(cmd) ? TeamFundApproval.target(cmd)
+                        : H8RewardParamApproval.supports(cmd) ? H8RewardParamApproval.target(cmd)
                         : E2TaskPricingApproval.supports(cmd) ? E2TaskPricingApproval.target(cmd)
                         : TreasuryThresholdApproval.supports(cmd) ? TreasuryThresholdApproval.target(cmd)
                         : WithdrawalConfigApproval.target(cmd);
@@ -850,7 +852,8 @@ public class OpsAuditCenterService {
 
     private static boolean superAdminProposalCommand(AuditReplayCommand command) {
         return WithdrawalConfigApproval.supports(command) || TreasuryThresholdApproval.supports(command)
-                || E2TaskPricingApproval.supports(command) || TeamFundApproval.supports(command);
+                || E2TaskPricingApproval.supports(command) || TeamFundApproval.supports(command)
+                || H8RewardParamApproval.supports(command);
     }
 
     private String refundOrderNo(AuditReplayCommand command) {
@@ -889,7 +892,7 @@ public class OpsAuditCenterService {
         detail.put("reason", reason.trim());
         detail.put("idempotencyKey", idempotencyKey.trim());
         detail.put("domain", TreasuryThresholdApproval.supports(command) || E2TaskPricingApproval.supports(command)
-                || TeamFundApproval.supports(command)
+                || TeamFundApproval.supports(command) || H8RewardParamApproval.supports(command)
                 ? ticket.getSourceDomain() : inferAuditDomain(ticket.getAction(), ticket.getObjectText()));
         return detail;
     }

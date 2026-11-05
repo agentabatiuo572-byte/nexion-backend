@@ -9,6 +9,7 @@ import ffdd.opsconsole.growth.mapper.ReferralRewardMapper;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -215,6 +216,78 @@ public class OpsReferralRewardService {
             String paramKey,
             String idempotencyKey,
             ReferralRewardParamUpdateRequest request) {
+        return updateParam(paramKey, idempotencyKey, request, false);
+    }
+
+    public record H8ParamReview(AuditLockTarget target, String action, String before, String after) {}
+
+    @Transactional
+    public H8ParamReview previewParamApproval(ReferralRewardParamUpdateRequest request) {
+        requireProductionH8UnavailableInStrictSandbox("H8_PRODUCTION_CONFIG_FORBIDDEN_IN_SANDBOX");
+        requireReason(request == null ? null : request.reason());
+        String key = request.key();
+        if (!PARAMS.contains(key)) {
+            throw new BizException(422, "REFERRAL_PARAM_NOT_ALLOWED");
+        }
+        String value = normalizeParam(key, request.value());
+        long expectedVersion = requireExpectedVersion(request.expectedVersion());
+        requireRewardMutex();
+        long currentVersion = version(config.activeValueForUpdate(VERSION_KEY).orElse("1"));
+        if (expectedVersion != currentVersion) {
+            throw new BizException(409, "H8_CONFIG_VERSION_CONFLICT");
+        }
+        String before = rawValue(key);
+        if (!amplifies(key, before, value)) {
+            throw new BizException(422, "H8_PARAM_APPROVAL_NOT_REQUIRED");
+        }
+        EffectiveRewards proposed = effectiveRewards(key, value);
+        requireHealthyCoverage();
+        String label = switch (key) {
+            case "newcomer.usdt" -> "新人 USDT 基础额";
+            case "newcomer.nex" -> "新人 UVT 基础额";
+            case "inviter.nex" -> "邀请人 UVT 基础额";
+            case "newcomer.lockMode" -> "新人礼发放模式";
+            case "enabled" -> "新人礼与邀请奖励";
+            default -> throw new IllegalStateException("REFERRAL_PARAM_NOT_ALLOWED");
+        };
+        String unit = "newcomer.usdt".equals(key) ? " USDT" : key.endsWith(".nex") ? " UVT" : "";
+        String beforeDisplay = "enabled".equals(key) ? Boolean.parseBoolean(before) ? "已启用" : "已停用"
+                : "newcomer.lockMode".equals(key) ? "direct".equals(before) ? "符合资格就直接发" : "按风险检查发放" : before;
+        String afterDisplay = "enabled".equals(key) ? "已启用"
+                : "newcomer.lockMode".equals(key) ? "符合资格就直接发" : value;
+        String after = label + "：" + afterDisplay + unit + "；配置版本：" + Math.addExact(currentVersion, 1L);
+        if (Set.of("newcomer.usdt", "newcomer.nex", "inviter.nex").contains(key)) {
+            boolean inviter = "inviter.nex".equals(key);
+            BigDecimal multiplier = inviter ? proposed.inviterMultiplier() : proposed.newcomerMultiplier();
+            BigDecimal amount = inviter ? proposed.inviterNex()
+                    : "newcomer.usdt".equals(key) ? proposed.newcomerUsdt() : proposed.newcomerNex();
+            after += "；提案参考：第 " + proposed.rhythmMonth() + " 个月，倍率 " + multiplier.stripTrailingZeros().toPlainString()
+                    + "，有效额 " + amount.toPlainString() + unit;
+        }
+        String action = switch (key) {
+            case "newcomer.usdt" -> "提高新人 USDT 基础额";
+            case "newcomer.nex" -> "提高新人 UVT 基础额";
+            case "inviter.nex" -> "提高邀请人 UVT 基础额";
+            case "newcomer.lockMode" -> "改为符合资格就直接发";
+            case "enabled" -> "启用新人礼与邀请奖励";
+            default -> throw new IllegalStateException("REFERRAL_PARAM_NOT_ALLOWED");
+        };
+        return new H8ParamReview(H8RewardParamApproval.TARGET, action,
+                label + "：" + beforeDisplay + unit + "；配置版本：" + currentVersion, after);
+    }
+
+    @Transactional
+    public Map<String, Object> executeApprovedParam(
+            String idempotencyKey, ReferralRewardParamUpdateRequest request, AuditLockTarget expectedTarget) {
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(A2ReplayContext.operationId())
+                || !H8RewardParamApproval.TARGET.equals(expectedTarget)) {
+            throw new BizException(403, "H8_PARAM_APPROVAL_FORBIDDEN");
+        }
+        return updateParam(request.key(), idempotencyKey, request, true);
+    }
+
+    private Map<String, Object> updateParam(
+            String paramKey, String idempotencyKey, ReferralRewardParamUpdateRequest request, boolean approved) {
         requireProductionH8UnavailableInStrictSandbox("H8_PRODUCTION_CONFIG_FORBIDDEN_IN_SANDBOX");
         try {
             validateIdempotency(idempotencyKey);
@@ -234,6 +307,13 @@ public class OpsReferralRewardService {
                         }
                         String before = rawValue(paramKey);
                         boolean amplification = amplifies(paramKey, before, value);
+                        if (amplification && !approved) {
+                            throw new BizException(409, "A2_CONFIRMATION_REQUIRED");
+                        }
+                        if (approved && !amplification) {
+                            throw new BizException(422, "H8_PARAM_APPROVAL_NOT_REQUIRED");
+                        }
+                        EffectiveRewards appliedRewards = approved ? effectiveRewards(paramKey, value) : null;
                         Map<String, Object> coverageEvidence;
                         if (amplification) {
                             coverageEvidence = coverageDetail(requireHealthyCoverage());
@@ -260,10 +340,19 @@ public class OpsReferralRewardService {
                         config.upsertAdminValue(VERSION_KEY, String.valueOf(nextVersion), "NUMBER",
                                 "GROWTH_REFERRAL", "H8 referral reward configuration version");
                         String operator = actor(request.operator());
-                        audit("REFERRAL_REWARD_PARAM_UPDATE", paramKey, operator, idempotencyKey,
-                                Map.of("before", before, "after", value, "reason", reason,
-                                        "versionBefore", currentVersion, "versionAfter", nextVersion,
-                                        "coverage", coverageEvidence));
+                        Map<String, Object> detail = new LinkedHashMap<>(Map.of(
+                                "before", before, "after", value, "reason", reason,
+                                "versionBefore", currentVersion, "versionAfter", nextVersion,
+                                "coverage", coverageEvidence));
+                        if (appliedRewards != null) {
+                            detail.put("approvalOperationId", A2ReplayContext.operationId());
+                            detail.put("rhythmMonth", appliedRewards.rhythmMonth());
+                            detail.put("newcomerMultiplier", appliedRewards.newcomerMultiplier());
+                            detail.put("inviterMultiplier", appliedRewards.inviterMultiplier());
+                            detail.put("effectiveRewards", Map.of("newcomer.usdt", appliedRewards.newcomerUsdt(),
+                                    "newcomer.nex", appliedRewards.newcomerNex(), "inviter.nex", appliedRewards.inviterNex()));
+                        }
+                        audit("REFERRAL_REWARD_PARAM_UPDATE", paramKey, operator, idempotencyKey, detail);
                         outbox.publish("REFERRAL_REWARD_PARAM", paramKey, "H8_REFERRAL_REWARD_PARAM_CHANGED",
                                 Map.of("paramKey", paramKey, "before", before, "after", value,
                                         "version", nextVersion, "operator", operator, "reason", reason,
@@ -576,6 +665,10 @@ public class OpsReferralRewardService {
     }
 
     private EffectiveRewards effectiveRewards() {
+        return effectiveRewards(null, null);
+    }
+
+    private EffectiveRewards effectiveRewards(String changedKey, String normalizedValue) {
         GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(config, readTimeSeedPolicy);
         BigDecimal newcomerMultiplier = rhythm.newUserBonusMultiplier();
         BigDecimal inviterMultiplier = rhythm.inviteRewardMultiplier();
@@ -584,9 +677,12 @@ public class OpsReferralRewardService {
         }
         return new EffectiveRewards(
                 rhythm.currentMonth(), newcomerMultiplier, inviterMultiplier,
-                effectiveAmount(amount("newcomer.usdt"), newcomerMultiplier),
-                effectiveAmount(amount("newcomer.nex"), newcomerMultiplier),
-                effectiveAmount(amount("inviter.nex"), inviterMultiplier));
+                effectiveAmount("newcomer.usdt".equals(changedKey) ? new BigDecimal(normalizedValue)
+                        : amount("newcomer.usdt"), newcomerMultiplier),
+                effectiveAmount("newcomer.nex".equals(changedKey) ? new BigDecimal(normalizedValue)
+                        : amount("newcomer.nex"), newcomerMultiplier),
+                effectiveAmount("inviter.nex".equals(changedKey) ? new BigDecimal(normalizedValue)
+                        : amount("inviter.nex"), inviterMultiplier));
     }
 
     /** 钱包、结算表、D4 与 App/PC 展示共用六位小数，不把数据库隐式舍入当业务规则。 */
@@ -756,7 +852,7 @@ public class OpsReferralRewardService {
                 || snapshot.redlinePct().signum() <= 0) {
             throw new BizException(422, "B1_COVERAGE_DATA_UNAVAILABLE");
         }
-        if (snapshot.coverageRatio().compareTo(snapshot.redlinePct()) < 0) {
+        if (snapshot.redlineBreached()) {
             throw new BizException(422, "B1_COVERAGE_BELOW_REDLINE");
         }
         return snapshot;
@@ -768,7 +864,8 @@ public class OpsReferralRewardService {
 
     private Map<String, Object> coverageDetail(TreasuryCoverageSnapshot snapshot) {
         return Map.of("coverageRatio", snapshot.coverageRatio(), "redlinePct", snapshot.redlinePct(),
-                "reliable", snapshot.reliable());
+                "reliable", snapshot.reliable(), "reserveUsd", snapshot.ratioReserveUsd(),
+                "liabilitiesUsd", snapshot.ratioLiabilitiesUsd(), "redlineBreached", snapshot.redlineBreached());
     }
 
     private LocalDateTime effectiveAtRequired() {
