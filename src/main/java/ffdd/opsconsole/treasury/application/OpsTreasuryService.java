@@ -25,6 +25,7 @@ import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository.CommissionCoverageAmounts;
 import ffdd.opsconsole.treasury.dto.TreasuryAlertAckRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryForecastConfigRequest;
+import ffdd.opsconsole.treasury.dto.TreasuryForecastPreviewRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryExportRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryInjectionRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryLedgerQueryRequest;
@@ -341,16 +342,9 @@ public class OpsTreasuryService {
         LocalDateTime now = LocalDateTime.now(clock);
         LocalDate today = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(now);
         Map<String, Object> config = forecastConfigSnapshot();
-        BigDecimal reserveTotal = configuredReserveTotal(config);
-        List<Map<String, Object>> liabilityRows = (List<Map<String, Object>>) liabilities(true).getData().get("breakdown");
-        BigDecimal liabilityTotal = liabilityRows.stream()
-                .filter(row -> categoryEnabled(config, "liabilityCategories", String.valueOf(row.get("category"))))
-                .filter(row -> Boolean.TRUE.equals(config.get("genesisIncluded"))
-                        || !"genesis_daily_emission".equals(row.get("category")))
-                .filter(row -> Boolean.TRUE.equals(config.get("includeFarLiabilities"))
-                        || !"nex_v2_future".equals(row.get("category")))
-                .map(row -> (BigDecimal) row.get("amountUsdt"))
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        ConfiguredTreasurySnapshot configured = configuredTreasurySnapshot(config);
+        BigDecimal reserveTotal = configured.reserveUsdt();
+        BigDecimal liabilityTotal = configured.liabilitiesUsdt();
         BigDecimal currentNet = reserveTotal.subtract(liabilityTotal);
         List<Map<String, Object>> series = new ArrayList<>();
         BigDecimal flowAfterDay = BigDecimal.ZERO;
@@ -451,6 +445,29 @@ public class OpsTreasuryService {
             response.put("pendingVersion", configVersion(D3_FORECAST_CONFIG_PENDING_VERSION_KEY));
         });
         return ApiResult.ok(response);
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> previewForecastConfig(TreasuryForecastPreviewRequest request) {
+        if (request == null || request.expectedVersion() == null || request.expectedVersion() < 0) {
+            throw new BizException(400, "D3_EXPECTED_VERSION_REQUIRED");
+        }
+        long version = configVersion(D3_FORECAST_CONFIG_VERSION_KEY);
+        if (request.expectedVersion() != version) {
+            throw new BizException(409, "D3_FORECAST_CONFIG_VERSION_CONFLICT");
+        }
+        // Saving promotes due pending first; its candidate is the same pending policy either way.
+        // Preview reads that candidate virtually, without promotion, locks or history writes.
+        Map<String, Object> before = forecastConfigCandidateSnapshot();
+        Map<String, Object> after = validateForecastConfig(new TreasuryForecastConfigRequest(
+                request.reserveCategories(), request.liabilityCategories(), request.forecastWindow(),
+                request.genesisIncluded(), request.includeFarLiabilities(), request.stakingInterestMode(),
+                request.trialStressEnabled(), request.expectedVersion(), null, null), before);
+        Instant effectiveAt = LocalDate.now(clock.withZone(ZoneOffset.UTC))
+                .plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant();
+        return ApiResult.ok(section("before", before, "after", after,
+                "forecastDeltaPreview", forecastDeltaPreview(before, after),
+                "effectiveAt", effectiveAt, "version", version));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -2108,7 +2125,6 @@ public class OpsTreasuryService {
 
     private Map<String, Object> forecastConfigCandidateSnapshot() {
         return pendingForecastConfig()
-                .filter(pending -> clock.instant().isBefore(pending.effectiveAt()))
                 .<Map<String, Object>>map(pending -> new LinkedHashMap<>(pending.config()))
                 .orElseGet(this::activeForecastConfigSnapshot);
     }
@@ -2244,23 +2260,50 @@ public class OpsTreasuryService {
 
     private Map<String, Object> forecastDeltaPreview(Map<String, Object> before, Map<String, Object> after) {
         BigDecimal genesisDaily = safe(ledgerRepository.genesisDailyLiabilityUsd());
-        boolean beforeGenesis = Boolean.TRUE.equals(before.get("genesisIncluded"));
-        boolean afterGenesis = Boolean.TRUE.equals(after.get("genesisIncluded"));
+        boolean beforeGenesis = Boolean.TRUE.equals(before.get("genesisIncluded"))
+                && categoryEnabled(before, "liabilityCategories", "genesis_daily_emission");
+        boolean afterGenesis = Boolean.TRUE.equals(after.get("genesisIncluded"))
+                && categoryEnabled(after, "liabilityCategories", "genesis_daily_emission");
         BigDecimal beforeDaily = beforeGenesis ? genesisDaily : BigDecimal.ZERO;
         BigDecimal afterDaily = afterGenesis ? genesisDaily : BigDecimal.ZERO;
         BigDecimal before7d = forecastTotal(before, 7);
         BigDecimal after7d = forecastTotal(after, 7);
         BigDecimal before30d = forecastTotal(before, 30);
         BigDecimal after30d = forecastTotal(after, 30);
-        return section("beforeDailyGenesisUsdt", money(beforeDaily), "afterDailyGenesisUsdt", money(afterDaily),
+        ConfiguredTreasurySnapshot beforeTreasury = configuredTreasurySnapshot(before);
+        ConfiguredTreasurySnapshot afterTreasury = configuredTreasurySnapshot(after);
+        BigDecimal beforeCoverage = beforeTreasury.valuationReliable() && beforeTreasury.liabilitiesUsdt().signum() > 0
+                ? pct(beforeTreasury.reserveUsdt(), beforeTreasury.liabilitiesUsdt()) : null;
+        BigDecimal afterCoverage = afterTreasury.valuationReliable() && afterTreasury.liabilitiesUsdt().signum() > 0
+                ? pct(afterTreasury.reserveUsdt(), afterTreasury.liabilitiesUsdt()) : null;
+        Map<String, Object> preview = section("beforeDailyGenesisUsdt", money(beforeDaily), "afterDailyGenesisUsdt", money(afterDaily),
                 "dailyDeltaUsdt", money(afterDaily.subtract(beforeDaily)),
                 "before7dUsdt", money(before7d), "after7dUsdt", money(after7d),
                 "delta7dUsdt", money(after7d.subtract(before7d)),
                 "before30dUsdt", money(before30d), "after30dUsdt", money(after30d),
                 "delta30dUsdt", money(after30d.subtract(before30d)),
+                "beforeReserveUsdt", beforeTreasury.reserveUsdt(), "afterReserveUsdt", afterTreasury.reserveUsdt(),
+                "reserveDeltaUsdt", money(afterTreasury.reserveUsdt().subtract(beforeTreasury.reserveUsdt())),
+                "beforeLiabilitiesUsdt", beforeTreasury.liabilitiesUsdt(), "afterLiabilitiesUsdt", afterTreasury.liabilitiesUsdt(),
+                "liabilitiesDeltaUsdt", money(afterTreasury.liabilitiesUsdt().subtract(beforeTreasury.liabilitiesUsdt())),
+                "beforeNetExposureUsdt", money(beforeTreasury.reserveUsdt().subtract(beforeTreasury.liabilitiesUsdt())),
+                "afterNetExposureUsdt", money(afterTreasury.reserveUsdt().subtract(afterTreasury.liabilitiesUsdt())),
+                "netExposureDeltaUsdt", money(afterTreasury.reserveUsdt().subtract(afterTreasury.liabilitiesUsdt())
+                        .subtract(beforeTreasury.reserveUsdt().subtract(beforeTreasury.liabilitiesUsdt()))),
+                "beforeCoverageStatus", beforeTreasury.coverageStatus(), "afterCoverageStatus", afterTreasury.coverageStatus(),
+                "coverageScope", "CONFIGURED_FULL_LIABILITIES",
+                "coverageFormula", "configuredReserveUsdt / configuredLiabilitiesUsdt * 100",
+                "coverageNote", "配置口径使用当前九类应付款按科目、创世和远期开关筛选；不含试用压力层，不是7/30天到期额；不改变B1全应付款安全覆盖率",
+                "removedLiabilityCategories", D3_LIABILITY_CATEGORIES.stream()
+                        .filter(category -> configuredLiabilityIncluded(before, category) && !configuredLiabilityIncluded(after, category)).toList(),
                 "reserveCategoryChanges", changedCategoryCount(before, after, "reserveCategories"),
                 "liabilityCategoryChanges", changedCategoryCount(before, after, "liabilityCategories"),
                 "note", "科目开关从下一个结算日（UTC 00:00）开始生效，不影响历史数据");
+        // section() omits nulls; these fields are explicitly nullable in the preview contract.
+        preview.put("beforeCoveragePct", beforeCoverage);
+        preview.put("afterCoveragePct", afterCoverage);
+        preview.put("coverageDeltaPct", beforeCoverage == null || afterCoverage == null ? null : afterCoverage.subtract(beforeCoverage));
+        return preview;
     }
 
     private BigDecimal forecastTotal(Map<String, Object> config, int days) {
@@ -2287,14 +2330,35 @@ public class OpsTreasuryService {
     }
 
     private BigDecimal configuredReserveTotal(Map<String, Object> config) {
-        Map<String, Object> canonical = reserve().getData();
-        BigDecimal total = categoryEnabled(config, "reserveCategories", "usdt")
-                ? decimal(canonical.get("reserveTotalUsdt"))
-                : BigDecimal.ZERO;
-        if (categoryEnabled(config, "reserveCategories", "otherLiquid")) {
-            total = total.add(decimal(canonical.get("otherLiquidUsdt")));
+        // Same D3 balance as reserve(); otherLiquid is canonically zero. Do not enter waterLevel/promotion.
+        return money(categoryEnabled(config, "reserveCategories", "usdt")
+                ? treasuryReserveBalance().availableUsd() : BigDecimal.ZERO);
+    }
+
+    private ConfiguredTreasurySnapshot configuredTreasurySnapshot(Map<String, Object> config) {
+        BigDecimal nexRate = ledgerRepository.latestNexUsdtPrice().map(this::safe).orElse(BigDecimal.ZERO);
+        BigDecimal nexUnits = nexLiabilityUnits();
+        var commissionCoverage = new CommissionCoverageAmounts(
+                ledgerRepository.sumUsdtAvailable(), ledgerRepository.sumPendingCommissionUsdt());
+        BigDecimal liabilities = liabilityRows(nexRate, nexUnits, commissionCoverage).stream()
+                .filter(row -> configuredLiabilityIncluded(config, String.valueOf(row.get("category"))))
+                .map(row -> money((BigDecimal) row.get("amountUsdt")))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        boolean valuationReliable = !configuredLiabilityIncluded(config, "nex_v2_future")
+                || nexUnits.signum() == 0 || nexRate.signum() > 0;
+        return new ConfiguredTreasurySnapshot(configuredReserveTotal(config), money(liabilities), valuationReliable);
+    }
+
+    private boolean configuredLiabilityIncluded(Map<String, Object> config, String category) {
+        return categoryEnabled(config, "liabilityCategories", category)
+                && (Boolean.TRUE.equals(config.get("genesisIncluded")) || !"genesis_daily_emission".equals(category))
+                && (Boolean.TRUE.equals(config.get("includeFarLiabilities")) || !"nex_v2_future".equals(category));
+    }
+
+    private record ConfiguredTreasurySnapshot(BigDecimal reserveUsdt, BigDecimal liabilitiesUsdt, boolean valuationReliable) {
+        String coverageStatus() {
+            return !valuationReliable ? "VALUATION_UNAVAILABLE" : liabilitiesUsdt.signum() <= 0 ? "NO_LIABILITIES" : "AVAILABLE";
         }
-        return money(total);
     }
 
     private int d3WithdrawCooldownDays() {
