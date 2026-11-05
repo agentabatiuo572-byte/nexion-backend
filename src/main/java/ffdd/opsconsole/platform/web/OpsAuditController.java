@@ -165,7 +165,7 @@ public class OpsAuditController {
 
     @GetMapping("/operations/proposals/by-idempotency-key")
     @PreAuthorize("hasAnyAuthority('platform_a2_read','overview_b1_redline_write','overview_b5_threshold_write',"
-            + "'device_e2_write','growth_h8_write','network_f1_write','network_f3_write','network_f4_pool_fund','finprod_g3_curve_target_price_write',"
+            + "'device_e2_write','growth_h8_write','growth_h5_write','network_f1_write','network_f3_write','network_f4_pool_fund','finprod_g3_curve_target_price_write',"
             + "'finprod_g3_curve_pump_prob_write','finprod_g3_override_price_write','finprod_g3_write')")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> proposalByIdempotencyKey(
             @org.springframework.web.bind.annotation.RequestParam String idempotencyKey) {
@@ -378,6 +378,7 @@ public class OpsAuditController {
             + " || (#request != null && (@treasuryThresholdApproval.canPropose(#request.command())"
             + " || @e2TaskPricingApproval.canPropose(#request.command())"
             + " || @h8RewardParamApproval.canPropose(#request.command())"
+            + " || @h5GrowthApproval.canPropose(#request.command())"
             + " || @teamFundApproval.canPropose(#request.command())"
             + " || @g3MarketApproval.canPropose(#request.command())))")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> createOperation(

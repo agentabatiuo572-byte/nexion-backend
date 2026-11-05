@@ -2,6 +2,7 @@ package ffdd.opsconsole.platform.application;
 
 import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.growth.application.H8RewardParamApproval;
+import ffdd.opsconsole.growth.application.H5GrowthApproval;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
 import ffdd.opsconsole.team.application.TeamFundApproval;
@@ -122,6 +123,8 @@ public class AuditReplayBusinessPermissionGuard {
     @Autowired
     private H8RewardParamApproval h8RewardParamApproval;
     @Autowired
+    private H5GrowthApproval h5GrowthApproval;
+    @Autowired
     private ffdd.opsconsole.device.application.OpsDeviceService devices;
     @Autowired
     private ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper calibrationMapper;
@@ -202,6 +205,10 @@ public class AuditReplayBusinessPermissionGuard {
         if (G3MarketApproval.supports(command)) {
             return g3MarketApproval.canPropose(command)
                     ? ApiResult.ok() : ApiResult.fail(403, "G3_APPROVAL_MAKER_FORBIDDEN");
+        }
+        if (H5GrowthApproval.supports(command)) {
+            return h5GrowthApproval.canPropose(command)
+                    ? ApiResult.ok() : ApiResult.fail(403, "H5_MAKER_FORBIDDEN");
         }
         if (H8RewardParamApproval.supports(command)) {
             return h8RewardParamApproval.canPropose(command)
@@ -322,6 +329,9 @@ public class AuditReplayBusinessPermissionGuard {
         if (G3MarketApproval.supports(command)) {
             return ApiResult.ok(g3MarketApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
         }
+        if (H5GrowthApproval.supports(command)) {
+            return ApiResult.ok(h5GrowthApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
+        }
         if (H8RewardParamApproval.supports(command)) {
             return ApiResult.ok(h8RewardParamApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
         }
@@ -357,6 +367,9 @@ public class AuditReplayBusinessPermissionGuard {
         if (G3MarketApproval.supports(command)) {
             return g3MarketApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         }
+        if (H5GrowthApproval.supports(command)) {
+            return h5GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        }
         if (H8RewardParamApproval.supports(command)) {
             return h8RewardParamApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         }
@@ -385,6 +398,9 @@ public class AuditReplayBusinessPermissionGuard {
     public ApiResult<Void> validateApproval(AuditReplayCommand command) {
         if (G3MarketApproval.supports(command)) {
             return g3MarketApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        }
+        if (H5GrowthApproval.supports(command)) {
+            return h5GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         }
         if (H8RewardParamApproval.supports(command)) {
             return h8RewardParamApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
@@ -600,6 +616,18 @@ public class AuditReplayBusinessPermissionGuard {
             }
             return ApiResult.ok(new DelegatedProposalDescriptor(review.action(), target.id(), review.before(), review.after(),
                     "G3", review.operationType(), review.amplifies(), target, null, review));
+        }
+        if (H5GrowthApproval.supports(command)) {
+            AuditLockTarget target = H5GrowthApproval.target(command);
+            if (!"H5".equals(text(request.sourceDomain())) || !target.id().equals(text(request.obj()))
+                    || !target.equals(request.target()) || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            var preview = h5GrowthApproval.preview(command, request.reason());
+            if (preview.getCode() != 0) return ApiResult.fail(preview.getCode(), preview.getMessage());
+            var review = preview.getData();
+            return ApiResult.ok(new DelegatedProposalDescriptor(
+                    review.action(), target.id(), review.before(), review.after(), "H5", "fund", true, target));
         }
         if (H8RewardParamApproval.supports(command)) {
             AuditLockTarget target = H8RewardParamApproval.target(command);

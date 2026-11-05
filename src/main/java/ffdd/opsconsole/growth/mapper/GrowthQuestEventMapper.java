@@ -1050,6 +1050,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                    power_up_name AS label,
                    COALESCE(effect_value, target_path) AS sub,
                    COALESCE(effect_value, '') AS note,
+                   effect_type AS effectType,
                    target_path AS downstream
               FROM nx_streak_power_up
              WHERE is_deleted = 0
@@ -1070,7 +1071,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
     @Update("""
             UPDATE nx_streak_power_up
                SET unlock_streak_days=#{day},updated_at=NOW()
-             WHERE id=#{powerUpId} AND unlock_streak_days=#{expectedDay} AND is_deleted=0
+             WHERE id=#{powerUpId} AND unlock_streak_days=#{expectedDay} AND status=1 AND is_deleted=0
             """)
     int updatePowerUpDayCas(
             @Param("powerUpId") int powerUpId,
@@ -1089,7 +1090,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
     @Update("""
             UPDATE nx_streak_power_up
                SET effect_value=#{note},updated_at=NOW()
-             WHERE id=#{powerUpId} AND COALESCE(effect_value,'')=#{expectedNote} AND is_deleted=0
+             WHERE id=#{powerUpId} AND COALESCE(effect_value,'')=#{expectedNote} AND status=1 AND is_deleted=0
             """)
     int updatePowerUpNoteCas(
             @Param("powerUpId") int powerUpId,
@@ -1100,7 +1101,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             UPDATE nx_streak_power_up
                SET unlock_streak_days=#{day},effect_value=#{note},updated_at=NOW()
              WHERE id=#{powerUpId} AND unlock_streak_days=#{expectedDay}
-               AND COALESCE(effect_value,'')=#{expectedNote} AND is_deleted=0
+               AND COALESCE(effect_value,'')=#{expectedNote} AND status=1 AND is_deleted=0
             """)
     int updatePowerUpConfigCas(
             @Param("powerUpId") int powerUpId,
@@ -1140,6 +1141,19 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             @Param("milestoneId") String milestoneId,
             @Param("thresholdUsd") BigDecimal thresholdUsd,
             @Param("rewardNex") BigDecimal rewardNex);
+
+    @Update("""
+            UPDATE nx_earning_milestone_rule
+               SET threshold_usdt=#{thresholdUsd},reward_nex=#{rewardNex},updated_at=NOW()
+             WHERE milestone_id=#{milestoneId} AND threshold_usdt=#{expectedThreshold}
+               AND reward_nex=#{expectedReward} AND status=1 AND is_deleted=0
+            """)
+    int updateEarnMilestoneRuleCas(
+            @Param("milestoneId") String milestoneId,
+            @Param("thresholdUsd") BigDecimal thresholdUsd,
+            @Param("rewardNex") BigDecimal rewardNex,
+            @Param("expectedThreshold") BigDecimal expectedThreshold,
+            @Param("expectedReward") BigDecimal expectedReward);
 
     @Select("""
             SELECT COUNT(1)
