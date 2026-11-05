@@ -1,6 +1,7 @@
 package ffdd.opsconsole.team.domain;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -257,6 +258,8 @@ public interface TeamCommissionRepository {
     default long countPromotionLog(Long userId, String v, String cohort, String from, String to) {
         return queryPromotionLog(userId, v, cohort, from, to).size();
     }
+
+    default Long countUpwardPromotions(LocalDateTime from, LocalDateTime until) { return null; }
 
     // ============================================================
     // F1 V-Rank 派发流水查询/补发/撤销(Sprint 6 端点第二组)

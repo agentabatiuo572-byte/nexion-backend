@@ -7,6 +7,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
@@ -45,6 +46,7 @@ import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.Collections;
@@ -58,6 +60,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import org.springframework.security.core.Authentication;
@@ -243,11 +247,12 @@ public class OpsTeamService implements AuditReplayable {
 
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> binarySummary = binarySettlementSummary();
+        Map<String, String> values = configValues();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "F");
         response.put("commissionPolicy", commissionPolicy());
         response.put("rankLadder", rankLadder());
-        response.put("vrankRows", vrankRows());
+        response.put("vrankRows", vrankRows(values.get("F.vrank.titles")));
         response.put("fulfillmentQueues", fulfillmentQueues());
         response.put("unilevelRates", unilevelRates());
         response.put("policyParams", policyParams());
@@ -265,7 +270,7 @@ public class OpsTeamService implements AuditReplayable {
         response.put("leadershipPool", leadershipPoolReadModel());
         response.put("quotaPolicy", quotaPolicy());
         response.put("payoutGuardrails", guardrails());
-        response.put("configValues", configValues());
+        response.put("configValues", values);
         response.put("sunsetExclusions", sunsetExclusions());
         response.put("sources", List.of(
                 "nx_config_item:team.* policy keys",
@@ -513,10 +518,15 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     public ApiResult<Map<String, Object>> ranks() {
+        Map<String, String> values = configValues();
+        var calendar = BusinessCalendar.growthTeam();
+        var month = calendar.month(Instant.now());
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "F1");
         response.put("rankLadder", rankLadder());
-        response.put("vrankRows", vrankRows());
+        response.put("vrankRows", vrankRows(values.get("F.vrank.titles")));
+        response.put("monthlyPromotionCount", commissionRepository.countUpwardPromotions(
+                calendar.storageStart(month), calendar.storageStart(month.plusMonths(1))));
         response.put("rewards", vRankRewards());
         Map<String, String> voucherLabels = voucherLabels();
         Map<String, String> skuLabels = skuLabels();
@@ -527,7 +537,7 @@ public class OpsTeamService implements AuditReplayable {
         response.put("leadership", leadershipSnapshot());
         response.put("promotionWindowDays", configDecimal("team.rank_window_days", BigDecimal.ZERO).intValue());
         response.put("quotaPolicy", quotaPolicy());
-        response.put("configValues", configValues());
+        response.put("configValues", values);
         // B1 备付金覆盖率快照:供前端 F1 OperationConfirmModal 对资金类奖励显示覆盖率 + covBlocked 拦截。
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
         Map<String, Object> coverageOverview = new LinkedHashMap<>();
@@ -537,6 +547,7 @@ public class OpsTeamService implements AuditReplayable {
         response.put("sources", List.of(
                 "nx_v_rank_config",
                 "nx_team_member",
+                "nx_user_level_log",
                 "nx_v_rank_reward_rule",
                 "nx_commission_event:leadership"));
         return ApiResult.ok(response);
@@ -1575,6 +1586,23 @@ public class OpsTeamService implements AuditReplayable {
         return commissionRepository.vRankRows().stream()
                 .map(this::normalizeVRankRow)
                 .toList();
+    }
+
+    private List<Map<String, Object>> vrankRows(String approvedTitles) {
+        List<Map<String, Object>> rows = vrankRows();
+        if (!StringUtils.hasText(approvedTitles)) return rows;
+        try {
+            JsonNode titles = JSON_PROBE.readTree(approvedTitles);
+            for (Map<String, Object> row : rows) {
+                JsonNode title = titles.path(String.valueOf(row.get("v")));
+                if (title.isTextual() && !title.asText().isBlank()) {
+                    row.put("label", title.asText().trim());
+                }
+            }
+        } catch (JsonProcessingException ex) {
+            log.warn("Ignoring malformed approved F1 rank titles", ex);
+        }
+        return rows;
     }
 
     private Map<String, Object> normalizeVRankRow(Map<String, Object> raw) {

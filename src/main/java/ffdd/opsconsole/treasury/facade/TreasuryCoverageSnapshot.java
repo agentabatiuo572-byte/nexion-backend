@@ -10,7 +10,21 @@ public record TreasuryCoverageSnapshot(
         BigDecimal liabilitiesUsd,
         BigDecimal nexUsdRate,
         BigDecimal ratioReserveUsd,
-        BigDecimal ratioLiabilitiesUsd) {
+        BigDecimal ratioLiabilitiesUsd,
+        BigDecimal healthyPct) {
+
+    public TreasuryCoverageSnapshot(
+            BigDecimal coverageRatio,
+            BigDecimal redlinePct,
+            boolean reliable,
+            BigDecimal reserveUsd,
+            BigDecimal liabilitiesUsd,
+            BigDecimal nexUsdRate,
+            BigDecimal ratioReserveUsd,
+            BigDecimal ratioLiabilitiesUsd) {
+        this(coverageRatio, redlinePct, reliable, reserveUsd, liabilitiesUsd, nexUsdRate,
+                ratioReserveUsd, ratioLiabilitiesUsd, null);
+    }
 
     public TreasuryCoverageSnapshot(
             BigDecimal coverageRatio,

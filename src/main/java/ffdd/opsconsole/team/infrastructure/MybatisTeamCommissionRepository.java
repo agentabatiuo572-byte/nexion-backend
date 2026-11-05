@@ -6,6 +6,7 @@ import ffdd.opsconsole.team.domain.VRankRewardPayout;
 import ffdd.opsconsole.team.domain.VRankRewardRuleRow;
 import ffdd.opsconsole.team.mapper.TeamCommissionMapper;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -472,6 +473,11 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     @Override
     public long countPromotionLog(Long userId, String v, String cohort, String from, String to) {
         return mapper.countPromotionLog(userId, v, cohort, from, to);
+    }
+
+    @Override
+    public Long countUpwardPromotions(LocalDateTime from, LocalDateTime until) {
+        return mapper.countUpwardPromotions(from, until);
     }
 
     // ============================================================

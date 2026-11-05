@@ -196,16 +196,22 @@ public class OpsI18nLearningService {
         // must obey the same shipped-key boundary as the normal draft editor;
         // otherwise an operator can use a real issue code to create and later
         // publish a key no App release consumes.
-        if (learningRepository.findMessagePairForUpdate(messageKey).isEmpty()) {
+        I18nMessagePairView previous = learningRepository.findMessagePairForUpdate(messageKey).orElse(null);
+        if (previous == null) {
             return ApiResult.fail(404, "I18N_MESSAGE_KEY_NOT_REGISTERED");
         }
-        learningRepository.saveMessagePair(messageKey, request.zh().trim(), request.en().trim(), request.vi().trim(), "draft", now());
+        Optional<I18nMessagePairView> published = learningRepository.findPublishedMessagePair(messageKey);
+        I18nMessagePairView saved = learningRepository.saveMessagePair(
+                messageKey, request.zh().trim(), request.en().trim(), request.vi().trim(), "draft", now());
         List<I18nIntegrityIssueView> recomputed = learningRepository.recomputeIntegrity(now());
         I18nIntegrityIssueView remaining = recomputed.stream().filter(issue -> issue.code().equals(issueCode.trim())).findFirst()
                 .orElse(new I18nIntegrityIssueView(issueCode.trim(), current.get().kind(), 0, List.of(), "fixed"));
+        int repairedCount = I18nCopyQuality.integrityIssueCodes(published.orElse(previous)).contains(remaining.code())
+                && !I18nCopyQuality.integrityIssueCodes(published.orElse(saved)).contains(remaining.code()) ? 1 : 0;
         audit("I6_I18N_INTEGRITY_FIXED", "I18N_INTEGRITY", remaining.code(), request.operator(), idempotencyKey, request.reason(), Map.of(
-                "messageKey", messageKey, "remainingCount", remaining.cnt()));
-        return ApiResult.ok(remaining);
+                "messageKey", messageKey, "remainingCount", remaining.cnt(), "repairedCount", repairedCount));
+        return ApiResult.ok(new I18nIntegrityIssueView(remaining.code(), remaining.kind(), remaining.cnt(),
+                remaining.samples(), remaining.status(), repairedCount));
     }
 
     @Transactional
