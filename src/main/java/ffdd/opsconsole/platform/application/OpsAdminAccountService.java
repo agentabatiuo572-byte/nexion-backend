@@ -188,8 +188,13 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (role == null) {
             return ApiResult.fail(422, "ROLE_INVALID");
         }
-        if (governanceRecoveryRequired() && !"super".equals(role)) {
-            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_ONLY");
+        if (governanceRecoveryRequired()) {
+            if (!"super".equals(role)) {
+                return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_ONLY");
+            }
+            if (!A2ReplayContext.isReplaying()) {
+                return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_REQUIRES_APPROVAL");
+            }
         }
         ffdd.opsconsole.content.application.SupportDefaultAvatarCatalog.gender(request.avatarGender());
         if(Boolean.TRUE.equals(request.useDefaultAvatar()) && (request.avatarAssetId()!=null || !"support".equals(role)))
@@ -371,8 +376,13 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (nextRole == null) {
             return ApiResult.fail(422, "ROLE_INVALID");
         }
-        if (governanceRecoveryRequired() && !"super".equals(nextRole)) {
-            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_ONLY");
+        if (governanceRecoveryRequired()) {
+            if (!"super".equals(nextRole)) {
+                return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_ONLY");
+            }
+            if (!A2ReplayContext.isReplaying()) {
+                return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_REQUIRES_APPROVAL");
+            }
         }
         lockAccount(accountId);
         AdminAccountOverview.OperatorRecord current = findOperator(accountId).orElse(null);
@@ -444,9 +454,13 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (nextStatus == null) {
             return ApiResult.fail(422, "STATUS_INVALID");
         }
-        if (governanceRecoveryRequired()
-                && !("enabled".equals(nextStatus) && "super".equals(current.role()) && current.tfa())) {
-            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_ONLY");
+        if (governanceRecoveryRequired()) {
+            if (!("enabled".equals(nextStatus) && "super".equals(current.role()) && current.tfa())) {
+                return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_ONLY");
+            }
+            if (!A2ReplayContext.isReplaying()) {
+                return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_REQUIRES_APPROVAL");
+            }
         }
         if ("disabled".equals(nextStatus)
                 && "super".equals(current.role())
@@ -1036,10 +1050,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
                 firstText(admin.getUsername()),
                 StringUtils.hasText(admin.getEmail()) ? admin.getEmail().trim() : "",
                 role,
-                state != null
-                        && Integer.valueOf(1).equals(state.getTfaRequired())
-                        && StringUtils.hasText(state.getTfaSecretEncrypted())
-                        && state.getTfaBoundAt() != null,
+                AdminAccountGovernance.mfaBound(state),
                 enabled ? "enabled" : "disabled",
                 state != null && state.getLastLoginAt() != null
                         ? state.getLastLoginAt().format(ISO)
@@ -1575,9 +1586,8 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
 
     private int effectiveSupers(List<AdminAccountOverview.OperatorRecord> operators) {
         return (int) operators.stream()
-                .filter(operator -> "super".equals(operator.role())
-                        && "enabled".equals(operator.status())
-                        && operator.tfa())
+                .filter(operator -> AdminAccountGovernance.effectiveSuper(
+                        operator.role(), operator.status(), operator.tfa()))
                 .count();
     }
 
@@ -1586,7 +1596,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     }
 
     private int minEffectiveSupers() {
-        return 2;
+        return AdminAccountGovernance.MIN_EFFECTIVE_SUPERS;
     }
 
     private boolean writes(List<String> grants, List<String> roleKeys, String... roles) {
