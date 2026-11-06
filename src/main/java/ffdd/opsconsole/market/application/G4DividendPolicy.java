@@ -59,6 +59,10 @@ public class G4DividendPolicy {
                         .append(item.userId()).append(':').append(number(item.amountUsdt())).append(':').append(item.status());
                 amount = amount.add(item.amountUsdt()); count++;
             }
+            if (!"COMPLETED".equals(batch.status()) && amount.signum() > 0
+                    && (batch.dailyRatePct() == null || batch.dailyRatePct().signum() <= 0)) {
+                throw new BizException(409, "G4_EMISSION_RATE_SNAPSHOT_INVALID");
+            }
         }
         return new State(hash(detail.toString()), series, batch, amount, count);
     }
