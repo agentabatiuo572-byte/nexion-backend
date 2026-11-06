@@ -16,23 +16,12 @@ import org.apache.ibatis.annotations.*;
 public interface WeeklyQuestSnapshotMapper extends BaseMapper<Object> {
     String HEADER_COLUMNS = "instance_key instanceKey,eligible_from eligibleFrom,eligible_until eligibleUntil,"
             + "quest_bonus_multiplier questBonusMultiplier,rhythm_month rhythmMonth,required_task_count requiredTaskCount,"
-            + "business_timezone businessTimezone,local_week_start localWeekStart,calendar_version calendarVersion";
-    @Select("""
-            SELECT instance_key instanceKey,eligible_from eligibleFrom,eligible_until eligibleUntil,
-                   quest_bonus_multiplier questBonusMultiplier,rhythm_month rhythmMonth,
-                   required_task_count requiredTaskCount,business_timezone businessTimezone,
-                   local_week_start localWeekStart,calendar_version calendarVersion
-              FROM nx_growth_weekly_definition WHERE instance_key=#{key}
-            """)
+            + "business_timezone businessTimezone,local_week_start localWeekStart,calendar_version calendarVersion,"
+            + "rhythm_phase rhythmPhase,weekly_phase_multiplier weeklyPhaseMultiplier";
+    @Select("SELECT " + HEADER_COLUMNS + " FROM nx_growth_weekly_definition WHERE instance_key=#{key}")
     Header find(@Param("key") String key);
 
-    @Select("""
-            SELECT instance_key instanceKey,eligible_from eligibleFrom,eligible_until eligibleUntil,
-                   quest_bonus_multiplier questBonusMultiplier,rhythm_month rhythmMonth,
-                   required_task_count requiredTaskCount,business_timezone businessTimezone,
-                   local_week_start localWeekStart,calendar_version calendarVersion
-              FROM nx_growth_weekly_definition WHERE instance_key=#{key} FOR SHARE
-            """)
+    @Select("SELECT " + HEADER_COLUMNS + " FROM nx_growth_weekly_definition WHERE instance_key=#{key} FOR SHARE")
     Header findAfterLock(@Param("key") String key);
 
     @Select("SELECT " + HEADER_COLUMNS + " FROM nx_growth_weekly_definition WHERE instance_key=#{key} FOR SHARE")
@@ -82,9 +71,10 @@ public interface WeeklyQuestSnapshotMapper extends BaseMapper<Object> {
     int copyBindings(@Param("from") String from,@Param("to") String to);
 
     @Insert("INSERT INTO nx_growth_weekly_definition(instance_key,eligible_from,eligible_until,quest_bonus_multiplier,"
-            + "rhythm_month,required_task_count,business_timezone,local_week_start,calendar_version,localized_content) "
+            + "rhythm_month,required_task_count,business_timezone,local_week_start,calendar_version,localized_content,"
+            + "rhythm_phase,weekly_phase_multiplier) "
             + "SELECT #{h.instanceKey},#{h.eligibleFrom},#{h.eligibleUntil},quest_bonus_multiplier,rhythm_month,required_task_count,"
-            + "#{h.businessTimezone},#{h.localWeekStart},#{h.calendarVersion},localized_content "
+            + "#{h.businessTimezone},#{h.localWeekStart},#{h.calendarVersion},localized_content,rhythm_phase,weekly_phase_multiplier "
             + "FROM nx_growth_weekly_definition WHERE instance_key=#{source}")
     int insertHeaderFromTemplate(@Param("h") Header header,@Param("source") String source);
 
@@ -96,6 +86,9 @@ public interface WeeklyQuestSnapshotMapper extends BaseMapper<Object> {
 
     @Select("SELECT lock_key FROM nx_admin_operation_mutex WHERE lock_key='H3_CONFIG' FOR UPDATE")
     String lockMutex();
+
+    @Select("SELECT config_value FROM nx_config_item WHERE config_key=#{key} AND status=1 AND is_deleted=0 FOR SHARE")
+    String activeWeeklyPhaseMultiplier(@Param("key") String key);
 
     @Select("""
             SELECT m.id missionId,m.mission_code questCode,m.mission_name name,m.mission_type layer,
@@ -119,9 +112,10 @@ public interface WeeklyQuestSnapshotMapper extends BaseMapper<Object> {
     @Insert("""
             INSERT INTO nx_growth_weekly_definition
               (instance_key,eligible_from,eligible_until,quest_bonus_multiplier,rhythm_month,required_task_count,
-               business_timezone,local_week_start,calendar_version,localized_content)
+               business_timezone,local_week_start,calendar_version,rhythm_phase,weekly_phase_multiplier,localized_content)
             VALUES(#{h.instanceKey},#{h.eligibleFrom},#{h.eligibleUntil},#{h.questBonusMultiplier},
                    #{h.rhythmMonth},#{h.requiredTaskCount},#{h.businessTimezone},#{h.localWeekStart},#{h.calendarVersion},
+                   #{h.rhythmPhase},#{h.weeklyPhaseMultiplier},
                    (SELECT config_value FROM nx_config_item WHERE config_key='growth.content.localized'
                      AND status=1 AND is_deleted=0 LIMIT 1))
             """)
@@ -241,13 +235,22 @@ public interface WeeklyQuestSnapshotMapper extends BaseMapper<Object> {
 
     record Header(String instanceKey,LocalDateTime eligibleFrom,LocalDateTime eligibleUntil,
                   BigDecimal questBonusMultiplier,int rhythmMonth,int requiredTaskCount,
-                  String businessTimezone,LocalDate localWeekStart,String calendarVersion) {
+                  String businessTimezone,LocalDate localWeekStart,String calendarVersion,
+                  String rhythmPhase,BigDecimal weeklyPhaseMultiplier) {
         @org.apache.ibatis.annotations.AutomapConstructor
         public Header {
             if (questBonusMultiplier!=null) questBonusMultiplier=questBonusMultiplier.stripTrailingZeros();
+            weeklyPhaseMultiplier=weeklyPhaseMultiplier.stripTrailingZeros();
+        }
+        public Header(String key,LocalDateTime from,LocalDateTime until,BigDecimal multiplier,int month,int count,
+                      String zone,LocalDate monday,String version) {
+            this(key,from,until,multiplier,month,count,zone,monday,version,null,BigDecimal.ONE);
         }
         public Header(String key,LocalDateTime from,LocalDateTime until,BigDecimal multiplier,int month,int count) {
             this(key,from,until,multiplier,month,count,null,null,null);
+        }
+        public BigDecimal effectiveQuestBonusMultiplier() {
+            return questBonusMultiplier.multiply(weeklyPhaseMultiplier);
         }
     }
     record Assignment(Long userId,LocalDate localWeekStart,String instanceKey,String countryCallingCode,long mappingVersion) {}
