@@ -275,7 +275,7 @@ public class AppGrowthWheelService {
         if (coverage == null || !coverage.reliable() || coverage.coverageRatio() == null
                 || coverage.redlinePct() == null || coverage.coverageRatio().signum() <= 0
                 || coverage.redlinePct().signum() <= 0
-                || coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
+                || coverage.redlineBreached()) {
             return "B1_COVERAGE_REDLINE";
         }
         BigDecimal budget = money(mapper.lockGuardValue("budget"));
