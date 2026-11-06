@@ -170,6 +170,7 @@ public class OpsAuditController {
             + "'finprod_g3_curve_pump_prob_write','finprod_g3_override_price_write','finprod_g3_write','finprod_g4_dividend_rate_write','finprod_g4_write','finprod_g4_price_write')"
             + " || (hasAuthority('content_i7_write') && hasAuthority('content_i7_course_reward_adjust'))"
             + " || (hasAuthority('content_i7_course_reward_adjust') && hasAnyAuthority('platform_a2_write','platform_a2_proposal_create'))"
+            + " || (hasAuthority('growth_h7_write') && hasAuthority('platform_a2_write'))"
             + " || (hasAuthority('risk_k2_write') && hasAnyAuthority('platform_a2_proposal_create','platform_a2_write'))")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> proposalByIdempotencyKey(
             @RequestParam(name = "idempotencyKey", required = false) String idempotencyKey) {

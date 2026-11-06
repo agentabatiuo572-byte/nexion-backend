@@ -51,6 +51,7 @@ import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.growth.application.H5GrowthApproval;
 import ffdd.opsconsole.growth.application.H3GrowthApproval;
 import ffdd.opsconsole.growth.application.H4GrowthApproval;
+import ffdd.opsconsole.growth.application.H7VoucherDisposition;
 import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.team.application.BinaryCommissionSettlementService.SettlementResult;
 import ffdd.opsconsole.team.application.TeamFundApproval;
@@ -322,13 +323,16 @@ public class OpsAuditCenterService {
             ticket.setAfterValue(H4GrowthApproval.supports(command) ? "H4 proposed configuration: " + command.op() : descriptor.afterValue());
             if (AuditReplayBusinessPermissionGuard.isE4Refund(command)) {
                 ticket.setOperatorRole("财务主管");
+            } else if (H7VoucherDisposition.isOperation(command)) {
+                ticket.setOperatorRole(accessPolicy.authenticatedOperatorRoleLabel());
             } else if (!superAdminProposal && replayBusinessPermissionGuard.delegatedProposal()) {
                 ticket.setOperatorRole("风控");
             }
             ticket.setOperationType(descriptor.operationType());
             ticket.setAmplifies(descriptor.amplifies() ? 1 : 0);
             ticket.setSos(0);
-            ticket.setRoleGate(superAdminProposal ? "超管" : "门槛者");
+            ticket.setRoleGate(H7VoucherDisposition.isOperation(command) ? "有审批和代金券操作权限的管理员"
+                    : superAdminProposal ? "超管" : "门槛者");
             sourceDomain = descriptor.sourceDomain();
             ticket.setSourceDomain(normalizeDomain(sourceDomain));
             target = descriptor.target();
@@ -839,7 +843,8 @@ public class OpsAuditCenterService {
         boolean mine = Long.valueOf(actorId).equals(makerId);
         if (operationId == null && !mine) return ApiResult.fail(409, "A2_MAKER_ID_UNVERIFIED");
         if ("WITHDRAW".equals(verb) && !mine) return fail(OpsErrorCode.FORBIDDEN, "A2_WITHDRAW_MAKER_ONLY");
-        if ("PROPOSE".equals(verb) && (G4CatalogApproval.supports(command) || A4RegistryApproval.supports(command))) {
+        if ("PROPOSE".equals(verb) && (G4CatalogApproval.supports(command) || A4RegistryApproval.supports(command)
+                || H7VoucherDisposition.isOperation(command))) {
             if (!canReadOwnProposal(ticket, command, actorId)) return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
             return ApiResult.ok(toTicket(ticket, true));
         }
@@ -1352,6 +1357,9 @@ public class OpsAuditCenterService {
 
     private TicketMetadata ticketMetadata(AuditOperationTicketEntity ticket, AuditReplayCommand command) {
         String domain = normalizeDomain(ticket.getSourceDomain());
+        if ("H".equals(domain) && H7VoucherDisposition.isOperation(command)) {
+            return new TicketMetadata(command.op(), null, null);
+        }
         if ("F".equals(domain) && command != null && "F".equals(command.domain())
                 && F5_COMMISSION_SUSPENSION.equals(command.op()) && command.params() != null
                 && command.params().get("suspended") instanceof Boolean suspended) {

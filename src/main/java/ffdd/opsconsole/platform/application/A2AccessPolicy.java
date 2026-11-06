@@ -8,6 +8,7 @@ import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.growth.application.H5GrowthApproval;
 import ffdd.opsconsole.growth.application.H3GrowthApproval;
 import ffdd.opsconsole.growth.application.H4GrowthApproval;
+import ffdd.opsconsole.growth.application.H7VoucherDisposition;
 import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.infrastructure.AuditOperationTicketEntity;
@@ -85,6 +86,7 @@ public class A2AccessPolicy {
                         || grants.contains(H5GrowthApproval.MAKER_AUTHORITY)
                         || grants.contains(H3GrowthApproval.MAKER_AUTHORITY)
                         || grants.contains(H4GrowthApproval.MAKER_AUTHORITY) || grants.contains(H4GrowthApproval.GUARD_AUTHORITY)
+                        || H7VoucherDisposition.canRecover(grants)
                         || (grants.contains(K2OtpInitialApproval.MAKER_AUTHORITY)
                             && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write")))
                         || grants.contains("network_f1_write") || grants.contains("network_f3_write") || grants.contains("network_f4_pool_fund")
@@ -101,6 +103,10 @@ public class A2AccessPolicy {
         String role = roleResolver.resolveCode();
         String actor = AdminActorResolver.resolve(null);
         return scope(role, actor, authorityDomains());
+    }
+
+    String authenticatedOperatorRoleLabel() {
+        return roleResolver.resolve();
     }
 
     private Scope scope(String role, String actor, List<String> domains) {
@@ -121,6 +127,9 @@ public class A2AccessPolicy {
         String domain = ticket.getSourceDomain().trim().substring(0, 1).toUpperCase(Locale.ROOT);
         // Exact maker ID was already matched by the durable proposal lookup.
         if (!domain.matches("[A-M]")) return false;
+        if (H7VoucherDisposition.isOperation(command)) {
+            return "H".equals(domain) && H7VoucherDisposition.canRecover(grants);
+        }
         if ("E".equals(domain) && AuditReplayBusinessPermissionGuard.isE4Refund(command)
                 && grants.contains("platform_a2_proposal_create")
                 && grants.contains(AuditReplayBusinessPermissionGuard.E4_REFUND_AUTHORITY)) return true;

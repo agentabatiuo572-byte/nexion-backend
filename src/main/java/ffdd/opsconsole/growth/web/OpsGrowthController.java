@@ -572,21 +572,13 @@ public class OpsGrowthController {
 
     @DeleteMapping("/vouchers/{voucherId}")
     @PreAuthorize("hasAuthority('growth_h7_write')")
-    public ApiResult<Map<String, Object>> deleteVoucher(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @PathVariable String voucherId,
-            @RequestBody GrowthConfigUpdateRequest request) {
-        return commandBoundary.execute("H7", "VOUCHER_DELETE", voucherId, idempotencyKey, request,
-                () -> growthService.deleteVoucher(idempotencyKey, voucherId, request));
+    public ApiResult<Map<String, Object>> deleteVoucher() {
+        return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
     }
 
     @PatchMapping("/vouchers/{voucherId}/grants/revoke-available")
     @PreAuthorize("hasAuthority('growth_h7_write')")
-    public ApiResult<Map<String, Object>> revokeAvailableVoucherGrants(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @PathVariable String voucherId,
-            @RequestBody GrowthConfigUpdateRequest request) {
-        return commandBoundary.execute("H7", "VOUCHER_AVAILABLE_GRANTS_REVOKE", voucherId, idempotencyKey, request,
-                () -> growthService.revokeAvailableVoucherGrants(idempotencyKey, voucherId, request));
+    public ApiResult<Map<String, Object>> revokeAvailableVoucherGrants() {
+        return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
     }
 }

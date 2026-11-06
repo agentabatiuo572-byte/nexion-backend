@@ -5,6 +5,8 @@ import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.growth.application.H5GrowthApproval;
 import ffdd.opsconsole.growth.application.H3GrowthApproval;
 import ffdd.opsconsole.growth.application.H4GrowthApproval;
+import ffdd.opsconsole.growth.application.H7VoucherDisposition;
+import ffdd.opsconsole.growth.application.OpsGrowthService;
 import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
@@ -145,6 +147,8 @@ public class AuditReplayBusinessPermissionGuard {
     private H3GrowthApproval h3GrowthApproval;
     @Autowired
     private H4GrowthApproval h4GrowthApproval;
+    @Autowired
+    private OpsGrowthService growth;
     @Autowired
     private K2OtpInitialApproval k2OtpInitialApproval;
     @Autowired
@@ -480,6 +484,9 @@ public class AuditReplayBusinessPermissionGuard {
         if (A4RegistryApproval.isOperation(command)) {
             return a4RegistryApproval.validateChecker();
         }
+        if (H7VoucherDisposition.isOperation(command)) {
+            return validateApproval(command);
+        }
         if (OpsI18nLearningService.isCourseRewardAdjustment(command)) {
             return validateCourseRewardChecker();
         }
@@ -801,6 +808,22 @@ public class AuditReplayBusinessPermissionGuard {
             AuditOperationProposalRequest request) {
         boolean delegated = delegatedProposal();
         AuditReplayCommand command = request == null ? null : request.command();
+        if (H7VoucherDisposition.isOperation(command)) {
+            var disposition = H7VoucherDisposition.parse(command);
+            var target = disposition.target();
+            if (!"H7".equals(text(request.sourceDomain())) || !target.id().equals(text(request.obj()))
+                    || !target.equals(request.target()) || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            var voucher = growth.reviewVoucherDisposition(disposition);
+            boolean delete = H7VoucherDisposition.DELETE.equals(command.op());
+            return ApiResult.ok(new DelegatedProposalDescriptor(
+                    delete ? "删除代金券" : "作废未使用的代金券", target.id(),
+                    voucher.get("name") + " · 版本 " + disposition.expectedVersion()
+                            + " · 可用 " + voucher.get("availableCount") + " 张 · 已用 " + voucher.get("redeemedCount") + " 张",
+                    delete ? "批准后删除券模板，已领取的券保留" : "批准后作废届时仍未使用的券，已使用的券保留",
+                    "H7", "param", false, target));
+        }
         if (G4DividendApproval.supports(command)) {
             var target=G4DividendApproval.target(command);
             if (!"G4".equals(text(request.sourceDomain())) || !target.id().equals(text(request.obj())) || !target.equals(request.target()) || (request.targets()!=null && !request.targets().isEmpty())) return ApiResult.fail(403,"A2_BUSINESS_CONTEXT_MISMATCH");
@@ -1768,6 +1791,7 @@ public class AuditReplayBusinessPermissionGuard {
                 default -> null;
             };
             case "H" -> switch (operation) {
+                case H7VoucherDisposition.DELETE, H7VoucherDisposition.REVOKE_AVAILABLE -> H7VoucherDisposition.AUTHORITY;
                 case "h3_weekly_region_policy" -> "growth_h3_write";
                 case "promotion_reward_correction" -> "CANCEL".equals(value(command.params(),"action"))
                         ?"growth_promotion_reward_cancel":"growth_promotion_reward_reverse";
@@ -1844,6 +1868,9 @@ public class AuditReplayBusinessPermissionGuard {
 
     private String approvalAuthority(AuditReplayCommand command, String operation) {
         String domain = command.domain() == null ? "" : command.domain().trim().toUpperCase(Locale.ROOT);
+        if ("H".equals(domain) && H7VoucherDisposition.isOperation(command)) {
+            return H7VoucherDisposition.AUTHORITY;
+        }
         if (!"E".equals(domain)) {
             return null;
         }
