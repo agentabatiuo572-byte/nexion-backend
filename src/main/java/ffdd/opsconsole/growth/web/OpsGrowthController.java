@@ -498,8 +498,7 @@ public class OpsGrowthController {
     }
 
     @PatchMapping("/earn-milestones/tick-interval")
-    // earn 里程碑属 H5 签到&UVT（收益/间隔），按业务内容归 H5
-    @PreAuthorize("hasAuthority('growth_h5_write')")
+    @PreAuthorize("hasAuthority('growth_h5_tick_write') and @superAdminAuthorization.isSuperAdmin(authentication)")
     public ApiResult<Map<String, Object>> updateEarnMilestoneTickInterval(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody GrowthConfigUpdateRequest request) {
