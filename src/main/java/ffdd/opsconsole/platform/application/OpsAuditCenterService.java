@@ -1370,6 +1370,9 @@ public class OpsAuditCenterService {
 
     private TicketMetadata ticketMetadata(AuditOperationTicketEntity ticket, AuditReplayCommand command) {
         String domain = normalizeDomain(ticket.getSourceDomain());
+        if ("A".equals(domain) && A4RegistryApproval.supports(command)) {
+            return new TicketMetadata(command.op(), null, null);
+        }
         if ("H".equals(domain) && H7VoucherDisposition.isOperation(command)) {
             return new TicketMetadata(command.op(), null, null);
         }

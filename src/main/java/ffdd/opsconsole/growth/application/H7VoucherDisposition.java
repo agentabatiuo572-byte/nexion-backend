@@ -37,7 +37,6 @@ public record H7VoucherDisposition(String voucherId, long expectedVersion) {
     }
 
     public static boolean canRecover(Set<String> grants) {
-        return grants.contains(AUTHORITY)
-                && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write"));
+        return grants.contains(AUTHORITY);
     }
 }
