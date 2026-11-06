@@ -40,7 +40,10 @@ class SessionLifetimeCache {
         }
         if (observed != null) {
             String[] values = observed.split(",", -1);
-            if (values.length == 2) return SessionLifetimes.from(values[0], values[1]);
+            if (values.length == 2) {
+                SessionLifetimes cached = SessionLifetimes.from(values[0], values[1]);
+                if (observed.equals(cached.accessHours() + "," + cached.refreshDays())) return cached;
+            }
         }
         SessionLifetimes fresh = load();
         // An older repeatable-read view must never seed the shared cache.
