@@ -33,6 +33,7 @@ import ffdd.opsconsole.growth.dto.ReferralSettlementRunRequest;
 import ffdd.opsconsole.growth.mapper.GrowthQuestEventMapper;
 import ffdd.opsconsole.growth.mapper.GrowthVoucherMapper;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.application.PendingApprovalProjection;
 import ffdd.opsconsole.platform.domain.AuditReplayable;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
@@ -221,6 +222,12 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     private final StreakPerkBusinessAvailabilityFacade streakPerkAvailability;
     private final ffdd.opsconsole.promotion.application.PromotionAdminService promotionAdmin;
     private ApplicationEventPublisher publicConfigEvents;
+    private PendingApprovalProjection pendingApprovalProjection;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setPendingApprovalProjection(PendingApprovalProjection projection) {
+        this.pendingApprovalProjection = projection;
+    }
 
     @Override
     public void setApplicationEventPublisher(ApplicationEventPublisher events) {
@@ -643,11 +650,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         if (guard != null) {
             return guard;
         }
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("H", "trial_session", sessionId) > 0) {
+        String sid = normalizeTrialSessionId(sessionId);
+        if (trialSessionLockedByApproval(sid)) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
-        String sid = normalizeTrialSessionId(sessionId);
         if (questEventMapper.isEmpty()) {
             return validation("TRIAL_SESSION_BUSINESS_TABLE_UNAVAILABLE");
         }
@@ -704,11 +710,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         if (guard != null) {
             return guard;
         }
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("H", "trial_session", sessionId) > 0) {
+        String sid = normalizeTrialSessionId(sessionId);
+        if (trialSessionLockedByApproval(sid)) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
-        String sid = normalizeTrialSessionId(sessionId);
         if (!trialKillSwitchEnabled()) {
             return validation("TRIAL_KILL_SWITCH_DISABLED");
         }
@@ -4003,7 +4008,29 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
 
     private List<Map<String, Object>> trialSessions(int pageNum, int pageSize) {
         long offset = (long) (pageNum - 1) * pageSize;
-        return growthRows(mapper -> mapper.trialSessionsPage(offset, pageSize));
+        List<Map<String, Object>> rows = growthRows(mapper -> mapper.trialSessionsPage(offset, pageSize));
+        if (rows.isEmpty() || pendingApprovalProjection == null) return rows;
+        var ids = rows.stream().map(row -> (String) row.get("sid"))
+                .flatMap(sid -> Stream.of(sid, bareTrialClaimNo(sid))).toList();
+        var pending = pendingApprovalProjection.read("H", "trial_session", ids);
+        return rows.stream().map(row -> {
+            String sid = (String) row.get("sid");
+            var approval = pending.getOrDefault(sid, pending.get(bareTrialClaimNo(sid)));
+            if (approval == null) return row;
+            Map<String, Object> projected = new LinkedHashMap<>(row);
+            projected.put("pendingApproval", approval);
+            return projected;
+        }).toList();
+    }
+
+    private boolean trialSessionLockedByApproval(String sid) {
+        return !A2ReplayContext.isReplaying()
+                && (lockMapper.countActiveByTarget("H", "trial_session", sid) > 0
+                    || lockMapper.countActiveByTarget("H", "trial_session", bareTrialClaimNo(sid)) > 0);
+    }
+
+    private static String bareTrialClaimNo(String sid) {
+        return sid.substring("trial-".length());
     }
 
     private boolean trialAutoPushKilled() {
@@ -4116,10 +4143,17 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         if (!sid.matches("[A-Za-z0-9_-]+")) {
             throw new IllegalArgumentException("TRIAL_SESSION_ID_INVALID");
         }
-        if (questEventMapper.isEmpty() || questEventMapper.get().trialSession(sid) == null) {
+        String canonical = canonicalTrialSessionId(sid);
+        if (canonical == null) {
             throw new IllegalArgumentException("TRIAL_SESSION_NOT_FOUND");
         }
-        return sid;
+        return canonical;
+    }
+
+    public String canonicalTrialSessionId(String sessionId) {
+        if (!StringUtils.hasText(sessionId)) return null;
+        return questEventMapper.map(mapper -> mapper.trialSession(sessionId.trim()))
+                .map(row -> (String) row.get("sid")).orElse(null);
     }
 
     private String trialSessionState(String sid) {
