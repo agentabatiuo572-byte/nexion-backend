@@ -28,6 +28,7 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
@@ -60,6 +61,8 @@ public class A2AccessPolicy {
     private final AdminOperatorRoleResolver roleResolver;
     private final AuditOperationTicketMapper ticketMapper;
     private final ffdd.opsconsole.shared.security.AdminPermissionCache permissions;
+    @Autowired
+    private AuditReplayBusinessPermissionGuard replayBusinessPermissionGuard;
 
     /** Rechecks current DB authority even when invoked outside the HTTP filter. */
     public long requireProposalReader() {
@@ -71,7 +74,8 @@ public class A2AccessPolicy {
             long id = Long.parseLong(auth.getName());
             if (roleResolver.isActiveAdministrator(id)) {
                 Set<String> grants = permissions.getPermissionCodes(id);
-                if (grants.contains("platform_a2_read") || grants.contains("overview_b1_redline_write")
+                if (grants.contains("platform_a2_read") || grants.contains("platform_a2_proposal_create")
+                        || grants.contains("overview_b1_redline_write")
                         || LearningCourseActivationApproval.hasMakerAuthorities(grants)
                         || canReadOwnCourseRewardProposal(grants)
                         || grants.contains("overview_b5_threshold_write")
@@ -110,14 +114,19 @@ public class A2AccessPolicy {
         };
     }
 
-    public boolean canAccessRecoveredProposal(AuditOperationTicketEntity ticket, long actorId) {
+    public boolean canAccessRecoveredProposal(AuditOperationTicketEntity ticket, AuditReplayCommand command, long actorId) {
         if (ticket == null || !StringUtils.hasText(ticket.getSourceDomain())) return false;
         Set<String> grants = permissions.getPermissionCodes(actorId);
-        if (!grants.contains("platform_a2_read")) return false;
-        var scope = scope(roleResolver.resolveCode(), AdminActorResolver.resolve(null), authorityDomains(grants));
         String domain = ticket.getSourceDomain().trim().substring(0, 1).toUpperCase(Locale.ROOT);
         // Exact maker ID was already matched by the durable proposal lookup.
-        return domain.matches("[A-M]") && (scope.ownActorOnly() || scope.canSee(domain, ticket.getOperatorName()));
+        if (!domain.matches("[A-M]")) return false;
+        if (!grants.contains("platform_a2_read")) {
+            return grants.contains("platform_a2_proposal_create")
+                    && (!StringUtils.hasText(ticket.getCommandJson()) || ("D".equals(domain)
+                        && replayBusinessPermissionGuard.canReadOwnFinanceProposal(command, actorId, grants)));
+        }
+        var scope = scope(roleResolver.resolveCode(), AdminActorResolver.resolve(null), authorityDomains(grants));
+        return scope.ownActorOnly() || scope.canSee(domain, ticket.getOperatorName());
     }
 
     boolean canAccessOwnBusinessProposal(AuditReplayCommand command, long actorId) {

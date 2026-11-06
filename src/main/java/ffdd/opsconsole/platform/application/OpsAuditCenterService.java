@@ -847,7 +847,7 @@ public class OpsAuditCenterService {
     }
 
     private boolean canReadOwnProposal(AuditOperationTicketEntity ticket, AuditReplayCommand command, long actorId) {
-        return (!G4CatalogApproval.supports(command) && accessPolicy.canAccessRecoveredProposal(ticket, actorId))
+        return (!G4CatalogApproval.supports(command) && accessPolicy.canAccessRecoveredProposal(ticket, command, actorId))
                 || accessPolicy.canAccessOwnBusinessProposal(command, actorId);
     }
 

@@ -223,6 +223,15 @@ public class AuditReplayBusinessPermissionGuard {
         }
     }
 
+    boolean canReadOwnFinanceProposal(AuditReplayCommand command, long actorId, Set<String> grants) {
+        if (command == null || !"D".equalsIgnoreCase(text(command.domain()))) return false;
+        if (WithdrawalConfigApproval.supports(command)) {
+            return withdrawalConfigApproval.canReadOwnProposal(command, actorId, grants);
+        }
+        String operation = text(command.op()).toLowerCase(Locale.ROOT);
+        return "d_cregis_deposit_policy".equals(operation) && grants.contains(requiredAuthority(command, operation));
+    }
+
     public ApiResult<Void> validateProposal(AuditReplayCommand command) {
         if (OpsI18nLearningService.isCourseRewardAdjustment(command)) {
             return hasAuthority("content_i7_course_reward_adjust") ? ApiResult.ok()
