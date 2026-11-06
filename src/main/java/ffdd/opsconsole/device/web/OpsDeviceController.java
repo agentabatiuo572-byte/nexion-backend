@@ -1,6 +1,7 @@
 package ffdd.opsconsole.device.web;
 
 
+import com.fasterxml.jackson.annotation.JsonUnwrapped;
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
@@ -49,8 +50,11 @@ import ffdd.opsconsole.device.dto.DeviceTaskStatusRequest;
 import ffdd.opsconsole.device.dto.DeviceTaskUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceTradeinActionRequest;
 import ffdd.opsconsole.device.dto.E3ConfigUpdateRequest;
+import ffdd.opsconsole.platform.application.PendingApprovalProjection;
+import ffdd.opsconsole.platform.application.PendingApprovalProjection.PendingApproval;
 import java.util.List;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -72,6 +76,8 @@ public class OpsDeviceController {
             + " && (@superAdminAuthorization.isSuperAdmin(authentication)"
             + " || @adminPermissionCache.hasGrantOutsideRole(authentication.name, 'device_e4_order_refund', 'FINANCE_LEAD'))";
     private final OpsDeviceService deviceService;
+    @Autowired
+    private PendingApprovalProjection pendingApprovals;
 
     @GetMapping("/overview")
     @PreAuthorize("hasAnyAuthority('device_e1_read','device_e2_read','device_e3_read','device_e4_read','device_e5_read','device_e6_read')")
@@ -294,15 +300,32 @@ public class OpsDeviceController {
 
     @GetMapping("/orders")
     @PreAuthorize("hasAuthority('device_e4_read')")
-    public ApiResult<PageResult<DeviceOrderView>> orders(DeviceOrderQueryRequest request) {
-        return deviceService.orders(request);
+    public ApiResult<PageResult<PendingOrderView>> orders(DeviceOrderQueryRequest request) {
+        var result = deviceService.orders(request);
+        if (result.getCode() != 0) return ApiResult.fail(result.getCode(), result.getMessage());
+        PageResult<DeviceOrderView> page = result.getData();
+        var approvals = page.getRecords().isEmpty() ? Map.<String, PendingApproval>of()
+                : pendingApprovals.read("E", "device_order", page.getRecords().stream().map(DeviceOrderView::orderNo).toList());
+        var records = page.getRecords().stream()
+                .map(order -> new PendingOrderView(order, approvals.get(order.orderNo())))
+                .toList();
+        return ApiResult.ok(new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(), records));
     }
 
     @GetMapping("/orders/{orderNo}")
     @PreAuthorize("hasAuthority('device_e4_read')")
-    public ApiResult<DeviceOrderDetailView> order(@PathVariable String orderNo) {
-        return deviceService.order(orderNo);
+    public ApiResult<PendingOrderDetailView> order(@PathVariable String orderNo) {
+        var result = deviceService.order(orderNo);
+        if (result.getCode() != 0) return ApiResult.fail(result.getCode(), result.getMessage());
+        var detail = result.getData();
+        String targetId = detail.order().orderNo();
+        var approval = pendingApprovals.read("E", "device_order", List.of(targetId)).get(targetId);
+        return ApiResult.ok(new PendingOrderDetailView(detail, approval));
     }
+
+    public record PendingOrderView(@JsonUnwrapped DeviceOrderView order, PendingApproval pendingApproval) {}
+
+    public record PendingOrderDetailView(@JsonUnwrapped DeviceOrderDetailView detail, PendingApproval pendingApproval) {}
 
     @PatchMapping("/orders/{orderNo}/refund")
     @PreAuthorize(DIRECT_E4_REFUND)
