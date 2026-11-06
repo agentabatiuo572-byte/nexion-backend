@@ -11,7 +11,8 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
-    String DISPATCH_LOCK_PREFIX = "CONCAT('nx:outbox:', LEFT(SHA2(DATABASE(), 256), 32), ':', ";
+    String DISPATCH_LOCK_NAMESPACE = "nx:outbox:";
+    String DISPATCH_LOCK_PREFIX = "CONCAT('" + DISPATCH_LOCK_NAMESPACE + "', LEFT(SHA2(DATABASE(), 256), 32), ':', ";
     String DISPATCH_OWNED = " AND IS_USED_LOCK(" + DISPATCH_LOCK_PREFIX + "#{id})) = #{ownerId}";
 
     String MESSAGE_COLUMNS = """
@@ -164,6 +165,12 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
             LIMIT #{limit}
             """;
 
+    String CANONICAL_DISPATCH_LANE = """
+            <if test="laneCount > 0">
+                AND MOD(id DIV 2, #{laneCount}) = #{lane}
+                AND IS_FREE_LOCK(
+            """ + DISPATCH_LOCK_PREFIX + "id)) = 1 </if>";
+
     // Each index branch fixes its status so it can read either end without sorting a backlog.
     // Merge bounded ID sets before loading messages, including rows matching both aliases only once.
     String CANONICAL_PENDING_SQL = """
@@ -178,7 +185,7 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
                      AND is_deleted = 0 AND status = #{dispatchStatus}
                      AND (next_retry_at IS NULL OR next_retry_at &lt;= NOW())
                      AND id &gt; #{afterId}
-            """ + CANONICAL_DISPATCH_ORDER + """
+            """ + CANONICAL_DISPATCH_LANE + CANONICAL_DISPATCH_ORDER + """
                  )
                  UNION DISTINCT
                  (SELECT id FROM nx_event_outbox FORCE INDEX (idx_outbox_canonical_name)
@@ -186,22 +193,28 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
                      AND is_deleted = 0 AND status = #{dispatchStatus}
                      AND (next_retry_at IS NULL OR next_retry_at &lt;= NOW())
                      AND id &gt; #{afterId}
-            """ + CANONICAL_DISPATCH_ORDER + """
+            """ + CANONICAL_DISPATCH_LANE + CANONICAL_DISPATCH_ORDER + """
                  )
                  </foreach>
                ) candidate
              )
             """ + CANONICAL_DISPATCH_ORDER;
 
-    @Select("<script><bind name='newestFirst' value='false'/>" + CANONICAL_PENDING_SQL + "</script>")
+    @Select("<script><bind name='newestFirst' value='false'/><bind name='laneCount' value='0'/>"
+            + CANONICAL_PENDING_SQL + "</script>")
     List<EventOutboxMessage> listPendingByCanonicalType(@Param("canonicalType") String canonicalType,
                                                         @Param("afterId") long afterId,
                                                         @Param("limit") int limit);
 
-    @Select("<script><bind name='newestFirst' value='true'/><bind name='afterId' value='0L'/>"
+    @Select("<script><bind name='newestFirst' value='true'/><bind name='afterId' value='0L'/><bind name='laneCount' value='0'/>"
             + CANONICAL_PENDING_SQL + "</script>")
     List<EventOutboxMessage> listNewestPendingByCanonicalType(@Param("canonicalType") String canonicalType,
                                                               @Param("limit") int limit);
+
+    @Select("<script><bind name='afterId' value='0L'/>" + CANONICAL_PENDING_SQL + "</script>")
+    List<EventOutboxMessage> listPendingByCanonicalLane(@Param("canonicalType") String canonicalType,
+                                                        @Param("laneCount") int laneCount, @Param("lane") int lane,
+                                                        @Param("newestFirst") boolean newestFirst, @Param("limit") int limit);
 
     @Select("""
             SELECT
