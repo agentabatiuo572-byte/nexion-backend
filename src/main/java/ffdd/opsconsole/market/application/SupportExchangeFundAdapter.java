@@ -49,11 +49,18 @@ public class SupportExchangeFundAdapter {
         var source=originals.get(0);var order=source.order();
         if(number(order,"customerId")!=token.customer() || !exchangeNo.equals(order.get("exchangeNo")))throw new IllegalStateException("Exchange customer identity mismatch");
         String status=String.valueOf(order.get("status"));
-        if(!Set.of("IMMEDIATE","HOLD","COMPLETE","CANCEL").contains(phase) || !("HOLD".equals(phase)?"QUEUED":"CANCEL".equals(phase)?"CANCELLED":"COMPLETED").equals(status))throw new IllegalStateException("Exchange phase mismatch");
         BigDecimal gross=decimal(order.get("fromAmount")),target=decimal(order.get("toAmount")),fee=money(actualFeeUsdt);
         String from=String.valueOf(order.get("fromAsset")),to=String.valueOf(order.get("toAsset"));
         if(!Set.of("USDT","UVT").contains(from)||from.equals(to)||!Set.of("USDT","UVT").contains(to)||gross.signum()<=0||target.signum()<0||!(order.get("updatedAt") instanceof LocalDateTime))throw new IllegalStateException("Exchange original invalid");
         boolean reserved=source.ledgers().stream().anyMatch(l->(exchangeNo+"-HOLD").equals(l.get("bizNo"))&&"EXCHANGE_SWAP".equals(l.get("bizType"))&&"OUT".equals(l.get("direction"))&&"SUCCESS".equals(l.get("status"))&&flag(l.get("deleted"))==0);
+        // CANCEL is the funds release phase. The original order keeps its own terminal status.
+        boolean phaseMatches = switch (phase) {
+            case "HOLD" -> "QUEUED".equals(status);
+            case "CANCEL" -> "CANCELLED".equals(status) || (reserved && "FAILED".equals(status));
+            case "IMMEDIATE", "COMPLETE" -> "COMPLETED".equals(status);
+            default -> false;
+        };
+        if (!phaseMatches) throw new IllegalStateException("Exchange phase mismatch");
         if(Set.of("IMMEDIATE","COMPLETE").contains(phase))verifyAmounts(source,gross,target,fee,from);
         var after=wallet(token.customer());
         boolean cash="HOLD".equals(phase)||!"CANCEL".equals(phase)||reserved;

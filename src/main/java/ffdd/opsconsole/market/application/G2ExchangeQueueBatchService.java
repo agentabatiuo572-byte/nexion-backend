@@ -71,7 +71,7 @@ public class G2ExchangeQueueBatchService {
             if (mapper.geoBlocked(wallet.countryCode()) > 0) {
                 var fundBefore=exchangeFunds.begin(row.userId(),row.exchangeNo());
                 if (mapper.cancelQueuedBySystem(row.exchangeNo()) != 1) throw new BizException(409,"EXCHANGE_QUEUE_STATE_CONFLICT");
-                refundReservation(row, wallet);
+                if (mapper.sourceReservationExists(row.exchangeNo()) > 0) refundReservation(row, wallet);
                 outbox.publish("EXCHANGE_ORDER",row.exchangeNo(),"exchange.queue_cancelled",
                         linked("exchangeNo",row.exchangeNo(),"status","CANCELLED","cancelledBy","SYSTEM_G2_BATCH","reasonCode","GEO_BLOCKED"));
                 exchangeFunds.recorded(fundBefore,row.exchangeNo(),"CANCEL",BigDecimal.ZERO);
@@ -94,6 +94,10 @@ public class G2ExchangeQueueBatchService {
             var fundBefore=exchangeFunds.begin(row.userId(),row.exchangeNo());
             if (mapper.applyWalletDelta(row.userId(),usdtDelta,nexDelta) != 1) {
                 if (mapper.failQueuedInsufficient(row.exchangeNo()) != 1) throw new BizException(409,"EXCHANGE_QUEUE_STATE_CONFLICT");
+                if (sourceReserved) {
+                    refundReservation(row, wallet);
+                    exchangeFunds.recorded(fundBefore,row.exchangeNo(),"CANCEL",BigDecimal.ZERO);
+                }
                 failed.add(item(row.exchangeNo(),"FAILED","FAILED","WALLET_BALANCE_CONFLICT","钱包余额不足或状态已变化，本单已终止")); continue;
             }
             if (mapper.completeQueued(row.exchangeNo(),toAmount,price) != 1) throw new BizException(409,"EXCHANGE_QUEUE_STATE_CONFLICT");
@@ -136,7 +140,6 @@ public class G2ExchangeQueueBatchService {
     }
 
     private void refundReservation(AppExchangeMapper.QueuedRow row, AppExchangeMapper.WalletGateRow wallet) {
-        if (mapper.sourceReservationExists(row.exchangeNo()) <= 0) return;
         BigDecimal usdtRefund = "USDT".equals(row.fromAsset()) ? row.fromAmount() : BigDecimal.ZERO;
         BigDecimal nexRefund = "UVT".equals(row.fromAsset()) ? row.fromAmount() : BigDecimal.ZERO;
         if (mapper.applyWalletDelta(row.userId(), usdtRefund, nexRefund) != 1) {
