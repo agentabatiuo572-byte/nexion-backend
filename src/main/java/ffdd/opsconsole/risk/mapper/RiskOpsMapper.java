@@ -1074,44 +1074,54 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
 
     // A plain MVCC read avoids INSERT...SELECT's source next-key locks under RR.
     @Select("""
+            WITH tradein_candidates AS (
+                SELECT user_id, COUNT(*) AS tradein_count
+                  FROM nx_tradein_application
+                 WHERE is_deleted = 0
+                   AND UPPER(status) = 'COMPLETED'
+                   AND completed_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+                 GROUP BY user_id
+                HAVING COUNT(*) >= 3
+            ), commissions AS (
+                SELECT c.user_id, COUNT(*) AS commission_count
+                  FROM tradein_candidates a
+                  JOIN nx_commission_event c ON c.user_id = a.user_id
+                 WHERE c.is_deleted = 0
+                   AND c.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+                   AND UPPER(c.status) NOT IN ('FAILED','REJECTED','CANCELLED')
+                   AND c.amount_usdt > 0
+                 GROUP BY c.user_id
+            ), gifts AS (
+                SELECT l.user_id, COUNT(*) AS gift_count
+                  FROM tradein_candidates a
+                  JOIN nx_wallet_ledger l ON l.user_id = a.user_id
+                 WHERE l.is_deleted = 0
+                   AND l.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+                   AND UPPER(l.biz_type) LIKE '%GIFT%'
+                   AND UPPER(l.status) IN ('POSTED','SUCCESS','COMPLETED')
+                   AND UPPER(l.direction) = 'IN'
+                   AND l.amount > 0
+                 GROUP BY l.user_id
+            )
             SELECT CONCAT('K2-E3-U', a.user_id) AS rowId,
                    'tradein' AS viewKey,
                    NULL AS clusterId,
                    CONCAT('U', LPAD(a.user_id,
                        GREATEST(8, CHAR_LENGTH(CAST(a.user_id AS CHAR))), '0')) AS cell1,
-                   CONCAT(COUNT(DISTINCT a.id), ' 次置换') AS cell2,
+                   CONCAT(a.tradein_count, ' 次置换') AS cell2,
                    '近 30 天' AS cell3,
-                   CONCAT(COUNT(DISTINCT a.id), ' 次高频下架置换') AS cell4,
+                   CONCAT(a.tradein_count, ' 次高频下架置换') AS cell4,
                    CONCAT_WS(' / ',
-                       CASE WHEN COUNT(DISTINCT c.id) > 0
-                            THEN CONCAT(COUNT(DISTINCT c.id), ' 笔返佣') END,
-                       CASE WHEN COUNT(DISTINCT l.id) > 0
-                            THEN CONCAT(COUNT(DISTINCT l.id), ' 笔礼金') END) AS cell5,
+                       CASE WHEN c.commission_count > 0 THEN CONCAT(c.commission_count, ' 笔返佣') END,
+                       CASE WHEN l.gift_count > 0 THEN CONCAT(l.gift_count, ' 笔礼金') END) AS cell5,
                    NULL AS cell6,
                    3 AS level,
                    'flag' AS actionsCsv,
                    NULL AS disposition,NULL AS version,NULL AS clusterStatus,NULL AS clusterVersion
-              FROM nx_tradein_application a
-              LEFT JOIN nx_commission_event c
-                ON c.user_id = a.user_id
-               AND c.is_deleted = 0
-               AND c.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-               AND UPPER(c.status) NOT IN ('FAILED','REJECTED','CANCELLED')
-               AND c.amount_usdt > 0
-              LEFT JOIN nx_wallet_ledger l
-                ON l.user_id = a.user_id
-               AND l.is_deleted = 0
-               AND l.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-               AND UPPER(l.biz_type) LIKE '%GIFT%'
-               AND UPPER(l.status) IN ('POSTED','SUCCESS','COMPLETED')
-               AND UPPER(l.direction) = 'IN'
-               AND l.amount > 0
-             WHERE a.is_deleted = 0
-               AND UPPER(a.status) = 'COMPLETED'
-               AND a.completed_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-             GROUP BY a.user_id
-            HAVING COUNT(DISTINCT a.id) >= 3
-               AND (COUNT(DISTINCT c.id) > 0 OR COUNT(DISTINCT l.id) > 0)
+              FROM tradein_candidates a
+              LEFT JOIN commissions c ON c.user_id = a.user_id
+              LEFT JOIN gifts l ON l.user_id = a.user_id
+             WHERE c.user_id IS NOT NULL OR l.user_id IS NOT NULL
             """)
     List<RiskArbitrageRowRecord> e3TradeinArbitrageProjection();
 
