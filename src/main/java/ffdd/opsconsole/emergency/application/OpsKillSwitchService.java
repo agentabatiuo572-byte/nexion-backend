@@ -129,11 +129,15 @@ public class OpsKillSwitchService {
         response.put("activeGateCount", gates.size());
         response.put("activeGates", gates);
         response.put("retiredGates", retiredGates());
-        response.put("coverage", Map.of(
-                "coverageRatio", coverage.coverageRatio(),
-                "redlinePct", coverage.redlinePct(),
-                "yellowLinePct", coverage.redlinePct().add(BigDecimal.valueOf(25)),
-                "recoveryAllowed", coverage.coverageRatio().compareTo(coverage.redlinePct()) >= 0));
+        Map<String, Object> coverageView = new LinkedHashMap<>();
+        coverageView.put("coverageRatio", coverage.coverageRatio());
+        coverageView.put("redlinePct", coverage.redlinePct());
+        coverageView.put("yellowLinePct", coverage.healthyPct());
+        coverageView.put("valuationReliable", coverage.reliable());
+        // The existing PC parser requires the display comparison to match this legacy field.
+        coverageView.put("recoveryAllowed", coverage.coverageRatio().compareTo(coverage.redlinePct()) >= 0);
+        coverageView.put("recoveryAllowedByServer", coverageAllowsRecovery(coverage));
+        response.put("coverage", coverageView);
         response.put("stats", Map.of(
                 "liveGateCount", live,
                 "killedGateCount", gates.size() - live,
@@ -206,7 +210,7 @@ public class OpsKillSwitchService {
         TreasuryCoverageSnapshot restoreCoverage = null;
         if (enable && !before && seed.coveragePrecheckRequired()) {
             restoreCoverage = coverageFacade.snapshot();
-            if (restoreCoverage.coverageRatio().compareTo(restoreCoverage.redlinePct()) < 0) {
+            if (!coverageAllowsRecovery(restoreCoverage)) {
                 auditCoverageBlocked(normalizedKey, request, operator, idempotencyKey, restoreCoverage);
                 return coverageRedline();
             }
@@ -376,12 +380,13 @@ public class OpsKillSwitchService {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "KILL_SWITCH_STATE_UNCHANGED");
         }
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        if (seed.coveragePrecheckRequired()
-                && coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
+        if (seed.coveragePrecheckRequired() && !coverageAllowsRecovery(coverage)) {
             auditRejected("J1_COVERAGE_RESTORE_BLOCKED", normalizedKey, authenticatedOperator(operator), Map.of(
                     "switchKey", normalizedKey,
                     "coverageRatio", coverage.coverageRatio(),
                     "redlinePct", coverage.redlinePct(),
+                    "valuationReliable", coverage.reliable(),
+                    "redlineBreached", coverage.redlineBreached(),
                     "reason", reason == null ? "" : reason.trim(),
                     "sourceDomain", sourceDomain == null ? "" : sourceDomain,
                     "trigger", "linked-domain"));
@@ -893,6 +898,10 @@ public class OpsKillSwitchService {
 
     private ApiResult<Map<String, Object>> coverageRedline() {
         return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+    }
+
+    private static boolean coverageAllowsRecovery(TreasuryCoverageSnapshot coverage) {
+        return coverage.reliable() && !coverage.redlineBreached();
     }
 
     private boolean parseEnabled(String enabled) {
@@ -1492,6 +1501,8 @@ public class OpsKillSwitchService {
                         "switchKey", switchKey,
                         "coverageRatio", coverage.coverageRatio(),
                         "redlinePct", coverage.redlinePct(),
+                        "valuationReliable", coverage.reliable(),
+                        "redlineBreached", coverage.redlineBreached(),
                         "reason", request.reason().trim(),
                         "trigger", "manual",
                         "idempotencyKey", idempotencyKey.trim()))
