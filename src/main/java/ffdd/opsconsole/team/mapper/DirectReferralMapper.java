@@ -31,6 +31,10 @@ public interface DirectReferralMapper extends BaseMapper<Object> {
     @Select("SELECT COALESCE(MAX(policy_version),0) FROM nx_direct_referral_policy FOR UPDATE") long latestVersionForUpdate();
     @Select("SELECT usdt_rate*100 usdtPct,nex_per_usd nexReward FROM nx_commission_rule WHERE commission_type='UNILEVEL' AND layer_no=1 AND status=1 AND is_deleted=0 ORDER BY id LIMIT 1 FOR UPDATE")
     List<Map<String,Object>> sevenLayerReferenceForUpdate();
+    @Select(TeamCommissionMapper.UNILEVEL_RATES_SQL)
+    List<Map<String,Object>> sevenLayerRates();
+    @Select(TeamCommissionMapper.UNILEVEL_RATES_SQL + " FOR UPDATE")
+    List<Map<String,Object>> sevenLayerRatesForUpdate();
     @Insert("INSERT INTO nx_direct_referral_policy(policy_version,effective_at,purchase_json,device_earning_json,operation_id,reason) VALUES(#{policyVersion},#{effectiveAt},#{purchaseJson},#{deviceEarningJson},#{operationId},#{reason})")
     int insertPolicy(@Param("policyVersion") long version,@Param("effectiveAt") LocalDateTime at,@Param("purchaseJson") String purchase,
                      @Param("deviceEarningJson") String earning,@Param("operationId") String operationId,@Param("reason") String reason);
