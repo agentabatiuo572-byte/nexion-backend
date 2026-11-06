@@ -85,6 +85,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import org.springframework.util.StringUtils;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.PessimisticLockingFailureException;
@@ -928,7 +929,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         return actual.compareTo(threshold) >= 0;
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<Map<String, Object>> arbitrageOverview() {
         List<RiskArbitrageParamView> currentParams = riskRepository.arbitrageParams();
         int[] trialBoundary = trialCycleBoundary(currentParams);
@@ -1005,7 +1006,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                         String.valueOf(boardSignals), "当前榜单异常投影 · 到「奖励池、名额与排行榜」处置", "danger"));
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public void refreshK2AuthoritativeProjection() {
         List<RiskArbitrageParamView> params = riskRepository.arbitrageParams();
         refreshK2AuthoritativeProjection(params, trialCycleBoundary(params));
