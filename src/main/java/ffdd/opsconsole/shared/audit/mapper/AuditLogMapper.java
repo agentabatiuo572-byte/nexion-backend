@@ -46,6 +46,37 @@ public interface AuditLogMapper extends BaseMapper<AuditLogEntity> {
 
     record A2CommandAudit(String operationId, String actorUsername) {}
 
+    @Select("""
+            <script>
+            SELECT reportId, IF(MIN(actorId)=MAX(actorId),MIN(actorId),-1) AS makerId
+              FROM (
+                SELECT resource_id AS reportId, actor_id AS actorId
+                  FROM nx_audit_log
+                 WHERE is_deleted=0 AND resource_type='BI_REPORT'
+                   AND action='L_BI_REPORT_CREATE' AND result='SUCCESS' AND actor_type='ADMIN' AND actor_id &gt; 0
+                   AND resource_id IN
+                   <foreach collection="reportIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+                UNION ALL
+                SELECT JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) AS reportId,
+                       CAST(JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorId')) AS SIGNED) AS actorId
+                  FROM nx_audit_log_archive
+                 WHERE content_sha256 IS NOT NULL
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceType'))='BI_REPORT'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))='L_BI_REPORT_CREATE'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.result'))='SUCCESS'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorType'))='ADMIN'
+                   AND JSON_TYPE(JSON_EXTRACT(cold_payload,'$.actorId')) IN ('INTEGER','UNSIGNED INTEGER')
+                   AND CAST(JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorId')) AS SIGNED) &gt; 0
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) IN
+                   <foreach collection="reportIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+              ) origins
+             GROUP BY reportId
+            </script>
+            """)
+    List<BiReportMaker> findBiReportMakers(@Param("reportIds") Collection<String> reportIds);
+
+    record BiReportMaker(String reportId, Long makerId) {}
+
     @Select("SELECT GET_LOCK('nexion:a2:audit-retention',0)")
     Integer tryAcquireRetentionLock();
 

@@ -8,8 +8,10 @@ import ffdd.opsconsole.shared.security.AdminActorResolver;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.LocalDateTime;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.core.Authentication;
@@ -115,6 +117,14 @@ public class AuditLogService {
 
     public List<AuditLogRecord> listForExport(AuditLogQueryRequest request, int maxRows) {
         return list(request, Math.max(1, Math.min(maxRows, 5000)));
+    }
+
+    public Map<String, Long> findBiReportMakers(Collection<String> reportIds) {
+        Map<String, Long> makers = new LinkedHashMap<>();
+        if (!reportIds.isEmpty()) {
+            auditLogMapper.findBiReportMakers(reportIds).forEach(row -> makers.put(row.reportId(), row.makerId()));
+        }
+        return makers;
     }
 
     /**
