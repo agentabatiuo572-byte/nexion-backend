@@ -304,12 +304,16 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
             @Param("ownerUserId") Long ownerUserId,
             @Param("windowEnd") LocalDateTime windowEnd);
 
-    @Select("""
+    String CONSUMED_MATCHED = """
             SELECT COALESCE(SUM(matched_volume),0)
               FROM nx_binary_commission_settlement
-             WHERE user_id=#{ownerUserId} AND settlement_date<#{windowEnd}
-               AND is_deleted=0 AND status<>'BLOCKED'
-            """)
+             WHERE user_id=#{ownerUserId} AND is_deleted=0 AND status<>'BLOCKED'
+            """;
+
+    @Select(CONSUMED_MATCHED)
+    BigDecimal totalConsumedMatched(@Param("ownerUserId") Long ownerUserId);
+
+    @Select(CONSUMED_MATCHED + " AND settlement_date<#{windowEnd}")
     BigDecimal consumedMatchedBefore(
             @Param("ownerUserId") Long ownerUserId,
             @Param("windowEnd") LocalDate windowEnd);

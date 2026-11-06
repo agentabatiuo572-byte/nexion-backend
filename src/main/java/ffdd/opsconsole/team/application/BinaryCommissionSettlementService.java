@@ -376,7 +376,8 @@ public class BinaryCommissionSettlementService {
                     ZERO, true, fromVolumeId, throughVolumeId);
         }
         if ("转结".equals(residualPolicy)) {
-            BigDecimal consumed = money(mapper.consumedMatchedBefore(ownerUserId, settlementDate.plusDays(1)));
+            // The owner lock serializes dates. A later settlement may already have used these orders.
+            BigDecimal consumed = money(mapper.totalConsumedMatched(ownerUserId));
             LegVolumeSnapshot snapshot = mapper.carriedLegVolumes(ownerUserId, settlementWindowEnd);
             BigDecimal left = money(snapshot == null ? null : snapshot.leftVolume())
                     .subtract(consumed).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
