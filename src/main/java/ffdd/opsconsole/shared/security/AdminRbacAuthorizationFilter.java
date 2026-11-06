@@ -280,6 +280,9 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
     // POST exact so the conversations/** write gate cannot turn an M3 observer into a writer.
     private RequiredAuthority requiredAuthority(String path, String method) {
         boolean read = HttpMethod.GET.matches(method) || HttpMethod.HEAD.matches(method);
+        if (HttpMethod.POST.matches(method) && path.equals("/api/admin/commissions/export")) {
+            return RequiredAuthority.exact("network_f5_export");
+        }
         if (HttpMethod.POST.matches(method) && path.equals("/api/admin/ops-dashboard/exports")) {
             return RequiredAuthority.exact("overview_b0_export");
         }
@@ -453,7 +456,8 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
                 return true;
             }
             return actualAuthorities.stream().anyMatch(authority -> authority.startsWith(domainPrefix)
-                    && (read ? authority.endsWith("_read") : !authority.endsWith("_read")));
+                    && (read ? authority.endsWith("_read")
+                            : !authority.endsWith("_read") && !"network_f5_export".equals(authority)));
         }
     }
 }
