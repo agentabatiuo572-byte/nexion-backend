@@ -13,6 +13,8 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.SuperAdminAuthorization;
 import java.io.IOException;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Predicate;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -52,17 +54,24 @@ public class WithdrawalConfigApproval {
 
     public ApiResult<Void> validateMaker(AuditReplayCommand command) {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        boolean permitted;
+        return canMakeProposal(command, authority -> hasAuthority(authentication, authority))
+                ? ApiResult.ok() : ApiResult.fail(403, "D_WITHDRAWAL_CONFIG_MAKER_FORBIDDEN");
+    }
+
+    public boolean canReadOwnProposal(AuditReplayCommand command, long adminId, Set<String> grants) {
+        Object maker = command.params() == null ? null : command.params().get(MAKER);
+        return maker instanceof Number && Long.toString(adminId).equals(maker.toString())
+                && canMakeProposal(command, grants::contains);
+    }
+
+    private boolean canMakeProposal(AuditReplayCommand command, Predicate<String> authorized) {
         if (D5.equals(command.op())) {
             var request = request(command, null, WithdrawalLimitsUpdateRequest.class);
-            permitted = !request.hasPhaseFields() && d5Authorization.canUpdateLimits(authentication, request);
-        } else {
-            var request = request(command, null, PayoutVndConfigUpdateRequest.class);
-            permitted = hasAuthority(authentication, "finance_d7_manage")
-                    && (!Boolean.TRUE.equals(request.forceInverted())
-                        || hasAuthority(authentication, "finance_d7_force_inverted"));
+            return !request.hasPhaseFields() && d5Authorization.canUpdateLimits(request, authorized);
         }
-        return permitted ? ApiResult.ok() : ApiResult.fail(403, "D_WITHDRAWAL_CONFIG_MAKER_FORBIDDEN");
+        var request = request(command, null, PayoutVndConfigUpdateRequest.class);
+        return authorized.test("finance_d7_manage")
+                && (!Boolean.TRUE.equals(request.forceInverted()) || authorized.test("finance_d7_force_inverted"));
     }
 
     public ApiResult<Void> validateChecker(AuditReplayCommand command, Long adminId, boolean executeChange) {

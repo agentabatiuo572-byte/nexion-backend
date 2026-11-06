@@ -2,6 +2,7 @@ package ffdd.opsconsole.finance.application;
 
 import ffdd.opsconsole.finance.dto.WithdrawalParamUpdateRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalLimitsUpdateRequest;
+import java.util.function.Predicate;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Component;
 
@@ -13,15 +14,19 @@ public class D5WithdrawalAuthorization {
     }
 
     public boolean canUpdateLimits(Authentication authentication, WithdrawalLimitsUpdateRequest request) {
+        return canUpdateLimits(request, authority -> has(authentication, authority));
+    }
+
+    boolean canUpdateLimits(WithdrawalLimitsUpdateRequest request, Predicate<String> authorized) {
         if (request == null) {
             return false;
         }
         // A caller who can read D5 must reach the service-level 422 read-only error for Phase fields.
         if (request.hasPhaseFields()) {
-            return has(authentication, "finance_d5_read");
+            return authorized.test("finance_d5_read");
         }
         var fields = request.changedD5Fields();
-        return !fields.isEmpty() && fields.stream().allMatch(field -> has(authentication, permission(field)));
+        return !fields.isEmpty() && fields.stream().allMatch(field -> authorized.test(permission(field)));
     }
 
     private String permission(String key) {
