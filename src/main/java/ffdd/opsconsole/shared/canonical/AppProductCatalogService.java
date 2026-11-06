@@ -66,10 +66,15 @@ public class AppProductCatalogService {
             List<AppTradeinMapper.CatalogTargetProduct> targets = tradeinMapper.listPurchasableCatalogTargets();
             if (targets == null) return ApiResult.fail(500, "PRODUCT_CATALOG_INVALID");
             reportPublishBlockedProducts();
+            Map<String, String> releaseCandidates = new LinkedHashMap<>();
+            for (AppTradeinMapper.CatalogTargetProduct target : targets) {
+                releaseCandidates.put(target.productNo(), target.unlockPhase());
+            }
+            Map<String, StorefrontProductReleasePolicy.Decision> releases = productReleasePolicy.evaluateBatch(releaseCandidates);
             List<Map<String, Object>> products = new ArrayList<>();
             LocalDateTime revision = null;
             for (AppTradeinMapper.CatalogTargetProduct target : targets) {
-                products.add(product(target, productReleasePolicy.evaluate(target.productNo(), target.unlockPhase())));
+                products.add(product(target, releases.get(target.productNo())));
                 if (target.updatedAt() != null && (revision == null || target.updatedAt().isAfter(revision))) {
                     revision = target.updatedAt();
                 }
