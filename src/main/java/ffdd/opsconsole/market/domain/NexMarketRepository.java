@@ -38,6 +38,10 @@ public interface NexMarketRepository {
 
     BigDecimal genesisAccrualUsd();
 
+    default BigDecimal genesisDailyPayableUsd() {
+        return BigDecimal.ZERO;
+    }
+
     default GenesisPaidEmission genesisPaidEmission(String batchNo) {
         return new GenesisPaidEmission(0L, BigDecimal.ZERO);
     }

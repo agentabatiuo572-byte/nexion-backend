@@ -582,7 +582,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             """)
     BigDecimal injectedCumulativeUsd();
 
-    @Select("SELECT COALESCE(SUM(" + GenesisEmissionSql.CURRENT_AMOUNT + "),0)" + GenesisEmissionSql.ELIGIBLE_HOLDINGS)
+    @Select(GenesisEmissionSql.CURRENT_TOTAL)
     BigDecimal genesisDailyLiabilityUsd();
 
     @Select("""

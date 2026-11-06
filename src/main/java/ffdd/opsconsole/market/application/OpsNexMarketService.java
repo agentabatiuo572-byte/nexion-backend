@@ -835,9 +835,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 .multiply(dividendPct)
                 .divide(BigDecimal.valueOf(100), 8, RoundingMode.HALF_UP);
         BigDecimal dailyVolumeBase = unitPrice.multiply(BigDecimal.valueOf(sold));
-        BigDecimal poolToday = perSlotPerDay.multiply(BigDecimal.valueOf(sold));
         BigDecimal floorPerNodePerDay = perSlotPerDay;
-        BigDecimal payoutToday = poolToday.setScale(2, RoundingMode.HALF_UP);
+        BigDecimal estimatedPayout = (emissionGateOpen ? safeBig(marketRepository.genesisDailyPayableUsd()) : BigDecimal.ZERO)
+                .setScale(2, RoundingMode.HALF_UP);
         BigDecimal genesisAccrual = emissionGateOpen
                 ? safeBig(marketRepository.genesisAccrualUsd()).setScale(2, RoundingMode.HALF_UP)
                 : BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
@@ -871,10 +871,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         response.put("dividend", map(
                 "dailyVolumeBase", dailyVolumeBase,
                 "dividendPct", dividendPct,
-                "poolToday", poolToday.setScale(2, RoundingMode.HALF_UP),
+                "poolToday", estimatedPayout,
                 "perSlotPerDay", perSlotPerDay.setScale(2, RoundingMode.HALF_UP),
                 "floorPerNodePerDay", floorPerNodePerDay.setScale(2, RoundingMode.HALF_UP),
-                "payoutToday", payoutToday,
+                "payoutToday", estimatedPayout,
                 "paidCount", paid.count(),
                 "paidAmountUsdt", paid.amountUsdt(),
                 "batchNo", todayBatch,

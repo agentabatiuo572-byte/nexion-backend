@@ -6,6 +6,7 @@ import ffdd.opsconsole.market.domain.GenesisPolicyView;
 import ffdd.opsconsole.market.domain.GenesisSecondaryStatsView;
 import ffdd.opsconsole.market.domain.GenesisSeriesView;
 import ffdd.opsconsole.market.infrastructure.GenesisSeriesEntity;
+import ffdd.opsconsole.shared.canonical.mapper.GenesisEmissionSql;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -158,6 +159,9 @@ public interface GenesisMapper extends BaseMapper<GenesisSeriesEntity> {
                AND ledger.biz_type IN ('GENESIS_DIVIDEND','GENESIS_EMISSION')
             """)
     BigDecimal genesisAccrualUsd();
+
+    @Select(GenesisEmissionSql.CURRENT_TOTAL)
+    BigDecimal genesisDailyPayableUsd();
 
     @Select("""
             SELECT COUNT(*) AS count, COALESCE(SUM(i.amount_usdt), 0) AS amountUsdt
