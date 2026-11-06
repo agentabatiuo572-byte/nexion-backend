@@ -3,6 +3,7 @@ package ffdd.opsconsole.market.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.market.domain.ExchangeOrderView;
 import ffdd.opsconsole.market.infrastructure.ExchangeOrderEntity;
+import ffdd.opsconsole.shared.config.BusinessPeriodSql;
 import java.math.BigDecimal;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
@@ -11,6 +12,9 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
+    String GATE_BUSINESS_DAY = "eo.created_at >= " + BusinessPeriodSql.Legacy.DAY_START
+            + " AND eo.created_at &lt; " + BusinessPeriodSql.Legacy.DAY_END;
+
     @Select("""
             SELECT COALESCE(SUM(CASE
                      WHEN UPPER(to_asset) = 'USDT' THEN to_amount
@@ -40,11 +44,15 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
     long countOrders();
 
     @Select("""
+            <script>
             SELECT COUNT(1)
-              FROM nx_exchange_order
-             WHERE is_deleted = 0
-               AND created_at >= """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
-               AND UPPER(status) = UPPER(#{status})
+              FROM nx_exchange_order eo
+             WHERE eo.is_deleted = 0
+               AND UPPER(eo.status) = UPPER(#{status})
+               AND (
+            """ + GATE_BUSINESS_DAY + """
+               )
+            </script>
             """)
     long countTodayByStatus(@Param("status") String status);
 
@@ -114,11 +122,14 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
                AND UPPER(eo.status) IN
                <foreach collection='statuses' item='status' open='(' separator=',' close=')'>UPPER(#{status})</foreach>
              </if>
+               AND (UPPER(eo.status) NOT IN ('USER_CAP', 'PLATFORM_CAP', 'GEO_BLOCKED')
+                 OR (""" + GATE_BUSINESS_DAY + """
+               ))
              ORDER BY eo.created_at DESC, eo.id DESC
              LIMIT #{limit}
             </script>
             """)
-    List<ExchangeOrderView> listByStatuses(@Param("statuses") List<String> statuses, @Param("limit") int limit);
+    List<ExchangeOrderView> listOverviewOrdersByStatuses(@Param("statuses") List<String> statuses, @Param("limit") int limit);
 
     @Select("""
             SELECT eo.id,

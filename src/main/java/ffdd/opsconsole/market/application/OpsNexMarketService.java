@@ -205,9 +205,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         response.put("caps", exchangeCaps(todayUsd, platformCap));
         response.put("queue", marketRepository.exchangeOrdersByStatuses(EXCHANGE_QUEUE_STATUSES, 50));
         response.put("gateDetails", map(
-                "user", gate("user", "单用户日额度拦截", "超过单用户日额度的拦截。进次日队列或拒绝。", List.of("USER_CAP")),
-                "platform", gate("platform", "平台日额度拦截", "全平台日总池见底的拦截。全部转次日队列。", List.of("PLATFORM_CAP")),
-                "geo", gate("geo", "地域封锁拦截", "命中 J2 地域封锁的兑换单会取消或拒绝。", List.of("GEO_BLOCKED"))));
+                "user", gate("user", "单用户日额度拦截", "超过单用户日额度的拦截。进次日队列或拒绝。", "USER_CAP", gateUser),
+                "platform", gate("platform", "平台日额度拦截", "全平台日总池见底的拦截。全部转次日队列。", "PLATFORM_CAP", gatePlatform),
+                "geo", gate("geo", "地域封锁拦截", "命中 J2 地域封锁的兑换单会取消或拒绝。", "GEO_BLOCKED", gateGeo)));
         response.put("swap", map(
                 "enabled", swapEnabled,
                 "status", swapEnabled ? "enabled" : "disabled",
@@ -416,7 +416,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         long claimedCount = marketRepository.stakingPositionCountByStatus("CLAIMED");
         long slashedCount = marketRepository.stakingPositionCountByStatus("SLASHED");
         long refundedCount = marketRepository.stakingPositionCountByStatus("REFUNDED");
-        long earlyWithdrawnMonth = marketRepository.stakingEarlyWithdrawnCountSince(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().today(clock).withDayOfMonth(1)));
+        long earlyWithdrawnMonth = marketRepository.stakingPositionCountByStatus("EARLY_WITHDRAWN");
         long killedCount = pools.stream()
                 .filter(pool -> Boolean.TRUE.equals(pool.get("killed")))
                 .count();
@@ -443,7 +443,14 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         response.put("appVisible", stakingAppVisible());
         response.put("disclosureGate", map("staking", disclosureGateActive("staking")));
         response.put("pools", pools);
-        response.put("positions", stakingPositionGroups());
+        response.put("positions", List.of(
+                stakingPositionGroup("pending_lock", "pending_lock 待确认", "支付或链上确认中,服务器确认后进入 active。", pendingCount),
+                stakingPositionGroup("active", "active 计息中", "按开仓时锁定 APY 线性计息,参数更新不追溯。", activeCount),
+                stakingPositionGroup("mature_unclaimed", "mature_unclaimed 到期未领", "到期后生成待领取的锁定金额及奖励,claim 写 D4 账单。", matureCount),
+                stakingPositionGroup("claimed", "claimed 已领取", "锁定金额及奖励已原子入账并写 D4。", claimedCount),
+                stakingPositionGroup("early_withdrawn", "本月 early_withdrawn 提前解锁", "提前解锁按锁定金额扣款并放弃未领取的质押奖励。", earlyWithdrawnMonth),
+                stakingPositionGroup("slashed", "slashed 熔断处置", "G1 熔断按结构化处置方案终结持仓;恢复只能走 J1。", slashedCount),
+                stakingPositionGroup("refunded", "refunded 锁定失败退款", "开仓失败后锁定金额已退回钱包。", refundedCount)));
         response.put("stateMachine", List.of(
                 "pending_lock",
                 "active",
@@ -2429,28 +2436,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "precheck", "raising APY, lowering early withdrawal penalty, restoring sale, or clearing a kill switch requires B1 coverage redline check");
     }
 
-    private List<Map<String, Object>> stakingPositionGroups() {
-        return List.of(
-                stakingPositionGroup("pending_lock", "pending_lock 待确认", "支付或链上确认中,服务器确认后进入 active。", "PENDING_LOCK"),
-                stakingPositionGroup("active", "active 计息中", "按开仓时锁定 APY 线性计息,参数更新不追溯。", "ACTIVE"),
-                stakingPositionGroup("mature_unclaimed", "mature_unclaimed 到期未领", "到期后生成待领取的锁定金额及奖励,claim 写 D4 账单。", "MATURE_UNCLAIMED"),
-                stakingPositionGroup("claimed", "claimed 已领取", "锁定金额及奖励已原子入账并写 D4。", "CLAIMED"),
-                stakingPositionGroup("early_withdrawn", "本月 early_withdrawn 提前解锁", "提前解锁按锁定金额扣款并放弃未领取的质押奖励。", "EARLY_WITHDRAWN"),
-                stakingPositionGroup("slashed", "slashed 熔断处置", "G1 熔断按结构化处置方案终结持仓;恢复只能走 J1。", "SLASHED"),
-                stakingPositionGroup("refunded", "refunded 锁定失败退款", "开仓失败后锁定金额已退回钱包。", "REFUNDED"));
-    }
-
-    private Map<String, Object> stakingPositionGroup(
-            String status,
-            String label,
-            String note,
-            String repositoryStatus) {
-        List<Map<String, Object>> rows = marketRepository.stakingPositionsByStatus(repositoryStatus, 50).stream()
+    private Map<String, Object> stakingPositionGroup(String status, String label, String note, long count) {
+        List<Map<String, Object>> rows = marketRepository.stakingPositionsByStatus(status.toUpperCase(Locale.ROOT), 50).stream()
                 .map(this::stakingPosition)
                 .toList();
-        long count = "EARLY_WITHDRAWN".equals(repositoryStatus)
-                ? marketRepository.stakingEarlyWithdrawnCountSince(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().today(clock).withDayOfMonth(1)))
-                : marketRepository.stakingPositionCountByStatus(repositoryStatus);
         return map("status", status, "label", label, "note", note, "count", count, "rows", rows);
     }
 
@@ -3177,13 +3166,13 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return row;
     }
 
-    private Map<String, Object> gate(String key, String title, String note, List<String> statuses) {
-        List<ExchangeOrderView> rows = marketRepository.exchangeOrdersByStatuses(statuses, 50);
+    private Map<String, Object> gate(String key, String title, String note, String status, long count) {
+        List<ExchangeOrderView> rows = marketRepository.exchangeOrdersByStatuses(List.of(status), 50);
         return map(
                 "key", key,
                 "title", title,
                 "note", note,
-                "count", rows.size(),
+                "count", count,
                 "rows", rows);
     }
 

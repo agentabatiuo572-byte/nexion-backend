@@ -7,6 +7,7 @@ import ffdd.opsconsole.market.domain.RepurchaseAmountBucketView;
 import ffdd.opsconsole.market.domain.RepurchaseStatsView;
 import ffdd.opsconsole.market.domain.RepurchaseStatusView;
 import ffdd.opsconsole.market.infrastructure.StakingProductEntity;
+import ffdd.opsconsole.shared.config.BusinessPeriodSql;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -15,6 +16,17 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface StakingMapper extends BaseMapper<StakingProductEntity> {
+    String G1_POSITION_SCOPE = """
+             WHERE sp.is_deleted = 0
+               AND UPPER(sp.status) = UPPER(#{status})
+               AND UPPER(sp.product_code) IN
+               <foreach collection='productCodes' item='productCode' open='(' separator=',' close=')'>#{productCode}</foreach>
+             <if test='status.equalsIgnoreCase("EARLY_WITHDRAWN")'>
+               AND sp.early_withdrawn_at >= """ + BusinessPeriodSql.Legacy.MONTH_START + """
+               AND sp.early_withdrawn_at &lt; """ + BusinessPeriodSql.Legacy.NEXT_MONTH_START + """
+             </if>
+            """;
+
     @Update("""
             UPDATE nx_staking_position
                SET status='SLASHED',updated_at=NOW()
@@ -241,12 +253,14 @@ public interface StakingMapper extends BaseMapper<StakingProductEntity> {
     BigDecimal sumEstimatedInterestUsdt();
 
     @Select("""
+            <script>
             SELECT COUNT(1)
-              FROM nx_staking_position
-             WHERE is_deleted = 0
-               AND UPPER(status) = UPPER(#{status})
+              FROM nx_staking_position sp
+            """ + G1_POSITION_SCOPE + """
+            </script>
             """)
-    long countPositionsByStatus(@Param("status") String status);
+    long countG1PositionsByStatus(@Param("status") String status,
+                                  @Param("productCodes") List<String> productCodes);
 
     @Select("""
             SELECT COUNT(1)
@@ -258,6 +272,7 @@ public interface StakingMapper extends BaseMapper<StakingProductEntity> {
     long countEarlyWithdrawnSince(@Param("since") LocalDateTime since);
 
     @Select("""
+            <script>
             SELECT sp.id,
                    sp.user_id AS userId,
                    CONCAT('U', LPAD(sp.user_id, GREATEST(8, LENGTH(CAST(sp.user_id AS CHAR))), '0')) AS userNo,
@@ -299,12 +314,14 @@ public interface StakingMapper extends BaseMapper<StakingProductEntity> {
               LEFT JOIN nx_user usr
                 ON usr.id = sp.user_id
                AND usr.is_deleted = 0
-             WHERE sp.is_deleted = 0
-               AND UPPER(sp.status) = UPPER(#{status})
+            """ + G1_POSITION_SCOPE + """
              ORDER BY sp.updated_at DESC, sp.id DESC
              LIMIT #{limit}
+            </script>
             """)
-    List<StakingPositionView> listPositionsByStatus(@Param("status") String status, @Param("limit") int limit);
+    List<StakingPositionView> listG1PositionsByStatus(@Param("status") String status,
+                                                    @Param("productCodes") List<String> productCodes,
+                                                    @Param("limit") int limit);
 
     @Select("""
             <script>
