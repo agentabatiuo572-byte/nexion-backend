@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.platform.infrastructure.AuditOperationTicketEntity;
 import java.util.Collection;
 import java.util.List;
+import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
@@ -51,7 +52,8 @@ public interface AuditOperationTicketMapper extends BaseMapper<AuditOperationTic
             """)
     AuditOperationTicketEntity selectActiveByOperationId(@Param("operationId") String operationId);
 
-    /** Serializes terminal decisions so a pending ticket can be replayed at most once. */
+    /** Serializes terminal decisions and clears pre-lock reads before rechecking authorization. */
+    @Options(flushCache = Options.FlushCachePolicy.TRUE, useCache = false)
     @Select("""
             SELECT *
             FROM nx_audit_operation_ticket
