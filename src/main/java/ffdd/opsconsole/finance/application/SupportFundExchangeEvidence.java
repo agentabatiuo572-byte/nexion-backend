@@ -48,10 +48,11 @@ public class SupportFundExchangeEvidence {
         require(number(oneOperation(input,key(no,phase)).get("id"))==id&&equal(codec.readCurrentProof(text(operation.get("sourceSnapshotJson"))),source)&&equal(codec.readCurrentProof(text(operation.get("sourceProofJson"))),proof));
         String status=text(current.get("status"));
         if(phase.equals("HOLD")) {
-            require("QUEUED".equals(text(order.path("status")))&&Set.of("QUEUED","COMPLETED","CANCELLED").contains(status));
+            require("QUEUED".equals(text(order.path("status")))&&Set.of("QUEUED","COMPLETED","CANCELLED","FAILED").contains(status));
             for(String field:IMMUTABLE)require(equal(order.path(field),current.get(field)));
             if(status.equals("QUEUED"))require(equal(order,current));
-        }else require(equal(order,current)&&("CANCEL".equals(phase)?"CANCELLED":"COMPLETED").equals(status));
+        }else require(equal(order,current)&&(phase.equals("CANCEL")
+                ? Set.of("CANCELLED","FAILED").contains(status) : status.equals("COMPLETED")));
         validOrder(map(order));
         boolean reserved=hasHold(actual);require(proof.path("sourceReservationPresent").isBoolean()&&proof.path("sourceReservationPresent").booleanValue()==reserved);
         require(phase.equals(text(proof.path("eventPhase")))&&(!phase.equals("IMMEDIATE")||!reserved));
@@ -85,7 +86,14 @@ public class SupportFundExchangeEvidence {
         for(var source:input.sources())if(component.contains(number(source.order().get("customerId")))) {
             var order=source.order();validOrder(order);String no=text(order.get("exchangeNo"));require(seen.add(no));
             boolean reserved=hasHold(source);String status=text(order.get("status"));validateLedgers(source,reserved);
-            List<String> phases=switch(status){case "QUEUED" -> {require(reserved&&source.feeAllocations().isEmpty());yield List.of("HOLD");}case "COMPLETED" -> reserved?List.of("HOLD","COMPLETE"):List.of("IMMEDIATE");case "CANCELLED" -> {require(reserved&&source.feeAllocations().isEmpty());yield List.of("HOLD","CANCEL");}case "GEO_BLOCKED","USER_CAP","PLATFORM_CAP" -> {require(source.ledgers().isEmpty()&&source.feeAllocations().isEmpty()&&time(order.get("createdAt")).equals(time(order.get("updatedAt"))));yield List.of();}default -> throw failure();};
+            List<String> phases=switch(status){
+                case "QUEUED" -> {require(reserved&&source.feeAllocations().isEmpty());yield List.of("HOLD");}
+                case "COMPLETED" -> reserved?List.of("HOLD","COMPLETE"):List.of("IMMEDIATE");
+                case "CANCELLED" -> {require(reserved&&source.feeAllocations().isEmpty());yield List.of("HOLD","CANCEL");}
+                case "FAILED" -> {require(source.feeAllocations().isEmpty());yield reserved?List.of("HOLD","CANCEL"):List.of();}
+                case "GEO_BLOCKED","USER_CAP","PLATFORM_CAP" -> {require(source.ledgers().isEmpty()&&source.feeAllocations().isEmpty()&&time(order.get("createdAt")).equals(time(order.get("updatedAt"))));yield List.of();}
+                default -> throw failure();
+            };
             for(String phase:phases){String covered=no+":"+phase;require(expected.add(covered)&&coveredPhases.contains(covered));var op=oneOperation(input,key(no,phase));var snapshot=codec.readCurrentProof(text(op.get("sourceSnapshotJson")));verify(op,snapshot,codec.readCurrentProof(text(op.get("sourceProofJson"))),exchange.events(snapshot(snapshot),phase),input);}
             var actualOps=input.operations().stream().filter(o->"SUPPORT_EXCHANGE".equals(o.get("businessType"))&&no.equals(o.get("sourceKey"))).toList();require(actualOps.size()==phases.size()&&actualOps.stream().allMatch(o->phases.contains(o.get("phase"))));
             if(status.equals("QUEUED"))holdings.add(new Holding(new Account(number(order.get("customerId")),text(order.get("fromAsset")),"held:exchange-"+no),money(order.get("fromAmount")),no));
@@ -115,7 +123,14 @@ public class SupportFundExchangeEvidence {
     private static Cash cash(Map<String,Object> raw,String side){return new Cash(money(raw.get(side+"UsdtAvailable")),money(raw.get(side+"NexAvailable")),money(raw.get(side+"PendingWithdraw")),money(raw.get(side+"CregisRiskHeld")));}
     private void validateLedgers(SupportExchangeReadFacade.Source source,boolean reserved){
         var order=source.order();String no=text(order.get("exchangeNo")),status=text(order.get("status"));long customer=number(order.get("customerId"));String from=text(order.get("fromAsset")),to=text(order.get("toAsset"));
-        Set<String> expected=switch(status){case "QUEUED" -> {require(reserved);yield Set.of("-HOLD");}case "COMPLETED" -> reserved?Set.of("-HOLD","-IN"):Set.of("-OUT","-IN");case "CANCELLED" -> {require(reserved);yield Set.of("-HOLD","-REFUND");}case "GEO_BLOCKED","USER_CAP","PLATFORM_CAP" -> Set.of();default -> throw failure();};
+        Set<String> expected=switch(status){
+            case "QUEUED" -> {require(reserved);yield Set.of("-HOLD");}
+            case "COMPLETED" -> reserved?Set.of("-HOLD","-IN"):Set.of("-OUT","-IN");
+            case "CANCELLED" -> {require(reserved);yield Set.of("-HOLD","-REFUND");}
+            case "FAILED" -> reserved?Set.of("-HOLD","-REFUND"):Set.of();
+            case "GEO_BLOCKED","USER_CAP","PLATFORM_CAP" -> Set.of();
+            default -> throw failure();
+        };
         require(source.ledgers().size()==expected.size());var ids=new HashSet<Long>();var suffixes=new HashSet<String>();
         for(var l:source.ledgers()) {String biz=text(l.get("bizNo"));require(biz.startsWith(no));String suffix=biz.substring(no.length());require(expected.contains(suffix)&&suffixes.add(suffix)&&number(l.get("id"))>0&&ids.add(number(l.get("id")))&&number(l.get("customerId"))==customer&&no.equals(l.get("exchangeNo"))&&"EXCHANGE_SWAP".equals(l.get("bizType"))&&"SUCCESS".equals(l.get("status"))&&flag(l.get("deleted"))==0);
             boolean in=suffix.equals("-IN");require((in?to:from).equals(l.get("asset"))&&(Set.of("-IN","-REFUND").contains(suffix)?"IN":"OUT").equals(l.get("direction"))&&money(l.get("amount")).compareTo(money(order.get(in?"toAmount":"fromAmount")))==0&&money(l.get("balanceAfter")).signum()>=0&&!time(l.get("createdAt")).isBefore(time(order.get("createdAt")))&&!time(l.get("updatedAt")).isBefore(time(l.get("createdAt"))));}
