@@ -16,7 +16,7 @@ import lombok.Setter;
  * 接受任意类型，plain POJO 更利于 Jackson 序列化进 SSE 数据帧（避免把 ApplicationEvent 的
  * source/timestamp 字段一起吐到前端）。
  *
- * <p>当前事件总线仅在单 Java 实例内生效；多实例部署需要接入共享事件总线。
+ * <p>该事件保留在源进程内，WebSocket 只通过共享事件流传播失效标识。
  */
 @Getter
 @Setter

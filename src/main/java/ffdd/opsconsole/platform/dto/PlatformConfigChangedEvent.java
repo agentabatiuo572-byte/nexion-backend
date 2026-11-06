@@ -5,7 +5,9 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /** Public projection invalidation, sent once for a committed configuration write. */
-public record PlatformConfigChangedEvent() {
+public record PlatformConfigChangedEvent(boolean replicated) {
+    public PlatformConfigChangedEvent() { this(false); }
+
     public static void publish(ApplicationEventPublisher events) {
         if (events == null) return;
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
