@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import org.mybatis.spring.SqlSessionTemplate;
 import org.springframework.dao.DataAccessException;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
@@ -27,9 +28,13 @@ public class SupportFundsReadService implements SupportFundsReadFacade {
     private static final int NET_READ_BATCH_SIZE=32;
     private final SupportFundsReadMapper mapper;
     private final SupportFundReadService net;
+    private final SqlSessionTemplate sqlSession;
     @org.springframework.beans.factory.annotation.Autowired
-    public SupportFundsReadService(SupportFundsReadMapper mapper,SupportFundReadService net) {this.mapper=Objects.requireNonNull(mapper);this.net=Objects.requireNonNull(net);}
-    public SupportFundsReadService(SupportFundsReadMapper mapper) {this.mapper=Objects.requireNonNull(mapper);this.net=null;}
+    public SupportFundsReadService(SupportFundsReadMapper mapper,SupportFundReadService net,SqlSessionTemplate sqlSession) {
+        this.mapper=Objects.requireNonNull(mapper);this.net=net;this.sqlSession=sqlSession;
+    }
+    public SupportFundsReadService(SupportFundsReadMapper mapper,SupportFundReadService net) {this(mapper,Objects.requireNonNull(net),null);}
+    public SupportFundsReadService(SupportFundsReadMapper mapper) {this(mapper,null,null);}
     @Override public NetSnapshot readNetContributions(Collection<Long> ids,Runnable batchRead) {
         if(net==null)throw invalid("SUPPORT_FUND_READER_NOT_CONFIGURED");
         if(ids==null || ids.stream().anyMatch(id->id==null || id<=0))throw new IllegalArgumentException("Explicit positive customer scope required");
@@ -41,6 +46,8 @@ public class SupportFundsReadService implements SupportFundsReadFacade {
         var customers=new ArrayList<NetCustomer>();var origins=new ArrayList<ContributionOrigin>();var changes=new ArrayList<ContributionChange>();
         while(!pending.isEmpty()) {
             var batch=pending.removeFirst();var read=net.read(batch);
+            // The transaction keeps the same snapshot, but raw rows from earlier batches can be released.
+            if(sqlSession!=null)sqlSession.clearCache();
             batchRead.run();
             // Unrelated roots must not push a valid connected component over its closure limit.
             if(batch.size()>1 && read.customers().size()==batch.size() && read.customers().stream()
