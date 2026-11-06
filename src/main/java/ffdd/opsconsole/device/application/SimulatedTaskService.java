@@ -17,6 +17,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.env.Environment;
@@ -33,7 +34,7 @@ public class SimulatedTaskService implements SchedulingConfigurer {
     private static final int BATCH_SIZE=500,CATCH_UP_LIMIT=12;
     private static final int SETTLEMENT_THREADS = 10;
     private static final int SLOTS_PER_BATCH = 600;
-    private static final int DUE_LIMIT = SETTLEMENT_THREADS * SLOTS_PER_BATCH;
+    private enum DueResult { EMPTY, ADVANCED, UNCHANGED }
     private final SimulatedTaskMapper mapper;
     private final AppTaskAssignmentMapper assignments;
     private final SimulatedTaskPolicyService policies;
@@ -146,47 +147,57 @@ public class SimulatedTaskService implements SchedulingConfigurer {
         moreWork=false;
         if(stopping || !enabled())return;
         LocalDateTime observed=now();
-        var due=mapper.due(observed,DUE_LIMIT);
-        boolean advancedDue=settleDue(due,observed),advancedInitial=false;
+        boolean advancedDue=settleDue(observed),advancedInitial=false;
         if(stopping)return;
         var candidates=mapper.initialDevices(initialCursor.get(),BATCH_SIZE);
         if(candidates.isEmpty())initialCursor.set(0);
         for(var candidate:candidates){
             if(stopping)return;
-            initialCursor.set(candidate.deviceId());advancedInitial|=process(candidate,observed,true);
+            initialCursor.set(candidate.deviceId());advancedInitial|=processInitial(candidate,observed);
         }
-        moreWork=(due.size()==DUE_LIMIT && advancedDue) || (candidates.size()==BATCH_SIZE && advancedInitial);
-        if(!moreWork && (advancedDue || advancedInitial))moreWork=!mapper.due(now(),1).isEmpty();
+        moreWork=(candidates.size()==BATCH_SIZE && advancedInitial) || ((advancedDue || advancedInitial) && mapper.hasDue(now()));
     }
-    private boolean settleDue(List<Candidate> due, LocalDateTime observed) {
-        if (due.isEmpty()) return false;
-        // A user's slots can span batches. Take them in the order returned by the due query.
-        Map<Long, ArrayDeque<Candidate>> byUser = new HashMap<>();
-        for (Candidate slot : due) byUser.computeIfAbsent(slot.userId(), id -> new ArrayDeque<>()).addLast(slot);
+    private boolean settleDue(LocalDateTime observed) {
         List<CompletableFuture<Integer>> batches = new ArrayList<>();
-        for (int start = 0; start < due.size(); start += SLOTS_PER_BATCH) {
-            var batch = due.subList(start, Math.min(start + SLOTS_PER_BATCH, due.size()));
+        for (int worker = 0; worker < SETTLEMENT_THREADS; worker++) {
             batches.add(CompletableFuture.supplyAsync(() -> {
-                int advanced = 0;
-                for (Candidate slot : batch) {
-                    var account = byUser.get(slot.userId());
-                    synchronized (account) {
-                        if (stopping) break;
-                        if (process(account.removeFirst(), observed, false)) advanced++;
-                    }
+                int claimed = 0, advanced = 0;
+                for (; claimed < SLOTS_PER_BATCH && !stopping; claimed++) {
+                    var result = processNextDue(observed);
+                    if (result == DueResult.EMPTY) break;
+                    if (result == DueResult.ADVANCED) advanced++;
                 }
-                LOG.debug("Settlement batch worker={} slots={} advanced={}",
-                        Thread.currentThread().getName(), batch.size(), advanced);
+                LOG.debug("Settlement batch worker={} claimed={} advanced={}",
+                        Thread.currentThread().getName(), claimed, advanced);
                 return advanced;
             }, settlementWorkers));
         }
         CompletableFuture.allOf(batches.toArray(CompletableFuture[]::new)).join();
-        LOG.debug("Settlement wave selected={} batches={}", due.size(), batches.size());
         return batches.stream().anyMatch(batch -> batch.join() > 0);
     }
-    private boolean process(Candidate candidate,LocalDateTime observed,boolean initial) {
+
+    private DueResult processNextDue(LocalDateTime observed) {
+        var claimed = new AtomicReference<DueCandidate>();
         try {
-            if(initial)transaction.execute(status->{
+            return transaction.execute(status -> {
+                var candidate = mapper.claimDue(observed);
+                if (candidate == null) return DueResult.EMPTY;
+                claimed.set(candidate);
+                if (!candidate.activeAccount()) throw error(403,"SIMULATED_ACCOUNT_NOT_ACTIVE");
+                var device = ownedDevice(candidate.userId(),candidate.deviceId());
+                return advanceCandidate(device,observed,false) ? DueResult.ADVANCED : DueResult.UNCHANGED;
+            });
+        } catch (RuntimeException failure) {
+            var candidate = claimed.get();
+            if (candidate == null) throw failure;
+            defer(candidate.deviceId(),candidate,failure);
+            return DueResult.UNCHANGED;
+        }
+    }
+
+    private boolean processInitial(Candidate candidate,LocalDateTime observed) {
+        try {
+            transaction.execute(status->{
                 var device=owned(candidate.userId(),candidate.deviceId());
                 var runtime=mapper.lockRuntime(candidate.deviceId());
                 if(!active(device) || device.pendingDeactivate())return null;
@@ -195,23 +206,30 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                         || !"DEVICE_PAUSED".equals(runtime.lastError()) && !device.activatedAt().isAfter(runtime.intervalStartedAt())))return null;
                 startInterval(device,runtime,observed,null);return null;
             });
-            return Boolean.TRUE.equals(transaction.execute(status->{
-                var device=owned(candidate.userId(),candidate.deviceId());
-                var runtime=mapper.lockRuntime(candidate.deviceId());
-                if(runtime==null)return false;
-                requireIdentity(device,runtime);
-                if(!initial && (runtime.nextActionAt()==null || runtime.nextActionAt().isAfter(observed)))return false;
-                var after=advance(device,runtime,observed);
-                return !Objects.equals(after.currentTaskNo(),runtime.currentTaskNo())
-                        || !Objects.equals(after.nextStartAt(),runtime.nextStartAt()) || !after.state().equals(runtime.state());
-            }));
+            return Boolean.TRUE.equals(transaction.execute(status->advanceCandidate(owned(candidate.userId(),candidate.deviceId()),observed,true)));
         } catch(RuntimeException failure) {
-            // Keep the original task and quote on a rolled-back financial/configuration failure; other devices continue.
-            String reason=failure instanceof BizException?failure.getMessage():failure.getClass().getSimpleName();
-            transaction.execute(status->{mapper.recordError(candidate.deviceId(),reason.substring(0,Math.min(128,reason.length())),now().plusSeconds(30));return null;});
-            LOG.warn("Simulated task deferred device={} reason={}",candidate.deviceId(),reason,failure);
+            defer(candidate.deviceId(),null,failure);
             return false;
         }
+    }
+
+    private boolean advanceCandidate(DeviceRow device,LocalDateTime observed,boolean initial) {
+        var runtime=mapper.lockRuntime(device.deviceId());
+        if(runtime==null)return false;
+        requireIdentity(device,runtime);
+        if(!initial && (runtime.nextActionAt()==null || runtime.nextActionAt().isAfter(observed)))return false;
+        var after=advance(device,runtime,observed);
+        return !Objects.equals(after.currentTaskNo(),runtime.currentTaskNo())
+                || !Objects.equals(after.nextStartAt(),runtime.nextStartAt()) || !after.state().equals(runtime.state());
+    }
+
+    private void defer(long deviceId,DueCandidate due,RuntimeException failure) {
+        // Record the retry after rollback, guarding a due slot against concurrent advancement.
+        String reason=failure instanceof BizException?failure.getMessage():failure.getClass().getSimpleName();
+        String error=reason.substring(0,Math.min(128,reason.length()));
+        LocalDateTime retryAt=now().plusSeconds(30);
+        int recorded=transaction.execute(status->due==null?mapper.recordError(deviceId,error,retryAt):mapper.recordDueError(due,error,retryAt));
+        if(due==null || recorded!=0)LOG.warn("Simulated task deferred device={} reason={}",deviceId,reason,failure);
     }
 
     private RuntimeRow startInterval(DeviceRow device,RuntimeRow previous,LocalDateTime start,LocalDateTime validUntil) {
@@ -326,6 +344,9 @@ public class SimulatedTaskService implements SchedulingConfigurer {
     }
     private DeviceRow owned(long user,long device) {
         if(mapper.lockUser(user)==null)throw error(403,"SIMULATED_ACCOUNT_NOT_ACTIVE");
+        return ownedDevice(user,device);
+    }
+    private DeviceRow ownedDevice(long user,long device) {
         var row=mapper.lockDevice(user,device);
         if(row==null)throw error(403,"SIMULATED_DEVICE_NOT_OWNED");return row;
     }

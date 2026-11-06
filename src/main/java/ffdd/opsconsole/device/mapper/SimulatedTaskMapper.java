@@ -23,6 +23,7 @@ public interface SimulatedTaskMapper {
             LocalDateTime intervalStartedAt,LocalDateTime phoneValidUntil,LocalDateTime stopAt,boolean stopAfterCurrent,
             LocalDateTime finishAfterAt,LocalDateTime nextStartAt,String currentTaskNo,LocalDateTime nextActionAt,String state,String lastError) { }
     record Candidate(long userId,long deviceId) { }
+    record DueCandidate(long userId,long deviceId,long generation,String currentTaskNo,LocalDateTime nextActionAt,boolean activeAccount) { }
     record WalletRow(long walletId,String incarnation) { }
 
     String DEVICE="""
@@ -56,7 +57,8 @@ public interface SimulatedTaskMapper {
 
     @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND sandbox=0 AND is_deleted=0 FOR UPDATE")
     Long lockUser(@Param("userId")long userId);
-    @Select(DEVICE+" FOR UPDATE")
+    // Device and runtime changes remain exclusive. Settlement only reads the shared datacenter state.
+    @Select(DEVICE+" FOR UPDATE OF d,r FOR SHARE OF dc")
     DeviceRow lockDevice(@Param("userId")long userId,@Param("deviceId")long deviceId);
     @Select("SELECT user_id userId,id deviceId FROM nx_user_device WHERE id=#{deviceId} AND is_deleted=0 AND source_environment='PRODUCTION' AND run_id='' AND UPPER(ownership_status)='OWNED'")
     Candidate subject(@Param("deviceId")long deviceId);
@@ -87,8 +89,20 @@ public interface SimulatedTaskMapper {
     List<TaskRow> recentTasksByUser(@Param("userId")long userId,@Param("deviceIds")List<Long> deviceIds,@Param("perDeviceLimit")int perDeviceLimit);
     @Select(TASK+" WHERE user_id=#{userId} AND task_no IN (SELECT current_task_no FROM nx_simulated_device_runtime WHERE user_id=#{userId}) ORDER BY user_device_id")
     List<TaskRow> currentTasks(@Param("userId")long userId);
-    @Select("SELECT user_id userId,user_device_id deviceId FROM nx_simulated_device_runtime WHERE next_action_at<=#{now} ORDER BY next_action_at,user_device_id LIMIT #{limit}")
-    List<Candidate> due(@Param("now")LocalDateTime now,@Param("limit")int limit);
+    String DUE_QUEUE="""
+            FROM nx_simulated_device_runtime r FORCE INDEX (idx_simulated_due)
+            STRAIGHT_JOIN nx_user_device d ON d.id=r.user_device_id AND d.user_id=r.user_id
+            STRAIGHT_JOIN nx_user u ON u.id=r.user_id
+            WHERE r.next_action_at<=#{now} AND d.is_deleted=0 AND d.ownership_status='OWNED'
+            """;
+    // Take the account lock first, in the same order as device commands and wallet settlement.
+    @Select("""
+            SELECT r.user_id userId,r.user_device_id deviceId,r.generation,r.current_task_no currentTaskNo,
+                   r.next_action_at nextActionAt,(u.status='ACTIVE' AND u.sandbox=0 AND u.is_deleted=0) activeAccount
+            """+DUE_QUEUE+" ORDER BY r.next_action_at,r.user_device_id LIMIT 1 FOR UPDATE OF u SKIP LOCKED")
+    DueCandidate claimDue(@Param("now")LocalDateTime now);
+    @Select("SELECT EXISTS(SELECT 1 "+DUE_QUEUE+" LIMIT 1)")
+    boolean hasDue(@Param("now")LocalDateTime now);
     @Select("""
             SELECT d.user_id userId,d.id deviceId FROM nx_user_device d
             JOIN nx_user u ON u.id=d.user_id AND u.status='ACTIVE' AND u.sandbox=0 AND u.is_deleted=0
@@ -151,4 +165,11 @@ public interface SimulatedTaskMapper {
     int cancelTask(@Param("taskNo")String taskNo,@Param("reason")String reason);
     @Update("UPDATE nx_simulated_device_runtime SET state='ERROR',last_error=#{error},next_action_at=#{retryAt} WHERE user_device_id=#{deviceId}")
     int recordError(@Param("deviceId")long deviceId,@Param("error")String error,@Param("retryAt")LocalDateTime retryAt);
+    @Update("""
+            UPDATE nx_simulated_device_runtime SET state='ERROR',last_error=#{error},next_action_at=#{retryAt}
+            WHERE user_device_id=#{due.deviceId} AND user_id=#{due.userId} AND generation=#{due.generation}
+              AND current_task_no <=> #{due.currentTaskNo} AND next_action_at=#{due.nextActionAt}
+              AND NOT (state='STOPPED' AND COALESCE(last_error,'') IN ('PROMOTION_REFUND','ORDER_REFUND'))
+            """)
+    int recordDueError(@Param("due")DueCandidate due,@Param("error")String error,@Param("retryAt")LocalDateTime retryAt);
 }

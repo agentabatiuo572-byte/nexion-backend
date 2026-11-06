@@ -23,9 +23,12 @@ public interface DirectReferralMapper extends BaseMapper<Object> {
     int resumePausedDeliveries();
     @Select("SELECT usdt_rate*100 usdtPct,nex_per_usd nexReward FROM nx_commission_rule WHERE commission_type='UNILEVEL' AND layer_no=1 AND status=1 AND is_deleted=0 ORDER BY id LIMIT 1")
     List<Map<String,Object>> sevenLayerReference();
-    @Select("SELECT policy_version policyVersion,effective_at effectiveAt,purchase_json purchaseJson,device_earning_json deviceEarningJson FROM nx_direct_referral_policy WHERE effective_at<=#{at} ORDER BY effective_at DESC,policy_version DESC LIMIT 1")
+    String POLICY_AT_SQL = "SELECT policy_version policyVersion,effective_at effectiveAt,purchase_json purchaseJson,device_earning_json deviceEarningJson FROM nx_direct_referral_policy WHERE effective_at<=#{at} ORDER BY effective_at DESC,policy_version DESC LIMIT 1";
+    @Select(POLICY_AT_SQL)
     PolicyRow policyAt(LocalDateTime at);
-    @Select("SELECT policy_version policyVersion,effective_at effectiveAt,purchase_json purchaseJson,device_earning_json deviceEarningJson FROM nx_direct_referral_policy WHERE effective_at<=#{at} ORDER BY effective_at DESC,policy_version DESC LIMIT 1 FOR UPDATE")
+    @Select(POLICY_AT_SQL + " FOR SHARE")
+    PolicyRow policyAtForShare(LocalDateTime at);
+    @Select(POLICY_AT_SQL + " FOR UPDATE")
     PolicyRow policyAtForUpdate(LocalDateTime at);
     @Select("SELECT COALESCE(MAX(policy_version),0) FROM nx_direct_referral_policy") long latestVersion();
     @Select("SELECT COALESCE(MAX(policy_version),0) FROM nx_direct_referral_policy FOR UPDATE") long latestVersionForUpdate();

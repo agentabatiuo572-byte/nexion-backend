@@ -148,8 +148,9 @@ public class DirectReferralService {
         if("direct_purchase".equals(kind)&&(policies.sevenLayerActiveForUpdate(source.sourceOccurredAt())||mapper.lockOrder(scope.sourceEnvironment(),scope.runId(),ref)!=null||mapper.historicalNetwork(ref)>0||mapper.historicalDirect(ref)>0))return settleSeven(ref,source,scope);
         String existing=mapper.existing(scope.sourceEnvironment(),scope.runId(),kind,ref);
         if(existing!=null)return 0;
-        var policy=policies.atForUpdate(source.sourceOccurredAt());
-        var rule="direct_purchase".equals(kind)?policy.purchase():policy.deviceEarning();
+        boolean purchase="direct_purchase".equals(kind);
+        var policy=purchase?policies.atForUpdate(source.sourceOccurredAt()):policies.atForShare(source.sourceOccurredAt());
+        var rule=purchase?policy.purchase():policy.deviceEarning();
         String reason="";
         if(!Integer.valueOf(1).equals(source.valid()))reason="SOURCE_NOT_ELIGIBLE";
         else if(Integer.valueOf(1).equals(source.refunded()))reason="SOURCE_REFUNDED";
