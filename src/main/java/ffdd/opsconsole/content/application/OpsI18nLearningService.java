@@ -25,6 +25,7 @@ import ffdd.opsconsole.content.dto.LearningFeaturedUpdateRequest;
 import ffdd.opsconsole.content.dto.LearningQuizQuestionRequest;
 import ffdd.opsconsole.content.dto.LearningRewardUpdateRequest;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -49,12 +50,14 @@ import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
 @RequiredArgsConstructor
 public class OpsI18nLearningService {
+    public static final String COURSE_REWARD_ADJUST = "i7_course_reward_adjust";
     private static final String FOCUS_MESSAGE_KEY = "milestones.earnCross";
     private static final TutorialRewardRange REWARD_RANGE = new TutorialRewardRange(new BigDecimal("10"), new BigDecimal("50"));
     private static final List<String> CATEGORIES = List.of("Basics", "Earn", "Team", "Wealth", "Security");
@@ -618,8 +621,48 @@ public class OpsI18nLearningService {
         return ApiResult.ok(updated);
     }
 
+    public static boolean isCourseRewardAdjustment(AuditReplayCommand command) {
+        return command != null && "I".equals(command.domain()) && COURSE_REWARD_ADJUST.equals(command.op());
+    }
+
+    public record CourseRewardReview(String version, long revision, String rewardNex, long makerAdminId) {
+        public static final String PARAM = "courseRewardReview";
+
+        public static CourseRewardReview fromCommand(AuditReplayCommand command) {
+            return isCourseRewardAdjustment(command) && command.params() != null
+                    && command.params().get(PARAM) instanceof CourseRewardReview review && review.makerAdminId() > 0
+                    ? review : null;
+        }
+
+        static CourseRewardReview fromCourse(LearningCourseView course, long makerAdminId) {
+            return new CourseRewardReview(course.version(), course.revision(), course.rewardNex().toPlainString(), makerAdminId);
+        }
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    public CourseRewardReview reviewCourseReward(String courseId, BigDecimal rewardNex, long makerAdminId) {
+        if (invalidReward(rewardNex)) throw new BizException(422, "LEARNING_REWARD_OUT_OF_RANGE");
+        LearningCourseView current = findCourseForUpdate(courseId);
+        if (current == null) throw new BizException(404, "LEARNING_COURSE_NOT_FOUND");
+        if (!"published".equals(current.status())) throw new BizException(409, OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        return CourseRewardReview.fromCourse(current, makerAdminId);
+    }
+
     @Transactional
     public ApiResult<LearningCourseView> updateCourseReward(String courseId, String idempotencyKey, LearningRewardUpdateRequest request) {
+        return updateCourseReward(courseId, idempotencyKey, request, null);
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    public ApiResult<LearningCourseView> updateApprovedCourseReward(String courseId, String idempotencyKey,
+            LearningRewardUpdateRequest request, CourseRewardReview review) {
+        if (A2ReplayContext.operationId() == null) return ApiResult.fail(403, "LEARNING_COURSE_REWARD_APPROVAL_REQUIRED");
+        if (review == null) return ApiResult.fail(409, "LEARNING_COURSE_REWARD_REPROPOSE_REQUIRED");
+        return updateCourseReward(courseId, idempotencyKey, request, review);
+    }
+
+    private ApiResult<LearningCourseView> updateCourseReward(String courseId, String idempotencyKey,
+            LearningRewardUpdateRequest request, CourseRewardReview review) {
         ApiResult<Void> guard = requireRewardUpdate(idempotencyKey, request);
         if (guard != null) {
             return fail(guard);
@@ -629,6 +672,10 @@ public class OpsI18nLearningService {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         LearningCourseView current = findCourseForUpdate(courseId);
+        if (review != null && (current == null || !"published".equals(current.status())
+                || !review.equals(CourseRewardReview.fromCourse(current, review.makerAdminId())))) {
+            return ApiResult.fail(409, "LEARNING_COURSE_REWARD_SNAPSHOT_CHANGED");
+        }
         if (current == null) {
             return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
         }
@@ -641,12 +688,27 @@ public class OpsI18nLearningService {
             return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
         }
         LearningCourseView updated = learningRepository.updateCourseReward(current.id(), request.rewardNex().setScale(6, RoundingMode.HALF_UP), now());
-        audit("I7_LEARNING_REWARD_CHANGED", "LEARNING_COURSE", current.id(), request.operator(), idempotencyKey, request.reason(), Map.of(
+        Map<String, Object> detail = new LinkedHashMap<>(Map.of(
                 "from", current.rewardNex(),
                 "to", updated.rewardNex(),
                 "coverageRatio", coverage.coverageRatio(),
                 "redlinePct", coverage.redlinePct()));
+        if (review != null) {
+            detail.put("version", current.version());
+            detail.put("reviewedRevision", current.revision());
+            detail.put("a2OperationId", A2ReplayContext.operationId());
+        }
+        audit("I7_LEARNING_REWARD_CHANGED", "LEARNING_COURSE", current.id(), request.operator(), idempotencyKey, request.reason(), detail);
         return ApiResult.ok(updated);
+    }
+
+    public static BigDecimal courseRewardAmount(Object value) {
+        if (value == null) return null;
+        try {
+            return new BigDecimal(value.toString().trim());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     @Transactional

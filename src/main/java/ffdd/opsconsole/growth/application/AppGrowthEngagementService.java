@@ -781,7 +781,7 @@ public class AppGrowthEngagementService {
             EventReward reward = mapper.lockClaimableEvent(userId, code);
             if (reward == null) return ApiResult.fail(409, "EVENT_NOT_CLAIMABLE");
             if (mapper.claimEvent(userId, code) != 1) throw conflict("EVENT_CLAIM_CONFLICT");
-            String rewardType = reward.rewardType() == null ? "" : reward.rewardType().trim().toUpperCase(Locale.ROOT);
+            String rewardType = reward.normalizedRewardType();
             BigDecimal amount = reward.rewardAmount() == null ? BigDecimal.ZERO : reward.rewardAmount();
             if ("UVT".equals(rewardType)) {
                 amount = positive(amount);
