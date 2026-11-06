@@ -63,6 +63,7 @@ import java.util.regex.Pattern;
 import java.util.function.Function;
 import java.util.stream.Stream;
 import org.springframework.util.StringUtils;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 @ApplicationService
@@ -2365,6 +2366,17 @@ public class OpsGrowthService implements AuditReplayable {
                 : updateQuestEventReward("H4_PREVIEW", eventId, request, true, true);
     }
 
+    // Read the committed translations and rules after acquiring the event mutex.
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public ApiResult<Map<String, Object>> previewQuestEventChange(
+            String eventId, String field, GrowthConfigUpdateRequest request) {
+        return switch (field) {
+            case "reward" -> updateQuestEventReward(null, eventId, request, false, true);
+            case "status" -> updateQuestEventStatus(null, eventId, request, false, true);
+            default -> validation("EVENT_FIELD_INVALID");
+        };
+    }
+
     ApiResult<Map<String, Object>> executeApprovedH4LegacyEvent(
             String key, String eventId, GrowthConfigUpdateRequest request, boolean opening) {
         return opening ? updateQuestEventStatus(key, eventId, request, true, false)
@@ -2373,9 +2385,10 @@ public class OpsGrowthService implements AuditReplayable {
 
     private ApiResult<Map<String, Object>> updateQuestEventReward(
             String idempotencyKey, String eventId, GrowthConfigUpdateRequest request, boolean approved, boolean preview) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
+        boolean review = preview && !approved;
+        if (!review) {
+            var guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+            if (guard != null) return guard;
         }
         ApiResult<Map<String, Object>> trialGate = requireTrialGateForH4Mutation();
         if (trialGate != null) {
@@ -2415,9 +2428,19 @@ public class OpsGrowthService implements AuditReplayable {
         BigDecimal oldAmount = legacyEventCashAmount(current);
         boolean comparable = reward != null && (oldAmount.signum() <= 0 || reward.type().equals(legacyEventAsset(current)));
         boolean amplifies = canPay && comparable && reward.amount().compareTo(oldAmount.max(BigDecimal.ZERO)) > 0;
-        // A proposal must fit the original reward_amount and reward_name columns.
-        if (amplifies && (reward.amount().precision() > 18 || value.codePointCount(0, value.length()) > 128)) {
+        // Both the previewed and approved values must fit the original columns.
+        if ((amplifies || review) && (value.codePointCount(0, value.length()) > 128
+                || reward != null && reward.amount().precision() > 18)) {
             return validation("EVENT_REWARD_INVALID");
+        }
+        if (review) {
+            var result = row("approvalRequired", amplifies, "current", oldValue, "proposed", value);
+            if (!hasRule) {
+                result.put("currentReward", oldAmount.signum() > 0
+                        ? row("asset", legacyEventAsset(current), "amount", oldAmount.toPlainString()) : null);
+                result.put("proposedReward", row("asset", reward.type(), "amount", reward.amount().toPlainString()));
+            }
+            return ApiResult.ok(result);
         }
         var approval = h4ApprovalGate(amplifies, approved);
         if (approval != null) return approval;
@@ -2463,9 +2486,10 @@ public class OpsGrowthService implements AuditReplayable {
 
     private ApiResult<Map<String, Object>> updateQuestEventStatus(
             String idempotencyKey, String eventId, GrowthConfigUpdateRequest request, boolean approved, boolean preview) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
+        boolean review = preview && !approved;
+        if (!review) {
+            var guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+            if (guard != null) return guard;
         }
         ApiResult<Map<String, Object>> trialGate = requireTrialGateForH4Mutation();
         if (trialGate != null) {
@@ -2513,8 +2537,16 @@ public class OpsGrowthService implements AuditReplayable {
                         "EVENT_LOCALIZED_CONTENT_INCOMPLETE", Map.of("missing", missing));
             }
         }
-        boolean amplifies = "ongoing".equals(status) && !hasRule
-                && legacyEventRewardWindow(id, current) && legacyEventCashAmount(current).signum() > 0;
+        BigDecimal openingReward = "ongoing".equals(status) && !hasRule && legacyEventRewardWindow(id, current)
+                ? legacyEventCashAmount(current) : BigDecimal.ZERO;
+        boolean amplifies = openingReward.signum() > 0;
+        if (review) {
+            var result = row("approvalRequired", amplifies, "current", oldStatus, "proposed", status);
+            if (amplifies) {
+                result.put("proposedReward", row("asset", legacyEventAsset(current), "amount", openingReward.toPlainString()));
+            }
+            return ApiResult.ok(result);
+        }
         var approval = h4ApprovalGate(amplifies, approved);
         if (approval != null) return approval;
         if (preview) return ApiResult.ok(Map.of());
