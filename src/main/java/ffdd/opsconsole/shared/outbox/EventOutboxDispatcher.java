@@ -6,8 +6,6 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.util.ArrayList;
-import java.util.Collections;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
@@ -54,10 +52,7 @@ public class EventOutboxDispatcher {
             try {
                 if (executeLockCommand(connection, ACQUIRE_LOCK, LANE_LOCK, laneKey) == 0) return;
                 try {
-                    var newest = new ArrayList<>(mapper.listPendingByCanonicalLane(eventType, laneCount, lane, true, 35));
-                    Collections.reverse(newest);
-                    for (EventOutboxMessage message : newest) dispatch(connection, message, null);
-                    for (EventOutboxMessage message : mapper.listPendingByCanonicalLane(eventType, laneCount, lane, false, 5)) {
+                    for (EventOutboxMessage message : mapper.listPendingByCanonicalLane(eventType, laneCount, lane, false, 40)) {
                         dispatch(connection, message, null);
                     }
                 } finally {
