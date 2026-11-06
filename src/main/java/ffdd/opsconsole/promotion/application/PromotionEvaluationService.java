@@ -81,14 +81,13 @@ public class PromotionEvaluationService {
         Map<String,Object> first=PromotionPolicyResolver.content(policies,"firstPurchase");
         boolean restore=first!=null&&Boolean.TRUE.equals(first.get("restoreAfterRefund"));
         Map<String,Object> buyerAudience=map(contract.get("buyerAudience"));
-        if((Set.of("FIRST_PURCHASE","DIRECT_REFERRAL").contains(text(contract.get("template")))||requiresFirst(buyerAudience))
+        if((Set.of("FIRST_PURCHASE","DIRECT_REFERRAL").contains(text(contract.get("template")))||PromotionRules.requiresFirstPurchase(buyerAudience))
             &&hasPriorPayment(buyer,excludedOrder,restore))return false;
-        if(contract.get("inviterAudience")!=null&&requiresFirst(map(contract.get("inviterAudience"))))
+        if(contract.get("inviterAudience")!=null&&PromotionRules.requiresFirstPurchase(map(contract.get("inviterAudience"))))
             for(Map<String,Object> award:awards)if("DIRECT_INVITER".equals(award.get("beneficiaryRole"))
                 &&hasPriorPayment(number(award.get("beneficiaryId")),null,restore))return false;
         return true;
     }
-    private boolean requiresFirst(Map<String,Object> audience){return "NEVER_PAID".equals(audience.get("purchaseHistory"))||Boolean.TRUE.equals(audience.get("neverPurchased"));}
     private boolean hasPriorPayment(long account,String excludedOrder,boolean restore){
         return db.list("""
             SELECT order_no,payment_status,order_status FROM nx_order WHERE user_id=? AND is_deleted=0

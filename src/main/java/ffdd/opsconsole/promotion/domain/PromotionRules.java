@@ -33,9 +33,8 @@ public final class PromotionRules {
         if(account==null||!account.active())return false;
         String history=text(audience.get("purchaseHistory"));
         long paid=restoreRefunds?account.firstPurchasePaid():account.everPaid();
-        if("NEVER_PAID".equals(history)&&paid>0)return false;
+        if(requiresFirstPurchase(audience)&&paid>0)return false;
         if("HAS_VALID_PURCHASE".equals(history)&&account.validPaid()==0)return false;
-        if(Boolean.TRUE.equals(audience.get("neverPurchased"))&&paid>0)return false;
         if(!days(audience.get("registrationAge"),account.registeredAt(),now))return false;
         Map<String,Object> last=map(audience.get("lastValidPurchaseAge"));
         if((last.get("minDays")!=null||last.get("maxDays")!=null)&&!days(last,account.lastValidPaid(),now))return false;
@@ -46,6 +45,32 @@ public final class PromotionRules {
         String presence=text(audience.get("devicePresence"));
         if("NONE".equals(presence)&&account.devices()!=0)return false;
         return !"HAS_QUALIFYING_DEVICE".equals(presence)||account.devices()>0;
+    }
+    public static boolean requiresFirstPurchase(Map<String,Object> audience) {
+        return "NEVER_PAID".equals(audience.get("purchaseHistory"))||Boolean.TRUE.equals(audience.get("neverPurchased"));
+    }
+    public static boolean buyerAudiencesMayOverlap(Map<String,Object> a,Map<String,Object> b,boolean referral) {
+        for(String field:List.of("rankIds","markets")) {
+            var left=(List<?>)a.get(field);
+            var right=(List<?>)b.get(field);
+            if(!left.isEmpty()&&!right.isEmpty()&&Collections.disjoint(left,right))return false;
+        }
+        for(String field:List.of("registrationAge","lastValidPurchaseAge")) {
+            var left=map(a.get(field));
+            var right=map(b.get(field));
+            if(startsAfter(left,right)||startsAfter(right,left))return false;
+        }
+        // A valid purchase consumes first-purchase eligibility under either refund policy.
+        if((requiresFirstPurchase(a)||requiresFirstPurchase(b))&&(requiresValidPurchase(a)||requiresValidPurchase(b)))return false;
+        boolean needsSponsor=referral||"REQUIRED".equals(a.get("sponsor"))||"REQUIRED".equals(b.get("sponsor"));
+        return !needsSponsor||!("ABSENT".equals(a.get("sponsor"))||"ABSENT".equals(b.get("sponsor")));
+    }
+    private static boolean startsAfter(Map<String,Object> a,Map<String,Object> b) {
+        return a.get("minDays")!=null&&b.get("maxDays")!=null&&number(a.get("minDays"))>number(b.get("maxDays"));
+    }
+    private static boolean requiresValidPurchase(Map<String,Object> audience) {
+        var range=map(audience.get("lastValidPurchaseAge"));
+        return "HAS_VALID_PURCHASE".equals(audience.get("purchaseHistory"))||range.get("minDays")!=null||range.get("maxDays")!=null;
     }
     private static boolean member(Object selected,String fact) {
         if(!(selected instanceof List<?> values))return false;
