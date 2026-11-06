@@ -1,6 +1,7 @@
 package ffdd.opsconsole.user.domain;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -11,6 +12,8 @@ import ffdd.opsconsole.user.dto.UserQueryRequest;
 
 public interface UserOpsRepository {
     Map<String, Object> overview();
+
+    default Long dailyActiveUsers(LocalDate date) { return null; }
 
     Map<String,Object> supportOverview(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope);
 

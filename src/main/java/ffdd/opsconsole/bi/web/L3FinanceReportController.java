@@ -33,6 +33,12 @@ public class L3FinanceReportController {
         return service.revenue(period, from, to);
     }
 
+    @GetMapping("/daily-flows")
+    @PreAuthorize("hasAuthority('bi_l3_read')")
+    public ApiResult<Map<String, Object>> dailyFlows(@RequestParam(defaultValue = "8") int days) {
+        return service.dailyFlows(days);
+    }
+
     @GetMapping("/redemption")
     @PreAuthorize("hasAuthority('bi_l3_read')")
     public ApiResult<Map<String, Object>> redemption(
