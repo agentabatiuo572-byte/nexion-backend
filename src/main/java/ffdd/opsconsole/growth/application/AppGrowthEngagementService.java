@@ -108,6 +108,7 @@ public class AppGrowthEngagementService {
     private final Clock clock;
     private final H4EventEngine eventEngine;
     private final TestCloudActivationAdmission testCloudAdmission;
+    private final VoucherRulesCache voucherRulesCache;
 
     /** Backward-compatible local construction; production Spring injection uses the business-zone clock. */
     public AppGrowthEngagementService(
@@ -168,7 +169,8 @@ public class AppGrowthEngagementService {
             WeeklyQuestSnapshotService weeklySnapshots, TestCloudActivationAdmission testCloudAdmission) {
         this(mapper, voucherGrantFacade, growthRhythmFacade, coverageFacade, idempotencyService,
                 auditLogService, outboxService, earningsReleaseService, sandboxService, questFactConsumer,
-                streakPerkAvailability, voucherSandboxService, environment, clock, weeklySnapshots, null, testCloudAdmission);
+                streakPerkAvailability, voucherSandboxService, environment, clock, weeklySnapshots, null, testCloudAdmission,
+                null);
     }
 
     @Autowired
@@ -188,7 +190,8 @@ public class AppGrowthEngagementService {
             Environment environment,
             Clock clock,
             WeeklyQuestSnapshotService weeklySnapshots,
-            H4EventEngine eventEngine, TestCloudActivationAdmission testCloudAdmission) {
+            H4EventEngine eventEngine, TestCloudActivationAdmission testCloudAdmission,
+            VoucherRulesCache voucherRulesCache) {
         this.mapper = mapper;
         this.voucherGrantFacade = voucherGrantFacade;
         this.growthRhythmFacade = growthRhythmFacade;
@@ -206,6 +209,7 @@ public class AppGrowthEngagementService {
         this.weeklySnapshots = weeklySnapshots;
         this.eventEngine = eventEngine;
         this.testCloudAdmission = java.util.Objects.requireNonNull(testCloudAdmission);
+        this.voucherRulesCache = voucherRulesCache;
     }
 
     public ApiResult<Map<String, Object>> questState(Long userId) {
@@ -449,7 +453,9 @@ public class AppGrowthEngagementService {
         requireReadableUser(userId);
         Attribution attribution = attribution(userId);
         long nowMillis = System.currentTimeMillis();
-        List<Map<String, Object>> rows = safeList(mapper.voucherState(userId, nowMillis));
+        List<Map<String, Object>> rows = safeList(voucherRulesCache == null
+                ? mapper.voucherState(userId, nowMillis)
+                : voucherRulesCache.state(userId, nowMillis));
         List<Map<String, Object>> vouchers = rows.stream().map(row -> {
             Map<String, Object> item = new LinkedHashMap<>(row);
             item.put("applicableSkus", voucherStringList(row.get("applicableSkus")));
