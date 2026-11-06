@@ -63,7 +63,18 @@ public class ConversationSocketAccess {
     }
 
     public boolean canRead(Authentication auth, String audience, String conversationNo) {
-        return participants(conversationNo).map(p -> p.canRead(auth, audience)).orElse(false);
+        return customerId(conversationNo).map(id -> "ADMIN".equals(audience)
+                ? has(auth, "service_m3_read") && canReadCustomer(auth.getName(), id)
+                : id.toString().equals(auth.getName())).orElse(false);
+    }
+
+    boolean canReadCustomer(String admin, Long customerId) {
+        return ownership.canRead(Long.valueOf(admin), customerId);
+    }
+
+    Optional<Long> customerId(String no) {
+        if (no == null || !no.matches("[A-Za-z0-9_-]{1,100}")) return Optional.empty();
+        return conversations.findByConversationNo(no).map(c -> c.userId());
     }
 
     public boolean canWrite(Authentication auth,String audience,String no) {
@@ -78,11 +89,10 @@ public class ConversationSocketAccess {
 
     /** Loaded once per watched conversation in a presence batch; never retained across batches. */
     public Optional<Participants> participants(String no) {
-        if (no == null || !no.matches("[A-Za-z0-9_-]{1,100}")) return Optional.empty();
-        return conversations.findByConversationNo(no).filter(c->c.userId()!=null).map(c -> {
-            var current=sessions.holders(List.of(c.userId())).get(c.userId());
-            Long peer=current==null?bindings.currentAgent(c.userId()):current.adminId();
-            return new Participants(String.valueOf(c.userId()),String.valueOf(peer),ownership);
+        return customerId(no).map(id -> {
+            var current=sessions.holders(List.of(id)).get(id);
+            Long peer=current==null?bindings.currentAgent(id):current.adminId();
+            return new Participants(String.valueOf(id),String.valueOf(peer),ownership);
         });
     }
 
@@ -95,14 +105,10 @@ public class ConversationSocketAccess {
         }
     }
 
-    public Set<String> presenceKeys(Authentication auth, String audience) {
-        if (audience.equals("USER")) return Set.of("USER:" + auth.getName());
-        if (!has(auth, "service_m3_write")) return Set.of();
-        if (bindings.eligibleAgent(ownership.actorId(auth))!=1 && !ownership.supervisor(ownership.actorId(auth))) return Set.of();
-        Set<String> keys = new HashSet<>();
-        keys.add("ADMIN:" + auth.getName());
-        Object username = ((Map<?, ?>) auth.getDetails()).get("username");
-        if (username != null) keys.add("ADMIN:" + username);
-        return keys;
+    boolean contributesPresence(Authentication auth, String audience) {
+        if ("USER".equals(audience)) return true;
+        if (!has(auth, "service_m3_write")) return false;
+        Long admin = ownership.actorId(auth);
+        return bindings.eligibleAgent(admin) == 1 || ownership.supervisor(admin);
     }
 }
