@@ -1,6 +1,7 @@
 package ffdd.opsconsole.platform.application;
 
 import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
+import ffdd.opsconsole.content.application.OpsI18nLearningService;
 
 import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.growth.application.H8RewardParamApproval;
@@ -72,6 +73,7 @@ public class A2AccessPolicy {
                 Set<String> grants = permissions.getPermissionCodes(id);
                 if (grants.contains("platform_a2_read") || grants.contains("overview_b1_redline_write")
                         || LearningCourseActivationApproval.hasMakerAuthorities(grants)
+                        || canReadOwnCourseRewardProposal(grants)
                         || grants.contains("overview_b5_threshold_write")
                         || grants.contains(E2TaskPricingApproval.MAKER_AUTHORITY)
                         || grants.contains(H8RewardParamApproval.MAKER_AUTHORITY)
@@ -119,6 +121,11 @@ public class A2AccessPolicy {
     }
 
     boolean canAccessOwnBusinessProposal(AuditReplayCommand command, long actorId) {
+        if (OpsI18nLearningService.isCourseRewardAdjustment(command)) {
+            var review = OpsI18nLearningService.CourseRewardReview.fromCommand(command);
+            return review != null && review.makerAdminId() == actorId
+                    && canReadOwnCourseRewardProposal(permissions.getPermissionCodes(actorId));
+        }
         if (G4CatalogApproval.supports(command)) {
             return G4CatalogApproval.canReadOwnProposal(command, actorId, permissions.getPermissionCodes(actorId));
         }
@@ -154,6 +161,11 @@ public class A2AccessPolicy {
         Object makerId = command.params().get("makerAdminId");
         return makerId instanceof Number && Long.toString(actorId).equals(makerId.toString())
                 && permissions.getPermissionCodes(actorId).contains(authority);
+    }
+
+    private static boolean canReadOwnCourseRewardProposal(Set<String> grants) {
+        return grants.contains("content_i7_course_reward_adjust")
+                && (grants.contains("platform_a2_write") || grants.contains("platform_a2_proposal_create"));
     }
 
     public AuditLogQueryRequest constrain(AuditLogQueryRequest request) {

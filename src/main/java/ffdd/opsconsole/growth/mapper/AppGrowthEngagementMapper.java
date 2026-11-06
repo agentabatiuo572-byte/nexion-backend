@@ -3,6 +3,7 @@ package ffdd.opsconsole.growth.mapper;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
@@ -523,48 +524,61 @@ public interface AppGrowthEngagementMapper {
             """)
     int joinEvent(@Param("userId") Long userId, @Param("event") EventReward event);
 
-    @Select("""
+    String LEGACY_EVENT_OPEN = """
+            q.status=1 AND q.is_deleted=0 AND q.target_value>0
+            AND q.target_type IN ('discount','referral','regional','boost','seasonal','onboarding')
+            AND (q.starts_at IS NULL OR q.starts_at<=UTC_TIMESTAMP())
+            AND (q.ends_at IS NULL OR q.ends_at>UTC_TIMESTAMP())
+            """;
+
+    String LEGACY_EVENT_CLAIM_REMAINING = """
+            AND u.progress_value>=q.target_value AND UPPER(u.claim_status)<>'CLAIMED'
+            """;
+
+    String LEGACY_EVENT_REWARD = """
             SELECT q.id questId,q.quest_code eventCode,q.target_value targetValue,
                    u.reward_type rewardType,u.reward_amount rewardAmount,q.badge_achievement_code badgeCode
               FROM nx_user_event_quest u
-              JOIN nx_event_quest q ON q.id=u.quest_id AND q.status=1 AND q.is_deleted=0
+              JOIN nx_event_quest q ON q.id=u.quest_id AND q.quest_code=u.quest_code
              WHERE u.user_id=#{userId} AND u.quest_code=#{eventCode} AND u.is_deleted=0
-               AND q.target_value>0 AND LOWER(q.target_type)<>'wheel'
-               AND q.target_type IN ('discount','referral','regional','boost','seasonal','onboarding')
-               AND (q.starts_at IS NULL OR q.starts_at<=UTC_TIMESTAMP())
-               AND (q.ends_at IS NULL OR q.ends_at>UTC_TIMESTAMP())
+               AND
+            """ + LEGACY_EVENT_OPEN;
+
+    @Select(LEGACY_EVENT_REWARD + LEGACY_EVENT_CLAIM_REMAINING + " LIMIT 1")
+    EventReward findClaimableLegacyEvent(@Param("userId") Long userId, @Param("eventCode") String eventCode);
+
+    @Select(LEGACY_EVENT_REWARD + """
                AND (u.progress_value>=q.target_value OR UPPER(u.claim_status) IN ('COMPLETED','CLAIMABLE'))
              LIMIT 1 FOR UPDATE
             """)
     EventReward lockClaimableEvent(@Param("userId") Long userId, @Param("eventCode") String eventCode);
 
     @Update("""
-            UPDATE nx_user_event_quest SET claim_status='CLAIMED',claimed_at=NOW(),updated_at=NOW()
-             WHERE user_id=#{userId} AND quest_code=#{eventCode}
-               AND UPPER(claim_status)<>'CLAIMED' AND is_deleted=0
-               AND progress_value >= (SELECT target_value FROM nx_event_quest
-                                        WHERE quest_code=#{eventCode} AND status=1 AND is_deleted=0
-                                          AND target_type IN ('discount','referral','wheel','regional','boost','seasonal','onboarding')
-                                          AND target_value>0 AND LOWER(target_type)<>'wheel'
-                                          AND (starts_at IS NULL OR starts_at<=UTC_TIMESTAMP())
-                                          AND (ends_at IS NULL OR ends_at>UTC_TIMESTAMP()) LIMIT 1)
-            """)
+            UPDATE nx_user_event_quest u SET claim_status='CLAIMED',claimed_at=NOW(),updated_at=NOW()
+             WHERE u.user_id=#{userId} AND u.quest_code=#{eventCode} AND u.is_deleted=0
+               AND EXISTS (SELECT 1 FROM nx_event_quest q
+                            WHERE q.id=u.quest_id AND q.quest_code=u.quest_code AND
+            """ + LEGACY_EVENT_OPEN + LEGACY_EVENT_CLAIM_REMAINING + ")")
     int claimEvent(@Param("userId") Long userId, @Param("eventCode") String eventCode);
+
+    String ACTIVE_ACHIEVEMENT = "achievement_code=#{badgeCode} AND status=1 AND is_deleted=0";
+    String USER_ACHIEVEMENT_KEY = "user_id=#{userId} AND achievement_code=#{badgeCode}";
+
+    // A soft-deleted holding occupies the same unique key and prevents a new insert.
+    @Select("SELECT COALESCE((SELECT is_deleted=0 FROM nx_user_achievement WHERE " + USER_ACHIEVEMENT_KEY + "), "
+            + "EXISTS(SELECT 1 FROM nx_achievement WHERE " + ACTIVE_ACHIEVEMENT + "))")
+    boolean canGrantAchievement(@Param("userId") Long userId, @Param("badgeCode") String badgeCode);
 
     @Insert("""
             INSERT IGNORE INTO nx_user_achievement
               (user_id,achievement_id,achievement_code,achievement_status,unlocked_at,created_at,updated_at,is_deleted)
             SELECT #{userId},a.id,a.achievement_code,'UNLOCKED',NOW(),NOW(),NOW(),0
               FROM nx_achievement a
-             WHERE a.achievement_code=#{badgeCode} AND a.status=1 AND a.is_deleted=0
-            """)
+             WHERE
+            """ + ACTIVE_ACHIEVEMENT)
     int unlockAchievement(@Param("userId") Long userId, @Param("badgeCode") String badgeCode);
 
-    @Select("""
-            SELECT id FROM nx_user_achievement
-             WHERE user_id=#{userId} AND achievement_code=#{badgeCode} AND is_deleted=0
-             LIMIT 1 FOR UPDATE
-            """)
+    @Select("SELECT id FROM nx_user_achievement WHERE " + USER_ACHIEVEMENT_KEY + " AND is_deleted=0 LIMIT 1 FOR UPDATE")
     Long lockUserAchievement(@Param("userId") Long userId, @Param("badgeCode") String badgeCode);
 
     @Select("SELECT nex_available FROM nx_user_wallet WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1 FOR UPDATE")
@@ -1111,6 +1125,9 @@ public interface AppGrowthEngagementMapper {
             String rewardType,
             BigDecimal rewardAmount,
             String badgeCode) {
+        public String normalizedRewardType() {
+            return rewardType == null ? "" : rewardType.trim().toUpperCase(Locale.ROOT);
+        }
     }
 
     record StreakState(

@@ -43,7 +43,6 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
-import java.math.BigDecimal;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.time.Clock;
@@ -2063,10 +2062,10 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 return deleteJurisdiction(jurisdiction, idem,
                         new TrustDisclosureActionRequest(longVal(p, "expectedRevision"), null, operator, reason));
             }
-            case "i7_course_reward_adjust" -> {
-                // 委托 OpsI18nLearningService + amplifies=true: 改 rewardNex 放大未来 UVT 流出,B1 红线前置由原方法 coverageFacade.snapshot() 只读 guard 保留
-                LearningRewardUpdateRequest req = new LearningRewardUpdateRequest(bdVal(p, "rewardNex"), operator, reason);
-                return i18nLearningService.updateCourseReward(str(p, "courseId"), idem, req);
+            case OpsI18nLearningService.COURSE_REWARD_ADJUST -> {
+                var review = OpsI18nLearningService.CourseRewardReview.fromCommand(cmd);
+                var request = new LearningRewardUpdateRequest(OpsI18nLearningService.courseRewardAmount(p.get("rewardNex")), operator, reason);
+                return i18nLearningService.updateApprovedCourseReward(str(p, "courseId"), idem, request, review);
             }
             default -> {
                 return ApiResult.fail(422, "UNKNOWN_REPLAY_OP:" + cmd.op());
@@ -2107,19 +2106,6 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (value == null) return List.of();
         return java.util.Arrays.stream(String.valueOf(value).split(","))
                 .map(String::trim).filter(StringUtils::hasText).toList();
-    }
-
-    /** 从 replay params 取 BigDecimal,null 安全(I7 rewardNex 用)。 */
-    private static BigDecimal bdVal(Map<String, Object> params, String key) {
-        Object v = params.get(key);
-        if (v == null) return null;
-        if (v instanceof BigDecimal bd) return bd;
-        if (v instanceof Number n) return BigDecimal.valueOf(n.doubleValue());
-        try {
-            return new BigDecimal(String.valueOf(v).trim());
-        } catch (NumberFormatException ex) {
-            return null;
-        }
     }
 
     private record DisclosureDraftMutationResult(int code, String message, DisclosureDraftView data) {

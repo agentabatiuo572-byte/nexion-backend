@@ -15,6 +15,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 import static ffdd.opsconsole.growth.application.H4EventRuleService.*;
 
 /** H4 decisions read canonical business facts; every award and budget share one transaction. */
@@ -96,8 +97,27 @@ public class H4EventEngine {
         if(source==null)throw new BizException(404,"EVENT_NOT_FOUND");
         if(deleted){source=new LinkedHashMap<>(source);source.put("deleted",true);source.put("href","");}
         if(deleted&&rule==null&&!Set.of("JOINED","CLAIMABLE","CLAIMED").contains(text(source.get("userStatus"))))throw new BizException(404,"EVENT_NOT_FOUND");
-        if(rule==null){source=new LinkedHashMap<>(source);source.remove("authoredRewardName");return ApiResult.ok(values("event",source,"rules",Map.of(),"enabled",!deleted,"eligible",false,"eligibilityReason",deleted?"ENDED":"IN_PROGRESS",
-                "progressValue",source.get("progressValue"),"targetValue",source.get("targetValue"),"rewards",List.of(),"results",List.of(),"myRewardAmount",null,"userStatus",source.get("userStatus")));}
+        if (rule == null) {
+            source = new LinkedHashMap<>(source);
+            source.remove("authoredRewardName");
+            String status = text(source.get("userStatus"));
+            String state = text(source.get("state"));
+            var reward = !deleted && "CLAIMABLE".equals(status) ? events.findClaimableLegacyEvent(id, code) : null;
+            boolean eligible = reward != null && switch (reward.normalizedRewardType()) {
+                case "UVT", "USDT" -> reward.rewardAmount().signum() > 0;
+                case "BADGE" -> StringUtils.hasText(reward.badgeCode()) && events.canGrantAchievement(id, reward.badgeCode());
+                default -> false;
+            };
+            String reason = "IN_PROGRESS";
+            if ("CLAIMED".equals(status)) reason = "CLAIMED";
+            else if (deleted || "ended".equals(state)) reason = "ENDED";
+            else if ("upcoming".equals(state)) reason = "NOT_STARTED";
+            else if (eligible) reason = "READY";
+            else if (reward != null) reason = "NOT_ELIGIBLE";
+            return ApiResult.ok(values("event", source, "rules", Map.of(), "enabled", !deleted, "eligible", eligible,
+                    "eligibilityReason", reason, "progressValue", source.get("progressValue"), "targetValue", source.get("targetValue"),
+                    "rewards", List.of(), "results", List.of(), "myRewardAmount", null, "userStatus", status));
+        }
         var r=policies.rules(rule);var progress=progress(id,rule,r,source);var event=project(id,source,rule,locale);
         if(deleted&&!Boolean.TRUE.equals(progress.get("eligible"))&&!Set.of("JOINED","CLAIMABLE","CLAIMED").contains(text(event.get("userStatus")))
                 &&db.row("SELECT 1 FROM nx_growth_event_claim WHERE event_code=? AND user_id=? LIMIT 1",code,id)==null

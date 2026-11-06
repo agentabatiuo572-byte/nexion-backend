@@ -23,6 +23,7 @@ import ffdd.opsconsole.content.domain.TrustSectionView;
 import ffdd.opsconsole.content.domain.DisclosureDraftView;
 import ffdd.opsconsole.content.application.DisclosureContentHash;
 import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
+import ffdd.opsconsole.content.application.OpsI18nLearningService;
 import ffdd.opsconsole.device.domain.ComputeConfigRegistry;
 import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.market.facade.GenesisParamPermissions;
@@ -33,6 +34,7 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.PhoneReplacementException;
 import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
+import ffdd.opsconsole.shared.security.SuperAdminAuthorization;
 import ffdd.opsconsole.team.application.OpsTeamService;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
 import java.nio.charset.StandardCharsets;
@@ -143,6 +145,8 @@ public class AuditReplayBusinessPermissionGuard {
     @Autowired
     private LearningCourseActivationApproval learningCourseActivationApproval;
     @Autowired
+    private SuperAdminAuthorization superAdmins;
+    @Autowired
     private ffdd.opsconsole.device.application.OpsDeviceService devices;
     @Autowired
     private ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper calibrationMapper;
@@ -220,6 +224,10 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     public ApiResult<Void> validateProposal(AuditReplayCommand command) {
+        if (OpsI18nLearningService.isCourseRewardAdjustment(command)) {
+            return hasAuthority("content_i7_course_reward_adjust") ? ApiResult.ok()
+                    : ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:content_i7_course_reward_adjust");
+        }
         if (G4CatalogApproval.supports(command)) {
             return g4CatalogApproval.canPropose(command)
                     ? ApiResult.ok() : ApiResult.fail(403, "G4_CATALOG_MAKER_FORBIDDEN");
@@ -438,6 +446,9 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     ApiResult<Void> validateRejection(AuditReplayCommand command) {
+        if (OpsI18nLearningService.isCourseRewardAdjustment(command)) {
+            return validateCourseRewardChecker();
+        }
         if (G4CatalogApproval.supports(command)) {
             return g4CatalogApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId(), false);
         }
@@ -488,6 +499,9 @@ public class AuditReplayBusinessPermissionGuard {
      * Other commands retain their existing replay-time business guard.
      */
     public ApiResult<Void> validateApproval(AuditReplayCommand command) {
+        if (OpsI18nLearningService.isCourseRewardAdjustment(command)) {
+            return validateCourseRewardChecker();
+        }
         if (G4CatalogApproval.supports(command)) {
             return g4CatalogApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId(), true);
         }
@@ -567,6 +581,12 @@ public class AuditReplayBusinessPermissionGuard {
             OpsTeamService.validateBinaryUiConfig(value(command.params(), "key"), value(command.params(), "value"));
         }
         return ApiResult.ok();
+    }
+
+    private ApiResult<Void> validateCourseRewardChecker() {
+        return superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())
+                && hasAuthority("platform_a2_operation_approve") && hasAuthority("content_i7_course_reward_adjust")
+                ? ApiResult.ok() : ApiResult.fail(403, "LEARNING_COURSE_REWARD_APPROVAL_FORBIDDEN");
     }
 
     private ApiResult<Void> validateJ4MakerAuthority(AuditReplayCommand command) {
@@ -711,6 +731,10 @@ public class AuditReplayBusinessPermissionGuard {
      */
     ApiResult<DelegatedProposalDescriptor> validateProposalContext(
             AuditOperationProposalRequest request, AuditReplayCommand boundCommand) {
+        if (OpsI18nLearningService.isCourseRewardAdjustment(boundCommand)) {
+            // The ticket writer validates the exact context when it attaches the server-only review.
+            return ApiResult.ok(null);
+        }
         if (G4CatalogApproval.supports(boundCommand)) {
             var target = G4CatalogApproval.TARGET;
             return ApiResult.ok(new DelegatedProposalDescriptor("调整创世节点价格档位", target.id(),

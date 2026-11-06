@@ -1,6 +1,8 @@
 package ffdd.opsconsole.platform.application;
 
 import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
+import ffdd.opsconsole.content.application.OpsI18nLearningService;
+import ffdd.opsconsole.content.application.OpsI18nLearningService.CourseRewardReview;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
@@ -54,6 +56,8 @@ import ffdd.opsconsole.team.application.TeamFundApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
 import ffdd.opsconsole.market.application.G4CatalogApproval;
 import ffdd.opsconsole.market.application.G4DividendApproval;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
@@ -118,6 +122,7 @@ public class OpsAuditCenterService {
     private final AdminIdempotencyService idempotencyService;
     private final PromotionOrderService promotions;
     private final ffdd.opsconsole.device.application.OpsDeviceService devices;
+    private final OpsI18nLearningService learning;
 
     public OpsAuditCenterService(PlatformConfigRepository configRepository, AuditLogService auditLogService,
             OpsReadTimeSeedPolicy readTimeSeedPolicy, AuditOperationTicketMapper ticketMapper,
@@ -127,7 +132,7 @@ public class OpsAuditCenterService {
             com.fasterxml.jackson.databind.ObjectMapper objectMapper, AdminIdempotencyService idempotencyService) {
         this(configRepository, auditLogService, readTimeSeedPolicy, ticketMapper, historyMapper,
                 confirmCategoryMapper, lockMapper, replayBusinessPermissionGuard, replayDispatcher,
-                accessPolicy, objectMapper, idempotencyService, null, null);
+                accessPolicy, objectMapper, idempotencyService, null, null, null);
     }
 
     public ApiResult<AuditCenterOverview> overview() {
@@ -308,9 +313,38 @@ public class OpsAuditCenterService {
             ticket.setSourceDomain(normalizeDomain(sourceDomain));
             target = descriptor.target();
         }
+        CourseRewardReview rewardReview = null;
+        if (OpsI18nLearningService.isCourseRewardAdjustment(command)) {
+            Long makerId = A2ReplayContext.authenticatedAdminId();
+            if (makerId == null) return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            var params = command.params();
+            if (params == null || !params.keySet().equals(Set.of("courseId", "rewardNex"))
+                    || !(params.get("courseId") instanceof String courseId) || courseId.isBlank()) {
+                return ApiResult.fail(422, "LEARNING_COURSE_REWARD_PROPOSAL_INVALID");
+            }
+            var expectedTarget = new AuditLockTarget("I", "learning_course", courseId.trim());
+            if (!Set.of("I", "I7").contains(sourceDomain.toUpperCase(Locale.ROOT))
+                    || !expectedTarget.id().equals(objectText) || !expectedTarget.equals(target)
+                    || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            var proposedReward = OpsI18nLearningService.courseRewardAmount(params.get("rewardNex"));
+            rewardReview = learning.reviewCourseReward(expectedTarget.id(), proposedReward, makerId);
+            ticket.setOperationType("fund");
+            ticket.setAmplifies(proposedReward.compareTo(new BigDecimal(rewardReview.rewardNex())) > 0 ? 1 : 0);
+            ticket.setSos(0);
+            ticket.setRoleGate("超管");
+            ticket.setBeforeValue(rewardReview.version() + " · r" + rewardReview.revision() + " · " + rewardReview.rewardNex() + " UVT");
+            ticket.setAfterValue(rewardReview.version() + " · "
+                    + proposedReward.setScale(6, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString() + " UVT");
+        }
         if (command != null) {
             try {
                 com.fasterxml.jackson.databind.node.ObjectNode stored = objectMapper.valueToTree(command);
+                if (rewardReview != null) {
+                    // Root metadata is written by A2. Old clients could include arbitrary fields in params.
+                    stored.set(CourseRewardReview.PARAM, objectMapper.valueToTree(rewardReview));
+                }
                 if (superAdminProposalCommand(command)) {
                     ((com.fasterxml.jackson.databind.node.ObjectNode) stored.get("params")).put("proposalReason", reason);
                 }
@@ -782,9 +816,15 @@ public class OpsAuditCenterService {
             return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A2_OPERATION_ALREADY_TERMINAL");
         }
         AuditReplayCommand ticketCommand = deserializeCommand(ticket.getCommandJson());
-        boolean makerMatches = G4CatalogApproval.supports(ticketCommand)
-                ? G4CatalogApproval.isMaker(ticketCommand, A2ReplayContext.authenticatedAdminId())
-                : sameActor(ticket.getOperatorName(), authenticatedOperator);
+        CourseRewardReview rewardReview = CourseRewardReview.fromCommand(ticketCommand);
+        boolean makerMatches;
+        if (rewardReview != null) {
+            makerMatches = Long.valueOf(rewardReview.makerAdminId()).equals(A2ReplayContext.authenticatedAdminId());
+        } else if (G4CatalogApproval.supports(ticketCommand)) {
+            makerMatches = G4CatalogApproval.isMaker(ticketCommand, A2ReplayContext.authenticatedAdminId());
+        } else {
+            makerMatches = sameActor(ticket.getOperatorName(), authenticatedOperator);
+        }
         if (makerOnly && !makerMatches) {
             return fail(OpsErrorCode.FORBIDDEN, "A2_WITHDRAW_MAKER_ONLY");
         }
@@ -956,7 +996,7 @@ public class OpsAuditCenterService {
         detail.put("reason", reason.trim());
         detail.put("idempotencyKey", idempotencyKey.trim());
         detail.put("domain", TreasuryThresholdApproval.supports(command) || E2TaskPricingApproval.supports(command)
-                || LearningCourseActivationApproval.supports(command)
+                || LearningCourseActivationApproval.supports(command) || OpsI18nLearningService.isCourseRewardAdjustment(command)
                 || TeamFundApproval.supports(command) || G3MarketApproval.supports(command) || H8RewardParamApproval.supports(command)
                 || G4CatalogApproval.supports(command) || G4DividendApproval.supports(command) || H5GrowthApproval.supports(command)
                 || H3GrowthApproval.supports(command)
@@ -1048,7 +1088,15 @@ public class OpsAuditCenterService {
                 params.remove("reviewedRuleVersion");
                 if(version!=null)params.set("reviewedRuleVersion",version);
             }
-            return objectMapper.treeToValue(stored, AuditReplayCommand.class);
+            var courseRewardReview = stored.remove(CourseRewardReview.PARAM);
+            AuditReplayCommand command = objectMapper.treeToValue(stored, AuditReplayCommand.class);
+            if (OpsI18nLearningService.isCourseRewardAdjustment(command) && command.params() != null) {
+                command.params().remove(CourseRewardReview.PARAM);
+                if (courseRewardReview != null) {
+                    command.params().put(CourseRewardReview.PARAM, objectMapper.treeToValue(courseRewardReview, CourseRewardReview.class));
+                }
+            }
+            return command;
         } catch (Exception ex) {
             return null;
         }
