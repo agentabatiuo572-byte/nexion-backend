@@ -1,6 +1,9 @@
 package ffdd.opsconsole.platform.application;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import ffdd.opsconsole.auth.infrastructure.AdminRoleRelationEntity;
 import ffdd.opsconsole.auth.mapper.AdminRolePermissionMapper;
 import ffdd.opsconsole.auth.mapper.AdminRoleRelationMapper;
@@ -19,10 +22,13 @@ import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.mapper.AdminRoleMapper;
 import ffdd.opsconsole.platform.mapper.AdminRoleMenuMapper;
+import ffdd.opsconsole.platform.mapper.AuditOperationTicketMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService.RecoveryStatus;
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.util.ArrayList;
@@ -57,6 +63,8 @@ public class OpsPlatformRoleService {
     private final AuditLogService auditLogService;
     private final OpsAuditCenterService auditCenterService;
     private final AdminIdempotencyService idempotencyService;
+    private final AuditOperationTicketMapper ticketMapper;
+    private final ObjectMapper objectMapper;
 
     public ApiResult<PlatformRoleOverview> overview() {
         List<AdminRoleEntity> roles = roleMapper.selectList(new LambdaQueryWrapper<AdminRoleEntity>()
@@ -435,20 +443,101 @@ public class OpsPlatformRoleService {
                 .build());
     }
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
     private ApiResult<?> idempotent(String scope, String idempotencyKey, Object request,
                                     Supplier<ApiResult<?>> action) {
-        return (ApiResult<?>) idempotencyService.execute(
-                scope, idempotencyKey.trim(), requestHash(scope, request), ApiResult.class, (Supplier) action);
+        Long actorId = A2ReplayContext.authenticatedAdminId();
+        if (actorId == null) return ApiResult.fail(403, OpsErrorCode.FORBIDDEN.name());
+        String key = idempotencyKey.trim();
+        var legacy = idempotencyService.recoveryResult(scope, key, requestHash(scope, request, key, null), ApiResult.class);
+        if (legacy.status() == RecoveryStatus.SUCCEEDED) {
+            return legacyReceipt(scope, key, request, actorId, legacy.response());
+        }
+        if (legacy.status() == RecoveryStatus.UNKNOWN) {
+            return ApiResult.fail(409, "IDEMPOTENCY_RESULT_UNKNOWN");
+        }
+        return idempotencyService.executeRetained(scope, key, requestHash(scope, request, key, actorId),
+                ApiResult.class, () -> {
+                    ApiResult<?> result = action.get();
+                    if (result.getCode() != 0) throw new BizException(result.getCode(), result.getMessage());
+                    return result;
+                });
     }
 
-    private String requestHash(String scope, Object request) {
+    private ApiResult<?> legacyReceipt(String scope, String key, Object request, long actorId, ApiResult<?> receipt) {
+        // A legacy receipt has no bound replay ticket. A new A2 approval must execute its own mutation.
+        if (A2ReplayContext.isReplaying()) return ApiResult.fail(409, "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+        if (receipt.getCode() != 0) return ApiResult.fail(409, "IDEMPOTENCY_RESULT_UNKNOWN");
+        int separator = scope.indexOf(':');
+        String command = scope.substring(0, separator);
+        String target = scope.substring(separator + 1);
+        Map<?, ?> data = receipt.getData() instanceof Map<?, ?> saved ? saved : Map.of();
+        Object resultId = data.get("id");
+        if (resultId instanceof String ticketId && ticketId.startsWith("WO-")) {
+            String op = switch (command) {
+                case "A6_ROLE_UPDATE" -> "a6_role_status_update";
+                case "A6_ROLE_DELETE" -> "a6_role_delete";
+                case "A6_ROLE_GRANTS" -> "a6_role_grants_update";
+                default -> null;
+            };
+            String alternateOp = request instanceof PlatformRoleUpdateRequest update && Integer.valueOf(0).equals(update.status())
+                    ? "a6_role_disable" : op;
+            if (op == null || !roleMapper.matchesA6Proposal(ticketId, target, op, alternateOp)) {
+                return ApiResult.fail(409, "A6_RECEIPT_OWNER_UNVERIFIED");
+            }
+            var origins = ticketMapper.selectMakerAudits(List.of(ticketId));
+            Long makerId = origins.isEmpty() ? null : origins.get(0).makerId();
+            if (makerId == null || makerId <= 0) return ApiResult.fail(409, "A6_RECEIPT_OWNER_UNVERIFIED");
+            if (makerId != actorId) return ApiResult.fail(409, "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+            if (!ticketId.equals(auditLogService.findA2ProposalId(actorId, key))) {
+                return ApiResult.fail(409, "A6_RECEIPT_OWNER_UNVERIFIED");
+            }
+            Map<Object, Object> owned = new LinkedHashMap<>(data);
+            owned.put("mine", true);
+            return ApiResult.ok(owned);
+        }
+        String action = switch (command) {
+            case "A6_ROLE_CREATE" -> "A6_ROLE_CREATED";
+            case "A6_ROLE_UPDATE" -> "A6_ROLE_UPDATED";
+            case "A6_ROLE_DELETE" -> "A6_ROLE_DELETED";
+            case "A6_ROLE_GRANTS" -> "A6_ROLE_GRANTS_CHANGED";
+            default -> throw new IllegalArgumentException(command);
+        };
+        String roleId = target;
+        String alternateAction = action;
+        if ("A6_ROLE_CREATE".equals(command)) {
+            if (!(resultId instanceof Number) || !target.equals(data.get("roleCode"))) {
+                return ApiResult.fail(409, "A6_RECEIPT_OWNER_UNVERIFIED");
+            }
+            roleId = resultId.toString();
+            alternateAction = "A6_ROLE_RESTORED";
+        } else if (!("A6_ROLE_DELETE".equals(command) && receipt.getData() == null)
+                && (!(resultId instanceof Number) || !target.equals(resultId.toString()))) {
+            return ApiResult.fail(409, "A6_RECEIPT_OWNER_UNVERIFIED");
+        }
+        List<Long> owners = roleMapper.findA6WriteActors(roleId, key, action, alternateAction);
+        if (owners.size() != 1 || owners.get(0) == null || owners.get(0) <= 0) {
+            return ApiResult.fail(409, "A6_RECEIPT_OWNER_UNVERIFIED");
+        }
+        return owners.get(0) == actorId ? receipt : ApiResult.fail(409, "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+    }
+
+    private String requestHash(String scope, Object request, String key, Long actorId) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            digest.update(scope.getBytes(StandardCharsets.UTF_8));
-            digest.update((byte) 0);
-            digest.update(String.valueOf(request).getBytes(StandardCharsets.UTF_8));
+            if (actorId == null) {
+                // Preserve the deployed digest so only the exact original legacy request can recover.
+                digest.update(scope.getBytes(StandardCharsets.UTF_8));
+                digest.update((byte) 0);
+                digest.update(String.valueOf(request).getBytes(StandardCharsets.UTF_8));
+            } else {
+                ObjectNode payload = objectMapper.valueToTree(request);
+                payload.remove("operator");
+                digest.update(objectMapper.writeValueAsBytes(
+                        new Object[] {actorId, scope, key, A2ReplayContext.operationId(), payload}));
+            }
             return HexFormat.of().formatHex(digest.digest());
+        } catch (JsonProcessingException ex) {
+            throw new BizException(422, "A6_REQUEST_HASH_FAILED");
         } catch (NoSuchAlgorithmException ex) {
             throw new IllegalStateException("SHA-256 unavailable", ex);
         }
