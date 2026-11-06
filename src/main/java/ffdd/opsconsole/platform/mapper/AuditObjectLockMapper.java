@@ -2,6 +2,9 @@ package ffdd.opsconsole.platform.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.platform.infrastructure.AuditObjectLockEntity;
+import java.time.LocalDateTime;
+import java.util.Collection;
+import java.util.List;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
@@ -30,6 +33,23 @@ public interface AuditObjectLockMapper extends BaseMapper<AuditObjectLockEntity>
               AND target_id = #{targetId} AND is_deleted = 0
             """)
     int countActiveByTarget(@Param("domain") String domain, @Param("type") String type, @Param("targetId") String targetId);
+
+    @Select("""
+            <script>
+            SELECT l.target_id, t.command_json, t.operator_name, t.created_at
+            FROM nx_audit_object_lock l
+            LEFT JOIN nx_audit_operation_ticket t ON t.operation_id = l.ticket_id
+              AND t.is_deleted = 0 AND t.status = 'pending'
+              AND BINARY t.operator_name = BINARY l.operator
+            WHERE l.target_domain = #{domain} AND l.target_type = #{type} AND l.is_deleted = 0
+              AND l.target_id IN
+              <foreach collection="targetIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+            </script>
+            """)
+    List<PendingLock> selectPendingLocks(@Param("domain") String domain, @Param("type") String type,
+                                        @Param("targetIds") Collection<String> targetIds);
+
+    record PendingLock(String targetId, String commandJson, String operatorName, LocalDateTime createdAt) {}
 
     @Select("""
             SELECT target_id FROM nx_audit_object_lock
