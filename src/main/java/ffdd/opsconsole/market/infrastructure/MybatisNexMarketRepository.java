@@ -136,6 +136,11 @@ public class MybatisNexMarketRepository implements NexMarketRepository {
     }
 
     @Override
+    public BigDecimal genesisDailyPayableUsd() {
+        return genesisMapper.genesisDailyPayableUsd();
+    }
+
+    @Override
     public GenesisPaidEmission genesisPaidEmission(String batchNo) {
         return genesisMapper.paidEmission(batchNo);
     }

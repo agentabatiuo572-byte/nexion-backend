@@ -1,6 +1,6 @@
 package ffdd.opsconsole.shared.canonical.mapper;
 
-/** Shared payable holdings and six-decimal amounts for the G4 commands and B1. */
+/** Shared payable holdings and six-decimal amounts for G4 and B1. */
 public final class GenesisEmissionSql {
     public static final String ELIGIBLE_HOLDINGS = """
               FROM nx_genesis_holding h
@@ -14,6 +14,7 @@ public final class GenesisEmissionSql {
     private static final String AMOUNT_SUFFIX = " * 0.01, 6))";
     public static final String CURRENT_AMOUNT = AMOUNT_PREFIX + "s.daily_dividend_rate_pct" + AMOUNT_SUFFIX;
     public static final String PROPOSED_AMOUNT = AMOUNT_PREFIX + "#{rate}" + AMOUNT_SUFFIX;
+    public static final String CURRENT_TOTAL = "SELECT COALESCE(SUM(" + CURRENT_AMOUNT + "),0)" + ELIGIBLE_HOLDINGS;
 
     private GenesisEmissionSql() {}
 }
