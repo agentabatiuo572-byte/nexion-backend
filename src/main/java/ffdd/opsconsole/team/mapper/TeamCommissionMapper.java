@@ -622,16 +622,23 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     @Select("""
             SELECT COALESCE(
                 (SELECT s.signal_no FROM nx_risk_signal s
+                   JOIN nx_admin_risk_arbitrage_row r
+                     ON r.row_id = SUBSTRING(SUBSTRING_INDEX(s.evidence, ';', 1), 5)
+                    AND r.is_deleted = 0
+                    AND r.view_key = 'board'
                   WHERE s.user_id = #{memberUserId}
                     AND s.is_deleted = 0
                     AND s.signal_no LIKE 'K2-%'
                     AND s.signal_type = 'risk.leaderboard_velocity_flagged'
+                    AND SUBSTRING_INDEX(s.evidence, ';', 2) = CONCAT('row=', r.row_id, ';view=board')
+                    AND r.cell1 = CONCAT('U', LPAD(#{memberUserId},
+                        GREATEST(8, CHAR_LENGTH(CAST(#{memberUserId} AS CHAR))), '0'))
                     AND s.created_at >= """ + VietnamBusinessPeriodSql.WEEK_START + """
                     AND s.created_at < """ + VietnamBusinessPeriodSql.NEXT_WEEK_START + """
                   ORDER BY s.created_at DESC, s.id DESC LIMIT 1),
                 (SELECT c.cluster_id FROM nx_admin_risk_multi_account_cluster c
                   WHERE c.is_deleted = 0
-                    AND c.status IN ('detected', 'flagged', 'frozen')
+                    AND (c.status IN ('flagged', 'frozen') OR (c.status = 'detected' AND c.threshold_hit = 1))
                     AND JSON_CONTAINS(IF(JSON_VALID(c.nodes_json), c.nodes_json, '[]'),
                         JSON_ARRAY(JSON_OBJECT('userNo', CONCAT('U', LPAD(#{memberUserId},
                             GREATEST(8, CHAR_LENGTH(CAST(#{memberUserId} AS CHAR))), '0')))))
