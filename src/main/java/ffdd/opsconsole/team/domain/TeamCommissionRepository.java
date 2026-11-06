@@ -74,6 +74,8 @@ public interface TeamCommissionRepository {
 
     Map<String, Object> leaderboardSummary();
 
+    default String leaderboardDisqualificationEvidence(long memberUserId) { return null; }
+
     List<Map<String, Object>> commissionEvents(int limit);
 
     List<Map<String, Object>> commissionKindSummary();

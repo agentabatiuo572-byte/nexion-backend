@@ -258,6 +258,11 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     }
 
     @Override
+    public String leaderboardDisqualificationEvidence(long memberUserId) {
+        return mapper.leaderboardDisqualificationEvidence(memberUserId);
+    }
+
+    @Override
     public boolean insertLeaderboardMemberAction(String period, Long memberUserId, String actionType, String reason, String operator) {
         return mapper.insertLeaderboardMemberAction(period, memberUserId, actionType, reason, operator) > 0;
     }
