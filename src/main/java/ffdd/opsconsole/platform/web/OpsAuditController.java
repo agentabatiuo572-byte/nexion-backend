@@ -165,12 +165,11 @@ public class OpsAuditController {
     }
 
     @GetMapping("/operations/proposals/by-idempotency-key")
-    @PreAuthorize("hasAnyAuthority('platform_a2_read','platform_a2_proposal_create','platform_a4_write','overview_b1_redline_write','overview_b5_threshold_write',"
+    @PreAuthorize("hasAnyAuthority('platform_a2_read','platform_a2_proposal_create','platform_a4_write','growth_h7_write','overview_b1_redline_write','overview_b5_threshold_write',"
             + "'device_e2_write','growth_h8_write','growth_h5_write','growth_h3_write','growth_h4_write','growth_h4_wheel_pool_write','network_f1_write','network_f3_write','network_f4_pool_fund','finprod_g3_curve_target_price_write',"
             + "'finprod_g3_curve_pump_prob_write','finprod_g3_override_price_write','finprod_g3_write','finprod_g4_dividend_rate_write','finprod_g4_write','finprod_g4_price_write')"
             + " || (hasAuthority('content_i7_write') && hasAuthority('content_i7_course_reward_adjust'))"
             + " || (hasAuthority('content_i7_course_reward_adjust') && hasAnyAuthority('platform_a2_write','platform_a2_proposal_create'))"
-            + " || (hasAuthority('growth_h7_write') && hasAuthority('platform_a2_write'))"
             + " || (hasAuthority('risk_k2_write') && hasAnyAuthority('platform_a2_proposal_create','platform_a2_write'))"
             + " || (hasAuthority('emergency_j1_gate_resume') && hasAuthority('platform_a2_write'))")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> proposalByIdempotencyKey(
@@ -386,6 +385,7 @@ public class OpsAuditController {
     @PreAuthorize("hasAnyAuthority('platform_a2_write','platform_a2_proposal_create')"
             + " || (#request != null && (@treasuryThresholdApproval.canPropose(#request.command())"
             + " || @a4RegistryApproval.canPropose(#request.command())"
+            + " || @auditReplayBusinessPermissionGuard.canProposeH7(#request.command())"
             + " || @e2TaskPricingApproval.canPropose(#request.command())"
             + " || @h8RewardParamApproval.canPropose(#request.command())"
             + " || @h5GrowthApproval.canPropose(#request.command())"

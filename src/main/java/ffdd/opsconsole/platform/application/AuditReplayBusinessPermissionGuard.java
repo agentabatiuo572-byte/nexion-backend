@@ -251,6 +251,11 @@ public class AuditReplayBusinessPermissionGuard {
         return "d_cregis_deposit_policy".equals(operation) && grants.contains(requiredAuthority(command, operation));
     }
 
+    public boolean canProposeH7(AuditReplayCommand command) {
+        return H7VoucherDisposition.isOperation(command) && "H".equals(command.domain())
+                && hasAuthority(H7VoucherDisposition.AUTHORITY);
+    }
+
     public ApiResult<Void> validateProposal(AuditReplayCommand command) {
         if (A4RegistryApproval.isOperation(command)) {
             return a4RegistryApproval.canPropose(command) ? ApiResult.ok()
