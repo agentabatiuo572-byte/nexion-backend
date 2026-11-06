@@ -429,7 +429,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261105_d2_preserve_review_reason.sql")
   (Join-Path $root "scripts\migrations\20261105_b0_snapshot_export_permission.sql")
   (Join-Path $root "scripts\migrations\20261106_h4_approval_command_capacity.sql"),
-  (Join-Path $root "scripts\migrations\20261106_a4_app_event_registry_restore.sql")
+  (Join-Path $root "scripts\migrations\20261106_a4_app_event_registry_restore.sql"),
+  (Join-Path $root "scripts\migrations\20261106_h2_discount_rate_percent.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

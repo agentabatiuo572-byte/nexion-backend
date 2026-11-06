@@ -1029,16 +1029,6 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         }
     }
 
-    @Override
-    public void retireMissingDetectedClusters(Set<String> activeClusterIds) {
-        mapper.retireMissingDetectedClusters(activeClusterIds == null ? Set.of() : activeClusterIds);
-    }
-
-    @Override
-    public void clearWhitelistedDetectedClusters(Set<String> clusterIds) {
-        mapper.clearWhitelistedDetectedClusters(clusterIds == null ? Set.of() : clusterIds);
-    }
-
     private List<String> nodeUserNos(String nodesJson) {
         if (!StringUtils.hasText(nodesJson)) {
             return List.of();

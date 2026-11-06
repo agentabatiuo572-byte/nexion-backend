@@ -549,13 +549,7 @@ public class AppTrialLifecycleService {
         BigDecimal shadowNex = row.dailyNex().multiply(days).setScale(6, RoundingMode.DOWN);
         BigDecimal offset = row.offsetCapUsdt() == null ? shadowUsdt : shadowUsdt.min(row.offsetCapUsdt());
         BigDecimal remainder = shadowUsdt.subtract(offset).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
-        BigDecimal discount = BigDecimal.ZERO;
-        if (early) {
-            BigDecimal rate = decimal(policy, "discountRate", "15");
-            if (rate.compareTo(BigDecimal.ONE) > 0) rate = rate.movePointLeft(2);
-            discount = row.priceUsdt().multiply(rate)
-                    .min(decimal(policy, "discountCapUSD", "50")).setScale(6, RoundingMode.DOWN);
-        }
+        BigDecimal discount = early ? conversionPromoDiscount(row.priceUsdt(), policy) : BigDecimal.ZERO;
         BigDecimal charge = row.priceUsdt().subtract(discount).subtract(offset)
                 .max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
         return new Settlement(shadowUsdt, shadowNex, offset, remainder, discount, charge);
@@ -628,11 +622,13 @@ public class AppTrialLifecycleService {
     }
 
     private BigDecimal conversionPromoDiscount(BigDecimal catalogPrice, Map<String, String> policy) {
-        BigDecimal rate = decimal(policy, "discountRate", "15");
-        if (rate.compareTo(BigDecimal.ONE) > 0) rate = rate.movePointLeft(2);
-        return catalogPrice.multiply(rate)
+        return catalogPrice.multiply(conversionPromoRate(policy))
                 .min(decimal(policy, "discountCapUSD", "50"))
                 .setScale(6, RoundingMode.DOWN);
+    }
+
+    private BigDecimal conversionPromoRate(Map<String, String> policy) {
+        return decimal(policy, "discountRate", "15").movePointLeft(2);
     }
 
     /** 商品未配收益时列为 0/NULL —— 只有正值才算「有权威收益」。 */
@@ -828,7 +824,7 @@ public class AppTrialLifecycleService {
         Map<String, Object> result = new LinkedHashMap<>();
         Map<String, String> defaults = linkedString(
                 "trialDays", "3", "graceDays", "7", "extensionDays", "3",
-                "discountRate", "0.15", "discountCapUSD", "20",
+                "discountCapUSD", "20",
                 "autoChargeAtEnd", "false", "highQualityThresholdUSD", "100",
                 "trialProductId", CANONICAL_TRIAL_PRODUCT_ID, "trialPriceUSD", "1299",
                 // 🔴 试用收益口径的兜底值不再是「像真数字」的 38.52/65(zentao #78):
@@ -846,6 +842,8 @@ public class AppTrialLifecycleService {
                 result.put(key, policy.getOrDefault(key, fallback));
             }
         });
+        // Installed App versions read rates at or below 1 as fractions.
+        result.put("discountRate", conversionPromoRate(policy).stripTrailingZeros().toPlainString());
         String offsetCap = policy.get("trialOffsetCapUSD");
         result.put("trialOffsetCapUSD",StringUtils.hasText(offsetCap)?offsetCap:null);
         // H2 emergency auto-push stop lives outside the regular policy table.

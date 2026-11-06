@@ -96,7 +96,7 @@ public class RiskReleaseParamsService {
         final TreasuryCoverageSnapshot snapshot;
         try{snapshot=coverageFacade.snapshot();}catch(Exception e){throw new BizException(503,"K1_COVERAGE_UNAVAILABLE");}
         if(snapshot==null||!snapshot.reliable()||snapshot.coverageRatio()==null||snapshot.redlinePct()==null||snapshot.coverageRatio().signum()<=0||snapshot.redlinePct().signum()<=0)throw new BizException(503,"K1_COVERAGE_UNAVAILABLE");
-        if(snapshot.coverageRatio().compareTo(snapshot.redlinePct())<0)throw new BizException(422,"COVERAGE_BELOW_REDLINE");
+        if(snapshot.redlineBreached())throw new BizException(422,"COVERAGE_BELOW_REDLINE");
         return snapshot;
     }
     private String hash(String value){try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));}catch(Exception e){throw new IllegalStateException(e);}}

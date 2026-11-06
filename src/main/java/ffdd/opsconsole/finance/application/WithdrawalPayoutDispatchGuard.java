@@ -1,5 +1,6 @@
 package ffdd.opsconsole.finance.application;
 
+import ffdd.opsconsole.emergency.domain.KillSwitchState;
 import ffdd.opsconsole.finance.cregis.CregisPayoutControl;
 import ffdd.opsconsole.finance.cregis.CregisNetwork;
 import ffdd.opsconsole.finance.mapper.CregisDepositMapper;
@@ -18,7 +19,7 @@ public class WithdrawalPayoutDispatchGuard {
     private final CregisDepositMapper deposits;
     private final CregisPayoutControl payouts;
 
-    @Transactional(isolation=Isolation.READ_COMMITTED,rollbackFor=Exception.class)
+    @Transactional(isolation = Isolation.REPEATABLE_READ, rollbackFor = Exception.class)
     public WithdrawalPayoutMapper.PayoutRow begin(WithdrawalPayoutMapper.PayoutRow candidate,LocalDateTime now) {
         var gate=deposits.lockProvisionGate();
         if(gate==null || !"IDLE".equals(gate.get("state")) || !on(gate.get("payoutEnabled")) || !payouts.enabled())return null;
@@ -28,6 +29,7 @@ public class WithdrawalPayoutDispatchGuard {
         if(enabled==null || !java.util.Set.of("true","1","on").contains(enabled.trim().toLowerCase(java.util.Locale.ROOT))
                 || !payouts.enabled(network)
                 || !candidate.userId().equals(mapper.lockCashCustomer(candidate.userId())))return null;
+        if (!withdrawalSwitchOpen()) return null;
         if(mapper.claimNewPayout(candidate.withdrawalNo(),now,now.plusMinutes(2))!=1)return null;
         if(mapper.markProviderIntent(candidate.withdrawalNo(),now)!=1)
             throw new IllegalStateException("CREGIS_DISPATCH_INTENT_CONFLICT");
@@ -37,6 +39,22 @@ public class WithdrawalPayoutDispatchGuard {
                 || claimed.providerIdempotencyKey()==null || claimed.providerIdempotencyKey().isBlank())
             throw new IllegalStateException("CREGIS_DISPATCH_INTENT_CONFLICT");
         return claimed;
+    }
+
+    @Transactional(isolation = Isolation.REPEATABLE_READ, rollbackFor = Exception.class)
+    public WithdrawalPayoutMapper.PayoutRow claimWithoutProvider(WithdrawalPayoutMapper.PayoutRow candidate,
+                                                                 LocalDateTime now) {
+        if (!withdrawalSwitchOpen()
+                || mapper.claimNewPayout(candidate.withdrawalNo(), now, now.plusMinutes(2)) != 1) {
+            return null;
+        }
+        return mapper.payout(candidate.withdrawalNo());
+    }
+
+    // Repeatable-read also protects a missing primary row while the legacy value governs admission.
+    private boolean withdrawalSwitchOpen() {
+        String value = mapper.lockWithdrawalSwitch("killswitch.withdraw");
+        return KillSwitchState.parse(value == null ? mapper.lockWithdrawalSwitch("emergency.killswitch.withdraw") : value);
     }
 
     private static boolean on(Object value) {return Boolean.TRUE.equals(value)||value instanceof Number n&&n.intValue()==1;}

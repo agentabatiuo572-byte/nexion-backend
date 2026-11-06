@@ -229,14 +229,8 @@ public class OpsTreasuryService {
     /** D3 canonical nine-category liability breakdown used as B1/B2 input. */
     public ApiResult<Map<String, Object>> liabilities(boolean breakdown) {
         BigDecimal nexRate = ledgerRepository.latestNexUsdtPrice().map(this::safe).orElse(BigDecimal.ZERO);
-        return liabilities(breakdown, nexRate, nexLiabilityUnits());
-    }
-
-    private BigDecimal nexLiabilityUnits() {
-        return safe(ledgerRepository.sumActiveNexLocked()).add(safe(ledgerRepository.sumActiveNexReward()));
-    }
-
-    private ApiResult<Map<String, Object>> liabilities(boolean breakdown, BigDecimal nexRate, BigDecimal nexLiabilityUnits) {
+        BigDecimal nexLiabilityUnits = nexLiabilityUnits();
+        boolean valuationReliable = uvtValuationReliable(nexLiabilityUnits, nexRate);
         var commissionCoverage = new CommissionCoverageAmounts(
                 ledgerRepository.sumUsdtAvailable(), ledgerRepository.sumPendingCommissionUsdt());
         List<Map<String, Object>> rows = liabilityRows(nexRate, nexLiabilityUnits, commissionCoverage).stream().map(row -> {
@@ -247,20 +241,39 @@ public class OpsTreasuryService {
         BigDecimal total = rows.stream().map(row -> (BigDecimal) row.get("amountUsdt")).reduce(BigDecimal.ZERO, BigDecimal::add);
         List<Map<String, Object>> withShare = rows.stream().map(row -> {
             Map<String, Object> next = new LinkedHashMap<>(row);
-            next.put("share", total.signum() == 0 ? BigDecimal.ZERO.setScale(4) :
-                    ((BigDecimal) row.get("amountUsdt")).divide(total, 6, RoundingMode.HALF_UP).setScale(4, RoundingMode.HALF_UP));
+            BigDecimal amount = (BigDecimal) row.get("amountUsdt");
+            BigDecimal share = total.signum() == 0 ? BigDecimal.ZERO.setScale(4) :
+                    amount.divide(total, 6, RoundingMode.HALF_UP).setScale(4, RoundingMode.HALF_UP);
+            next.put("share", share);
+            next.put("valuedAmountUsdt", valuationReliable || !"nex_v2_future".equals(row.get("category")) ? amount : null);
+            next.put("valuedShare", valuationReliable ? share : null);
             return next;
         }).toList();
         Map<String, Object> response = section(
                 "totalUsdt", money(total),
+                "valuationReliable", valuationReliable,
+                "valuationStatus", valuationStatus(valuationReliable),
                 "hardLiabilityCategoryCount", 9,
                 "trialShadowIncluded", false,
                 "asOf", LocalDateTime.now(clock));
+        response.put("valuedTotalUsdt", valuationReliable ? money(total) : null);
         if (breakdown) {
             response.put("breakdown", withShare);
         }
         response.put("sources", List.of("nx_user_wallet", "nx_staking_position", "nx_nex_lock_order", "nx_withdrawal_order", "nx_wallet_ledger", "nx_genesis_holding", "nx_treasury_legacy_lock_liability", "nx_vietqr_reconciliation"));
         return ApiResult.ok(response);
+    }
+
+    private BigDecimal nexLiabilityUnits() {
+        return safe(ledgerRepository.sumActiveNexLocked()).add(safe(ledgerRepository.sumActiveNexReward()));
+    }
+
+    private static boolean uvtValuationReliable(BigDecimal units, BigDecimal rate) {
+        return units.signum() == 0 || rate.signum() > 0;
+    }
+
+    private static String valuationStatus(boolean reliable) {
+        return reliable ? "AVAILABLE" : "VALUATION_UNAVAILABLE";
     }
 
     private List<Map<String, Object>> liabilityRows(
@@ -343,6 +356,7 @@ public class OpsTreasuryService {
         LocalDate today = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(now);
         Map<String, Object> config = forecastConfigSnapshot();
         ConfiguredTreasurySnapshot configured = configuredTreasurySnapshot(config);
+        boolean valuationReliable = configured.valuationReliable();
         BigDecimal reserveTotal = configured.reserveUsdt();
         BigDecimal liabilityTotal = configured.liabilitiesUsdt();
         BigDecimal currentNet = reserveTotal.subtract(liabilityTotal);
@@ -363,16 +377,23 @@ public class OpsTreasuryService {
             // The resulting deficit remains visible in netExposureUsdt.
             BigDecimal historicalReserve = reserveTotal.subtract(flowAfterDay).max(BigDecimal.ZERO);
             BigDecimal net = historicalReserve.subtract(liabilityTotal);
-            series.add(0, section("date", day.toString(), "reserveUsdt", money(historicalReserve),
-                    "liabilitiesUsdt", money(liabilityTotal), "netExposureUsdt", money(net), "negative", net.signum() < 0));
+            Map<String, Object> point = section("date", day.toString(), "reserveUsdt", money(historicalReserve),
+                    "liabilitiesUsdt", money(liabilityTotal), "netExposureUsdt", money(net), "negative", net.signum() < 0);
+            point.put("valuedLiabilitiesUsdt", valuationReliable ? money(liabilityTotal) : null);
+            point.put("valuedNetExposureUsdt", valuationReliable ? money(net) : null);
+            series.add(0, point);
         }
-        return ApiResult.ok(section("window", days + "d", "series", series,
+        Map<String, Object> response = section("window", days + "d", "series", series,
+                "valuationReliable", valuationReliable,
+                "valuationStatus", valuationStatus(valuationReliable),
                 "appliedReserveCategories", config.get("reserveCategories"),
                 "appliedLiabilityCategories", config.get("liabilityCategories"),
                 "farLiabilitiesIncluded", config.get("includeFarLiabilities"),
                 "historyMethod", "current reserve rolled backward by cumulative canonical ledger flow; active liability snapshot held constant",
                 "currentNetExposureUsdt", money(currentNet),
-                "asOf", LocalDateTime.now(clock)));
+                "asOf", LocalDateTime.now(clock));
+        response.put("valuedCurrentNetExposureUsdt", valuationReliable ? money(currentNet) : null);
+        return ApiResult.ok(response);
     }
 
     /** B2 only: authoritative reserve-ledger windows plus canonical successful user deposits. */
@@ -647,7 +668,7 @@ public class OpsTreasuryService {
 
         BigDecimal queueBacklogUsd = safe(ledgerRepository.sumActiveWithdrawalQueueUsdt());
         BigDecimal nexLiabilityUnits = nexLiabilityUnits();
-        boolean valuationReliable = (nexLiabilityUnits.signum() == 0 || currentNexPrice.signum() > 0)
+        boolean valuationReliable = uvtValuationReliable(nexLiabilityUnits, currentNexPrice)
                 && (proposedNexPrice == null || proposedNexPrice.signum() > 0);
         // F5 moves a commission from cooling to available in one transaction.
         List<Map<String, Object>> accounts = liabilityRows(nexUsdRate, nexLiabilityUnits,
@@ -2345,7 +2366,7 @@ public class OpsTreasuryService {
                 .map(row -> money((BigDecimal) row.get("amountUsdt")))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         boolean valuationReliable = !configuredLiabilityIncluded(config, "nex_v2_future")
-                || nexUnits.signum() == 0 || nexRate.signum() > 0;
+                || uvtValuationReliable(nexUnits, nexRate);
         return new ConfiguredTreasurySnapshot(configuredReserveTotal(config), money(liabilities), valuationReliable);
     }
 

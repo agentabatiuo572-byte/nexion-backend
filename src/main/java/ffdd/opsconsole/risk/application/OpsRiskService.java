@@ -184,6 +184,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private final UserAccountControlFacade userAccountControlFacade;
     private final EventOutboxService eventOutboxService;
     private final ChainAddressReputationGateway chainAddressReputationGateway;
+    private final RiskReleaseParamsService riskReleaseParamsService;
     private final K4RiskScorer k4RiskScorer = new K4RiskScorer();
     private final K3WithdrawalRuleEvaluator k3WithdrawalRuleEvaluator = new K3WithdrawalRuleEvaluator();
 
@@ -331,6 +332,13 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 requestHash(normalizedKey, normalizedValue, request.reason()), () -> {
                     String beforeValue = riskRepository.multiAccountParamValue(normalizedKey)
                             .orElseThrow(() -> new IllegalStateException("K1_PARAM_NOT_FOUND"));
+                    if (K1_INTEGER_PARAMS.containsKey(normalizedKey)) {
+                        String beforeLimit = normalizeK1Param(normalizedKey, beforeValue);
+                        if (beforeLimit == null || !beforeValue.equals(beforeValue.trim())
+                                || Integer.parseInt(normalizedValue) > Integer.parseInt(beforeLimit)) {
+                            riskReleaseParamsService.requireCoverageForAmplifyingRelease();
+                        }
+                    }
                     Map<String, Object> updated = riskRepository.updateMultiAccountParam(normalizedKey, normalizedValue);
                     String afterValue = riskRepository.multiAccountParamValue(normalizedKey)
                             .orElseThrow(() -> new IllegalStateException("K1_PARAM_WRITE_NOT_VISIBLE"));
@@ -385,6 +393,9 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     if (!K1_CLUSTER_TRANSITIONS.getOrDefault(before.status(), Set.of()).contains(status)) {
                         return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
                     }
+                    if ("released".equals(status) || "cleared".equals(status)) {
+                        riskReleaseParamsService.requireCoverageForAmplifyingRelease();
+                    }
                     if ("frozen".equals(status) || "released".equals(status)) {
                         userAccountControlFacade.lockUsersByUserNos(before.affectedUserIds());
                     }
@@ -428,6 +439,10 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         return idempotentK1("K1_WHITELIST_UPSERT:" + cidr, idempotencyKey,
                 requestHash(cidr, note, expireText, request.reason()), () -> {
                     RiskOpsRepository.IpWhitelistState before = riskRepository.ipWhitelistState(cidr).orElse(null);
+                    if (before == null || !before.active() || !futureDate(before.expireText())
+                            || LocalDate.parse(expireText).isAfter(LocalDate.parse(before.expireText()))) {
+                        riskReleaseParamsService.requireCoverageForAmplifyingRelease();
+                    }
                     riskRepository.upsertIpWhitelist(cidr, note, actor, expireText);
                     RiskOpsRepository.IpWhitelistState after = riskRepository.ipWhitelistState(cidr)
                             .orElseThrow(() -> new IllegalStateException("K1_WHITELIST_WRITE_NOT_VISIBLE"));

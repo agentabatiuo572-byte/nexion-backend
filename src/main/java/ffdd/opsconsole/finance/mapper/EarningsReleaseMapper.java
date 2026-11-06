@@ -136,9 +136,20 @@ public interface EarningsReleaseMapper {
     int release(@Param("entryNo") String entryNo,@Param("source") String source);
     @Select("SELECT COALESCE(SUM(online_seconds),0) FROM nx_earnings_release_attestation WHERE user_id=#{userId} AND source_environment=#{sourceEnvironment}")
     long attestedSeconds(@Param("userId") Long userId,@Param("sourceEnvironment") String sourceEnvironment);
-    @Select("SELECT c.cluster_id clusterId,c.account_count accountCount,c.status FROM nx_admin_risk_multi_account_cluster c JOIN nx_user u ON u.id=#{userId} AND u.is_deleted=0 WHERE c.is_deleted=0 AND c.nodes_json IS NOT NULL AND JSON_VALID(c.nodes_json) AND JSON_CONTAINS(CAST(c.nodes_json AS JSON),JSON_OBJECT('userNo',CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')))) ORDER BY c.account_count DESC,c.id ASC LIMIT 1")
+    String RISK_CLUSTER = """
+            SELECT c.cluster_id clusterId,c.account_count accountCount,c.status
+              FROM nx_admin_risk_multi_account_cluster c
+              JOIN nx_user u ON u.id=#{userId} AND u.is_deleted=0
+             WHERE c.is_deleted=0 AND c.nodes_json IS NOT NULL AND JSON_VALID(c.nodes_json)
+               AND JSON_CONTAINS(CAST(c.nodes_json AS JSON),JSON_OBJECT(
+                   'userNo',CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))))
+             ORDER BY (c.status IN ('detected','flagged','frozen')) DESC,c.account_count DESC,c.id ASC
+             LIMIT 1
+            """;
+
+    @Select(RISK_CLUSTER)
     RiskCluster riskCluster(@Param("userId") Long userId);
-    @Select("SELECT c.cluster_id clusterId,c.account_count accountCount,c.status FROM nx_admin_risk_multi_account_cluster c JOIN nx_user u ON u.id=#{userId} AND u.is_deleted=0 WHERE c.is_deleted=0 AND c.nodes_json IS NOT NULL AND JSON_VALID(c.nodes_json) AND JSON_CONTAINS(CAST(c.nodes_json AS JSON),JSON_OBJECT('userNo',CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')))) ORDER BY c.account_count DESC,c.id ASC LIMIT 1 FOR UPDATE")
+    @Select(RISK_CLUSTER + "FOR UPDATE")
     RiskCluster lockRiskCluster(@Param("userId") Long userId);
     @Select("SELECT amount-recovered_amount AS amount FROM nx_earnings_release_entry WHERE user_id=#{userId} AND asset='USDT' AND bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND amount>recovered_amount AND is_deleted=0 ORDER BY id FOR UPDATE")
     List<BigDecimal> lockProtectedUsdtAmounts(@Param("userId") Long userId);

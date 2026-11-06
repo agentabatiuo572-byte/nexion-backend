@@ -72,8 +72,7 @@ public class WithdrawalPayoutExecutor {
                 if(claimed!=null)dispatch(claimed,true);
                 continue;
             }
-            if (mapper.claimNewPayout(candidate.withdrawalNo(), now, now.plusMinutes(2)) != 1) continue;
-            WithdrawalPayoutMapper.PayoutRow claimed = mapper.payout(candidate.withdrawalNo());
+            WithdrawalPayoutMapper.PayoutRow claimed = dispatchGuard.claimWithoutProvider(candidate, now);
             if (claimed == null) continue;
             dispatch(claimed,false);
         }

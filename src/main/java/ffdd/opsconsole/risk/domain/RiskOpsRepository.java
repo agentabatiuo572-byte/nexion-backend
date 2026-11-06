@@ -278,12 +278,6 @@ public interface RiskOpsRepository {
     default void upsertMultiAccountProjections(List<MultiAccountClusterProjection> projections) {
     }
 
-    default void retireMissingDetectedClusters(Set<String> activeClusterIds) {
-    }
-
-    default void clearWhitelistedDetectedClusters(Set<String> clusterIds) {
-    }
-
     record TamperProjection(boolean k4Accepted, int k4Delta, boolean b5Accepted) {
     }
 

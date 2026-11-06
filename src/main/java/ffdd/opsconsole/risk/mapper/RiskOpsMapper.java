@@ -2302,7 +2302,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     List<RiskParamRecord> riskParams(@Param("section") String section);
 
-    @Select("SELECT value_text FROM nx_admin_risk_param WHERE section_key=#{section} AND param_key=#{key} AND is_deleted=0 LIMIT 1")
+    @Select("SELECT value_text FROM nx_admin_risk_param WHERE section_key=#{section} AND param_key=#{key} AND is_deleted=0 LIMIT 1 FOR UPDATE")
     String riskParamValue(@Param("section") String section, @Param("key") String key);
 
     @Insert("""
@@ -2489,33 +2489,6 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             @Param("giftsJson") String giftsJson,
             @Param("nodesJson") String nodesJson,@Param("edgesJson") String edgesJson);
 
-    @Update("""
-            <script>
-            UPDATE nx_admin_risk_multi_account_cluster SET is_deleted=1,updated_at=NOW()
-             WHERE is_deleted=0 AND status='detected'
-             <if test="ids != null and ids.size() > 0">
-               AND cluster_id NOT IN <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
-             </if>
-            </script>
-            """)
-    int retireMissingDetectedClusters(@Param("ids") java.util.Set<String> ids);
-
-    @Update("""
-            <script>
-            UPDATE nx_admin_risk_multi_account_cluster
-               SET status='cleared',review_note='IP 白名单自动清除',updated_by='K1_CLUSTER_SCHEDULER',
-                   version=version+1,updated_at=NOW()
-             WHERE is_deleted=0 AND status='detected'
-             <choose>
-               <when test="ids != null and ids.size() > 0">
-                 AND cluster_id IN <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
-               </when>
-               <otherwise>AND 1=0</otherwise>
-             </choose>
-            </script>
-            """)
-    int clearWhitelistedDetectedClusters(@Param("ids") java.util.Set<String> ids);
-
     @Select("SELECT COUNT(*) FROM nx_admin_risk_ip_whitelist WHERE is_deleted = 0")
     long countIpWhitelist();
 
@@ -2543,7 +2516,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             SELECT cidr,note_text AS note,operator,expire_text AS expireText,active
               FROM nx_admin_risk_ip_whitelist
              WHERE cidr=#{cidr} AND is_deleted=0
-             LIMIT 1
+             LIMIT 1 FOR UPDATE
             """)
     IpWhitelistRecord ipWhitelistState(@Param("cidr") String cidr);
 
