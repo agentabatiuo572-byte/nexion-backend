@@ -50,7 +50,6 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.transaction.annotation.Transactional;
 
 @RestController
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/platform/audit")
@@ -190,7 +189,6 @@ public class OpsAuditController {
 
     @PostMapping("/exports")
     @PreAuthorize("hasAuthority('platform_a2_export')")
-    @Transactional
     public ResponseEntity<?> export(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) AuditExportRequest request) {
@@ -211,9 +209,14 @@ public class OpsAuditController {
         String actor = AdminActorResolver.resolve(null);
         AuditExportResult export;
         try {
+            AuditLogQueryRequest query = auditExportQuery(request);
+            AuditExportScope currentScope = AuditExportScope.from(query);
             export = idempotencyService.execute("A2_COMMAND", normalizedKey,
                     exportHash(actor, request), AuditExportResult.class,
-                    () -> createExport(normalizedKey, actor, request));
+                    () -> createExport(normalizedKey, actor, request, query, currentScope));
+            if (!currentScope.canRecover(export.scope(), query.getDomain())) {
+                throw new BizException(403, "A2_EXPORT_SCOPE_CHANGED");
+            }
         } catch (BizException ex) {
             return ResponseEntity.status(ex.getCode()).contentType(MediaType.APPLICATION_JSON)
                     .body(ApiResult.fail(ex.getCode(), ex.getMessage()));
@@ -221,19 +224,22 @@ public class OpsAuditController {
             return ResponseEntity.unprocessableEntity().contentType(MediaType.APPLICATION_JSON)
                     .body(ApiResult.fail(422, ex.getMessage()));
         }
+        String extension = export.csv() ? ".csv" : ".xls";
         return ResponseEntity.ok()
-                .contentType(MediaType.parseMediaType("application/vnd.ms-excel;charset=UTF-8"))
+                .contentType(MediaType.parseMediaType(export.csv()
+                        ? "text/csv;charset=UTF-8" : "application/vnd.ms-excel;charset=UTF-8"))
                 .contentLength(export.body().length)
                 .header(HttpHeaders.CONTENT_DISPOSITION,
-                        ContentDisposition.attachment().filename(export.jobNo() + ".xls", StandardCharsets.UTF_8).build().toString())
+                        ContentDisposition.attachment().filename(export.jobNo() + extension, StandardCharsets.UTF_8).build().toString())
                 .body(export.body());
     }
 
-    private AuditExportResult createExport(String idempotencyKey, String actor, AuditExportRequest request) {
+    private AuditExportResult createExport(String idempotencyKey, String actor, AuditExportRequest request,
+                                           AuditLogQueryRequest query, AuditExportScope scope) {
         LocalDateTime createdAt = LocalDateTime.now();
         String jobNo = "A2-AUD-EXP-" + DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS").format(createdAt);
-        ExportWorkbook workbook = auditExportWorkbook(jobNo, idempotencyKey, createdAt, request);
-        if (workbook.rowCount() == 0) {
+        AuditExportCsv csv = auditExportCsv(query);
+        if (csv.rowCount() == 0) {
             throw new BizException(422, "A2_EXPORT_EMPTY_RESULT");
         }
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
@@ -241,9 +247,9 @@ public class OpsAuditController {
                 .resourceId(jobNo).bizNo(jobNo).actorType("ADMIN").actorUsername(actor)
                 .result("SUCCESS").riskLevel("MEDIUM")
                 .detail(Map.of("jobNo", jobNo, "filter", request.filter(), "reason", request.reason().trim(),
-                        "idempotencyKey", idempotencyKey, "rowCount", workbook.rowCount()))
+                        "idempotencyKey", idempotencyKey, "rowCount", csv.rowCount()))
                 .build());
-        return new AuditExportResult(jobNo, createdAt, workbook.body());
+        return new AuditExportResult(jobNo, createdAt, csv.body(), true, scope);
     }
 
     private String exportHash(String actor, AuditExportRequest request) {
@@ -265,17 +271,14 @@ public class OpsAuditController {
                 .body(ApiResult.fail(errorCode.httpStatus(), errorCode.name()));
     }
 
-    private ExportWorkbook auditExportWorkbook(
-            String jobNo,
-            String idempotencyKey,
-            LocalDateTime createdAt,
-            AuditExportRequest request) {
+    private AuditLogQueryRequest auditExportQuery(AuditExportRequest request) {
         AuditLogQueryRequest query = new AuditLogQueryRequest();
         query.setLimit(MAX_EXPORT_ROWS);
-        if (request.filter() != null) {
-            applyAuditFilter(query, request.filter());
-        }
-        query = accessPolicy.constrain(query);
+        applyAuditFilter(query, request.filter());
+        return accessPolicy.constrain(query);
+    }
+
+    private AuditExportCsv auditExportCsv(AuditLogQueryRequest query) {
         long total = auditLogService.count(query);
         if (total > MAX_EXPORT_ROWS) {
             throw new BizException(422, "A2_EXPORT_TOO_LARGE_REFINE_FILTER");
@@ -284,32 +287,16 @@ public class OpsAuditController {
         if (rows.size() != total) {
             throw new BizException(409, "A2_EXPORT_SNAPSHOT_CHANGED_RETRY");
         }
-        StringBuilder html = new StringBuilder(8192);
-        html.append('\ufeff')
-                .append("<html><head><meta charset=\"UTF-8\"></head><body>")
-                .append("<table border=\"1\">")
-                .append("<tr><th colspan=\"9\">A2 审计日志导出</th></tr>")
-                .append("<tr><td>导出单号</td><td colspan=\"8\">").append(escape(jobNo)).append("</td></tr>")
-                .append("<tr><td>导出时间</td><td colspan=\"8\">").append(escape(createdAt.toString())).append("</td></tr>")
-                .append("<tr><td>幂等键</td><td colspan=\"8\">").append(escape(idempotencyKey)).append("</td></tr>")
-                .append("<tr><td>导出原因</td><td colspan=\"8\">").append(escape(request.reason().trim())).append("</td></tr>")
-                .append("<tr><th>时间</th><th>操作者</th><th>动作</th><th>资源类型</th><th>资源编号</th>")
-                .append("<th>业务编号</th><th>结果</th><th>风险级别</th><th>Schema 版本</th></tr>");
-        for (AuditLogRecord row : rows == null ? List.<AuditLogRecord>of() : rows) {
-            html.append("<tr>")
-                    .append("<td>").append(escape(row.getCreatedAt() == null ? "" : row.getCreatedAt().toString())).append("</td>")
-                    .append("<td>").append(escape(row.getActorUsername())).append("</td>")
-                    .append("<td>").append(escape(row.getAction())).append("</td>")
-                    .append("<td>").append(escape(row.getResourceType())).append("</td>")
-                    .append("<td>").append(escape(row.getResourceId())).append("</td>")
-                    .append("<td>").append(escape(row.getBizNo())).append("</td>")
-                    .append("<td>").append(escape(row.getResult())).append("</td>")
-                    .append("<td>").append(escape(row.getRiskLevel())).append("</td>")
-                    .append("<td>").append(escape(row.getSchemaVersion() == null ? "legacy" : row.getSchemaVersion())).append("</td>")
-                    .append("</tr>");
+        StringBuilder csv = new StringBuilder(8192).append('\ufeff');
+        appendCsvRow(csv, "时间", "操作者", "动作", "资源类型", "资源编号",
+                "业务编号", "结果", "风险级别", "Schema 版本");
+        for (AuditLogRecord row : rows) {
+            appendCsvRow(csv, row.getCreatedAt(), maskAuditIdentifier(row.getActorUsername()),
+                    row.getAction(), row.getResourceType(), maskAuditIdentifier(row.getResourceId()),
+                    maskAuditIdentifier(row.getBizNo()), row.getResult(), row.getRiskLevel(),
+                    row.getSchemaVersion() == null ? "legacy" : row.getSchemaVersion());
         }
-        html.append("</table></body></html>");
-        return new ExportWorkbook(html.toString().getBytes(StandardCharsets.UTF_8), rows == null ? 0 : rows.size());
+        return new AuditExportCsv(csv.toString().getBytes(StandardCharsets.UTF_8), rows.size());
     }
 
     private void applyAuditFilter(AuditLogQueryRequest query, Map<String, Object> filter) {
@@ -352,11 +339,18 @@ public class OpsAuditController {
         }
     }
 
-    private String escape(Object value) {
-        if (value == null) {
-            return "";
+    private void appendCsvRow(StringBuilder csv, Object... cells) {
+        for (int index = 0; index < cells.length; index++) {
+            if (index > 0) {
+                csv.append(',');
+            }
+            csv.append(csvCell(cells[index]));
         }
-        String text = String.valueOf(value);
+        csv.append("\r\n");
+    }
+
+    private String csvCell(Object value) {
+        String text = value == null ? "" : String.valueOf(value);
         String firstVisible = text.stripLeading();
         boolean leadingControl = !text.isEmpty()
                 && (text.charAt(0) == '\t' || text.charAt(0) == '\r' || text.charAt(0) == '\n');
@@ -364,11 +358,19 @@ public class OpsAuditController {
         if (leadingControl || formulaPrefix) {
             text = "'" + text;
         }
-        return text
-                .replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace("\"", "&quot;");
+        return "\"" + text.replace("\"", "\"\"") + "\"";
+    }
+
+    private String maskAuditIdentifier(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "";
+        }
+        int length = value.codePointCount(0, value.length());
+        if (length <= 4) {
+            return "***";
+        }
+        return value.substring(0, value.offsetByCodePoints(0, 2)) + "***"
+                + value.substring(value.offsetByCodePoints(0, length - 2));
     }
 
     @PostMapping("/operations/{operationId}/approve")
@@ -478,6 +480,26 @@ public class OpsAuditController {
         return ApiResult.ok(auditLogService.topUsers(request));
     }
 
-    public record AuditExportResult(String jobNo, LocalDateTime createdAt, byte[] body) {}
-    private record ExportWorkbook(byte[] body, int rowCount) {}
+    public record AuditExportResult(String jobNo, LocalDateTime createdAt, byte[] body, boolean csv,
+                                    AuditExportScope scope) {}
+
+    public record AuditExportScope(List<String> domains, String actor) {
+        static AuditExportScope from(AuditLogQueryRequest query) {
+            List<String> allowed = query.getAllowedDomains();
+            List<String> domains = query.getDomain() != null
+                    && (allowed == null || allowed.contains(query.getDomain())) ? List.of(query.getDomain()) : allowed;
+            return new AuditExportScope(domains, query.getOperatorExact());
+        }
+
+        boolean canRecover(AuditExportScope issued, String explicitDomain) {
+            if (issued == null) {
+                // Older receipts have no scope metadata. A requested domain still bounds the old result.
+                return actor == null && (domains == null || explicitDomain != null && domains.contains(explicitDomain));
+            }
+            return (actor == null || actor.equals(issued.actor()))
+                    && (domains == null || issued.domains() != null && domains.containsAll(issued.domains()));
+        }
+    }
+
+    private record AuditExportCsv(byte[] body, int rowCount) {}
 }
