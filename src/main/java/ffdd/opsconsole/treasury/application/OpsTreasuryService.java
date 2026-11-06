@@ -855,10 +855,14 @@ public class OpsTreasuryService {
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> createInjection(String idempotencyKey, TreasuryInjectionRequest request) {
         requireD3Command(idempotencyKey, request == null ? null : request.reason());
-        BigDecimal amount = request.amount() == null ? BigDecimal.ZERO : request.amount().setScale(2, RoundingMode.HALF_UP);
-        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+        BigDecimal requestedAmount = request.amount();
+        if (requestedAmount == null || requestedAmount.signum() <= 0) {
             throw new BizException(400, "AMOUNT_MUST_BE_POSITIVE");
         }
+        if (requestedAmount.scale() > 2) {
+            throw new BizException(400, "D3_INJECTION_AMOUNT_PRECISION_INVALID");
+        }
+        BigDecimal amount = requestedAmount.setScale(2, RoundingMode.UNNECESSARY);
         if (!StringUtils.hasText(request.voucherNo())) {
             throw new BizException(400, "VOUCHER_NO_REQUIRED");
         }

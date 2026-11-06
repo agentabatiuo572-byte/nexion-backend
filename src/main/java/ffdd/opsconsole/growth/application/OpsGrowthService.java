@@ -1039,6 +1039,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             if (!EVENT_KINDS.contains(kind)) {
                 return validation("EVENT_KIND_INVALID");
             }
+            int requestedTarget = Optional.ofNullable(request.targetValue()).orElse(1);
+            if (requestedTarget < 1 || requestedTarget > 1_000_000_000) {
+                return validation("EVENT_TARGET_VALUE_INVALID");
+            }
             boolean wheelEvent = "wheel".equals(kind);
             if (wheelEvent && questEventsList().stream()
                     .anyMatch(row -> "wheel".equalsIgnoreCase(String.valueOf(row.get("kind"))))) {
@@ -1069,12 +1073,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 return coverageRedline();
             }
             boolean trackable = !wheelEvent && Boolean.TRUE.equals(request.trackable());
-            int targetValue = trackable
-                    ? Optional.ofNullable(request.targetValue()).orElse(1)
-                    : 0;
-            if ((trackable && targetValue <= 0) || targetValue < 0 || targetValue > 1_000_000_000) {
-                return validation("EVENT_TARGET_VALUE_INVALID");
-            }
+            int targetValue = trackable ? requestedTarget : 0;
             String geo = StringUtils.hasText(request.geo()) ? normalizePlainText(request.geo(), 64) : "";
             String href = StringUtils.hasText(request.href()) ? normalizePlainText(request.href(), 255) : "";
             if (StringUtils.hasText(href) && !href.matches("^/pages/[A-Za-z0-9_./-]+$")) {
@@ -3073,17 +3072,28 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                     && lockMapper.countActiveByTarget("H", "voucher", id) > 0) {
                 return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
             }
-            List<Map<String, Object>> rows = new ArrayList<>(voucherRows());
-            voucherIndex(rows, id);
             Map<String, Object> next = normalizeVoucher(request, id);
             long expectedVersion = expectedVoucherVersion(request.expectedVersion());
             if (voucherMapper.isEmpty()) {
                 return validation("VOUCHER_BUSINESS_TABLE_UNAVAILABLE");
             }
-            int updatedRows = voucherMapper.get().updateVoucher(
+            GrowthVoucherMapper mapper = voucherMapper.get();
+            Map<String, Object> current = mapper.lockVoucherTemplate(id);
+            if (current == null) {
+                return validation("VOUCHER_NOT_FOUND");
+            }
+            if (longValue(current.get("version")) != expectedVersion) {
+                return ApiResult.fail(409, "H7_VOUCHER_STALE");
+            }
+            String nextType = stringValue(next.get("type"), "");
+            if (!nextType.equalsIgnoreCase(stringValue(current.get("type"), ""))
+                    && mapper.findIssuedGrantForUpdate(id) != null) {
+                return ApiResult.fail(409, "H7_VOUCHER_TYPE_LOCKED_AFTER_ISSUE");
+            }
+            int updatedRows = mapper.updateVoucher(
                     id,
                     stringValue(next.get("name"), ""),
-                    stringValue(next.get("type"), ""),
+                    nextType,
                     voucherNumberValue(next.get("amountUSD")),
                     voucherNumberValue(next.get("percent")),
                     voucherNumberValue(next.get("minPurchaseUSD")),
@@ -4941,9 +4951,11 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         BigDecimal amount = "fixed".equals(type)
                 ? bounded(voucherNumber(request.amountUSD(), BigDecimal.ZERO), BigDecimal.ONE, new BigDecimal("1000000"))
                 : BigDecimal.ZERO;
-        BigDecimal percent = "percent".equals(type)
-                ? bounded(voucherNumber(request.percent(), BigDecimal.ZERO), BigDecimal.ONE, new BigDecimal("100"))
-                : BigDecimal.ZERO;
+        BigDecimal percent = "percent".equals(type) ? voucherNumber(request.percent(), BigDecimal.ZERO) : BigDecimal.ZERO;
+        if ("percent".equals(type) && (percent.stripTrailingZeros().scale() > 0
+                || percent.compareTo(BigDecimal.ONE) < 0 || percent.compareTo(BigDecimal.valueOf(99)) > 0)) {
+            throw new IllegalArgumentException("H7_VOUCHER_PERCENT_INVALID");
+        }
         BigDecimal minPurchase = bounded(voucherNumber(request.minPurchaseUSD(), BigDecimal.ZERO), BigDecimal.ZERO, new BigDecimal("10000000"));
         BigDecimal maxDiscount = bounded(voucherNumber(request.maxDiscountUSD(), BigDecimal.ZERO), BigDecimal.ZERO, new BigDecimal("10000000"));
         String audience = requireText(request.audience(), "VOUCHER_AUDIENCE_REQUIRED").toLowerCase(Locale.ROOT);

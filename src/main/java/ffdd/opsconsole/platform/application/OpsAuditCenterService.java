@@ -1278,6 +1278,9 @@ public class OpsAuditCenterService {
         }
         try {
             com.fasterxml.jackson.databind.node.ObjectNode stored = (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(commandJson);
+            if ("E".equals(stored.path("domain").asText()) && "e1_bundle_discount".equals(stored.path("op").asText())) {
+                return objectMapper.readValue(commandJson, AuditReplayCommand.class);
+            }
             stored.remove("avatarMakerAdminId");
             stored.remove(A4RegistryApproval.MAKER_FIELD);
             stored.remove("skuReview");

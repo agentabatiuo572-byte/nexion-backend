@@ -106,6 +106,20 @@ public interface GrowthVoucherMapper extends BaseMapper<Object> {
     @Select("SELECT COUNT(1) FROM nx_growth_voucher WHERE voucher_id = #{voucherId} AND is_deleted = 0")
     long countByVoucherId(@Param("voucherId") String voucherId);
 
+    @Select("""
+            SELECT voucher_type AS type, version FROM nx_growth_voucher
+             WHERE voucher_id = #{voucherId} AND is_deleted = 0
+             FOR UPDATE
+            """)
+    Map<String, Object> lockVoucherTemplate(@Param("voucherId") String voucherId);
+
+    @Select("""
+            SELECT id FROM nx_growth_voucher_grant
+             WHERE voucher_id = #{voucherId} AND is_deleted = 0
+             LIMIT 1 FOR UPDATE
+            """)
+    Long findIssuedGrantForUpdate(@Param("voucherId") String voucherId);
+
     @Insert("""
             INSERT INTO nx_growth_voucher (
                 voucher_id, voucher_name, voucher_type, amount_usd, percent_value,

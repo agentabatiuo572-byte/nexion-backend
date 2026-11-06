@@ -2010,21 +2010,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (guard != null) {
             return guard;
         }
-        if (request == null || request.expectedVersion() == null || request.expectedVersion() < 1
-                || request.twoItemsPct() == null || request.threeItemsPct() == null
-                || request.fourPlusItemsPct() == null) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(),
-                    "BUNDLE_DISCOUNT_REQUEST_INVALID");
-        }
         BundleDiscountPolicy proposed;
         try {
-            proposed = new BundleDiscountPolicy(
-                    request.twoItemsPct().movePointLeft(2),
-                    request.threeItemsPct().movePointLeft(2),
-                    request.fourPlusItemsPct().movePointLeft(2));
-        } catch (IllegalArgumentException ex) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(),
-                    "BUNDLE_DISCOUNT_POLICY_INVALID");
+            proposed = validateBundleDiscount(request);
+        } catch (BizException invalid) {
+            return ApiResult.fail(invalid.getCode(), invalid.getMessage());
         }
         String trustedOperator = operator(request.operator());
         DeviceBundleDiscountUpdateRequest trusted = new DeviceBundleDiscountUpdateRequest(
@@ -2065,6 +2055,42 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                             "idempotencyKey", idempotencyKey.trim()));
             return e1BundleDiscount();
         });
+    }
+
+    public static ApiResult<Void> validateBundleDiscountProposal(Map<String, Object> params) {
+        try {
+            validateBundleDiscount(bundleDiscountRequest(params, null, null));
+            return ApiResult.ok();
+        } catch (BizException invalid) {
+            return ApiResult.fail(invalid.getCode(), invalid.getMessage());
+        }
+    }
+
+    private static BundleDiscountPolicy validateBundleDiscount(DeviceBundleDiscountUpdateRequest request) {
+        if (request == null || request.expectedVersion() == null || request.expectedVersion() < 1
+                || request.twoItemsPct() == null || request.threeItemsPct() == null
+                || request.fourPlusItemsPct() == null) {
+            throw new BizException(422, "BUNDLE_DISCOUNT_REQUEST_INVALID");
+        }
+        if (request.twoItemsPct().compareTo(new BigDecimal("0.01")) < 0
+                || request.fourPlusItemsPct().compareTo(BigDecimal.valueOf(30)) > 0) {
+            throw new BizException(422, "BUNDLE_DISCOUNT_POLICY_INVALID");
+        }
+        try {
+            return new BundleDiscountPolicy(
+                    request.twoItemsPct().movePointLeft(2),
+                    request.threeItemsPct().movePointLeft(2),
+                    request.fourPlusItemsPct().movePointLeft(2));
+        } catch (IllegalArgumentException invalid) {
+            throw new BizException(422, "BUNDLE_DISCOUNT_POLICY_INVALID");
+        }
+    }
+
+    private static DeviceBundleDiscountUpdateRequest bundleDiscountRequest(
+            Map<String, Object> params, String reason, String operator) {
+        return new DeviceBundleDiscountUpdateRequest(
+                decimal(params, "twoItemsPct"), decimal(params, "threeItemsPct"),
+                decimal(params, "fourPlusItemsPct"), longVal(params, "expectedVersion"), reason, operator);
     }
 
     private long bundleDiscountVersion(java.util.Optional<String> raw) {
@@ -5461,10 +5487,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return ApiResult.ok(legacyUnknownZeroCredit.approve(LegacyUnknownZeroCreditService.command(p)));
             }
             case "e1_bundle_discount" -> {
-                DeviceBundleDiscountUpdateRequest req = new DeviceBundleDiscountUpdateRequest(
-                        decimal(p, "twoItemsPct"), decimal(p, "threeItemsPct"),
-                        decimal(p, "fourPlusItemsPct"), longVal(p, "expectedVersion"), reason, operator);
-                return updateE1BundleDiscount(idem, req);
+                return updateE1BundleDiscount(idem, bundleDiscountRequest(p, reason, operator));
             }
             case "e1_phone_task_policy" -> {
                 return updatePhoneTaskPolicy(idem,new ffdd.opsconsole.device.dto.PhoneTaskPolicyUpdateRequest(
