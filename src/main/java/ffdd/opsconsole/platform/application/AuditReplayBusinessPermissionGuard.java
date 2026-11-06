@@ -261,6 +261,10 @@ public class AuditReplayBusinessPermissionGuard {
         if (command != null && OpsNexMarketService.isRetiredStakingReplay(command.domain(), command.op())) {
             return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), OpsErrorCode.RETIRED_FEATURE.name());
         }
+        if (command != null && "G".equals(command.domain())
+                && ("g3_override".equals(command.op()) || "g3_curve_update".equals(command.op()))) {
+            g3MarketApproval.validateLegacyProposal(command);
+        }
         if (A4RegistryApproval.isOperation(command)) {
             return a4RegistryApproval.canPropose(command) ? ApiResult.ok()
                     : ApiResult.fail(403, "A4_REGISTRY_MAKER_FORBIDDEN");
