@@ -193,7 +193,8 @@ public class OpsDashboardService {
         Map<String, Object> l1 = map(biOverview.get("l1"));
         List<Map<String, Object>> rows = new ArrayList<>();
         for (Map<String, Object> row : list(l1.get("kpis"))) {
-            BigDecimal value = decimal(row.get("value"));
+            boolean suppressed = Boolean.TRUE.equals(row.get("suppressed"));
+            BigDecimal value = suppressed || row.get("value") == null ? null : decimal(row.get("value"));
             BigDecimal target = decimal(row.get("target"));
             String dir = stringValue(row.get("dir"));
             rows.add(linked(
@@ -202,8 +203,10 @@ public class OpsDashboardService {
                     "value", value,
                     "target", target,
                     "unit", stringValue(row.get("unit")),
-                    "pass", passKpi(value, target, dir, row.get("band")),
+                    "pass", value == null ? null : passKpi(value, target, dir, row.get("band")),
+                    "suppressed", suppressed,
                     "series", row.getOrDefault("spark", List.of()),
+                    "seriesSuppressed", row.getOrDefault("sparkSuppressed", List.of()),
                     "hint", stringValue(row.get("cohort"))));
         }
         return rows;
