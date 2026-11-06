@@ -54,10 +54,10 @@ public class EventOutboxDispatcher {
             try {
                 if (executeLockCommand(connection, ACQUIRE_LOCK, LANE_LOCK, laneKey) == 0) return;
                 try {
-                    var newest = new ArrayList<>(mapper.listPendingByCanonicalLane(eventType, laneCount, lane, true, 25));
+                    var newest = new ArrayList<>(mapper.listPendingByCanonicalLane(eventType, laneCount, lane, true, 35));
                     Collections.reverse(newest);
                     for (EventOutboxMessage message : newest) dispatch(connection, message, null);
-                    for (EventOutboxMessage message : mapper.listPendingByCanonicalLane(eventType, laneCount, lane, false, 15)) {
+                    for (EventOutboxMessage message : mapper.listPendingByCanonicalLane(eventType, laneCount, lane, false, 5)) {
                         dispatch(connection, message, null);
                     }
                 } finally {
