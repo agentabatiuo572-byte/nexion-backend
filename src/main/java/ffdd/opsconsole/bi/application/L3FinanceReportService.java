@@ -1,6 +1,7 @@
 package ffdd.opsconsole.bi.application;
 
 import ffdd.opsconsole.bi.mapper.L3FinanceFactMapper;
+import ffdd.opsconsole.bi.mapper.L3FinanceFactMapper.CohortWindow;
 import ffdd.opsconsole.bi.mapper.L3FinanceFactMapper.DailyFlowFact;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -14,6 +15,7 @@ import java.time.DayOfWeek;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.YearMonth;
 import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -98,8 +100,14 @@ public class L3FinanceReportService {
     public ApiResult<Map<String, Object>> redemption(String period, String from, String to, String cohort) {
         PeriodWindow window = periodWindow(period, from, to);
         String normalizedCohort = normalizeCohort(cohort);
-        Map<String, Object> current = mapper.redemptionSummary(window.from(), window.to(), normalizedCohort);
-        Map<String, Object> previous = mapper.redemptionSummary(window.previousFrom(), window.previousTo(), normalizedCohort);
+        CohortWindow cohortWindow = null;
+        if (normalizedCohort != null) {
+            YearMonth month = YearMonth.parse(normalizedCohort);
+            var calendar = BusinessCalendar.legacy();
+            cohortWindow = new CohortWindow(calendar.storageStart(month), calendar.storageStart(month.plusMonths(1)));
+        }
+        Map<String, Object> current = mapper.redemptionSummary(window.from(), window.to(), cohortWindow);
+        Map<String, Object> previous = mapper.redemptionSummary(window.previousFrom(), window.previousTo(), cohortWindow);
         long submitted = whole(current, "submitted");
         long confirmed = whole(current, "confirmed");
         long previousSubmitted = whole(previous, "submitted");
