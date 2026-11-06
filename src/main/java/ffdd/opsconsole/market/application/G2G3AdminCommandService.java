@@ -13,6 +13,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.nio.charset.StandardCharsets;
@@ -33,8 +34,11 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor
 public class G2G3AdminCommandService {
+    private static final String QUEUE_BATCH_SCOPE = "ADMIN:G2:QUEUE_BATCH";
+    private static final String RECEIPT_OWNER = "g2QueueBatchOwnerAdminId";
     private final OpsNexMarketService market;
     private final AdminIdempotencyService idempotency;
+    private final AdminIdempotencyRecordMapper idempotencyRecords;
     private final EventOutboxService outbox;
     private final G2ExchangeQueueBatchService queueBatch;
     private final AuditLogService audit;
@@ -82,10 +86,11 @@ public class G2G3AdminCommandService {
     }
 
     @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
-    public ApiResult<Map<String,Object>> processQueue(String key,ExchangeQueueBatchRequest request) {
+    @SuppressWarnings("unchecked")
+    public ApiResult<Map<String,Object>> processQueue(String key, ExchangeQueueBatchRequest request, long adminId) {
         requireReason(request == null ? null : request.reason());
         int limit = request.limit() == null ? 50 : request.limit();
-        return once("G2:QUEUE_BATCH",key,request,() -> {
+        var stored = idempotency.executeRetained(QUEUE_BATCH_SCOPE, key, sha256(String.valueOf(request)), ApiResult.class, () -> {
             Map<String,Object> batch = queueBatch.process(limit);
             outbox.publish("EXCHANGE_QUEUE","daily","admin.exchange_queue_batch_processed",linked(
                     "completedCount",batch.get("completedCount"),"skippedCount",batch.get("skippedCount"),
@@ -96,9 +101,36 @@ public class G2G3AdminCommandService {
                     .actorUsername(actor(request.operator())).method("POST").path("/api/admin/market/exchange/queue/process")
                     .result("SUCCESS").riskLevel("HIGH").detail(linked("reason",request.reason().trim(),"batch",batch)).build());
             Map<String,Object> data = new LinkedHashMap<>(market.exchangeOverview().getData());
-            data.put("batch",batch);
+            data.put("batch", batch);
+            data.put(RECEIPT_OWNER, adminId);
             return ApiResult.ok(data);
         });
+        var data = new LinkedHashMap<>((Map<String,Object>) stored.getData());
+        // Legacy receipts keep the original POST replay contract. New receipts bind their owner.
+        if (data.containsKey(RECEIPT_OWNER) && !ownsQueueBatch(data, adminId)) {
+            throw new BizException(404, "G2_BATCH_RECEIPT_NOT_FOUND");
+        }
+        data.remove(RECEIPT_OWNER);
+        return ApiResult.ok(data);
+    }
+
+    public ApiResult<Map<String,Object>> queueBatchReceipt(String key, long adminId) {
+        if (!StringUtils.hasText(key) || key.trim().length() > 128) {
+            throw new BizException(400, "IDEMPOTENCY_KEY_INVALID");
+        }
+        var record = idempotencyRecords.selectCurrent(QUEUE_BATCH_SCOPE, key.trim());
+        if (record != null) {
+            var recovered = idempotency.recoveryResult(QUEUE_BATCH_SCOPE, key, record.getRequestHash(), ApiResult.class);
+            if (recovered.response() != null && recovered.response().getData() instanceof Map<?, ?> data
+                    && ownsQueueBatch(data, adminId) && data.get("batch") instanceof Map<?, ?> batch) {
+                return ApiResult.ok(Map.of("batch", batch));
+            }
+        }
+        throw new BizException(404, "G2_BATCH_RECEIPT_NOT_FOUND");
+    }
+
+    private boolean ownsQueueBatch(Map<?, ?> data, long adminId) {
+        return data.get(RECEIPT_OWNER) instanceof Number owner && owner.longValue() == adminId;
     }
 
     @Transactional(rollbackFor = Exception.class)
