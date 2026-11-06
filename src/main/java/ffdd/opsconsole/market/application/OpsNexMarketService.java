@@ -1160,6 +1160,16 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return ApiResult.ok(prepareMarketPolicy(request, reason, operator(null)).review());
     }
 
+    void validateLegacyMarketProposal(AuditReplayCommand command) {
+        if (manualTuningAllowed) return;
+        Map<String, Object> params = command.params();
+        if (params == null) throw new BizException(422, "G3_POLICY_PROPOSAL_INVALID");
+        boolean forbidden = "g3_override".equals(command.op())
+                ? "currentPrice".equals(str(params, "overrideKey"))
+                : curveFieldChanged(loadCurve(), normalizeFrames(replayMarketFrames(params.get("frames"))), "pumpProbability");
+        if (forbidden) throw new BizException(403, MANUAL_TUNING_FORBIDDEN);
+    }
+
     ApiResult<Map<String, Object>> applyApprovedMarketPolicy(String idempotencyKey, G3MarketPolicyChangeRequest request,
                                                             String reason, String operator, String operationId) {
         if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(operationId)

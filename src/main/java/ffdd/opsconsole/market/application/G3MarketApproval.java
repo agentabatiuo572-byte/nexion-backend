@@ -100,6 +100,10 @@ public class G3MarketApproval {
         return market.previewMarketPolicy(request(command), reason);
     }
 
+    public void validateLegacyProposal(AuditReplayCommand command) {
+        market.validateLegacyMarketProposal(command);
+    }
+
     public ApiResult<?> replay(AuditReplayCommand command, AuditReplayContext context,
                                Long checkerId, String operationId) {
         ApiResult<Void> checker = validateChecker(command, checkerId);
