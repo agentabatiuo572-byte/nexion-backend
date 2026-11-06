@@ -34,6 +34,7 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.PhoneReplacementException;
 import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
+import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.shared.security.SuperAdminAuthorization;
 import ffdd.opsconsole.team.application.OpsTeamService;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
@@ -57,6 +58,8 @@ import org.springframework.security.core.context.SecurityContextHolder;
 @ApplicationService
 @RequiredArgsConstructor(onConstructor_ = @org.springframework.beans.factory.annotation.Autowired)
 public class AuditReplayBusinessPermissionGuard {
+
+    static final String E4_REFUND_AUTHORITY = "device_e4_order_refund";
 
     private static final Set<String> SENSITIVE_TRUST_SECTIONS = Set.of(
             "financials", "nexnarrative", "nexstory", "auditsreserves", "compliancebadges");
@@ -118,6 +121,8 @@ public class AuditReplayBusinessPermissionGuard {
     private final ffdd.opsconsole.finance.cregis.CregisDepositPolicyService depositPolicies;
     private final ffdd.opsconsole.device.application.LegacyUnknownZeroCreditService legacyUnknownZeroCredit;
     private final TeamCommissionRepository teamCommissionRepository;
+    @Autowired
+    private AdminPermissionCache permissions;
     @Autowired
     private WithdrawalConfigApproval withdrawalConfigApproval;
     @Autowired
@@ -221,6 +226,10 @@ public class AuditReplayBusinessPermissionGuard {
                 String sourceDomain, String operationType, boolean amplifies, AuditLockTarget target) {
             this(action, objectId, beforeValue, afterValue, sourceDomain, operationType, amplifies, target, null);
         }
+    }
+
+    static boolean isE4Refund(AuditReplayCommand command) {
+        return command != null && "E".equals(command.domain()) && "e4_order_refund".equals(command.op());
     }
 
     boolean canReadOwnFinanceProposal(AuditReplayCommand command, long actorId, Set<String> grants) {
@@ -911,6 +920,29 @@ public class AuditReplayBusinessPermissionGuard {
         if (command != null && "A".equals(command.domain())
                 && A1_ACCOUNT_PROPOSAL_AUTHORITIES.containsKey(text(command.op()))) {
             return validateA1AccountProposalContext(request, command, delegated);
+        }
+        if (isE4Refund(command) && permissions
+                .getPermissionGrantRoles(A2ReplayContext.authenticatedAdminId(), E4_REFUND_AUTHORITY).equals(Set.of("FINANCE_LEAD"))
+                && !superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())) {
+            Object rawOrderNo = command.params() == null ? null : command.params().get("orderNo");
+            if (!(rawOrderNo instanceof String suppliedOrderNo) || suppliedOrderNo.isBlank()) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            String orderNo = suppliedOrderNo.trim();
+            var target = new AuditLockTarget("E", "device_order", orderNo);
+            if (!"E4".equals(text(request.sourceDomain()))
+                    || !orderNo.equals(text(request.obj())) || !target.equals(request.target())
+                    || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            var detail = devices.order(orderNo);
+            if (detail.getCode() != 0) return ApiResult.fail(detail.getCode(), detail.getMessage());
+            var order = detail.getData().order();
+            if (!orderNo.equals(order.orderNo())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            return ApiResult.ok(new DelegatedProposalDescriptor("退款设备订单", orderNo, order.state(), "已退款",
+                    "E4", "fund", true, target));
         }
         if (command != null && Set.of("f_direct_referral_policy","f_seven_layer_activation").contains(command.op())
                 && (request.reason() == null || request.reason().trim().length() < 8 || request.reason().trim().length() > 200)) {
@@ -1739,7 +1771,7 @@ public class AuditReplayBusinessPermissionGuard {
                 case "e2_task_create", "e2_task_update", "e2_task_price", "e2_task_status", "e2_task_delete" -> "device_e2_write";
                 case "e1_legacy_unknown_zero_credit_cancel" -> "device_e5_write";
                 case "e3_config" -> "device_e3_write";
-                case "e4_order_refund" -> "device_e4_order_refund";
+                case "e4_order_refund" -> E4_REFUND_AUTHORITY;
                 case "e4_order_cancel", "e4_order_terminal", "e4_order_state" -> "device_e4_write";
                 case "e5_device_force_activate" -> "device_e5_device_force_activate";
                 case "e5_device_unbind" -> "device_e5_device_unbind";

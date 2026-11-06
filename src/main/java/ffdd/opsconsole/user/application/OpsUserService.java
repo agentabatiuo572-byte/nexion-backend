@@ -375,14 +375,25 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             throw new IllegalArgumentException(validationError);
         }
         var scope=supportReader()?supportOwnership.defaultQueryScope(null,null):null;
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()
+                || !(authentication.getDetails() instanceof Map<?, ?> details)
+                || !"ADMIN".equals(details.get("subjectType"))) {
+            throw new BizException(403, "C1_EXPORT_ACTOR_REQUIRED");
+        }
+        String role = scope == null ? text(roleResolver.resolveCode()).trim().toUpperCase(Locale.ROOT) : "SUPPORT";
+        boolean full = Set.of("SUPER_ADMIN", "RISK", "AUDITOR").contains(role);
+        String receiptScope = scope == null
+                ? "C1_USER_LIST_EXPORT:ADMIN:" + authentication.getName() + (full ? ":FULL" : ":MASKED")
+                : "C1_USER_LIST_EXPORT:" + scope.actorId();
         UserProfileExportFile file=idempotencyService.execute(
-                scope==null?"C1_USER_LIST_EXPORT":"C1_USER_LIST_EXPORT:"+scope.actorId(),
+                receiptScope,
                 normalizedKey,
                 // Idempotency persistence is CHAR(64): hash the complete semantic request
                 // (filter + reason) instead of storing the concatenated material itself.
                 filterHash(filterHash(query) + "|reason=" + exportReason),
                 UserProfileExportFile.class,
-                () -> buildProfileExport(normalizedKey, request,scope));
+                () -> buildProfileExport(normalizedKey, request, scope, role, full));
         if(scope!=null) {
             List<Long> ids=file.customerIds();
             if(ids==null || ids.size()!=file.rowCount() || ids.stream().distinct().count()!=ids.size()
@@ -394,7 +405,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     }
 
     private UserProfileExportFile buildProfileExport(String idempotencyKey, UserProfileExportRequest request,
-            ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+            ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope, String role, boolean full) {
         int pageSize = 200;
         UserQueryRequest firstQuery = exportQuery(request, 1, pageSize);
         PageResult<UserAccountView> first = scope==null?userRepository.pageProfiles(firstQuery):userRepository.pageSupportProfiles(firstQuery,scope);
@@ -416,7 +427,6 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 + DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS").format(createdAt)
                 + "-"
                 + UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase(Locale.ROOT);
-        String role = scope==null?text(roleResolver.resolveCode()).trim().toUpperCase(Locale.ROOT):"SUPPORT";
         String exportFilterHash = filterHash(exportQuery(request, 1, pageSize));
         requiredAudit(
                 "ADMIN.USER_LIST_EXPORTED",
@@ -438,13 +448,12 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 "occurred_at", Instant.now().toString()));
         return new UserProfileExportFile(
                 jobNo + ".csv",
-                profileExportCsv(rows, role),
+                profileExportCsv(rows, full),
                 rows.size(),scope==null?null:rows.stream().map(UserAccountView::id).toList());
     }
 
-    private byte[] profileExportCsv(List<UserAccountView> rows, String role) {
+    private byte[] profileExportCsv(List<UserAccountView> rows, boolean full) {
         StringBuilder csv = new StringBuilder(4096 + rows.size() * 320);
-        boolean full = Set.of("SUPER_ADMIN", "RISK", "AUDITOR").contains(role);
         if (!full) {
             csv.append('\ufeff')
                     .append("用户编码,昵称,手机号(脱敏),国家/地区,生命周期,V-Rank,状态,注册时间,最近登录\r\n");

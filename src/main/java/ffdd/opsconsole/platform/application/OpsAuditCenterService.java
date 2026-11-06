@@ -319,7 +319,9 @@ public class OpsAuditCenterService {
             ticket.setObjectText(descriptor.objectId());
             ticket.setBeforeValue(H4GrowthApproval.supports(command) ? "H4 original configuration: " + descriptor.objectId() : descriptor.beforeValue());
             ticket.setAfterValue(H4GrowthApproval.supports(command) ? "H4 proposed configuration: " + command.op() : descriptor.afterValue());
-            if (!superAdminProposal && replayBusinessPermissionGuard.delegatedProposal()) {
+            if (AuditReplayBusinessPermissionGuard.isE4Refund(command)) {
+                ticket.setOperatorRole("财务主管");
+            } else if (!superAdminProposal && replayBusinessPermissionGuard.delegatedProposal()) {
                 ticket.setOperatorRole("风控");
             }
             ticket.setOperationType(descriptor.operationType());
@@ -836,6 +838,12 @@ public class OpsAuditCenterService {
         if ("PROPOSE".equals(verb) && G4CatalogApproval.supports(command)) {
             if (!canReadOwnProposal(ticket, command, actorId)) return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
             return ApiResult.ok(toTicket(ticket, true));
+        }
+        if ("PROPOSE".equals(verb) && AuditReplayBusinessPermissionGuard.isE4Refund(command)) {
+            if (!A2ReplayContext.hasAuthority(AuditReplayBusinessPermissionGuard.E4_REFUND_AUTHORITY)) {
+                return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
+            }
+            if (canReadOwnProposal(ticket, command, actorId)) return ApiResult.ok(toTicket(ticket, true));
         }
         if (!accessPolicy.canAccessTicket(ticket, makerId)
                 && !("PROPOSE".equals(verb) && accessPolicy.canAccessOwnBusinessProposal(command, actorId))) {

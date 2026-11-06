@@ -94,8 +94,7 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
             """)
     boolean isM5ContentRbacClosureApplied();
 
-    @Select("""
-            SELECT DISTINCT p.permission_code
+    String ACTIVE_ADMIN_API_GRANTS = """
             FROM nx_admin_role_relation rr
             JOIN nx_admin_role r
               ON r.id = rr.role_id
@@ -111,8 +110,14 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
              AND p.resource_type = 'API'
             WHERE rr.admin_id = #{adminId}
               AND rr.is_deleted = 0
-            """)
+            """;
+
+    @Select("SELECT DISTINCT p.permission_code " + ACTIVE_ADMIN_API_GRANTS)
     List<String> selectActivePermissionCodes(Long adminId);
+
+    @Select("SELECT DISTINCT r.role_code " + ACTIVE_ADMIN_API_GRANTS + " AND p.permission_code = #{permissionCode}")
+    List<String> selectActivePermissionGrantRoles(@Param("adminId") Long adminId,
+                                                  @Param("permissionCode") String permissionCode);
 
     @Select("""
             SELECT permission_code AS permissionCode, permission_name AS permissionName
