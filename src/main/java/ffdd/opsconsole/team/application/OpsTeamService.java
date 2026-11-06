@@ -1691,11 +1691,31 @@ public class OpsTeamService implements AuditReplayable {
             TeamCommissionConfigUpdateRequest request,
             String key,
             String eventId) {
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("F", "commission_event", eventId) > 0) {
-            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-        }
         String value = normalizeUiValue(request.value());
+        String toCanonical = canonicalCommissionState(value);
+        if (!A2ReplayContext.isReplaying()) {
+            Long adminId = parseAdminIdFromContext();
+            if (adminId == null) {
+                return ApiResult.fail(401, "ADMIN_AUTH_REQUIRED");
+            }
+            String authority = switch (toCanonical) {
+                case "REJECTED" -> "network_f5_commission_reverse";
+                case "FROZEN", "COOLING" -> "network_f5_commission_freeze";
+                default -> "network_f5_commission_release";
+            };
+            if (!permissionCache.getPermissionCodes(adminId).contains(authority)) {
+                return ApiResult.fail(403, "PERMISSION_DENIED");
+            }
+        }
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(A2ReplayContext.operationId())) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
+        var locks = lockMapper.selectActiveByTicketId(A2ReplayContext.operationId());
+        if (locks.size() != 1 || !"F".equals(locks.get(0).getTargetDomain())
+                || !"commission_event".equals(locks.get(0).getTargetType())
+                || !eventId.equals(locks.get(0).getTargetId())) {
+            return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+        }
         Map<String, Object> oldEvent = commissionEvents().stream()
                 .filter(row -> eventId.equals(row.get("id")))
                 .findFirst()
@@ -1705,7 +1725,6 @@ public class OpsTeamService implements AuditReplayable {
         }
         // A1 批1a 修复1:F5 佣金事件状态机校验(原接受任意 status,REJECTED→UNLOCKED 静默复活=资金漏洞)。
         String fromCanonical = canonicalCommissionState(String.valueOf(oldEvent.get("status")));
-        String toCanonical = canonicalCommissionState(value);
         if (request.expectedVersion() == null || request.expectedVersion() < 0) {
             return ApiResult.fail(400,"F5_EXPECTED_VERSION_REQUIRED");
         }
@@ -1714,21 +1733,6 @@ public class OpsTeamService implements AuditReplayable {
         if(currentVersion!=request.expectedVersion()) return ApiResult.fail(409,"F5_COMMISSION_VERSION_CONFLICT");
         if (!isLegalCommissionStateTransition(fromCanonical, toCanonical)) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
-        }
-        // F5 权限按资金影响分键:冻结/解冻(止损)、解锁/支付(放钱)、红冲(退钱)。
-        if (!A2ReplayContext.isReplaying()) {
-            Long adminId = parseAdminIdFromContext();
-            if (adminId == null) {
-                return ApiResult.fail(401, "ADMIN_AUTH_REQUIRED");
-            }
-            String f5Required = switch (toCanonical) {
-                case "REJECTED" -> "network_f5_commission_reverse";
-                case "FROZEN", "COOLING" -> "network_f5_commission_freeze";
-                default -> "network_f5_commission_release";
-            };
-            if (!permissionCache.getPermissionCodes(adminId).contains(f5Required)) {
-                return ApiResult.fail(403, "PERMISSION_DENIED");
-            }
         }
         var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
         Long directEventId = Long.valueOf(eventId.replaceFirst("^CM-", ""));
@@ -1788,7 +1792,7 @@ public class OpsTeamService implements AuditReplayable {
      * F5 佣金事件状态归一化(PRD F5②:cooling/unlocked/withdrawn/reversed + 任务 A1 转换图 frozen/settled/paid)。
      * nx_commission_event 历史数据混用中英文,统一归一为大写英文供状态机判断。
      */
-    private String canonicalCommissionState(String raw) {
+    public static String canonicalCommissionState(String raw) {
         String normalized = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
         return switch (normalized) {
             case "计提", "cooling", "pending" -> "COOLING";
@@ -1956,7 +1960,11 @@ public class OpsTeamService implements AuditReplayable {
         return Integer.parseInt(normalized.substring(1));
     }
 
-    private Optional<String> commissionStatusEventId(String key) {
+    public static boolean isCommissionEventStatusKey(String key) {
+        return commissionStatusEventId(key).isPresent();
+    }
+
+    private static Optional<String> commissionStatusEventId(String key) {
         String prefix = "F.commission.";
         String suffix = ".status";
         if (!key.startsWith(prefix) || !key.endsWith(suffix)) {
