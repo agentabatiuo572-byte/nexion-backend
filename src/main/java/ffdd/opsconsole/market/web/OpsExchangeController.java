@@ -8,9 +8,11 @@ import ffdd.opsconsole.market.dto.ExchangeQueueCancelRequest;
 import ffdd.opsconsole.market.dto.ExchangeQueueBatchRequest;
 import ffdd.opsconsole.market.dto.ExchangeSwapStatusRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.exception.BizException;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -72,8 +74,26 @@ public class OpsExchangeController {
     @PreAuthorize("hasAuthority('finprod_g2_write')")
     public ApiResult<Map<String,Object>> processQueue(
             @RequestHeader(value=OpsAdminApi.IDEMPOTENCY_KEY_HEADER,required=false) String idempotencyKey,
-            @RequestBody ExchangeQueueBatchRequest request) {
+            @RequestBody ExchangeQueueBatchRequest request,
+            Authentication authentication) {
         if (commandService == null) return ApiResult.fail(503,"G2_COMMAND_BOUNDARY_UNAVAILABLE");
-        return commandService.processQueue(idempotencyKey,request);
+        return commandService.processQueue(idempotencyKey, request, queueBatchAdminId(authentication));
+    }
+
+    @GetMapping("/queue/process")
+    @PreAuthorize("hasAuthority('finprod_g2_write')")
+    public ApiResult<Map<String,Object>> queueBatchReceipt(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            Authentication authentication) {
+        if (commandService == null) return ApiResult.fail(503,"G2_COMMAND_BOUNDARY_UNAVAILABLE");
+        return commandService.queueBatchReceipt(idempotencyKey, queueBatchAdminId(authentication));
+    }
+
+    private long queueBatchAdminId(Authentication authentication) {
+        try {
+            return Long.parseLong(authentication.getName());
+        } catch (NumberFormatException ex) {
+            throw new BizException(403, "ADMIN_AUTH_REQUIRED");
+        }
     }
 }
