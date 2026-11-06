@@ -249,7 +249,16 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
         long pageSize = normalizeSize(request == null ? null : request.pageSize());
         long offset = (pageNum - 1) * pageSize;
         long total = mapper.countTasks(status, keyword, taskClass);
-        List<DeviceTaskView> records = mapper.pageTasks(status, keyword, taskClass, pageSize, offset);
+        return new PageResult<>(total, pageNum, pageSize,
+                withTaskPolicies(mapper.pageTasks(status, keyword, taskClass, pageSize, offset)));
+    }
+
+    @Override
+    public List<DeviceTaskView> lockTaskCatalog() {
+        return withTaskPolicies(mapper.lockTaskCatalog());
+    }
+
+    private List<DeviceTaskView> withTaskPolicies(List<DeviceTaskView> records) {
         if (taskScheduling != null && records != null && !records.isEmpty()) {
             var policies = taskScheduling.findMany(records.stream().map(DeviceTaskView::taskId).toList()).stream()
                     .collect(java.util.stream.Collectors.toMap(
@@ -259,8 +268,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                     ? task.withScheduling(policies.get(task.taskId())) : task).toList();
         }
         var simulations=simulationPolicies.typeViews(records.stream().map(DeviceTaskView::taskId).toList());
-        records=records.stream().map(t->t.withSimulation(simulations.get(t.taskId()))).toList();
-        return new PageResult<>(total, pageNum, pageSize, records);
+        return records.stream().map(task -> task.withSimulation(simulations.get(task.taskId()))).toList();
     }
 
     @Override

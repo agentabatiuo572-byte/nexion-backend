@@ -377,6 +377,9 @@ public class AuditReplayBusinessPermissionGuard {
                 && request.targets().stream().anyMatch(G4CatalogApproval::isCatalogTarget))) {
             return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
         }
+        if (e2TaskPricingApproval.shouldBindLifecycle(command)) {
+            return ApiResult.ok(e2TaskPricingApproval.bindLifecycle(request, A2ReplayContext.authenticatedAdminId()));
+        }
         if (!LearningCourseActivationApproval.isOperation(command)) return canonicalizeProposalCommand(command);
         if (!LearningCourseActivationApproval.supports(command)) {
             return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
@@ -720,6 +723,13 @@ public class AuditReplayBusinessPermissionGuard {
                     (String) boundCommand.params().get("beforeSummary"), (String) boundCommand.params().get("afterSummary"),
                     "I", "fund", true, target));
         }
+        if (E2TaskPricingApproval.isLifecycle(boundCommand)) {
+            var preview = e2TaskPricingApproval.preview(boundCommand, request.reason());
+            if (preview.getCode() != 0) return ApiResult.fail(preview.getCode(), preview.getMessage());
+            var review = preview.getData();
+            return ApiResult.ok(new DelegatedProposalDescriptor("变更正式任务目录", review.target().id(),
+                    review.before(), review.after(), "E2", "fund", true, review.target()));
+        }
         return validateProposalContext(request);
     }
 
@@ -823,7 +833,7 @@ public class AuditReplayBusinessPermissionGuard {
             return ApiResult.ok(new DelegatedProposalDescriptor(
                     review.action(), target.id(), review.before(), review.after(), source, "fund", true, target, review));
         }
-        if (E2TaskPricingApproval.supports(command)) {
+        if (E2TaskPricingApproval.supports(command) && !E2TaskPricingApproval.isLifecycle(command)) {
             if (!"E2".equals(text(request.sourceDomain())) || (request.targets() != null && !request.targets().isEmpty())) {
                 return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
             }

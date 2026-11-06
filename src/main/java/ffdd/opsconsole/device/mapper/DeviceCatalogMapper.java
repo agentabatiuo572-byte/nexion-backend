@@ -1260,6 +1260,9 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                                    @Param("taskClass") String taskClass,
                                    @Param("limit") long limit, @Param("offset") long offset);
 
+    @Select("SELECT " + TASK_COLUMNS + " FROM nx_admin_device_task WHERE is_deleted = 0 ORDER BY id FOR UPDATE")
+    List<DeviceTaskView> lockTaskCatalog();
+
     @Select("""
             SELECT
             """ + TASK_COLUMNS + """
