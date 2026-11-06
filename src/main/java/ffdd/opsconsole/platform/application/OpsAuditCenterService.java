@@ -1307,6 +1307,7 @@ public class OpsAuditCenterService {
     private record ViewerTicket(AuditOperationTicketEntity row, boolean mine) {}
 
     private AuditOperationTicket toTicket(AuditOperationTicketEntity row, boolean mine) {
+        AuditReplayCommand command = deserializeCommand(row.getCommandJson());
         return new AuditOperationTicket(
                 row.getOperationId(),
                 row.getAction(),
@@ -1322,11 +1323,12 @@ public class OpsAuditCenterService {
                 mine,
                 normalizeRoleGate(row.getRoleGate()),
                 row.getReason(),
-                status(row.getStatus()), phoneCalibrationProposal(row.getCommandJson()));
+                status(row.getStatus()), phoneCalibrationProposal(command),
+                command != null && "K".equals(command.domain())
+                        && ("k1_cluster_release".equals(command.op()) || "k1_cluster_cleared".equals(command.op())));
     }
 
-    private String phoneCalibrationProposal(String commandJson) {
-        AuditReplayCommand command = deserializeCommand(commandJson);
+    private String phoneCalibrationProposal(AuditReplayCommand command) {
         if (command == null || !"E".equals(command.domain()) || !"e6_phone_calibration".equals(command.op())) return null;
         try {
             var proposal = objectMapper.convertValue(command.params(),

@@ -9,7 +9,6 @@ import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -38,11 +37,10 @@ public class MultiAccountClusterBatchService {
         List<RiskOpsRepository.MultiAccountSignalFact> facts = repository.multiAccountSignalFacts();
         Set<String> whitelist = repository.activeIpWhitelistCidrs();
         Map<String, Optional<MultiAccountClusterState>> stateCache = new HashMap<>();
-        List<MultiAccountClusterProjection> fullProjections = engine.project(facts, Set.of(), config);
-        Map<String, String> fullFingerprints = fullProjections.stream().collect(Collectors.toMap(
-                MultiAccountClusterProjection::clusterId,
-                MultiAccountClusterProjection::evidenceFingerprint));
-        List<RoutedProjection> withoutWhitelist = route(fullProjections, stateCache, Map.of());
+        Map<String, String> fullFingerprints = whitelist.isEmpty() ? Map.of()
+                : engine.project(facts, Set.of(), config).stream().collect(Collectors.toMap(
+                        MultiAccountClusterProjection::clusterId,
+                        MultiAccountClusterProjection::evidenceFingerprint));
         List<RoutedProjection> routed = route(
                 engine.project(facts, whitelist, config), stateCache, fullFingerprints).stream()
                 .map(item -> new RoutedProjection(
@@ -51,29 +49,11 @@ public class MultiAccountClusterBatchService {
                 .toList();
         List<MultiAccountClusterProjection> projections = routed.stream()
                 .map(RoutedProjection::projection).toList();
-        Set<String> activeIds = projections.stream()
-                .map(MultiAccountClusterProjection::clusterId).collect(Collectors.toSet());
-        Set<String> clearedByWhitelist = withoutWhitelist.stream()
-                .map(item -> item.projection().clusterId())
-                .filter(clusterId -> !activeIds.contains(clusterId))
-                .collect(Collectors.toSet());
-        Map<String, Optional<MultiAccountClusterState>> before = routed.stream().collect(Collectors.toMap(
-                item -> item.projection().clusterId(),
-                RoutedProjection::currentState,
-                (left, ignored) -> left,
-                LinkedHashMap::new));
-        Map<String, Optional<MultiAccountClusterState>> clearBefore = clearedByWhitelist.stream().collect(Collectors.toMap(
-                clusterId -> clusterId,
-                clusterId -> stateCache.computeIfAbsent(clusterId, repository::multiAccountClusterState),
-                (left, ignored) -> left,
-                LinkedHashMap::new));
+        // Missing projections stay open for manual disposition, including when a policy change hides all evidence.
         repository.upsertMultiAccountProjections(projections);
-        repository.clearWhitelistedDetectedClusters(clearedByWhitelist);
-        auditWhitelistClears(clearedByWhitelist, clearBefore);
-        repository.retireMissingDetectedClusters(activeIds);
         for (RoutedProjection item : routed) {
             MultiAccountClusterProjection projection = item.projection();
-            Optional<MultiAccountClusterState> old = before.getOrDefault(projection.clusterId(), Optional.empty());
+            Optional<MultiAccountClusterState> old = item.currentState();
             Optional<MultiAccountClusterState> current = repository.multiAccountClusterState(projection.clusterId());
             if (old.isEmpty() && item.terminalRoot().isPresent()
                     && current.filter(state -> "detected".equals(state.status())).isPresent()) {
@@ -130,6 +110,17 @@ public class MultiAccountClusterBatchService {
             Optional<MultiAccountClusterState> rootState = stateCache.computeIfAbsent(
                     projection.clusterId(), repository::multiAccountClusterState);
             Optional<MultiAccountClusterState> terminal = rootState.filter(this::terminal);
+            boolean replacesAffectedUsers = false;
+            if (rootState.isPresent() && terminal.isEmpty()) {
+                Set<String> projectedUsers = projection.nodes().stream()
+                        .map(RiskOpsRepository.MultiAccountNode::userNo).collect(Collectors.toSet());
+                Set<String> previousUsers = Set.copyOf(rootState.get().affectedUserIds());
+                if (!projectedUsers.containsAll(previousUsers)) {
+                    // A smaller projection cannot lift restrictions for an existing group member.
+                    if (previousUsers.containsAll(projectedUsers)) continue;
+                    replacesAffectedUsers = true;
+                }
+            }
             if (terminal.isPresent() && hasFingerprint(terminal.get().evidenceFingerprint())
                     && fullFingerprints.containsKey(projection.clusterId())
                     && !fullFingerprints.get(projection.clusterId()).equals(projection.evidenceFingerprint())
@@ -139,8 +130,8 @@ public class MultiAccountClusterBatchService {
                 // evidence and must neither reopen/overwrite the terminal root nor create a derived incident.
                 continue;
             }
-            if (terminal.isPresent() && hasFingerprint(terminal.get().evidenceFingerprint())
-                    && !terminal.get().evidenceFingerprint().equals(projection.evidenceFingerprint())) {
+            if (replacesAffectedUsers || (terminal.isPresent() && hasFingerprint(terminal.get().evidenceFingerprint())
+                    && !terminal.get().evidenceFingerprint().equals(projection.evidenceFingerprint()))) {
                 String incidentId = incidentId(projection.clusterId(), projection.evidenceFingerprint());
                 Optional<MultiAccountClusterState> incidentState = stateCache.computeIfAbsent(
                         incidentId, repository::multiAccountClusterState);
@@ -150,36 +141,6 @@ public class MultiAccountClusterBatchService {
             }
         }
         return List.copyOf(routed);
-    }
-
-    private void auditWhitelistClears(
-            Set<String> clearedByWhitelist,
-            Map<String, Optional<MultiAccountClusterState>> before) {
-        for (String clusterId : clearedByWhitelist) {
-            Optional<MultiAccountClusterState> old = before.getOrDefault(clusterId, Optional.empty())
-                    .filter(state -> "detected".equals(state.status()));
-            if (old.isEmpty()) continue;
-            Optional<MultiAccountClusterState> current = repository.multiAccountClusterState(clusterId)
-                    .filter(state -> "cleared".equals(state.status()) && state.version() > old.orElseThrow().version());
-            if (current.isEmpty()) continue;
-            auditLogService.recordRequired(AuditLogWriteRequest.builder()
-                    .action("K1_CLUSTER_AUTO_CLEARED_BY_WHITELIST")
-                    .resourceType("RISK_MULTI_ACCOUNT_CLUSTER")
-                    .resourceId(clusterId)
-                    .bizNo(clusterId)
-                    .actorType("SYSTEM")
-                    .actorUsername("K1_CLUSTER_SCHEDULER")
-                    .result("SUCCESS")
-                    .riskLevel("HIGH")
-                    .detail(Map.of(
-                            "previousStatus", "detected",
-                            "newStatus", "cleared",
-                            "previousVersion", old.orElseThrow().version(),
-                            "currentVersion", current.orElseThrow().version(),
-                            "affectedUserIds", old.orElseThrow().affectedUserIds(),
-                            "reason", "ACTIVE_IP_WHITELIST_MATCH"))
-                    .build());
-        }
     }
 
     private boolean terminal(MultiAccountClusterState state) {

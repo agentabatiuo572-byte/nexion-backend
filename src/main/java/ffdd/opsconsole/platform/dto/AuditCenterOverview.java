@@ -42,10 +42,12 @@ public record AuditCenterOverview(
             String roleGate,
             String reason,
             String status,
-            String phoneCalibrationProposal) {
+            String phoneCalibrationProposal,
+            boolean coverageCheckOnApproval) {
         public AuditOperationTicket withMine(boolean ownedByViewer) {
             return new AuditOperationTicket(id, action, obj, beforeValue, afterValue, operator, operatorRole,
-                    type, amplifies, sos, ts, ownedByViewer, roleGate, reason, status, phoneCalibrationProposal);
+                    type, amplifies, sos, ts, ownedByViewer, roleGate, reason, status, phoneCalibrationProposal,
+                    coverageCheckOnApproval);
         }
     }
 

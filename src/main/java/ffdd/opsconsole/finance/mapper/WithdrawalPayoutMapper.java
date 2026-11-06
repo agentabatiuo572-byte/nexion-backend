@@ -16,6 +16,9 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
     @Select("SELECT config_value FROM nx_config_item WHERE config_key=#{key} AND is_deleted=0 AND status=1 FOR SHARE")
     String lockNetworkPayoutEnabled(@Param("key") String key);
 
+    @Select("SELECT CASE WHEN is_deleted=0 THEN setting_value END FROM nx_emergency_control_setting WHERE setting_key=#{key} FOR SHARE")
+    String lockWithdrawalSwitch(@Param("key") String key);
+
     @Select("SELECT id FROM nx_user WHERE id=#{userId} FOR UPDATE")
     @org.apache.ibatis.annotations.Options(useCache=false, flushCache=org.apache.ibatis.annotations.Options.FlushCachePolicy.TRUE)
     Long lockCashCustomer(@Param("userId") Long userId);
