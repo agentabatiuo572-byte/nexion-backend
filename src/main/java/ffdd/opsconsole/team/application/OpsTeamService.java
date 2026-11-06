@@ -208,6 +208,7 @@ public class OpsTeamService implements AuditReplayable {
     private static final List<String> VRANK_LEVELS = List.of(
             "V0", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8");
     private static final Set<String> VRANK_THRESHOLD_FIELDS = Set.of("selfBuy", "directRefs", "teamGv", "legCount", "legRank");
+    private static final Set<String> VRANK_ORDERED_FIELDS = Set.of("selfBuy", "teamGv", "legCount", "legRank");
     private static final long MAX_SAFE_COMPUTE_POINTS = 9_007_199_254_740_991L;
     private static final Set<String> VRANK_REWARD_TYPES = Set.of("usdt", "uvt", "voucher", "sku", "custom");
     private static final List<F2PolicyParamSeed> F2_POLICY_PARAM_SEEDS = List.of(
@@ -817,14 +818,15 @@ public class OpsTeamService implements AuditReplayable {
             throw new BizException(422, "VRANK_POLICY_REVISION_REQUIRED");
         }
         String rank = requireVRank(request.rank()).v();
+        String action = requireText(request.action(), "VRANK_POLICY_ACTION_REQUIRED");
+        String field = request.field();
+        var orderedThresholds = lockOrderedVRankThresholds("threshold".equals(action) ? field : null);
         Map<String, Object> before = currentVRankPolicy(rank);
         if (!request.expectedRevision().equals(before.get("policyRevision"))) {
             throw new BizException(409, "VRANK_POLICY_VERSION_CONFLICT");
         }
-        String action = requireText(request.action(), "VRANK_POLICY_ACTION_REQUIRED");
         Map<String, Object> after = new LinkedHashMap<>(before);
         Map<String, Object> reward = Map.of();
-        String field = request.field();
         String value = request.value();
         boolean amplifies;
         if ("threshold".equals(action)) {
@@ -834,6 +836,7 @@ public class OpsTeamService implements AuditReplayable {
             }
             value = normalizeVRankThreshold(rank, field, value);
             after.put(field, "legRank".equals(field) ? value : parseDecimal(value).stripTrailingZeros());
+            validateVRankThresholdOrder(orderedThresholds, rank, field, before, after);
             amplifies = loosensVRankCondition(before, after, field);
         } else if ("reward_add".equals(action) || "reward_update".equals(action)) {
             if (request.reward() == null || StringUtils.hasText(field) || StringUtils.hasText(value)) {
@@ -873,6 +876,56 @@ public class OpsTeamService implements AuditReplayable {
         Map<String, Object> row = commissionRepository.lockVRankPolicy(rank);
         if (row.isEmpty()) throw new BizException(422, "TEAM_VRANK_NOT_FOUND");
         return vRankPolicyFields(row, commissionRepository.vRankRewardsForUpdate(rank));
+    }
+
+    private List<Map<String, Object>> lockOrderedVRankThresholds(String field) {
+        if (field == null || !VRANK_ORDERED_FIELDS.contains(field)) return List.of();
+        return VRANK_LEVELS.stream().map(commissionRepository::lockVRankPolicy)
+                .filter(row -> !row.isEmpty()).toList();
+    }
+
+    private void validateVRankThresholdOrder(List<Map<String, Object>> rows, String rank, String field,
+                                             Map<String, Object> before, Map<String, Object> after) {
+        if (rows.isEmpty()) return;
+        requireVRankThresholdOrder(rows, rank, field, vRankOrderValue(after, field));
+        if (("legCount".equals(field) || "legRank".equals(field))
+                && !hasVRankBranchThreshold(before) && hasVRankBranchThreshold(after)) {
+            String otherField = "legCount".equals(field) ? "legRank" : "legCount";
+            requireVRankThresholdOrder(rows, rank, otherField, vRankOrderValue(after, otherField));
+        }
+    }
+
+    private void requireVRankThresholdOrder(List<Map<String, Object>> rows, String rank, String field, long value) {
+        if (value <= 0) return;
+        long lower = 0;
+        long upper = Long.MAX_VALUE;
+        for (var row : rows) {
+            int position = textValue(row, "v", "").compareToIgnoreCase(rank);
+            long neighbor = vRankOrderValue(row, field);
+            if (position == 0 || neighbor <= 0) continue;
+            if (position > 0) {
+                upper = neighbor;
+                break;
+            }
+            lower = neighbor;
+        }
+        if (value < lower || value > upper) {
+            throw new BizException(422, "VRANK_THRESHOLD_ORDER_INVALID");
+        }
+    }
+
+    private long vRankOrderValue(Map<String, Object> row, String field) {
+        return switch (field) {
+            case "legCount" -> hasVRankBranchThreshold(row) ? intValue(row.get("legCount"), 0) : 0;
+            case "legRank" -> hasVRankBranchThreshold(row)
+                    ? VRANK_LEVELS.indexOf(textValue(row, "legRank", "").toUpperCase(Locale.ROOT)) + 1L : 0;
+            default -> decimalValue(row.get(field), BigDecimal.ZERO).longValueExact();
+        };
+    }
+
+    private boolean hasVRankBranchThreshold(Map<String, Object> row) {
+        return intValue(row.get("legCount"), 0) > 0
+                && VRANK_LEVELS.contains(textValue(row, "legRank", "").toUpperCase(Locale.ROOT));
     }
 
     @SuppressWarnings("unchecked")
@@ -1052,11 +1105,13 @@ public class OpsTeamService implements AuditReplayable {
         }
         String value = normalizeVRankThreshold(rankCode, normalizedField, request.value());
         Object businessValue = vRankThresholdBusinessValue(normalizedField, value);
+        var orderedThresholds = lockOrderedVRankThresholds(normalizedField);
         Map<String, Object> before = currentVRankPolicy(rankCode);
         String oldValue = "legRank".equals(normalizedField) ? String.valueOf(before.get(normalizedField))
                 : decimalValue(before.get(normalizedField), BigDecimal.ZERO).toPlainString();
         Map<String, Object> after = new LinkedHashMap<>(before);
         after.put(normalizedField, "legRank".equals(normalizedField) ? value : parseDecimal(value).stripTrailingZeros());
+        validateVRankThresholdOrder(orderedThresholds, rankCode, normalizedField, before, after);
         if (loosensVRankCondition(before, after, normalizedField)) {
             return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
