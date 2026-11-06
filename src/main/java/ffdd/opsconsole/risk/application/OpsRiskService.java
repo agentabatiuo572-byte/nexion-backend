@@ -459,6 +459,9 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         String actor = authenticatedOperator();
         return idempotentK1("K1_CLUSTER_REVIEW:" + normalizedCluster, idempotencyKey,
                 requestHash(normalizedCluster, String.valueOf(request.expectedVersion()), request.reason()), () -> {
+                    if (lockMapper.countActiveByTarget("K", "cluster", normalizedCluster) > 0) {
+                        return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+                    }
                     RiskOpsRepository.MultiAccountClusterState before = riskRepository.multiAccountClusterState(normalizedCluster).orElse(null);
                     if (before == null) return ApiResult.fail(404, "K1_CLUSTER_NOT_FOUND");
                     if (before.version() != request.expectedVersion()) {

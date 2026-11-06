@@ -35,6 +35,14 @@ public interface AuditObjectLockMapper extends BaseMapper<AuditObjectLockEntity>
     int countActiveByTarget(@Param("domain") String domain, @Param("type") String type, @Param("targetId") String targetId);
 
     @Select("""
+            SELECT COUNT(*) FROM nx_audit_object_lock
+            WHERE target_domain = #{domain} AND target_type = #{type} AND target_id = #{targetId}
+              AND is_deleted = 0 AND ticket_id <> #{ticketId}
+            """)
+    int countActiveByOtherTicket(@Param("domain") String domain, @Param("type") String type,
+                                 @Param("targetId") String targetId, @Param("ticketId") String ticketId);
+
+    @Select("""
             <script>
             SELECT l.target_id, t.command_json, t.operator_name, t.created_at
             FROM nx_audit_object_lock l
