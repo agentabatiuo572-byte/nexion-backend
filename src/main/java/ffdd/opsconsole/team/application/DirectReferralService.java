@@ -99,7 +99,7 @@ public class DirectReferralService {
         if(!(networkAsset?Set.of("COOLING","FROZEN","UNLOCKED"):Set.of("COOLING","UNLOCKED")).contains(status)||flag(row,"reversal_recorded"))throw new BizException(409,"DIRECT_REFERRAL_RELEASE_STATE_CONFLICT");
         if(time(row,"release_at").isAfter(now()))throw new BizException(409,"DIRECT_REFERRAL_COOLING_ACTIVE");
         if(Set.of("direct_purchase","network").contains(text(row,"source_type"))){
-            var source=mapper.purchase(text(row,"source_ref"));
+            var source=purchaseSource(text(row,"source_ref"));
             if(source==null||Integer.valueOf(1).equals(source.refunded()))throw new BizException(409,"DIRECT_REFERRAL_SOURCE_REFUNDED");
             var scope=policies.scope();var order=mapper.lockOrder(scope.sourceEnvironment(),scope.runId(),text(row,"source_ref"));
             if(order!=null&&"CONFLICT".equals(text(order,"settlement_mode")))throw new BizException(409,"UNILEVEL_SOURCE_REQUIRES_REVIEW");
@@ -138,7 +138,7 @@ public class DirectReferralService {
         if(!KINDS.contains(kind)||ref==null||ref.isBlank()||ref.length()>96)throw new BizException(422,"DIRECT_REFERRAL_SOURCE_INVALID");
         var scope=policies.scope();
         // The immutable business row serializes all envelopes, including new event IDs and changed sponsors.
-        var source="direct_purchase".equals(kind)?mapper.purchase(ref):mapper.earning(ref);
+        var source="direct_purchase".equals(kind)?purchaseSource(ref):mapper.earning(ref);
         if(source==null)throw new BizException(409,"DIRECT_REFERRAL_SOURCE_NOT_FOUND");
         if(claimedUserId==null||!claimedUserId.equals(source.userId()))throw new BizException(409,"DIRECT_REFERRAL_SOURCE_USER_MISMATCH");
         if(!Integer.valueOf(scope.sandbox()).equals(source.sandbox()))throw new BizException(409,"DIRECT_REFERRAL_SOURCE_ENVIRONMENT_MISMATCH");
@@ -224,8 +224,11 @@ public class DirectReferralService {
 
     public void resumeSource(String kind,String ref) {
         var scope=policies.scope();var target=self==null?this:self.getObject();
-        if("direct_purchase".equals(kind)){var order=mapper.lockOrder(scope.sourceEnvironment(),scope.runId(),ref);if(order!=null&&"CONFLICT".equals(text(order,"settlement_mode")))throw new BizException(409,"UNILEVEL_SOURCE_REQUIRES_REVIEW");}
-        if("direct_purchase".equals(kind)){var source=mapper.purchase(ref);if(source!=null&&Integer.valueOf(1).equals(source.refunded())){target.refund(ref);return;}}
+        if("direct_purchase".equals(kind)){
+            var source=target.purchaseSource(ref);var order=mapper.lockOrder(scope.sourceEnvironment(),scope.runId(),ref);
+            if(order!=null&&"CONFLICT".equals(text(order,"settlement_mode")))throw new BizException(409,"UNILEVEL_SOURCE_REQUIRES_REVIEW");
+            if(source!=null&&Integer.valueOf(1).equals(source.refunded())){target.refund(ref);return;}
+        }
         List<String> groups="direct_purchase".equals(kind)?mapper.orderGroups(scope.sourceEnvironment(),scope.runId(),ref):
                 Optional.ofNullable(mapper.existing(scope.sourceEnvironment(),scope.runId(),kind,ref)).map(List::of).orElse(List.of());
         RuntimeException failed=null;
@@ -245,14 +248,14 @@ public class DirectReferralService {
     /** Must precede an event/wallet lock, including F5 reissues whose order_no was changed. */
     public void lockEventSource(Long eventId,boolean requirePaid) {
         String order=mapper.sourceOrderForEvent(eventId);if(order==null)return;
-        var source=mapper.purchase(order);
+        var source=purchaseSource(order);
         if(requirePaid&&(source==null||Integer.valueOf(1).equals(source.refunded())))throw new BizException(409,"COMMISSION_SOURCE_REFUNDED");
     }
     /** All batches acquire original orders in the same order before any event or wallet lock. */
     public void lockEventSources(Collection<Long> eventIds,boolean requirePaid) {
         var orders=new TreeSet<String>();
         for(Long eventId:eventIds){String order=mapper.sourceOrderForEvent(eventId);if(order!=null)orders.add(order);}
-        for(String order:orders){var source=mapper.purchase(order);if(requirePaid&&(source==null||Integer.valueOf(1).equals(source.refunded())))throw new BizException(409,"COMMISSION_SOURCE_REFUNDED");}
+        for(String order:orders){var source=purchaseSource(order);if(requirePaid&&(source==null||Integer.valueOf(1).equals(source.refunded())))throw new BizException(409,"COMMISSION_SOURCE_REFUNDED");}
     }
     private void recoverReissues(String order,DirectReferralPolicyService.Scope scope) {
         for(var event:mapper.reissueDescendants(order)) {
@@ -278,7 +281,7 @@ public class DirectReferralService {
     public boolean calculateWaiting(String no) {
         lockPurchaseSource(no);var row=lock(no);
         if(!"WAITING_CALCULATION".equals(text(row,"status")))return false;
-        if("direct_purchase".equals(text(row,"source_type"))){var source=mapper.purchase(text(row,"source_ref"));if(source==null||Integer.valueOf(1).equals(source.refunded())){reverse(no,BigDecimal.ONE);return false;}}
+        if("direct_purchase".equals(text(row,"source_type"))){var source=purchaseSource(text(row,"source_ref"));if(source==null||Integer.valueOf(1).equals(source.refunded())){reverse(no,BigDecimal.ONE);return false;}}
         BigDecimal price=policies.price();if(price==null)return false;
         try{
             var snapshot=json.readTree(text(row,"policy_snapshot"));var policy=json.treeToValue(snapshot.has("policy")?snapshot.get("policy"):snapshot,DirectReferralPolicy.class);
@@ -350,7 +353,7 @@ public class DirectReferralService {
     }
     @Transactional(rollbackFor=Exception.class)
     public List<String> confirmRefund(String orderNo){
-        var source=mapper.purchase(orderNo);
+        var source=purchaseSource(orderNo);
         if(source==null||!Integer.valueOf(1).equals(source.refunded()))throw new BizException(409,"DIRECT_REFERRAL_REFUND_NOT_CONFIRMED");
         var scope=policies.scope();var order=mapper.lockOrder(scope.sourceEnvironment(),scope.runId(),orderNo);
         if(order!=null&&"SEVEN_V2".equals(text(order,"settlement_mode"))){
@@ -359,7 +362,7 @@ public class DirectReferralService {
         }else return mapper.purchaseGroups(orderNo);
     }
     @Transactional(rollbackFor=Exception.class)
-    public void recoverOrderReissues(String orderNo){var scope=policies.scope();var source=mapper.purchase(orderNo);var order=mapper.lockOrder(scope.sourceEnvironment(),scope.runId(),orderNo);
+    public void recoverOrderReissues(String orderNo){var scope=policies.scope();var source=purchaseSource(orderNo);var order=mapper.lockOrder(scope.sourceEnvironment(),scope.runId(),orderNo);
         if(source==null||!Integer.valueOf(1).equals(source.refunded())||order==null||!"SEVEN_V2".equals(text(order,"settlement_mode")))return;
         recoverReissues(orderNo,scope);
     }
@@ -464,7 +467,14 @@ public class DirectReferralService {
         value.put("ts",time(row,"created_at").atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant().toEpochMilli());
         value.put("unlockAt",time(row,"release_at").atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant().toEpochMilli());return value;
     }
-    private void lockPurchaseSource(String no){var row=mapper.group(no);if(row!=null&&Set.of("direct_purchase","network").contains(text(row,"source_type")))mapper.purchase(text(row,"source_ref"));}
+    @Transactional(rollbackFor=Exception.class)
+    public DirectReferralMapper.Source purchaseSource(String ref){
+        Long userId=mapper.purchaseOwner(ref);
+        if(userId==null||mapper.lockSourceUser(userId)==null)return null;
+        // Purchase and activation hold the buyer before reading reserved order slots.
+        return mapper.purchase(ref,userId);
+    }
+    private void lockPurchaseSource(String no){var row=mapper.group(no);if(row!=null&&Set.of("direct_purchase","network").contains(text(row,"source_type")))purchaseSource(text(row,"source_ref"));}
     private Map<String,Object> lock(String no){var row=mapper.lockGroup(no);if(row==null)throw new BizException(404,"DIRECT_REFERRAL_GROUP_NOT_FOUND");scope(row);return row;}
     private int scope(Map<String,Object> row){var expected=policies.scope();if(!expected.sourceEnvironment().equals(text(row,"source_environment"))||!expected.runId().equals(text(row,"run_id")))throw new BizException(409,"DIRECT_REFERRAL_ENVIRONMENT_MISMATCH");return expected.sandbox();}
     private LocalDateTime now(){return LocalDateTime.ofInstant(clock.instant(),DateTimeFormatConfig.BUSINESS_ZONE);}
