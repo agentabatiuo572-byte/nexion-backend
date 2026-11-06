@@ -146,13 +146,16 @@ public interface L3FinanceFactMapper extends BaseMapper<Object> {
                  'withdraw.delayed', 'withdraw.frozen')
                AND e.event_ts >= #{from}
                AND e.event_ts &lt; #{to}
-               <if test="cohort != null and cohort != ''">
-               AND DATE_FORMAT(u.created_at, '%Y-%m') = #{cohort}
+               <if test="cohort != null">
+               AND u.created_at >= #{cohort.from}
+               AND u.created_at &lt; #{cohort.to}
                </if>
             </script>
             """)
     Map<String, Object> redemptionSummary(
             @Param("from") LocalDateTime from,
             @Param("to") LocalDateTime to,
-            @Param("cohort") String cohort);
+            @Param("cohort") CohortWindow cohort);
+
+    record CohortWindow(LocalDateTime from, LocalDateTime to) {}
 }
