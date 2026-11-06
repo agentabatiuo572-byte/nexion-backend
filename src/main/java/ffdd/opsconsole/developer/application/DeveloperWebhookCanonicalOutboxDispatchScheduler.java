@@ -3,10 +3,12 @@ package ffdd.opsconsole.developer.application;
 import ffdd.opsconsole.shared.outbox.EventOutboxDispatcher;
 import ffdd.opsconsole.shared.outbox.EventOutboxMessage;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
-import java.util.List;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import lombok.RequiredArgsConstructor;
@@ -24,6 +26,7 @@ import org.springframework.stereotype.Component;
 @Slf4j
 public class DeveloperWebhookCanonicalOutboxDispatchScheduler {
     private static final int BATCH_SIZE = 100;
+    private static final Set<String> FRESH_EVENT_TYPES = Set.of("task.completed", "earnings.credited");
     private final EventOutboxService outboxService;
     private final EventOutboxDispatcher dispatcher;
     private final Map<String, Long> cursors = new ConcurrentHashMap<>();
@@ -51,28 +54,35 @@ public class DeveloperWebhookCanonicalOutboxDispatchScheduler {
     }
 
     private List<EventOutboxMessage> nextBatch(String eventType) {
-        long cursor = cursors.getOrDefault(eventType, 0L);
-        // Read a bounded head on every pass for retry-due rows whose id is behind the cursor, and a separate
-        // cursor window for newly appended rows. A permanently bad row in the head is isolated by its retry
-        // due timestamp; it cannot hide fresh events behind a single global LIMIT.
+        boolean prioritizeNewest = FRESH_EVENT_TYPES.contains(eventType);
         Map<String, EventOutboxMessage> merged = new LinkedHashMap<>();
-        append(merged, safeRead(eventType, 0L, BATCH_SIZE / 2));
-        append(merged, safeRead(eventType, cursor, BATCH_SIZE - BATCH_SIZE / 2));
-        List<EventOutboxMessage> pending = new ArrayList<>(merged.values());
-        if (pending != null && !pending.isEmpty()) {
-            long next = pending.stream().map(EventOutboxMessage::getId).filter(java.util.Objects::nonNull)
-                    .mapToLong(Long::longValue).max().orElse(cursor);
-            cursors.put(eventType, Math.max(cursor, next));
+        if (prioritizeNewest) {
+            // Reserve half for new facts even when the oldest due backlog spans hours.
+            List<EventOutboxMessage> newest = new ArrayList<>(
+                    safeRead(eventType, 0L, BATCH_SIZE - BATCH_SIZE / 2, true));
+            Collections.reverse(newest);
+            append(merged, newest);
         }
-        return pending;
+        // The head always makes room for older facts and retries behind the cursor.
+        append(merged, safeRead(eventType, 0L, BATCH_SIZE / 2, false));
+        if (!prioritizeNewest) {
+            long cursor = cursors.getOrDefault(eventType, 0L);
+            append(merged, safeRead(eventType, cursor, BATCH_SIZE - BATCH_SIZE / 2, false));
+            long next = merged.values().stream().map(EventOutboxMessage::getId).filter(java.util.Objects::nonNull)
+                    .mapToLong(Long::longValue).max().orElse(cursor);
+            if (next > cursor) cursors.put(eventType, next);
+        }
+        return new ArrayList<>(merged.values());
     }
 
-    private List<EventOutboxMessage> safeRead(String eventType, long cursor, int limit) {
+    private List<EventOutboxMessage> safeRead(String eventType, long cursor, int limit, boolean newestFirst) {
         try {
-            return outboxService.listPendingByCanonicalType(eventType, cursor, limit);
+            return newestFirst
+                    ? outboxService.listNewestPendingByCanonicalType(eventType, limit)
+                    : outboxService.listPendingByCanonicalType(eventType, cursor, limit);
         } catch (RuntimeException ex) {
-            log.warn("developer webhook canonical outbox read failed eventType={} cursor={} error={}", eventType,
-                    cursor, ex.getMessage());
+            log.warn("developer webhook canonical outbox read failed eventType={} cursor={} newestFirst={} error={}",
+                    eventType, cursor, newestFirst, ex.getMessage());
             return List.of();
         }
     }
