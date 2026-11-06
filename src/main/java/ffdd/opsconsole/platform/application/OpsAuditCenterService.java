@@ -1062,7 +1062,8 @@ public class OpsAuditCenterService {
     // H4 keeps complete review data in its bound command; audit summaries keep the recovery key structured.
     private String auditReviewValue(AuditOperationTicketEntity ticket, String side) {
         var command = deserializeCommand(ticket.getCommandJson());
-        if (H4GrowthApproval.supports(command) || LearningCourseActivationApproval.supports(command)) {
+        if (H4GrowthApproval.supports(command) || LearningCourseActivationApproval.supports(command)
+                || E2TaskPricingApproval.isLifecycle(command)) {
             return "before".equals(side) ? ticket.getBeforeValue() : ticket.getAfterValue();
         }
         return reviewValue(ticket, side);
@@ -1070,7 +1071,8 @@ public class OpsAuditCenterService {
 
     private String reviewValue(AuditOperationTicketEntity ticket, String side) {
         var command = deserializeCommand(ticket.getCommandJson());
-        if (LearningCourseActivationApproval.supports(command) && command.params() != null
+        if ((LearningCourseActivationApproval.supports(command) || E2TaskPricingApproval.isLifecycle(command))
+                && command.params() != null
                 && command.params().get(side + "Review") instanceof String review) {
             return review;
         }

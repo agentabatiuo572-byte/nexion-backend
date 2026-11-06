@@ -48,6 +48,10 @@ public interface DeviceCatalogRepository {
 
     PageResult<DeviceTaskView> pageTasks(DeviceTaskQueryRequest request);
 
+    default List<DeviceTaskView> lockTaskCatalog() {
+        return pageTasks(new DeviceTaskQueryRequest(null, null, null, 1L, 100L)).getRecords();
+    }
+
     Optional<DeviceTaskView> findTask(String taskId);
 
     Optional<DeviceTaskView> findTaskForUpdate(String taskId);

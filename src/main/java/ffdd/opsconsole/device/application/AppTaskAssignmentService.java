@@ -671,8 +671,7 @@ public class AppTaskAssignmentService {
             if(safe(availableTasks).stream().anyMatch(row->row==null || row.minVram()==null))
                 throw new BizException(503,"E2_TASK_CONFIG_INVALID");
             String configuredTask=environment.getProperty(TestCloudExecutorService.PREFIX+"task-config-id","");
-            availableTasks=safe(availableTasks).stream().filter(row->"EM".equalsIgnoreCase(row.taskClass())
-                    && "BGE-M3".equals(row.modelName()) && configuredTask.equals(row.taskId())).toList();
+            availableTasks = testCloudTaskPool(safe(availableTasks), configuredTask);
         }
         TaskConfigRow task = chooseTask(availableTasks, routingVram);
         List<ConfigRow> capacityRows = safe(mapper.e3CapacityConfig());
@@ -969,15 +968,28 @@ public class AppTaskAssignmentService {
         if (pool.stream().anyMatch(task -> task == null || task.minVram() == null)) {
             throw new BizException(503, "E2_TASK_CONFIG_INVALID");
         }
+        return preferredTask(pool, vramTotalGb)
+                .orElseThrow(() -> new BizException(409, "TASK_ASSIGNMENT_NO_ELIGIBLE_TASK"));
+    }
+
+    static List<TaskConfigRow> testCloudTaskPool(List<TaskConfigRow> rows, String configuredTask) {
+        return rows.stream().filter(row -> "EM".equalsIgnoreCase(row.taskClass())
+                && "BGE-M3".equals(row.modelName()) && configuredTask.equals(row.taskId())).toList();
+    }
+
+    static java.util.Optional<TaskConfigRow> preferredTask(List<TaskConfigRow> pool, int vramTotalGb) {
         return pool.stream()
                 .filter(task -> !PhoneComputeV2Access.MODEL.equals(task.modelName()))
                 .filter(task -> activeDevice(task.status()))
                 .filter(task -> !killed(task.killInit()))
                 .filter(task -> task.minVram() != null && task.minVram() <= vramTotalGb)
                 .filter(task -> midpoint(task.minReward(), task.maxReward()).signum() > 0)
-                .max(Comparator.comparing(task -> midpoint(task.minReward(), task.maxReward())
-                        .divide(BigDecimal.valueOf(requiredSeconds(task.taskClass())), 12, RoundingMode.HALF_UP)))
-                .orElseThrow(() -> new BizException(409, "TASK_ASSIGNMENT_NO_ELIGIBLE_TASK"));
+                .max(Comparator.comparing(AppTaskAssignmentService::taskRewardRate));
+    }
+
+    static BigDecimal taskRewardRate(TaskConfigRow task) {
+        return midpoint(task.minReward(), task.maxReward())
+                .divide(BigDecimal.valueOf(requiredSeconds(task.taskClass())), 12, RoundingMode.HALF_UP);
     }
 
     static int effectiveRoutingVram(DeviceRow device) {
@@ -1101,21 +1113,21 @@ public class AppTaskAssignmentService {
         return SETTLED_EARNING_STATUSES.contains(value(status).toUpperCase(Locale.ROOT));
     }
 
-    private int requiredSeconds(String taskClass) {
+    private static int requiredSeconds(String taskClass) {
         return switch (value(taskClass).toUpperCase(Locale.ROOT)) {
             case "IG" -> 18; case "VG" -> 900; case "LL" -> 12;
             case "FT" -> 1800; case "EM" -> 5; case "SP" -> 30; default -> 60;
         };
     }
 
-    private BigDecimal midpoint(BigDecimal min, BigDecimal max) {
+    private static BigDecimal midpoint(BigDecimal min, BigDecimal max) {
         BigDecimal low = min == null ? BigDecimal.ZERO : min;
         BigDecimal high = max == null ? low : max;
         if (low.signum() < 0 || high.compareTo(low) < 0) throw new BizException(503, "E2_TASK_REWARD_INVALID");
         return low.add(high).divide(BigDecimal.valueOf(2), 6, RoundingMode.HALF_UP);
     }
 
-    private boolean killed(String value) {
+    private static boolean killed(String value) {
         String normalized = value(value).toLowerCase(Locale.ROOT).replace(" ", "");
         return normalized.equals("kill") || normalized.equals("killed") || normalized.equals("已kill");
     }
@@ -1154,7 +1166,7 @@ public class AppTaskAssignmentService {
         }
     }
     private boolean completed(String status) { return "COMPLETED".equalsIgnoreCase(status); }
-    private boolean activeDevice(String status) { return "ACTIVE".equalsIgnoreCase(status) || "ONLINE".equalsIgnoreCase(status); }
+    private static boolean activeDevice(String status) { return "ACTIVE".equalsIgnoreCase(status) || "ONLINE".equalsIgnoreCase(status); }
     private LocalDateTime now() { return LocalDateTime.now(clock).withNano(0); }
     private void requireUser(Long userId) { if (userId == null || userId <= 0) throw new BizException(401, "USER_AUTH_REQUIRED"); }
     private void requireDevelopmentAccount(Long userId) {
