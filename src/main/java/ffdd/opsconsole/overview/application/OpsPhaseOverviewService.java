@@ -74,7 +74,7 @@ public class OpsPhaseOverviewService {
                         linked("key", "H1", "label", "运营阶段效果分析", "href", h1AttributionHref(filter.phase(), current.currentPhase())),
                         linked("key", "B3", "label", "用户转化概览", "href", "/overview/funnel?phase=" + valueOrAll(filter.phase())),
                         linked("key", "B1", "label", "资金与应付款总览", "href", "/overview/dual-ledger"),
-                        linked("key", "B2", "label", "可用资金与应付款", "href", "/overview/liquidity")),
+                        linked("key", "B2", "label", "资金储备与应付款", "href", "/finance/pool")),
                 "sourceStatement", "按「运营阶段设置」的当前月份展示，这里只能查看，不能修改",
                 "sources", List.of("运营阶段设置", "账户注册时间统计", "操作记录"),
                 "asOf", OffsetDateTime.now().toString());
