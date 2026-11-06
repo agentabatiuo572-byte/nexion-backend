@@ -302,6 +302,10 @@ public class EventOutboxService {
         return mapper.listPendingByCanonicalType(canonicalType, Math.max(0L, afterId), normalizeLimit(limit));
     }
 
+    public List<EventOutboxMessage> listNewestPendingByCanonicalType(String canonicalType, int limit) {
+        return mapper.listNewestPendingByCanonicalType(canonicalType, normalizeLimit(limit));
+    }
+
     public List<EventOutboxMessage> listByAggregate(String aggregateType, String aggregateId, int limit) {
         return mapper.listByAggregate(aggregateType, aggregateId, normalizeLimit(limit));
     }
