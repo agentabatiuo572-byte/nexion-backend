@@ -652,6 +652,10 @@ public class OpsTreasuryService {
     }
 
     private Map<String, Object> dualLedgerSnapshot(BigDecimal proposedNexPrice, boolean fullView) {
+        return readDualLedgerSnapshot(proposedNexPrice, fullView).data();
+    }
+
+    private DualLedgerSnapshot readDualLedgerSnapshot(BigDecimal proposedNexPrice, boolean fullView) {
         LocalDateTime now = LocalDateTime.now(clock);
         LocalDateTime current24hStart = now.minusHours(24);
         LocalDateTime prev24hStart = now.minusHours(48);
@@ -685,6 +689,8 @@ public class OpsTreasuryService {
         BigDecimal coverageRatio = pct(reserveUsd, liabilitiesUsd);
         boolean redlineBreached = liabilitiesUsd.signum() <= 0 ? coverageRatio.compareTo(redlinePct) < 0
                 : reserveUsd.multiply(BigDecimal.valueOf(100)).compareTo(liabilitiesUsd.multiply(redlinePct)) < 0;
+        boolean healthyForAlert = valuationReliable && liabilitiesUsd.signum() > 0
+                && reserveUsd.multiply(ONE_HUNDRED).compareTo(liabilitiesUsd.multiply(healthyPct)) >= 0;
         BigDecimal netFlow24hUsd = safe(ledgerRepository.sumNetUsdtFlowBetween(current24hStart, now));
         BigDecimal prevNetFlow24hUsd = safe(ledgerRepository.sumNetUsdtFlowBetween(prev24hStart, current24hStart));
         BigDecimal avgRiskScore = safe(ledgerRepository.avgActiveWithdrawalQueueRiskScore()).setScale(0, RoundingMode.HALF_UP);
@@ -726,7 +732,7 @@ public class OpsTreasuryService {
                 "scope", scope);
         response.put("snapshot", snapshot);
         if (!fullView) {
-            return response;
+            return new DualLedgerSnapshot(response, healthyForAlert);
         }
         snapshot.put("thresholdVersion", thresholdVersion);
         response.put("accounts", accounts.stream().map(this::scaleAccount).toList());
@@ -736,8 +742,10 @@ public class OpsTreasuryService {
                 "netFlow24hUsd", money(prevNetFlow24hUsd),
                 "queueBacklogCount", ledgerRepository.countActiveWithdrawalQueue(),
                 "avgRiskScore", avgRiskScore.longValue()));
-        return response;
+        return new DualLedgerSnapshot(response, healthyForAlert);
     }
+
+    private record DualLedgerSnapshot(Map<String, Object> data, boolean healthyForAlert) {}
 
     private Map<String, Object> bRhythmSummary() {
         Map<String, Object> summary = new LinkedHashMap<>(GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy).summary());
@@ -746,8 +754,23 @@ public class OpsTreasuryService {
         return summary;
     }
 
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<Map<String, Object>> bDomainDashboard() {
-        Map<String, Object> dualLedger = dualLedgerSnapshot();
+        boolean acknowledged = configFacade.activeValue(B_ALERT_COVERAGE_ACK_KEY).map(Boolean::parseBoolean).orElse(false);
+        if (acknowledged) {
+            // Read coverage after locking the acknowledgement so an older sample cannot clear a later acknowledgement.
+            acknowledged = configFacade.activeValueForUpdate(B_ALERT_COVERAGE_ACK_KEY)
+                    .map(Boolean::parseBoolean).orElse(false);
+        }
+        var snapshot = readDualLedgerSnapshot(null, true);
+        if (acknowledged && snapshot.healthyForAlert()) {
+            saveCoverageAlertAcknowledgement(false);
+            acknowledged = false;
+        }
+        return ApiResult.ok(bDomainDashboard(snapshot.data(), acknowledged));
+    }
+
+    private Map<String, Object> bDomainDashboard(Map<String, Object> dualLedger, boolean acknowledged) {
         List<Map<String, Object>> warnings = new ArrayList<>();
         Map<String, Object> response = section(
                 "service", "nexion-backend",
@@ -765,13 +788,13 @@ public class OpsTreasuryService {
         response.put("warnings", warnings);
         response.put("dualLedger", dualLedger);
         response.put("alerts", section(
-                "coverageRedlineAcked", Boolean.parseBoolean(configFacade.activeValue(B_ALERT_COVERAGE_ACK_KEY).orElse("false")),
+                "coverageRedlineAcked", acknowledged,
                 "sources", List.of("nx_config_item:" + B_ALERT_COVERAGE_ACK_KEY)));
         response.put("liquidity", liquidityDashboard(dualLedger, warnings));
         response.put("funnel", funnelDashboard(warnings));
         response.put("rhythm", rhythmDashboard(dualLedger, warnings));
         response.put("riskRadar", riskRadarDashboard(dualLedger, warnings));
-        return ApiResult.ok(response);
+        return response;
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -802,6 +825,7 @@ public class OpsTreasuryService {
             String idempotencyKey,
             String reason,
             String operator) {
+        configFacade.activeValueForUpdate(B_ALERT_COVERAGE_ACK_KEY);
         Map<String, Object> snapshot = dualLedgerSnapshot();
         @SuppressWarnings("unchecked")
         Map<String, Object> values = (Map<String, Object>) snapshot.getOrDefault("snapshot", Map.of());
@@ -810,20 +834,20 @@ public class OpsTreasuryService {
         if (coverageRatio.compareTo(healthyPct) >= 0) {
             return ApiResult.fail(409, "B_ALERT_NOT_ACTIVE");
         }
-        configFacade.upsertAdminValue(
-                B_ALERT_COVERAGE_ACK_KEY,
-                "true",
-                "BOOLEAN",
-                "treasury_b",
-                "B1 coverage redline alert acknowledgement");
+        saveCoverageAlertAcknowledgement(true);
         audit("B1_COVERAGE_ALERT_ACKED", "TREASURY_ALERT", normalizedAlertId, null, section(
                 "alertId", normalizedAlertId,
                 "reason", reason,
                 "operator", operator,
                 "idempotencyKey", idempotencyKey));
-        Map<String, Object> response = bDomainDashboard().getData();
+        Map<String, Object> response = bDomainDashboard(snapshot, true);
         response.put("alertAck", section("alertId", normalizedAlertId, "acknowledged", true));
         return ApiResult.ok(response);
+    }
+
+    private void saveCoverageAlertAcknowledgement(boolean acknowledged) {
+        configFacade.upsertAdminValue(B_ALERT_COVERAGE_ACK_KEY, Boolean.toString(acknowledged),
+                "BOOLEAN", "treasury_b", "B1 coverage redline alert acknowledgement");
     }
 
     @Transactional(rollbackFor = Exception.class)
