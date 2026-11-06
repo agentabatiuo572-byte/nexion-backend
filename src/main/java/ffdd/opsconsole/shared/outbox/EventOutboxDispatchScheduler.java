@@ -4,7 +4,6 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -102,7 +101,7 @@ public class EventOutboxDispatchScheduler {
             "ADMIN_USER_PROFILE_VIEWED", "ADMIN_USER_LIST_EXPORTED");
 
     private final EventOutboxService outboxService;
-    private final ApplicationEventPublisher eventPublisher;
+    private final EventOutboxDispatcher dispatcher;
     private final AtomicLong lastHeartbeatNanos = new AtomicLong();
 
     @Scheduled(
@@ -169,25 +168,13 @@ public class EventOutboxDispatchScheduler {
             }
             scanned += pending.size();
             log.info("event-outbox dispatch batch eventType={} pending={}", eventType, pending.size());
+            // MySQL collations can match aliases that the exact C1 consumer ignores.
+            String exactEventType = C1_AUDIT_EVENT_TYPES.contains(eventType) ? eventType : null;
             for (EventOutboxMessage message : pending) {
-                try {
-                    // MySQL collations may also match case/accent/padding aliases. A
-                    // C1 scan must never acknowledge a row its exact consumer ignores.
-                    if (C1_AUDIT_EVENT_TYPES.contains(eventType) && !eventType.equals(message.getEventType())) {
-                        throw new IllegalStateException("C1_AUDIT_ENVELOPE_INVALID");
-                    }
-                    outboxService.assertDispatchAllowed(message);
-                    eventPublisher.publishEvent(message);
-                    if (!outboxService.markPublished(message.getEventId())) {
-                        log.warn("Outbox message was delivered but status was not updated eventId={}", message.getEventId());
-                    } else {
-                        published++;
-                    }
-                } catch (RuntimeException ex) {
-                    failed++;
-                    outboxService.markFailed(message.getEventId(), ex.getMessage());
-                    log.warn("Outbox delivery failed eventId={}, eventType={}, error={}",
-                            message.getEventId(), message.getEventType(), ex.getMessage());
+                switch (dispatcher.dispatch(message, exactEventType)) {
+                    case PUBLISHED -> published++;
+                    case FAILED -> failed++;
+                    case SKIPPED -> { }
                 }
             }
         }
