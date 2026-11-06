@@ -308,8 +308,15 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
     @Select("""
             <script>
             SELECT o.id FROM nx_event_outbox o
+            <if test="unlinkedC1Type == null">FORCE INDEX (idx_outbox_canonical_type)</if>
              WHERE
             """ + RETIREMENT_ELIGIBILITY + """
+             <if test="unlinkedC1Type == null">
+               AND o.canonical_event_type IN
+               <foreach item="eventType" collection="eventTypes" open="(" separator="," close=")">
+                   LOWER(#{eventType})
+               </foreach>
+             </if>
              ORDER BY o.id
              LIMIT #{limit}
             </script>

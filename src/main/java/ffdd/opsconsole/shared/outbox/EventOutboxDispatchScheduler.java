@@ -1,6 +1,7 @@
 package ffdd.opsconsole.shared.outbox;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -103,6 +104,7 @@ public class EventOutboxDispatchScheduler {
     private final EventOutboxService outboxService;
     private final EventOutboxDispatcher dispatcher;
     private final AtomicLong lastHeartbeatNanos = new AtomicLong();
+    private long nextRecordOnlySweepNanos = System.nanoTime();
 
     @Scheduled(
             fixedDelayString = "${nexion.outbox.dispatch-delay-ms:1000}",
@@ -112,13 +114,18 @@ public class EventOutboxDispatchScheduler {
         // Facts with no bus consumer can never be delivered by any dispatcher.
         // Retire them explicitly; otherwise they stay PENDING forever and both
         // inflate the A3 backlog and hide real delivery failures.
-        try {
-            int retired = outboxService.retireRecordOnlyPending(BATCH_SIZE);
-            if (retired > 0) {
-                log.info("event-outbox retired record-only facts count={}", retired);
+        if (System.nanoTime() - nextRecordOnlySweepNanos >= 0) {
+            try {
+                int retired = outboxService.retireRecordOnlyPending(BATCH_SIZE);
+                if (retired < BATCH_SIZE) {
+                    nextRecordOnlySweepNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
+                }
+                if (retired > 0) {
+                    log.info("event-outbox retired record-only facts count={}", retired);
+                }
+            } catch (RuntimeException ex) {
+                log.warn("event-outbox record-only retirement failed error={}", ex.getMessage());
             }
-        } catch (RuntimeException ex) {
-            log.warn("event-outbox record-only retirement failed error={}", ex.getMessage());
         }
         // Legacy C1 profile facts without their audit link can never be selected
         // for dispatch and can never be retried. Give them a terminal state too,
