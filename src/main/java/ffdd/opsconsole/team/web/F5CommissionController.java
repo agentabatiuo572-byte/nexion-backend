@@ -51,7 +51,7 @@ public class F5CommissionController {
     }
 
     @PostMapping("/commissions/export")
-    @PreAuthorize("hasAuthority('network_f5_read')")
+    @PreAuthorize("hasAuthority('network_f5_export')")
     public ResponseEntity<byte[]> export(
             @RequestHeader(OpsAdminApi.IDEMPOTENCY_KEY_HEADER) String idempotencyKey,
             @RequestBody F5CommissionExportRequest request,
