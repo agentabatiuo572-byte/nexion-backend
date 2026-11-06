@@ -167,6 +167,8 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_COOLDOWN_ACTIVE");
         }
         int days = positiveInt(policy, "trialDays", 3);
+        int graceDays = nonNegativeInt(policy, "graceDays", 7);
+        int extensionDays = nonNegativeInt(policy, "extensionDays", 3);
         String configuredCap = policy.get("trialOffsetCapUSD");
         BigDecimal offsetCap = StringUtils.hasText(configuredCap) ? new BigDecimal(configuredCap) : null;
         String productCode = trialProductCode(policy);
@@ -204,6 +206,7 @@ public class AppTrialLifecycleService {
         String claimNo = "TRIAL-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         String snapshot = "paymentRail=UVEL_USDT_WALLET,productCode=" + productCode
                 + ",trialDays=" + days
+                + ",graceDays=" + graceDays + ",extensionDays=" + extensionDays
                 + ",dailyUsdtSource=" + (productDailyUsdt != null ? "nx_product.estimated_daily_usdt" : "policy.shadowDailyUSD")
                 + ",dailyNexSource=" + (productDailyNex != null ? "nx_product.daily_nex" : "policy.shadowDailyNEX")
                 + ",dailyUsdt=" + dailyUsdt + ",dailyNex=" + dailyNex
@@ -211,9 +214,11 @@ public class AppTrialLifecycleService {
                 + ",seatsLeftTodayBefore=" + seatsBeforeClaim + ",seatsLeftTodayAfter=" + seatsAfterClaim;
         int changed = existing == null
                 ? mapper.insertTrial(userId, claimNo, idempotencyKey, paymentMethodId, normalizedDevice,
-                        days, dailyUsdt, dailyNex, offsetCap, price, now, now.plusDays(days), snapshot)
+                        days, graceDays, extensionDays, dailyUsdt, dailyNex, offsetCap, price,
+                        now, now.plusDays(days), snapshot)
                 : mapper.restartTrial(existing.id(), existing.version(), claimNo, idempotencyKey,
-                        paymentMethodId, normalizedDevice, days, dailyUsdt, dailyNex, offsetCap, price,
+                        paymentMethodId, normalizedDevice, days, graceDays, extensionDays,
+                        dailyUsdt, dailyNex, offsetCap, price,
                         now, now.plusDays(days), snapshot);
         if (changed != 1) throw new BizException(409, "TRIAL_START_CONFLICT");
         Attribution attr = requireAttribution(userId);
@@ -270,9 +275,8 @@ public class AppTrialLifecycleService {
         Settlement preview = settlement(row, policy, false, now);
         BigDecimal threshold = decimal(policy, "highQualityThresholdUSD", "100");
         if (preview.shadowUsdt().compareTo(threshold) < 0) return ApiResult.fail(409, "TRIAL_EXTENSION_THRESHOLD_NOT_MET");
-        int days = positiveInt(policy, "extensionDays", 3);
-        int graceDays = nonNegativeInt(policy, "graceDays", 7);
-        LocalDateTime extendedExpiresAt = row.expiresAt().plusDays((long) graceDays + days);
+        int days = Math.max(1, row.extensionDaysSnapshot());
+        LocalDateTime extendedExpiresAt = row.expiresAt().plusDays((long) row.graceDaysSnapshot() + days);
         if (mapper.extendTrial(row.id(), row.version(), extendedExpiresAt, now) != 1) {
             throw new BizException(409, "TRIAL_EXTENSION_CONFLICT");
         }
@@ -372,7 +376,7 @@ public class AppTrialLifecycleService {
         LocalDateTime now = businessNow();
         LocalDateTime conversionDeadline = row.expiresAt() == null ? null
                 : "EXTENDED".equals(normalize(row.status())) ? row.expiresAt()
-                : row.expiresAt().plusDays(nonNegativeInt(policy, "graceDays", 7));
+                : row.expiresAt().plusDays(row.graceDaysSnapshot());
         if (conversionDeadline == null || !now.isBefore(conversionDeadline)) {
             return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
         }
@@ -527,7 +531,7 @@ public class AppTrialLifecycleService {
         if (row.expiresAt() == null) return ApiResult.fail(409, "TRIAL_DUE_TIME_MISSING");
         LocalDateTime dueAt = "EXTENDED".equals(state)
                 ? row.expiresAt()
-                : row.expiresAt().plusDays(nonNegativeInt(policy, "graceDays", 7));
+                : row.expiresAt().plusDays(row.graceDaysSnapshot());
         if (dueAt.isAfter(now)) return ApiResult.fail(409, "TRIAL_NOT_DUE");
         // FEAT-TRIAL02: expiry may close a trial, never authorize a purchase.
         return cancelOnce(userId, flag(policy, "autoChargeAtEnd", false) && now.isAfter(dueAt.plus(MAX_AUTO_SETTLEMENT_DELAY))
@@ -693,7 +697,6 @@ public class AppTrialLifecycleService {
         }
         String effectiveState = effectiveState(row, now);
         Settlement preview = active(effectiveState) ? settlement(row, policy, false, now) : null;
-        int graceDays = nonNegativeInt(policy, "graceDays", 7);
         boolean canStart = restartable(effectiveState)
                 && (row.cooldownUntil() == null || !row.cooldownUntil().isAfter(now))
                 && productAvailable && trialGateEnabled && phaseOpen && !riskBlocked && quotaAvailable && capacityAvailable;
@@ -713,7 +716,7 @@ public class AppTrialLifecycleService {
         result.put("expiresAtEpochMs", epochMillis(row.expiresAt()));
         result.put("activeEndsAt", "EXTENDED".equals(effectiveState) ? null : row.expiresAt());
         LocalDateTime graceEndsAt = List.of("ACTIVE", "GRACE").contains(effectiveState)
-                ? row.expiresAt().plusDays(graceDays) : null;
+                ? row.expiresAt().plusDays(row.graceDaysSnapshot()) : null;
         LocalDateTime extendedEndsAt = "EXTENDED".equals(effectiveState) ? row.expiresAt() : null;
         result.put("graceEndsAt", graceEndsAt);
         result.put("graceEndsAtEpochMs", epochMillis(graceEndsAt));
@@ -758,6 +761,8 @@ public class AppTrialLifecycleService {
                 frozenProduct ? row.dailyNex() : catalogProduct == null ? null : catalogProduct.dailyNex());
         if (frozenProduct) {
             config.put("trialDays", Integer.toString(Math.max(1, row.durationDays() == null ? 1 : row.durationDays())));
+            config.put("graceDays", Integer.toString(row.graceDaysSnapshot()));
+            config.put("extensionDays", Integer.toString(row.extensionDaysSnapshot()));
             config.put("trialOffsetCapUSD", row.offsetCapUsdt()==null?null:row.offsetCapUsdt().stripTrailingZeros().toPlainString());
         }
         result.put("config", config);

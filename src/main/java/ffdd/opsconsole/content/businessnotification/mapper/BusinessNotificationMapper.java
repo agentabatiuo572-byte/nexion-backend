@@ -237,9 +237,8 @@ public interface BusinessNotificationMapper {
           SELECT t.id,t.user_id,t.claimed_at,t.expires_at dueAt,'trial' deadlineKind
           FROM nx_trial_claim t WHERE t.is_deleted=0 AND t.status IN ('CLAIMED','ACTIVE','GRACE')
           UNION ALL
-          SELECT t.id,t.user_id,t.claimed_at,CASE WHEN t.extended_at IS NOT NULL THEN t.expires_at
-            ELSE TIMESTAMPADD(DAY,COALESCE((SELECT CAST(current_value AS UNSIGNED)
-              FROM nx_growth_trial_policy WHERE policy_key='graceDays' AND is_deleted=0 LIMIT 1),7),t.expires_at) END,
+          SELECT t.id,t.user_id,t.claimed_at,CASE WHEN t.status='EXTENDED' THEN t.expires_at
+            ELSE TIMESTAMPADD(DAY,COALESCE(t.grace_days_snapshot,7),t.expires_at) END,
             'retention' FROM nx_trial_claim t WHERE t.is_deleted=0 AND t.status IN ('CLAIMED','ACTIVE','GRACE','EXTENDED')
           UNION ALL
           SELECT t.id,t.user_id,t.claimed_at,t.closed_at,'retention'
