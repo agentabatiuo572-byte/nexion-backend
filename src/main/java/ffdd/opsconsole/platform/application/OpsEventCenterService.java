@@ -616,11 +616,7 @@ public class OpsEventCenterService {
         if (existing != null && governanceMapper.countProperty(existing.id(), schema.propertyName()) > 0) {
             return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A4_SCHEMA_PROPERTY_DUPLICATE");
         }
-        if (existing != null && (!existing.ownerDomain().equals(schema.ownerDomain())
-                || !existing.producer().equals(schema.producer())
-                || !existing.consumers().equals(schema.consumer())
-                || existing.serverAuthoritative() != schema.serverAuthoritative()
-                || !existing.samplingPolicy().equals(schema.samplingPolicy()))) {
+        if (existing != null && !schemaMetadataMatches(existing, schema)) {
             return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A4_SCHEMA_METADATA_CONFLICT");
         }
 
@@ -714,6 +710,13 @@ public class OpsEventCenterService {
                         "beforeVersion", property.expectedVersion(),
                         "afterVersion", "v" + nextRevision));
         return overview();
+    }
+
+    static boolean schemaMetadataMatches(EventSchemaRecord existing, NormalizedSchema schema) {
+        return existing.ownerDomain().equals(schema.ownerDomain()) && existing.producer().equals(schema.producer())
+                && existing.consumers().equals(schema.consumer())
+                && existing.serverAuthoritative() == schema.serverAuthoritative()
+                && existing.samplingPolicy().equals(schema.samplingPolicy());
     }
 
     private void carryForwardExistingProperties(EventSchemaRecord existing, int nextRevision) {
@@ -859,7 +862,7 @@ public class OpsEventCenterService {
         return protectedFamily ? "100%" : "浏览/会话 " + percent + "% · 资金/风控/转化 100%";
     }
 
-    private NormalizedSchema normalizeSchema(EventSchemaRegistrationRequest request) {
+    NormalizedSchema normalizeSchema(EventSchemaRegistrationRequest request) {
         String eventName = lowerRequired(request.eventName(), "A4_SCHEMA_EVENT_NAME_REQUIRED");
         String ownerDomain = lowerRequired(request.ownerDomain(), "A4_SCHEMA_OWNER_DOMAIN_REQUIRED");
         String producer = lowerRequired(request.producer(), "A4_SCHEMA_PRODUCER_REQUIRED");
@@ -905,7 +908,7 @@ public class OpsEventCenterService {
                 propertyType, authoritative, sampling, expectedVersion, reason, extensionDomain);
     }
 
-    private NormalizedSchemaProperty normalizeSchemaProperty(ExistingSchemaPropertyRequest request) {
+    NormalizedSchemaProperty normalizeSchemaProperty(ExistingSchemaPropertyRequest request) {
         String eventName = lowerRequired(request.eventName(), "A4_SCHEMA_EVENT_NAME_REQUIRED");
         String propertyName = lowerRequired(request.propertyName(), "A4_SCHEMA_PROPERTY_REQUIRED");
         String propertyType = lowerRequired(request.propertyType(), "A4_SCHEMA_PROPERTY_TYPE_REQUIRED");
@@ -929,7 +932,7 @@ public class OpsEventCenterService {
         return new NormalizedSchemaProperty(eventName, propertyName, propertyType, expectedVersion, reason);
     }
 
-    private NormalizedDomainExtension normalizeDomainExtension(EventDomainExtensionRequest request) {
+    NormalizedDomainExtension normalizeDomainExtension(EventDomainExtensionRequest request) {
         String domain = lowerRequired(request.domainName(), "A4_DOMAIN_EXTENSION_DOMAIN_REQUIRED");
         String eventName = lowerRequired(request.eventName(), "A4_DOMAIN_EXTENSION_EVENT_REQUIRED");
         String producer = textRequired(request.producer(), "A4_DOMAIN_EXTENSION_PRODUCER_REQUIRED");
@@ -1148,7 +1151,7 @@ public class OpsEventCenterService {
             String configKey) {
     }
 
-    private record NormalizedSchema(
+    record NormalizedSchema(
             String eventName,
             String ownerDomain,
             String familyKey,
@@ -1163,7 +1166,7 @@ public class OpsEventCenterService {
             boolean extensionDomain) {
     }
 
-    private record NormalizedSchemaProperty(
+    record NormalizedSchemaProperty(
             String eventName,
             String propertyName,
             String propertyType,
@@ -1171,7 +1174,7 @@ public class OpsEventCenterService {
             String reason) {
     }
 
-    private record NormalizedDomainExtension(
+    record NormalizedDomainExtension(
             String domainName,
             String eventName,
             String producer,

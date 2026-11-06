@@ -75,6 +75,7 @@ public class A2AccessPolicy {
             if (roleResolver.isActiveAdministrator(id)) {
                 Set<String> grants = permissions.getPermissionCodes(id);
                 if (grants.contains("platform_a2_read") || grants.contains("platform_a2_proposal_create")
+                        || grants.contains(A4RegistryApproval.MAKER_AUTHORITY)
                         || grants.contains("overview_b1_redline_write")
                         || LearningCourseActivationApproval.hasMakerAuthorities(grants)
                         || canReadOwnCourseRewardProposal(grants)
@@ -133,6 +134,9 @@ public class A2AccessPolicy {
     }
 
     boolean canAccessOwnBusinessProposal(AuditReplayCommand command, long actorId) {
+        if (A4RegistryApproval.supports(command)) {
+            return permissions.getPermissionCodes(actorId).contains(A4RegistryApproval.MAKER_AUTHORITY);
+        }
         if (OpsI18nLearningService.isCourseRewardAdjustment(command)) {
             var review = OpsI18nLearningService.CourseRewardReview.fromCommand(command);
             return review != null && review.makerAdminId() == actorId

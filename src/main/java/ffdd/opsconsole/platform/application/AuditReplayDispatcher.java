@@ -51,8 +51,13 @@ public class AuditReplayDispatcher {
     private K2OtpInitialApproval k2OtpInitialApproval;
     @Autowired
     private LearningCourseActivationApproval learningCourseActivationApproval;
+    @Autowired
+    private A4RegistryApproval a4RegistryApproval;
 
     public ApiResult<?> dispatch(AuditReplayCommand cmd, AuditReplayContext ctx) {
+        if (A4RegistryApproval.supports(cmd)) {
+            return a4RegistryApproval.replay(cmd);
+        }
         if (G4CatalogApproval.supports(cmd)) {
             return g4CatalogApproval.replay(cmd, ctx);
         }

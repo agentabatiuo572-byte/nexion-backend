@@ -150,6 +150,8 @@ public class AuditReplayBusinessPermissionGuard {
     @Autowired
     private LearningCourseActivationApproval learningCourseActivationApproval;
     @Autowired
+    private A4RegistryApproval a4RegistryApproval;
+    @Autowired
     private SuperAdminAuthorization superAdmins;
     @Autowired
     private ffdd.opsconsole.device.application.OpsDeviceService devices;
@@ -242,6 +244,10 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     public ApiResult<Void> validateProposal(AuditReplayCommand command) {
+        if (A4RegistryApproval.isOperation(command)) {
+            return a4RegistryApproval.canPropose(command) ? ApiResult.ok()
+                    : ApiResult.fail(403, "A4_REGISTRY_MAKER_FORBIDDEN");
+        }
         if (OpsI18nLearningService.isCourseRewardAdjustment(command)) {
             return hasAuthority("content_i7_course_reward_adjust") ? ApiResult.ok()
                     : ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:content_i7_course_reward_adjust");
@@ -395,6 +401,13 @@ public class AuditReplayBusinessPermissionGuard {
      */
     ApiResult<AuditReplayCommand> bindProposalCommand(AuditOperationProposalRequest request) {
         AuditReplayCommand command = request.command();
+        if (A4RegistryApproval.isOperation(command)) {
+            return ApiResult.ok(a4RegistryApproval.prepare(request));
+        }
+        if (A4RegistryApproval.isRegistrationTarget(request.target()) || (request.targets() != null
+                && request.targets().stream().anyMatch(A4RegistryApproval::isRegistrationTarget))) {
+            return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+        }
         if (G4CatalogApproval.isOperation(command)) {
             if (!G4CatalogApproval.supports(command)) return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
             return ApiResult.ok(g4CatalogApproval.prepare(request, A2ReplayContext.authenticatedAdminId()));
@@ -464,6 +477,9 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     ApiResult<Void> validateRejection(AuditReplayCommand command) {
+        if (A4RegistryApproval.isOperation(command)) {
+            return a4RegistryApproval.validateChecker();
+        }
         if (OpsI18nLearningService.isCourseRewardAdjustment(command)) {
             return validateCourseRewardChecker();
         }
@@ -517,6 +533,9 @@ public class AuditReplayBusinessPermissionGuard {
      * Other commands retain their existing replay-time business guard.
      */
     public ApiResult<Void> validateApproval(AuditReplayCommand command) {
+        if (A4RegistryApproval.isOperation(command)) {
+            return a4RegistryApproval.validateChecker();
+        }
         if (OpsI18nLearningService.isCourseRewardAdjustment(command)) {
             return validateCourseRewardChecker();
         }
@@ -749,6 +768,9 @@ public class AuditReplayBusinessPermissionGuard {
      */
     ApiResult<DelegatedProposalDescriptor> validateProposalContext(
             AuditOperationProposalRequest request, AuditReplayCommand boundCommand) {
+        if (A4RegistryApproval.supports(boundCommand)) {
+            return ApiResult.ok(A4RegistryApproval.describe(boundCommand));
+        }
         if (OpsI18nLearningService.isCourseRewardAdjustment(boundCommand)) {
             // The ticket writer validates the exact context when it attaches the server-only review.
             return ApiResult.ok(null);
