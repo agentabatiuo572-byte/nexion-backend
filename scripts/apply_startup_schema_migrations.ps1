@@ -238,12 +238,6 @@ $migrations = @(
   # with test punctuation; the server-side gate now rejects new writes of the same
   # shape.
   (Join-Path $root "scripts\migrations\20260920_e6_download_copy_test_punctuation_cleanup.sql"),
-  # E2 had a tier ladder but no authoritative pricing rows, so the console showed
-  # six empty task classes and an empty task list (PURGE_GATE / read failed). The
-  # seed script existed but was never registered here, so it never ran on deploy.
-  # It is idempotent (INSERT ... ON DUPLICATE KEY UPDATE) and already documents the
-  # canonical six-class vocabulary, so registering it is the whole fix.
-  (Join-Path $root "scripts\seed_e2_task_pricing.sql"),
   # Prepare the H4 localization branch without inserting unreviewed translations.
   # Existing ongoing events still need operator-approved copy configured in H4.
   (Join-Path $root "scripts\migrations\20260920_h4_event_localized_content.sql"),
@@ -409,6 +403,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261102_simulated_task_runtime.sql"),
   (Join-Path $root "scripts\migrations\20261102_simulated_task_runtime_recent_read_index.sql")
   (Join-Path $root "scripts\migrations\20261103_english_rule_task_catalog.sql")
+  # Seed missing E2 classes only, after the catalog tables exist on fresh installs.
+  (Join-Path $root "scripts\seed_e2_task_pricing.sql")
   (Join-Path $root "scripts\migrations\20261103_retired_compute_read_views.sql")
   (Join-Path $root "scripts\migrations\20261103_retired_device_referral_read_view.sql")
   (Join-Path $root "scripts\migrations\20261103_task_class_authorization.sql")

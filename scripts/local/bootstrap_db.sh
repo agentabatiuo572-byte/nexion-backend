@@ -58,7 +58,7 @@ fi
 # Same ordered list as the $migrations block in apply_startup_schema_migrations.ps1.
 files=()
 while IFS= read -r f; do files+=("$f"); done < <(awk '/^\$migrations = @\(/{on=1; next} on && /^\)/{exit} on && $0 !~ /^[[:space:]]*#/' \
-  "$BACKEND/scripts/apply_startup_schema_migrations.ps1" | grep -oE 'scripts\\(migrations|local)\\[^"]+\.sql' | tr '\\' '/')
+  "$BACKEND/scripts/apply_startup_schema_migrations.ps1" | grep -oE 'scripts\\((migrations|local)\\[^"]+|seed_e2_task_pricing)\.sql' | tr '\\' '/')
 echo "Startup migrations: ${#files[@]}"
 i=0
 for path in "${files[@]}"; do
