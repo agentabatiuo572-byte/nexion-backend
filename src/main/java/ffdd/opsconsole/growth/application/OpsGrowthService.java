@@ -224,6 +224,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         publicConfigEvents = events;
     }
 
+    private void voucherRulesChanged() {
+        if (publicConfigEvents != null) publicConfigEvents.publishEvent(new VoucherRulesCache.Changed());
+    }
+
     /** Legacy direct construction; Spring uses the complete constructor below. */
     public OpsGrowthService(PlatformConfigFacade configFacade, EmergencyControlRepository emergencyRepository,
             TreasuryCoverageFacade coverageFacade, TreasuryLedgerPostingFacade ledgerPostingFacade,
@@ -2746,6 +2750,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                     longValue(next.get("issuanceLimit")),
                     stringValue(next.get("status"), ""),
                     request.operator());
+            voucherRulesChanged();
             audit("H7_VOUCHER_CREATED", "VOUCHER", id, request.operator(), Map.of(
                     "voucherId", id,
                     "reason", request.reason().trim(),
@@ -2805,6 +2810,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             if (updatedRows == 0) {
                 return ApiResult.fail(409, "H7_VOUCHER_STALE");
             }
+            voucherRulesChanged();
             audit("H7_VOUCHER_UPDATED", "VOUCHER", id, request.operator(), Map.of(
                     "voucherId", id,
                     "reason", request.reason().trim(),
@@ -2839,6 +2845,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             if (voucherMapper.get().updateStatus(id, status, expectedVersion, request.operator()) == 0) {
                 return ApiResult.fail(409, "H7_VOUCHER_STALE");
             }
+            voucherRulesChanged();
             audit("H7_VOUCHER_STATUS_CHANGED", "VOUCHER", id, request.operator(), Map.of(
                     "voucherId", id,
                     "status", status,
@@ -2873,6 +2880,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             if (voucherMapper.get().softDelete(id, expectedVersion, request.operator()) == 0) {
                 return ApiResult.fail(409, "H7_VOUCHER_STALE");
             }
+            voucherRulesChanged();
             audit("H7_VOUCHER_DELETED", "VOUCHER", id, request.operator(), Map.of(
                     "voucherId", id,
                     "reason", request.reason().trim(),
@@ -2908,6 +2916,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             if (voucherMapper.get().touchVersion(id, expectedVersion, request.operator()) == 0) {
                 return ApiResult.fail(409, "H7_VOUCHER_STALE");
             }
+            voucherRulesChanged();
             int revoked = voucherMapper.get().revokeAvailableGrants(id);
             audit("H7_VOUCHER_AVAILABLE_GRANTS_REVOKED", "VOUCHER", id, request.operator(), Map.of(
                     "voucherId", id,

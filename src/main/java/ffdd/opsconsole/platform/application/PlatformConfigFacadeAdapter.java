@@ -1,7 +1,6 @@
 package ffdd.opsconsole.platform.application;
 
 
-import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.platform.domain.PlatformConfigItem;
 import ffdd.opsconsole.platform.domain.PlatformConfigRepository;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -9,16 +8,32 @@ import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
-@RequiredArgsConstructor
 public class PlatformConfigFacadeAdapter implements PlatformConfigFacade {
     private final PlatformConfigRepository configRepository;
+    private final SessionLifetimeCache sessionLifetimeCache;
+
+    public PlatformConfigFacadeAdapter(PlatformConfigRepository configRepository) {
+        this(configRepository, null);
+    }
+
+    @Autowired
+    PlatformConfigFacadeAdapter(PlatformConfigRepository configRepository, SessionLifetimeCache sessionLifetimeCache) {
+        this.configRepository = configRepository;
+        this.sessionLifetimeCache = sessionLifetimeCache;
+    }
 
     @Override
     public Optional<String> activeValue(String configKey) {
         return configRepository.findActiveByKey(configKey).map(PlatformConfigItem::configValue);
+    }
+
+    @Override
+    public SessionLifetimes sessionLifetimes() {
+        return sessionLifetimeCache == null ? PlatformConfigFacade.super.sessionLifetimes() : sessionLifetimeCache.read();
     }
 
     @Override
@@ -53,12 +68,13 @@ public class PlatformConfigFacadeAdapter implements PlatformConfigFacade {
                 existing.createdAt(),
                 LocalDateTime.now());
         configRepository.save(saved);
+        if (sessionLifetimeCache != null) sessionLifetimeCache.invalidateAfterCommit(configKey);
     }
 
     @Override
     public boolean insertAdminValueIfMissing(
             String configKey, String configValue, String valueType, String configGroup, String remark) {
-        return configRepository.insertIfAbsent(new PlatformConfigItem(
+        boolean inserted = configRepository.insertIfAbsent(new PlatformConfigItem(
                 null,
                 configKey,
                 configValue,
@@ -69,6 +85,8 @@ public class PlatformConfigFacadeAdapter implements PlatformConfigFacade {
                 1,
                 LocalDateTime.now(),
                 LocalDateTime.now()));
+        if (inserted && sessionLifetimeCache != null) sessionLifetimeCache.invalidateAfterCommit(configKey);
+        return inserted;
     }
 
     @Override

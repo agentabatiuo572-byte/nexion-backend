@@ -912,17 +912,21 @@ public interface AppGrowthEngagementMapper {
             """)
     List<Map<String, Object>> earningMilestoneState(@Param("userId") Long userId);
 
-    @Select("""
-            SELECT v.voucher_id voucherId,v.voucher_name voucherName,v.voucher_type voucherType,
+    String VOUCHER_RULE_FIELDS = """
+                   v.voucher_name voucherName,v.voucher_type voucherType,
                    v.amount_usd amountUsd,v.percent_value percentValue,v.min_purchase_usd minPurchaseUsd,
                    v.max_discount_usd maxDiscountUsd,v.applicable_skus applicableSkus,
-                   v.audience,v.claim_surfaces claimSurfaces,v.start_at startAt,v.end_at endAt,
+                   v.audience,v.claim_surfaces claimSurfaces,
                    v.popup_enabled popupEnabled,v.stack_with_trial stackWithTrial,
                    v.popup_delay_ms popupDelayMs,v.popup_cooldown_hours popupCooldownHours,
                    v.popup_max_per_session popupMaxPerSession,v.popup_cadence_enabled popupCadenceEnabled,
+                   v.stack_with_others stackWithOthers,v.splittable
+            """;
+
+    String VOUCHER_LIVE_FIELDS = """
+                   v.voucher_id voucherId,v.start_at startAt,v.end_at endAt,
                    COALESCE(ps.last_seen_at,0) popupLastSeenAt,
                    COALESCE(ps.session_count,0) popupSessionCount,
-                   v.stack_with_others stackWithOthers,v.splittable,
                    v.status definitionStatus,v.is_deleted definitionDeleted,
                    v.issuance_limit issuanceLimit,
                    CASE WHEN v.issuance_limit>0 THEN (
@@ -930,6 +934,9 @@ public interface AppGrowthEngagementMapper {
                       WHERE issued.voucher_id=v.voucher_id AND issued.is_deleted=0
                    ) ELSE 0 END issuedCount,
                    g.grant_id grantId,COALESCE(g.status,'UNCLAIMED') grantStatus,g.used_order_no usedOrderNo
+            """;
+
+    String VOUCHER_STATE_SOURCE = """
               FROM nx_growth_voucher v
               LEFT JOIN nx_voucher_popup_state ps
                 ON ps.user_id=#{userId} AND ps.voucher_id=v.voucher_id
@@ -954,8 +961,18 @@ public interface AppGrowthEngagementMapper {
                     AND (v.start_at=0 OR v.start_at<=#{nowMillis})
                     AND (v.end_at=0 OR v.end_at>=#{nowMillis}))
              ORDER BY v.updated_at DESC,v.id DESC
-            """)
+            """;
+
+    @Select("SELECT " + VOUCHER_RULE_FIELDS + ", " + VOUCHER_LIVE_FIELDS + VOUCHER_STATE_SOURCE)
     List<Map<String, Object>> voucherState(
+            @Param("userId") Long userId, @Param("nowMillis") long nowMillis);
+
+    @Select("SELECT v.voucher_id voucherId,v.version definitionVersion, " + VOUCHER_RULE_FIELDS
+            + " FROM nx_growth_voucher v")
+    List<Map<String, Object>> voucherRules();
+
+    @Select("SELECT v.version definitionVersion, " + VOUCHER_LIVE_FIELDS + VOUCHER_STATE_SOURCE)
+    List<Map<String, Object>> voucherLiveState(
             @Param("userId") Long userId, @Param("nowMillis") long nowMillis);
 
     /**
