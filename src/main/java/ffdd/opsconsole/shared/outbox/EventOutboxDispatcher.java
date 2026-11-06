@@ -6,6 +6,8 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.Collections;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
@@ -16,7 +18,9 @@ import org.springframework.stereotype.Component;
 @Component
 @RequiredArgsConstructor
 public class EventOutboxDispatcher {
-    private static final String LOCK_NAME = EventOutboxMapper.DISPATCH_LOCK_PREFIX + "?)";
+    private static final String EVENT_LOCK = EventOutboxMapper.DISPATCH_LOCK_NAMESPACE;
+    private static final String LANE_LOCK = "nx:obl:";
+    private static final String LOCK_NAME = "CONCAT(?, LEFT(SHA2(DATABASE(), 256), 32), ':', ?)";
     private static final String ACQUIRE_LOCK = "SELECT CASE GET_LOCK(" + LOCK_NAME
             + ", 0) WHEN 1 THEN CONNECTION_ID() WHEN 0 THEN 0 END";
     private static final String RELEASE_LOCK = "SELECT RELEASE_LOCK(" + LOCK_NAME + ")";
@@ -28,21 +32,10 @@ public class EventOutboxDispatcher {
     private final ApplicationEventPublisher eventPublisher;
 
     public Result dispatch(EventOutboxMessage message, String exactEventType) {
-        long id = message.getId();
         // Keep the advisory lock on a dedicated session, without an open transaction.
         try (Connection connection = dataSource.getConnection()) {
             try {
-                long ownerId = executeLockCommand(connection, ACQUIRE_LOCK, id);
-                if (ownerId == 0) {
-                    return Result.SKIPPED;
-                }
-                try {
-                    return dispatchOwned(message, exactEventType, ownerId);
-                } finally {
-                    if (executeLockCommand(connection, RELEASE_LOCK, id) != 1) {
-                        throw new SQLException("Outbox dispatch lock was lost");
-                    }
-                }
+                return dispatch(connection, message, exactEventType);
             } catch (SQLException ex) {
                 // A pooled connection must never be reused with uncertain lock ownership.
                 dataSource.evictConnection(connection);
@@ -52,6 +45,45 @@ public class EventOutboxDispatcher {
             log.error("Outbox dispatch coordination failed eventId={} eventType={}",
                     message.getEventId(), message.getEventType(), ex);
             return Result.FAILED;
+        }
+    }
+
+    void dispatchComputeLane(String eventType, int laneCount, int lane) {
+        String laneKey = eventType + ":" + lane;
+        try (Connection connection = dataSource.getConnection()) {
+            try {
+                if (executeLockCommand(connection, ACQUIRE_LOCK, LANE_LOCK, laneKey) == 0) return;
+                try {
+                    var newest = new ArrayList<>(mapper.listPendingByCanonicalLane(eventType, laneCount, lane, true, 25));
+                    Collections.reverse(newest);
+                    for (EventOutboxMessage message : newest) dispatch(connection, message, null);
+                    for (EventOutboxMessage message : mapper.listPendingByCanonicalLane(eventType, laneCount, lane, false, 15)) {
+                        dispatch(connection, message, null);
+                    }
+                } finally {
+                    releaseLock(connection, LANE_LOCK, laneKey);
+                }
+            } catch (SQLException ex) {
+                dataSource.evictConnection(connection);
+                throw ex;
+            }
+        } catch (SQLException | RuntimeException ex) {
+            log.error("Compute outbox lane failed eventType={} lane={}", eventType, lane, ex);
+        }
+    }
+
+    private Result dispatch(Connection connection, EventOutboxMessage message, String exactEventType) throws SQLException {
+        String key = Long.toString(message.getId());
+        long ownerId = executeLockCommand(connection, ACQUIRE_LOCK, EVENT_LOCK, key);
+        if (ownerId == 0) return Result.SKIPPED;
+        try {
+            return dispatchOwned(message, exactEventType, ownerId);
+        } catch (RuntimeException ex) {
+            log.error("Outbox dispatch coordination failed eventId={} eventType={}",
+                    message.getEventId(), message.getEventType(), ex);
+            return Result.FAILED;
+        } finally {
+            releaseLock(connection, EVENT_LOCK, key);
         }
     }
 
@@ -87,9 +119,16 @@ public class EventOutboxDispatcher {
         return Result.PUBLISHED;
     }
 
-    private long executeLockCommand(Connection connection, String sql, long id) throws SQLException {
+    private void releaseLock(Connection connection, String namespace, String key) throws SQLException {
+        if (executeLockCommand(connection, RELEASE_LOCK, namespace, key) != 1) {
+            throw new SQLException("Outbox dispatch lock was lost");
+        }
+    }
+
+    private long executeLockCommand(Connection connection, String sql, String namespace, String key) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setLong(1, id);
+            statement.setString(1, namespace);
+            statement.setString(2, key);
             try (ResultSet rows = statement.executeQuery()) {
                 if (rows.next()) {
                     long result = rows.getLong(1);
