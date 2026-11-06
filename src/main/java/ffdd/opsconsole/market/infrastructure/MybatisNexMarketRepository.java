@@ -187,7 +187,7 @@ public class MybatisNexMarketRepository implements NexMarketRepository {
 
     @Override
     public List<ExchangeOrderView> exchangeOrdersByStatuses(List<String> statuses, int limit) {
-        return exchangeOrderMapper.listByStatuses(statuses, limit);
+        return exchangeOrderMapper.listOverviewOrdersByStatuses(statuses, limit);
     }
 
     @Override
@@ -229,7 +229,7 @@ public class MybatisNexMarketRepository implements NexMarketRepository {
 
     @Override
     public long stakingPositionCountByStatus(String status) {
-        return stakingMapper.countPositionsByStatus(status);
+        return stakingMapper.countG1PositionsByStatus(status, CANONICAL_STAKING_PRODUCT_CODES);
     }
 
     @Override
@@ -239,7 +239,7 @@ public class MybatisNexMarketRepository implements NexMarketRepository {
 
     @Override
     public List<StakingPositionView> stakingPositionsByStatus(String status, int limit) {
-        return stakingMapper.listPositionsByStatus(status, limit);
+        return stakingMapper.listG1PositionsByStatus(status, CANONICAL_STAKING_PRODUCT_CODES, limit);
     }
 
     @Override
