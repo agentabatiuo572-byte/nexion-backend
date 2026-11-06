@@ -1758,7 +1758,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 redline,
                 projected,
                 refundAllowed,
-                channels));
+                channels,
+                catalogRepository.listOrderDevices(normalizedOrderNo)));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -3913,7 +3914,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             // concurrent pay/refund transactions cannot deadlock by taking the two
             // resource families in opposite order. Any later failure rolls both
             // changes back with this service transaction.
-            if (!catalogRepository.rollbackOrderAssets(normalizedOrderNo, now)) {
+            if (!catalogRepository.rollbackRefundedOrderAssets(normalizedOrderNo, now)) {
                 throw new BizException(409, "SKU_STOCK_RESTORE_CONFLICT");
             }
             settlement = refundSettlementFacade.settle(

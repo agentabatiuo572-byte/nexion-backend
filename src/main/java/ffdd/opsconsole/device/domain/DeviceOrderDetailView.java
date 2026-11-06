@@ -25,5 +25,9 @@ public record DeviceOrderDetailView(
         BigDecimal coverageRedline,
         BigDecimal coverageProjected,
         boolean refundAllowed,
-        List<String> refundChannels) {
+        List<String> refundChannels,
+        List<OrderDevice> devices) {
+    public record OrderDevice(Long deviceId, String deviceInstanceNo, String kind, String sourceChannel,
+                              String status, String ownershipStatus) {
+    }
 }

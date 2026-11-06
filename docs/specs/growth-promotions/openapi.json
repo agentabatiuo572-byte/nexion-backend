@@ -6928,6 +6928,7 @@
             "minimum": 0
           },
           "giftCostUsdt": {
+            "description": "Original payable USDT at placement, counted once per distinct order with an issued device gift in the report cohort. Refunds do not change this basis. Null indicates unavailable order evidence.",
             "anyOf": [
               {
                 "$ref": "#/components/schemas/AggregateAmount"
@@ -10244,7 +10245,15 @@
             "const": false
           },
           "giftCostUsdt": {
-            "type": "null"
+            "description": "Estimated order payable USDT from pricing.amountUsdt for a determined device gift. Null indicates no matched device gift or unavailable facts.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Amount"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "acquisitionCostUsdt": {
             "type": "null"
