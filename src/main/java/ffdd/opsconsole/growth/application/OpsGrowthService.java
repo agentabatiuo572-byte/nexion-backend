@@ -551,10 +551,14 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     }
 
     public ApiResult<Map<String, Object>> trials() {
-        return trials(1, 100);
+        return trials(1, 100, false);
     }
 
     public ApiResult<Map<String, Object>> trials(int requestedPageNum, int requestedPageSize) {
+        return trials(requestedPageNum, requestedPageSize, true);
+    }
+
+    private ApiResult<Map<String, Object>> trials(int requestedPageNum, int requestedPageSize, boolean includePendingApproval) {
         ensureTrialSeedData();
         int pageNum = Math.max(1, requestedPageNum);
         int pageSize = Math.max(1, Math.min(requestedPageSize, 100));
@@ -568,7 +572,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         response.put("trialProducts", trialProducts);
         response.put("gates", trialGates());
         response.put("states", trialStates());
-        response.put("sessions", trialSessions(pageNum, pageSize));
+        var sessions = trialSessions(pageNum, pageSize);
+        response.put("sessions", includePendingApproval ? withPendingTrialApprovals(sessions) : sessions);
         response.put("sessionsPage", Map.of(
                 "total", totalSessions,
                 "pageNum", pageNum,
@@ -4008,7 +4013,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
 
     private List<Map<String, Object>> trialSessions(int pageNum, int pageSize) {
         long offset = (long) (pageNum - 1) * pageSize;
-        List<Map<String, Object>> rows = growthRows(mapper -> mapper.trialSessionsPage(offset, pageSize));
+        return growthRows(mapper -> mapper.trialSessionsPage(offset, pageSize));
+    }
+
+    private List<Map<String, Object>> withPendingTrialApprovals(List<Map<String, Object>> rows) {
         if (rows.isEmpty() || pendingApprovalProjection == null) return rows;
         var ids = rows.stream().map(row -> (String) row.get("sid"))
                 .flatMap(sid -> Stream.of(sid, bareTrialClaimNo(sid))).toList();
