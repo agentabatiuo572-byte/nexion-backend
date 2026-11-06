@@ -4,10 +4,9 @@ package ffdd.opsconsole.bi.web;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
-import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.bi.application.OpsBiService;
 import ffdd.opsconsole.bi.domain.BiReportStreamDownload;
-import ffdd.opsconsole.bi.domain.BiReportView;
+import ffdd.opsconsole.bi.domain.BiReportPage;
 import ffdd.opsconsole.bi.dto.BiDashboardValueRequest;
 import ffdd.opsconsole.bi.dto.BiRegulatoryTemplateRequest;
 import ffdd.opsconsole.bi.dto.BiReportActionRequest;
@@ -227,7 +226,7 @@ public class OpsBiController {
 
     @GetMapping("/reports")
     @PreAuthorize("hasAuthority('bi_l5_read')")
-    public ApiResult<PageResult<BiReportView>> reports(@ModelAttribute BiReportQueryRequest request) {
+    public ApiResult<BiReportPage> reports(@ModelAttribute BiReportQueryRequest request) {
         return biService.reports(request);
     }
 

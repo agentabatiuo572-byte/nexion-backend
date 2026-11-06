@@ -10,6 +10,8 @@ import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.bi.domain.BiReportCreateCommand;
+import ffdd.opsconsole.bi.domain.BiReportPage;
+import ffdd.opsconsole.bi.domain.BiReportPage.ApprovalEligibility;
 import ffdd.opsconsole.bi.domain.BiReportDownloadFile;
 import ffdd.opsconsole.bi.domain.BiReportRepository;
 import ffdd.opsconsole.bi.domain.BiReportSnapshot;
@@ -508,14 +510,25 @@ public class OpsBiService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
-    public ApiResult<PageResult<BiReportView>> reports(BiReportQueryRequest request) {
+    public ApiResult<BiReportPage> reports(BiReportQueryRequest request) {
         int pageNum = normalizePageNum(request == null ? null : request.pageNum());
         int pageSize = normalizePageSize(request == null ? null : request.pageSize(), request == null ? null : request.limit());
-        return ApiResult.ok(reportRepository.reports(
+        PageResult<BiReportView> page = reportRepository.reports(
                 request == null ? null : request.type(),
                 normalizeStatuses(request == null ? null : request.status()),
                 pageNum,
-                pageSize));
+                pageSize);
+        Map<String, ApprovalEligibility> eligibility = new LinkedHashMap<>();
+        Long adminId = parseAdminIdFromContext();
+        if (adminId != null && permissionCache.getPermissionCodes(adminId).contains("bi_l5_task_approve")) {
+            List<String> pendingIds = page.getRecords().stream()
+                    .filter(report -> nextStatus(report, "APPROVE") != null)
+                    .map(BiReportView::reportId)
+                    .toList();
+            Map<String, Long> makers = auditLogService.findBiReportMakers(pendingIds);
+            pendingIds.forEach(id -> eligibility.put(id, ApprovalEligibility.forActor(makers.get(id), adminId)));
+        }
+        return ApiResult.ok(new BiReportPage(page.getTotal(), page.getPageNum(), page.getPageSize(), page.getRecords(), eligibility));
     }
 
     public ApiResult<Map<String, Object>> regulatoryTemplates() {
@@ -769,6 +782,16 @@ public class OpsBiService implements AuditReplayable {
         String nextStatus = nextStatus(report, normalizedAction);
         if (nextStatus == null) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+        if ("APPROVE".equals(normalizedAction)) {
+            Long makerId = auditLogService.findBiReportMakers(List.of(report.reportId())).get(report.reportId());
+            ApprovalEligibility eligibility = ApprovalEligibility.forActor(makerId, adminId);
+            if (eligibility == ApprovalEligibility.MAKER_UNVERIFIED) {
+                return ApiResult.fail(409, "BI_TASK_MAKER_UNVERIFIED");
+            }
+            if (eligibility == ApprovalEligibility.SELF) {
+                return ApiResult.fail(403, "BI_TASK_SELF_APPROVAL_FORBIDDEN");
+            }
         }
         if (!reportRepository.updateActionIfStatus(
                 report.reportId(), normalizedAction, normalizeText(report.status()), nextStatus, request.reason().trim())) {
