@@ -3,6 +3,7 @@ package ffdd.opsconsole.shared.outbox.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.shared.outbox.EventOutboxMessage;
 import ffdd.opsconsole.shared.outbox.infrastructure.EventOutboxEntity;
+import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
@@ -10,6 +11,9 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
+    String DISPATCH_LOCK_PREFIX = "CONCAT('nx:outbox:', LEFT(SHA2(DATABASE(), 256), 32), ':', ";
+    String DISPATCH_OWNED = " AND IS_USED_LOCK(" + DISPATCH_LOCK_PREFIX + "#{id})) = #{ownerId}";
+
     String MESSAGE_COLUMNS = """
             id,
             event_id AS eventId,
@@ -133,22 +137,30 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
             SELECT
             """ + MESSAGE_COLUMNS + """
               FROM nx_event_outbox
-             WHERE is_deleted = 0
-               AND event_type = #{eventType}
-               AND status IN ('PENDING', 'FAILED')
-               AND (event_type != 'ADMIN_USER_PROFILE_VIEWED' OR EXISTS (
-                   SELECT 1 FROM nx_audit_log a
-                    WHERE a.biz_no = CONCAT('C1-VIEW-', nx_event_outbox.event_id)
-                      AND a.is_deleted = 0))
-              AND (next_retry_at IS NULL OR next_retry_at &lt;= NOW())
+             WHERE id IN (
+               SELECT candidate.id FROM (
+                 <foreach collection="{'PENDING', 'FAILED'}" item="dispatchStatus" separator="UNION ALL">
+                 (SELECT id FROM nx_event_outbox FORCE INDEX (idx_outbox_canonical_type)
+                   WHERE canonical_event_type = LOWER(#{eventType})
+                     AND event_type = #{eventType}
+                     AND is_deleted = 0 AND status = #{dispatchStatus}
+                     AND (next_retry_at IS NULL OR next_retry_at &lt;= NOW())
+                     AND (event_type != 'ADMIN_USER_PROFILE_VIEWED' OR EXISTS (
+                         SELECT 1 FROM nx_audit_log a
+                          WHERE a.biz_no = CONCAT('C1-VIEW-', nx_event_outbox.event_id)
+                            AND a.is_deleted = 0))
+                   ORDER BY id ASC LIMIT #{limit})
+                 </foreach>
+               ) candidate
+             )
              ORDER BY id ASC
              LIMIT #{limit}
             </script>
             """)
     List<EventOutboxMessage> listPendingByEventType(@Param("eventType") String eventType, @Param("limit") int limit);
 
-    // Each branch's first limit IDs contain every possible global first-limit result.
-    // Union IDs before loading messages so a row matching both canonical aliases appears once.
+    // Each index branch fixes its status so it can read the earliest IDs without sorting a backlog.
+    // Merge bounded ID sets before loading messages, including rows matching both aliases only once.
     @Select("""
             <script>
             SELECT
@@ -156,19 +168,21 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
               FROM nx_event_outbox
              WHERE id IN (
                SELECT candidate.id FROM (
-                 (SELECT id FROM nx_event_outbox
-                   WHERE is_deleted = 0 AND LOWER(event_type) = LOWER(#{canonicalType})
-                     AND status IN ('PENDING', 'FAILED')
+                 <foreach collection="{'PENDING', 'FAILED'}" item="dispatchStatus" separator="UNION DISTINCT">
+                 (SELECT id FROM nx_event_outbox FORCE INDEX (idx_outbox_canonical_type)
+                   WHERE canonical_event_type = LOWER(#{canonicalType})
+                     AND is_deleted = 0 AND status = #{dispatchStatus}
                      AND (next_retry_at IS NULL OR next_retry_at &lt;= NOW())
                      AND id &gt; #{afterId}
                    ORDER BY id ASC LIMIT #{limit})
                  UNION DISTINCT
-                 (SELECT id FROM nx_event_outbox
-                   WHERE is_deleted = 0 AND LOWER(event_name) = LOWER(#{canonicalType})
-                     AND status IN ('PENDING', 'FAILED')
+                 (SELECT id FROM nx_event_outbox FORCE INDEX (idx_outbox_canonical_name)
+                   WHERE canonical_event_name = LOWER(#{canonicalType})
+                     AND is_deleted = 0 AND status = #{dispatchStatus}
                      AND (next_retry_at IS NULL OR next_retry_at &lt;= NOW())
                      AND id &gt; #{afterId}
                    ORDER BY id ASC LIMIT #{limit})
+                 </foreach>
                ) candidate
              )
              ORDER BY id ASC
@@ -204,17 +218,50 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
             """)
     List<EventOutboxMessage> listByStatus(@Param("status") String status, @Param("limit") int limit);
 
+    @Select("""
+            SELECT o.id, (
+                SELECT TIMESTAMPADD(SECOND, #{processingTimeoutSeconds} + 1, MAX(d.updated_at))
+                  FROM nx_event_consumer_delivery d
+                 WHERE d.event_id = o.event_id
+                   AND d.is_deleted = 0
+                   AND d.status = 'PROCESSING'
+                   AND d.topic LIKE 'spring-%'
+                   AND d.updated_at >= TIMESTAMPADD(SECOND, -#{processingTimeoutSeconds}, NOW())
+            ) AS activeClaimUntil
+              FROM nx_event_outbox o
+             WHERE o.id = #{id}
+               AND o.is_deleted = 0
+               AND o.status IN ('PENDING', 'FAILED')
+               AND (o.next_retry_at IS NULL OR o.next_retry_at <= NOW())
+            """ + DISPATCH_OWNED)
+    DispatchState findDispatchState(@Param("id") long id, @Param("processingTimeoutSeconds") int processingTimeoutSeconds,
+                                    @Param("ownerId") long ownerId);
+
+    record DispatchState(long id, LocalDateTime activeClaimUntil) {}
+
+    @Update("""
+            UPDATE nx_event_outbox
+               SET next_retry_at = #{nextRetryAt}, updated_at = NOW()
+             WHERE id = #{id}
+               AND is_deleted = 0
+               AND status IN ('PENDING', 'FAILED')
+               AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+            """ + DISPATCH_OWNED)
+    void deferDispatchUntil(@Param("id") long id, @Param("nextRetryAt") LocalDateTime nextRetryAt,
+                            @Param("ownerId") long ownerId);
+
     @Update("""
             UPDATE nx_event_outbox
                SET status = #{publishedStatus},
                    published_at = NOW(),
                    updated_at = NOW(),
                    last_error = NULL
-            WHERE event_id = #{eventId}
+            WHERE id = #{id}
               AND is_deleted = 0
-              AND status != #{publishedStatus}
-            """)
-    int markPublished(@Param("eventId") String eventId, @Param("publishedStatus") String publishedStatus);
+              AND status IN ('PENDING', 'FAILED')
+            """ + DISPATCH_OWNED)
+    int markPublished(@Param("id") long id, @Param("publishedStatus") String publishedStatus,
+                      @Param("ownerId") long ownerId);
 
     String RETIREMENT_ELIGIBILITY = """
                o.is_deleted = 0
@@ -402,13 +449,14 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
                    retry_count = retry_count + 1,
                    last_error = #{errorMessage},
                    updated_at = NOW()
-             WHERE event_id = #{eventId}
+             WHERE id = #{id}
                AND is_deleted = 0
                AND status IN (#{pendingStatus}, #{failedStatus})
-            """)
-    int markFailed(@Param("eventId") String eventId, @Param("errorMessage") String errorMessage,
+            """ + DISPATCH_OWNED)
+    int markFailed(@Param("id") long id, @Param("errorMessage") String errorMessage,
                    @Param("maxRetries") int maxRetries, @Param("deadStatus") String deadStatus,
-                   @Param("failedStatus") String failedStatus, @Param("pendingStatus") String pendingStatus);
+                   @Param("failedStatus") String failedStatus, @Param("pendingStatus") String pendingStatus,
+                   @Param("ownerId") long ownerId);
 
     /**
      * The redrive boundary intentionally selects only the five governed H3

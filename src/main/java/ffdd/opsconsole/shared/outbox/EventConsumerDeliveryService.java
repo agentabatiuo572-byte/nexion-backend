@@ -1,11 +1,9 @@
 package ffdd.opsconsole.shared.outbox;
 
 import ffdd.opsconsole.shared.outbox.mapper.EventConsumerDeliveryMapper;
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -15,6 +13,7 @@ import org.springframework.util.StringUtils;
 public class EventConsumerDeliveryService {
     private static final int MAX_LIMIT = 200;
     private static final int MAX_ERROR_LENGTH = 512;
+    private static final String STATUS_CLAIMING = "CLAIMING";
     private static final String STATUS_PROCESSING = "PROCESSING";
     private static final String STATUS_SUCCESS = "SUCCESS";
     private static final String STATUS_FAILED = "FAILED";
@@ -37,36 +36,28 @@ public class EventConsumerDeliveryService {
             String msgId,
             int rocketmqReconsumeTimes) {
         String eventId = eventId(message, msgId);
-        try {
-            mapper.insertClaim(
-                    eventId,
-                    consumerGroup,
-                    topic,
-                    msgId,
-                    valueOrUnknown(message == null ? null : message.getEventType()),
-                    message == null ? null : message.getAggregateType(),
-                    message == null ? null : message.getAggregateId(),
-                    STATUS_PROCESSING,
-                    Math.max(0, rocketmqReconsumeTimes));
-            return new ConsumerClaim(true, eventId, STATUS_PROCESSING, 1);
-        } catch (DuplicateKeyException ignored) {
-            // Existing SUCCESS/DEAD rows are idempotency fences; retryable rows are reclaimed below.
-        }
+        String eventType = valueOrUnknown(message == null ? null : message.getEventType());
+        String aggregateType = message == null ? null : message.getAggregateType();
+        String aggregateId = message == null ? null : message.getAggregateId();
+        int reconsumeTimes = Math.max(0, rocketmqReconsumeTimes);
+        // A new row stays in CLAIMING only until the update in this transaction.
+        mapper.ensureClaimRow(eventId, consumerGroup, topic, msgId, eventType, aggregateType, aggregateId,
+                STATUS_CLAIMING, reconsumeTimes);
 
-        LocalDateTime staleBefore = LocalDateTime.now().minusSeconds(properties.processingTimeoutSeconds());
-        int updated = mapper.reclaim(
+        int updated = mapper.claimEligible(
                 eventId,
                 consumerGroup,
                 topic,
                 msgId,
-                valueOrUnknown(message == null ? null : message.getEventType()),
-                message == null ? null : message.getAggregateType(),
-                message == null ? null : message.getAggregateId(),
+                eventType,
+                aggregateType,
+                aggregateId,
+                STATUS_CLAIMING,
                 STATUS_PROCESSING,
                 STATUS_FAILED,
-                Math.max(0, rocketmqReconsumeTimes),
-                staleBefore);
-        EventConsumerDelivery delivery = getByEvent(consumerGroup, eventId);
+                reconsumeTimes,
+                properties.processingTimeoutSeconds());
+        EventConsumerDelivery delivery = mapper.lockClaimState(consumerGroup, eventId);
         int attemptCount = delivery == null || delivery.getAttemptCount() == null ? 0 : delivery.getAttemptCount();
         String status = delivery == null ? "MISSING" : delivery.getStatus();
         return new ConsumerClaim(updated > 0, eventId, status, attemptCount);
