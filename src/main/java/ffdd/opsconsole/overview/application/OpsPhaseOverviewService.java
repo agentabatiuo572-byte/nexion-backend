@@ -72,7 +72,7 @@ public class OpsPhaseOverviewService {
                 "monthLeverCombo", leverCombo(selected),
                 "attributionLinks", List.of(
                         linked("key", "H1", "label", "运营阶段效果分析", "href", h1AttributionHref(filter.phase(), current.currentPhase())),
-                        linked("key", "B3", "label", "用户转化分析", "href", "/overview/funnel?phase=" + valueOrAll(filter.phase())),
+                        linked("key", "B3", "label", "用户转化概览", "href", "/overview/funnel?phase=" + valueOrAll(filter.phase())),
                         linked("key", "B1", "label", "资金与应付款总览", "href", "/overview/dual-ledger"),
                         linked("key", "B2", "label", "可用资金与应付款", "href", "/overview/liquidity")),
                 "sourceStatement", "按「运营阶段设置」的当前月份展示，这里只能查看，不能修改",

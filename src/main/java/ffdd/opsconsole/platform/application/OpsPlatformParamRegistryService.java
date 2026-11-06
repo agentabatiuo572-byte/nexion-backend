@@ -177,11 +177,11 @@ public class OpsPlatformParamRegistryService {
     private String phonePolicySummary(String value) {
         try {
             var state = new com.fasterxml.jackson.databind.ObjectMapper().readTree(value);
-            if (!state.has("revision") || !state.path("revision").canConvertToLong()) return "设置有误，请到「算力与设备配置」检查";
-            if (state.path("revision").asLong() == 0) return "还没发布 · 请到「算力与设备配置」设置";
+            if (!state.has("revision") || !state.path("revision").canConvertToLong()) return "设置有误，请到「手机算力配置」检查";
+            if (state.path("revision").asLong() == 0) return "还没发布 · 请到「手机算力配置」设置";
             return "发布版本 " + state.path("revision").asLong()
-                    + (state.path("scheduled").isObject() ? " · 有待生效的版本" : "") + " · 到「算力与设备配置」查看";
-        } catch (Exception invalid) { return "设置有误，请到「算力与设备配置」检查"; }
+                    + (state.path("scheduled").isObject() ? " · 有待生效的版本" : "") + " · 到「手机算力配置」查看";
+        } catch (Exception invalid) { return "设置有误，请到「手机算力配置」检查"; }
     }
 
     /**
@@ -320,7 +320,7 @@ public class OpsPlatformParamRegistryService {
             return new Owner("M", "M5", "服务规则与话术", "/service/scripts");
         }
         if ("content".equals(group) || key.startsWith("disclosure.")) {
-            return new Owner("I", "I5", "风险披露", "/content/disclosures");
+            return new Owner("I", "I5", "法律条款与风险披露", "/content/disclosures");
         }
         if ("e2".equals(group) || key.startsWith("e.task.")) {
             return new Owner("E", "E2", "设备收益与任务", "/devices/tasks");
@@ -329,16 +329,16 @@ public class OpsPlatformParamRegistryService {
             return new Owner("E", "E1", "商品管理与上架条件", "/devices/pricing");
         }
         if ("e6_compute".equals(group) || key.startsWith("e.compute.")) {
-            return new Owner("E", "E6", "算力与设备配置", "/devices/compute-config");
+            return new Owner("E", "E6", "手机算力配置", "/devices/compute-config");
         }
         if (List.of("dailyusdtperbaseline", "nexperusdt").contains(key)) {
-            return new Owner("E", "E6", "算力与设备配置", "/devices/compute-config");
+            return new Owner("E", "E6", "手机算力配置", "/devices/compute-config");
         }
         if ("finance-topup".equals(group) || key.startsWith("finance.topup.")) {
-            return new Owner("D", "D1", "充值对账中心", "/finance/recon");
+            return new Owner("D", "D1", "充值与收款对账", "/finance/recon");
         }
         if (key.startsWith("finance.payout_vnd.")) {
-            return new Owner("D", "D7", "法币提现参数", "/finance/payout-vnd");
+            return new Owner("D", "D7", "越南盾提现参数", "/finance/payout-vnd");
         }
         if (key.startsWith("growth.phase.") || key.startsWith("h1.rhythm.")) {
             return new Owner("H", "H1", "运营阶段设置", "/growth/phase");
@@ -374,7 +374,7 @@ public class OpsPlatformParamRegistryService {
             return new Owner("K", "K1", "多账户风险排查", "/risk/multi-account");
         }
         if (key.startsWith("payout.")) {
-            return new Owner("D", "D5", "提现参数配置", "/finance/params");
+            return new Owner("D", "D5", "USDT 提现参数", "/finance/params");
         }
         if (key.startsWith("treasury.d3.")) {
             return new Owner("D", "D3", "资金储备与应付款", "/finance/pool");
@@ -398,13 +398,13 @@ public class OpsPlatformParamRegistryService {
             return new Owner("B", "B1", "资金与应付款总览", "/overview/dual-ledger");
         }
         if (key.startsWith("wallet.exchange.")) {
-            return new Owner("G", "G2", "兑换风险规则", "/finance-products/exchange");
+            return new Owner("G", "G2", "兑换额度与规则", "/finance-products/exchange");
         }
         if (key.startsWith("wallet.nex_market.")) {
             return new Owner("G", "G3", "UVT价格管理", "/finance-products/market");
         }
         if (key.startsWith("withdrawal.")) {
-            return new Owner("D", "D5", "提现参数配置", "/finance/params");
+            return new Owner("D", "D5", "USDT 提现参数", "/finance/params");
         }
         return null;
     }
