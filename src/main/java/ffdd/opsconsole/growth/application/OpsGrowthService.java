@@ -3188,76 +3188,53 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         }
     }
 
-    @Transactional
-    public ApiResult<Map<String, Object>> deleteVoucher(String idempotencyKey, String voucherId, GrowthConfigUpdateRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
+    public Map<String, Object> reviewVoucherDisposition(H7VoucherDisposition request) {
+        if (voucherMapper.isEmpty()) {
+            throw new BizException(503, "VOUCHER_BUSINESS_TABLE_UNAVAILABLE");
         }
-        try {
-            String id = normalizeVoucherId(voucherId);
-            if (!A2ReplayContext.isReplaying()
-                    && lockMapper.countActiveByTarget("H", "voucher", id) > 0) {
-                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-            }
-            long expectedVersion = expectedVoucherVersion(request.expectedValue());
-            List<Map<String, Object>> rows = new ArrayList<>(voucherRows());
-            voucherIndex(rows, id);
-            if (voucherMapper.isEmpty()) {
-                return validation("VOUCHER_BUSINESS_TABLE_UNAVAILABLE");
-            }
-            if (voucherMapper.get().softDelete(id, expectedVersion, request.operator()) == 0) {
-                return ApiResult.fail(409, "H7_VOUCHER_STALE");
-            }
-            voucherRulesChanged();
-            audit("H7_VOUCHER_DELETED", "VOUCHER", id, request.operator(), Map.of(
-                    "voucherId", id,
-                    "reason", request.reason().trim(),
-                    "idempotencyKey", idempotencyKey.trim()));
-            Map<String, Object> response = vouchers().getData();
-            response.put("updated", Map.of("voucherId", id, "action", "deleted"));
-            return ApiResult.ok(response);
-        } catch (IllegalArgumentException ex) {
-            return validation(ex.getMessage());
+        Map<String, Object> voucher = voucherRows().stream()
+                .filter(row -> request.voucherId().equals(row.get("id")))
+                .findFirst()
+                .orElseThrow(() -> new BizException(404, "VOUCHER_NOT_FOUND"));
+        if (request.expectedVersion() != longValue(voucher.get("version"))) {
+            throw new BizException(409, "H7_VOUCHER_STALE");
         }
+        return voucher;
     }
 
-    @Transactional
-    public ApiResult<Map<String, Object>> revokeAvailableVoucherGrants(
-            String idempotencyKey,
-            String voucherId,
-            GrowthConfigUpdateRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+    private ApiResult<?> replayVoucherDisposition(AuditReplayCommand command, AuditReplayContext context) {
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
+        var request = H7VoucherDisposition.parse(command);
+        var locks = lockMapper.selectActiveByTicketId(A2ReplayContext.operationId());
+        if (locks.size() != 1 || !request.target().equals(new AuditLockTarget(
+                locks.get(0).getTargetDomain(), locks.get(0).getTargetType(), locks.get(0).getTargetId()))) {
+            return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+        }
+        var guard = requireCommand(context.idempotencyKey(), context.reason());
         if (guard != null) {
             return guard;
         }
-        try {
-            String id = normalizeVoucherId(voucherId);
-            if (!A2ReplayContext.isReplaying()
-                    && lockMapper.countActiveByTarget("H", "voucher", id) > 0) {
-                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-            }
-            long expectedVersion = expectedVoucherVersion(request.expectedValue());
-            voucherIndex(new ArrayList<>(voucherRows()), id);
-            if (voucherMapper.isEmpty()) {
-                return validation("VOUCHER_BUSINESS_TABLE_UNAVAILABLE");
-            }
-            if (voucherMapper.get().touchVersion(id, expectedVersion, request.operator()) == 0) {
-                return ApiResult.fail(409, "H7_VOUCHER_STALE");
-            }
-            voucherRulesChanged();
-            int revoked = voucherMapper.get().revokeAvailableGrants(id);
-            audit("H7_VOUCHER_AVAILABLE_GRANTS_REVOKED", "VOUCHER", id, request.operator(), Map.of(
-                    "voucherId", id,
-                    "revoked", revoked,
-                    "reason", request.reason().trim(),
-                    "idempotencyKey", idempotencyKey.trim()));
-            Map<String, Object> response = vouchers().getData();
-            response.put("updated", Map.of("voucherId", id, "action", "available_grants_revoked", "revoked", revoked));
-            return ApiResult.ok(response);
-        } catch (IllegalArgumentException ex) {
-            return validation(ex.getMessage());
+        if (voucherMapper.isEmpty()) {
+            return ApiResult.fail(503, "VOUCHER_BUSINESS_TABLE_UNAVAILABLE");
         }
+        var mapper = voucherMapper.get();
+        String id = request.voucherId();
+        boolean delete = H7VoucherDisposition.DELETE.equals(command.op());
+        int updated = delete ? mapper.softDelete(id, request.expectedVersion(), context.operator())
+                : mapper.touchVersion(id, request.expectedVersion(), context.operator());
+        if (updated == 0) {
+            return ApiResult.fail(409, "H7_VOUCHER_STALE");
+        }
+        Map<String, Object> detail = row("voucherId", id, "reason", context.reason().trim(),
+                "idempotencyKey", context.idempotencyKey().trim());
+        if (!delete) {
+            detail.put("revoked", mapper.revokeAvailableGrants(id));
+        }
+        audit(delete ? "H7_VOUCHER_DELETED" : "H7_VOUCHER_AVAILABLE_GRANTS_REVOKED",
+                "VOUCHER", id, context.operator(), detail);
+        return ApiResult.ok();
     }
 
     public ApiResult<Map<String, Object>> updateWithdrawGate(String idempotencyKey, GrowthConfigUpdateRequest request) {
@@ -6223,6 +6200,9 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         String reason = ctx.reason();
         String idem = ctx.idempotencyKey();
         switch (cmd.op()) {
+            case H7VoucherDisposition.DELETE, H7VoucherDisposition.REVOKE_AVAILABLE -> {
+                return replayVoucherDisposition(cmd, ctx);
+            }
             case "h3_weekly_region_policy" -> {
                 if (!A2ReplayContext.isReplaying()) return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
                 if (weeklyRegionPolicies == null || weeklySnapshots == null) {
