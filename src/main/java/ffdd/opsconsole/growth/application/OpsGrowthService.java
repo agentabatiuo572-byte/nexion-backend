@@ -37,6 +37,7 @@ import ffdd.opsconsole.platform.domain.AuditReplayable;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.platform.dto.PlatformConfigChangedEvent;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
@@ -60,10 +61,12 @@ import java.util.regex.Pattern;
 import java.util.function.Function;
 import java.util.stream.Stream;
 import org.springframework.util.StringUtils;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.ApplicationEventPublisherAware;
 import org.springframework.transaction.annotation.Transactional;
 
 @ApplicationService
-public class OpsGrowthService implements AuditReplayable {
+public class OpsGrowthService implements AuditReplayable, ApplicationEventPublisherAware {
     private final H4EventRuleService h4EventRules;
     private final WeeklyQuestSnapshotService weeklySnapshots;
     private final WeeklyRegionPolicyService weeklyRegionPolicies;
@@ -214,6 +217,12 @@ public class OpsGrowthService implements AuditReplayable {
     private final Optional<OpsReferralRewardService> referralRewardService;
     private final StreakPerkBusinessAvailabilityFacade streakPerkAvailability;
     private final ffdd.opsconsole.promotion.application.PromotionAdminService promotionAdmin;
+    private ApplicationEventPublisher publicConfigEvents;
+
+    @Override
+    public void setApplicationEventPublisher(ApplicationEventPublisher events) {
+        publicConfigEvents = events;
+    }
 
     /** Legacy direct construction; Spring uses the complete constructor below. */
     public OpsGrowthService(PlatformConfigFacade configFacade, EmergencyControlRepository emergencyRepository,
@@ -1481,9 +1490,10 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     private int transitionMissionStatus(String kind, String code, int expected, int target) {
-        return "MISSION".equals(kind)
-                ? questEventMapper.get().transitionMissionStatusCas(code, expected, target)
-                : questEventMapper.get().transitionMonthlyMissionStatusCas(code, expected, target);
+        if (!"MISSION".equals(kind)) return questEventMapper.get().transitionMonthlyMissionStatusCas(code, expected, target);
+        int updated = questEventMapper.get().transitionMissionStatusCas(code, expected, target);
+        if (updated == 1) PlatformConfigChangedEvent.publish(publicConfigEvents);
+        return updated;
     }
 
     private ApiResult<Map<String, Object>> invalidMissionTransition() {
@@ -2086,6 +2096,7 @@ public class OpsGrowthService implements AuditReplayable {
         if (mapper.updatePromoBannerField(id, field, value) != 1) {
             return validation("QUEST_CONFIG_STALE");
         }
+        if ("status".equals(field)) PlatformConfigChangedEvent.publish(publicConfigEvents);
         audit("H3_PROMO_BANNER_CHANGED", "GROWTH_PROMO_BANNER", String.valueOf(id), request.operator(), Map.of(
                 "field", field, "oldValue", oldValue, "newValue", value,
                 "reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim()));

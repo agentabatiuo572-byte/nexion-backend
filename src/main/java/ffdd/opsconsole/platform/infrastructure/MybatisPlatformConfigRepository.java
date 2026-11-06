@@ -5,16 +5,25 @@ import lombok.RequiredArgsConstructor;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import ffdd.opsconsole.platform.domain.PlatformConfigItem;
 import ffdd.opsconsole.platform.domain.PlatformConfigRepository;
+import ffdd.opsconsole.platform.dto.PlatformConfigChangedEvent;
 import ffdd.opsconsole.platform.mapper.PlatformConfigItemMapper;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.ApplicationEventPublisherAware;
 import org.springframework.stereotype.Repository;
 
 @Repository
 @RequiredArgsConstructor
-public class MybatisPlatformConfigRepository implements PlatformConfigRepository {
+public class MybatisPlatformConfigRepository implements PlatformConfigRepository, ApplicationEventPublisherAware {
     private final PlatformConfigItemMapper mapper;
+    private ApplicationEventPublisher events;
+
+    @Override
+    public void setApplicationEventPublisher(ApplicationEventPublisher events) {
+        this.events = events;
+    }
 
     @Override
     public Optional<PlatformConfigItem> findActiveByKey(String configKey) {
@@ -59,16 +68,16 @@ public class MybatisPlatformConfigRepository implements PlatformConfigRepository
         PlatformConfigItemEntity entity = toEntity(item);
         if (entity.getId() == null) {
             entity.setIsDeleted(0);
-            mapper.insert(entity);
+            if (mapper.insert(entity) == 1) publishPublicChange(item.configKey());
         } else {
-            mapper.updateById(entity);
+            if (mapper.updateById(entity) == 1) publishPublicChange(item.configKey());
         }
         return toDomain(entity);
     }
 
     @Override
     public boolean insertIfAbsent(PlatformConfigItem item) {
-        return mapper.insertIfConfigKeyAbsent(
+        boolean inserted = mapper.insertIfConfigKeyAbsent(
                 item.configKey(),
                 item.configValue(),
                 item.valueType(),
@@ -76,6 +85,18 @@ public class MybatisPlatformConfigRepository implements PlatformConfigRepository
                 item.visibility(),
                 item.remark(),
                 item.status()) == 1;
+        if (inserted) publishPublicChange(item.configKey());
+        return inserted;
+    }
+
+    private void publishPublicChange(String key) {
+        if (key.startsWith("platform.experience.") || key.startsWith("E.compute.")
+                || key.startsWith("K.rewards.") || key.startsWith("growth.phase.month.")
+                || key.startsWith("growth.public_stats.") || key.startsWith("h9.sb.")
+                || key.equals("G.staking.app_visible") || key.equals("dailyUsdtPerBaseline")
+                || key.equals("platform.phase.config")) {
+            PlatformConfigChangedEvent.publish(events);
+        }
     }
 
     private PlatformConfigItem toDomain(PlatformConfigItemEntity entity) {
