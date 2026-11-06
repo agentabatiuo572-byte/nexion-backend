@@ -43,14 +43,18 @@ public interface DirectReferralMapper extends BaseMapper<Object> {
                      @Param("deviceEarningJson") String earning,@Param("operationId") String operationId,@Param("reason") String reason);
     record PolicyRow(long policyVersion,LocalDateTime effectiveAt,String purchaseJson,String deviceEarningJson) { }
 
+    @Select("SELECT user_id FROM nx_order WHERE order_no=#{ref} AND is_deleted=0")
+    Long purchaseOwner(String ref);
+    @Select("SELECT id FROM nx_user WHERE id=#{id} AND is_deleted=0 FOR UPDATE")
+    Long lockSourceUser(Long id);
     @Select("""
         SELECT o.user_id userId,u.sponsor_user_id sponsorUserId,u.nickname sourceUserName,o.paid_at sourceOccurredAt,
                o.amount_usdt amountUsdt,0 amountNex,NULL sourceDeviceId,u.sandbox sandbox,
                CASE WHEN o.payment_status='REFUNDED' OR o.order_status='REFUNDED' THEN 1 ELSE 0 END refunded,
                CASE WHEN o.payment_status IN ('PAID','REFUNDED') AND o.paid_at IS NOT NULL THEN 1 ELSE 0 END valid
           FROM nx_order o JOIN nx_user u ON u.id=o.user_id AND u.is_deleted=0
-         WHERE o.order_no=#{ref} AND o.is_deleted=0 FOR UPDATE
-        """) Source purchase(String ref);
+         WHERE o.order_no=#{ref} AND o.user_id=#{userId} AND o.is_deleted=0 FOR UPDATE
+        """) Source purchase(@Param("ref") String ref,@Param("userId") Long userId);
     @Select("""
         SELECT r.user_id userId,u.sponsor_user_id sponsorUserId,u.nickname sourceUserName,r.completed_at sourceOccurredAt,
                COALESCE((SELECT SUM(e.amount) FROM nx_earning_event e WHERE e.receipt_no=r.receipt_no AND e.user_id=r.user_id
