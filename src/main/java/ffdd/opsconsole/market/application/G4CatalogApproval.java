@@ -128,7 +128,7 @@ public class G4CatalogApproval {
         return grants.contains(PRICE_AUTHORITY) && (!changesSupply || grants.contains("finprod_g4_write"));
     }
 
-    private static Long makerId(AuditReplayCommand command) {
+    public static Long makerId(AuditReplayCommand command) {
         return command.params() != null && command.params().get("makerAdminId") instanceof Number maker
                 ? maker.longValue() : null;
     }

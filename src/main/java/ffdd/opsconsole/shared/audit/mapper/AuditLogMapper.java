@@ -14,28 +14,37 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 public interface AuditLogMapper extends BaseMapper<AuditLogEntity> {
-    /** Exact durable proposal identity; retention may move the audit into its cold payload. */
+    /** Exact durable command identity; retention may move the audit into its cold payload. */
     @Select("""
-            SELECT resourceId FROM (
-              SELECT resource_id AS resourceId
+            SELECT operationId,
+                   IF(COUNT(DISTINCT BINARY actorUsername)=1, MIN(actorUsername), NULL) AS actorUsername
+              FROM (
+              SELECT resource_id AS operationId, actor_username AS actorUsername
                 FROM nx_audit_log
                WHERE is_deleted=0 AND actor_type='ADMIN' AND actor_id=#{actorId}
-                 AND action='A2_OPERATION_PROPOSED' AND resource_type='A2_OPERATION' AND result='SUCCESS'
+                 AND action=#{action} AND resource_type='A2_OPERATION' AND result='SUCCESS'
                  AND BINARY JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.idempotencyKey'))=BINARY #{key}
-              UNION
-              SELECT JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) AS resourceId
+              UNION ALL
+              SELECT JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) AS operationId,
+                     NULLIF(JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorUsername')), 'null') AS actorUsername
                 FROM nx_audit_log_archive
-               WHERE JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorType'))='ADMIN'
+               WHERE content_sha256 IS NOT NULL
+                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorType'))='ADMIN'
                  AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorId'))=CAST(#{actorId} AS CHAR)
-                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))='A2_OPERATION_PROPOSED'
+                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))=#{action}
                  AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceType'))='A2_OPERATION'
                  AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.result'))='SUCCESS'
                  AND BINARY JSON_UNQUOTE(JSON_EXTRACT(
                        JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.detail')),'$.idempotencyKey'))=BINARY #{key}
-                 AND content_sha256 IS NOT NULL
-            ) proposals LIMIT 2
+            ) receipts
+             WHERE (#{operationId} IS NULL OR operationId=#{operationId})
+             GROUP BY operationId
+             LIMIT 2
             """)
-    List<String> findA2ProposalIds(@Param("actorId") long actorId, @Param("key") String key);
+    List<A2CommandAudit> findA2CommandAudits(@Param("actorId") long actorId, @Param("key") String key,
+                                           @Param("action") String action, @Param("operationId") String operationId);
+
+    record A2CommandAudit(String operationId, String actorUsername) {}
 
     @Select("SELECT GET_LOCK('nexion:a2:audit-retention',0)")
     Integer tryAcquireRetentionLock();

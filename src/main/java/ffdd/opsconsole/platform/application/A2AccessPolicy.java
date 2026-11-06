@@ -217,6 +217,19 @@ public class A2AccessPolicy {
 
     /** Rechecks the row selected under the decision transaction's lock. */
     public boolean canAccessTicket(AuditOperationTicketEntity ticket) {
+        Scope scope = current();
+        Long makerId = ticket != null && scope.ownActorOnly()
+                ? ticketMapper.selectMakerAudits(List.of(ticket.getOperationId())).stream().findFirst()
+                        .map(AuditOperationTicketMapper.MakerAudit::makerId).orElse(null)
+                : null;
+        return canAccessTicket(ticket, makerId, scope);
+    }
+
+    boolean canAccessTicket(AuditOperationTicketEntity ticket, Long makerId) {
+        return canAccessTicket(ticket, makerId, current());
+    }
+
+    private boolean canAccessTicket(AuditOperationTicketEntity ticket, Long makerId, Scope scope) {
         if (ticket == null || !StringUtils.hasText(ticket.getSourceDomain())) {
             return false;
         }
@@ -224,7 +237,9 @@ public class A2AccessPolicy {
         if (first < 'A' || first > 'M') {
             return false;
         }
-        return current().canSee(String.valueOf(first), ticket.getOperatorName());
+        return scope.ownActorOnly()
+                ? makerId != null && makerId.equals(A2ReplayContext.authenticatedAdminId())
+                : scope.canSee(String.valueOf(first), ticket.getOperatorName());
     }
 
     private List<String> authorityDomains() {
