@@ -3232,6 +3232,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         if (!delete) {
             detail.put("revoked", mapper.revokeAvailableGrants(id));
         }
+        voucherRulesChanged();
         audit(delete ? "H7_VOUCHER_DELETED" : "H7_VOUCHER_AVAILABLE_GRANTS_REVOKED",
                 "VOUCHER", id, context.operator(), detail);
         return ApiResult.ok();
