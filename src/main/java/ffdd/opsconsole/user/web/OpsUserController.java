@@ -128,7 +128,7 @@ public class OpsUserController {
     }
 
     @PostMapping("/profiles/export")
-    @PreAuthorize("hasAuthority('user_c1_write')")
+    @PreAuthorize("hasAuthority('user_c1_export')")
     public ResponseEntity<?> exportProfiles(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) UserProfileExportRequest request) {

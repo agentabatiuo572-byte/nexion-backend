@@ -120,6 +120,9 @@ public class A2AccessPolicy {
         String domain = ticket.getSourceDomain().trim().substring(0, 1).toUpperCase(Locale.ROOT);
         // Exact maker ID was already matched by the durable proposal lookup.
         if (!domain.matches("[A-M]")) return false;
+        if ("E".equals(domain) && AuditReplayBusinessPermissionGuard.isE4Refund(command)
+                && grants.contains("platform_a2_proposal_create")
+                && grants.contains(AuditReplayBusinessPermissionGuard.E4_REFUND_AUTHORITY)) return true;
         if (!grants.contains("platform_a2_read")) {
             return grants.contains("platform_a2_proposal_create")
                     && (!StringUtils.hasText(ticket.getCommandJson()) || ("D".equals(domain)
