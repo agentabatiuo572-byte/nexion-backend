@@ -9,6 +9,7 @@ import ffdd.opsconsole.finance.cregis.CregisProperties;
 import ffdd.opsconsole.finance.cregis.BscDepositProof;
 import ffdd.opsconsole.finance.cregis.CregisPayoutControl;
 import ffdd.opsconsole.finance.mapper.WithdrawalPayoutMapper;
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import java.time.LocalDateTime;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -48,7 +49,7 @@ public class WithdrawalPayoutExecutor {
         // The local gateway is an acceptance probe only. It must never consume real wallet orders.
         if (mode == CregisProperties.Mode.LOCAL_SANDBOX) return;
         if (mode == CregisProperties.Mode.PROVIDER) {
-            for (var expired : mapper.expiredProviderAttempts(LocalDateTime.now(),50))
+            for (var expired : mapper.expiredProviderAttempts(LocalDateTime.now(BusinessCalendar.STORAGE_ZONE), 50))
                 finalizer.orphaned(expired,expired.providerCid(),"provider","CREGIS_SUBMISSION_UNKNOWN");
             var submitted = mapper.incompleteProviderSubmissions(providerObservationCursor.get(), 50);
             if (submitted.isEmpty() && !providerObservationCursor.get().isEmpty()) {
@@ -63,7 +64,7 @@ public class WithdrawalPayoutExecutor {
         }
         // Existing submitted orders keep being observed when the operator closes new payouts.
         if (mode == CregisProperties.Mode.PROVIDER && !payouts.enabled()) return;
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(BusinessCalendar.STORAGE_ZONE);
         for (var candidate : mapper.claimable(now, 50)) {
             if(mode==CregisProperties.Mode.PROVIDER && java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(candidate.chain())) {
                 WithdrawalPayoutMapper.PayoutRow claimed;
