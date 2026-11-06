@@ -69,6 +69,7 @@ import java.util.Optional;
 import java.time.temporal.ChronoUnit;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.ApplicationEventPublisherAware;
 import org.springframework.security.core.Authentication;
@@ -81,6 +82,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.AuditReplayable, ApplicationEventPublisherAware {
     private static final int GENESIS_MAX_SUPPLY = 100_000;
+    private static final String MANUAL_TUNING_FORBIDDEN = "G3_MANUAL_TUNING_FORBIDDEN_IN_PRODUCTION";
     private static final String EXCHANGE_USER_DAILY_CAP_KEY = "wallet.exchange.user_daily_cap_usdt";
     private static final String EXCHANGE_PLATFORM_DAILY_CAP_KEY = "wallet.exchange.platform_daily_cap_usdt";
     private static final String EXCHANGE_FEE_PCT_KEY = "wallet.exchange.fee_pct";
@@ -168,6 +170,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
     private final ExchangeOrderMapper exchangeOrderMapper;
     private final SupportExchangeFundAdapter exchangeFunds;
+    @Value("#{environment.matchesProfiles('dev')}")
+    private boolean manualTuningAllowed;
     @Autowired
     private GenesisCatalogMapper genesisCatalogMapper;
     @Autowired
@@ -1191,6 +1195,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private PreparedMarketPolicy prepareMarketPolicy(G3MarketPolicyChangeRequest request, String reason, String operator) {
         ApiResult<Map<String, Object>> guard = requireCommand("g3-policy-review", reason);
         if (guard != null) throw new BizException(guard.getCode(), guard.getMessage());
+        if (!manualTuningAllowed && ("current-price".equals(request.action())
+                || ("curve-cell".equals(request.action()) && "pumpProbability".equals(request.field())))) {
+            throw new BizException(403, MANUAL_TUNING_FORBIDDEN);
+        }
         Map<String, Object> beforeFields = new LinkedHashMap<>();
         Map<String, Object> afterFields = new LinkedHashMap<>();
         if ("curve-cell".equals(request.action())) {
@@ -1352,6 +1360,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (curveFieldChanged(before, frames, "pumpProbability")) {
             ApiResult<Map<String, Object>> permission = requirePermission("finprod_g3_curve_pump_prob_write");
             if (permission != null) return permission;
+            if (!manualTuningAllowed) return ApiResult.fail(403, MANUAL_TUNING_FORBIDDEN);
         }
         if (curveFieldChanged(before, frames, "volatilityPct")) {
             ApiResult<Map<String, Object>> permission = requirePermission("finprod_g3_write");
@@ -1525,6 +1534,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         }
         if (!OVERRIDE_KEYS.contains(overrideKey)) {
             return validation("G3_OVERRIDE_KEY_INVALID");
+        }
+        if (!manualTuningAllowed && "currentPrice".equals(overrideKey)) {
+            return ApiResult.fail(403, MANUAL_TUNING_FORBIDDEN);
         }
         if (!StringUtils.hasText(request.value())) {
             return validation("VALUE_REQUIRED");
