@@ -42,6 +42,9 @@ import java.util.Set;
 import java.util.HexFormat;
 import java.util.UUID;
 import java.util.function.Supplier;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.domain.AuditLockTarget;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import org.springframework.util.StringUtils;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.annotation.Propagation;
@@ -49,6 +52,8 @@ import org.springframework.transaction.annotation.Propagation;
 @ApplicationService
 @RequiredArgsConstructor
 public class OpsKillSwitchService {
+    public static final String RESTORE_OPERATION = "j1_gate_resume";
+    public static final String RESTORE_AUTHORITY = "emergency_j1_gate_resume";
     private static final ObjectMapper AUDIT_JSON_READER = new ObjectMapper();
     private static final List<String> ACTIVE_GATES = List.of("withdraw", "staking", "genesis", "exchange", "trial");
     private static final Set<String> RETIRED_GATES = Set.of("premium", "nexv2", "nex-v2", "points");
@@ -147,13 +152,62 @@ public class OpsKillSwitchService {
         response.put("emergencySla", emergencySlaRows(coverage));
         response.put("autoRules", autoRuleRows());
         response.put("autoConfirmations", autoConfirmationRows());
-        response.put("executionModel", "single confirm-with-reason plus broadcast and A2 audit");
+        response.put("executionModel", "immediate kill; restore only after A2 approval");
         response.put("sources", List.of("nx_emergency_control_setting:killswitch.*", "nx_emergency_control_setting:ops.J.emergency.*", "nx_emergency_control_setting:emergency.autorule.*", "B1 treasury coverage facade"));
         return ApiResult.ok(response);
     }
 
     @Transactional
     public ApiResult<Map<String, Object>> toggle(String key, String idempotencyKey, KillSwitchToggleRequest request) {
+        return toggle(key, idempotencyKey, request, null);
+    }
+
+    public static boolean isRestoreCommand(AuditReplayCommand command) {
+        return command != null && "J".equals(command.domain()) && RESTORE_OPERATION.equals(command.op());
+    }
+
+    public static AuditLockTarget restoreTarget(AuditReplayCommand command) {
+        if (!isRestoreCommand(command) || command.params() == null
+                || !(command.params().get("gateKey") instanceof String key) || !ACTIVE_GATES.contains(key)) return null;
+        return new AuditLockTarget("J", "kill_switch", key);
+    }
+
+    public static boolean requiresRestoreCoverage(AuditLockTarget target) {
+        return GATE_SEEDS.stream().anyMatch(seed -> seed.key().equals(target.id()) && seed.coveragePrecheckRequired());
+    }
+
+    public ApiResult<AuditReplayCommand> prepareRestoreProposal(AuditReplayCommand command) {
+        AuditLockTarget target = restoreTarget(command);
+        if (target == null || !command.params().keySet().equals(Set.of("gateKey"))) {
+            return ApiResult.fail(422, "J1_RESTORE_TARGET_INVALID");
+        }
+        String key = target.id();
+        if (gateEnabled(key)) return ApiResult.fail(409, "KILL_SWITCH_STATE_UNCHANGED");
+        if (autoConfirmationPending(key)) return ApiResult.fail(409, "AUTO_CONFIRMATION_REQUIRED");
+        if (requiresRestoreCoverage(target) && !coverageAllowsRecovery(coverageFacade.snapshot())) {
+            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), "COVERAGE_BELOW_REDLINE");
+        }
+        // The current change marker already carries the unique J4 ownership token when J4 killed this gate.
+        return ApiResult.ok(new AuditReplayCommand("J", RESTORE_OPERATION,
+                Map.of("gateKey", key, "expectedLastChange", activeValue(lastChangeConfigKey(key)).orElse(""))));
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> restoreApproved(AuditReplayCommand command, String idempotencyKey,
+                                                          String reason, String operator) {
+        AuditLockTarget target = restoreTarget(command);
+        if (target == null || !(command.params().get("expectedLastChange") instanceof String expectedLastChange)) {
+            return ApiResult.fail(409, "J1_RESTORE_TARGET_INVALID");
+        }
+        return toggle(target.id(), idempotencyKey, new KillSwitchToggleRequest("enabled", reason, operator), expectedLastChange);
+    }
+
+    private ApiResult<Map<String, Object>> toggle(String key, String idempotencyKey, KillSwitchToggleRequest request,
+                                                   String expectedLastChange) {
+        boolean enable = request != null && parseEnabled(request.enabled());
+        if (enable && (expectedLastChange == null || !A2ReplayContext.isReplaying() || A2ReplayContext.operationId() == null)) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
@@ -162,7 +216,6 @@ public class OpsKillSwitchService {
         if (isRetired(normalizedKey)) {
             return retiredFeature();
         }
-        boolean enable = parseEnabled(request.enabled());
         if (!enable && !StringUtils.hasText(request.triggerBasis())) {
             return validationFailed("TRIGGER_BASIS_REQUIRED");
         }
@@ -174,11 +227,16 @@ public class OpsKillSwitchService {
         }
         String operator = authenticatedOperator(request.operator());
         return idempotent(
-                "J1_TOGGLE:" + normalizedKey,
+                enable ? "J1_RESTORE:" + A2ReplayContext.operationId() : "J1_TOGGLE:" + normalizedKey,
                 idempotencyKey,
                 requestHash(normalizedKey, String.valueOf(enable), request.reason(), operator,
                         request.triggerBasis(), request.dispositionPlan()),
-                () -> toggleOnce(normalizedKey, enable, idempotencyKey, request, operator));
+                () -> {
+                    if (enable && !expectedLastChange.equals(activeValue(lastChangeConfigKey(normalizedKey)).orElse(""))) {
+                        return ApiResult.fail(409, "J1_RESTORE_STALE");
+                    }
+                    return toggleOnce(normalizedKey, enable, idempotencyKey, request, operator);
+                });
     }
 
     private ApiResult<Map<String, Object>> toggleOnce(

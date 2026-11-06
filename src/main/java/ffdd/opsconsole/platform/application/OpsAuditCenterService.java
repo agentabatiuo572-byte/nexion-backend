@@ -1,5 +1,7 @@
 package ffdd.opsconsole.platform.application;
 
+import ffdd.opsconsole.emergency.application.OpsKillSwitchService;
+
 import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
 import ffdd.opsconsole.content.application.OpsI18nLearningService;
 import ffdd.opsconsole.content.application.OpsI18nLearningService.CourseRewardReview;
@@ -175,7 +177,10 @@ public class OpsAuditCenterService {
                         deserializeCommand(row.getCommandJson()), auditedMakers.get(row.getOperationId())))))
                 .filter(ticket -> !ownOnly || ticket.mine())
                 .toList();
-        List<AuditOperationTicket> tickets = visible.stream().map(ticket -> toTicket(ticket.row(), ticket.mine())).toList();
+        List<AuditOperationTicket> tickets = visible.stream().map(ticket -> toTicket(ticket.row(), ticket.mine()))
+                .sorted(Comparator.comparing(ticket -> !(STATUS_PENDING.equals(ticket.status()) && ticket.sos()
+                        && OpsKillSwitchService.RESTORE_OPERATION.equals(ticket.operationCode()))))
+                .toList();
         List<AuditOperationHistory> history = history(tickets, visible);
         List<AuditLogRecord> logs = recentLogs(filter);
         AuditLogQueryRequest aggregateFilter = calendarTodayFilter(filter);
@@ -315,13 +320,16 @@ public class OpsAuditCenterService {
             ticket.setSourceDomain(sourceDomain);
         }
         if (descriptor != null) {
-            boolean superAdminProposal = "A1".equals(descriptor.sourceDomain()) || superAdminProposalCommand(command)
-                    || A4RegistryApproval.supports(command);
+            boolean j1Restore = OpsKillSwitchService.isRestoreCommand(command);
+            boolean superAdminProposal = j1Restore || "A1".equals(descriptor.sourceDomain())
+                    || superAdminProposalCommand(command) || A4RegistryApproval.supports(command);
             ticket.setAction(descriptor.action());
             ticket.setObjectText(descriptor.objectId());
             ticket.setBeforeValue(H4GrowthApproval.supports(command) ? "H4 original configuration: " + descriptor.objectId() : descriptor.beforeValue());
             ticket.setAfterValue(H4GrowthApproval.supports(command) ? "H4 proposed configuration: " + command.op() : descriptor.afterValue());
-            if (AuditReplayBusinessPermissionGuard.isE4Refund(command)) {
+            if (j1Restore) {
+                ticket.setOperatorRole(normalizeOptionalText(accessPolicy.current().roleCode(), "运营员", 32));
+            } else if (AuditReplayBusinessPermissionGuard.isE4Refund(command)) {
                 ticket.setOperatorRole("财务主管");
             } else if (H7VoucherDisposition.isOperation(command)) {
                 ticket.setOperatorRole(accessPolicy.authenticatedOperatorRoleLabel());
@@ -330,7 +338,7 @@ public class OpsAuditCenterService {
             }
             ticket.setOperationType(descriptor.operationType());
             ticket.setAmplifies(descriptor.amplifies() ? 1 : 0);
-            ticket.setSos(0);
+            ticket.setSos(j1Restore ? 1 : 0);
             ticket.setRoleGate(H7VoucherDisposition.isOperation(command) ? "有审批和代金券操作权限的管理员"
                     : superAdminProposal ? "超管" : "门槛者");
             sourceDomain = descriptor.sourceDomain();
@@ -995,8 +1003,10 @@ public class OpsAuditCenterService {
                     return fail(OpsErrorCode.FORBIDDEN, "A2_BUSINESS_CONTEXT_MISMATCH");
                 }
             }
-            if (superAdminProposalCommand(cmd)) {
-                var target = LearningCourseActivationApproval.supports(cmd) ? LearningCourseActivationApproval.target(cmd)
+            boolean j1Restore = OpsKillSwitchService.isRestoreCommand(cmd);
+            if (j1Restore || superAdminProposalCommand(cmd)) {
+                var target = j1Restore ? OpsKillSwitchService.restoreTarget(cmd)
+                        : LearningCourseActivationApproval.supports(cmd) ? LearningCourseActivationApproval.target(cmd)
                         : G4CatalogApproval.supports(cmd) ? G4CatalogApproval.TARGET
                         : TeamFundApproval.supports(cmd) ? TeamFundApproval.target(cmd)
                         : G3MarketApproval.supports(cmd) ? G3MarketApproval.target(cmd)
@@ -1014,7 +1024,10 @@ public class OpsAuditCenterService {
                         && "nex_market_control".equals(target.type()) && "schedule".equals(target.id());
                 boolean historicalH4 = H4GrowthApproval.supports(cmd) && target != null
                         && "h4_event_rule".equals(target.type()) && "evt-anniversary-spin".equals(target.id());
-                boolean classificationMatches = initialSchedule || historicalH4
+                boolean classificationMatches = j1Restore
+                        ? target != null && "sos".equals(ticket.getOperationType()) && isTrue(ticket.getSos())
+                            && isTrue(ticket.getAmplifies()) == OpsKillSwitchService.requiresRestoreCoverage(target)
+                        : initialSchedule || historicalH4
                         ? "param".equals(ticket.getOperationType()) && Integer.valueOf(0).equals(ticket.getAmplifies())
                         : "fund".equals(ticket.getOperationType()) && Integer.valueOf(1).equals(ticket.getAmplifies());
                 if (target == null || !target.id().equals(ticket.getObjectText()) || !target.domain().equals(ticket.getSourceDomain())
@@ -1360,6 +1373,9 @@ public class OpsAuditCenterService {
         if ("H".equals(domain) && H7VoucherDisposition.isOperation(command)) {
             return new TicketMetadata(command.op(), null, null);
         }
+        if ("J".equals(domain) && OpsKillSwitchService.isRestoreCommand(command)) {
+            return new TicketMetadata(OpsKillSwitchService.RESTORE_OPERATION, null, null);
+        }
         if ("F".equals(domain) && command != null && "F".equals(command.domain())
                 && F5_COMMISSION_SUSPENSION.equals(command.op()) && command.params() != null
                 && command.params().get("suspended") instanceof Boolean suspended) {
@@ -1389,8 +1405,9 @@ public class OpsAuditCenterService {
                 normalizeRoleGate(row.getRoleGate()),
                 row.getReason(),
                 status(row.getStatus()), phoneCalibrationProposal(command),
-                command != null && "K".equals(command.domain())
-                        && ("k1_cluster_release".equals(command.op()) || "k1_cluster_cleared".equals(command.op())),
+                OpsKillSwitchService.RESTORE_OPERATION.equals(metadata.operationCode()) && isTrue(row.getAmplifies())
+                        || command != null && "K".equals(command.domain())
+                            && ("k1_cluster_release".equals(command.op()) || "k1_cluster_cleared".equals(command.op())),
                 metadata.operationCode(), metadata.fundEffect(), metadata.refundOrderNo());
     }
 

@@ -171,7 +171,8 @@ public class OpsAuditController {
             + " || (hasAuthority('content_i7_write') && hasAuthority('content_i7_course_reward_adjust'))"
             + " || (hasAuthority('content_i7_course_reward_adjust') && hasAnyAuthority('platform_a2_write','platform_a2_proposal_create'))"
             + " || (hasAuthority('growth_h7_write') && hasAuthority('platform_a2_write'))"
-            + " || (hasAuthority('risk_k2_write') && hasAnyAuthority('platform_a2_proposal_create','platform_a2_write'))")
+            + " || (hasAuthority('risk_k2_write') && hasAnyAuthority('platform_a2_proposal_create','platform_a2_write'))"
+            + " || (hasAuthority('emergency_j1_gate_resume') && hasAuthority('platform_a2_write'))")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> proposalByIdempotencyKey(
             @RequestParam(name = "idempotencyKey", required = false) String idempotencyKey) {
         if (idempotencyKey == null) {

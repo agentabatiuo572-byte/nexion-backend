@@ -1,5 +1,7 @@
 package ffdd.opsconsole.platform.application;
 
+import ffdd.opsconsole.emergency.application.OpsKillSwitchService;
+
 import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
 import ffdd.opsconsole.content.application.OpsI18nLearningService;
 
@@ -77,6 +79,7 @@ public class A2AccessPolicy {
                 Set<String> grants = permissions.getPermissionCodes(id);
                 if (grants.contains("platform_a2_read") || grants.contains("platform_a2_proposal_create")
                         || grants.contains(A4RegistryApproval.MAKER_AUTHORITY)
+                        || (grants.contains(OpsKillSwitchService.RESTORE_AUTHORITY) && grants.contains("platform_a2_write"))
                         || grants.contains("overview_b1_redline_write")
                         || LearningCourseActivationApproval.hasMakerAuthorities(grants)
                         || canReadOwnCourseRewardProposal(grants)
@@ -129,6 +132,10 @@ public class A2AccessPolicy {
         if (!domain.matches("[A-M]")) return false;
         if (H7VoucherDisposition.isOperation(command)) {
             return "H".equals(domain) && H7VoucherDisposition.canRecover(grants);
+        }
+        if ("J".equals(domain) && OpsKillSwitchService.isRestoreCommand(command)) {
+            return grants.contains(OpsKillSwitchService.RESTORE_AUTHORITY)
+                    && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write"));
         }
         if ("E".equals(domain) && AuditReplayBusinessPermissionGuard.isE4Refund(command)
                 && grants.contains("platform_a2_proposal_create")
