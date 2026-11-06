@@ -1,5 +1,7 @@
 package ffdd.opsconsole.platform.application;
 
+import ffdd.opsconsole.emergency.application.OpsKillSwitchService;
+
 import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.growth.application.H5GrowthApproval;
@@ -158,6 +160,8 @@ public class AuditReplayBusinessPermissionGuard {
     @Autowired
     private SuperAdminAuthorization superAdmins;
     @Autowired
+    private OpsKillSwitchService killSwitches;
+    @Autowired
     private ffdd.opsconsole.device.application.OpsDeviceService devices;
     @Autowired
     private ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper calibrationMapper;
@@ -313,7 +317,7 @@ public class AuditReplayBusinessPermissionGuard {
         }
         if ("J".equalsIgnoreCase(command.domain())) {
             String operation = command.op().trim().toLowerCase(Locale.ROOT);
-            if (operation.startsWith("j1_")) {
+            if (operation.startsWith("j1_") && !OpsKillSwitchService.isRestoreCommand(command)) {
                 return ApiResult.fail(409, "J1_DIRECT_EXECUTION_REQUIRED");
             }
         }
@@ -412,6 +416,12 @@ public class AuditReplayBusinessPermissionGuard {
                 && request.targets().stream().anyMatch(A4RegistryApproval::isRegistrationTarget))) {
             return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
         }
+        if (OpsKillSwitchService.isRestoreCommand(command)) {
+            if (!hasAuthority(OpsKillSwitchService.RESTORE_AUTHORITY)) {
+                return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:" + OpsKillSwitchService.RESTORE_AUTHORITY);
+            }
+            return killSwitches.prepareRestoreProposal(command);
+        }
         if (G4CatalogApproval.isOperation(command)) {
             if (!G4CatalogApproval.supports(command)) return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
             return ApiResult.ok(g4CatalogApproval.prepare(request, A2ReplayContext.authenticatedAdminId()));
@@ -487,6 +497,7 @@ public class AuditReplayBusinessPermissionGuard {
         if (H7VoucherDisposition.isOperation(command)) {
             return validateApproval(command);
         }
+        if (OpsKillSwitchService.isRestoreCommand(command)) return validateJ1RestoreChecker();
         if (OpsI18nLearningService.isCourseRewardAdjustment(command)) {
             return validateCourseRewardChecker();
         }
@@ -543,6 +554,7 @@ public class AuditReplayBusinessPermissionGuard {
         if (A4RegistryApproval.isOperation(command)) {
             return a4RegistryApproval.validateChecker();
         }
+        if (OpsKillSwitchService.isRestoreCommand(command)) return validateJ1RestoreChecker();
         if (OpsI18nLearningService.isCourseRewardAdjustment(command)) {
             return validateCourseRewardChecker();
         }
@@ -631,6 +643,12 @@ public class AuditReplayBusinessPermissionGuard {
         return superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())
                 && hasAuthority("platform_a2_operation_approve") && hasAuthority("content_i7_course_reward_adjust")
                 ? ApiResult.ok() : ApiResult.fail(403, "LEARNING_COURSE_REWARD_APPROVAL_FORBIDDEN");
+    }
+
+    private ApiResult<Void> validateJ1RestoreChecker() {
+        return superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())
+                && hasAuthority("platform_a2_operation_approve") && hasAuthority(OpsKillSwitchService.RESTORE_AUTHORITY)
+                ? ApiResult.ok() : ApiResult.fail(403, "J1_RESTORE_CHECKER_FORBIDDEN");
     }
 
     private ApiResult<Void> validateJ4MakerAuthority(AuditReplayCommand command) {
@@ -823,6 +841,15 @@ public class AuditReplayBusinessPermissionGuard {
                             + " · 可用 " + voucher.get("availableCount") + " 张 · 已用 " + voucher.get("redeemedCount") + " 张",
                     delete ? "批准后删除券模板，已领取的券保留" : "批准后作废届时仍未使用的券，已使用的券保留",
                     "H7", "param", false, target));
+        }
+        if (OpsKillSwitchService.isRestoreCommand(command)) {
+            AuditLockTarget target = OpsKillSwitchService.restoreTarget(command);
+            if (target == null || !"J1".equals(text(request.sourceDomain())) || !target.id().equals(text(request.obj()))
+                    || !target.equals(request.target()) || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            return ApiResult.ok(new DelegatedProposalDescriptor("恢复业务开关 · " + target.id(), target.id(),
+                    "已关停", "批准后恢复", "J1", "sos", OpsKillSwitchService.requiresRestoreCoverage(target), target));
         }
         if (G4DividendApproval.supports(command)) {
             var target=G4DividendApproval.target(command);
@@ -1784,6 +1811,7 @@ public class AuditReplayBusinessPermissionGuard {
                 default -> null;
             };
             case "J" -> switch (operation) {
+                case OpsKillSwitchService.RESTORE_OPERATION -> OpsKillSwitchService.RESTORE_AUTHORITY;
                 case "j4_playbook_execute" -> "emergency_j4_playbook_execute";
                 case "j4_playbook_rollback" -> "emergency_j4_playbook_execute";
                 case "j2_country_manage" -> "emergency_j2_write";

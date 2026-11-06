@@ -3913,9 +3913,11 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         String reason = ctx.reason();
         String idem = ctx.idempotencyKey();
         switch (cmd.op()) {
-            case "j1_gate_kill", "j1_gate_resume" -> {
-                String enabled = "j1_gate_kill".equals(cmd.op()) ? "disabled" : "enabled";
-                KillSwitchToggleRequest req = new KillSwitchToggleRequest(enabled, reason, operator);
+            case OpsKillSwitchService.RESTORE_OPERATION -> {
+                return killSwitchService.restoreApproved(cmd, idem, reason, operator);
+            }
+            case "j1_gate_kill" -> {
+                KillSwitchToggleRequest req = new KillSwitchToggleRequest("disabled", reason, operator);
                 return killSwitchService.toggle(str(p, "gateKey"), idem, req);
             }
             case "j1_batch_kill" -> {
