@@ -5,6 +5,7 @@ import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Collection;
 import java.util.Date;
 import java.util.HexFormat;
@@ -61,6 +62,13 @@ public class JwtTokenProvider {
                 Duration.ofMinutes(ttlMinutes));
     }
 
+    public String createImpersonationToken(
+            Long userId, String username, String sessionNo, Instant issuedAt, Instant expiresAt) {
+        return createTokenInternal(userId, "IMPERSONATION", username,
+                java.util.List.of("impersonate_readonly"), sessionNo, null,
+                Date.from(issuedAt), Date.from(expiresAt));
+    }
+
     private String createTokenInternal(
             Long subjectId,
             String subjectType,
@@ -75,11 +83,17 @@ public class JwtTokenProvider {
             Long subjectId, String subjectType, String username, Collection<String> authorities,
             String sessionId, Duration ttl, UserAuthEnvironment audience) {
         Date now = new Date();
+        return createTokenInternal(subjectId, subjectType, username, authorities, sessionId, audience,
+                now, new Date(now.getTime() + ttl.toMillis()));
+    }
+
+    private String createTokenInternal(
+            Long subjectId, String subjectType, String username, Collection<String> authorities,
+            String sessionId, UserAuthEnvironment audience, Date now, Date expiresAt) {
         boolean admin = "ADMIN".equals(subjectType);
         if (admin && (sessionId == null || sessionId.isBlank())) {
             throw new IllegalArgumentException("ADMIN_SESSION_ID_REQUIRED");
         }
-        Date expiresAt = new Date(now.getTime() + ttl.toMillis());
         var builder = Jwts.builder()
                 .subject(String.valueOf(subjectId))
                 .claim("subjectType", subjectType)

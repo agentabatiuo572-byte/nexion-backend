@@ -374,7 +374,7 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
             if (!("REVIEW_REJECTED".equals(order.status()) || "REFUNDED".equals(order.status()))
                     || (order.txid() != null && !order.txid().isBlank())
                     || (order.payoutSource() != null && !order.payoutSource().isBlank()))
-                throw new IllegalStateException("BEP20_RESERVE_RETURN_STATE_INVALID");
+                throw new BizException(409, "BEP20_RESERVE_RETURN_STATE_INVALID");
             returnBep20Reserve(withdrawalNo, order, safeAmount, LocalDateTime.now(),
                     "REVIEW_REJECTED".equals(order.status()));
         }

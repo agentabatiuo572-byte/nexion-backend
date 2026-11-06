@@ -862,7 +862,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         UserImpersonationSessionView session = userRepository.findImpersonation(sessionNo.trim()).orElse(null);
         if (session == null || !Objects.equals(session.userId(), userId)
                 || !"ACTIVE".equalsIgnoreCase(session.status())
-                || session.expiresAt() == null || !session.expiresAt().isAfter(LocalDateTime.now())) {
+                || session.expiresAt() == null || !session.expiresAt().isAfter(LocalDateTime.now(clock))) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "IMPERSONATION_SESSION_INACTIVE");
         }
         UserAccountView account = userRepository.findById(userId).orElse(null);
@@ -871,7 +871,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         }
         UserAccountListEntryView accountList = userRepository.findAccountList(userId)
                 .filter(entry -> "ACTIVE".equalsIgnoreCase(entry.status()))
-                .filter(entry -> entry.expiresAt() == null || entry.expiresAt().isAfter(LocalDateTime.now()))
+                .filter(entry -> entry.expiresAt() == null || entry.expiresAt().isAfter(LocalDateTime.now(clock)))
                 .orElse(null);
         long activeSessions = userRepository.countActiveSessions(userId, sessionIdleDays());
         List<UserReadonlyDeviceView> devices = "DEVICES".equals(normalizedPage)
@@ -1209,7 +1209,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return ApiResult.fail(404, "IMPERSONATION_SESSION_NOT_FOUND");
         }
         if (!"ACTIVE".equalsIgnoreCase(existing.status())
-                || (existing.expiresAt() != null && !existing.expiresAt().isAfter(LocalDateTime.now()))) {
+                || (existing.expiresAt() != null && !existing.expiresAt().isAfter(LocalDateTime.now(clock)))) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
         String reason = request.reason().trim();
@@ -1230,11 +1230,11 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                         existing.reason(),
                         existing.expiresAt(),
                         existing.createdAt(),
-                        LocalDateTime.now(),
+                        LocalDateTime.now(clock),
                         operator,
                         reason,
                         0L));
-        LocalDateTime sessionEnd = updated.endedAt() == null ? LocalDateTime.now() : updated.endedAt();
+        LocalDateTime sessionEnd = updated.endedAt() == null ? LocalDateTime.now(clock) : updated.endedAt();
         LocalDateTime sessionStart = existing.createdAt() == null
                 ? sessionEnd.minusMinutes(existing.ttlMinutes())
                 : existing.createdAt();
@@ -1794,6 +1794,11 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> revokeAllSecuritySessions(
             Long userId, String idempotencyKey, UserSessionRevokeAllRequest request) {
+        ApiResult<Map<String, Object>> approvalGuard = delegatedDirectExecutionGuard(
+                "c2_session_revoke_all", "USER_SESSION", String.valueOf(userId), userId);
+        if (approvalGuard != null) {
+            return approvalGuard;
+        }
         ApiResult<Map<String, Object>> guard = requireUserCommand(
                 userId, idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
@@ -1895,8 +1900,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "IMPERSONATION_SESSION_ALREADY_ACTIVE");
         }
         String sessionNo = "IMP-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase(Locale.ROOT);
-        LocalDateTime sessionStart = LocalDateTime.now();
-        LocalDateTime expiresAt = sessionStart.plusMinutes(ttlMinutes);
+        Instant issuedAt = clock.instant().truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        Instant deadline = issuedAt.plusSeconds(ttlMinutes * 60L);
+        LocalDateTime sessionStart = LocalDateTime.ofInstant(issuedAt, BusinessCalendar.STORAGE_ZONE);
+        LocalDateTime expiresAt = LocalDateTime.ofInstant(deadline, BusinessCalendar.STORAGE_ZONE);
         String operator = operator(request.operator());
         userRepository.recordImpersonationSession(sessionNo, userId, ttlMinutes, operator, request.reason().trim(), expiresAt);
         Map<String, Object> response = new LinkedHashMap<>();
@@ -1908,7 +1915,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         response.put("claim", "impersonate_readonly");
         response.put("writePolicy", "DENY");
         response.put("boundary", "server-issued impersonation identity is read-only and expires with this session");
-        response.put("accessToken", tokenProvider.createImpersonationToken(userId, userNo, sessionNo, ttlMinutes));
+        response.put("accessToken", tokenProvider.createImpersonationToken(userId, userNo, sessionNo, issuedAt, deadline));
         Map<String, Object> detail = Map.of(
                 "ttlMinutes", ttlMinutes,
                 "reasonCode", reasonCode,
@@ -3005,20 +3012,23 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (A2ReplayContext.isReplaying()) {
             return null;
         }
-        if (!Set.of("c2_account_freeze", "c2_account_unfreeze").contains(operation)) {
+        boolean sessionRevocation = "c2_session_revoke_all".equals(operation);
+        if (!sessionRevocation && !Set.of("c2_account_freeze", "c2_account_unfreeze").contains(operation)) {
             return null;
         }
         var authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()) {
-            return null;
-        }
-        Set<String> authorities = authentication.getAuthorities().stream()
-                .map(authority -> authority.getAuthority())
-                .collect(java.util.stream.Collectors.toSet());
-        if (!"FINANCE".equalsIgnoreCase(text(roleResolver.resolveCode()))
-                || !authorities.contains("platform_a2_proposal_create")
-                || authorities.contains("platform_a2_operation_approve")) {
-            return null;
+        if (!sessionRevocation) {
+            if (authentication == null || !authentication.isAuthenticated()) {
+                return null;
+            }
+            Set<String> authorities = authentication.getAuthorities().stream()
+                    .map(authority -> authority.getAuthority())
+                    .collect(java.util.stream.Collectors.toSet());
+            if (!"FINANCE".equalsIgnoreCase(text(roleResolver.resolveCode()))
+                    || !authorities.contains("platform_a2_proposal_create")
+                    || authorities.contains("platform_a2_operation_approve")) {
+                return null;
+            }
         }
         String safeResourceId = resourceId == null ? "" : resourceId;
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
@@ -3028,7 +3038,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 .bizNo(safeResourceId)
                 .userId(userId)
                 .actorType("ADMIN")
-                .actorUsername(operator(String.valueOf(authentication.getName())))
+                .actorUsername(operator(null))
                 .result("REJECTED")
                 .riskLevel("HIGH")
                 .detail(Map.of(

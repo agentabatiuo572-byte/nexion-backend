@@ -247,6 +247,11 @@ public class AuditReplayBusinessPermissionGuard {
         return command != null && "E".equals(command.domain()) && "e4_order_refund".equals(command.op());
     }
 
+    static boolean isUserSessionRevocation(AuditReplayCommand command) {
+        return command != null && "C".equalsIgnoreCase(command.domain())
+                && "c2_session_revoke_all".equalsIgnoreCase(command.op());
+    }
+
     boolean canReadOwnFinanceProposal(AuditReplayCommand command, long actorId, Set<String> grants) {
         if (command == null || !"D".equalsIgnoreCase(text(command.domain()))) return false;
         if (WithdrawalConfigApproval.supports(command)) {
@@ -389,6 +394,8 @@ public class AuditReplayBusinessPermissionGuard {
         }
         if (requiredAuthority != null
                 && !hasAuthority(requiredAuthority)
+                && !(isUserSessionRevocation(command)
+                    && hasAuthority("user_c5_session_revoke_all"))
                 && !scopedMakerMayPropose(command, operation)) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_PERMISSION_DENIED:" + requiredAuthority);
         }

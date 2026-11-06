@@ -78,6 +78,8 @@ public class A2AccessPolicy {
             if (roleResolver.isActiveAdministrator(id)) {
                 Set<String> grants = permissions.getPermissionCodes(id);
                 if (grants.contains("platform_a2_read") || grants.contains("platform_a2_proposal_create")
+                        || (grants.contains("platform_a2_write")
+                            && (grants.contains("user_c2_session_revoke_all") || grants.contains("user_c5_session_revoke_all")))
                         || grants.stream().anyMatch(AuditReplayBusinessPermissionGuard.F5_ACTION_AUTHORITIES::contains)
                         || grants.contains(A4RegistryApproval.MAKER_AUTHORITY)
                         || (grants.contains(OpsKillSwitchService.RESTORE_AUTHORITY) && grants.contains("platform_a2_write"))
@@ -136,6 +138,10 @@ public class A2AccessPolicy {
         String domain = ticket.getSourceDomain().trim().substring(0, 1).toUpperCase(Locale.ROOT);
         // Exact maker ID was already matched by the durable proposal lookup.
         if (!domain.matches("[A-M]")) return false;
+        if ("C".equals(domain) && AuditReplayBusinessPermissionGuard.isUserSessionRevocation(command)) {
+            return (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write"))
+                    && (grants.contains("user_c2_session_revoke_all") || grants.contains("user_c5_session_revoke_all"));
+        }
         if (H7VoucherDisposition.isOperation(command)) {
             return "H".equals(domain) && H7VoucherDisposition.canRecover(grants);
         }
