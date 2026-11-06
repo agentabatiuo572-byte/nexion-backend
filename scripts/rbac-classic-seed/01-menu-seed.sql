@@ -6,7 +6,7 @@
 
 -- ===== 1. 域级菜单（13，parent_id NULL）=====
 INSERT INTO nx_admin_menu (menu_code, menu_name, menu_name_zh, parent_id, route_path, icon, sort_order, remark, status, is_deleted) VALUES
-  ('A','平台基础','平台基础',NULL,'','shield-check',1,'A roles=[] 仅superadmin',1,0),
+  ('A','平台基础','平台基础',NULL,'','shield-check',14,'A roles=[] 仅superadmin',1,0),
   ('B','总览驾驶舱','总览驾驶舱',NULL,'','gauge',2,'B 全角色',1,0),
   ('C','用户与账户','用户与账户',NULL,'','users',3,'C support+risk',1,0),
   ('D','资金与财务','资金与财务',NULL,'','wallet',4,'D finance+risk',1,0),
@@ -30,7 +30,7 @@ JOIN (SELECT 'A1' code,'运营账号 & RBAC' name,'/platform/rbac' path,1 sort U
       SELECT 'A2','审计 & 操作确认','/platform/audit',2 UNION ALL
       SELECT 'A3','系统配置','/platform/config',3 UNION ALL
       SELECT 'A4','埋点事件体系','/platform/events',4 UNION ALL
-      SELECT 'A5','平台参数寄存器','/platform/params-registry',5 UNION ALL
+      SELECT 'A5','平台参数目录','/platform/params-registry',5 UNION ALL
       SELECT 'A6','角色管理','/platform/roles',6 UNION ALL
       SELECT 'A7','菜单管理','/platform/menus',7 UNION ALL
       SELECT 'A8','权限字典','/platform/permissions',8) v
@@ -42,7 +42,7 @@ SELECT v.code, v.name, v.name, p.id, v.path, v.sort, 1, 0
 FROM nx_admin_menu p JOIN (SELECT 'B' d) x ON p.menu_code='B'
 JOIN (SELECT 'B1' code,'双账本总览' name,'/overview/dual-ledger' path,1 sort UNION ALL
       SELECT 'B2','资金池水位','/overview/liquidity',2 UNION ALL
-      SELECT 'B3','转化漏斗','/overview/funnel',3 UNION ALL
+      SELECT 'B3','用户转化概览','/overview/funnel',3 UNION ALL
       SELECT 'B4','节奏状态','/overview/rhythm',4 UNION ALL
       SELECT 'B5','风险雷达','/overview/risk-radar',5) v
 ON 1=1
@@ -62,11 +62,11 @@ ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_pat
 INSERT INTO nx_admin_menu (menu_code, menu_name, menu_name_zh, parent_id, route_path, sort_order, status, is_deleted)
 SELECT v.code, v.name, v.name, p.id, v.path, v.sort, 1, 0
 FROM nx_admin_menu p JOIN (SELECT 'D' d) x ON p.menu_code='D'
-JOIN (SELECT 'D1' code,'充值对账中心' name,'/finance/recon' path,1 sort UNION ALL
-      SELECT 'D2','提现审核队列','/finance/withdrawals',2 UNION ALL
+JOIN (SELECT 'D1' code,'充值与收款对账' name,'/finance/recon' path,1 sort UNION ALL
+      SELECT 'D2','提现审核','/finance/withdrawals',2 UNION ALL
       SELECT 'D3','资金池水位仪表盘','/finance/pool',3 UNION ALL
       SELECT 'D4','账本/账单审计','/finance/ledger',4 UNION ALL
-      SELECT 'D5','提现参数配置','/finance/params',5 UNION ALL
+      SELECT 'D5','USDT 提现参数','/finance/params',5 UNION ALL
       SELECT 'D6','汇率牌价','/finance/fx-rate',6) v
 ON 1=1
 ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_path), sort_order=VALUES(sort_order), status=1, is_deleted=0;
@@ -79,7 +79,7 @@ JOIN (SELECT 'E1' code,'商品目录 & 上架门' name,'/devices/pricing' path,1
       SELECT 'E3','生命周期 & Trade-in','/devices/trade-in',3 UNION ALL
       SELECT 'E4','订单状态机','/devices/orders',4 UNION ALL
       SELECT 'E5','设备运维','/devices/ops',5 UNION ALL
-      SELECT 'E6','算力与设备配置','/devices/compute-config',6) v
+      SELECT 'E6','手机算力配置','/devices/compute-config',6) v
 ON 1=1
 ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_path), sort_order=VALUES(sort_order), status=1, is_deleted=0;
 -- F 域 (5)
@@ -98,8 +98,8 @@ INSERT INTO nx_admin_menu (menu_code, menu_name, menu_name_zh, parent_id, route_
 SELECT v.code, v.name, v.name, p.id, v.path, v.sort, 1, 0
 FROM nx_admin_menu p JOIN (SELECT 'G' d) x ON p.menu_code='G'
 JOIN (SELECT 'G1' code,'质押产品配置' name,'/finance-products/staking' path,1 sort UNION ALL
-      SELECT 'G2','兑换风控','/finance-products/exchange',2 UNION ALL
-      SELECT 'G3','UVT 行情引擎','/finance-products/market',3 UNION ALL
+      SELECT 'G2','兑换额度与规则','/finance-products/exchange',2 UNION ALL
+      SELECT 'G3','UVT价格管理','/finance-products/market',3 UNION ALL
       SELECT 'G4','创世节点销售与收益','/finance-products/genesis',4 UNION ALL
       SELECT 'G7','锁定计划','/finance-products/repurchase',5) v
 ON 1=1
@@ -112,7 +112,7 @@ JOIN (SELECT 'H1' code,'Phase 调度器' name,'/growth/phase' path,1 sort UNION 
       SELECT 'H2','免费试用引擎','/growth/trial',2 UNION ALL
       SELECT 'H3','Quest 引擎','/growth/quest',3 UNION ALL
       SELECT 'H4','活动中心 CMS','/growth/events',4 UNION ALL
-      SELECT 'H5','签到 & UVT','/growth/daily',5 UNION ALL
+      SELECT 'H5','签到与UVT奖励','/growth/daily',5 UNION ALL
       SELECT 'H7','代金券','/growth/vouchers',6 UNION ALL
       SELECT 'H8','新人礼与邀请奖励','/growth/referral-rewards',7) v
 ON 1=1
@@ -125,8 +125,8 @@ JOIN (SELECT 'I1' code,'转化文案 A/B' name,'/content/copy-ab' path,1 sort UN
       SELECT 'I2','Nova 推送运营','/content/nova',2 UNION ALL
       SELECT 'I3','通知 Campaign','/content/notifications',3 UNION ALL
       SELECT 'I4','信任中心 CMS','/content/trust',4 UNION ALL
-      SELECT 'I5','风险披露版本','/content/disclosures',5 UNION ALL
-      SELECT 'I6','i18n 文案与教程','/content/i18n',6) v
+      SELECT 'I5','法律条款与风险披露','/content/disclosures',5 UNION ALL
+      SELECT 'I6','多语言与课程','/content/i18n',6) v
 ON 1=1
 ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_path), sort_order=VALUES(sort_order), status=1, is_deleted=0;
 UPDATE nx_admin_menu SET status=0, is_deleted=1 WHERE menu_code='I7';
@@ -170,7 +170,7 @@ FROM nx_admin_menu p JOIN (SELECT 'L' d) x ON p.menu_code='L'
 JOIN (SELECT 'L1' code,'KPI 看板' name,'/analytics/kpi' path,1 sort UNION ALL
       SELECT 'L2','漏斗/cohort/留存','/analytics/funnel-cohort',2 UNION ALL
       SELECT 'L3','财务报表','/analytics/financial',3 UNION ALL
-      SELECT 'L4','设备/任务/网络报表','/analytics/operations',4 UNION ALL
+      SELECT 'L4','设备、任务与团队报表','/analytics/operations',4 UNION ALL
       SELECT 'L5','导出 & 监管报告','/analytics/export',5 UNION ALL
       SELECT 'L6','用户行为热力图','/analytics/behavior-heatmap',6) v
 ON 1=1
