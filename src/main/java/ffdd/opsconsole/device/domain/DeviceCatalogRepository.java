@@ -104,6 +104,10 @@ public interface DeviceCatalogRepository {
 
     Optional<DeviceOrderFacts> findOrderFacts(String orderNo);
 
+    default List<DeviceOrderDetailView.OrderDevice> listOrderDevices(String orderNo) {
+        return List.of();
+    }
+
     List<DeviceOrderHistoryView> listOrderHistory(String orderNo);
 
     List<DeviceOrderFundingView> listOrderFunding(String orderNo);
@@ -125,6 +129,10 @@ public interface DeviceCatalogRepository {
             LocalDateTime now);
 
     boolean rollbackOrderAssets(String orderNo, LocalDateTime now);
+
+    default boolean rollbackRefundedOrderAssets(String orderNo, LocalDateTime now) {
+        return rollbackOrderAssets(orderNo, now);
+    }
 
     List<DevicePhaseView> listPhases(String scope, boolean includeArchived);
 

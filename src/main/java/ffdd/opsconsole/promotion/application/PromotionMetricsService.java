@@ -100,12 +100,15 @@ public class PromotionMetricsService {
              ORDER BY o.order_no
             """,timestamp(start),timestamp(end),timestamp(now),activity,version,version);
         var rewards=db.list("""
-            SELECT r.*,s.asset,s.amount,s.product_no FROM nx_promotion_reward r
+            SELECT r.*,s.asset,s.amount,s.product_no,CASE WHEN buyer.id IS NOT NULL THEN o.amount_usdt END AS gift_order_amount_usdt
+              FROM nx_promotion_reward r
               JOIN nx_promotion_reservation s ON s.reservation_id=r.reservation_id JOIN nx_promotion p ON p.activity_id=r.activity_id
               JOIN nx_user u ON u.id=r.beneficiary_id
+              LEFT JOIN nx_order o ON s.asset='DEVICE' AND o.order_no=r.order_no AND o.is_deleted=0 AND o.paid_at<=?
+              LEFT JOIN nx_user buyer ON buyer.id=o.user_id AND buyer.sandbox=0 AND buyer.is_deleted=0
              WHERE r.activity_id=? AND (? IS NULL OR r.version=?) AND r.created_at>=? AND r.created_at<? AND r.created_at<=?
                AND p.fixture_run_id='' AND u.sandbox=0 AND u.is_deleted=0 ORDER BY r.obligation_id
-            """,activity,version,version,timestamp(start),timestamp(end),timestamp(now));
+            """,timestamp(now),activity,version,version,timestamp(start),timestamp(end),timestamp(now));
         var createdOrders=db.list("""
             SELECT DISTINCT o.order_no,o.created_at FROM nx_order o JOIN nx_user u ON u.id=o.user_id
             WHERE o.is_deleted=0 AND u.is_deleted=0 AND u.sandbox=0 AND o.created_at>=? AND o.created_at<? AND o.created_at<=?
@@ -137,10 +140,23 @@ public class PromotionMetricsService {
         List<Map<String,Object>> assets=new ArrayList<>();long gifts=0;
         for(String asset:List.of("USDT","UVT")){
             var total=values("asset",asset);for(String measure:List.of("issued","pending","reversed","unrecoverable")){
-                BigDecimal amount=BigDecimal.ZERO;for(var fact:manifestRewards)if(asset.equals(fact.get("asset")))amount=amount.add(decimal(fact.get(measure)));total.put(measure,money(amount));
+                BigDecimal amount=BigDecimal.ZERO;
+                for(var fact:manifestRewards){
+                    if(asset.equals(fact.get("asset")))amount=amount.add(decimal(fact.get(measure)));
+                    else if("unrecoverable".equals(measure)&&"DEVICE".equals(fact.get("asset")))
+                        amount=amount.add(decimal(map(fact.get("giftPlatformLoss")).get(asset)));
+                }
+                total.put(measure,money(amount));
             }assets.add(total);
         }
-        for(var fact:manifestRewards)if("DEVICE".equals(fact.get("asset")))gifts+=decimal(fact.get("issued")).longValueExact();
+        Set<String> giftOrders=new HashSet<>();BigDecimal giftCost=BigDecimal.ZERO;
+        for(var fact:manifestRewards)if("DEVICE".equals(fact.get("asset"))){
+            long issued=decimal(fact.get("issued")).longValueExact();gifts+=issued;
+            if(issued>0&&giftCost!=null&&giftOrders.add(text(fact.get("orderNo")))){
+                Object originalAmount=fact.get("giftOrderAmountUsdt");
+                giftCost=originalAmount==null?null:giftCost.add(decimal(originalAmount));
+            }
+        }
         var attempts=db.list("""
             SELECT a.*,s.asset FROM nx_promotion_reward_attempt a JOIN nx_promotion_reward r ON r.obligation_id=a.obligation_id
               JOIN nx_promotion_reservation s ON s.reservation_id=r.reservation_id JOIN nx_promotion p ON p.activity_id=r.activity_id
@@ -151,8 +167,8 @@ public class PromotionMetricsService {
         var failure=failureMetrics(attempts,now);var recovery=recoveryMetrics(attempts,now);
         long quoteCount=db.count("SELECT COUNT(*) FROM nx_promotion_quote q JOIN nx_user u ON u.id=q.user_id JOIN nx_promotion p ON p.activity_id=JSON_UNQUOTE(JSON_EXTRACT(q.quote_json,'$.public.activityId')) WHERE p.activity_id=? AND (? IS NULL OR JSON_EXTRACT(q.quote_json,'$.public.activityVersion')=?) AND q.created_at>=? AND q.created_at<? AND q.created_at<=? AND p.fixture_run_id='' AND u.sandbox=0 AND u.is_deleted=0",activity,version,version,timestamp(start),timestamp(end),timestamp(now));
         var result=values("activityId",activity,"version",version,"from",from,"to",to,"timezone",timezone,"querySnapshot",snapshot,"asOf",now.toString(),
-            "source",List.of("nx_order","nx_order_item","nx_promotion_reservation","nx_wallet_ledger","nx_promotion_device_receipt","nx_promotion_reward_attempt"),"completeness","UNAVAILABLE","impressions",null,"quotes",quoteCount,"orders",createdOrders.size(),"paidOrders",orders.size(),"refundedOrders",refundedOrders,
-            "grossPaidUsdt",money(gross),"refundUsdt",money(refund),"netReceivedUsdt",money(gross.subtract(refund)),"externalInflowUsdt",null,"externalOutflowUsdt",null,"assets",assets,"giftDevices",gifts,"giftCostUsdt",null,
+            "source",List.of("nx_order","nx_order_item","nx_promotion_reservation","nx_wallet_ledger","nx_promotion_device_receipt","nx_promotion_reversal","nx_promotion_reward_attempt"),"completeness","UNAVAILABLE","impressions",null,"quotes",quoteCount,"orders",createdOrders.size(),"paidOrders",orders.size(),"refundedOrders",refundedOrders,
+            "grossPaidUsdt",money(gross),"refundUsdt",money(refund),"netReceivedUsdt",money(gross.subtract(refund)),"externalInflowUsdt",null,"externalOutflowUsdt",null,"assets",assets,"giftDevices",gifts,"giftCostUsdt",giftCost==null?null:money(giftCost),
             "budgets",budgets(activity),"testDataExcluded",true,"effectiveFirstPurchasePeople",people(first.size(),now),"directInvitedQualifiedPurchasers",people(invited.size(),now),"rewardFailureMetrics",failure,"recoveryDuration",recovery,
             "acquisitionCostUsdt",null,"conversionRate",null,"roi",null,"orderWindowBasis","CREATED_AT","paidWindowBasis","PAID_AT_REFUNDS_AS_OF");
         result.put("breakdown",breakdown(groupings,groupBy,0,Integer.MAX_VALUE));
@@ -187,16 +203,24 @@ public class PromotionMetricsService {
             else{var receipt=db.one("SELECT amount FROM nx_wallet_ledger WHERE biz_no=? AND user_id=? AND asset=? AND direction='IN' AND status='SUCCESS' AND created_at<=?",reward.get("original_ledger_no"),reward.get("beneficiary_id"),asset,timestamp(asOf));if(receipt!=null)issued=decimal(receipt.get("amount"));}
             var reversal=db.requiredRow("""
                 SELECT COALESCE(SUM(recovered),0) AS recovered,
-                  COALESCE(MAX(CASE WHEN basis_type='WHOLE_ORDER_REFUND' THEN outstanding END),SUM(outstanding),0) AS outstanding
+                  COALESCE(MAX(CASE WHEN basis_type='WHOLE_ORDER_REFUND' THEN outstanding END),SUM(outstanding),0) AS outstanding,
+                  COALESCE(MAX(CASE WHEN basis_type='WHOLE_ORDER_REFUND'
+                    THEN JSON_UNQUOTE(JSON_EXTRACT(evidence_json,'$.platformLoss')) END),'{}') AS platform_loss
                 FROM nx_promotion_reversal WHERE obligation_id=? AND created_at<=?
                 """,reward.get("obligation_id"),timestamp(asOf));
             reversed=decimal(reversal.get("recovered"));loss=decimal(reversal.get("outstanding"));
             BigDecimal amount=decimal(reward.get("amount"));String state=text(reward.get("status"));
             BigDecimal pending=Set.of("ISSUED","CANCELLED","REVERSED").contains(state)?BigDecimal.ZERO:amount.subtract(issued).max(BigDecimal.ZERO);
-            result.add(values("obligationId",reward.get("obligation_id"),"orderNo",reward.get("order_no"),"version",number(reward.get("version")),
+            var fact=values("obligationId",reward.get("obligation_id"),"orderNo",reward.get("order_no"),"version",number(reward.get("version")),
                 "purchaseProductNo",award.get("productNo"),"template",map(promise.get("contract")).get("template"),"beneficiaryId",text(reward.get("beneficiary_id")),"beneficiaryRole",reward.get("beneficiary_role"),
                 "asset",asset,"giftProductNo","DEVICE".equals(asset)?reward.get("product_no"):null,"amount",money(amount),"state",state,"revision",reward.get("revision"),
-                "issued",money(issued),"pending",money(pending),"reversed",money(reversed),"unrecoverable",money(loss),"cancelled",money("CANCELLED".equals(state)?amount:BigDecimal.ZERO)));
+                "issued",money(issued),"pending",money(pending),"reversed",money(reversed),"unrecoverable",money(loss),"cancelled",money("CANCELLED".equals(state)?amount:BigDecimal.ZERO));
+            if("DEVICE".equals(asset)){
+                Object originalAmount=reward.get("gift_order_amount_usdt");
+                fact.put("giftOrderAmountUsdt",originalAmount==null?null:money(decimal(originalAmount)));
+                fact.put("giftPlatformLoss",parse(reversal.get("platform_loss")));
+            }
+            result.add(fact);
         }
         return result;
     }

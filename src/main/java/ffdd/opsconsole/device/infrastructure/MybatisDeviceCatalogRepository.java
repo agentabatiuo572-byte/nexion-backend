@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
 import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
 import ffdd.opsconsole.device.domain.DeviceOrderFacts;
+import ffdd.opsconsole.device.domain.DeviceOrderDetailView.OrderDevice;
 import ffdd.opsconsole.device.domain.DeviceOrderFundingView;
 import ffdd.opsconsole.device.domain.DeviceOrderHistoryView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
@@ -416,6 +417,11 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     }
 
     @Override
+    public List<OrderDevice> listOrderDevices(String orderNo) {
+        return mapper.listOrderDevices(orderNo);
+    }
+
+    @Override
     public List<DeviceOrderHistoryView> listOrderHistory(String orderNo) {
         return mapper.listOrderHistory(orderNo);
     }
@@ -456,12 +462,24 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
 
     @Override
     public boolean rollbackOrderAssets(String orderNo, LocalDateTime now) {
+        return rollbackOrderAssets(orderNo, now, false);
+    }
+
+    @Override
+    public boolean rollbackRefundedOrderAssets(String orderNo, LocalDateTime now) {
+        return rollbackOrderAssets(orderNo, now, true);
+    }
+
+    private boolean rollbackOrderAssets(String orderNo, LocalDateTime now, boolean refunded) {
         DeviceCatalogMapper.OrderRestockPlan plan = mapper.orderRestockPlan(orderNo);
         if (plan == null || plan.orderQuantity() == null || plan.orderQuantity() <= 0) {
             return false;
         }
-        if (Boolean.FALSE.equals(plan.inventoryReserved())) return true;
+        boolean restock = !Boolean.FALSE.equals(plan.inventoryReserved());
+        if (!refunded && !restock) return true;
         mapper.rollbackOrderDevices(orderNo, now);
+        if (refunded) mapper.stopRefundedOrderTasks(orderNo, now);
+        if (!restock) return true;
         String orderType = plan.orderType() == null
                 ? ""
                 : plan.orderType().trim().toUpperCase(java.util.Locale.ROOT);
