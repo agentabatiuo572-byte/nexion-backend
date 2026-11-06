@@ -1,14 +1,17 @@
 package ffdd.opsconsole.bi.application;
 
 import ffdd.opsconsole.bi.mapper.L3FinanceFactMapper;
+import ffdd.opsconsole.bi.mapper.L3FinanceFactMapper.DailyFlowFact;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.treasury.facade.TreasuryL3FinanceFacade;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
 import java.time.DayOfWeek;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.TemporalAdjusters;
@@ -18,7 +21,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
@@ -33,6 +40,7 @@ public class L3FinanceReportService {
         return ApiResult.ok(treasuryL3FinanceFacade.currentL3FinanceSnapshot());
     }
 
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public ApiResult<Map<String, Object>> revenue(String period, String from, String to) {
         PeriodWindow window = periodWindow(period, from, to);
         List<RevenueFact> current = revenueFacts(window.from(), window.to());
@@ -48,6 +56,10 @@ public class L3FinanceReportService {
                     "source", fact.source(),
                     "amountUsdt", money(fact.amount()),
                     "previousAmountUsdt", money(previousAmount));
+            if ("device_sales".equals(fact.key())) {
+                row.put("orderCount", mapper.countDeviceSalesOrders(window.from(), window.to()));
+                row.put("previousOrderCount", mapper.countDeviceSalesOrders(window.previousFrom(), window.previousTo()));
+            }
             row.put("share", total.signum() == 0 ? null : pct(fact.amount(), total));
             row.put("momDelta", previousAmount.signum() == 0 ? null
                     : fact.amount().subtract(previousAmount).multiply(BigDecimal.valueOf(100))
@@ -62,6 +74,25 @@ public class L3FinanceReportService {
                 "breakdown", "stream",
                 "serverAuthoritative", true,
                 "sources", List.of("设备订单", "团队奖励账本", "代币兑换订单", "算力服务费账本")));
+    }
+
+    public ApiResult<Map<String, Object>> dailyFlows(int days) {
+        if (days < 1 || days > 31) throw new BizException(400, "L3_DAYS_INVALID");
+        var calendar = BusinessCalendar.legacy();
+        Instant generatedAt = clock.instant();
+        LocalDate today = calendar.dateAt(generatedAt);
+        LocalDate first = today.minusDays(days - 1L);
+        Map<LocalDate, DailyFlowFact> facts = mapper.dailyFlows(calendar.storageStart(first),
+                        calendar.storageStart(today.plusDays(1))).stream()
+                .collect(Collectors.toMap(DailyFlowFact::date, Function.identity()));
+        List<DailyFlowFact> rows = new ArrayList<>(days);
+        for (LocalDate date = first; !date.isAfter(today); date = date.plusDays(1)) {
+            DailyFlowFact fact = facts.getOrDefault(date,
+                    new DailyFlowFact(date, BigDecimal.ZERO, 0, BigDecimal.ZERO, 0));
+            rows.add(new DailyFlowFact(date, money(fact.userTopupUsdt()), fact.userTopupCount(),
+                    money(fact.withdrawalUsdt()), fact.withdrawalCount()));
+        }
+        return ApiResult.ok(Map.of("days", rows, "generatedAt", generatedAt));
     }
 
     public ApiResult<Map<String, Object>> redemption(String period, String from, String to, String cohort) {
@@ -110,7 +141,7 @@ public class L3FinanceReportService {
     private PeriodWindow periodWindow(String rawPeriod, String rawFrom, String rawTo) {
         String period = StringUtils.hasText(rawPeriod) ? rawPeriod.trim().toLowerCase(Locale.ROOT) : "month";
         if (!PERIODS.contains(period)) throw new BizException(400, "L3_PERIOD_INVALID");
-        var calendar = ffdd.opsconsole.shared.config.BusinessCalendar.legacy();
+        var calendar = BusinessCalendar.legacy();
         LocalDate today = calendar.today(clock);
         LocalDate start;
         LocalDate endExclusive;

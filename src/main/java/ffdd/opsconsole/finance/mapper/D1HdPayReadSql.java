@@ -1,10 +1,10 @@
 package ffdd.opsconsole.finance.mapper;
 
 /** Read-only D1 projection. Never insert a bank receipt or invoke settlement while displaying history. */
-final class D1HdPayReadSql {
+public final class D1HdPayReadSql {
     private D1HdPayReadSql() {}
 
-    static final String CTES = """
+    public static final String CTES = """
             hdpay_wallet_orders AS (
                 SELECT h.id, h.merchant_order_id AS intent_no, h.provider_order_id,
                        h.provider_status, h.settlement_status, h.amount_vnd, h.settled_usdt,

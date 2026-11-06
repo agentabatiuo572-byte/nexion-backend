@@ -69,6 +69,12 @@ public class OpsUserController {
     private final OpsUser360Service user360Service;
     private final AdminOperatorRoleResolver roleResolver;
 
+    @GetMapping("/active-summary")
+    @PreAuthorize("hasAuthority('user_c1_read')")
+    public ApiResult<Map<String, Object>> activeSummary() {
+        return userService.activeSummary();
+    }
+
     @GetMapping("/overview")
     @PreAuthorize("hasAuthority('user_c1_read')")
     public ApiResult<Map<String, Object>> overview(Authentication authentication) {

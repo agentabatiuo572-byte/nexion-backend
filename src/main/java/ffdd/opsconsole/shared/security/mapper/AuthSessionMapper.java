@@ -2,6 +2,9 @@ package ffdd.opsconsole.shared.security.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.shared.security.infrastructure.UserSessionEntity;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
@@ -14,6 +17,13 @@ import org.springframework.transaction.interceptor.TransactionAspectSupport;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
+    @Insert("""
+            INSERT IGNORE INTO nx_user_daily_active (biz_date, user_id, first_seen_at)
+            VALUES (#{date}, #{userId}, #{seenAt})
+            """)
+    int recordDailyUserActivity(@Param("date") LocalDate date, @Param("userId") Long userId,
+                                @Param("seenAt") LocalDateTime seenAt);
+
     record SessionSummary(String sessionGroup,String installationId,Long appSessionVersion,boolean executionSupported,
                           long sessionCount,java.time.LocalDateTime lastActiveAt) { }
     @Select("SELECT session_group sessionGroup,installation_id installationId,app_session_version appSessionVersion,"

@@ -20,6 +20,7 @@ import ffdd.opsconsole.user.dto.UserQueryRequest;
 import ffdd.opsconsole.user.mapper.UserOpsMapper;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -35,6 +36,11 @@ import org.springframework.stereotype.Repository;
 public class MybatisUserOpsRepository implements UserOpsRepository {
     private final UserOpsMapper mapper;
     private final ffdd.opsconsole.shared.security.UserSessionRevocationService revocations;
+
+    @Override
+    public Long dailyActiveUsers(LocalDate date) {
+        return mapper.dailyActiveUsers(date);
+    }
 
     @Override
     public Map<String, Object> overview() {

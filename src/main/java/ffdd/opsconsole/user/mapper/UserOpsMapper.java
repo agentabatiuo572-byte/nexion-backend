@@ -15,6 +15,7 @@ import ffdd.opsconsole.user.domain.UserTeamMemberView;
 import ffdd.opsconsole.user.dto.UserQueryRequest;
 import ffdd.opsconsole.user.infrastructure.UserEntity;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
@@ -24,6 +25,9 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface UserOpsMapper extends BaseMapper<UserEntity> {
+    @Select("SELECT NULLIF(COUNT(*), 0) FROM nx_user_daily_active WHERE biz_date=#{date}")
+    Long dailyActiveUsers(@Param("date") LocalDate date);
+
     @Select("SELECT COUNT(*) FROM nx_user_oauth_identity WHERE user_id=#{userId} AND source_environment='PRODUCTION' AND is_deleted=0")
     int countProviderIdentities(@Param("userId") Long userId);
     @Select("SELECT * FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")

@@ -1,5 +1,6 @@
 package ffdd.opsconsole.shared.security;
 
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
 import ffdd.opsconsole.user.infrastructure.UserEntity;
 import ffdd.opsconsole.user.mapper.UserOpsMapper;
@@ -11,12 +12,14 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.core.env.Environment;
 import org.springframework.security.authentication.BadCredentialsException;
@@ -135,7 +138,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     if (recordActivity) revocations.revokeAll(userId);
                     return;
                 }
-                if (!isUserSessionActive(sessionId.trim(), userId, recordActivity)) return;
+                if (!isUserSessionActive(sessionId.trim(), user, recordActivity)) return;
             } catch (RuntimeException ex) {
                 throw new SessionStoreUnavailableException(ex, "USER");
             }
@@ -233,17 +236,31 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 if (recordActivity) revocations.revokeAll(userId);
                 return false;
             }
-            return isUserSessionActive(sessionId, userId, recordActivity);
+            return isUserSessionActive(sessionId, user, recordActivity);
         } catch (RuntimeException ex) {
             throw new SessionStoreUnavailableException(ex, "USER");
         }
     }
 
-    private boolean isUserSessionActive(String sessionId, Long userId, boolean recordActivity) {
+    private boolean isUserSessionActive(String sessionId, UserEntity user, boolean recordActivity) {
         int idleDays = configInt("auth.session.idle_ttl_days", 30, 7, 90);
+        Long userId = user.getId();
         if (!recordActivity) return authSessionMapper.isReadableUserSession(sessionId, userId, idleDays);
-        return authSessionMapper.touchActiveUserSession(sessionId, userId, idleDays) > 0
+        boolean active = authSessionMapper.touchActiveUserSession(sessionId, userId, idleDays) > 0
                 || authSessionMapper.touchRecentlyRotatedUserSession(sessionId, userId, idleDays) > 0;
+        if (active) recordDailyActivity(user);
+        return active;
+    }
+
+    private void recordDailyActivity(UserEntity user) {
+        if (Integer.valueOf(1).equals(user.getSandbox())) return;
+        LocalDateTime seenAt = LocalDateTime.now(BusinessCalendar.STORAGE_ZONE);
+        try {
+            authSessionMapper.recordDailyUserActivity(BusinessCalendar.legacy().dateAtStorage(seenAt),
+                    user.getId(), seenAt);
+        } catch (DataAccessException failure) {
+            logger.warn("Daily App activity write failed: " + failure.getClass().getSimpleName());
+        }
     }
 
     private String sessionEndedReason(Claims claims) {

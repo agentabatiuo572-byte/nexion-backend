@@ -4,6 +4,7 @@ package ffdd.opsconsole.user.application;
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
@@ -280,6 +281,21 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     private final JwtTokenProvider tokenProvider;
     private final Clock clock;
     private final ffdd.opsconsole.content.application.SupportOwnershipService supportOwnership;
+
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> activeSummary() {
+        Instant generatedAt = clock.instant();
+        LocalDate today = BusinessCalendar.legacy().dateAt(generatedAt);
+        return ApiResult.ok(Map.of("today", dailyActiveSummary(today),
+                "yesterday", dailyActiveSummary(today.minusDays(1)), "generatedAt", generatedAt));
+    }
+
+    private Map<String, Object> dailyActiveSummary(LocalDate date) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("date", date);
+        summary.put("activeUsers", userRepository.dailyActiveUsers(date));
+        return summary;
+    }
 
     @Transactional
     public ApiResult<Map<String, Object>> overview() {
