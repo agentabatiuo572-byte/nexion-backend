@@ -354,8 +354,12 @@ public class AuditReplayBusinessPermissionGuard {
                 && !scopedMakerMayPropose(command, operation)) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_PERMISSION_DENIED:" + requiredAuthority);
         }
-        if ("F".equalsIgnoreCase(command.domain()) && "f_ui_config".equals(operation)) {
-            OpsTeamService.validateBinaryUiConfig(value(command.params(), "key"), value(command.params(), "value"));
+        if ("F".equalsIgnoreCase(command.domain())) {
+            if ("f_ui_config".equals(operation)) {
+                OpsTeamService.validateBinaryUiConfig(value(command.params(), "key"), value(command.params(), "value"));
+            }
+            ApiResult<Void> evidence = validateLeaderboardMemberProposal(operation, command.params());
+            if (evidence.getCode() != 0) return evidence;
         }
         if (ffdd.opsconsole.device.application.LegacyUnknownZeroCreditCases.OP.equals(operation)) {
             if (legacyUnknownZeroCredit==null) return ApiResult.fail(503,"LEGACY_UNKNOWN_RESOLUTION_UNAVAILABLE");
@@ -652,6 +656,23 @@ public class AuditReplayBusinessPermissionGuard {
         return superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())
                 && hasAuthority("platform_a2_operation_approve") && hasAuthority("content_i7_course_reward_adjust")
                 ? ApiResult.ok() : ApiResult.fail(403, "LEARNING_COURSE_REWARD_APPROVAL_FORBIDDEN");
+    }
+
+    private ApiResult<Void> validateLeaderboardMemberProposal(String operation, Map<String, Object> params) {
+        if ("f_ui_config".equals(operation) || "f_config".equals(operation)) {
+            return OpsTeamService.validateLeaderboardMemberProposal(
+                    teamCommissionRepository, value(params, "key"), value(params, "value"));
+        }
+        if ("f_config_batch".equals(operation) && params != null && params.get("changes") instanceof List<?> changes) {
+            for (Object item : changes) {
+                if (item instanceof Map<?, ?> change) {
+                    ApiResult<Void> evidence = OpsTeamService.validateLeaderboardMemberProposal(
+                            teamCommissionRepository, value(change, "key"), value(change, "value"));
+                    if (evidence.getCode() != 0) return evidence;
+                }
+            }
+        }
+        return ApiResult.ok();
     }
 
     private ApiResult<Void> validateJ1RestoreChecker() {
@@ -2109,7 +2130,7 @@ public class AuditReplayBusinessPermissionGuard {
                 .anyMatch(requiredAuthority::equals);
     }
 
-    private String value(Map<String, Object> params, String key) {
+    private String value(Map<?, ?> params, String key) {
         Object value = params == null ? null : params.get(key);
         return value == null ? "" : String.valueOf(value).trim();
     }

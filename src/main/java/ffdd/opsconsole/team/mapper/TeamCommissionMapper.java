@@ -619,6 +619,26 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     int insertAmbassadorBudgetGrants(@Param("applicationId") Long applicationId,
                                      @Param("operator") String operator);
 
+    @Select("""
+            SELECT COALESCE(
+                (SELECT s.signal_no FROM nx_risk_signal s
+                  WHERE s.user_id = #{memberUserId}
+                    AND s.is_deleted = 0
+                    AND s.signal_no LIKE 'K2-%'
+                    AND s.signal_type = 'risk.leaderboard_velocity_flagged'
+                    AND s.created_at >= """ + VietnamBusinessPeriodSql.WEEK_START + """
+                    AND s.created_at < """ + VietnamBusinessPeriodSql.NEXT_WEEK_START + """
+                  ORDER BY s.created_at DESC, s.id DESC LIMIT 1),
+                (SELECT c.cluster_id FROM nx_admin_risk_multi_account_cluster c
+                  WHERE c.is_deleted = 0
+                    AND c.status IN ('detected', 'flagged', 'frozen')
+                    AND JSON_CONTAINS(IF(JSON_VALID(c.nodes_json), c.nodes_json, '[]'),
+                        JSON_ARRAY(JSON_OBJECT('userNo', CONCAT('U', LPAD(#{memberUserId},
+                            GREATEST(8, CHAR_LENGTH(CAST(#{memberUserId} AS CHAR))), '0')))))
+                  ORDER BY c.id DESC LIMIT 1))
+            """)
+    String leaderboardDisqualificationEvidence(@Param("memberUserId") long memberUserId);
+
     String LEADERBOARD_PODIUM_SQL = """
             SELECT ranked.rank_no AS `rank`,
                    ranked.member_user_id AS memberUserId,

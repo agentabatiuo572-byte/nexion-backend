@@ -1668,7 +1668,7 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     /** F4 榜单 action 归一:disqualified/paused/fraud 三态化(其余原样大写)。 */
-    private String canonicalLeaderboardAction(String raw) {
+    private static String canonicalLeaderboardAction(String raw) {
         String normalized = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
         return switch (normalized) {
             case "disqualified", "取消资格" -> "DISQUALIFIED";
@@ -2800,11 +2800,14 @@ public class OpsTeamService implements AuditReplayable {
 
     private ApiResult<Map<String, Object>> updateLeaderboardMemberStatus(
             String idempotencyKey, TeamCommissionConfigUpdateRequest request, String key) {
-        String rawId = key.substring("F.leaderboard.week.user.".length(), key.length() - ".status".length());
-        Long memberUserId = parseLongFromMap(rawId);
+        Long memberUserId = leaderboardMemberUserId(key);
         String actionType = canonicalLeaderboardAction(normalizeUiValue(request.value()));
         if (memberUserId == null || memberUserId <= 0 || !Set.of("DISQUALIFIED", "FRAUD").contains(actionType)) {
             return ApiResult.fail(422, "LEADERBOARD_MEMBER_ACTION_INVALID");
+        }
+        String evidence = commissionRepository.leaderboardDisqualificationEvidence(memberUserId);
+        if (evidence == null) {
+            return ApiResult.fail(422, "NO_RISK_EVIDENCE");
         }
         if (!commissionRepository.insertLeaderboardMemberAction("week", memberUserId, actionType,
                 request.reason().trim(), actor(request.operator()))) {
@@ -2812,7 +2815,8 @@ public class OpsTeamService implements AuditReplayable {
         }
         audit("F_TEAM_LEADERBOARD_MEMBER_DISQUALIFIED", "nx_team_leaderboard_action:week:" + memberUserId,
                 actor(request.operator()), Map.of("memberUserId", memberUserId, "actionType", actionType,
-                        "reason", request.reason().trim(), "idempotencyKey", idempotencyKey));
+                        "reason", request.reason().trim(), "idempotencyKey", idempotencyKey,
+                        "riskEvidenceRef", evidence));
         Map<String, Object> response = leadershipPool().getData();
         response.put("updated", Map.of("key", key, "source", "nx_team_leaderboard_action", "memberUserId", memberUserId));
         return ApiResult.ok(response);
@@ -2826,8 +2830,23 @@ public class OpsTeamService implements AuditReplayable {
         return key != null && key.matches("^F\\.quota\\.usage\\.[1-9][0-9]*\\.status$");
     }
 
-    private boolean isLeaderboardMemberStatusKey(String key) {
+    private static boolean isLeaderboardMemberStatusKey(String key) {
         return key != null && key.matches("^F\\.leaderboard\\.week\\.user\\.[1-9][0-9]*\\.status$");
+    }
+
+    private static Long leaderboardMemberUserId(String key) {
+        return parseLongFromMap(key.substring("F.leaderboard.week.user.".length(), key.length() - ".status".length()));
+    }
+
+    public static ApiResult<Void> validateLeaderboardMemberProposal(
+            TeamCommissionRepository repository, String key, String value) {
+        if (!isLeaderboardMemberStatusKey(key)) return ApiResult.ok();
+        Long memberUserId = leaderboardMemberUserId(key);
+        if (memberUserId == null || !Set.of("DISQUALIFIED", "FRAUD").contains(canonicalLeaderboardAction(value))) {
+            return ApiResult.fail(422, "LEADERBOARD_MEMBER_ACTION_INVALID");
+        }
+        return repository.leaderboardDisqualificationEvidence(memberUserId) == null
+                ? ApiResult.fail(422, "NO_RISK_EVIDENCE") : ApiResult.ok();
     }
 
     private Map<String, Object> normalizeCommissionAuditFeedItem(Map<String, Object> raw) {
@@ -4284,7 +4303,7 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     /** 从 Map 取 Long(null 安全)。 */
-    private Long parseLongFromMap(Object raw) {
+    private static Long parseLongFromMap(Object raw) {
         if (raw == null) {
             return null;
         }
