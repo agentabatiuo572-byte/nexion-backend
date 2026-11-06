@@ -93,28 +93,26 @@ public class G4AdminCommandService {
                 .map(v->List.of("1","true","on","enabled","open").contains(v.trim().toLowerCase())).orElse(false);
         if(!open) throw new BizException(409,"G4_GENESIS_EMISSION_GATE_CLOSED");
         var state=dividendPolicy.requireEmission(batchNo);
-        AppGenesisMapper.SeriesRow series=state.series();
         AppGenesisMapper.EmissionBatchRow existing=state.batch();
         if(existing!=null && "COMPLETED".equals(existing.status())){
             return replayedBatch(batchNo,existing);
         }
-        BigDecimal rate=existing==null ? nz(series.dailyEmissionRatePct()) : existing.dailyRatePct();
+        List<AppGenesisMapper.EmissionItemRow> pendingItems=state.pendingItems();
         if(existing==null){
-            List<AppGenesisMapper.HoldingRow> holdings=mapper.lockEmissionHoldings();
-            // Genesis daily emission is a product liability based on the immutable series unit price.
-            // A secondary-market resale price must never amplify or shrink the promised daily payout.
-            BigDecimal total=holdings.stream().map(h->emissionAmount(series.priceUsdt(),rate)).reduce(BigDecimal.ZERO,BigDecimal::add);
-            if(mapper.insertEmissionBatch(new AppGenesisMapper.EmissionBatchWrite(batchNo,LocalDateTime.now(clock),rate,
-                    holdings.size(),money(total),AdminActorResolver.resolve("system"),request.reason().trim(),request.decisionRef().trim()))!=1){
+            if(mapper.insertEmissionBatch(new AppGenesisMapper.EmissionBatchWrite(batchNo,LocalDateTime.now(clock),
+                    state.count(),money(state.amount()),AdminActorResolver.resolve("system"),request.reason().trim(),request.decisionRef().trim()))!=1){
                 throw new BizException(409,"GENESIS_EMISSION_BATCH_CONFLICT");
             }
-            for(AppGenesisMapper.HoldingRow h:holdings){
-                BigDecimal amount=emissionAmount(series.priceUsdt(),rate);
-                if(amount.signum()>0) mapper.insertEmissionItem(new AppGenesisMapper.EmissionItemWrite(batchNo,h.holdingNo(),h.userId(),amount));
+            for(var holding:state.holdings()){
+                if(holding.amountUsdt().signum()>0 && mapper.insertEmissionItem(new AppGenesisMapper.EmissionItemWrite(
+                        batchNo,holding.holdingNo(),holding.userId(),holding.amountUsdt(),holding.dailyRatePct()))!=1){
+                    throw new BizException(409,"GENESIS_EMISSION_ITEM_CONFLICT");
+                }
             }
+            pendingItems=mapper.lockPendingEmissionItems(batchNo);
         }
         int paid=0; BigDecimal paidTotal=BigDecimal.ZERO;
-        for(AppGenesisMapper.EmissionItemRow item:mapper.lockPendingEmissionItems(batchNo)){
+        for(AppGenesisMapper.EmissionItemRow item:pendingItems){
             BigDecimal before=mapper.lockWallet(item.userId());
             if(before==null) throw new BizException(409,"GENESIS_EMISSION_WALLET_CONFLICT");
             String billNo="G4E-"+batchNo+"-"+item.holdingNo();
@@ -130,7 +128,7 @@ public class G4AdminCommandService {
             outbox.publishUserEvent("GENESIS_HOLDING",item.holdingNo(),"genesis.emission_paid",
                     item.userId(),policy.phase(),policy.accountAgeMonths(),policy.cohort(),linked(
                             "holdingNo",item.holdingNo(),"amountUsdt",item.amountUsdt(),
-                            "rateApplied",rate,"paidAt",paidAt));
+                            "rateApplied",item.rateAppliedPct(),"paidAt",paidAt));
             paid++; paidTotal=paidTotal.add(item.amountUsdt());
         }
         mapper.completeEmissionBatch(batchNo);
@@ -179,7 +177,6 @@ public class G4AdminCommandService {
         return ApiResult.ok(response);
     }
 
-    private BigDecimal emissionAmount(BigDecimal base,BigDecimal rate){return money(nz(base).multiply(rate).divide(BigDecimal.valueOf(100),6,RoundingMode.HALF_UP));}
     private void requireCommand(String key,NexMarketValueUpdateRequest r){
         if(!StringUtils.hasText(key)) throw new BizException(428,"IDEMPOTENCY_KEY_REQUIRED");
         if(r==null) throw new BizException(422,"REQUEST_REQUIRED");
