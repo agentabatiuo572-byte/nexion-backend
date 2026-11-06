@@ -159,10 +159,14 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
             """)
     List<EventOutboxMessage> listPendingByEventType(@Param("eventType") String eventType, @Param("limit") int limit);
 
-    // Each index branch fixes its status so it can read the earliest IDs without sorting a backlog.
+    String CANONICAL_DISPATCH_ORDER = """
+            ORDER BY id <choose><when test="newestFirst">DESC</when><otherwise>ASC</otherwise></choose>
+            LIMIT #{limit}
+            """;
+
+    // Each index branch fixes its status so it can read either end without sorting a backlog.
     // Merge bounded ID sets before loading messages, including rows matching both aliases only once.
-    @Select("""
-            <script>
+    String CANONICAL_PENDING_SQL = """
             SELECT
             """ + MESSAGE_COLUMNS + """
               FROM nx_event_outbox
@@ -174,24 +178,30 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
                      AND is_deleted = 0 AND status = #{dispatchStatus}
                      AND (next_retry_at IS NULL OR next_retry_at &lt;= NOW())
                      AND id &gt; #{afterId}
-                   ORDER BY id ASC LIMIT #{limit})
+            """ + CANONICAL_DISPATCH_ORDER + """
+                 )
                  UNION DISTINCT
                  (SELECT id FROM nx_event_outbox FORCE INDEX (idx_outbox_canonical_name)
                    WHERE canonical_event_name = LOWER(#{canonicalType})
                      AND is_deleted = 0 AND status = #{dispatchStatus}
                      AND (next_retry_at IS NULL OR next_retry_at &lt;= NOW())
                      AND id &gt; #{afterId}
-                   ORDER BY id ASC LIMIT #{limit})
+            """ + CANONICAL_DISPATCH_ORDER + """
+                 )
                  </foreach>
                ) candidate
              )
-             ORDER BY id ASC
-             LIMIT #{limit}
-            </script>
-            """)
+            """ + CANONICAL_DISPATCH_ORDER;
+
+    @Select("<script><bind name='newestFirst' value='false'/>" + CANONICAL_PENDING_SQL + "</script>")
     List<EventOutboxMessage> listPendingByCanonicalType(@Param("canonicalType") String canonicalType,
                                                         @Param("afterId") long afterId,
                                                         @Param("limit") int limit);
+
+    @Select("<script><bind name='newestFirst' value='true'/><bind name='afterId' value='0L'/>"
+            + CANONICAL_PENDING_SQL + "</script>")
+    List<EventOutboxMessage> listNewestPendingByCanonicalType(@Param("canonicalType") String canonicalType,
+                                                              @Param("limit") int limit);
 
     @Select("""
             SELECT
