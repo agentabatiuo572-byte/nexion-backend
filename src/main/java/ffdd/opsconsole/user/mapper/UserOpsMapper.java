@@ -1263,7 +1263,8 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     @Insert("""
             INSERT INTO nx_user_impersonation_session (
                 session_no, user_id, status, ttl_minutes, operator, reason, expires_at, created_at, updated_at, is_deleted
-            ) VALUES (#{sessionNo}, #{userId}, 'ACTIVE', #{ttlMinutes}, #{operator}, #{reason}, #{expiresAt}, NOW(), NOW(), 0)
+            ) VALUES (#{sessionNo}, #{userId}, 'ACTIVE', #{ttlMinutes}, #{operator}, #{reason}, #{expiresAt},
+                      DATE_SUB(#{expiresAt}, INTERVAL #{ttlMinutes} MINUTE), NOW(), 0)
             """)
     int insertImpersonationSession(@Param("sessionNo") String sessionNo, @Param("userId") Long userId,
                                    @Param("ttlMinutes") int ttlMinutes, @Param("operator") String operator,

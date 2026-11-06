@@ -1006,6 +1006,10 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                     OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
                     "WITHDRAWAL_FROZEN_BY_C2_USER_STATUS");
         }
+        if ("USDT-ERC20".equals(order.chain()) && "REFUND".equals(action)
+                && D2WithdrawalStateMachine.TX_ORPHANED.equals(D2WithdrawalStateMachine.canonical(order.status()))) {
+            return ApiResult.fail(409, "ERC20_ORPHANED_REFUND_FORBIDDEN");
+        }
         String authenticatedOperator = AdminActorResolver.resolve(request.operator());
         String newStatus = D2WithdrawalStateMachine.next(order.status(), action);
         if (newStatus == null) {

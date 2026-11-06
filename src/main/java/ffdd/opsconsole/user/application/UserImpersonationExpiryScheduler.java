@@ -5,6 +5,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.user.domain.UserImpersonationSessionView;
 import ffdd.opsconsole.user.domain.UserOpsRepository;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Map;
@@ -20,13 +21,14 @@ public class UserImpersonationExpiryScheduler {
     private final UserOpsRepository userRepository;
     private final AuditLogService auditLogService;
     private final EventOutboxService outboxService;
+    private final Clock clock;
 
     @Scheduled(fixedDelayString = "${nexion.user.impersonation-expiry-delay-ms:30000}")
     @Transactional(rollbackFor = Exception.class)
     public void expireDueSessions() {
         for (UserImpersonationSessionView session : userRepository.expiredActiveImpersonations(100)) {
             if (!userRepository.expireActiveImpersonation(session.sessionNo(), EXPIRE_REASON, "system")) continue;
-            LocalDateTime sessionEnd = LocalDateTime.now();
+            LocalDateTime sessionEnd = LocalDateTime.now(clock);
             LocalDateTime sessionStart = session.createdAt() == null
                     ? sessionEnd.minusMinutes(session.ttlMinutes())
                     : session.createdAt();

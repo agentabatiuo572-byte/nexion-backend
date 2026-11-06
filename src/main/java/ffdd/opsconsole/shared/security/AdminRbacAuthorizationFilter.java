@@ -306,9 +306,10 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
                     "finprod_g4_dividend_rate_write", "finprod_g4_write", "finprod_g4_price_write");
         }
         if (read && path.equals("/api/admin/platform/audit/operations/proposals/by-idempotency-key")) {
+            // Method security and the DB policy limit legacy writers to their own C2/C5 revocation command.
             return RequiredAuthority.exactOrAll(LearningCourseActivationApproval.MAKER_AUTHORITIES,
                     AuditReplayBusinessPermissionGuard.F5_ACTION_AUTHORITIES,
-                    "platform_a2_read", "platform_a2_proposal_create", "platform_a4_write", "overview_b1_redline_write", "overview_b5_threshold_write",
+                    "platform_a2_read", "platform_a2_proposal_create", "platform_a2_write", "platform_a4_write", "overview_b1_redline_write", "overview_b5_threshold_write",
                     "risk_k2_write", "content_i7_course_reward_adjust", "growth_h7_write", "emergency_j1_gate_resume",
                     "device_e2_write", "network_f1_write", "network_f3_write", "network_f4_pool_fund", "growth_h8_write", "growth_h5_write", "growth_h3_write", "growth_h4_write", "growth_h4_wheel_pool_write", "finprod_g3_curve_target_price_write",
                     "finprod_g3_curve_pump_prob_write", "finprod_g3_override_price_write", "finprod_g3_write",

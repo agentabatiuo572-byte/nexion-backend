@@ -4,6 +4,7 @@ import ffdd.opsconsole.bi.mapper.BehaviorAnalyticsMapper;
 import ffdd.opsconsole.bi.mapper.BehaviorAnalyticsSandboxMapper;
 import ffdd.opsconsole.bi.web.BehaviorEventRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -58,6 +59,7 @@ public class BehaviorAnalyticsService {
     private final BehaviorAnalyticsSandboxMapper sandboxMapper;
     private final EventOutboxService outbox;
     private final AuditLogService auditLogService;
+    private final A2RuntimePolicy a2RuntimePolicy;
     private final Environment environment;
     @Value("${nexion.analytics.pseudonym-secret:${jwt.secret:nexion-l6-local-only}}")
     private final String pseudonymSecret;
@@ -420,9 +422,19 @@ public class BehaviorAnalyticsService {
     }
 
     public byte[] exportBehavior(String window, String device, String locale, String depth, String sort, String sortDir) {
+        return exportBehavior(window, device, locale, depth, sort, sortDir, null);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public byte[] exportBehavior(String window, String device, String locale, String depth, String sort, String sortDir, String reason) {
         // Must precede queries, audit, and outbox: acceptance admins cannot
         // use the production export route to create production side effects.
         requireProductionL6Surface();
+        String normalizedReason = text(reason);
+        require(!normalizedReason.isEmpty(), "REASON_REQUIRED");
+        int reasonLength = normalizedReason.codePointCount(0, normalizedReason.length());
+        require(reasonLength >= 8 && reasonLength <= 200, "REASON_LENGTH_INVALID");
+        a2RuntimePolicy.validateReason(normalizedReason);
         Query query = query(window, device, locale);
         String normalizedDepth = normalizeDepth(depth);
         String direction = text(sortDir).toLowerCase(Locale.ROOT);
@@ -449,7 +461,8 @@ public class BehaviorAnalyticsService {
                 .result("SUCCESS")
                 .riskLevel("LOW")
                 .detail(linked("window", query.window(), "depth", normalizedDepth, "device", valueOrAll(query.device()),
-                        "locale", valueOrAll(query.locale()), "rows", rows.size(), "containsPii", false))
+                        "locale", valueOrAll(query.locale()), "rows", rows.size(), "containsPii", false,
+                        "reason", normalizedReason))
                 .build());
         outbox.publish("BI_REPORT", exportId, "admin.report_exported", linked(
                 "reportId", exportId,
@@ -459,7 +472,7 @@ public class BehaviorAnalyticsService {
                 "containsPii", false,
                 "maskingPolicy", "AGGREGATED",
                 "operator", AdminActorResolver.resolve("unknown"),
-                "reason", "L6 behavior aggregate export",
+                "reason", normalizedReason,
                 "format", "CSV"));
         return csv.toString().getBytes(StandardCharsets.UTF_8);
     }
