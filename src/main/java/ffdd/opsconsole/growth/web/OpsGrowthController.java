@@ -360,6 +360,13 @@ public class OpsGrowthController {
                 ()->growthService.deleteQuestEvent(key,eventId,request));
     }
 
+    @PostMapping("/quest-events/events/{eventId}/{field}/preview")
+    @PreAuthorize("hasAuthority('growth_h4_write')")
+    public ApiResult<Map<String, Object>> previewQuestEventChange(
+            @PathVariable String eventId, @PathVariable String field, @RequestBody GrowthConfigUpdateRequest request) {
+        return growthService.previewQuestEventChange(eventId, field, request);
+    }
+
     @PatchMapping("/quest-events/events/{eventId}/reward")
     @PreAuthorize("hasAuthority('growth_h4_write')")
     public ApiResult<Map<String, Object>> updateQuestEventReward(
