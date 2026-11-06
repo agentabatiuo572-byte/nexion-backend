@@ -24,6 +24,7 @@ import java.util.function.Predicate;
 /** L1 pure read-model calculator over schema-accepted A4 KPI event facts. */
 public final class L1KpiAnalytics {
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final int MINIMUM_SAMPLE_SIZE = 5;
     private static final List<String> COLORS = List.of(
             "#2dd4bf", "#60a5fa", "#818cf8", "#c084fc",
             "#f472b6", "#fb7185", "#f59e0b", "#84cc16");
@@ -77,23 +78,28 @@ public final class L1KpiAnalytics {
         for (KpiSpec spec : specs) {
             KpiValue current = value(spec.id(), all, from, end, dimensions, day0WindowSeconds);
             KpiValue previous = value(spec.id(), all, previousFrom, from, dimensions, day0WindowSeconds);
-            List<Double> spark = spark(spec.id(), all, from, end, dimensions, day0WindowSeconds);
-            String status = status(spec, current.value());
+            Trend spark = spark(spec.id(), all, from, end, dimensions, day0WindowSeconds);
+            Double currentValue = current.visibleValue();
+            Double previousValue = previous.visibleValue();
+            boolean suppressed = current.suppressed();
             kpis.add(linked(
                     "n", spec.id(), "kpiId", String.valueOf(spec.id()), "name", spec.name(),
-                    "value", current.value(), "target", spec.target(), "unit", spec.unit(),
-                    "dir", spec.direction(), "band", spec.band(), "status", status,
-                    "available", current.value() != null, "unavailableReason", current.reason(),
-                    "momDelta", delta(current.value(), previous.value()), "cohort", defaultText(cohort, "全部 cohort"),
-                    "vis", spec.maturity(), "spark", spark,
-                    "numerator", current.numerator(), "denominator", current.denominator(),
+                    "value", currentValue, "target", spec.target(), "unit", spec.unit(),
+                    "dir", spec.direction(), "band", spec.band(), "status", suppressed ? "SUPPRESSED" : status(spec, currentValue),
+                    "available", currentValue != null, "unavailableReason", suppressed ? null : current.reason(),
+                    "suppressed", suppressed, "previousSuppressed", previous.suppressed(),
+                    "momDelta", delta(currentValue, previousValue), "cohort", defaultText(cohort, "全部 cohort"),
+                    "vis", spec.maturity(), "spark", spark.values(), "sparkSuppressed", spark.suppressed(),
+                    "numerator", suppressed ? null : current.numerator(),
+                    "denominator", suppressed ? null : current.denominator(),
                     "kpiSpec", spec.formula()));
             plain.put(String.valueOf(spec.id()), spec.plain());
             ext.put(String.valueOf(spec.id()), linked(
                     "fx", spec.formula(), "fxBold", spec.events(),
-                    "num", String.valueOf(current.numerator()), "den", String.valueOf(current.denominator()),
-                    "delta", deltaLabel(current.value(), previous.value()),
-                    "note", current.value() == null ? unavailableMessage(current.reason()) : spec.note(),
+                    "num", suppressed ? null : String.valueOf(current.numerator()),
+                    "den", suppressed ? null : String.valueOf(current.denominator()),
+                    "delta", deltaLabel(currentValue, previousValue),
+                    "note", suppressed ? "样本过小" : currentValue == null ? unavailableMessage(current.reason()) : spec.note(),
                     "jump", spec.jumps()));
         }
         return linked(
@@ -142,9 +148,11 @@ public final class L1KpiAnalytics {
         Object selected = ((List<?>) dashboard.get("kpis")).stream()
                 .filter(row -> row instanceof Map<?, ?> map && Objects.equals(map.get("n"), kpiId))
                 .findFirst().orElse(null);
-        Object values = selected instanceof Map<?, ?> map ? map.get("spark") : List.of();
+        Map<?, ?> row = selected instanceof Map<?, ?> map ? map : Map.of();
         return linked("module", "L1", "kpiId", kpiId, "labels", dashboard.get("weeks"),
-                "values", values, "filters", dashboard.get("filters"), "sources", dashboard.get("sources"));
+                "values", row.get("spark"), "suppressed", row.get("suppressed"),
+                "suppressedPoints", row.get("sparkSuppressed"),
+                "filters", dashboard.get("filters"), "sources", dashboard.get("sources"));
     }
 
     private static KpiValue value(
@@ -258,18 +266,20 @@ public final class L1KpiAnalytics {
 
     private static KpiValue genesis(List<EventFact> events) {
         List<EventFact> purchases = events.stream().filter(named("genesis.purchased")).toList();
+        long purchasers = purchases.stream().map(EventFact::actor).distinct().count();
         long sold = purchases.stream().mapToLong(event -> Math.max(0, event.quantity())).sum();
-        if (purchases.isEmpty()) return new KpiValue(null, 0, 1000, "NO_GENESIS_PURCHASES");
-        if (sold < 1000) return new KpiValue(null, sold, 1000, "GENESIS_NOT_SOLD_OUT");
+        if (purchases.isEmpty()) return new KpiValue(null, 0, 1000, purchasers, "NO_GENESIS_PURCHASES");
+        if (sold < 1000) return new KpiValue(null, sold, 1000, purchasers, "GENESIS_NOT_SOLD_OUT");
         LocalDate first = businessDay(purchases.get(0).at());
         long cumulative = 0;
         for (EventFact event : purchases) {
             cumulative += Math.max(0, event.quantity());
             if (cumulative >= 1000) {
-                return new KpiValue((double) Math.max(1, ChronoUnit.DAYS.between(first, businessDay(event.at())) + 1), sold, 1000, null);
+                return new KpiValue((double) Math.max(1, ChronoUnit.DAYS.between(first, businessDay(event.at())) + 1),
+                        sold, 1000, purchasers, null);
             }
         }
-        return new KpiValue(null, sold, 1000, "GENESIS_NOT_SOLD_OUT");
+        return new KpiValue(null, sold, 1000, purchasers, "GENESIS_NOT_SOLD_OUT");
     }
 
     private static KpiValue ratio(Set<String> numerator, Set<String> denominator, String reason) {
@@ -279,7 +289,7 @@ public final class L1KpiAnalytics {
         return new KpiValue(round(matched.size() * 100D / denominator.size()), matched.size(), denominator.size(), null);
     }
 
-    private static List<Double> spark(
+    private static Trend spark(
             int id,
             List<EventFact> events,
             LocalDateTime from,
@@ -287,15 +297,16 @@ public final class L1KpiAnalytics {
             Predicate<EventFact> dimensions,
             int day0WindowSeconds) {
         List<Double> result = new ArrayList<>();
+        List<Boolean> suppressed = new ArrayList<>();
         long seconds = Math.max(1, ChronoUnit.SECONDS.between(from, to));
         for (int index = 0; index < 6; index++) {
             LocalDateTime start = from.plusSeconds(seconds * index / 6);
             LocalDateTime end = from.plusSeconds(seconds * (index + 1) / 6);
             KpiValue point = value(id, events, start, end, dimensions, day0WindowSeconds);
-            if (point.value() == null) return List.of();
-            result.add(point.value());
+            result.add(point.visibleValue());
+            suppressed.add(point.suppressed());
         }
-        return result;
+        return new Trend(result, suppressed);
     }
 
     private static List<String> sparkLabels(LocalDateTime from, LocalDateTime to) {
@@ -550,7 +561,21 @@ public final class L1KpiAnalytics {
     private record EventFact(String eventId, String name, String actor, String sourceActor,
                              String commissionKind, LocalDateTime at, String cohort,
                              String phase, String locale, String ref, Double latencySec, long quantity) { }
-    private record KpiValue(Double value, long numerator, long denominator, String reason) { }
+    private record Trend(List<Double> values, List<Boolean> suppressed) { }
+
+    private record KpiValue(Double value, long numerator, long denominator, long sampleSize, String reason) {
+        private KpiValue(Double value, long numerator, long denominator, String reason) {
+            this(value, numerator, denominator, denominator, reason);
+        }
+
+        private boolean suppressed() {
+            return sampleSize < MINIMUM_SAMPLE_SIZE;
+        }
+
+        private Double visibleValue() {
+            return suppressed() ? null : value;
+        }
+    }
     private record WindowRange(String label, LocalDateTime from, LocalDateTime to) { }
     private record KpiSpec(int id, String name, double target, String unit, String direction,
                            List<Integer> band, String maturity, String plain, String formula,

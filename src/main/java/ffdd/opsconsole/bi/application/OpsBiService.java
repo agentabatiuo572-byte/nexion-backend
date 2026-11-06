@@ -1012,12 +1012,14 @@ public class OpsBiService implements AuditReplayable {
                         stringValue(row.get("cohort")),
                         stringValue(row.getOrDefault("vis", row.get("maturity"))),
                         stringValue(row.get("available")),
-                        stringValue(row.get("unavailableReason")),
+                        Boolean.TRUE.equals(row.get("suppressed")) ? "样本过小" : stringValue(row.get("unavailableReason")),
                         stringValue(row.get("numerator")),
                         stringValue(row.get("denominator"))));
                 List<?> spark = (List<?>) row.get("spark");
+                List<?> suppressedPoints = row.get("sparkSuppressed") instanceof List<?> points ? points : List.of();
                 for (int index = 0; index < weeks.size(); index++) {
-                    values.add(index < spark.size() ? stringValue(spark.get(index)) : "");
+                    values.add(index < suppressedPoints.size() && Boolean.TRUE.equals(suppressedPoints.get(index))
+                            ? "样本过小" : index < spark.size() ? stringValue(spark.get(index)) : "");
                 }
                 csv.append(csvRow(values));
             }
@@ -1148,7 +1150,7 @@ public class OpsBiService implements AuditReplayable {
                     || weeks.stream().anyMatch(week -> !(week instanceof String label) || label.isBlank())) {
                 throw new L1ExportDataException();
             }
-            boolean anyAvailable = false;
+            boolean anyExportable = false;
             for (int index = 0; index < rows.size(); index++) {
                 Map<String, Object> row = mutableObjectMap(rows.get(index));
                 if (!(row.get("n") instanceof Number number) || number.doubleValue() != index + 1
@@ -1157,9 +1159,14 @@ public class OpsBiService implements AuditReplayable {
                         || !(row.get("name") instanceof String name) || name.isBlank()
                         || !(row.get("target") instanceof Number target) || !Double.isFinite(target.doubleValue())
                         || !List.of("%", "d").contains(row.get("unit"))
-                        || !nonnegativeInteger(row.get("numerator")) || !nonnegativeInteger(row.get("denominator"))
                         || !(row.get("spark") instanceof List<?> spark) || (spark.size() != 0 && spark.size() != 6)
-                        || spark.stream().anyMatch(point -> !(point instanceof Number numeric) || !Double.isFinite(numeric.doubleValue()))) {
+                        || spark.stream().anyMatch(point -> point != null
+                                && (!(point instanceof Number numeric) || !Double.isFinite(numeric.doubleValue())))) {
+                    throw new L1ExportDataException();
+                }
+                boolean suppressed = Boolean.TRUE.equals(row.get("suppressed"));
+                if (suppressed ? available || row.get("numerator") != null || row.get("denominator") != null
+                        : !nonnegativeInteger(row.get("numerator")) || !nonnegativeInteger(row.get("denominator"))) {
                     throw new L1ExportDataException();
                 }
                 Object value = row.get("value");
@@ -1170,9 +1177,9 @@ public class OpsBiService implements AuditReplayable {
                     if ("%".equals(row.get("unit")) && (numeric < 0 || numeric > 100)
                             || "d".equals(row.get("unit")) && numeric <= 0) throw new L1ExportDataException();
                 }
-                anyAvailable |= available;
+                anyExportable |= available || suppressed;
             }
-            return anyAvailable ? prepareReportSnapshot(kpiReportCsv(dashboard), (long) rows.size()) : prepareReportSnapshot("", 0L);
+            return anyExportable ? prepareReportSnapshot(kpiReportCsv(dashboard), (long) rows.size()) : prepareReportSnapshot("", 0L);
         }
         // Older authoritative aggregate responses remain a distinct totals export.
         Map<String, Object> totals = mutableObjectMap(dashboard.get("totals"));
