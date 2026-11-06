@@ -3,7 +3,6 @@ package ffdd.opsconsole.shared.outbox.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.shared.outbox.EventConsumerDelivery;
 import ffdd.opsconsole.shared.outbox.infrastructure.EventConsumerDeliveryEntity;
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
@@ -35,6 +34,7 @@ public interface EventConsumerDeliveryMapper extends BaseMapper<EventConsumerDel
             updated_at AS updatedAt
             """;
 
+    // The duplicate branch takes an exclusive lock before the guarded claim update.
     @Insert("""
             INSERT INTO nx_event_consumer_delivery (
               event_id, consumer_group, topic, msg_id, event_type, aggregate_type, aggregate_id,
@@ -42,14 +42,15 @@ public interface EventConsumerDeliveryMapper extends BaseMapper<EventConsumerDel
               created_at, updated_at, is_deleted
             ) VALUES (
               #{eventId}, #{consumerGroup}, #{topic}, #{msgId}, #{eventType}, #{aggregateType}, #{aggregateId},
-              #{status}, 1, #{rocketmqReconsumeTimes}, NOW(), NOW(), NOW(), NOW(), 0
+              #{claimingStatus}, 0, #{rocketmqReconsumeTimes}, NOW(), NOW(), NOW(), NOW(), 0
             )
+            ON DUPLICATE KEY UPDATE id = id
             """)
-    int insertClaim(@Param("eventId") String eventId, @Param("consumerGroup") String consumerGroup,
-                    @Param("topic") String topic, @Param("msgId") String msgId,
-                    @Param("eventType") String eventType, @Param("aggregateType") String aggregateType,
-                    @Param("aggregateId") String aggregateId, @Param("status") String status,
-                    @Param("rocketmqReconsumeTimes") int rocketmqReconsumeTimes);
+    void ensureClaimRow(@Param("eventId") String eventId, @Param("consumerGroup") String consumerGroup,
+                        @Param("topic") String topic, @Param("msgId") String msgId,
+                        @Param("eventType") String eventType, @Param("aggregateType") String aggregateType,
+                        @Param("aggregateId") String aggregateId, @Param("claimingStatus") String claimingStatus,
+                        @Param("rocketmqReconsumeTimes") int rocketmqReconsumeTimes);
 
     @Update("""
             <script>
@@ -70,17 +71,29 @@ public interface EventConsumerDeliveryMapper extends BaseMapper<EventConsumerDel
                AND consumer_group = #{consumerGroup}
                AND is_deleted = 0
                AND (
-                    status = #{failedStatus}
-                   OR (status = #{processingStatus} AND updated_at &lt; #{staleBefore})
+                    status IN (#{claimingStatus}, #{failedStatus})
+                   OR (status = #{processingStatus}
+                       AND updated_at &lt; TIMESTAMPADD(SECOND, -#{processingTimeoutSeconds}, NOW()))
                )
             </script>
             """)
-    int reclaim(@Param("eventId") String eventId, @Param("consumerGroup") String consumerGroup,
-                @Param("topic") String topic, @Param("msgId") String msgId,
-                @Param("eventType") String eventType, @Param("aggregateType") String aggregateType,
-                @Param("aggregateId") String aggregateId, @Param("processingStatus") String processingStatus,
-                @Param("failedStatus") String failedStatus, @Param("rocketmqReconsumeTimes") int rocketmqReconsumeTimes,
-                @Param("staleBefore") LocalDateTime staleBefore);
+    int claimEligible(@Param("eventId") String eventId, @Param("consumerGroup") String consumerGroup,
+                      @Param("topic") String topic, @Param("msgId") String msgId,
+                      @Param("eventType") String eventType, @Param("aggregateType") String aggregateType,
+                      @Param("aggregateId") String aggregateId, @Param("claimingStatus") String claimingStatus,
+                      @Param("processingStatus") String processingStatus, @Param("failedStatus") String failedStatus,
+                      @Param("rocketmqReconsumeTimes") int rocketmqReconsumeTimes,
+                      @Param("processingTimeoutSeconds") int processingTimeoutSeconds);
+
+    @Select("""
+            SELECT status, attempt_count AS attemptCount
+              FROM nx_event_consumer_delivery
+             WHERE event_id = #{eventId}
+               AND consumer_group = #{consumerGroup}
+               AND is_deleted = 0
+             FOR UPDATE
+            """)
+    EventConsumerDelivery lockClaimState(@Param("consumerGroup") String consumerGroup, @Param("eventId") String eventId);
 
     @Select("""
             SELECT
