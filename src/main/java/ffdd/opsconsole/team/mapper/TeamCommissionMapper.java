@@ -151,7 +151,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    metric.tone
               FROM (
                     SELECT 'l1TriggerRate' AS id,
-                           'L1 触发率' AS label,
+                           'L1 成员占比' AS label,
                            CONCAT(ROUND(SUM(CASE WHEN level = 1 THEN 1 ELSE 0 END) * 100 / COUNT(1), 1), '%') AS value,
                            CONCAT(SUM(CASE WHEN level = 1 THEN 1 ELSE 0 END), ' / ', COUNT(1), ' 团队成员') AS sub,
                            '' AS tone,

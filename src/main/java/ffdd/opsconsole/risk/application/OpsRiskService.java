@@ -147,19 +147,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             "block-gift", new K2ActionSpec("blockgift", "gift_blocked", "K2_WELCOME_GIFT_BLOCKED", "risk_k2_row_blockgift"),
             "board-flag", new K2ActionSpec("boardflag", "leaderboard_flagged", "K2_LEADERBOARD_FLAGGED", "risk_k2_row_boardflag"),
             "freeze-cluster", new K2ActionSpec("freeze", "cluster_frozen", "K2_CLUSTER_FREEZE_LINKED", "risk_k2_row_freeze"));
-    private static final List<K2ViewSpec> K2_VIEWS = List.of(
-            new K2ViewSpec("trial", "试用循环", "· 试用循环养号 · 服务器端复活计数,不信客户端状态",
-                    List.of("实体 / 簇", "30 天循环次数", "关联账户", "累计套取试用收益"),
-                    "循环次数是服务器记的开试用、取消、再开的轮数。层数命中 = 多账户 / 绑邀请人 / 试用循环。"),
-            new K2ViewSpec("tradein", "换新套利", "· 高频下架置换 · 礼金/返佣叠加行为证据后再判定闭环",
-                    List.of("账户 / 实体", "设备链", "观察窗口", "高频下架置换", "礼金/返佣叠加"),
-                    "置换抵扣阶梯归 E3；K2 只根据高频下架置换与礼金/返佣叠加证据判定异常，不使用持有月或旧残值闸门。"),
-            new K2ViewSpec("gift", "新人礼刷取", "· 新人礼刷取 · 看领完礼就走的闭环行为",
-                    List.of("簇", "实体", "已发 / 已拦", "涉及金额", "闭环特征"),
-                    "K1 看同一实体重复领；K2 加看行为闭环。拦截只停发后续,不动已入账资产。"),
-            new K2ViewSpec("board", "排行榜刷榜", "· 排行榜刷榜 · 邀请/奖励增速异常的冲榜账户",
-                    List.of("账户", "本期累计奖励", "增速(对基线)", "直接邀请增长", "关联簇"),
-                    "这里只标记并发信号给 F8 和风险雷达；取消参榜资格、从奖池剔除由 F8 执行。"));
     private static final Map<String, DimensionMeta> K3_DIMENSION_META = Map.ofEntries(
             Map.entry("largeAmountUsdt", new DimensionMeta("largeAmountUsdt", "金额", "由 nx_admin_risk_withdraw_rule 配置", "card", 0)),
             Map.entry("amount", new DimensionMeta("largeAmountUsdt", "金额", "由 nx_admin_risk_withdraw_rule 配置", "card", 0)),
@@ -940,12 +927,13 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
 
     @Transactional
     public ApiResult<Map<String, Object>> arbitrageOverview() {
-        refreshK2AuthoritativeProjection();
         List<RiskArbitrageParamView> currentParams = riskRepository.arbitrageParams();
+        int[] trialBoundary = trialCycleBoundary(currentParams);
+        refreshK2AuthoritativeProjection(currentParams, trialBoundary);
         List<RiskArbitrageRowView> rows = riskRepository.arbitrageRows();
         Map<String, List<RiskArbitrageRowView>> byView = rows.stream()
                 .collect(Collectors.groupingBy(RiskArbitrageRowView::viewKey, LinkedHashMap::new, Collectors.toList()));
-        List<RiskArbitrageViewGroup> views = K2_VIEWS.stream()
+        List<RiskArbitrageViewGroup> views = k2Views(trialBoundary[1]).stream()
                 .map(spec -> new RiskArbitrageViewGroup(
                         spec.key(),
                         spec.label(),
@@ -982,6 +970,22 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         return ApiResult.ok(response);
     }
 
+    private static List<K2ViewSpec> k2Views(int trialDays) {
+        return List.of(
+                new K2ViewSpec("trial", "试用循环", "· 试用循环养号 · 服务器端复活计数,不信客户端状态",
+                        List.of("实体 / 簇", trialDays + " 天循环次数", "关联账户", "累计套取试用收益"),
+                        "循环次数是服务器记的开试用、取消、再开的轮数。层数命中 = 多账户 / 绑邀请人 / 试用循环。"),
+                new K2ViewSpec("tradein", "换新套利", "· 高频下架置换 · 礼金/返佣叠加行为证据后再判定闭环",
+                        List.of("账户 / 实体", "设备链", "观察窗口", "高频下架置换", "礼金/返佣叠加"),
+                        "置换抵扣阶梯归 E3；K2 只根据高频下架置换与礼金/返佣叠加证据判定异常，不使用持有月或旧残值闸门。"),
+                new K2ViewSpec("gift", "新人礼刷取", "· 新人礼刷取 · 看领完礼就走的闭环行为",
+                        List.of("簇", "实体", "已发 / 已拦", "涉及金额", "闭环特征"),
+                        "K1 看同一实体重复领；K2 加看行为闭环。拦截只停发后续,不动已入账资产。"),
+                new K2ViewSpec("board", "排行榜刷榜", "· 排行榜刷榜 · 邀请/奖励增速异常的冲榜账户",
+                        List.of("账户", "本期累计奖励", "增速(对基线)", "直接邀请增长", "关联簇"),
+                        "这里只标记并发信号给「奖励池、名额与排行榜」和风险雷达。取消参榜资格和从奖池剔除在「奖励池、名额与排行榜」执行。"));
+    }
+
     private List<RiskArbitrageStatView> canonicalK2Stats(List<RiskArbitrageRowView> rows) {
         long loopConfirmed = rows.stream().filter(row -> row.level() != null && row.level() >= 3).count();
         long loopWarn = rows.stream().filter(row -> row.level() != null && row.level() == 2).count();
@@ -995,13 +999,16 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 new RiskArbitrageStatView("giftBlockedCnt", "新人礼拦截",
                         String.valueOf(giftBlocked), "已确认停发的后续奖励", "ok"),
                 new RiskArbitrageStatView("boardSignals", "刷榜信号",
-                        String.valueOf(boardSignals), "当前榜单异常投影 · 处置归 F8", "danger"));
+                        String.valueOf(boardSignals), "当前榜单异常投影 · 到「奖励池、名额与排行榜」处置", "danger"));
     }
 
     @Transactional
     public void refreshK2AuthoritativeProjection() {
         List<RiskArbitrageParamView> params = riskRepository.arbitrageParams();
-        int[] trialBoundary = trialCycleBoundary(params);
+        refreshK2AuthoritativeProjection(params, trialCycleBoundary(params));
+    }
+
+    private void refreshK2AuthoritativeProjection(List<RiskArbitrageParamView> params, int[] trialBoundary) {
         int giftMinimum = thresholdMinimum(
                 params, "welcomeGiftAnomalyThreshold", K2_WELCOME_GIFT_THRESHOLD, 2);
         int boardMultiplier = thresholdValue(
