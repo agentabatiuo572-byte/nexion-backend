@@ -11,6 +11,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.event.EventListener;
@@ -22,6 +23,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.socket.*;
 import org.springframework.web.socket.handler.*;
 
+@Slf4j
 @Component
 @RequiredArgsConstructor
 public class ConversationSocketHandler extends TextWebSocketHandler {
@@ -321,6 +323,7 @@ public class ConversationSocketHandler extends TextWebSocketHandler {
         try{outbound.execute(work);return true;}
         catch(RejectedExecutionException e){
             if (!outbound.isShutdown() && overloadPending.compareAndSet(false, true)) {
+                log.warn("Conversation realtime queue overloaded queueSize={} clients={}", outbound.getQueue().size(), clients.size());
                 CompletableFuture.runAsync(() -> {
                     try { resetConnections(); }
                     finally { overloadPending.set(false); }
@@ -379,21 +382,19 @@ public class ConversationSocketHandler extends TextWebSocketHandler {
     }
 
     private void refreshPresence(Client c, Authentication auth) {
-        enqueue(() -> {
-            synchronized (c) {
-                if (clients.get(c.socket.getId()) != c) return;
-                try {
-                    var grant = c.identity.grant;
-                    boolean online = access.contributesPresence(auth, grant.audience());
-                    if (online) socketRedis.touchOnline(grant.actor(), c.socket.getId(), System.currentTimeMillis());
-                    else if (c.online) socketRedis.clearOnline(grant.actor(), c.socket.getId());
-                    if (c.online != online) {
-                        c.online = online;
-                        socketRedis.publish(Map.of("kind", "PRESENCE", "actor", grant.actor()));
-                    }
-                } catch (RuntimeException ex) { close(c, 1013); }
-            }
-        });
+        synchronized (c) {
+            if (clients.get(c.socket.getId()) != c) return;
+            try {
+                var grant = c.identity.grant;
+                boolean online = access.contributesPresence(auth, grant.audience());
+                if (online) socketRedis.touchOnline(grant.actor(), c.socket.getId(), System.currentTimeMillis());
+                else if (c.online) socketRedis.clearOnline(grant.actor(), c.socket.getId());
+                if (c.online != online) {
+                    c.online = online;
+                    socketRedis.publish(Map.of("kind", "PRESENCE", "actor", grant.actor()));
+                }
+            } catch (RuntimeException ex) { close(c, 1013); }
+        }
     }
 
     private void registerClient(Client c) {
