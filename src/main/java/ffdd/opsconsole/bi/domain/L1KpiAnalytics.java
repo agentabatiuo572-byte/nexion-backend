@@ -170,11 +170,11 @@ public final class L1KpiAnalytics {
                             && event.latencySec() != null && event.latencySec() <= day0WindowSeconds,
                     (long) day0WindowSeconds,
                     end,
-                    "NO_REGISTRATION_DENOMINATOR");
+                    "NO_REGISTRATION_DENOMINATOR").withNumeratorSample();
             case 2 -> day7(events, from, end, dimensions);
             case 3 -> orderedRatio(
                     anchors(events, "auth.register_completed", from, end, dimensions),
-                    events, named("store.viewed"), null, end, "NO_REGISTRATION_DENOMINATOR");
+                    events, named("store.viewed"), null, end, "NO_REGISTRATION_DENOMINATOR").withNumeratorSample();
             case 4 -> orderedRatio(
                     anchors(events, "store.viewed", from, end, dimensions),
                     events, named("checkout.completed"), null, end, "NO_STORE_VIEW_DENOMINATOR");
@@ -566,6 +566,11 @@ public final class L1KpiAnalytics {
     private record KpiValue(Double value, long numerator, long denominator, long sampleSize, String reason) {
         private KpiValue(Double value, long numerator, long denominator, String reason) {
             this(value, numerator, denominator, denominator, reason);
+        }
+
+        // These B3-aligned ratios already constrain the numerator to a subset of the denominator.
+        private KpiValue withNumeratorSample() {
+            return new KpiValue(value, numerator, denominator, numerator, reason);
         }
 
         private boolean suppressed() {
