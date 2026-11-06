@@ -73,7 +73,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260813_compute_share_enrollment.sql"),
   (Join-Path $root "scripts\migrations\20260813_developer_access_request.sql"),
   (Join-Path $root "scripts\migrations\20260814_team_ambassador_application.sql"),
-  (Join-Path $root "scripts\migrations\20260816_team_ambassador_policy.sql"),
+  # Seed missing policy only on startup and keep the managed migration immutable.
+  (Join-Path $root "scripts\local\20260816_team_ambassador_policy.sql"),
   # Upgraded F4 databases may predate the mapper's audit projections.
   (Join-Path $root "scripts\migrations\20260905_team_ambassador_policy_audit_columns.sql"),
   (Join-Path $root "scripts\migrations\20260813_user_self_service.sql"),
