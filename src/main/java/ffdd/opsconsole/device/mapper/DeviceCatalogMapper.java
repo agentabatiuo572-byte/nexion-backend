@@ -1331,6 +1331,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             """)
     int softDeleteTask(@Param("taskId") String taskId, @Param("now") LocalDateTime now);
 
+    // The legacy ALTER leaves both text columns empty. Saved pricing can have zero rewards.
     @Update("""
             UPDATE nx_admin_device_task
                SET task_class = CASE task_id
@@ -1372,13 +1373,12 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                      WHEN 'TK-4' THEN '48GB'
                      WHEN 'TK-5' THEN '48GB'
                      WHEN 'TK-6' THEN '8GB'
-                     ELSE min_vram END,
-                   kill_init = '派发中'
+                     ELSE min_vram END
              WHERE is_deleted = 0
                AND task_id IN ('TK-1','TK-2','TK-3','TK-4','TK-5','TK-6')
                AND NOT EXISTS (SELECT 1 FROM nx_sim_task_type_version simulated
                                WHERE simulated.task_type_id=nx_admin_device_task.task_id COLLATE utf8mb4_unicode_ci)
-               AND (model_name = '' OR min_reward = 0 OR max_reward = 0 OR min_vram = '')
+               AND model_name = '' AND min_vram = ''
             """)
     int backfillDefaultTaskExtensions();
 

@@ -11,8 +11,7 @@
 // 字段口径：task_class / model / min_reward / max_reward / min_vram 严格对齐
 // 后端 DeviceCatalogMapper.backfillDefaultTaskExtensions() 的 TK-1~TK-6 期望值，
 // 其余展示字段满足 OpsDeviceService.requireTaskCommand 全部枚举/区间校验。
-// 手机档位(nx_admin_phone_tier_reward)后端无创建 API，已由 SQL seed 单独灌入，
-// 本脚本不涉及。
+// 手机档位由 onboarding 迁移维护，本脚本不涉及。
 // =====================================================================
 
 const BASE = "http://localhost:8110";
