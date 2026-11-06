@@ -185,7 +185,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             """)
     List<Map<String, Object>> f2Metrics();
 
-    @Select("""
+    String UNILEVEL_RATES_SQL = """
             SELECT CONCAT('L', layer_no) AS level,
                    ROUND(usdt_rate * 100, 6) AS usdtPct,
                    nex_per_usd AS nexReward,
@@ -198,9 +198,11 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                AND LOWER(commission_type) = 'unilevel'
                AND layer_no IS NOT NULL
              ORDER BY layer_no ASC, id ASC
-            """)
+            """;
+
+    @Select(UNILEVEL_RATES_SQL)
     List<Map<String, Object>> unilevelRates();
-    @Select("SELECT CONCAT('L',layer_no) level,ROUND(usdt_rate*100,6) usdtPct,nex_per_usd nexReward FROM nx_commission_rule WHERE is_deleted=0 AND status=1 AND LOWER(commission_type)='unilevel' AND layer_no IS NOT NULL ORDER BY layer_no,id FOR UPDATE")
+    @Select(UNILEVEL_RATES_SQL + " FOR UPDATE")
     List<Map<String,Object>> unilevelRatesForUpdate();
 
     /** Serializes all F2 settlement attempts for one buyer before idempotency checks. */

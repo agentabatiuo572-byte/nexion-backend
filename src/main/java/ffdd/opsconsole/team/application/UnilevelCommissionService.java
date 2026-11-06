@@ -228,14 +228,9 @@ public class UnilevelCommissionService {
     /** Freeze every layer decision, including zero/paused/capped layers, before any asset is written. */
     public Map<String, Object> prepareBudget(Long buyer, Long sponsor, BigDecimal subtotal) {
         if(subtotal==null||subtotal.signum()<0||subtotal.stripTrailingZeros().scale()>6||subtotal.precision()-subtotal.scale()>12)throw new BizException(422,"UNILEVEL_ORDER_AMOUNT_INVALID");
-        var rates = loadUsdtPctByLevel(true);
-        var nexRates = loadNexPerUsdByLevel(true);
-        for (int layer = 1; layer <= MAX_DEPTH; layer++) {
-            BigDecimal rate = rates.get("L" + layer), nex = nexRates.get("L" + layer);
-            if (rate == null || rate.signum() < 0 || rate.compareTo(HUNDRED) > 0 || nex == null || nex.signum() < 0)
-                throw new BizException(503, "UNILEVEL_RULES_NOT_CONFIGURED");
-        }
-        if (rates.get("L1").compareTo(BigDecimal.TEN) != 0) throw new BizException(503, "F2_L1_DIRECT_RATE_FIXED_AT_10_PERCENT");
+        var layerRates = requireCompleteLayerRates(teamCommissionMapper.unilevelRatesForUpdate());
+        var rates = layerRates.usdtPct();
+        var nexRates = layerRates.nexPerUsd();
         int gate = resolveDepthGateLayer(true), rank = resolveDepthGateRankNum(true), cooling = resolveCoolingDays(true);
         BigDecimal promo = resolvePromoMultiplier(true), capPct = configDecimal(CONFIG_KEY_MERGE_EXIT_MAX_PCT, new BigDecimal("25"),true);
         BigDecimal cap = subtotal.multiply(capPct).divide(HUNDRED, 6, RoundingMode.DOWN), allocated = ZERO;
@@ -289,35 +284,42 @@ public class UnilevelCommissionService {
 
     /** 加载 nx_commission_rule:UNILEVEL 的 level("L1"-"L7") → usdtPct 映射。 */
     private Map<String, BigDecimal> loadUsdtPctByLevel() {
-        return loadUsdtPctByLevel(false);
+        return ratesByLevel(teamCommissionMapper.unilevelRates(), "usdtPct");
     }
-    private Map<String,BigDecimal> loadUsdtPctByLevel(boolean currentRead) {
+
+    /** 加载 nx_commission_rule:UNILEVEL 的 level("L1"-"L7") → nexPerUsd 映射(nexReward 字段)。 */
+    private Map<String, BigDecimal> loadNexPerUsdByLevel() {
+        return ratesByLevel(teamCommissionMapper.unilevelRates(), "nexReward");
+    }
+
+    private static Map<String, BigDecimal> ratesByLevel(List<Map<String, Object>> rows, String column) {
         Map<String, BigDecimal> map = new LinkedHashMap<>();
-        for (Map<String, Object> r : currentRead?teamCommissionMapper.unilevelRatesForUpdate():teamCommissionMapper.unilevelRates()) {
-            Object level = r.get("level");
-            BigDecimal pct = asBigDecimal(r.get("usdtPct"));
-            if (level != null && pct != null) {
-                map.put(level.toString(), pct);
+        for (var row : rows) {
+            Object level = row.get("level");
+            BigDecimal rate = asBigDecimal(row.get(column));
+            if (level != null && rate != null) {
+                map.put(level.toString(), rate);
             }
         }
         return map;
     }
 
-    /** 加载 nx_commission_rule:UNILEVEL 的 level("L1"-"L7") → nexPerUsd 映射(nexReward 字段)。 */
-    private Map<String, BigDecimal> loadNexPerUsdByLevel() {
-        return loadNexPerUsdByLevel(false);
-    }
-    private Map<String,BigDecimal> loadNexPerUsdByLevel(boolean currentRead) {
-        Map<String, BigDecimal> map = new LinkedHashMap<>();
-        for (Map<String, Object> r : currentRead?teamCommissionMapper.unilevelRatesForUpdate():teamCommissionMapper.unilevelRates()) {
-            Object level = r.get("level");
-            BigDecimal nexPerUsd = asBigDecimal(r.get("nexReward"));
-            if (level != null && nexPerUsd != null) {
-                map.put(level.toString(), nexPerUsd);
+    static LayerRates requireCompleteLayerRates(List<Map<String, Object>> rows) {
+        var usdtRates = ratesByLevel(rows, "usdtPct");
+        var nexRates = ratesByLevel(rows, "nexReward");
+        for (int layer = 1; layer <= MAX_DEPTH; layer++) {
+            BigDecimal rate = usdtRates.get("L" + layer), nex = nexRates.get("L" + layer);
+            if (rate == null || rate.signum() < 0 || rate.compareTo(HUNDRED) > 0 || nex == null || nex.signum() < 0) {
+                throw new BizException(503, "UNILEVEL_RULES_NOT_CONFIGURED");
             }
         }
-        return map;
+        if (usdtRates.get("L1").compareTo(BigDecimal.TEN) != 0) {
+            throw new BizException(503, "F2_L1_DIRECT_RATE_FIXED_AT_10_PERCENT");
+        }
+        return new LayerRates(usdtRates, nexRates);
     }
+
+    record LayerRates(Map<String, BigDecimal> usdtPct, Map<String, BigDecimal> nexPerUsd) {}
 
     /** F2 层暂停开关:读 operator canonical team.ui.F.unilevel.L{n}.paused。 */
     private boolean isLayerPaused(int layer) {

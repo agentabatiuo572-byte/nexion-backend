@@ -1922,7 +1922,7 @@ public class OpsTeamService implements AuditReplayable {
 
     /**
      * A1 批2b 修复2:F.pool.votes.V{n} 动态 key 判定。
-     * V{n} 中 n 必须为 1-12 数字(V0 无票权、不入权重表;前端 voteWeights 来自 leadershipRanks 已过滤 votes>0)。
+     * V{n} 中 n 必须为 1-8 数字(V0 无票权、不入权重表;前端 voteWeights 来自 leadershipRanks 已过滤 votes>0)。
      */
     private boolean isVRankVoteKey(String key) {
         if (!key.startsWith("F.pool.votes.")) {
@@ -1934,7 +1934,7 @@ public class OpsTeamService implements AuditReplayable {
         }
         try {
             int n = Integer.parseInt(raw.substring(1));
-            return n >= 1 && n <= 12;
+            return n >= 1 && n <= 8;
         } catch (NumberFormatException ex) {
             return false;
         }
@@ -2986,6 +2986,7 @@ public class OpsTeamService implements AuditReplayable {
                 }
             }
             case "F.pool.ratio" -> LeadershipPoolConfigGuard.parseConfiguredRate(value);
+            case "F.pool.unlockVRank" -> LeadershipPoolConfigGuard.parseConfiguredUnlockRank(value);
             case "F.pool.periodPrize" -> validatePeriodPrize(value);
             case "F.pool.settleCron" -> LeadershipPoolSettleScheduler.normalizeCron(value);
             case "F.partner.tiers" -> validatePartnerTiers(value);
@@ -3715,10 +3716,7 @@ public class OpsTeamService implements AuditReplayable {
         if (guard != null) {
             return guard;
         }
-        String targetV = requireText(request.targetV(), "TEAM_VRANK_REQUIRED").toUpperCase(Locale.ROOT);
-        if (!activeVRankLevels().contains(targetV)) {
-            throw new IllegalArgumentException("Unsupported F1 V-Rank level");
-        }
+        String targetV = requireVRank(request.targetV()).v();
         String direction = requireText(request.direction(), "TEAM_VRANK_DIRECTION_REQUIRED")
                 .toLowerCase(Locale.ROOT);
         if (!"promote".equals(direction) && !"rollback".equals(direction)) {

@@ -150,6 +150,10 @@ public class DirectReferralPolicyService {
             default -> false;
         };
         if(!valid)throw new BizException(409,"SEVEN_LAYER_ACTIVATION_STATE_CONFLICT");
+        if ("ACTIVATE".equals(request.action())) {
+            var rates = currentRead ? mapper.sevenLayerRatesForUpdate() : mapper.sevenLayerRates();
+            UnilevelCommissionService.requireCompleteLayerRates(rates);
+        }
     }
     @Transactional(rollbackFor=Exception.class)
     public Map<String,Object> activation(String key,ffdd.opsconsole.team.dto.SevenLayerActivationRequest request,String reason) {
