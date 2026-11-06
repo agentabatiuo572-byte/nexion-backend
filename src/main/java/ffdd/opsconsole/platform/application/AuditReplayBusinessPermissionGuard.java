@@ -8,6 +8,7 @@ import ffdd.opsconsole.growth.application.H5GrowthApproval;
 import ffdd.opsconsole.growth.application.H3GrowthApproval;
 import ffdd.opsconsole.growth.application.H4GrowthApproval;
 import ffdd.opsconsole.growth.application.H7VoucherDisposition;
+import ffdd.opsconsole.device.application.OpsDeviceService;
 import ffdd.opsconsole.growth.application.OpsGrowthService;
 import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
@@ -357,6 +358,9 @@ public class AuditReplayBusinessPermissionGuard {
                 && !hasAuthority(requiredAuthority)
                 && !scopedMakerMayPropose(command, operation)) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_PERMISSION_DENIED:" + requiredAuthority);
+        }
+        if ("E".equalsIgnoreCase(command.domain()) && "e1_bundle_discount".equals(operation)) {
+            return OpsDeviceService.validateBundleDiscountProposal(command.params());
         }
         if ("F".equalsIgnoreCase(command.domain())) {
             if ("f_ui_config".equals(operation)) {
