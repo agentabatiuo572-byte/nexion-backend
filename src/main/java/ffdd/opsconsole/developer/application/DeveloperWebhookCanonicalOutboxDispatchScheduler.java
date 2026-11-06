@@ -1,5 +1,6 @@
 package ffdd.opsconsole.developer.application;
 
+import ffdd.opsconsole.shared.outbox.EventOutboxDispatcher;
 import ffdd.opsconsole.shared.outbox.EventOutboxMessage;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.util.List;
@@ -10,15 +11,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
  * Dedicated canonical-event bridge for developer webhooks. This is intentionally separate from the broad
  * shared outbox scan: an unrelated event type or a slow consumer cannot starve the webhook delivery worker.
- * The shared dispatcher may also observe these rows; markPublished and delivery's unique key make that race
- * harmless and idempotent.
+ * The shared dispatcher may also observe these rows; both use the same per-event dispatch lock.
  */
 @Component
 @RequiredArgsConstructor
@@ -26,7 +25,7 @@ import org.springframework.stereotype.Component;
 public class DeveloperWebhookCanonicalOutboxDispatchScheduler {
     private static final int BATCH_SIZE = 100;
     private final EventOutboxService outboxService;
-    private final ApplicationEventPublisher eventPublisher;
+    private final EventOutboxDispatcher dispatcher;
     private final Map<String, Long> cursors = new ConcurrentHashMap<>();
     private final AtomicLong lastHeartbeatNanos = new AtomicLong();
 
@@ -46,20 +45,7 @@ public class DeveloperWebhookCanonicalOutboxDispatchScheduler {
             }
             if (pending == null || pending.isEmpty()) continue;
             for (EventOutboxMessage message : pending) {
-                try {
-                    outboxService.assertDispatchAllowed(message);
-                    eventPublisher.publishEvent(message);
-                    outboxService.markPublished(message.getEventId());
-                } catch (RuntimeException ex) {
-                    try {
-                        outboxService.markFailed(message.getEventId(), ex.getMessage());
-                    } catch (RuntimeException markFailure) {
-                        log.error("developer webhook canonical outbox retry state update failed eventId={} error={}",
-                                message.getEventId(), markFailure.getMessage());
-                    }
-                    log.warn("developer webhook canonical outbox dispatch failed eventId={} eventType={} error={}",
-                            message.getEventId(), message.getEventType(), ex.getMessage());
-                }
+                dispatcher.dispatch(message, null);
             }
         }
     }

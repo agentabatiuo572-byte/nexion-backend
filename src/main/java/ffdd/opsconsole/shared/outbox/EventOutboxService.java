@@ -310,13 +310,13 @@ public class EventOutboxService {
         return mapper.listByStatus(STATUS_DEAD, normalizeLimit(limit));
     }
 
-    public boolean markPublished(String eventId) {
-        return mapper.markPublished(eventId, STATUS_PUBLISHED) > 0;
+    boolean markPublished(long id, long ownerId) {
+        return mapper.markPublished(id, STATUS_PUBLISHED, ownerId) > 0;
     }
 
-    public boolean markFailed(String eventId, String errorMessage) {
+    boolean markFailed(long id, String errorMessage, long ownerId) {
         String clippedError = clip(errorMessage);
-        return mapper.markFailed(eventId, clippedError, properties.maxRetries(), STATUS_DEAD, STATUS_FAILED, STATUS_PENDING) > 0;
+        return mapper.markFailed(id, clippedError, properties.maxRetries(), STATUS_DEAD, STATUS_FAILED, STATUS_PENDING, ownerId) > 0;
     }
 
     /**
