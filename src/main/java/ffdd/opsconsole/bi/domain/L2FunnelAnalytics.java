@@ -1,5 +1,7 @@
 package ffdd.opsconsole.bi.domain;
 
+import static ffdd.opsconsole.bi.domain.BiSampleSuppression.belowThreshold;
+import static ffdd.opsconsole.bi.domain.BiSampleSuppression.protect;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.sql.Timestamp;
@@ -109,22 +111,31 @@ public final class L2FunnelAnalytics {
             Double conversion = index == 0 || previous.isEmpty()
                     ? null
                     : percent(current.size(), previous.size());
-            funnel.add(linked(
+            boolean suppressed = belowThreshold(current.size()) || (index > 0 && belowThreshold(previous.size()));
+            funnel.add(protect(linked(
                     "stage", stageNames.get(index),
                     "ev", stageEvents.get(index),
                     "users", current.size(),
                     "cvr", conversion,
                     "lc", lifecycle.get(index),
                     "color", colors.get(index),
-                    "source", "nx_event_outbox:" + stageEvents.get(index)));
-            funnelExt.add(linked(
+                    "source", "nx_event_outbox:" + stageEvents.get(index)), suppressed, "users", "cvr"));
+            List<Integer> dwell = index == 0 || suppressed ? List.of() : dwellDistribution(previous, current);
+            boolean dwellSuppressed = dwell.stream().anyMatch(count -> count > 0 && belowThreshold(count));
+            Map<String, Object> detail = protect(linked(
                     "plain", stagePlain(index),
                     "inflow", index == 0 ? "漏斗入口" : previous.size() + " 人",
                     "lost", index == 0 ? "—" : Math.max(0, previous.size() - current.size()) + " 人未进入下一阶段",
-                    "dwell", index == 0 ? List.of() : dwellDistribution(previous, current),
+                    "dwell", dwellSuppressed ? List.of() : dwell,
                     "note", stageNote(index),
                     "trial", index == 1,
-                    "v1", index == 2));
+                    "v1", index == 2), suppressed, "inflow", "lost");
+            if (!suppressed && index > 0 && belowThreshold(previous.size() - current.size())) {
+                detail.put("lost", null);
+                detail.put("lostSuppressed", true);
+            }
+            if (dwellSuppressed) detail.put("dwellSuppressed", true);
+            funnelExt.add(detail);
         }
 
         List<Map<String, Object>> cohorts = cohortRows(selectedEvents, registered, false);
@@ -137,6 +148,11 @@ public final class L2FunnelAnalytics {
                 .filter(row -> row.get("d7") instanceof Number)
                 .reduce((left, right) -> right)
                 .orElse(Map.of());
+        boolean day7Suppressed = latestMature.get("size") instanceof Number size && belowThreshold(size.longValue());
+        Map<String, Object> day7Kpi = protect(linked("value", latestMature.get("d7"), "target", 60),
+                day7Suppressed, "value");
+        protectCohorts(cohorts);
+        protectCohorts(monthlyCohorts);
 
         return linked(
                 "available", true,
@@ -150,7 +166,7 @@ public final class L2FunnelAnalytics {
                 "crossAnalysis", cross,
                 "stageEvents", stageEvents,
                 "filters", filterMap(cohort, phase, locale, ref),
-                "day7Kpi", linked("value", latestMature.get("d7"), "target", 60),
+                "day7Kpi", day7Kpi,
                 "quality", linked(
                         "sameUserJoin", true,
                         "stageOrderEnforced", true,
@@ -249,6 +265,10 @@ public final class L2FunnelAnalytics {
         Map<String, Object> curves = new LinkedHashMap<>();
         for (Map<String, Object> cohort : cohorts) {
             String key = String.valueOf(cohort.get("w"));
+            if (belowThreshold(((Number) cohort.get("size")).longValue())) {
+                curves.put(key, List.of());
+                continue;
+            }
             Set<String> actors = registered.entrySet().stream()
                     .filter(entry -> cohortKey(entry.getValue(), monthly).equals(key))
                     .map(Map.Entry::getKey)
@@ -261,6 +281,12 @@ public final class L2FunnelAnalytics {
             curves.put(key, points);
         }
         return curves;
+    }
+
+    private static void protectCohorts(List<Map<String, Object>> cohorts) {
+        for (Map<String, Object> row : cohorts) {
+            protect(row, belowThreshold(((Number) row.get("size")).longValue()), "size", "d1", "d7", "d14", "d30", "d60");
+        }
     }
 
     /** R-1: business calendar date of a stored (Beijing) timestamp. */
@@ -302,7 +328,7 @@ public final class L2FunnelAnalytics {
                 row.put("arr", previous == 0 ? null : percent(count, previous) + "%");
                 row.put("arrLb", previous == 0 ? "上一步数据不足" : " 上一步转化");
             }
-            result.add(row);
+            result.add(protect(row, belowThreshold(count) || (index > 0 && belowThreshold(previous)), "n", "arr", "arrLb"));
             previous = count;
         }
         return result;
@@ -346,23 +372,28 @@ public final class L2FunnelAnalytics {
             Map<String, EventFact> numerator,
             String message) {
         List<List<Object>> rows = new ArrayList<>();
+        List<List<Integer>> suppressedCells = new ArrayList<>();
         for (String group : groups) {
             List<Object> row = new ArrayList<>();
             row.add(group);
             List<Double> valid = new ArrayList<>();
+            boolean rowSuppressed = false;
             for (String locale : locales) {
                 Set<String> actors = actorsFor(groupingBase, group, locale);
                 long den = actors.stream().filter(denominator::containsKey).count();
                 long num = actors.stream().filter(numerator::containsKey).count();
-                Double value = den == 0 ? null : percent(num, den);
+                boolean suppressed = !actors.isEmpty() && (belowThreshold(den) || belowThreshold(num));
+                if (suppressed) suppressedCells.add(List.of(rows.size(), row.size() - 1));
+                rowSuppressed |= suppressed;
+                Double value = suppressed || den == 0 ? null : percent(num, den);
                 row.add(value);
                 if (value != null) valid.add(value);
             }
-            row.add(valid.isEmpty() ? null : round(valid.stream().mapToDouble(Double::doubleValue).average().orElse(0)));
+            if (rowSuppressed) suppressedCells.add(List.of(rows.size(), locales.size()));
+            row.add(rowSuppressed || valid.isEmpty() ? null : round(valid.stream().mapToDouble(Double::doubleValue).average().orElse(0)));
             rows.add(row);
         }
-        return linked("columns", locales, "rows", rows, "alert", List.of(-1, -1), "unit", "%",
-                "msg", linked("pre", message, "bold", "", "post", ""));
+        return crossResult(locales, rows, suppressedCells, message);
     }
 
     private static Map<String, Object> retentionCrossMetric(
@@ -371,21 +402,37 @@ public final class L2FunnelAnalytics {
             List<EventFact> events,
             Map<String, EventFact> registered) {
         List<List<Object>> rows = new ArrayList<>();
+        List<List<Integer>> suppressedCells = new ArrayList<>();
         for (String group : groups) {
             List<Object> row = new ArrayList<>();
             row.add(group);
             List<Double> valid = new ArrayList<>();
+            boolean rowSuppressed = false;
             for (String locale : locales) {
                 Set<String> actors = actorsFor(registered, group, locale);
-                Double value = retention(events, registered, actors, 7);
+                boolean suppressed = !actors.isEmpty() && belowThreshold(actors.size());
+                if (suppressed) suppressedCells.add(List.of(rows.size(), row.size() - 1));
+                rowSuppressed |= suppressed;
+                Double value = suppressed ? null : retention(events, registered, actors, 7);
                 row.add(value);
                 if (value != null) valid.add(value);
             }
-            row.add(valid.isEmpty() ? null : round(valid.stream().mapToDouble(Double::doubleValue).average().orElse(0)));
+            if (rowSuppressed) suppressedCells.add(List.of(rows.size(), locales.size()));
+            row.add(rowSuppressed || valid.isEmpty() ? null : round(valid.stream().mapToDouble(Double::doubleValue).average().orElse(0)));
             rows.add(row);
         }
-        return linked("columns", locales, "rows", rows, "alert", List.of(-1, -1), "unit", "%",
-                "msg", linked("pre", "Day7 app.dau ÷ 注册 cohort；未成熟窗口显示为空", "bold", "", "post", ""));
+        return crossResult(locales, rows, suppressedCells, "Day7 app.dau ÷ 注册 cohort；未成熟窗口显示为空");
+    }
+
+    private static Map<String, Object> crossResult(List<String> locales, List<List<Object>> rows,
+                                                    List<List<Integer>> suppressedCells, String message) {
+        Map<String, Object> result = linked("columns", locales, "rows", rows, "alert", List.of(-1, -1), "unit", "%",
+                "msg", linked("pre", message, "bold", "", "post", ""));
+        if (!suppressedCells.isEmpty()) {
+            result.put("suppressed", true);
+            result.put("suppressedCells", suppressedCells);
+        }
+        return result;
     }
 
     private static Set<String> actorsFor(Map<String, EventFact> base, String group, String locale) {

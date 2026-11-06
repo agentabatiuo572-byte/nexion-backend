@@ -216,10 +216,17 @@ public class OpsBiService implements AuditReplayable {
                 normalizedCohort, normalizedPhase, normalizedLocale, normalizedRef);
         Map<String, Object> response = l2ReadResponse(dashboard, null, cohort, phase, locale, ref);
         Map<String, Object> curves = mutableObjectMap(dashboard.get("curves"));
+        String rowsKey = "cohorts";
         if (normalizedCohort.matches("\\d{4}-\\d{2}")) {
             curves = mutableObjectMap(dashboard.get("monthlyCurves"));
+            rowsKey = "monthlyCohorts";
         }
         response.put("curve", curves.getOrDefault(normalizedCohort, List.of()));
+        if (dashboard.get(rowsKey) instanceof List<?> rows && rows.stream().anyMatch(item ->
+                item instanceof Map<?, ?> row && normalizedCohort.equals(row.get("w"))
+                        && Boolean.TRUE.equals(row.get("suppressed")))) {
+            response.put("suppressed", true);
+        }
         response.put("retentionEvent", "app.dau");
         return ApiResult.ok(response);
     }
@@ -1040,7 +1047,7 @@ public class OpsBiService implements AuditReplayable {
         if (funnel instanceof List<?> rows && !rows.isEmpty()) {
             StringBuilder csv = new StringBuilder(csvRow(List.of(
                     "记录类型", "阶段或同期群", "去重人数", "转化率", "Day1", "Day7",
-                    "Day14", "Day30", "Day60", "业务事件", "数据来源")));
+                    "Day14", "Day30", "Day60", "业务事件", "数据来源", "样本状态")));
             for (Object item : rows) {
                 Map<String, Object> row = mutableObjectMap(item);
                 csv.append(csvRow(List.of(
@@ -1050,7 +1057,7 @@ public class OpsBiService implements AuditReplayable {
                         stringValue(row.getOrDefault("cvr", row.get("conversionRate"))),
                         "", "", "", "", "",
                         stringValue(row.getOrDefault("ev", row.get("event"))),
-                        businessSourceLabel(stringValue(row.get("source"))))));
+                        businessSourceLabel(stringValue(row.get("source"))), sampleStatus(row))));
             }
             Object cohorts = dashboard.get("cohorts");
             if (cohorts instanceof List<?> cohortRows) {
@@ -1067,12 +1074,12 @@ public class OpsBiService implements AuditReplayable {
                             stringValue(row.get("d30")),
                             stringValue(row.get("d60")),
                             "app.dau",
-                            "事件事实")));
+                            "事件事实", sampleStatus(row))));
                 }
             }
             return csv.toString();
         }
-        StringBuilder csv = new StringBuilder(csvRow(List.of("生命周期阶段", "数量", "数据来源")));
+        StringBuilder csv = new StringBuilder(csvRow(List.of("生命周期阶段", "数量", "数据来源", "样本状态")));
         Object stages = dashboard.get("stages");
         if (stages instanceof List<?> rows) {
             for (Object item : rows) {
@@ -1080,10 +1087,14 @@ public class OpsBiService implements AuditReplayable {
                 csv.append(csvRow(List.of(
                         lifecycleStageLabel(stringValue(row.get("key"))),
                         stringValue(row.get("count")),
-                        businessSourceLabel(stringValue(row.get("source"))))));
+                        businessSourceLabel(stringValue(row.get("source"))), sampleStatus(row))));
             }
         }
         return csv.toString();
+    }
+
+    private String sampleStatus(Map<String, Object> row) {
+        return Boolean.TRUE.equals(row.get("suppressed")) ? "样本过小" : "";
     }
 
     private Map<String, Object> l2ExportDashboard(BiReportCreateRequest request) {

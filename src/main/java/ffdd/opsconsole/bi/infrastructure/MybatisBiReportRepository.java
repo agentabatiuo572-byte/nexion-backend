@@ -8,6 +8,7 @@ import ffdd.opsconsole.bi.domain.BiReportSnapshot;
 import ffdd.opsconsole.bi.domain.BiReportView;
 import ffdd.opsconsole.bi.domain.L1KpiAnalytics;
 import ffdd.opsconsole.bi.domain.L2FunnelAnalytics;
+import ffdd.opsconsole.bi.domain.BiSampleSuppression;
 import ffdd.opsconsole.bi.domain.L4OperationsAnalytics;
 import ffdd.opsconsole.bi.mapper.BiReportMapper;
 import ffdd.opsconsole.shared.api.PageResult;
@@ -216,10 +217,10 @@ public class MybatisBiReportRepository implements BiReportRepository {
                 "sources", List.of("nx_event_outbox:event_name", "nx_event_schema_registry"));
         if (allowIndependentFallback) {
             dashboard.put("stages", List.of(
-                        stage("registered", mapper.countA4DistinctActors("auth.register_completed"), "nx_event_outbox:auth.register_completed"),
-                        stage("profileCompleted", mapper.countA4DistinctActors("onboarding.profile_completed"), "nx_event_outbox:onboarding.profile_completed"),
-                        stage("ordered", mapper.countA4DistinctActors("checkout.started"), "nx_event_outbox:checkout.started"),
-                        stage("walletActivity", mapper.countA4DistinctActors("wallet.topup_confirmed"), "nx_event_outbox:wallet.topup_confirmed")));
+                         protectedL2Stage("registered", "auth.register_completed"),
+                         protectedL2Stage("profileCompleted", "onboarding.profile_completed"),
+                         protectedL2Stage("ordered", "checkout.started"),
+                         protectedL2Stage("walletActivity", "wallet.topup_confirmed")));
         }
         Map<String, Object> analytics = L2FunnelAnalytics.calculate(
                 mapper.selectL2EventFacts(), cohort, phase, locale, ref);
@@ -236,6 +237,12 @@ public class MybatisBiReportRepository implements BiReportRepository {
             dashboard.put("degraded", analytics);
         }
         return dashboard;
+    }
+
+    private Map<String, Object> protectedL2Stage(String key, String event) {
+        long count = mapper.countA4DistinctActors(event);
+        return BiSampleSuppression.protect(stage(key, count, "nx_event_outbox:" + event),
+                BiSampleSuppression.belowThreshold(count), "count");
     }
 
     private Map<String, Object> operationsDashboard() {
