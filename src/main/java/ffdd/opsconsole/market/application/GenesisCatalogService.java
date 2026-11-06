@@ -147,17 +147,14 @@ public class GenesisCatalogService {
     private ApiResult<Void> changeTierDirectly(String tierId, TierRequest request) {
         TierChange change = prepareTierChange(tierId, request);
         if (change.amplifies()) throw new BizException(409, "G4_CATALOG_APPROVAL_REQUIRED");
-        return applyTierChange(change, request, null);
+        return applyTierChange(change, request.reason(), request.operator(), null);
     }
 
     // The direct command and A2 both run in their READ_COMMITTED idempotency transaction.
     TierChange prepareTierChange(String tierId, TierRequest request) {
         requireReason(request == null ? null : request.reason());
         CatalogState state = lockVersion(request.expectedTiersVersion());
-        // Primary purchases take the same series row lock before advancing their holding count.
-        List<LockedSeriesRow> seriesRows = mapper.lockActiveSeriesForSupply();
-        if (seriesRows.size() > 1) throw new BizException(409, "GENESIS_ACTIVE_SERIES_AMBIGUOUS");
-        LockedSeriesRow series = seriesRows.isEmpty() ? null : seriesRows.get(0);
+        LockedSeriesRow series = lockCurrentSeries();
         List<TierRow> before = mapper.activeTiers();
         long sold = mapper.soldCount();
         boolean create = tierId == null;
@@ -210,6 +207,13 @@ public class GenesisCatalogService {
         return new TierChange(state, series, before, after, index, newSupply, amplifies);
     }
 
+    private LockedSeriesRow lockCurrentSeries() {
+        // Primary purchases take the same series row lock before advancing their holding count.
+        List<LockedSeriesRow> rows = mapper.lockActiveSeriesForSupply();
+        if (rows.size() > 1) throw new BizException(409, "GENESIS_ACTIVE_SERIES_AMBIGUOUS");
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
     private static boolean raisesUnsoldPrice(List<TierRow> before, List<TierRow> after, long sold, int commonSupply) {
         int oldIndex = 0;
         int newIndex = 0;
@@ -240,7 +244,8 @@ public class GenesisCatalogService {
         return hash(source.toString());
     }
 
-    ApiResult<Void> applyTierChange(TierChange change, TierRequest request, String operationId) {
+    ApiResult<Void> applyTierChange(TierChange change, String reason, String operator, String operationId) {
+        if (change.deletesTier()) return applyTierDeletion(change, reason, operator, operationId);
         CatalogState state = change.state();
         TierRow tier = change.after().get(change.index());
         Map<String,Object> detail = linked("from", tier.rangeFrom(), "to", tier.rangeTo(), "priceUSDT", tier.priceUsdt());
@@ -269,7 +274,7 @@ public class GenesisCatalogService {
             throw new BizException(409, "GENESIS_TIERS_VERSION_CONFLICT");
         }
         if (change.before().isEmpty()) {
-            String actor = AdminActorResolver.resolve(request.operator());
+            String actor = AdminActorResolver.resolve(operator);
             String description = LocalDateTime.now(clock)+" "+actor+" "+state.marketOpenState()
                     +"->closed:first tier created; explicit reopen required";
             if (mapper.updateMarketState("closed", "default", description, state.marketOpenStateVersion()) != 1) {
@@ -281,26 +286,52 @@ public class GenesisCatalogService {
             detail.put("marketForcedClosed", true);
         }
         if (operationId != null) detail.put("operationId", operationId);
-        audit(create ? "GENESIS_TIER_CREATED" : "GENESIS_TIER_UPDATED", tier.tierId(), request.operator(), request.reason(), detail);
+        audit(create ? "GENESIS_TIER_CREATED" : "GENESIS_TIER_UPDATED", tier.tierId(), operator, reason, detail);
         return ApiResult.ok();
     }
 
     @Transactional(rollbackFor = Exception.class)
     protected ApiResult<Void> deleteTierOnce(String tierId, DeleteTierRequest request) {
+        TierChange change = prepareTierDeletion(tierId, request);
+        if (change.amplifies()) throw new BizException(409, "G4_CATALOG_APPROVAL_REQUIRED");
+        return applyTierChange(change, request.reason(), request.operator(), null);
+    }
+
+    TierChange prepareTierDeletion(String tierId, DeleteTierRequest request) {
         requireReason(request == null ? null : request.reason());
-        CatalogState state = lockVersion(request == null ? null : request.expectedTiersVersion());
-        List<TierRow> tiers = requireTiers();
-        if (tiers.size() <= 1) throw new BizException(422,"GENESIS_TIER_MIN_ONE");
-        int index=indexOf(tiers,tierId); TierRow current=tiers.get(index);
-        if (index==0) {
-            if (mapper.updateTierFrom(tiers.get(1).tierId(),current.rangeFrom())!=1) throw new BizException(409,"GENESIS_TIER_CONFLICT");
-        } else {
-            if (mapper.updateTierTo(tiers.get(index-1).tierId(),current.rangeTo())!=1) throw new BizException(409,"GENESIS_TIER_CONFLICT");
+        CatalogState state = lockVersion(request.expectedTiersVersion());
+        LockedSeriesRow series = lockCurrentSeries();
+        List<TierRow> before = requireTiers();
+        if (before.size() <= 1) throw new BizException(422, "GENESIS_TIER_MIN_ONE");
+        int index = indexOf(before, tierId);
+        List<TierRow> after = new ArrayList<>(before);
+        TierRow deleted = after.remove(index);
+        int recipientIndex = Math.max(0, index - 1);
+        TierRow recipient = after.get(recipientIndex);
+        after.set(recipientIndex, new TierRow(recipient.tierId(),
+                Math.min(deleted.rangeFrom(), recipient.rangeFrom()),
+                Math.max(deleted.rangeTo(), recipient.rangeTo()), recipient.priceUsdt()));
+        if (after.get(after.size() - 1).rangeTo() < mapper.soldCount()) {
+            throw new BizException(422, "GENESIS_TIER_BELOW_SOLD");
         }
-        if (mapper.softDeleteTier(tierId)!=1 || mapper.advanceTierVersion(state.tiersVersion(),state.nextTierSeq())!=1) throw new BizException(409,"GENESIS_TIERS_VERSION_CONFLICT");
-        List<TierRow> after=mapper.activeTiers();
-        if (after.get(after.size()-1).rangeTo()<mapper.soldCount()) throw new BizException(422,"GENESIS_TIER_BELOW_SOLD");
-        audit("GENESIS_TIER_DELETED",tierId,request.operator(),request.reason(),Map.of("softDeleted",true));
+        boolean amplifies = series != null && raisesUnsoldPrice(before, after,
+                appGenesisMapper.holdingCount(series.seriesCode()), series.totalSupply());
+        return new TierChange(state, series, before, after, index, null, amplifies);
+    }
+
+    private ApiResult<Void> applyTierDeletion(TierChange change, String reason, String operator, String operationId) {
+        CatalogState state = change.state();
+        String deleted = change.before().get(change.index()).tierId();
+        TierRow recipient = change.deletionRecipient();
+        int updated = change.index() == 0 ? mapper.updateTierFrom(recipient.tierId(), recipient.rangeFrom())
+                : mapper.updateTierTo(recipient.tierId(), recipient.rangeTo());
+        if (updated != 1) throw new BizException(409, "GENESIS_TIER_CONFLICT");
+        if (mapper.softDeleteTier(deleted) != 1 || mapper.advanceTierVersion(state.tiersVersion(), state.nextTierSeq()) != 1) {
+            throw new BizException(409, "GENESIS_TIERS_VERSION_CONFLICT");
+        }
+        Map<String,Object> detail = linked("softDeleted", true);
+        if (operationId != null) detail.put("operationId", operationId);
+        audit("GENESIS_TIER_DELETED", deleted, operator, reason, detail);
         return ApiResult.ok();
     }
 
@@ -424,6 +455,8 @@ public class GenesisCatalogService {
     record TierChange(CatalogState state, LockedSeriesRow series, List<TierRow> before, List<TierRow> after,
                       int index, Integer newSupply, boolean amplifies) {
         boolean createsTier() { return index == before.size(); }
+        boolean deletesTier() { return after.size() < before.size(); }
+        TierRow deletionRecipient() { return after.get(Math.max(0, index - 1)); }
     }
     public record DeleteTierRequest(Long expectedTiersVersion,String reason,String operator){}
     public record MarketStateRequest(String value,String reason,String operator,String noticeKey,

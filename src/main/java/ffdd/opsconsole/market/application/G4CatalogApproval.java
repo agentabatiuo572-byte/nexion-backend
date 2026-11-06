@@ -1,5 +1,6 @@
 package ffdd.opsconsole.market.application;
 
+import ffdd.opsconsole.market.application.GenesisCatalogService.DeleteTierRequest;
 import ffdd.opsconsole.market.application.GenesisCatalogService.TierChange;
 import ffdd.opsconsole.market.application.GenesisCatalogService.TierRequest;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.TierRow;
@@ -29,6 +30,7 @@ public class G4CatalogApproval {
     private static final String OP = "g4_genesis_tier_change";
     private static final Set<String> CREATE_FIELDS = Set.of("to", "priceUSDT", "expectedTiersVersion");
     private static final Set<String> UPDATE_FIELDS = Set.of("tierId", "to", "priceUSDT", "expectedTiersVersion");
+    private static final Set<String> DELETE_FIELDS = Set.of("action", "tierId", "expectedTiersVersion");
 
     private final GenesisCatalogService catalog;
     private final AdminOperatorRoleResolver roles;
@@ -64,17 +66,22 @@ public class G4CatalogApproval {
         }
         if (!canPropose(command) || !isActiveMaker(maker, false)) throw new BizException(403, "G4_CATALOG_MAKER_FORBIDDEN");
         Map<String, Object> params = command.params();
-        if (params == null || (!CREATE_FIELDS.equals(params.keySet()) && !UPDATE_FIELDS.equals(params.keySet()))) throw invalid();
+        if (params == null || (!CREATE_FIELDS.equals(params.keySet()) && !UPDATE_FIELDS.equals(params.keySet())
+                && !(DELETE_FIELDS.equals(params.keySet()) && "delete".equals(params.get("action"))))) throw invalid();
         String tierId = tierId(params);
-        TierRequest tier = tierRequest(params, request.reason(), request.operator());
-        TierChange change = catalog.prepareTierChange(tierId, tier);
+        TierChange change = prepareChange(tierId, params, request.reason(), request.operator());
         if (!change.amplifies()) throw new BizException(409, "G4_CATALOG_APPROVAL_NOT_REQUIRED");
 
         Map<String, Object> bound = new LinkedHashMap<>();
         if (tierId != null) bound.put("tierId", tierId);
-        bound.put("to", tier.to());
-        bound.put("priceUSDT", tier.priceUSDT().stripTrailingZeros().toPlainString());
-        bound.put("expectedTiersVersion", tier.expectedTiersVersion());
+        if (change.deletesTier()) {
+            bound.put("action", "delete");
+        } else {
+            TierRow tier = change.after().get(change.index());
+            bound.put("to", tier.rangeTo());
+            bound.put("priceUSDT", tier.priceUsdt().stripTrailingZeros().toPlainString());
+        }
+        bound.put("expectedTiersVersion", change.state().tiersVersion());
         bound.put("makerAdminId", maker);
         bound.put("changesSupply", change.newSupply() != null);
         bound.put("sourceRevision", catalog.tierSourceRevision(change));
@@ -110,13 +117,21 @@ public class G4CatalogApproval {
         String operationId = A2ReplayContext.approvedGenesisCatalogId(command);
         if (operationId == null) return ApiResult.fail(403, "G4_CATALOG_APPROVAL_FORBIDDEN");
         Map<String, Object> params = command.params();
-        TierRequest tier = tierRequest(params, (String) params.get("proposalReason"), context.operator());
-        TierChange change = catalog.prepareTierChange(tierId(params), tier);
+        String reason = (String) params.get("proposalReason");
+        TierChange change = prepareChange(tierId(params), params, reason, context.operator());
         if (!catalog.tierSourceRevision(change).equals(params.get("sourceRevision"))
                 || !change.amplifies() || (change.newSupply() != null) != changesSupply(command)) {
             return ApiResult.fail(409, "G4_CATALOG_SNAPSHOT_CHANGED");
         }
-        return catalog.applyTierChange(change, tier, operationId);
+        return catalog.applyTierChange(change, reason, context.operator(), operationId);
+    }
+
+    private TierChange prepareChange(String tierId, Map<String, Object> params, String reason, String operator) {
+        if ("delete".equals(params.get("action"))) {
+            return catalog.prepareTierDeletion(tierId,
+                    new DeleteTierRequest(integer(params.get("expectedTiersVersion")), reason, operator));
+        }
+        return catalog.prepareTierChange(tierId, tierRequest(params, reason, operator));
     }
 
     private boolean isActiveMaker(Long maker, boolean changesSupply) {
@@ -166,6 +181,12 @@ public class G4CatalogApproval {
         int supply = after && change.newSupply() != null ? change.newSupply() : series.totalSupply();
         String prefix = "系列 " + series.seriesCode() + " (#" + series.id() + ") · 总量 " + supply
                 + " · 档位版本 " + (change.state().tiersVersion() + (after ? 1 : 0)) + " · ";
+        if (change.deletesTier()) {
+            TierRow deleted = change.before().get(change.index());
+            if (after) return prefix + "删除 " + deleted.tierId() + " · " + tierSummary(change.deletionRecipient());
+            int neighborIndex = change.index() == 0 ? 1 : change.index() - 1;
+            return prefix + tierSummary(deleted) + " · " + tierSummary(change.before().get(neighborIndex));
+        }
         if (change.createsTier() && !after) {
             return prefix + (change.before().isEmpty() ? "无档位" : "末档截止 " + change.before().get(change.index() - 1).rangeTo());
         }

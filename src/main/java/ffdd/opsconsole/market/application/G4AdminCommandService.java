@@ -92,27 +92,22 @@ public class G4AdminCommandService {
         boolean open=config.activeValue("growth.phase.genesis_emissions_open")
                 .map(v->List.of("1","true","on","enabled","open").contains(v.trim().toLowerCase())).orElse(false);
         if(!open) throw new BizException(409,"G4_GENESIS_EMISSION_GATE_CLOSED");
-        dividendPolicy.requireEmission(batchNo);
-        AppGenesisMapper.SeriesRow series=mapper.lockActiveSeries();
-        if(series==null) throw new BizException(409,"G4_GENESIS_SERIES_NOT_FOUND");
-        AppGenesisMapper.EmissionBatchRow existing=mapper.lockEmissionBatch(batchNo);
+        var state=dividendPolicy.requireEmission(batchNo);
+        AppGenesisMapper.SeriesRow series=state.series();
+        AppGenesisMapper.EmissionBatchRow existing=state.batch();
         if(existing!=null && "COMPLETED".equals(existing.status())){
             return replayedBatch(batchNo,existing);
         }
-        List<AppGenesisMapper.HoldingRow> holdings=mapper.lockEmissionHoldings();
-        BigDecimal rate=nz(series.dailyEmissionRatePct());
-        // Genesis daily emission is a product liability based on the immutable series unit price.
-        // A secondary-market resale price must never amplify or shrink the promised daily payout.
-        BigDecimal total=holdings.stream().map(h->emissionAmount(series.priceUsdt(),rate)).reduce(BigDecimal.ZERO,BigDecimal::add);
-        int inserted=mapper.insertEmissionBatch(new AppGenesisMapper.EmissionBatchWrite(batchNo,LocalDateTime.now(clock),rate,
-                holdings.size(),money(total),AdminActorResolver.resolve("system"),request.reason().trim(),request.decisionRef().trim()));
-        if(inserted==0){
-            existing=mapper.lockEmissionBatch(batchNo);
-            if(existing!=null && "COMPLETED".equals(existing.status())){
-                return replayedBatch(batchNo,existing);
+        BigDecimal rate=existing==null ? nz(series.dailyEmissionRatePct()) : existing.dailyRatePct();
+        if(existing==null){
+            List<AppGenesisMapper.HoldingRow> holdings=mapper.lockEmissionHoldings();
+            // Genesis daily emission is a product liability based on the immutable series unit price.
+            // A secondary-market resale price must never amplify or shrink the promised daily payout.
+            BigDecimal total=holdings.stream().map(h->emissionAmount(series.priceUsdt(),rate)).reduce(BigDecimal.ZERO,BigDecimal::add);
+            if(mapper.insertEmissionBatch(new AppGenesisMapper.EmissionBatchWrite(batchNo,LocalDateTime.now(clock),rate,
+                    holdings.size(),money(total),AdminActorResolver.resolve("system"),request.reason().trim(),request.decisionRef().trim()))!=1){
+                throw new BizException(409,"GENESIS_EMISSION_BATCH_CONFLICT");
             }
-        }
-        if(inserted==1){
             for(AppGenesisMapper.HoldingRow h:holdings){
                 BigDecimal amount=emissionAmount(series.priceUsdt(),rate);
                 if(amount.signum()>0) mapper.insertEmissionItem(new AppGenesisMapper.EmissionItemWrite(batchNo,h.holdingNo(),h.userId(),amount));

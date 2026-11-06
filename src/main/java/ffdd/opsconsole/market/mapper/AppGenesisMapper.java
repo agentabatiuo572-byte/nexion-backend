@@ -313,7 +313,7 @@ public interface AppGenesisMapper {
 
     @Select("""
             SELECT batch_no AS batchNo,UPPER(status) AS status,holder_count AS holderCount,
-                   total_amount_usdt AS totalAmountUsdt
+                   total_amount_usdt AS totalAmountUsdt,daily_rate_pct AS dailyRatePct
               FROM nx_genesis_emission_batch
              WHERE batch_no=#{batchNo} AND is_deleted=0 LIMIT 1 FOR UPDATE
             """)
@@ -381,7 +381,7 @@ public interface AppGenesisMapper {
     record EmissionRow(String batchNo,String holdingNo,BigDecimal amountUsdt,String status,LocalDateTime paidAt) {}
     record EmissionBatchWrite(String batchNo,LocalDateTime snapshotAt,BigDecimal dailyRatePct,Integer holderCount,
                               BigDecimal totalAmountUsdt,String operator,String reason,String decisionRef) {}
-    record EmissionBatchRow(String batchNo,String status,Integer holderCount,BigDecimal totalAmountUsdt) {}
+    record EmissionBatchRow(String batchNo,String status,Integer holderCount,BigDecimal totalAmountUsdt,BigDecimal dailyRatePct) {}
     record EmissionItemWrite(String batchNo,String holdingNo,Long userId,BigDecimal amountUsdt) {}
     record EmissionItemRow(Long id,String batchNo,String holdingNo,Long userId,BigDecimal amountUsdt,String status) {}
     record LedgerWrite(Long userId,String bizNo,String bizType,String direction,BigDecimal amount,
