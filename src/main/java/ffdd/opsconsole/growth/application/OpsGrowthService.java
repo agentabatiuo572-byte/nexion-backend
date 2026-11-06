@@ -1769,6 +1769,19 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             String idempotencyKey,
             String tierNameRaw,
             GrowthConfigUpdateRequest request) {
+        return deleteWheelTier(idempotencyKey, tierNameRaw, request, false, false);
+    }
+
+    ApiResult<Map<String, Object>> previewH4WheelTierDelete(GrowthConfigUpdateRequest request) {
+        return deleteWheelTier("H4_PREVIEW", request.key(), request, true, true);
+    }
+
+    ApiResult<Map<String, Object>> executeApprovedH4WheelTierDelete(String key, GrowthConfigUpdateRequest request) {
+        return deleteWheelTier(key, request.key(), request, true, false);
+    }
+
+    private ApiResult<Map<String, Object>> deleteWheelTier(
+            String idempotencyKey, String tierNameRaw, GrowthConfigUpdateRequest request, boolean approved, boolean preview) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
@@ -1782,7 +1795,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             }
             String tierName = normalizePlainText(tierNameRaw, 128);
             List<Map<String, Object>> tiers = growthRows(GrowthQuestEventMapper::wheelTiers);
-            if (!expectedTextMatches(request.expectedValue(), wheelPoolSignature(tiers))) {
+            if (!wheelSignatureMatches(request.expectedValue(), tiers, approved)) {
                 return validation("WHEEL_CONFIG_STALE");
             }
             Map<String, Object> before = tiers.stream()
@@ -1798,6 +1811,11 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             if (parseDecimal(String.valueOf(before.get("prob")), BigDecimal.ZERO).compareTo(BigDecimal.ZERO) != 0) {
                 return validation("WHEEL_TIER_DELETE_REQUIRES_ZERO_PROBABILITY");
             }
+            boolean amplifies = !truthy(before.get("real")) && "uvt".equalsIgnoreCase(String.valueOf(before.get("kind")))
+                    && increasesUvtFallback(tiers, before, parseDecimal(String.valueOf(before.get("amount")), BigDecimal.ZERO), false);
+            var approval = h4ApprovalGate(amplifies, approved);
+            if (approval != null) return approval;
+            if (preview) return ApiResult.ok(Map.of());
             if (questEventMapper.get().softDeleteWheelTier(tierName) != 1) {
                 throw new IllegalStateException("WHEEL_TIER_DELETE_FAILED");
             }

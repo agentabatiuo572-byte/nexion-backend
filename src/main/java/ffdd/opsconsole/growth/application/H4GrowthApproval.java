@@ -37,12 +37,13 @@ public class H4GrowthApproval {
     private static final String GUARD_UPDATE = "h4_wheel_guard_update";
     private static final String TIER_CREATE = "h4_wheel_tier_create";
     private static final String TIER_UPDATE = "h4_wheel_tier_update";
+    private static final String TIER_DELETE = "h4_wheel_tier_delete";
     private static final String PROBABILITIES_UPDATE = "h4_wheel_probabilities_update";
     private static final AuditLockTarget WHEEL_POOL = new AuditLockTarget("H", "h4_wheel_pool", "ACTIVE_POOL");
-    private static final Set<String> WHEEL_POOL_OPERATIONS = Set.of(TIER_CREATE, TIER_UPDATE, PROBABILITIES_UPDATE);
+    private static final Set<String> WHEEL_POOL_OPERATIONS = Set.of(TIER_CREATE, TIER_UPDATE, TIER_DELETE, PROBABILITIES_UPDATE);
     private static final Set<String> LEGACY_EVENT_OPERATIONS = Set.of(LEGACY_REWARD, LEGACY_OPEN);
     private static final Set<String> OPERATIONS = Set.of(RULE, RAFFLE, GUARD_CREATE, GUARD_UPDATE,
-            TIER_CREATE, TIER_UPDATE, PROBABILITIES_UPDATE, LEGACY_REWARD, LEGACY_OPEN);
+            TIER_CREATE, TIER_UPDATE, TIER_DELETE, PROBABILITIES_UPDATE, LEGACY_REWARD, LEGACY_OPEN);
     private final H4EventRuleService rules;
     private final GenesisRaffleService raffles;
     private final OpsGrowthService growth;
@@ -59,7 +60,7 @@ public class H4GrowthApproval {
 
     public static String makerAuthority(AuditReplayCommand command) {
         return switch (command.op()) {
-            case GUARD_CREATE, GUARD_UPDATE, TIER_CREATE, TIER_UPDATE, PROBABILITIES_UPDATE -> GUARD_AUTHORITY;
+            case GUARD_CREATE, GUARD_UPDATE, TIER_CREATE, TIER_UPDATE, TIER_DELETE, PROBABILITIES_UPDATE -> GUARD_AUTHORITY;
             default -> MAKER_AUTHORITY;
         };
     }
@@ -70,6 +71,7 @@ public class H4GrowthApproval {
             case LEGACY_OPEN -> "开放旧活动资金奖励";
             case TIER_CREATE -> "新增转盘奖项";
             case TIER_UPDATE -> "放宽转盘奖项配置";
+            case TIER_DELETE -> "删除转盘奖项并提高安慰奖";
             case PROBABILITIES_UPDATE -> "提高转盘奖项概率";
             default -> "启用活动或放宽转盘资金护栏";
         };
@@ -148,6 +150,7 @@ public class H4GrowthApproval {
             case GUARD_UPDATE -> growth.previewH4GuardUpdate(target.id(), guardUpdate(command, reason));
             case TIER_CREATE -> growth.previewH4WheelTierCreate(wheelTier(command, reason));
             case TIER_UPDATE -> growth.previewH4WheelTierUpdate(wheelTier(command, reason));
+            case TIER_DELETE -> growth.previewH4WheelTierDelete(wheelTierDelete(command, reason));
             case PROBABILITIES_UPDATE -> growth.previewH4WheelProbabilities(wheelProbabilities(command, reason));
             default -> throw new BizException(422, "H4_PROPOSAL_INVALID");
         };
@@ -205,6 +208,11 @@ public class H4GrowthApproval {
                 yield commands.execute("H4", "WHEEL_TIER_UPDATE", request.tierName(), context.idempotencyKey(), request,
                         () -> growth.executeApprovedH4WheelTierUpdate(context.idempotencyKey(), request));
             }
+            case TIER_DELETE -> {
+                var request = wheelTierDelete(command, reason);
+                yield commands.execute("H4", "WHEEL_TIER_DELETE", request.key(), context.idempotencyKey(), request,
+                        () -> growth.executeApprovedH4WheelTierDelete(context.idempotencyKey(), request));
+            }
             case PROBABILITIES_UPDATE -> {
                 var request = wheelProbabilities(command, reason);
                 yield commands.execute("H4", "WHEEL_PROBABILITIES_UPDATE", target.id(), context.idempotencyKey(), request,
@@ -258,6 +266,7 @@ public class H4GrowthApproval {
             case GUARD_CREATE -> Set.of("guardKey", "guardLabel", "guardValue", "note");
             case GUARD_UPDATE -> Set.of("guardKey", "value", "expectedValue");
             case TIER_CREATE, TIER_UPDATE -> Set.of("tierName", "rewardName", "expectedSignature");
+            case TIER_DELETE -> Set.of("tierName", "expectedSignature");
             case PROBABILITIES_UPDATE -> Set.of("probabilities", "expectedSignature");
             default -> throw new BizException(422, "H4_PROPOSAL_INVALID");
         };
@@ -328,6 +337,11 @@ public class H4GrowthApproval {
             probabilities.put(tier, wheelDecimal(entry.getValue()));
         }
         return new GrowthWheelProbabilityBatchRequest(probabilities, reason, null, text(values, "expectedSignature"));
+    }
+
+    private GrowthConfigUpdateRequest wheelTierDelete(AuditReplayCommand command, String reason) {
+        var values = values(command);
+        return new GrowthConfigUpdateRequest(text(values, "tierName"), null, reason, null, text(values, "expectedSignature"));
     }
 
     private static BigDecimal wheelDecimal(Object value) {
