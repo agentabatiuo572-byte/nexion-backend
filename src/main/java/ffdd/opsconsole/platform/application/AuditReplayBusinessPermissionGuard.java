@@ -66,6 +66,9 @@ import org.springframework.security.core.context.SecurityContextHolder;
 public class AuditReplayBusinessPermissionGuard {
 
     static final String E4_REFUND_AUTHORITY = "device_e4_order_refund";
+    public static final Set<String> F5_ACTION_AUTHORITIES = Set.of(
+            "network_f5_commission_freeze", "network_f5_commission_suspend", "network_f5_commission_release",
+            "network_f5_commission_reverse", "network_f5_commission_reissue");
 
     private static final Set<String> SENSITIVE_TRUST_SECTIONS = Set.of(
             "financials", "nexnarrative", "nexstory", "auditsreserves", "compliancebadges");
@@ -256,6 +259,36 @@ public class AuditReplayBusinessPermissionGuard {
     public boolean canProposeH7(AuditReplayCommand command) {
         return H7VoucherDisposition.isOperation(command) && "H".equals(command.domain())
                 && hasAuthority(H7VoucherDisposition.AUTHORITY);
+    }
+
+    public boolean canProposeF5(AuditReplayCommand command) {
+        String authority = f5ActionAuthority(command);
+        return authority != null && hasAuthority(authority) && delegatedDescriptor(command) != null;
+    }
+
+    public boolean hasF5ProposalAuthority() {
+        return F5_ACTION_AUTHORITIES.stream().anyMatch(this::hasAuthority);
+    }
+
+    boolean canRecoverF5Proposal(AuditReplayCommand command, Set<String> grants) {
+        String authority = f5ActionAuthority(command);
+        return authority != null && grants.contains(authority);
+    }
+
+    private String f5ActionAuthority(AuditReplayCommand command) {
+        if (command == null || !"F".equalsIgnoreCase(text(command.domain()))) return null;
+        String operation = text(command.op()).toLowerCase(Locale.ROOT);
+        return switch (operation) {
+            case "f_commission_status", "f5_commission_reverse", "f5_commission_suspension",
+                    "f5_commission_reissue" -> requiredAuthority(command, operation);
+            default -> null;
+        };
+    }
+
+    private boolean isF5StatusUiAlias(AuditReplayCommand command) {
+        return command != null && "F".equalsIgnoreCase(text(command.domain()))
+                && "f_ui_config".equalsIgnoreCase(text(command.op()))
+                && OpsTeamService.isCommissionEventStatusKey(value(command.params(), "key"));
     }
 
     public ApiResult<Void> validateProposal(AuditReplayCommand command) {
@@ -462,6 +495,9 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     public ApiResult<AuditReplayCommand> canonicalizeProposalCommand(AuditReplayCommand command) {
+        if (isF5StatusUiAlias(command)) {
+            return ApiResult.fail(422, "F5_COMMISSION_STATUS_COMMAND_REQUIRED");
+        }
         if (H4GrowthApproval.supports(command)) {
             return ApiResult.ok(h4GrowthApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
         }
@@ -572,6 +608,9 @@ public class AuditReplayBusinessPermissionGuard {
      * Other commands retain their existing replay-time business guard.
      */
     public ApiResult<Void> validateApproval(AuditReplayCommand command) {
+        if (isF5StatusUiAlias(command)) {
+            return ApiResult.fail(422, "F5_COMMISSION_STATUS_COMMAND_REQUIRED");
+        }
         if (A4RegistryApproval.isOperation(command)) {
             return a4RegistryApproval.validateChecker();
         }
@@ -1338,23 +1377,26 @@ public class AuditReplayBusinessPermissionGuard {
         }
         if ("f_commission_status".equals(operation)) {
             String key = value(params, "key");
-            String state = value(params, "value").toLowerCase(Locale.ROOT);
+            String state = OpsTeamService.canonicalCommissionState(value(params, "value")).toLowerCase(Locale.ROOT);
             Long expectedVersion = strictLong(params.get("expectedVersion"), 0, Long.MAX_VALUE);
             String prefix = "F.commission.";
             String suffix = ".status";
             if (!key.startsWith(prefix) || !key.endsWith(suffix)
                     || expectedVersion == null
-                    || !Set.of("frozen", "unlocked", "cooling").contains(state)) {
+                    || !Set.of("frozen", "unlocked", "cooling", "rejected", "settled", "paid").contains(state)) {
                 return null;
             }
             String eventId = key.substring(prefix.length(), key.length() - suffix.length());
             if (!eventId.matches("^CM-[1-9]\\d*$")) {
                 return null;
             }
-            boolean amplifies = "unlocked".equals(state);
+            boolean amplifies = Set.of("unlocked", "settled", "paid").contains(state);
             String action = switch (state) {
                 case "frozen" -> "冻结奖励记录 " + eventId;
                 case "unlocked" -> "提前解锁奖励记录 " + eventId;
+                case "rejected" -> "驳回奖励记录 " + eventId;
+                case "settled" -> "结算奖励记录 " + eventId;
+                case "paid" -> "发放奖励记录 " + eventId;
                 default -> "解冻奖励记录 " + eventId;
             };
             return new DelegatedProposalDescriptor(
@@ -2058,14 +2100,11 @@ public class AuditReplayBusinessPermissionGuard {
      * 红冲 → commission_reverse;冻结/解冻回冷却 → commission_freeze;解锁/结算/支付 → commission_release。
      */
     private String f5CommissionAuthority(Map<String, Object> params) {
-        String targetValue = value(params, "value").toLowerCase(Locale.ROOT);
-        if (Set.of("rejected", "reversed", "异常回退", "驳回", "红冲").contains(targetValue)) {
-            return "network_f5_commission_reverse";
-        }
-        if (Set.of("frozen", "冻结", "cooling", "pending", "计提").contains(targetValue)) {
-            return "network_f5_commission_freeze";
-        }
-        return "network_f5_commission_release";
+        return switch (OpsTeamService.canonicalCommissionState(value(params, "value"))) {
+            case "REJECTED" -> "network_f5_commission_reverse";
+            case "FROZEN", "COOLING" -> "network_f5_commission_freeze";
+            default -> "network_f5_commission_release";
+        };
     }
 
     private String f1RewardPayoutAuthority(Map<String, Object> params) {

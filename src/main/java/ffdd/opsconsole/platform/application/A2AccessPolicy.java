@@ -78,6 +78,7 @@ public class A2AccessPolicy {
             if (roleResolver.isActiveAdministrator(id)) {
                 Set<String> grants = permissions.getPermissionCodes(id);
                 if (grants.contains("platform_a2_read") || grants.contains("platform_a2_proposal_create")
+                        || grants.stream().anyMatch(AuditReplayBusinessPermissionGuard.F5_ACTION_AUTHORITIES::contains)
                         || grants.contains(A4RegistryApproval.MAKER_AUTHORITY)
                         || (grants.contains(OpsKillSwitchService.RESTORE_AUTHORITY) && grants.contains("platform_a2_write"))
                         || grants.contains("overview_b1_redline_write")
@@ -145,6 +146,7 @@ public class A2AccessPolicy {
         if ("E".equals(domain) && AuditReplayBusinessPermissionGuard.isE4Refund(command)
                 && grants.contains("platform_a2_proposal_create")
                 && grants.contains(AuditReplayBusinessPermissionGuard.E4_REFUND_AUTHORITY)) return true;
+        if ("F".equals(domain) && replayBusinessPermissionGuard.canRecoverF5Proposal(command, grants)) return true;
         if (!grants.contains("platform_a2_read")) {
             return grants.contains("platform_a2_proposal_create")
                     && (!StringUtils.hasText(ticket.getCommandJson()) || ("D".equals(domain)

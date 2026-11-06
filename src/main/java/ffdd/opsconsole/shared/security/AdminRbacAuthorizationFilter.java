@@ -1,6 +1,7 @@
 package ffdd.opsconsole.shared.security;
 
 import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
+import ffdd.opsconsole.platform.application.AuditReplayBusinessPermissionGuard;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -12,6 +13,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import java.io.IOException;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -296,6 +298,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         // The controller binds business grants to their exact A2 commands.
         if (HttpMethod.POST.matches(method) && path.equals("/api/admin/platform/audit/operations")) {
             return RequiredAuthority.exactOrAll(LearningCourseActivationApproval.MAKER_AUTHORITIES,
+                    AuditReplayBusinessPermissionGuard.F5_ACTION_AUTHORITIES,
                     "platform_a2_write", "platform_a2_proposal_create", "platform_a4_write", "growth_h7_write",
                     "overview_b1_redline_write", "overview_b5_threshold_write", "device_e2_write",
                     "network_f1_write", "network_f3_write", "network_f4_pool_fund", "growth_h8_write", "growth_h5_write", "growth_h3_write", "growth_h4_write", "growth_h4_wheel_pool_write", "finprod_g3_curve_target_price_write",
@@ -304,6 +307,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         }
         if (read && path.equals("/api/admin/platform/audit/operations/proposals/by-idempotency-key")) {
             return RequiredAuthority.exactOrAll(LearningCourseActivationApproval.MAKER_AUTHORITIES,
+                    AuditReplayBusinessPermissionGuard.F5_ACTION_AUTHORITIES,
                     "platform_a2_read", "platform_a2_proposal_create", "platform_a4_write", "overview_b1_redline_write", "overview_b5_threshold_write",
                     "risk_k2_write", "content_i7_course_reward_adjust", "growth_h7_write", "emergency_j1_gate_resume",
                     "device_e2_write", "network_f1_write", "network_f3_write", "network_f4_pool_fund", "growth_h8_write", "growth_h5_write", "growth_h3_write", "growth_h4_write", "growth_h4_wheel_pool_write", "finprod_g3_curve_target_price_write",
@@ -423,11 +427,13 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         }
 
         static RequiredAuthority exact(String... authorities) {
-            return exactOrAll(null, authorities);
+            return new RequiredAuthority(null, false, false, Set.of(authorities), null);
         }
 
-        static RequiredAuthority exactOrAll(Set<String> allOfAlternative, String... authorities) {
-            return new RequiredAuthority(null, false, false, Set.of(authorities), allOfAlternative);
+        static RequiredAuthority exactOrAll(Set<String> allOfAlternative, Set<String> extraExact, String... authorities) {
+            Set<String> exact = new HashSet<>(Set.of(authorities));
+            exact.addAll(extraExact);
+            return new RequiredAuthority(null, false, false, Set.copyOf(exact), allOfAlternative);
         }
 
         String describe() {
