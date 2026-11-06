@@ -4,7 +4,6 @@ import ffdd.opsconsole.market.mapper.AppGenesisMapper;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -15,7 +14,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-/** The existing G4 payout formulas and the exact snapshot authorized by one A2 replay. */
+/** G4's locked payable holdings and the exact snapshot authorized by one A2 replay. */
 @Component
 @RequiredArgsConstructor
 public class G4DividendPolicy {
@@ -24,7 +23,9 @@ public class G4DividendPolicy {
     private final ThreadLocal<Authorization> authorized = new ThreadLocal<>();
 
     public record State(String revision, AppGenesisMapper.SeriesRow series,
-                        AppGenesisMapper.EmissionBatchRow batch, BigDecimal amount, int count) {}
+                        AppGenesisMapper.EmissionBatchRow batch, BigDecimal amount, int count,
+                        List<AppGenesisMapper.EmissionHoldingRow> holdings,
+                        List<AppGenesisMapper.EmissionItemRow> pendingItems) {}
     public record Change(String before, String after) {}
     private record Authorization(String action, String revision) {}
 
@@ -35,36 +36,47 @@ public class G4DividendPolicy {
         if (mapper.activeSeriesCount() != 1) throw new BizException(409, "GENESIS_ACTIVE_SERIES_AMBIGUOUS");
         if (batchNo == null) {
             return new State(hash(series.id()+"|"+series.seriesCode()+"|"+series.status()+"|"+number(series.dailyEmissionRatePct())),
-                    series, null, BigDecimal.ZERO, 0);
+                    series, null, BigDecimal.ZERO, 0, List.of(), List.of());
         }
         if (!batchNo.matches("[A-Za-z0-9-]{3,32}")) throw new BizException(422, "G4_GENESIS_BATCH_NO_INVALID");
         var batch = mapper.lockEmissionBatch(batchNo);
+        List<AppGenesisMapper.EmissionHoldingRow> holdings = List.of();
+        List<AppGenesisMapper.EmissionItemRow> pendingItems = List.of();
         BigDecimal amount = BigDecimal.ZERO;
         int count = 0;
         StringBuilder detail = new StringBuilder(series.id()+"|"+series.seriesCode()+"|"+series.status()+"|"+batchNo+"|");
         if (batch == null) {
             detail.append(number(series.priceUsdt())).append('|').append(number(series.dailyEmissionRatePct()));
-            // Preserve the existing selection/formula; cross-series scope is tracked separately as BUG-317.
-            for (var holding : mapper.lockEmissionHoldings()) {
+            holdings = mapper.lockEmissionHoldings();
+            for (var holding : holdings) {
+                if (holding.seriesId() == null || holding.unitPriceUsdt().signum() <= 0 || holding.dailyRatePct().signum() < 0) {
+                    throw new BizException(409, "G4_EMISSION_SERIES_SNAPSHOT_INVALID");
+                }
                 detail.append('|').append(holding.id()).append(':').append(holding.holdingNo()).append(':')
                         .append(holding.userId()).append(':').append(holding.seriesCode());
-                BigDecimal single = series.priceUsdt().multiply(series.dailyEmissionRatePct())
-                        .divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP);
-                if (single.signum() > 0) { amount = amount.add(single); count++; }
+                // The prefix already binds the active series terms used by single-series proposals.
+                if (!series.id().equals(holding.seriesId())) {
+                    detail.append(':').append(holding.seriesId()).append(':').append(number(holding.unitPriceUsdt()))
+                            .append(':').append(number(holding.dailyRatePct()));
+                }
+                if (holding.amountUsdt().signum() > 0) { amount = amount.add(holding.amountUsdt()); count++; }
             }
         } else {
             detail.append(mapper.emissionBatchSnapshot(batchNo));
-            for (var item : mapper.lockPendingEmissionItems(batchNo)) {
+            pendingItems = mapper.lockPendingEmissionItems(batchNo);
+            boolean completed = "COMPLETED".equals(batch.status());
+            for (var item : pendingItems) {
                 detail.append('|').append(item.id()).append(':').append(item.holdingNo()).append(':')
                         .append(item.userId()).append(':').append(number(item.amountUsdt())).append(':').append(item.status());
+                if (item.snapshotRatePct() != null) detail.append(':').append(number(item.snapshotRatePct()));
+                if (!completed && item.amountUsdt().signum() > 0
+                        && (item.rateAppliedPct() == null || item.rateAppliedPct().signum() <= 0)) {
+                    throw new BizException(409, "G4_EMISSION_RATE_SNAPSHOT_INVALID");
+                }
                 amount = amount.add(item.amountUsdt()); count++;
             }
-            if (!"COMPLETED".equals(batch.status()) && amount.signum() > 0
-                    && (batch.dailyRatePct() == null || batch.dailyRatePct().signum() <= 0)) {
-                throw new BizException(409, "G4_EMISSION_RATE_SNAPSHOT_INVALID");
-            }
         }
-        return new State(hash(detail.toString()), series, batch, amount, count);
+        return new State(hash(detail.toString()), series, batch, amount, count, holdings, pendingItems);
     }
 
     public Change updateDividend(BigDecimal value) {
@@ -76,8 +88,7 @@ public class G4DividendPolicy {
                     ? "G4_FIRST_CONFIG_REQUIRES_APPROVAL" : "G4_DIVIDEND_APPROVAL_REQUIRED");
         }
         if (amplifies) {
-            requireCoverage(mapper.genesisLiabilityAtRate(state.series().seriesCode(), value)
-                    .subtract(mapper.genesisLiabilityAtRate(state.series().seriesCode(), before)));
+            requireCoverage(mapper.genesisLiabilityIncrease(state.series().seriesCode(), value));
         }
         if (mapper.updateDividend(state.series().id(), before, value) != 1)
             throw new BizException(409, "G4_DIVIDEND_STALE");
@@ -98,8 +109,7 @@ public class G4DividendPolicy {
     public void previewDividend(State state, BigDecimal value) {
         BigDecimal before = state.series().dailyEmissionRatePct();
         if (value.compareTo(before) <= 0) throw new BizException(422, "G4_DIVIDEND_AMPLIFICATION_REQUIRED");
-        requireCoverage(mapper.genesisLiabilityAtRate(state.series().seriesCode(), value)
-                .subtract(mapper.genesisLiabilityAtRate(state.series().seriesCode(), before)));
+        requireCoverage(mapper.genesisLiabilityIncrease(state.series().seriesCode(), value));
     }
 
     public void requireCoverage(BigDecimal additionalLiability) {

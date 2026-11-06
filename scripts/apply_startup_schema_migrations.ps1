@@ -433,6 +433,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261106_a4_app_event_registry_restore.sql"),
   (Join-Path $root "scripts\migrations\20261106_h2_discount_rate_percent.sql"),
   (Join-Path $root "scripts\migrations\20261106_h2_trial_deadline_snapshots.sql"),
+  (Join-Path $root "scripts\migrations\20261106_g4_emission_item_rate_snapshot.sql"),
   (Join-Path $root "scripts\migrations\20261106_b32_user_daily_active.sql"),
   (Join-Path $root "scripts\migrations\20261106_b32_daily_flow_wallet_index.sql"),
   (Join-Path $root "scripts\migrations\20261106_g2_queue_batch_event_fields.sql")

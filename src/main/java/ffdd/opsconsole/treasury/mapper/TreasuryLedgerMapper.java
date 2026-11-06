@@ -1,6 +1,7 @@
 package ffdd.opsconsole.treasury.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import ffdd.opsconsole.shared.canonical.mapper.GenesisEmissionSql;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository.CommissionCoverageAmounts;
 import ffdd.opsconsole.treasury.infrastructure.WalletLedgerEntity;
@@ -581,15 +582,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             """)
     BigDecimal injectedCumulativeUsd();
 
-    @Select("""
-            SELECT COALESCE(SUM(h.acquired_price_usdt * s.daily_dividend_rate_pct / 100), 0)
-              FROM nx_genesis_holding h
-              JOIN nx_genesis_series s
-                ON s.series_code = h.series_code
-               AND s.is_deleted = 0
-             WHERE h.is_deleted = 0
-               AND UPPER(h.status) IN ('ACTIVE', 'HELD', 'LISTED')
-            """)
+    @Select("SELECT COALESCE(SUM(" + GenesisEmissionSql.CURRENT_AMOUNT + "),0)" + GenesisEmissionSql.ELIGIBLE_HOLDINGS)
     BigDecimal genesisDailyLiabilityUsd();
 
     @Select("""
