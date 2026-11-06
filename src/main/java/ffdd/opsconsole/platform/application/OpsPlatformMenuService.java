@@ -97,7 +97,7 @@ public class OpsPlatformMenuService {
         entity.setMenuName(request.menuName());
         entity.setMenuNameZh(StringUtils.hasText(request.menuNameZh()) ? request.menuNameZh() : request.menuName());
         entity.setParentId(parentId);
-        entity.setRoutePath(request.routePath());
+        entity.setRoutePath(request.routePath() == null ? "" : request.routePath());
         entity.setIcon(request.icon());
         entity.setSortOrder(request.sortOrder() == null ? 0 : request.sortOrder());
         entity.setStatus(1);
