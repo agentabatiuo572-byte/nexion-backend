@@ -56,6 +56,7 @@ public class DirectReferralPolicyService {
         return readPolicy(mapper.policyAt(at));
     }
     public DirectReferralPolicy atForUpdate(LocalDateTime at) {return readPolicy(mapper.policyAtForUpdate(at));}
+    public DirectReferralPolicy atForShare(LocalDateTime at) {return readPolicy(mapper.policyAtForShare(at));}
     private DirectReferralPolicy readPolicy(DirectReferralMapper.PolicyRow row) {
         if(row==null) return new DirectReferralPolicy(0,null,DirectReferralPolicy.DISABLED,DirectReferralPolicy.DISABLED);
         try {

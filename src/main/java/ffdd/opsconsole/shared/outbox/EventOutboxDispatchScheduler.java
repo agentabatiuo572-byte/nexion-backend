@@ -162,6 +162,7 @@ public class EventOutboxDispatchScheduler {
         int published = 0;
         int failed = 0;
         for (String eventType : supportedEventTypes.stream().distinct().toList()) {
+            if (ComputeOutboxDispatchScheduler.EVENT_TYPES.contains(eventType)) continue;
             List<EventOutboxMessage> pending = outboxService.listPendingByEventType(eventType, BATCH_SIZE);
             if (pending == null || pending.isEmpty()) {
                 continue;

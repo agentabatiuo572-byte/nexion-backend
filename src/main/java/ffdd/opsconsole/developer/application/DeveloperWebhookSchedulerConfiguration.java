@@ -1,5 +1,6 @@
 package ffdd.opsconsole.developer.application;
 
+import ffdd.opsconsole.shared.outbox.ComputeOutboxDispatchScheduler;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
@@ -40,6 +41,18 @@ public class DeveloperWebhookSchedulerConfiguration {
         ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
         scheduler.setPoolSize(2);
         scheduler.setThreadNamePrefix("developer-webhook-");
+        scheduler.setWaitForTasksToCompleteOnShutdown(true);
+        scheduler.setAwaitTerminationSeconds(10);
+        return scheduler;
+    }
+
+    @Bean(name = "computeOutboxTaskScheduler")
+    ThreadPoolTaskScheduler computeOutboxTaskScheduler() {
+        ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+        int maximum = ComputeOutboxDispatchScheduler.MAX_WORKERS;
+        int configured = environment.getProperty("nexion.outbox.compute-dispatch-workers", Integer.class, maximum);
+        scheduler.setPoolSize(Math.max(1, Math.min(configured, maximum)));
+        scheduler.setThreadNamePrefix("compute-outbox-");
         scheduler.setWaitForTasksToCompleteOnShutdown(true);
         scheduler.setAwaitTerminationSeconds(10);
         return scheduler;

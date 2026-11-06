@@ -1,14 +1,13 @@
 package ffdd.opsconsole.developer.application;
 
+import ffdd.opsconsole.shared.outbox.ComputeOutboxDispatchScheduler;
 import ffdd.opsconsole.shared.outbox.EventOutboxDispatcher;
 import ffdd.opsconsole.shared.outbox.EventOutboxMessage;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import lombok.RequiredArgsConstructor;
@@ -26,7 +25,6 @@ import org.springframework.stereotype.Component;
 @Slf4j
 public class DeveloperWebhookCanonicalOutboxDispatchScheduler {
     private static final int BATCH_SIZE = 100;
-    private static final Set<String> FRESH_EVENT_TYPES = Set.of("task.completed", "earnings.credited");
     private final EventOutboxService outboxService;
     private final EventOutboxDispatcher dispatcher;
     private final Map<String, Long> cursors = new ConcurrentHashMap<>();
@@ -38,6 +36,7 @@ public class DeveloperWebhookCanonicalOutboxDispatchScheduler {
     public void dispatchPending() {
         logHeartbeat();
         for (String eventType : DeveloperWebhookCanonicalEventBridge.supportedCanonicalEventTypes()) {
+            if (ComputeOutboxDispatchScheduler.EVENT_TYPES.contains(eventType)) continue;
             List<EventOutboxMessage> pending;
             try {
                 pending = nextBatch(eventType);
@@ -54,35 +53,23 @@ public class DeveloperWebhookCanonicalOutboxDispatchScheduler {
     }
 
     private List<EventOutboxMessage> nextBatch(String eventType) {
-        boolean prioritizeNewest = FRESH_EVENT_TYPES.contains(eventType);
         Map<String, EventOutboxMessage> merged = new LinkedHashMap<>();
-        if (prioritizeNewest) {
-            // Reserve half for new facts even when the oldest due backlog spans hours.
-            List<EventOutboxMessage> newest = new ArrayList<>(
-                    safeRead(eventType, 0L, BATCH_SIZE - BATCH_SIZE / 2, true));
-            Collections.reverse(newest);
-            append(merged, newest);
-        }
         // The head always makes room for older facts and retries behind the cursor.
-        append(merged, safeRead(eventType, 0L, BATCH_SIZE / 2, false));
-        if (!prioritizeNewest) {
-            long cursor = cursors.getOrDefault(eventType, 0L);
-            append(merged, safeRead(eventType, cursor, BATCH_SIZE - BATCH_SIZE / 2, false));
-            long next = merged.values().stream().map(EventOutboxMessage::getId).filter(java.util.Objects::nonNull)
-                    .mapToLong(Long::longValue).max().orElse(cursor);
-            if (next > cursor) cursors.put(eventType, next);
-        }
+        append(merged, safeRead(eventType, 0L, BATCH_SIZE / 2));
+        long cursor = cursors.getOrDefault(eventType, 0L);
+        append(merged, safeRead(eventType, cursor, BATCH_SIZE - BATCH_SIZE / 2));
+        long next = merged.values().stream().map(EventOutboxMessage::getId).filter(java.util.Objects::nonNull)
+                .mapToLong(Long::longValue).max().orElse(cursor);
+        if (next > cursor) cursors.put(eventType, next);
         return new ArrayList<>(merged.values());
     }
 
-    private List<EventOutboxMessage> safeRead(String eventType, long cursor, int limit, boolean newestFirst) {
+    private List<EventOutboxMessage> safeRead(String eventType, long cursor, int limit) {
         try {
-            return newestFirst
-                    ? outboxService.listNewestPendingByCanonicalType(eventType, limit)
-                    : outboxService.listPendingByCanonicalType(eventType, cursor, limit);
+            return outboxService.listPendingByCanonicalType(eventType, cursor, limit);
         } catch (RuntimeException ex) {
-            log.warn("developer webhook canonical outbox read failed eventType={} cursor={} newestFirst={} error={}",
-                    eventType, cursor, newestFirst, ex.getMessage());
+            log.warn("developer webhook canonical outbox read failed eventType={} cursor={} error={}",
+                    eventType, cursor, ex.getMessage());
             return List.of();
         }
     }
