@@ -2103,11 +2103,14 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         Matcher localizedContent = Pattern.compile("^content\\.mission\\.([A-Za-z0-9_-]{2,64})\\.name\\.(" + String.join("|", InterfaceLanguages.CODES) + ")$")
                 .matcher(configKey == null ? "" : configKey);
         if (localizedContent.matches()) {
-            if (mapper.countByMissionCode(localizedContent.group(1)) != 1L) {
+            String missionCode = localizedContent.group(1);
+            Map<String, Object> mission = mapper.lockMission(missionCode);
+            if (mission == null) {
                 return validation("MISSION_NOT_FOUND");
             }
+            if (intValue(mission.get("status"), -1) == 2) return invalidMissionTransition();
             if (weeklySnapshots != null) weeklySnapshots.beforeConfigurationChange();
-            return updateLocalizedContent("mission", localizedContent.group(1), "name",
+            return updateLocalizedContent("mission", missionCode, "name",
                     localizedContent.group(2), configKey, idempotencyKey, request);
         }
         String normalizedKey;

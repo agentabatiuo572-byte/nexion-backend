@@ -657,6 +657,10 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                         return rejectK3Write("STATE_CHANGE", normalized, actor, 409, "K3_RULE_CONCURRENT_UPDATE",
                                 request.reason(), idempotencyKey);
                     }
+                    if ("active".equals(state) && "pass".equalsIgnoreCase(trimmed(before.action()))) {
+                        return rejectK3Write("STATE_CHANGE", normalized, actor, 422, "K3_LEGACY_PASS_ENABLE_FORBIDDEN",
+                                request.reason(), idempotencyKey);
+                    }
                     if (!K3_RULE_TRANSITIONS.getOrDefault(trimmed(before.state()).toLowerCase(Locale.ROOT), Set.of()).contains(state)) {
                         return rejectK3Write("STATE_CHANGE", normalized, actor,
                                 OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K3_RULE_TRANSITION_INVALID",
