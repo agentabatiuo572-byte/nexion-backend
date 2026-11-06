@@ -109,7 +109,7 @@ public class AppTrialLifecycleService {
         }
         LocalDateTime now = businessNow();
         Map<String, String> policy = policyMap();
-        return ApiResult.ok(project(userId, mapper.trial(userId), policy, now));
+        return ApiResult.ok(project(userId, mapper.trial(userId), policy, now, false));
     }
 
     @Transactional(readOnly = true)
@@ -178,7 +178,7 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
         }
         if (!productReleased(product)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_RELEASED");
-        if (!withinPhysicalSlotCapacity(userId, product)) return ApiResult.fail(409, "TRIAL_CAPACITY_FULL");
+        if (!withinPhysicalSlotCapacity(userId, product, true)) return ApiResult.fail(409, "TRIAL_CAPACITY_FULL");
         String normalizedDevice = product.name();
         BigDecimal price = product.priceUsdt();
         // 🔴 试用抵扣金必须与该商品的**权威日收益**同源(zentao #78)。
@@ -222,7 +222,7 @@ public class AppTrialLifecycleService {
         record("H2_TRIAL_STARTED", claimNo, userId, linked("claimNo", claimNo, "policySnapshot", snapshot));
         Map<String, String> remainingPolicy = new LinkedHashMap<>(policy);
         remainingPolicy.put("seatsLeftToday", Integer.toString(seatsAfterClaim));
-        return ApiResult.ok(project(userId, mapper.trial(userId), remainingPolicy, now));
+        return ApiResult.ok(project(userId, mapper.trial(userId), remainingPolicy, now, true));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -247,7 +247,7 @@ public class AppTrialLifecycleService {
                 linked("cause", reason, "state_before", normalize(row.status())));
         record("H2_TRIAL_CANCELLED", row.claimNo(), userId,
                 linked("cause", reason, "stateBefore", normalize(row.status())));
-        return ApiResult.ok(project(userId, mapper.trial(userId), policyMap(), now));
+        return ApiResult.ok(project(userId, mapper.trial(userId), policyMap(), now, true));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -281,7 +281,7 @@ public class AppTrialLifecycleService {
                 linked("extension_days", days, "shadow_usdt", preview.shadowUsdt()));
         record("H2_TRIAL_EXTENDED", row.claimNo(), userId,
                 linked("extensionDays", days, "shadowUsdt", preview.shadowUsdt()));
-        return ApiResult.ok(project(userId, mapper.trial(userId), policy, now));
+        return ApiResult.ok(project(userId, mapper.trial(userId), policy, now, true));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -389,7 +389,7 @@ public class AppTrialLifecycleService {
                 || positiveOrNull(row.dailyNex()) == null) {
             return ApiResult.fail(409, "TRIAL_DAILY_YIELD_INVALID");
         }
-        if (!withinPhysicalSlotCapacity(userId, product)) {
+        if (!withinPhysicalSlotCapacity(userId, product, true)) {
             return ApiResult.fail(409, "CAPACITY_REPLACEMENT_REQUIRED");
         }
         BigDecimal subtotal = row.priceUsdt();
@@ -655,7 +655,7 @@ public class AppTrialLifecycleService {
     }
 
     private Map<String, Object> project(
-            Long userId, TrialRow row, Map<String, String> policy, LocalDateTime now) {
+            Long userId, TrialRow row, Map<String, String> policy, LocalDateTime now, boolean lockCapacity) {
         Map<String, Object> result = new LinkedHashMap<>();
         boolean trialGateEnabled = trialGateEnabled();
         boolean phaseOpen = flag(policy, "phaseOpen", true);
@@ -668,7 +668,7 @@ public class AppTrialLifecycleService {
         boolean productAvailable = availablePhysicalTrialProduct(startProduct) && productReleased(startProduct);
         boolean quotaAvailable = nonNegativeInt(policy, "seatsLeftToday", 0) > 0;
         boolean capacityAvailable = row != null && !restartable(normalize(row.status()))
-                || withinPhysicalSlotCapacity(userId, startProduct);
+                || withinPhysicalSlotCapacity(userId, startProduct, lockCapacity);
         result.put("authoritative", true);
         result.put("serverCanonical", true);
         result.put("sourceEnvironment", "PRODUCTION");
@@ -928,10 +928,14 @@ public class AppTrialLifecycleService {
     }
 
     /** Start reserves one slot; conversion replaces that same trial reservation with one device. */
-    private boolean withinPhysicalSlotCapacity(Long userId, AppTrialLifecycleMapper.ConversionProduct product) {
+    private boolean withinPhysicalSlotCapacity(
+            Long userId, AppTrialLifecycleMapper.ConversionProduct product, boolean lockCapacity) {
         if (product == null) return true;
-        int active = Math.max(0, canonicalStateMapper.lockActiveDeviceCount(userId, false));
-        int reserved = Math.max(0, canonicalStateMapper.lockReservedDeviceOrderCount(userId, false));
+        // Polling projects eligibility from its read snapshot. Trial writes require current reads.
+        int active = Math.max(0, lockCapacity ? canonicalStateMapper.lockActiveDeviceCount(userId, false)
+                : canonicalStateMapper.activeDeviceCount(userId));
+        int reserved = Math.max(0, lockCapacity ? canonicalStateMapper.lockReservedDeviceOrderCount(userId, false)
+                : canonicalStateMapper.reservedDeviceOrderCount(userId));
         int cap = Math.max(1, canonicalStateMapper.deviceSlotCap());
         return (long) active + reserved + 1 <= cap;
     }
