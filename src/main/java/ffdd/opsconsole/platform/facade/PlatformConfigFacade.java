@@ -7,6 +7,11 @@ import java.util.Optional;
 public interface PlatformConfigFacade extends DomainFacade {
     Optional<String> activeValue(String configKey);
 
+    /** Reads a stored value for compatibility with an existing snapshot. */
+    default Optional<String> storedValue(String configKey) {
+        return activeValue(configKey);
+    }
+
     default SessionLifetimes sessionLifetimes() {
         return SessionLifetimes.from(activeValue(SessionLifetimes.ACCESS_KEY).orElse(null),
                 activeValue(SessionLifetimes.REFRESH_KEY).orElse(null));

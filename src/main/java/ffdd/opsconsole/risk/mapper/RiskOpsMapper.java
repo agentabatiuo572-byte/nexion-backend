@@ -18,6 +18,14 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
+    @Select("SELECT DATE_FORMAT(last_success_at, '%Y-%m-%dT%H:%i:%s.%fZ') FROM nx_admin_risk_multi_account_check WHERE id = 1")
+    String lastSuccessfulMultiAccountCheckAt();
+
+    @Insert("""
+            INSERT INTO nx_admin_risk_multi_account_check (id, last_success_at) VALUES (1, UTC_TIMESTAMP(3))
+            ON DUPLICATE KEY UPDATE last_success_at = GREATEST(last_success_at, UTC_TIMESTAMP(3))
+            """)
+    void recordSuccessfulMultiAccountCheck();
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_risk_decision (
               id BIGINT PRIMARY KEY AUTO_INCREMENT,

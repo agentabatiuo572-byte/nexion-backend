@@ -39,7 +39,7 @@ public class PromotionNativeContractResolver {
             case "EARNINGS_RELEASE" -> {
                 valid("risk.k1.release.version".equals(resource),"PROMOTION_NATIVE_EARNINGS_UNKNOWN");
                 revision=number(config.activeValue(resource).orElseThrow(()->new BizException(503,"PROMOTION_NATIVE_EARNINGS_UNAVAILABLE")));
-                data=values("rows",earnings.rows(),"manualOnly",earnings.manualOnly(),"trustedAttestationEnabled",earnings.trustedAttestationEnabled());
+                data=values("rows",earnings.promotionContractRows(),"manualOnly",earnings.manualOnly(),"trustedAttestationEnabled",earnings.trustedAttestationEnabled());
             }
             case "A2_POLICY" -> {
                 valid("admin.a2.schema_version".equals(resource),"PROMOTION_NATIVE_A2_UNKNOWN");

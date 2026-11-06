@@ -63,6 +63,9 @@ public class OpsPlatformParamRegistryService {
                     || key.startsWith("E.compute.gpuTier.") || key.startsWith("E.compute.download.")
                     || key.equals("wallet.dual-ledger.thresholds.version")
                     || key.equals("admin.security.min_super_admins")
+                    || key.equals("risk.k1.release.freePhoneSlotsPerCluster")
+                    || key.equals("risk.k1.release.pendingReleaseHours")
+                    || key.equals("risk.k1.release.freeSlotRequiresBinding")
                     || key.equals("risk.k1.release.appAttestationReleaseHours"))) continue;
             // H9 acceptance runs store payloads here, not operational parameters.
             // Keep those payloads private without hiding unknown config families.
@@ -302,6 +305,9 @@ public class OpsPlatformParamRegistryService {
     private Owner ownerFor(String groupValue, String keyValue) {
         String group = lower(groupValue);
         String key = lower(keyValue);
+        if (OpsPlatformConfigService.isK1RegistrationParam(key)) {
+            return new Owner("K", "K1", "多账户风险排查", "/risk/multi-account");
+        }
         if ("admin_a2".equals(group) || "admin_audit".equals(group) || key.startsWith("admin.a2.") || key.startsWith("admin.audit.")) {
             return new Owner("A", "A2", "操作记录与审批", "/platform/audit");
         }

@@ -1,0 +1,4 @@
+CREATE TABLE IF NOT EXISTS nx_admin_risk_multi_account_check (
+  id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+  last_success_at DATETIME(3) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

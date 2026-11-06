@@ -15,6 +15,10 @@ public interface PlatformConfigRepository {
         return findActiveByKey(configKey);
     }
 
+    default Optional<PlatformConfigItem> findStoredByKey(String configKey) {
+        return findActiveByKey(configKey);
+    }
+
     List<PlatformConfigItem> findActiveByGroups(Collection<String> configGroups);
 
     PlatformConfigItem save(PlatformConfigItem item);

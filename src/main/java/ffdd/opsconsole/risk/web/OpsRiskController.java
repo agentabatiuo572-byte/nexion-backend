@@ -43,6 +43,10 @@ import ffdd.opsconsole.risk.dto.RiskScoringWeightsRequest;
 import ffdd.opsconsole.risk.dto.RiskSignalRequest;
 import java.util.List;
 import java.util.Map;
+import ffdd.opsconsole.platform.application.OpsPlatformConfigService;
+import ffdd.opsconsole.platform.dto.PlatformConfigResponse;
+import ffdd.opsconsole.platform.dto.PlatformConfigUpdateRequest;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -62,6 +66,8 @@ import org.springframework.web.bind.annotation.RestController;
 public class OpsRiskController {
     private final OpsRiskService riskService;
     private final RiskReleaseParamsService releaseParamsService;
+    @Autowired
+    private OpsPlatformConfigService platformConfigService;
 
     @GetMapping("/overview")
     @PreAuthorize("hasAnyAuthority('risk_k1_read','risk_k2_read','risk_k3_read','risk_k4_read')")
@@ -108,10 +114,22 @@ public class OpsRiskController {
             @RequestParam(value = "clusterSort", required = false) String clusterSort,
             @RequestParam(value = "whitelistPageNum", required = false) Integer whitelistPageNum,
             @RequestParam(value = "whitelistPageSize", required = false) Integer whitelistPageSize) {
-        ApiResult<Map<String,Object>> result=riskService.multiAccountOverview(
+        ApiResult<Map<String, Object>> result = riskService.multiAccountOverview(
                 clusterPageNum, clusterPageSize, clusterLayer, clusterStatus, clusterSort,
                 whitelistPageNum, whitelistPageSize);
-        if(result.getCode()==0&&releaseParamsService!=null){Map<String,Object> data=new java.util.LinkedHashMap<>(result.getData());data.put("releaseParams",releaseParamsService.rows());return ApiResult.ok(data);}return result;
+        if (result.getCode() != 0 || releaseParamsService == null) return result;
+        Map<String, Object> data = new java.util.LinkedHashMap<>(result.getData());
+        data.put("releaseParams", releaseParamsService.rows());
+        data.put("registrationParams", platformConfigService.k1RegistrationParams());
+        return ApiResult.ok(data);
+    }
+
+    @PatchMapping("/multi-account/registration-params")
+    @PreAuthorize("hasAuthority('risk_k1_read') && @superAdminAuthorization.isSuperAdmin(authentication)")
+    public ApiResult<PlatformConfigResponse> updateK1RegistrationParam(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody PlatformConfigUpdateRequest request) {
+        return platformConfigService.updateK1RegistrationParam(idempotencyKey, request);
     }
 
     @PatchMapping("/multi-account/params/{key}")

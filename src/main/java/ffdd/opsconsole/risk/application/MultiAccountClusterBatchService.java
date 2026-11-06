@@ -98,6 +98,7 @@ public class MultiAccountClusterBatchService {
                         "ts", Instant.now().toString()));
             }
         }
+        repository.recordSuccessfulMultiAccountCheck();
         return projections.size();
     }
 

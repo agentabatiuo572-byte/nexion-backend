@@ -442,7 +442,9 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261106_zz_h5_tick_permission.sql"),
   (Join-Path $root "scripts\migrations\20261106_zzz_f5_export_permission.sql"),
   (Join-Path $root "scripts\migrations\20261106_zzzz_a6_role_remarks.sql"),
-  (Join-Path $root "scripts\migrations\20261106_e4_refunded_device_tasks.sql")
+  (Join-Path $root "scripts\migrations\20261106_e4_refunded_device_tasks.sql"),
+  (Join-Path $root "scripts\migrations\20261106_k1_last_success.sql"),
+  (Join-Path $root "scripts\migrations\20261106_k1_retired_release_params.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
