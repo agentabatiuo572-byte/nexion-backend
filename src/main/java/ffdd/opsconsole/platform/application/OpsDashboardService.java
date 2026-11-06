@@ -228,16 +228,19 @@ public class OpsDashboardService {
         List<Map<String, Object>> rows = new ArrayList<>();
         for (int i = 0; i < raw.size(); i++) {
             Map<String, Object> row = raw.get(i);
-            long count = longValue(row.get("users"));
-            long previousCount = i == 0 ? count : longValue(raw.get(i - 1).get("users"));
-            rows.add(linked(
+            boolean suppressed = Boolean.TRUE.equals(row.get("suppressed"));
+            Object count = row.get("users");
+            Object previousCount = i == 0 ? count : raw.get(i - 1).get("users");
+            Map<String, Object> projected = linked(
                     "key", "stage-" + (i + 1),
                     "label", stringValue(row.get("stage")),
                     "event", stringValue(row.get("ev")),
                     "count", count,
-                    "prevCount", previousCount,
+                    "prevCount", suppressed ? null : previousCount,
                     "conversion", row.getOrDefault("cvr", null),
-                    "target", row.getOrDefault("target", null)));
+                    "target", row.getOrDefault("target", null));
+            if (suppressed) projected.put("suppressed", true);
+            rows.add(projected);
         }
         return rows;
     }

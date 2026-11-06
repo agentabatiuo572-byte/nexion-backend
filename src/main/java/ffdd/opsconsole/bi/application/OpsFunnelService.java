@@ -160,7 +160,7 @@ public class OpsFunnelService {
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> stages =
                 (List<Map<String, Object>>) dashboard.getOrDefault("stages", List.of());
-        StringBuilder csv = new StringBuilder("\uFEFFstage,event,lifecycle,distinct_users,previous_users,cvr_from_prev,cohort,phase,ref\r\n");
+        StringBuilder csv = new StringBuilder("\uFEFFstage,event,lifecycle,distinct_users,previous_users,cvr_from_prev,cohort,phase,ref,sample_status\r\n");
         for (Map<String, Object> stage : stages) {
             csv.append(csv(stage.get("stage"))).append(',')
                     .append(csv(stage.get("event"))).append(',')
@@ -170,7 +170,8 @@ public class OpsFunnelService {
                     .append(csv(stage.get("cvrFromPrev"))).append(',')
                     .append(csv(filter.valueOrAll(filter.cohort()))).append(',')
                     .append(csv(filter.valueOrAll(filter.phase()))).append(',')
-                    .append(csv(filter.valueOrAll(filter.ref()))).append("\r\n");
+                    .append(csv(filter.valueOrAll(filter.ref()))).append(',')
+                    .append(csv(Boolean.TRUE.equals(stage.get("suppressed")) ? "样本过小" : "")).append("\r\n");
         }
         auditRequired("admin.report_exported", "GET", "SUCCESS", linked(
                 "exportType", "B3_FUNNEL_COHORT",
