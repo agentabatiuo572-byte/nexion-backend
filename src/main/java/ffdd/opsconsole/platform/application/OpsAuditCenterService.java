@@ -19,6 +19,7 @@ import ffdd.opsconsole.platform.dto.AuditCenterOverview.AuditMechanismParam;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview.AuditOperationHistory;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview.AuditOperationStats;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview.AuditOperationTicket;
+import ffdd.opsconsole.platform.dto.AuditCenterOverview.FundEffect;
 import ffdd.opsconsole.platform.dto.AuditMechanismParamUpdateRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationDecisionRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
@@ -91,6 +92,8 @@ public class OpsAuditCenterService {
     private static final String A2_COMMAND = "A2_COMMAND";
     private static final String A2_OPERATION_PROPOSED = "A2_OPERATION_PROPOSED";
     private static final String A2_OPERATION_EXECUTED = "A2_OPERATION_EXECUTED";
+    private static final String F5_COMMISSION_SUSPENSION = "f5_commission_suspension";
+    private static final String E4_ORDER_REFUND = "e4_order_refund";
     private static final String EXECUTED_DECISION_REASON = "即时执行·已生效(单人确认)";
     private static final Set<String> TERMINAL_STATUSES = Set.of(STATUS_APPROVED, STATUS_REJECTED, "withdrawn", "expired");
     private static final DateTimeFormatter ISO = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
@@ -838,7 +841,9 @@ public class OpsAuditCenterService {
                 && !("PROPOSE".equals(verb) && accessPolicy.canAccessOwnBusinessProposal(command, actorId))) {
             return fail(OpsErrorCode.FORBIDDEN, OpsErrorCode.FORBIDDEN.name());
         }
-        return ApiResult.ok(receipt.withMine(mine));
+        var metadata = ticketMetadata(ticket, command);
+        return ApiResult.ok(receipt.withViewerMetadata(mine, metadata.operationCode(), metadata.fundEffect(),
+                metadata.refundOrderNo()));
     }
 
     private boolean canReadOwnProposal(AuditOperationTicketEntity ticket, AuditReplayCommand command, long actorId) {
@@ -1060,7 +1065,7 @@ public class OpsAuditCenterService {
     }
 
     private String refundOrderNo(AuditReplayCommand command) {
-        if (command == null || !"E".equals(command.domain()) || !"e4_order_refund".equals(command.op())
+        if (command == null || !"E".equals(command.domain()) || !E4_ORDER_REFUND.equals(command.op())
                 || command.params() == null || !(command.params().get("orderNo") instanceof String orderNo)
                 || !StringUtils.hasText(orderNo)) return null;
         return orderNo.trim();
@@ -1306,8 +1311,25 @@ public class OpsAuditCenterService {
 
     private record ViewerTicket(AuditOperationTicketEntity row, boolean mine) {}
 
+    private record TicketMetadata(String operationCode, FundEffect fundEffect, String refundOrderNo) {
+        private static final TicketMetadata NONE = new TicketMetadata(null, null, null);
+    }
+
+    private TicketMetadata ticketMetadata(AuditOperationTicketEntity ticket, AuditReplayCommand command) {
+        String domain = normalizeDomain(ticket.getSourceDomain());
+        if ("F".equals(domain) && command != null && "F".equals(command.domain())
+                && F5_COMMISSION_SUSPENSION.equals(command.op()) && command.params() != null
+                && command.params().get("suspended") instanceof Boolean suspended) {
+            return new TicketMetadata(F5_COMMISSION_SUSPENSION,
+                    suspended ? FundEffect.REWARD_SUSPENSION : FundEffect.REWARD_RESUMPTION, null);
+        }
+        String orderNo = "E".equals(domain) ? refundOrderNo(command) : null;
+        return orderNo == null ? TicketMetadata.NONE : new TicketMetadata(E4_ORDER_REFUND, FundEffect.ORDER_REFUND, orderNo);
+    }
+
     private AuditOperationTicket toTicket(AuditOperationTicketEntity row, boolean mine) {
         AuditReplayCommand command = deserializeCommand(row.getCommandJson());
+        var metadata = ticketMetadata(row, command);
         return new AuditOperationTicket(
                 row.getOperationId(),
                 row.getAction(),
@@ -1325,7 +1347,8 @@ public class OpsAuditCenterService {
                 row.getReason(),
                 status(row.getStatus()), phoneCalibrationProposal(command),
                 command != null && "K".equals(command.domain())
-                        && ("k1_cluster_release".equals(command.op()) || "k1_cluster_cleared".equals(command.op())));
+                        && ("k1_cluster_release".equals(command.op()) || "k1_cluster_cleared".equals(command.op())),
+                metadata.operationCode(), metadata.fundEffect(), metadata.refundOrderNo());
     }
 
     private String phoneCalibrationProposal(AuditReplayCommand command) {

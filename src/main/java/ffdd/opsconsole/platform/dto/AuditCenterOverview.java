@@ -43,12 +43,22 @@ public record AuditCenterOverview(
             String reason,
             String status,
             String phoneCalibrationProposal,
-            boolean coverageCheckOnApproval) {
-        public AuditOperationTicket withMine(boolean ownedByViewer) {
+            boolean coverageCheckOnApproval,
+            String operationCode,
+            FundEffect fundEffect,
+            String refundOrderNo) {
+        public AuditOperationTicket withViewerMetadata(boolean ownedByViewer, String code, FundEffect effect,
+                                                       String orderNo) {
             return new AuditOperationTicket(id, action, obj, beforeValue, afterValue, operator, operatorRole,
                     type, amplifies, sos, ts, ownedByViewer, roleGate, reason, status, phoneCalibrationProposal,
-                    coverageCheckOnApproval);
+                    coverageCheckOnApproval, code, effect, orderNo);
         }
+    }
+
+    public enum FundEffect {
+        REWARD_SUSPENSION,
+        REWARD_RESUMPTION,
+        ORDER_REFUND
     }
 
     public record AuditOperationHistory(
