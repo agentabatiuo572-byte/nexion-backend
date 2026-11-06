@@ -91,6 +91,7 @@ public class OpsTreasuryService {
     private static final List<String> D3_LIABILITY_CATEGORIES = List.of(
             "withdrawable_balance", "usdt_staking_principal", "staking_interest", "genesis_daily_emission",
             "nex_v2_future", "withdrawal_queue", "commission_cooling", "lock_other", "unverified_deposit");
+    private static final int B1_COVERAGE_SERIES_INTERVAL_HOURS = 3;
     private static final String B_ALERT_COVERAGE_ID = "coverage-redline";
     private static final String B_ALERT_COVERAGE_ACK_KEY = "wallet.dual-ledger.alert.coverage-redline.ack";
     private static final String B_ALERT_ACK_IDEMPOTENCY_SCOPE = "TREASURY_B_ALERT_ACK";
@@ -184,7 +185,7 @@ public class OpsTreasuryService {
         LocalDateTime asOf = LocalDateTime.now(clock);
         List<Map<String, Object>> series = new ArrayList<>();
         for (int index = 0; index < ratios.size(); index++) {
-            int hoursAgo = (ratios.size() - index - 1) * 3;
+            int hoursAgo = (ratios.size() - index - 1) * B1_COVERAGE_SERIES_INTERVAL_HOURS;
             series.add(section(
                     "period", asOf.minusHours(hoursAgo).toString(),
                     "coverageRatio", pctScale(ratios.get(index))));
@@ -729,6 +730,7 @@ public class OpsTreasuryService {
                 "queueBacklogUsd", money(queueBacklogUsd),
                 "avgRiskScore", avgRiskScore.longValue(),
                 "coverageSeries", coverageSeries(now, reserveUsd, liabilitiesUsd),
+                "coverageSeriesIntervalHours", B1_COVERAGE_SERIES_INTERVAL_HOURS,
                 "scope", scope);
         response.put("snapshot", snapshot);
         if (!fullView) {
@@ -2664,7 +2666,7 @@ public class OpsTreasuryService {
     private List<BigDecimal> coverageSeries(LocalDateTime now, BigDecimal reserveUsd, BigDecimal liabilitiesUsd) {
         List<BigDecimal> series = new ArrayList<>();
         for (int i = 0; i < 8; i++) {
-            LocalDateTime point = now.minusHours((7L - i) * 3L);
+            LocalDateTime point = now.minusHours((7L - i) * B1_COVERAGE_SERIES_INTERVAL_HOURS);
             BigDecimal flowAfterPoint = safe(ledgerRepository.sumNetUsdtFlowBetween(point, now));
             BigDecimal historicalReserve = reserveUsd.subtract(flowAfterPoint).max(BigDecimal.ZERO);
             series.add(pctScale(pct(historicalReserve, liabilitiesUsd)));

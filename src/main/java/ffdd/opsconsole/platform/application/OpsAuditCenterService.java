@@ -745,8 +745,11 @@ public class OpsAuditCenterService {
             boolean catalogReceipt = catalogProposal;
             String operationId = separator < 0 ? null : operation.substring(separator + 1).trim().toUpperCase(Locale.ROOT);
             if (operationId != null) {
-                String authority = "WITHDRAW".equals(verb) ? "platform_a2_proposal_create" : "platform_a2_operation_approve";
-                if (!A2ReplayContext.hasAuthority(authority)) {
+                // Retained receipts can be returned before entering the decision transaction.
+                boolean allowed = "WITHDRAW".equals(verb)
+                        ? A2ReplayContext.hasAuthority("platform_a2_proposal_create")
+                        : accessPolicy.canDecide(actorId);
+                if (!allowed) {
                     return fail(OpsErrorCode.FORBIDDEN, OpsErrorCode.FORBIDDEN.name());
                 }
                 var ticket = ticketMapper.selectActiveByOperationId(operationId);
@@ -941,6 +944,10 @@ public class OpsAuditCenterService {
             }
         }
         AuditOperationTicketEntity ticket = ticketForUpdate(operationId).orElse(null);
+        Long actorId = A2ReplayContext.authenticatedAdminId();
+        if (!makerOnly && !accessPolicy.canDecide(actorId)) {
+            return fail(OpsErrorCode.FORBIDDEN);
+        }
         if (ticket == null) {
             return fail(OpsErrorCode.VALIDATION_FAILED, "A2_OPERATION_NOT_FOUND");
         }
@@ -962,7 +969,6 @@ public class OpsAuditCenterService {
             return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A2_OPERATION_ALREADY_TERMINAL");
         }
         if (makerId == null) return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A2_MAKER_ID_UNVERIFIED");
-        Long actorId = A2ReplayContext.authenticatedAdminId();
         boolean makerMatches = makerId.equals(actorId);
         if (makerOnly && !makerMatches) {
             return fail(OpsErrorCode.FORBIDDEN, "A2_WITHDRAW_MAKER_ONLY");

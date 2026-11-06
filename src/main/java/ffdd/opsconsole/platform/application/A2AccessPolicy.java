@@ -102,6 +102,11 @@ public class A2AccessPolicy {
         throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");
     }
 
+    boolean canDecide(Long actorId) {
+        return actorId != null && A2ReplayContext.hasAuthority("platform_a2_operation_approve")
+                && roleResolver.isActiveAdministrator(actorId);
+    }
+
     public Scope current() {
         String role = roleResolver.resolveCode();
         String actor = AdminActorResolver.resolve(null);
