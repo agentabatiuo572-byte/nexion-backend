@@ -6,10 +6,13 @@ import ffdd.opsconsole.platform.dto.PlatformConfigChangedEvent;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import jakarta.annotation.PreDestroy;
+import java.net.InetAddress;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.security.core.Authentication;
@@ -24,87 +27,90 @@ import org.springframework.web.socket.handler.*;
 public class ConversationSocketHandler extends TextWebSocketHandler {
     @org.springframework.transaction.event.TransactionalEventListener(phase=org.springframework.transaction.event.TransactionPhase.AFTER_COMMIT)
     public void userViewCleared(ffdd.opsconsole.content.application.AppConversationManagementService.UserViewCleared event) {
-        enqueue(() -> {
-            for (Client c : clients.values()) {
-                Identity identity=c.identity;
-                if (identity==null || !identity.grant.actor().equals("USER:" + event.userId())
-                        || revalidate(c)==null) continue;
-                for (String no : event.conversationNos()) {
-                    send(c, Map.of("type", "event", "eventId", UUID.randomUUID().toString(),
-                            "conversationNo", no, "eventType", "STATUS", "senderType", "SYSTEM"));
-                }
-            }
-        });
+        publish(Map.of("kind", "CLEARED", "customerId", event.userId(), "conversationNos", event.conversationNos()));
     }
     @org.springframework.transaction.event.TransactionalEventListener(phase=org.springframework.transaction.event.TransactionPhase.AFTER_COMMIT)
     public void scopeChanged(ffdd.opsconsole.content.domain.SupportGroupFacts.ScopeChanged event) {
-        enqueue(()-> {
-            for(Client c:clients.values()) {
-                Identity identity=c.identity;
-                if(identity==null || !"ADMIN".equals(identity.grant.audience())
-                        || event.affectedAdminIds().stream().noneMatch(id->String.valueOf(id).equals(identity.auth.getName()))) continue;
-                Authentication auth=revalidate(c);
-                if(auth==null)continue;
-                try {
-                    if(c.watching!=null && !access.canRead(auth,identity.grant.audience(),c.watching)) {
-                        c.watching=null;c.typingUntil=0;
-                    }
-                    // A lost management group must not disconnect a still-authorized personal service.
-                    send(c,Map.of("type","scope-invalidated","reason",event.reason()));
-                } catch(Exception ex) {close(c,4401);}
-            }
-            requestPresence();
-        });
+        publish(Map.of("kind", "SCOPE", "adminIds", event.affectedAdminIds(), "reason", event.reason()));
     }
     @org.springframework.transaction.event.TransactionalEventListener(phase=org.springframework.transaction.event.TransactionPhase.AFTER_COMMIT)
     public void assignmentChanged(ffdd.opsconsole.content.application.SupportBindingService.SupportAssignmentChanged event) {
-        enqueue(()-> {
-            for(Client c:clients.values()) {
-                Identity identity=c.identity;
-                if(identity==null) continue;
-                String actor=identity.auth.getName();
-                boolean customer="USER".equals(identity.grant.audience()) && actor.equals(String.valueOf(event.customerId()));
-                boolean advisor="ADMIN".equals(identity.grant.audience()) && (actor.equals(String.valueOf(event.current().agentAdminId()))
-                        || (event.previous()!=null && actor.equals(String.valueOf(event.previous().agentAdminId()))));
-                if((!customer && !advisor) || revalidate(c)==null) continue;
-                try {
-                    if(c.watching!=null && access.participants(c.watching).map(p->p.userId().equals(String.valueOf(event.customerId()))).orElse(false)) {
-                        c.watching=null;c.typingUntil=0;
-                    }
-                    send(c,Map.of("type","scope-invalidated","reason","ASSIGNMENT_CHANGED","customerId",event.customerId()));
-                } catch(Exception ex) {close(c,4401);}
-            }
-            requestPresence();
-        });
+        Set<Long> advisors = new HashSet<>();
+        if (event.current() != null) advisors.add(event.current().agentAdminId());
+        if (event.previous() != null) advisors.add(event.previous().agentAdminId());
+        publish(Map.of("kind", "ASSIGNMENT", "customerId", event.customerId(), "adminIds", advisors));
     }
     private final ObjectMapper json;
     private final ConversationSocketTickets tickets;
     private final ConversationSocketAccess access;
     private final ConversationSocketCommands commands;
+    private final ConversationSocketRedis socketRedis;
+    private final ApplicationEventPublisher events;
     private final Map<String,Client> clients=new ConcurrentHashMap<>();
+    private final Map<String, Set<Client>> users = new ConcurrentHashMap<>();
+    private final Map<String, Set<Client>> admins = new ConcurrentHashMap<>();
+    private final Map<String, Set<Client>> watchers = new ConcurrentHashMap<>();
+    private final Map<String, Set<Client>> peerWatchers = new ConcurrentHashMap<>();
+    private final Object admissionLock = new Object();
+    private final Map<InetAddress, Integer> pendingByIp = new HashMap<>();
+    private final ScheduledThreadPoolExecutor authTimeouts = authTimeoutExecutor();
+    private int pendingConnections;
+    private int maxConnections;
     private final AtomicBoolean presencePending=new AtomicBoolean();
+    private final AtomicBoolean overloadPending = new AtomicBoolean();
     private final ThreadPoolExecutor outbound=new ThreadPoolExecutor(1,1,0,TimeUnit.SECONDS,new ArrayBlockingQueue<>(2048),
             r->{Thread t=new Thread(r,"conversation-events");t.setDaemon(true);return t;});
 
     private record Identity(ConversationSocketTickets.Grant grant, Authentication auth) {}
     private static final class Client {
         final WebSocketSession socket;
+        final InetAddress remoteIp;
+        ScheduledFuture<?> authTimeout;
         volatile Identity identity;
         volatile String watching;
+        String watchedPeer;
         volatile long seen=System.currentTimeMillis(), typingUntil=0;
+        boolean online;
         long window=seen; int frames;
-        Client(WebSocketSession socket){this.socket=new ConcurrentWebSocketSessionDecorator(socket,5000,262144);}
+        Client(WebSocketSession socket) {
+            var remote = socket.getRemoteAddress();
+            this.remoteIp = remote == null ? null : remote.getAddress();
+            this.socket = new ConcurrentWebSocketSessionDecorator(socket, 5000, 262144);
+        }
     }
-    @Override public synchronized void afterConnectionEstablished(WebSocketSession session) throws Exception {
-        if(clients.size()>=2000 || clients.values().stream().filter(c->c.identity==null).count()>=100
-                || (session.getRemoteAddress()!=null && clients.values().stream().filter(c->c.identity==null && c.socket.getRemoteAddress()!=null
-                    && c.socket.getRemoteAddress().getAddress().equals(session.getRemoteAddress().getAddress())).count()>=8)){
-            session.close(CloseStatus.SERVICE_OVERLOAD);return;}
-        session.setTextMessageSizeLimit(16384);
-        Client client=new Client(session);clients.put(session.getId(),client);
-        CompletableFuture.delayedExecutor(5,TimeUnit.SECONDS).execute(()->{
-            if(client.identity==null && clients.get(session.getId())==client)close(client,4401);
+
+    @Value("${nexion.websocket.max-connections:2000}")
+    void configureMaxConnections(int limit) {
+        if (limit < 1) throw new IllegalArgumentException("nexion.websocket.max-connections must be positive");
+        maxConnections = limit;
+    }
+
+    private static ScheduledThreadPoolExecutor authTimeoutExecutor() {
+        var scheduler = new ScheduledThreadPoolExecutor(1, work -> {
+            Thread thread = new Thread(work, "conversation-auth-timeouts");
+            thread.setDaemon(true);
+            return thread;
         });
+        scheduler.setRemoveOnCancelPolicy(true);
+        return scheduler;
+    }
+
+    @Override public void afterConnectionEstablished(WebSocketSession session) throws Exception {
+        session.setTextMessageSizeLimit(16384);
+        Client client = new Client(session);
+        synchronized (admissionLock) {
+            if (!authTimeouts.isShutdown() && clients.size() < maxConnections && pendingConnections < 100
+                    && pendingByIp.getOrDefault(client.remoteIp, 0) < 8) {
+                clients.put(session.getId(), client);
+                pendingConnections++;
+                if (client.remoteIp != null) pendingByIp.merge(client.remoteIp, 1, Integer::sum);
+                client.authTimeout = authTimeouts.schedule(() -> {
+                    if (detach(client, true)) closeTransport(client, 4401);
+                }, 5, TimeUnit.SECONDS);
+                return;
+            }
+        }
+        session.close(CloseStatus.SERVICE_OVERLOAD);
     }
     @Override protected void handleTextMessage(WebSocketSession session,TextMessage message) {
         Client c=clients.get(session.getId()); if(c==null)return;
@@ -122,11 +128,18 @@ public class ConversationSocketHandler extends TextWebSocketHandler {
                 Identity current=c.identity;
                 if(current==null){
                     if(!"auth".equals(type))throw new BizException(401,"SOCKET_AUTH_REQUIRED");
+                    if (!socketRedis.isAvailable()) throw new BizException(503, "SOCKET_REALTIME_UNAVAILABLE");
                     var grant=tickets.consume(frame.path("ticket").asText());
-                    c.identity=new Identity(grant,access.revalidate(grant.token(),grant.audience()));
-                    c.seen=now;
+                    var identity = new Identity(grant, access.revalidate(grant.token(), grant.audience()));
+                    synchronized (admissionLock) {
+                        if (clients.get(session.getId()) != c) return;
+                        c.identity = identity;
+                        c.seen = now;
+                        releasePending(c);
+                        registerClient(c);
+                    }
                     send(c,"USER".equals(grant.audience())?Map.of("type","ready","reauth",true):Map.of("type","ready"));
-                    requestPresence();return;
+                    refreshPresence(c, identity.auth);return;
                 }
                 audience=current.grant.audience();
                 if("reauth".equals(type)) {
@@ -141,17 +154,31 @@ public class ConversationSocketHandler extends TextWebSocketHandler {
                 c.seen=now;
             }
             switch(type){
-                case "ping" -> send(c,Map.of("type","pong"));
+                case "ping" -> {
+                    send(c, Map.of("type", "pong"));
+                    refreshPresence(c, auth);
+                }
                 case "watch" -> {
                     String no=frame.path("conversationNo").asText(null);
                     if(no!=null && !access.canRead(auth,audience,no))throw new BizException(404,"CONVERSATION_NOT_FOUND");
-                    c.watching=no;c.typingUntil=0;requestPresence();
+                    setWatch(c, no);
+                    if (no != null) enqueue(() -> broadcastPresence(no));
                 }
                 case "typing" -> {
                     String no=frame.path("conversationNo").asText();
-                    if(!Objects.equals(c.watching,no) || !access.canWrite(auth,audience,no))throw new BizException(404,"CONVERSATION_NOT_FOUND");
-                    access.write(auth,audience);
-                    c.typingUntil=frame.path("active").asBoolean()?now+5000:0;requestPresence();
+                    synchronized (c) {
+                        if (clients.get(session.getId()) != c) return;
+                        if(!Objects.equals(c.watching,no) || !access.canWrite(auth,audience,no))throw new BizException(404,"CONVERSATION_NOT_FOUND");
+                        access.write(auth,audience);
+                        if (frame.path("active").asBoolean()) {
+                            socketRedis.touchTyping(c.identity.grant.actor(), no, session.getId(), now);
+                            c.typingUntil = now + 5000;
+                        } else {
+                            socketRedis.clearTyping(c.identity.grant.actor(), no, session.getId());
+                            c.typingUntil = 0;
+                        }
+                    }
+                    publish(Map.of("kind", "PRESENCE", "conversationNo", no));
                 }
                 case "command" -> {
                     requestId=frame.path("requestId").asText();
@@ -168,40 +195,114 @@ public class ConversationSocketHandler extends TextWebSocketHandler {
                     e instanceof ffdd.opsconsole.content.application.SupportSessionService.Busy busy
                             ? ApiResult.fail(code,reason,busy.state()) : ApiResult.fail(code,reason)));
             else send(c,Map.of("type","error","code",code));
-            if(c.identity==null || code==401 || code==403 || code==429 || code==500)close(c,code==401||code==403?4401:1013);
+            if(c.identity==null || code==401 || code==403 || code==429 || code==500 || code==503)close(c,code==401||code==403?4401:1013);
         }
     }
     @EventListener public void changed(ConversationMessageEvent event){
-        Runnable push=()->enqueue(()->{
-            String eventId=UUID.randomUUID().toString();
-            for(Client c:clients.values()){
-                Identity identity=c.identity;
-                if(identity==null)continue;
-                Authentication auth=revalidate(c);
-                if(auth==null)continue;
-                try{
-                    if(access.canRead(auth,identity.grant.audience(),event.getConversationNo()))
-                        // Only invalidations cross this boundary; each UI reads its authorized projection.
-                        send(c,Map.of("type","event","eventId",eventId,"conversationNo",event.getConversationNo(),
-                                "eventType","STATUS","senderType","SYSTEM"));
-                }catch(Exception e){close(c,4401);}
-            }
-            requestPresence();
-        });
-        // Publishers already emit after commit. Registering another synchronization here
-        // would lose events published from an existing afterCommit callback.
-        push.run();
+        // Publishers already emit after commit, including from other afterCommit callbacks.
+        if (event.getConversationNo() != null) publish(Map.of("kind", "MESSAGE", "conversationNo", event.getConversationNo()));
     }
 
     @EventListener public void platformConfigChanged(PlatformConfigChangedEvent event) {
-        enqueue(()->{
-            var frame=Map.of("type","event","eventId",UUID.randomUUID().toString(),
-                    "eventType","PLATFORM_CONFIG_CHANGED","senderType","SYSTEM");
-            for(Client c:clients.values()) {
-                Identity identity=c.identity;
-                if(identity!=null && "USER".equals(identity.grant.audience()) && revalidate(c)!=null)send(c,frame);
-            }
+        if (!event.replicated()) publish(Map.of("kind", "PLATFORM", "source", socketRedis.instance()));
+    }
+
+    private void publish(Map<String,?> notice) {
+        if (!enqueue(() -> socketRedis.publish(notice))) socketRedis.markGap();
+    }
+
+    @EventListener void received(ConversationSocketRedis.Delivery delivery) {
+        enqueue(() -> {
+            try { deliver(delivery); }
+            catch (RuntimeException ex) { resetConnections(); }
         });
+    }
+
+    @EventListener void deliveryLost(ConversationSocketRedis.DeliveryLost lost) {
+        enqueue(this::resetConnections);
+    }
+
+    private void resetConnections() {
+        events.publishEvent(new PlatformConfigChangedEvent(true));
+        clients.values().forEach(c -> close(c, 1013));
+    }
+
+    private void deliver(ConversationSocketRedis.Delivery delivery) {
+        JsonNode notice = delivery.notice();
+        String no = notice.path("conversationNo").asText();
+        String customer = notice.path("customerId").asText();
+        switch (notice.path("kind").asText()) {
+            case "MESSAGE" -> {
+                if (users.isEmpty() && admins.isEmpty()) return;
+                var frame = statusFrame(delivery.id(), no);
+                access.customerId(no).ifPresent(id -> {
+                    sendTo(users.getOrDefault(id.toString(), Set.of()), frame);
+                    admins.forEach((actor, sockets) -> {
+                        if (access.canReadCustomer(actor, id)) sendTo(sockets, frame);
+                    });
+                });
+                broadcastPresence(no);
+            }
+            case "CLEARED" -> {
+                for (Client c : users.getOrDefault(customer, Set.of())) {
+                    if (revalidate(c) != null) for (JsonNode entry : notice.path("conversationNos")) {
+                        send(c, statusFrame(delivery.id() + ":" + entry.asText(), entry.asText()));
+                    }
+                }
+            }
+            case "ASSIGNMENT" -> {
+                var frame = Map.of("type", "scope-invalidated", "reason", "ASSIGNMENT_CHANGED",
+                        "customerId", notice.path("customerId").longValue());
+                var sockets = new HashSet<>(users.getOrDefault(customer, Set.of()));
+                for (JsonNode id : notice.path("adminIds")) sockets.addAll(admins.getOrDefault(id.asText(), Set.of()));
+                for (Client c : sockets) synchronized (c) {
+                    if (revalidate(c) == null) continue;
+                    if (c.watching != null && access.customerId(c.watching).map(Object::toString).filter(customer::equals).isPresent()) {
+                        setWatch(c, null);
+                    }
+                    send(c, frame);
+                }
+                requestPresence();
+            }
+            case "SCOPE" -> {
+                var frame = Map.of("type", "scope-invalidated", "reason", notice.path("reason").asText());
+                for (JsonNode id : notice.path("adminIds")) for (Client c : admins.getOrDefault(id.asText(), Set.of())) {
+                    synchronized (c) {
+                        Authentication auth = revalidate(c);
+                        if (auth == null) continue;
+                        if (c.watching != null && !access.canRead(auth, "ADMIN", c.watching)) setWatch(c, null);
+                        send(c, frame);
+                        refreshPresence(c, auth);
+                    }
+                }
+                requestPresence();
+            }
+            case "PLATFORM" -> {
+                if (!socketRedis.instance().equals(notice.path("source").asText())) {
+                    events.publishEvent(new PlatformConfigChangedEvent(true));
+                }
+                var frame = Map.of("type", "event", "eventId", delivery.id(),
+                        "eventType", "PLATFORM_CONFIG_CHANGED", "senderType", "SYSTEM");
+                users.values().forEach(sockets -> sendTo(sockets, frame));
+            }
+            case "PRESENCE" -> {
+                if (!no.isEmpty()) broadcastPresence(no);
+                else peerWatchers.getOrDefault(notice.path("actor").asText(), Set.of()).stream()
+                        .map(c -> c.watching).filter(Objects::nonNull).distinct().forEach(this::broadcastPresence);
+            }
+            case "RESYNC" -> { if (!socketRedis.instance().equals(notice.path("source").asText())) resetConnections(); }
+            case "START" -> { }
+            default -> throw new IllegalStateException("Unknown conversation realtime notice");
+        }
+    }
+
+    private Map<String,String> statusFrame(String id, String no) {
+        return Map.of("type", "event", "eventId", id, "conversationNo", no,
+                "eventType", "STATUS", "senderType", "SYSTEM");
+    }
+
+    private void sendTo(Set<Client> sockets, Map<String,String> frame) {
+        for (Client c : sockets) if (revalidate(c) != null) send(c, frame);
     }
 
     private Authentication revalidate(Client c) {
@@ -218,12 +319,25 @@ public class ConversationSocketHandler extends TextWebSocketHandler {
     }
     private boolean enqueue(Runnable work){
         try{outbound.execute(work);return true;}
-        catch(RejectedExecutionException e){clients.values().forEach(c->close(c,1013));return false;}
+        catch(RejectedExecutionException e){
+            if (!outbound.isShutdown() && overloadPending.compareAndSet(false, true)) {
+                CompletableFuture.runAsync(() -> {
+                    try { resetConnections(); }
+                    finally { overloadPending.set(false); }
+                });
+            }
+            return false;
+        }
     }
     @Scheduled(fixedDelay=10000) public void heartbeat(){
+        if (!socketRedis.isAvailable()) {
+            resetConnections();
+            return;
+        }
         long now=System.currentTimeMillis();
         for(Client c:clients.values()){
-            if(now-c.seen>(c.identity==null?5000:60000)){close(c,1001);continue;}
+            if (c.identity == null) continue;
+            if(now-c.seen>60000){close(c,1001);continue;}
             revalidate(c);
         }
         requestPresence();
@@ -231,53 +345,172 @@ public class ConversationSocketHandler extends TextWebSocketHandler {
     private void requestPresence(){
         if(!presencePending.compareAndSet(false,true))return;
         CompletableFuture.delayedExecutor(100,TimeUnit.MILLISECONDS).execute(()->{
-            if(!enqueue(()->{presencePending.set(false);broadcastPresence();}))presencePending.set(false);
+            if(!enqueue(()->{presencePending.set(false);watchers.keySet().forEach(this::broadcastPresence);}))presencePending.set(false);
         });
     }
-    private void broadcastPresence(){
-        long now=System.currentTimeMillis();
-        Map<Client,Authentication> live=new LinkedHashMap<>();
-        Map<String,List<Client>> peers=new HashMap<>();
-        // Index authenticated actors once, instead of looking up every viewer/peer pair in MySQL.
-        for(Client c:clients.values()){
-            Identity identity=c.identity;
-            if(identity==null || now-c.seen>=60000)continue;
-            Authentication auth=revalidate(c);
-            if(auth==null)continue;
-            try{
-                live.put(c,auth);
-                for(String key:access.presenceKeys(auth,identity.grant.audience()))
-                    peers.computeIfAbsent(key,k->new ArrayList<>()).add(c);
-            }catch(Exception e){close(c,4401);}
-        }
-        Map<String,Optional<ConversationSocketAccess.Participants>> participants=new HashMap<>();
-        for(var entry:live.entrySet()){
-            Client viewer=entry.getKey();
-            String watching=viewer.watching;
-            if(watching==null)continue;
-            String audience=viewer.identity.grant.audience();
-            try{
-                var scope=participants.computeIfAbsent(watching,access::participants).orElse(null);
-                if(scope==null || !scope.canRead(entry.getValue(),audience)){
-                    if(Objects.equals(viewer.watching,watching)){viewer.watching=null;viewer.typingUntil=0;}
+
+    private void broadcastPresence(String no) {
+        Set<Client> sockets = watchers.get(no);
+        if (sockets == null || sockets.isEmpty()) return;
+        var scope = access.participants(no).orElse(null);
+        Map<String, ConversationSocketRedis.Presence> states = new HashMap<>();
+        for (Client c : sockets) synchronized (c) {
+            if (!no.equals(c.watching)) continue;
+            Authentication auth = revalidate(c);
+            if (auth == null) continue;
+            String audience = c.identity.grant.audience();
+            try {
+                if (scope == null || !scope.canRead(auth, audience)) {
+                    setWatch(c, null);
                     continue;
                 }
-                List<Client> matching=peers.getOrDefault(scope.peerKey(audience),List.of());
-                boolean online=!matching.isEmpty();
-                long typingRemaining=matching.stream()
-                        .filter(peer->Objects.equals(peer.watching,watching))
-                        .mapToLong(peer->Math.max(0,peer.typingUntil-now))
-                        .max().orElse(0);
-                boolean typing=typingRemaining>0;
-                if(Objects.equals(viewer.watching,watching))
-                    send(viewer,Map.of("type","presence","conversationNo",watching,"online",online,"typing",typing,
-                            "expiresIn",Math.min(5000,typingRemaining)));
-            }catch(Exception e){close(viewer,1013);}
+                String peer = scope.peerKey(audience);
+                if (!peer.equals(c.watchedPeer)) {
+                    clearWatchedPeer(c);
+                    c.watchedPeer = peer;
+                    index(peerWatchers, peer, c);
+                }
+                var state = states.computeIfAbsent(peer,
+                        actor -> socketRedis.presence(actor, no, System.currentTimeMillis()));
+                send(c, Map.of("type", "presence", "conversationNo", no, "online", state.online(),
+                        "typing", state.typingMillis() > 0, "expiresIn", state.typingMillis()));
+            } catch (RuntimeException ex) { close(c, 1013); }
         }
     }
+
+    private void refreshPresence(Client c, Authentication auth) {
+        enqueue(() -> {
+            synchronized (c) {
+                if (clients.get(c.socket.getId()) != c) return;
+                try {
+                    var grant = c.identity.grant;
+                    boolean online = access.contributesPresence(auth, grant.audience());
+                    if (online) socketRedis.touchOnline(grant.actor(), c.socket.getId(), System.currentTimeMillis());
+                    else if (c.online) socketRedis.clearOnline(grant.actor(), c.socket.getId());
+                    if (c.online != online) {
+                        c.online = online;
+                        socketRedis.publish(Map.of("kind", "PRESENCE", "actor", grant.actor()));
+                    }
+                } catch (RuntimeException ex) { close(c, 1013); }
+            }
+        });
+    }
+
+    private void registerClient(Client c) {
+        index(actorIndex(c), c.identity.auth.getName(), c);
+    }
+
+    private void removeClient(Client c) {
+        String no;
+        boolean online;
+        boolean typing;
+        synchronized (c) {
+            unindex(actorIndex(c), c.identity.auth.getName(), c);
+            no = c.watching;
+            if (no != null) unindex(watchers, no, c);
+            clearWatchedPeer(c);
+            online = c.online;
+            typing = no != null && c.typingUntil > System.currentTimeMillis();
+            c.watching = null;
+        }
+        if (!online && !typing) return;
+        try {
+            outbound.execute(() -> {
+                String actor = c.identity.grant.actor();
+                String socketId = c.socket.getId();
+                try {
+                    if (online) socketRedis.clearOnline(actor, socketId);
+                    if (typing) socketRedis.clearTyping(actor, no, socketId);
+                    socketRedis.publish(online ? Map.of("kind", "PRESENCE", "actor", actor)
+                            : Map.of("kind", "PRESENCE", "conversationNo", no));
+                } catch (RuntimeException ex) {
+                    // The shared leases expire even when Redis is unavailable during close.
+                }
+            });
+        } catch (RejectedExecutionException ex) {
+            // A closed or overloaded executor likewise leaves only expiring leases.
+        }
+    }
+
+    private Map<String, Set<Client>> actorIndex(Client c) {
+        return "USER".equals(c.identity.grant.audience()) ? users : admins;
+    }
+
+    private void setWatch(Client c, String no) {
+        synchronized (c) {
+            if (clients.get(c.socket.getId()) != c) return;
+            String previous = c.watching;
+            if (previous != null && c.typingUntil > System.currentTimeMillis()) {
+                socketRedis.clearTyping(c.identity.grant.actor(), previous, c.socket.getId());
+                publish(Map.of("kind", "PRESENCE", "conversationNo", previous));
+            }
+            c.typingUntil = 0;
+            if (Objects.equals(previous, no)) return;
+            if (previous != null) unindex(watchers, previous, c);
+            clearWatchedPeer(c);
+            c.watching = no;
+            if (no != null) index(watchers, no, c);
+        }
+    }
+
+    private void clearWatchedPeer(Client c) {
+        if (c.watchedPeer == null) return;
+        unindex(peerWatchers, c.watchedPeer, c);
+        c.watchedPeer = null;
+    }
+
+    private void index(Map<String, Set<Client>> index, String key, Client c) {
+        index.compute(key, (ignored, sockets) -> {
+            Set<Client> bucket = sockets == null ? ConcurrentHashMap.newKeySet() : sockets;
+            bucket.add(c);
+            return bucket;
+        });
+    }
+
+    private void unindex(Map<String, Set<Client>> index, String key, Client c) {
+        index.computeIfPresent(key, (ignored, sockets) -> {
+            sockets.remove(c);
+            return sockets.isEmpty() ? null : sockets;
+        });
+    }
     private void send(Client c,Object value){try{if(c.socket.isOpen())c.socket.sendMessage(new TextMessage(json.writeValueAsString(value)));}catch(Exception e){close(c,1013);}}
-    private void close(Client c,int code){clients.remove(c.socket.getId());try{c.socket.close(new CloseStatus(code));}catch(Exception ignored){}}
-    @Override public void afterConnectionClosed(WebSocketSession session,CloseStatus status){clients.remove(session.getId());requestPresence();}
+    private void releasePending(Client client) {
+        client.authTimeout.cancel(false);
+        pendingConnections--;
+        if (client.remoteIp != null) {
+            pendingByIp.computeIfPresent(client.remoteIp, (ip, count) -> count == 1 ? null : count - 1);
+        }
+    }
+
+    private boolean detach(Client client, boolean pendingOnly) {
+        boolean pending;
+        synchronized (admissionLock) {
+            pending = client.identity == null;
+            if ((pendingOnly && !pending) || !clients.remove(client.socket.getId(), client)) return false;
+            if (pending) releasePending(client);
+        }
+        if (!pending) removeClient(client);
+        return true;
+    }
+
+    private void close(Client client, int code) {
+        if (detach(client, false)) closeTransport(client, code);
+    }
+
+    private void closeTransport(Client client, int code) {
+        try { client.socket.close(new CloseStatus(code)); } catch (Exception ignored) {}
+    }
+
+    @Override public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        Client client = clients.get(session.getId());
+        if (client != null) detach(client, false);
+    }
     @Override public void handleTransportError(WebSocketSession session,Throwable error){Client c=clients.get(session.getId());if(c!=null)close(c,1013);}
-    @PreDestroy public void stop(){clients.values().forEach(c->close(c,1001));outbound.shutdownNow();}
+    @PreDestroy public void stop() {
+        synchronized (admissionLock) {
+            authTimeouts.shutdownNow();
+        }
+        clients.values().forEach(c -> close(c, 1001));
+        outbound.shutdownNow();
+    }
 }

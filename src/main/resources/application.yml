@@ -42,6 +42,8 @@ spring:
       password: ${NEXION_REDIS_PASSWORD:}
 
 nexion:
+  websocket:
+    max-connections: ${NEXION_WEBSOCKET_MAX_CONNECTIONS:2000}
   developer:
     webhooks:
       # Production must explicitly configure exact hosts or parent domains.
