@@ -2235,7 +2235,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         return null;
     }
 
-    private BigDecimal h3Decimal(String raw, int scale) {
+    private static BigDecimal h3Decimal(String raw, int scale) {
         BigDecimal value = parseDecimal(raw);
         if (value.stripTrailingZeros().scale() > scale) throw new IllegalArgumentException("H3_VALUE_PRECISION_INVALID");
         return value;
@@ -5397,9 +5397,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             }
         }
         if (key.startsWith("weekly.mult.")) {
-            BigDecimal multiplier = bounded(h3Decimal(value.replace("×", "").replace("x", ""), 6),
-                    new BigDecimal("0.1"), new BigDecimal("5"));
-            return multiplier.stripTrailingZeros().toPlainString() + "×";
+            return parseWeeklyPhaseMultiplier(value).toPlainString() + "×";
         }
         if (key.startsWith("wheel.guards.kill")) {
             if (!Set.of("开", "关", "on", "off", "true", "false").contains(value)) {
@@ -5450,7 +5448,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
 
     private String questConfigStorageKey(String key) {
         if (key.startsWith("weekly.mult.")) {
-            return QUEST_PREFIX + "weekly.mult." + key.substring("weekly.mult.".length());
+            return weeklyPhaseMultiplierConfigKey(key.substring("weekly.mult.".length()));
         }
         if (key.startsWith("wheel.guards.")) {
             return WHEEL_PREFIX + "guard." + key.substring("wheel.guards.".length());
@@ -5463,6 +5461,15 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             case "wheel.pool" -> WHEEL_PREFIX + "pool_signature";
             default -> throw new IllegalArgumentException("QUEST_CONFIG_KEY_INVALID");
         };
+    }
+
+    static String weeklyPhaseMultiplierConfigKey(String phase) {
+        return QUEST_PREFIX + "weekly.mult." + phase;
+    }
+
+    static BigDecimal parseWeeklyPhaseMultiplier(String raw) {
+        String value = raw == null ? null : raw.replace("×", "").replace("x", "");
+        return bounded(h3Decimal(value, 6), new BigDecimal("0.1"), new BigDecimal("5"));
     }
 
     private String defaultQuestConfigValue(String key) {
@@ -5499,8 +5506,12 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             return DayOneTriRewardPolicy.increases(oldValue, newValue);
         }
         if (key.startsWith("weekly.mult.")) {
-            return oldValue.isBlank() || parseDecimal(newValue.replace("×", "")).compareTo(
-                    parseDecimal(oldValue.replace("×", "").replace("x", ""))) > 0;
+            BigDecimal next = parseWeeklyPhaseMultiplier(newValue);
+            try {
+                return next.compareTo(parseWeeklyPhaseMultiplier(oldValue)) > 0;
+            } catch (IllegalArgumentException invalidPriorValue) {
+                return true; // A repair follows the existing approval path for a missing prior value.
+            }
         }
         if (key.equals("wheel.pool")) {
             return !oldValue.equals(newValue);
@@ -5797,11 +5808,11 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         return values;
     }
 
-    private BigDecimal parseDecimal(String raw) {
+    private static BigDecimal parseDecimal(String raw) {
         return parseDecimal(raw, null);
     }
 
-    private BigDecimal parseDecimal(String raw, BigDecimal fallback) {
+    private static BigDecimal parseDecimal(String raw, BigDecimal fallback) {
         if (!StringUtils.hasText(raw)) {
             if (fallback != null) {
                 return BigDecimal.ZERO;
@@ -5824,7 +5835,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 : raw;
     }
 
-    private BigDecimal bounded(BigDecimal value, BigDecimal min, BigDecimal max) {
+    private static BigDecimal bounded(BigDecimal value, BigDecimal min, BigDecimal max) {
         if (value.compareTo(min) < 0 || value.compareTo(max) > 0) {
             throw new IllegalArgumentException("Numeric value is out of range");
         }

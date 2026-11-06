@@ -164,6 +164,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260909_h3_day_one_instance_snapshot.sql"),
   (Join-Path $root "scripts\migrations\20261016_h3_weekly_definition_snapshot.sql"),
   (Join-Path $root "scripts\migrations\20261018_h3_regional_weekly_period.sql"),
+  (Join-Path $root "scripts\migrations\20261106_h3_weekly_phase_multiplier.sql"),
   (Join-Path $root "scripts\migrations\20260911_h3_day_one_registration_bindings.sql"),
   # Lifetime purchase quota release must follow the reservation made by the
   # exact order line, never today's mutable SKU policy.

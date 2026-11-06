@@ -311,7 +311,7 @@ public class AppGrowthEngagementService {
                     quest.put("nameLocale", selected != null ? contentLocale(locale) : english != null ? "en" : "und");
                     return quest;
                 }).toList();
-        BigDecimal responseMultiplier = weekly != null ? weekly.questBonusMultiplier() : liveRhythmAvailable
+        BigDecimal responseMultiplier = weekly != null ? weekly.effectiveQuestBonusMultiplier() : liveRhythmAvailable
                 ? positiveOrOne(rhythm.questBonusMultiplier())
                 : positive(dayOneSnapshot.questBonusMultiplier());
         int responseRhythmMonth = weekly != null ? weekly.rhythmMonth() : liveRhythmAvailable ? rhythm.currentMonth()
@@ -554,7 +554,7 @@ public class AppGrowthEngagementService {
             }
             GrowthRhythmSnapshot rhythm = weekly == null ? growthRhythmFacade.snapshot() : null;
             if (weekly == null && (rhythm == null || rhythm.currentMonth() <= 0)) throw conflict("H1_RHYTHM_UNAVAILABLE");
-            BigDecimal multiplier = weekly == null ? positiveOrOne(rhythm.questBonusMultiplier()) : weekly.questBonusMultiplier();
+            BigDecimal multiplier = weekly == null ? positiveOrOne(rhythm.questBonusMultiplier()) : weekly.effectiveQuestBonusMultiplier();
             BigDecimal baseReward = reward.rewardNex();
             BigDecimal amount = positive(baseReward).multiply(multiplier)
                     .setScale(6, RoundingMode.DOWN);
