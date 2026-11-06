@@ -390,7 +390,7 @@ WHERE r.role_code='GROWTH' AND p.permission_code <> 'growth_h8_settle'
   AND LEFT(p.permission_code,17) <> 'growth_promotion_'
   AND p.permission_code NOT IN (
       'growth_h1_control_pin_write', 'growth_h1_override_revoke', 'growth_h1_write',
-      'growth_h8_write'
+      'growth_h5_tick_write', 'growth_h8_write'
   )
   AND p.status=1 AND p.is_deleted=0;
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
