@@ -19,6 +19,7 @@ import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import org.springframework.beans.factory.annotation.Autowired;
 
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.market.application.OpsNexMarketService;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.common.boundary.PhoneReplacementContract;
 import ffdd.opsconsole.common.boundary.PhoneReplacementContract.Policy;
@@ -257,6 +258,9 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     public ApiResult<Void> validateProposal(AuditReplayCommand command) {
+        if (command != null && OpsNexMarketService.isRetiredStakingReplay(command.domain(), command.op())) {
+            return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), OpsErrorCode.RETIRED_FEATURE.name());
+        }
         if (A4RegistryApproval.isOperation(command)) {
             return a4RegistryApproval.canPropose(command) ? ApiResult.ok()
                     : ApiResult.fail(403, "A4_REGISTRY_MAKER_FORBIDDEN");

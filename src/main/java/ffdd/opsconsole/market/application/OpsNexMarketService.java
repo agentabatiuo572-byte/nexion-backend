@@ -64,6 +64,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.Optional;
 import java.time.temporal.ChronoUnit;
 import lombok.RequiredArgsConstructor;
@@ -115,6 +116,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private static final String STAKING_VISIBILITY_KEY = "G.staking.app_visible";
     private static final String STAKING_KILLSWITCH_KEY = "killswitch.staking";
     private static final String STAKING_LEGACY_KILLSWITCH_KEY = "J.killswitch.staking";
+    private static final Set<String> RETIRED_STAKING_REPLAY_OPERATIONS = Set.of(
+            "g1_staking_pool_param", "g1_staking_pool_sale_status", "g1_staking_pool_kill_status");
     private static final String SUNSET_EXCLUSIONS_KEY = "G.sunset.exclusions";
     private static final int REPURCHASE_LOCK_DAYS = 90;
     private static final List<String> CONTROL_KEYS = List.of("schedule", "pin", "loop");
@@ -3606,6 +3609,11 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private record PageSpec(int page, int pageSize, long total, int totalPages, int offset) {
     }
 
+    public static boolean isRetiredStakingReplay(String domain, String operation) {
+        return "G".equalsIgnoreCase(domain) && operation != null
+                && RETIRED_STAKING_REPLAY_OPERATIONS.contains(operation.trim().toLowerCase(Locale.ROOT));
+    }
+
     @Override
     public String domain() {
         return "G";
@@ -3613,24 +3621,14 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
 
     @Override
     public ApiResult<?> replay(AuditReplayCommand cmd, AuditReplayContext ctx) {
+        if (isRetiredStakingReplay(cmd.domain(), cmd.op())) {
+            return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), OpsErrorCode.RETIRED_FEATURE.name());
+        }
         Map<String, Object> p = cmd.params() == null ? Map.of() : cmd.params();
         String operator = ctx.operator();
         String reason = ctx.reason();
         String idem = ctx.idempotencyKey();
         switch (cmd.op()) {
-            case "g1_staking_pool_param" -> {
-                NexMarketValueUpdateRequest req = new NexMarketValueUpdateRequest(str(p, "value"), reason, operator);
-                return updateStakingPoolParam(idem, str(p, "tierKey"), str(p, "paramKey"), req);
-            }
-            case "g1_staking_pool_sale_status" -> {
-                // updateStakingPoolSaleStatus 内部用 parseBooleanValue(request.value()) 解析布尔,enabled 以字符串放入 value
-                NexMarketValueUpdateRequest req = new NexMarketValueUpdateRequest(String.valueOf(boolVal(p, "enabled")), reason, operator);
-                return updateStakingPoolSaleStatus(idem, str(p, "tierKey"), req);
-            }
-            case "g1_staking_pool_kill_status" -> {
-                NexMarketValueUpdateRequest req = new NexMarketValueUpdateRequest(String.valueOf(boolVal(p, "killed")), reason, operator);
-                return updateStakingPoolKillStatus(idem, str(p, "tierKey"), req);
-            }
             case "g2_exchange_param" -> {
                 ExchangeParamUpdateRequest req = new ExchangeParamUpdateRequest(str(p, "value"), reason, operator);
                 return updateExchangeParam(idem, str(p, "paramKey"), req);
