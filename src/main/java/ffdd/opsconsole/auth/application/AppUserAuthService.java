@@ -19,6 +19,7 @@ import ffdd.opsconsole.auth.mapper.UserLoginGuardMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade.SessionLifetimes;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.JwtProperties;
 import ffdd.opsconsole.shared.security.JwtTokenProvider;
@@ -46,6 +47,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.core.Authentication;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -106,23 +108,24 @@ public class AppUserAuthService {
         if (loginGuardMapper.countUpdatedAtIndex() == 0) loginGuardMapper.addUpdatedAtIndex();
     }
 
-    @Transactional
+    // The account row serializes takeover. READ_COMMITTED keeps the session scan from locking adjacent users' insert gaps.
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<UserLoginResponse> login(UserLoginRequest request) {
         return login(request, "local");
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<UserLoginResponse> login(UserLoginRequest request, String clientAddress) {
         return login(request, clientAddress, AppSessionSurface.UNKNOWN);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<UserLoginResponse> login(
             UserLoginRequest request, String clientAddress, AppSessionSurface surface) {
         return login(request, clientAddress, AppLoginContext.unavailable(surface));
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<UserLoginResponse> login(
             UserLoginRequest request, String clientAddress, AppLoginContext context) {
         ApiResult<UserLoginResponse> recovered = recoverCompletedLogin(context);
@@ -241,24 +244,24 @@ public class AppUserAuthService {
         return ApiResult.ok(new UserOtpLoginChallengeResponse(challengeNo, policy.cooldownSeconds(), maskPhone(phone)));
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<UserLoginResponse> completeOtpLogin(UserOtpLoginVerifyRequest request) {
         return completeOtpLogin(request, "local");
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<UserLoginResponse> completeOtpLogin(
             UserOtpLoginVerifyRequest request, String clientAddress) {
         return completeOtpLogin(request, clientAddress, AppSessionSurface.UNKNOWN);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<UserLoginResponse> completeOtpLogin(
             UserOtpLoginVerifyRequest request, String clientAddress, AppSessionSurface surface) {
         return completeOtpLogin(request, clientAddress, AppLoginContext.unavailable(surface));
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<UserLoginResponse> completeOtpLogin(
             UserOtpLoginVerifyRequest request, String clientAddress, AppLoginContext context) {
         ApiResult<UserLoginResponse> recovered = recoverCompletedLogin(context);
@@ -307,18 +310,18 @@ public class AppUserAuthService {
         return issueSession(user, countryCode, phone, clientAddress, context, true);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<UserLoginResponse> completePasswordReset(UserPasswordResetCompleteRequest request) {
         return completePasswordReset(request, "local");
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<UserLoginResponse> completePasswordReset(
             UserPasswordResetCompleteRequest request, String clientAddress) {
         return completePasswordReset(request, clientAddress, AppLoginContext.unavailable(null));
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<UserLoginResponse> completePasswordReset(
             UserPasswordResetCompleteRequest request, String clientAddress, AppLoginContext context) {
         ApiResult<UserLoginResponse> recovered = recoverCompletedLogin(context);
@@ -370,24 +373,24 @@ public class AppUserAuthService {
         return issueSession(user, countryCode, phone, clientAddress, context, true);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<UserLoginResponse> completeTwoFactorLogin(UserTwoFactorLoginRequest request) {
         return completeTwoFactorLogin(request, "local");
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<UserLoginResponse> completeTwoFactorLogin(
             UserTwoFactorLoginRequest request, String clientAddress) {
         return completeTwoFactorLogin(request, clientAddress, AppSessionSurface.UNKNOWN);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<UserLoginResponse> completeTwoFactorLogin(
             UserTwoFactorLoginRequest request, String clientAddress, AppSessionSurface surface) {
         return completeTwoFactorLogin(request, clientAddress, AppLoginContext.unavailable(surface));
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<UserLoginResponse> completeTwoFactorLogin(
             UserTwoFactorLoginRequest request, String clientAddress, AppLoginContext context) {
         ApiResult<UserLoginResponse> recovered = recoverCompletedLogin(context);
@@ -483,20 +486,26 @@ public class AppUserAuthService {
             boolean interactiveLogin) {
         ApiResult<UserLoginResponse> environmentFailure = environmentFailure(user, false);
         if (environmentFailure != null) return environmentFailure;
+        SessionLifetimes lifetimes = sessionLifetimes();
         var issued = singleSessions.issue(user.getId(), context, clientAddress,
-                configInt("auth.session.refresh_ttl_days", 30, 7, 90));
+                lifetimes.refreshDays());
         UserSessionEntity session = issued.session();
         UserAuthEnvironment audience = UserAuthEnvironment.resolve(environment)
                 .orElseThrow(() -> new BizException(503, "USER_AUTH_ENVIRONMENT_FORBIDDEN"));
         if (!issued.original() && interactiveLogin && audience == UserAuthEnvironment.PRODUCTION)
             supportActivity.interactiveLogin(user.getId(), session.getSessionChainId());
-        return loginReceipt(user, issued);
+        return loginReceipt(user, issued, lifetimes.accessHours());
     }
 
     private ApiResult<UserLoginResponse> loginReceipt(UserEntity user, AppSingleSessionService.Issued issued) {
+        return loginReceipt(user, issued, issued.refreshToken() == null ? 0 : sessionLifetimes().accessHours());
+    }
+
+    private ApiResult<UserLoginResponse> loginReceipt(
+            UserEntity user, AppSingleSessionService.Issued issued, int accessHours) {
         UserSessionEntity session = issued.session();
         String token = issued.refreshToken() == null ? null : tokenProvider.createUserToken(user.getId(), user.getPhone() == null ? "" : user.getPhone(),
-                List.of(), session.getRefreshTokenId(), Duration.ofHours(configInt("auth.session.access_ttl_hours",4,1,24)),
+                List.of(), session.getRefreshTokenId(), Duration.ofHours(accessHours),
                 UserAuthEnvironment.resolve(environment).orElseThrow(() -> new BizException(503,"USER_AUTH_ENVIRONMENT_FORBIDDEN")));
         return ApiResult.ok(new UserLoginResponse(token, "Bearer",
                 new UserLoginResponse.UserSession(user.getId(), sessionCountryCode(user), sessionPhone(user),
@@ -731,10 +740,11 @@ public class AppUserAuthService {
             revocations.revokeAll(user.getId());
             return ApiResult.fail(403, "USER_REFRESH_PHONE_INVALID");
         }
+        SessionLifetimes lifetimes = sessionLifetimes();
         if (recoveredRaw != null) {
             String access = tokenProvider.createUserToken(user.getId(), sessionPhone(user), List.of(),
                     current.getRefreshTokenId(),
-                    Duration.ofHours(configInt("auth.session.access_ttl_hours", 4, 1, 24)),
+                    Duration.ofHours(lifetimes.accessHours()),
                     UserAuthEnvironment.resolve(environment)
                             .orElseThrow(() -> new BizException(503, "USER_AUTH_ENVIRONMENT_FORBIDDEN")));
             return ApiResult.ok(new UserLoginResponse(access, "Bearer",
@@ -760,7 +770,7 @@ public class AppUserAuthService {
         next.setExecutionSupported(current.getExecutionSupported());
         next.setLoginAttemptId(current.getLoginAttemptId());
         next.setLastActiveAt(now);
-        next.setExpiresAt(now.plusDays(configInt("auth.session.refresh_ttl_days", 30, 7, 90)));
+        next.setExpiresAt(now.plusDays(lifetimes.refreshDays()));
         next.setIsDeleted(0);
         sessionMapper.insert(next);
         String phone = user.getPhone() == null ? "" : user.getPhone();
@@ -769,7 +779,7 @@ public class AppUserAuthService {
                 .orElseThrow(() -> new BizException(503, "USER_AUTH_ENVIRONMENT_FORBIDDEN"));
         String access = tokenProvider.createUserToken(
                 user.getId(), phone, List.of(), nextId,
-                Duration.ofHours(configInt("auth.session.access_ttl_hours", 4, 1, 24)), audience);
+                Duration.ofHours(lifetimes.accessHours()), audience);
         return ApiResult.ok(new UserLoginResponse(access, "Bearer",
                 new UserLoginResponse.UserSession(user.getId(), countryCode, phone, user.getNickname(),
                         userMapper.isOnboardingComplete(user.getId())),
@@ -1029,6 +1039,14 @@ public class AppUserAuthService {
         } catch (IllegalArgumentException exception) {
             passwordEncoder.matches(rawPassword, DUMMY_PASSWORD_HASH);
             return false;
+        }
+    }
+
+    private SessionLifetimes sessionLifetimes() {
+        try {
+            return configFacade.sessionLifetimes();
+        } catch (org.springframework.dao.DataAccessException ex) {
+            return SessionLifetimes.DEFAULT;
         }
     }
 

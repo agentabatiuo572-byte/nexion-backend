@@ -20,6 +20,7 @@ import org.springframework.core.env.Environment;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
@@ -137,13 +138,13 @@ public class OAuthProviderFlowService {
         return new Status(state, flow.getProvider(), "VERIFIED".equals(state) ? flow.getDisplayName() : null);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<UserLoginResponse> login(Proof proof, String clientAddress, AppLoginContext context,
             String challengeNo, String code) {
         return login(proof, clientAddress, context, challengeNo, code, null);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<UserLoginResponse> login(Proof proof, String clientAddress, AppLoginContext context,
             String challengeNo, String code, String captchaTicket) {
         requireEnvironment();
