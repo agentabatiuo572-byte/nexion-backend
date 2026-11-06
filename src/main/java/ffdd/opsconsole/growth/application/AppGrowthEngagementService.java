@@ -995,13 +995,16 @@ public class AppGrowthEngagementService {
                     .filter(row -> target == null || target.equals(row.milestoneId())).limit(1).toList();
             if (target != null && selected.isEmpty()) throw conflict("EARNING_MILESTONE_NOT_CLAIMABLE");
             for (EarningMilestone row : selected) {
-                BigDecimal reward = positive(row.rewardNex());
+                BigDecimal reward = row.rewardNex();
+                if (reward == null || reward.signum() < 0) throw conflict("REWARD_AMOUNT_INVALID");
                 String eventNo = "EMS-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
                 if (mapper.insertEarningMilestone(userId, row, eventNo) != 1) {
                     throw conflict("EARNING_MILESTONE_CONFLICT");
                 }
-                creditNex(userId, "EARNING-MS:" + userId + ":" + row.milestoneId(),
-                        "EARNING_MILESTONE", reward, "H5 earning milestone fired");
+                if (reward.signum() > 0) {
+                    creditNex(userId, "EARNING-MS:" + userId + ":" + row.milestoneId(),
+                            "EARNING_MILESTONE", reward, "H5 earning milestone fired");
+                }
                 Map<String, Object> detail = linked(
                         "milestoneId", row.milestoneId(), "thresholdUsd", row.thresholdUsdt(),
                         "rewardNex", reward, "lifetimeEarningsUsd", row.lifetimeEarningsUsdt());
