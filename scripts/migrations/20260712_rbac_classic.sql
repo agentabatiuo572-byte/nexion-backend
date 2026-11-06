@@ -6,14 +6,14 @@ SOURCE scripts/rbac-classic-seed/00-permission-alter.sql;
 
 INSERT INTO nx_admin_role (role_code, role_name, remark, status, is_deleted) VALUES
 ('SUPER_ADMIN', '超级管理员', '平台全域管理员', 1, 0),
-('CONFIG_ADMIN', '配置运营', '平台配置与系统参数管理员', 1, 0),
+('CONFIG_ADMIN', '配置运营', '查看运营总览的部分页面', 1, 0),
 ('FINANCE', '财务', '资金、账务与提现审核', 1, 0),
 ('FINANCE_LEAD', '财务主管', '财务权限并负责大额调整与冲正', 1, 0),
 ('RISK', '风控', '风控、KYC 与紧急处置', 1, 0),
 ('CONTENT', '内容运营', '内容、公告与披露管理', 1, 0),
 ('GROWTH', '增长运营', '增长、设备与网络运营', 1, 0),
 ('SUPPORT', '客服', '客服中心全局后台角色', 1, 0),
-('AUDITOR', '只读审计', '审计与合规只读观察', 1, 0)
+('AUDITOR', '只读审计', '全域只读，可导出脱敏文件', 1, 0)
 ON DUPLICATE KEY UPDATE role_name=VALUES(role_name), remark=VALUES(remark),
  status=1, is_deleted=0, updated_at=NOW();
 
