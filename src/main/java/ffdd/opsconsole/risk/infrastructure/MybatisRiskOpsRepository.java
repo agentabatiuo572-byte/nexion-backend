@@ -918,6 +918,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("stats", stats);
+        response.put("lastSuccessfulCheckAt", mapper.lastSuccessfulMultiAccountCheckAt());
         response.put("params", mapper.riskParams("k1"));
         response.put("clusters", new PageResult<>(clusterTotal, normalizedClusterPageNum, normalizedClusterPageSize, clusters));
         response.put("whitelist", new PageResult<>(whitelistTotal, normalizedWhitelistPageNum, normalizedWhitelistPageSize, whitelist));
@@ -1028,6 +1029,11 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                     projection.evidenceFingerprint(), projection.thresholdHit(),
                     json(projection.giftDuplicates()), json(projection.nodes()), json(projection.edges()));
         }
+    }
+
+    @Override
+    public void recordSuccessfulMultiAccountCheck() {
+        mapper.recordSuccessfulMultiAccountCheck();
     }
 
     private List<String> nodeUserNos(String nodesJson) {

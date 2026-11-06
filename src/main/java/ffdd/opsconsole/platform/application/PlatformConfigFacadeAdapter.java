@@ -32,6 +32,11 @@ public class PlatformConfigFacadeAdapter implements PlatformConfigFacade {
     }
 
     @Override
+    public Optional<String> storedValue(String configKey) {
+        return configRepository.findStoredByKey(configKey).map(PlatformConfigItem::configValue);
+    }
+
+    @Override
     public SessionLifetimes sessionLifetimes() {
         return sessionLifetimeCache == null ? PlatformConfigFacade.super.sessionLifetimes() : sessionLifetimeCache.read();
     }
