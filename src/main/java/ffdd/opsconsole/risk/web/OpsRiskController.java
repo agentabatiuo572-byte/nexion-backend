@@ -1,6 +1,7 @@
 package ffdd.opsconsole.risk.web;
 
-
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonUnwrapped;
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
@@ -41,9 +42,12 @@ import ffdd.opsconsole.risk.dto.RiskScoringEscalateRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringSourceRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringWeightsRequest;
 import ffdd.opsconsole.risk.dto.RiskSignalRequest;
+import ffdd.opsconsole.risk.mapper.RiskOpsMapper.MultiAccountClusterRecord;
 import java.util.List;
 import java.util.Map;
 import ffdd.opsconsole.platform.application.OpsPlatformConfigService;
+import ffdd.opsconsole.platform.application.PendingApprovalProjection;
+import ffdd.opsconsole.platform.application.PendingApprovalProjection.PendingApproval;
 import ffdd.opsconsole.platform.dto.PlatformConfigResponse;
 import ffdd.opsconsole.platform.dto.PlatformConfigUpdateRequest;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -66,6 +70,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class OpsRiskController {
     private final OpsRiskService riskService;
     private final RiskReleaseParamsService releaseParamsService;
+    private final PendingApprovalProjection pendingApprovals;
     @Autowired
     private OpsPlatformConfigService platformConfigService;
 
@@ -119,10 +124,20 @@ public class OpsRiskController {
                 whitelistPageNum, whitelistPageSize);
         if (result.getCode() != 0 || releaseParamsService == null) return result;
         Map<String, Object> data = new java.util.LinkedHashMap<>(result.getData());
+        if (data.get("clusters") instanceof PageResult<?> page) {
+            List<MultiAccountClusterRecord> rows = page.getRecords().stream()
+                    .map(MultiAccountClusterRecord.class::cast).toList();
+            var approvals = pendingApprovals.read("K", "cluster", rows.stream().map(MultiAccountClusterRecord::id).toList());
+            data.put("clusters", new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(), rows.stream()
+                    .map(row -> new ClusterWithPendingApproval(row, approvals.get(row.id()))).toList()));
+        }
         data.put("releaseParams", releaseParamsService.rows());
         data.put("registrationParams", platformConfigService.k1RegistrationParams());
         return ApiResult.ok(data);
     }
+
+    private record ClusterWithPendingApproval(@JsonUnwrapped MultiAccountClusterRecord cluster,
+                                              @JsonInclude(JsonInclude.Include.NON_NULL) PendingApproval pendingApproval) {}
 
     @PatchMapping("/multi-account/registration-params")
     @PreAuthorize("hasAuthority('risk_k1_read') && @superAdminAuthorization.isSuperAdmin(authentication)")

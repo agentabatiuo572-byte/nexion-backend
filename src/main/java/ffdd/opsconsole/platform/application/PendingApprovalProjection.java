@@ -6,9 +6,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
+import java.time.format.DateTimeFormatter;
 import java.util.Collection;
-import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.TreeMap;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -27,14 +28,14 @@ public class PendingApprovalProjection {
             Map.entry("k1_cluster_freeze", new Operation("K", "cluster", "clusterId", "冻结账户组")),
             Map.entry("k1_cluster_release", new Operation("K", "cluster", "clusterId", "解除误判")),
             Map.entry("k1_cluster_cleared", new Operation("K", "cluster", "clusterId", "判定正常")),
-            Map.entry("k1_cluster_flag", new Operation("K", "cluster", "clusterId", "标记待复审")));
+            Map.entry("k1_cluster_flag", new Operation("K", "cluster", "clusterId", "标记为可疑")));
 
     private final AuditObjectLockMapper lockMapper;
     private final ObjectMapper objectMapper;
 
     public Map<String, PendingApproval> read(String domain, String targetType, Collection<String> authorizedIds) {
         if (authorizedIds.isEmpty()) return Map.of();
-        Map<String, PendingApproval> approvals = new LinkedHashMap<>();
+        Map<String, PendingApproval> approvals = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
         for (var lock : lockMapper.selectPendingLocks(domain, targetType, authorizedIds)) {
             approvals.put(lock.targetId(), describe(domain, targetType, lock));
         }
@@ -45,6 +46,12 @@ public class PendingApprovalProjection {
         if (command == null || command.op() == null) return null;
         Operation operation = OPERATIONS.get(command.op());
         return operation != null && operation.domain().equals(command.domain()) ? operation : null;
+    }
+
+    static boolean coversTarget(AuditLockTarget target) {
+        return target != null && OPERATIONS.values().stream()
+                .anyMatch(operation -> operation.domain().equalsIgnoreCase(target.domain())
+                        && operation.targetType().equalsIgnoreCase(target.type()));
     }
 
     private PendingApproval describe(String domain, String targetType, AuditObjectLockMapper.PendingLock lock) {
@@ -58,7 +65,8 @@ public class PendingApprovalProjection {
                     || !lock.targetId().equals(command.path("params").path(operation.idField()).asText().trim())) {
                 return GENERIC;
             }
-            return new PendingApproval(operation.label(), lock.operatorName(), lock.createdAt().toString());
+            return new PendingApproval(operation.label(), lock.operatorName(),
+                    lock.createdAt().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
         } catch (JsonProcessingException invalidHistoricCommand) {
             return GENERIC;
         }

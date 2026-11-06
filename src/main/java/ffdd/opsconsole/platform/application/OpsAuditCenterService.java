@@ -10,6 +10,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
+import ffdd.opsconsole.growth.application.OpsGrowthService;
 import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
@@ -132,6 +133,8 @@ public class OpsAuditCenterService {
     private final PromotionOrderService promotions;
     private final ffdd.opsconsole.device.application.OpsDeviceService devices;
     private final OpsI18nLearningService learning;
+    @Autowired
+    private OpsGrowthService growth;
 
     public OpsAuditCenterService(PlatformConfigRepository configRepository, AuditLogService auditLogService,
             OpsReadTimeSeedPolicy readTimeSeedPolicy, AuditOperationTicketMapper ticketMapper,
@@ -344,6 +347,30 @@ public class OpsAuditCenterService {
             sourceDomain = descriptor.sourceDomain();
             ticket.setSourceDomain(normalizeDomain(sourceDomain));
             target = descriptor.target();
+        }
+        var pendingOperation = PendingApprovalProjection.operation(command);
+        if (pendingOperation != null) {
+            String targetId = pendingActionId(command, pendingOperation);
+            String suppliedTargetId = target == null ? null : target.id();
+            if ("H".equals(pendingOperation.domain())) {
+                suppliedTargetId = growth.canonicalTrialSessionId(suppliedTargetId);
+            }
+            if (targetId == null || target == null || !pendingOperation.target(targetId).equals(
+                    new AuditLockTarget(target.domain(), target.type(), suppliedTargetId))
+                    || (request.targets() != null && !request.targets().isEmpty())) {
+                return fail(OpsErrorCode.VALIDATION_FAILED, "A2_TARGET_MISMATCH");
+            }
+            target = pendingOperation.target(targetId);
+            if ("H".equals(pendingOperation.domain())
+                    && lockMapper.countActiveByTarget("H", "trial_session", targetId.substring("trial-".length())) > 0) {
+                return ApiResult.fail(409, "OBJECT_ALREADY_PENDING");
+            }
+            Map<String, Object> params = new LinkedHashMap<>(command.params());
+            params.put(pendingOperation.idField(), targetId);
+            command = new AuditReplayCommand(command.domain(), command.op(), params);
+        } else if (PendingApprovalProjection.coversTarget(target) || (request.targets() != null
+                && request.targets().stream().anyMatch(PendingApprovalProjection::coversTarget))) {
+            return fail(OpsErrorCode.VALIDATION_FAILED, "A2_TARGET_MISMATCH");
         }
         CourseRewardReview rewardReview = null;
         if (OpsI18nLearningService.isCourseRewardAdjustment(command)) {
@@ -1047,6 +1074,16 @@ public class OpsAuditCenterService {
             if (businessPermission.getCode() != 0) {
                 return ApiResult.fail(businessPermission.getCode(), businessPermission.getMessage());
             }
+            var pendingOperation = PendingApprovalProjection.operation(cmd);
+            if (pendingOperation != null) {
+                String targetId = pendingActionId(cmd, pendingOperation);
+                if (targetId != null && (lockMapper.countActiveByOtherTicket(pendingOperation.domain(),
+                        pendingOperation.targetType(), targetId, ticket.getOperationId()) > 0
+                        || ("H".equals(pendingOperation.domain()) && lockMapper.countActiveByOtherTicket("H",
+                        "trial_session", targetId.substring("trial-".length()), ticket.getOperationId()) > 0))) {
+                    return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+                }
+            }
             AuditReplayContext ctx = new AuditReplayContext(
                     authenticatedOperator, request.reason().trim(), idempotencyKey.trim());
             if (avatarMaker != null) {
@@ -1226,6 +1263,12 @@ public class OpsAuditCenterService {
         for (AuditObjectLockEntity lock : locks) {
             lockMapper.deleteById(lock.getId());
         }
+    }
+
+    private String pendingActionId(AuditReplayCommand command, PendingApprovalProjection.Operation operation) {
+        Object value = command.params() == null ? null : command.params().get(operation.idField());
+        if (!(value instanceof String id) || id.isBlank() || id.trim().length() > 128) return null;
+        return "H".equals(operation.domain()) ? growth.canonicalTrialSessionId(id) : id.trim();
     }
 
     /** 反序列化回放指令;空或解析失败返回 null。 */
