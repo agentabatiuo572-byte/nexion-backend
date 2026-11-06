@@ -8,9 +8,6 @@ import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.platform.application.A4EventRetentionService;
 import ffdd.opsconsole.platform.dto.EventCenterMutationRequest;
 import ffdd.opsconsole.platform.dto.EventCenterOverview;
-import ffdd.opsconsole.platform.dto.EventDomainExtensionRequest;
-import ffdd.opsconsole.platform.dto.EventSchemaRegistrationRequest;
-import ffdd.opsconsole.platform.dto.ExistingSchemaPropertyRequest;
 import ffdd.opsconsole.platform.dto.EventLifecycleTransitionRequest;
 import ffdd.opsconsole.platform.dto.RetentionExecutionRequest;
 import ffdd.opsconsole.platform.dto.RetentionExecutionView;
@@ -98,28 +95,10 @@ public class OpsEventCenterController {
         return eventCenterService.updateParam(idempotencyKey, paramKey, request);
     }
 
-    @PostMapping("/schema-registrations")
+    @PostMapping({"/schema-registrations", "/schema-registrations/properties", "/domain-extension-batches"})
     @PreAuthorize("hasAuthority('platform_a4_write')")
-    public ApiResult<EventCenterOverview> registerSchema(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody(required = false) EventSchemaRegistrationRequest request) {
-        return eventCenterService.registerSchema(idempotencyKey, request);
-    }
-
-    @PostMapping("/schema-registrations/properties")
-    @PreAuthorize("hasAuthority('platform_a4_write')")
-    public ApiResult<EventCenterOverview> addSchemaProperty(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody(required = false) ExistingSchemaPropertyRequest request) {
-        return eventCenterService.addSchemaProperty(idempotencyKey, request);
-    }
-
-    @PostMapping("/domain-extension-batches")
-    @PreAuthorize("hasAuthority('platform_a4_write')")
-    public ApiResult<EventCenterOverview.EventDomainExtensionBatch> registerDomainExtension(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody(required = false) EventDomainExtensionRequest request) {
-        return eventCenterService.registerDomainExtension(idempotencyKey, request);
+    public ApiResult<Void> requireRegistrationApproval() {
+        return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
     }
 
     @PostMapping("/retention-runs")

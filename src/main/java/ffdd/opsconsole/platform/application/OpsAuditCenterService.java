@@ -314,7 +314,8 @@ public class OpsAuditCenterService {
             ticket.setSourceDomain(sourceDomain);
         }
         if (descriptor != null) {
-            boolean superAdminProposal = "A1".equals(descriptor.sourceDomain()) || superAdminProposalCommand(command);
+            boolean superAdminProposal = "A1".equals(descriptor.sourceDomain()) || superAdminProposalCommand(command)
+                    || A4RegistryApproval.supports(command);
             ticket.setAction(descriptor.action());
             ticket.setObjectText(descriptor.objectId());
             ticket.setBeforeValue(H4GrowthApproval.supports(command) ? "H4 original configuration: " + descriptor.objectId() : descriptor.beforeValue());
@@ -360,6 +361,9 @@ public class OpsAuditCenterService {
         if (command != null) {
             try {
                 com.fasterxml.jackson.databind.node.ObjectNode stored = objectMapper.valueToTree(command);
+                if (A4RegistryApproval.supports(command)) {
+                    stored.put(A4RegistryApproval.MAKER_FIELD, A2ReplayContext.authenticatedAdminId());
+                }
                 if (rewardReview != null) {
                     // Root metadata is written by A2. Old clients could include arbitrary fields in params.
                     stored.set(CourseRewardReview.PARAM, objectMapper.valueToTree(rewardReview));
@@ -835,7 +839,7 @@ public class OpsAuditCenterService {
         boolean mine = Long.valueOf(actorId).equals(makerId);
         if (operationId == null && !mine) return ApiResult.fail(409, "A2_MAKER_ID_UNVERIFIED");
         if ("WITHDRAW".equals(verb) && !mine) return fail(OpsErrorCode.FORBIDDEN, "A2_WITHDRAW_MAKER_ONLY");
-        if ("PROPOSE".equals(verb) && G4CatalogApproval.supports(command)) {
+        if ("PROPOSE".equals(verb) && (G4CatalogApproval.supports(command) || A4RegistryApproval.supports(command))) {
             if (!canReadOwnProposal(ticket, command, actorId)) return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
             return ApiResult.ok(toTicket(ticket, true));
         }
@@ -855,6 +859,9 @@ public class OpsAuditCenterService {
     }
 
     private boolean canReadOwnProposal(AuditOperationTicketEntity ticket, AuditReplayCommand command, long actorId) {
+        if (A4RegistryApproval.supports(command)) {
+            return accessPolicy.canAccessOwnBusinessProposal(command, actorId);
+        }
         return (!G4CatalogApproval.supports(command) && accessPolicy.canAccessRecoveredProposal(ticket, command, actorId))
                 || accessPolicy.canAccessOwnBusinessProposal(command, actorId);
     }
@@ -951,7 +958,8 @@ public class OpsAuditCenterService {
             return fail(OpsErrorCode.FORBIDDEN, "A2_MAKER_CHECKER_REQUIRED");
         }
         AuditReplayCommand cmd = STATUS_APPROVED.equals(nextStatus) ? ticketCommand : null;
-        Long avatarMaker = A2ReplayContext.isAvatarCommand(cmd) ? avatarMakerId(ticket.getCommandJson()) : null;
+        Long avatarMaker = A2ReplayContext.isAvatarCommand(cmd)
+                ? boundMakerId(ticket.getCommandJson(), "avatarMakerAdminId") : null;
         if (STATUS_APPROVED.equals(nextStatus) && A2ReplayContext.isAvatarCommand(cmd)) {
             var expectedTarget = A2ReplayContext.avatarTarget(cmd);
             var locks = lockMapper.selectActiveByTicketId(ticket.getOperationId());
@@ -969,6 +977,18 @@ public class OpsAuditCenterService {
         if (STATUS_APPROVED.equals(nextStatus)) {
             if (cmd == null) {
                 return fail(OpsErrorCode.VALIDATION_FAILED, "COMMAND_REQUIRED");
+            }
+            if (A4RegistryApproval.isOperation(cmd)) {
+                var target = A4RegistryApproval.target(cmd);
+                var locks = lockMapper.selectActiveByTicketId(ticket.getOperationId());
+                if (target == null || !"A".equals(ticket.getSourceDomain()) || !target.id().equals(ticket.getObjectText())
+                        || !"param".equals(ticket.getOperationType()) || !Integer.valueOf(0).equals(ticket.getAmplifies())
+                        || !Integer.valueOf(0).equals(ticket.getSos()) || !"超管".equals(ticket.getRoleGate())
+                        || !Objects.equals(ticket.getReason(), cmd.params().get("proposalReason"))
+                        || locks.size() != 1 || !target.equals(new AuditLockTarget(locks.get(0).getTargetDomain(),
+                                locks.get(0).getTargetType(), locks.get(0).getTargetId()))) {
+                    return fail(OpsErrorCode.FORBIDDEN, "A2_BUSINESS_CONTEXT_MISMATCH");
+                }
             }
             if (superAdminProposalCommand(cmd)) {
                 var target = LearningCourseActivationApproval.supports(cmd) ? LearningCourseActivationApproval.target(cmd)
@@ -1192,6 +1212,7 @@ public class OpsAuditCenterService {
         try {
             com.fasterxml.jackson.databind.node.ObjectNode stored = (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(commandJson);
             stored.remove("avatarMakerAdminId");
+            stored.remove(A4RegistryApproval.MAKER_FIELD);
             stored.remove("skuReview");
             stored.remove("ambassadorPolicyReview");
             var version=stored.remove("ruleStatusReviewVersion");
@@ -1222,7 +1243,7 @@ public class OpsAuditCenterService {
     // H4 keeps complete review data in its bound command; audit summaries keep the recovery key structured.
     private String auditReviewValue(AuditOperationTicketEntity ticket, String side) {
         var command = deserializeCommand(ticket.getCommandJson());
-        if (H4GrowthApproval.supports(command) || LearningCourseActivationApproval.supports(command)
+        if (A4RegistryApproval.supports(command) || H4GrowthApproval.supports(command) || LearningCourseActivationApproval.supports(command)
                 || E2TaskPricingApproval.isLifecycle(command)) {
             return "before".equals(side) ? ticket.getBeforeValue() : ticket.getAfterValue();
         }
@@ -1231,6 +1252,9 @@ public class OpsAuditCenterService {
 
     private String reviewValue(AuditOperationTicketEntity ticket, String side) {
         var command = deserializeCommand(ticket.getCommandJson());
+        if (A4RegistryApproval.supports(command) && "after".equals(side)) {
+            return A4RegistryApproval.reviewAfter(command);
+        }
         if ((LearningCourseActivationApproval.supports(command) || E2TaskPricingApproval.isLifecycle(command))
                 && command.params() != null
                 && command.params().get(side + "Review") instanceof String review) {
@@ -1258,9 +1282,9 @@ public class OpsAuditCenterService {
         return "before".equals(side) ? ticket.getBeforeValue() : ticket.getAfterValue();
     }
 
-    private Long avatarMakerId(String commandJson) {
+    private Long boundMakerId(String commandJson, String field) {
         try {
-            var maker = objectMapper.readTree(commandJson).get("avatarMakerAdminId");
+            var maker = objectMapper.readTree(commandJson).get(field);
             if (maker == null || !maker.isIntegralNumber() || !maker.canConvertToLong()) return null;
             long id = maker.longValue();
             return id > 0 && id <= 9_007_199_254_740_991L ? id : null;
@@ -1309,7 +1333,10 @@ public class OpsAuditCenterService {
         } else if (LearningCourseActivationApproval.supports(command)) {
             boundMaker = LearningCourseActivationApproval.makerId(command);
         } else if (A2ReplayContext.isAvatarCommand(command)) {
-            boundMaker = avatarMakerId(ticket.getCommandJson());
+            boundMaker = boundMakerId(ticket.getCommandJson(), "avatarMakerAdminId");
+        } else if (A4RegistryApproval.supports(command)) {
+            return auditedMaker != null && auditedMaker.equals(boundMakerId(ticket.getCommandJson(), A4RegistryApproval.MAKER_FIELD))
+                    ? auditedMaker : null;
         }
         if (auditedMaker != null) {
             return auditedMaker > 0 && (boundMaker == null || boundMaker.equals(auditedMaker)) ? auditedMaker : null;
