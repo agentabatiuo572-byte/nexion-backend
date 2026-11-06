@@ -50,7 +50,7 @@ public class DeveloperWebhookSchedulerConfiguration {
     ThreadPoolTaskScheduler computeOutboxTaskScheduler() {
         ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
         int maximum = ComputeOutboxDispatchScheduler.MAX_WORKERS;
-        int configured = environment.getProperty("nexion.outbox.compute-dispatch-workers", Integer.class, maximum);
+        int configured = environment.getProperty("nexion.outbox.compute-dispatch-workers", Integer.class, 8);
         scheduler.setPoolSize(Math.max(1, Math.min(configured, maximum)));
         scheduler.setThreadNamePrefix("compute-outbox-");
         scheduler.setWaitForTasksToCompleteOnShutdown(true);
