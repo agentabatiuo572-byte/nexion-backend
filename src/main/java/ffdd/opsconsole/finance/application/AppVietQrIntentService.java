@@ -22,6 +22,7 @@ import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -111,7 +112,8 @@ public class AppVietQrIntentService {
         throw new BizException(410, "VIETQR_MANUAL_TOPUP_RETIRED");
     }
 
-    @Transactional
+    // Keep the user row lock without gap-locking missing create keys across users.
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<Map<String, Object>> createHosted(
             Long userId, String idempotencyKey, BigDecimal requestedAmount) {
         requirePaymentRuntime();
