@@ -48,6 +48,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -171,7 +172,10 @@ public class OpsAuditController {
             + " || (hasAuthority('content_i7_course_reward_adjust') && hasAnyAuthority('platform_a2_write','platform_a2_proposal_create'))"
             + " || (hasAuthority('risk_k2_write') && hasAnyAuthority('platform_a2_proposal_create','platform_a2_write'))")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> proposalByIdempotencyKey(
-            @org.springframework.web.bind.annotation.RequestParam String idempotencyKey) {
+            @RequestParam(name = "idempotencyKey", required = false) String idempotencyKey) {
+        if (idempotencyKey == null) {
+            return ApiResult.fail(400, "idempotencyKey is required");
+        }
         return auditCenterService.proposalByIdempotencyKey(idempotencyKey);
     }
 

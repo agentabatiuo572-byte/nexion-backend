@@ -43,6 +43,10 @@ public record AuditCenterOverview(
             String reason,
             String status,
             String phoneCalibrationProposal) {
+        public AuditOperationTicket withMine(boolean ownedByViewer) {
+            return new AuditOperationTicket(id, action, obj, beforeValue, afterValue, operator, operatorRole,
+                    type, amplifies, sos, ts, ownedByViewer, roleGate, reason, status, phoneCalibrationProposal);
+        }
     }
 
     public record AuditOperationHistory(

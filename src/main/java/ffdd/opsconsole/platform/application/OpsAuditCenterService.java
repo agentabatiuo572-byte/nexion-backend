@@ -68,6 +68,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -87,6 +88,8 @@ public class OpsAuditCenterService {
     private static final String STATUS_PENDING = "pending";
     private static final String STATUS_APPROVED = "approved";
     private static final String STATUS_REJECTED = "rejected";
+    private static final String A2_COMMAND = "A2_COMMAND";
+    private static final String A2_OPERATION_PROPOSED = "A2_OPERATION_PROPOSED";
     private static final String A2_OPERATION_EXECUTED = "A2_OPERATION_EXECUTED";
     private static final String EXECUTED_DECISION_REASON = "即时执行·已生效(单人确认)";
     private static final Set<String> TERMINAL_STATUSES = Set.of(STATUS_APPROVED, STATUS_REJECTED, "withdrawn", "expired");
@@ -147,18 +150,29 @@ public class OpsAuditCenterService {
         AuditOperationTicketEntity ticket = ticketMapper.selectActiveByOperationId(operationId);
         if (ticket == null) return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
         AuditReplayCommand command = deserializeCommand(ticket.getCommandJson());
-        if ((G4CatalogApproval.supports(command) || !accessPolicy.canAccessRecoveredProposal(ticket, actorId))
-                && !accessPolicy.canAccessOwnBusinessProposal(command, actorId)) {
+        if (!Long.valueOf(actorId).equals(ticketMakerId(ticket, command))) {
+            return ApiResult.fail(409, "A2_MAKER_ID_UNVERIFIED");
+        }
+        if (!canReadOwnProposal(ticket, command, actorId)) {
             return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
         }
-        return ApiResult.ok(toTicket(ticket));
+        return ApiResult.ok(toTicket(ticket, true));
     }
 
     public ApiResult<AuditCenterOverview> overview(AuditLogQueryRequest filter) {
         ensureSeedData();
         Map<String, PlatformConfigItem> configs = loadConfigMap(List.of(GROUP_A2));
-        List<AuditOperationTicket> tickets = tickets(filter);
-        List<AuditOperationHistory> history = history(tickets, filter);
+        Long viewer = A2ReplayContext.authenticatedAdminId();
+        boolean ownOnly = accessPolicy.current().ownActorOnly();
+        var rows = ticketRows(filter, ownOnly);
+        var auditedMakers = auditedMakers(rows);
+        var visible = rows.stream()
+                .map(row -> new ViewerTicket(row, viewer != null && viewer.equals(ticketMakerId(row,
+                        deserializeCommand(row.getCommandJson()), auditedMakers.get(row.getOperationId())))))
+                .filter(ticket -> !ownOnly || ticket.mine())
+                .toList();
+        List<AuditOperationTicket> tickets = visible.stream().map(ticket -> toTicket(ticket.row(), ticket.mine())).toList();
+        List<AuditOperationHistory> history = history(tickets, visible);
         List<AuditLogRecord> logs = recentLogs(filter);
         AuditLogQueryRequest aggregateFilter = calendarTodayFilter(filter);
         List<A2AuditAggregate> aggregates = auditLogService.aggregate(aggregateFilter);
@@ -478,7 +492,7 @@ public class OpsAuditCenterService {
         if (promotions != null && refundOrderNo != null) promotions.holdA2Refund(ticket.getOperationId(), refundOrderNo);
 
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
-                .action("A2_OPERATION_PROPOSED")
+                .action(A2_OPERATION_PROPOSED)
                 .resourceType("A2_OPERATION")
                 .resourceId(ticket.getOperationId())
                 .bizNo(ticket.getOperationId())
@@ -497,7 +511,7 @@ public class OpsAuditCenterService {
                         "reason", ticket.getReason(),
                         "idempotencyKey", idempotencyKey.trim()))
                 .build());
-        return ApiResult.ok(toTicket(ticket));
+        return ApiResult.ok(toTicket(ticket, true));
     }
 
     public ApiResult<AuditOperationTicket> recordExecuted(
@@ -565,7 +579,7 @@ public class OpsAuditCenterService {
         ticketMapper.insert(ticket);
 
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
-                .action("A2_OPERATION_EXECUTED")
+                .action(A2_OPERATION_EXECUTED)
                 .resourceType("A2_OPERATION")
                 .resourceId(ticket.getOperationId())
                 .bizNo(ticket.getOperationId())
@@ -585,7 +599,7 @@ public class OpsAuditCenterService {
                         "status", STATUS_APPROVED,
                         "idempotencyKey", idempotencyKey.trim()))
                 .build());
-        return ApiResult.ok(toTicket(ticket));
+        return ApiResult.ok(toTicket(ticket, true));
     }
 
     @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
@@ -696,42 +710,140 @@ public class OpsAuditCenterService {
     private ApiResult<AuditOperationTicket> idempotentTicket(
             String operation, String idempotencyKey, Object request,
             java.util.function.Supplier<ApiResult<AuditOperationTicket>> action) {
-        String actor = AdminActorResolver.resolve(request instanceof AuditOperationDecisionRequest value
-                ? value.operator() : request instanceof AuditOperationProposalRequest value ? value.operator()
-                : request instanceof AuditOperationWithdrawRequest value ? value.operator() : null);
         if (!StringUtils.hasText(idempotencyKey)) {
             return fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED, OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
+        Long actorId = A2ReplayContext.authenticatedAdminId();
+        if (actorId == null) return fail(OpsErrorCode.FORBIDDEN, OpsErrorCode.FORBIDDEN.name());
         try {
-            boolean catalogProposal = "PROPOSE".equals(operation) && request instanceof AuditOperationProposalRequest proposal
-                    && G4CatalogApproval.supports(proposal.command());
+            int separator = operation.indexOf(':');
+            String verb = separator < 0 ? operation : operation.substring(0, separator);
+            boolean proposal = "PROPOSE".equals(verb);
+            boolean catalogProposal = proposal && request instanceof AuditOperationProposalRequest value
+                    && G4CatalogApproval.supports(value.command());
             boolean catalogReceipt = catalogProposal;
-            if (request instanceof AuditOperationDecisionRequest || request instanceof AuditOperationWithdrawRequest) {
-                String operationId = operation.substring(operation.indexOf(':') + 1).trim().toUpperCase(Locale.ROOT);
-                AuditOperationTicketEntity ticket = ticketMapper.selectActiveByOperationId(operationId);
+            String operationId = separator < 0 ? null : operation.substring(separator + 1).trim().toUpperCase(Locale.ROOT);
+            if (operationId != null) {
+                String authority = "WITHDRAW".equals(verb) ? "platform_a2_proposal_create" : "platform_a2_operation_approve";
+                if (!A2ReplayContext.hasAuthority(authority)) {
+                    return fail(OpsErrorCode.FORBIDDEN, OpsErrorCode.FORBIDDEN.name());
+                }
+                var ticket = ticketMapper.selectActiveByOperationId(operationId);
                 catalogReceipt = ticket != null && G4CatalogApproval.supports(deserializeCommand(ticket.getCommandJson()));
             }
-            String requestActor = catalogReceipt ? "admin:" + A2ReplayContext.authenticatedAdminId() : actor;
-            Object fingerprintRequest = request;
-            if (catalogReceipt) {
-                com.fasterxml.jackson.databind.node.ObjectNode fields = objectMapper.valueToTree(request);
-                fields.remove(List.of("operator", "operatorRole"));
-                fingerprintRequest = fields;
+            com.fasterxml.jackson.databind.node.ObjectNode fields = request == null ? null : objectMapper.valueToTree(request);
+            var fingerprint = fields == null ? null : fields.deepCopy();
+            if (fingerprint != null) fingerprint.remove(List.of("operator", "operatorRole"));
+            // G4 already uses a stable fingerprint. The numeric ID keeps new hashes distinct from old name hashes.
+            String requestHash = commandHash(catalogReceipt ? "admin:" + actorId : actorId, operation, fingerprint);
+            var recovery = idempotencyService.recoveryResult(A2_COMMAND, idempotencyKey, requestHash, AuditOperationTicket.class);
+            if (proposal && recovery.status() == AdminIdempotencyService.RecoveryStatus.NOT_FOUND
+                    && auditLogService.findA2ProposalId(actorId, idempotencyKey) != null) {
+                // A committed audit may belong to a concurrent success or to a historical claim we can no longer prove.
+                recovery = idempotencyService.recoveryResult(A2_COMMAND, idempotencyKey, requestHash, AuditOperationTicket.class);
+                if (recovery.status() != AdminIdempotencyService.RecoveryStatus.SUCCEEDED
+                        && recovery.status() != AdminIdempotencyService.RecoveryStatus.MISMATCH) {
+                    return ApiResult.fail(409, "IDEMPOTENCY_RESULT_UNKNOWN");
+                }
             }
-            String requestHash = commandHash(requestActor, operation, fingerprintRequest);
-            java.util.function.Supplier<AuditOperationTicket> mutation = () -> requireSuccess(action.get());
+            if (recovery.status() == AdminIdempotencyService.RecoveryStatus.SUCCEEDED) {
+                if (catalogProposal) return proposalByIdempotencyKey(idempotencyKey);
+                if (proposal && !Objects.equals(recovery.response().id(),
+                        auditLogService.findA2ProposalId(actorId, idempotencyKey))) {
+                    return ApiResult.fail(409, "IDEMPOTENCY_RESULT_UNKNOWN");
+                }
+                return ticketReceipt(recovery.response(), actorId, verb, operationId);
+            }
+            if (recovery.status() == AdminIdempotencyService.RecoveryStatus.UNKNOWN) {
+                return ApiResult.fail(409, "IDEMPOTENCY_RESULT_UNKNOWN");
+            }
+            if (recovery.status() == AdminIdempotencyService.RecoveryStatus.MISMATCH) {
+                var legacy = legacyTicketReceipt(idempotencyKey, operation, verb, operationId, actorId, request, fields);
+                if (legacy != null) return legacy;
+            }
+            // Retained claims keep successful keys across expiry and fence an unresolved processing lease.
+            var receipt = idempotencyService.executeRetained(A2_COMMAND, idempotencyKey, requestHash,
+                    AuditOperationTicket.class, () -> requireSuccess(action.get()));
             if (catalogProposal) {
-                idempotencyService.executeRetained("A2_COMMAND", idempotencyKey, requestHash, AuditOperationTicket.class, mutation);
                 return proposalByIdempotencyKey(idempotencyKey);
             }
-            return ApiResult.ok(idempotencyService.execute(
-                    "A2_COMMAND", idempotencyKey, requestHash, AuditOperationTicket.class, mutation));
+            return ApiResult.ok(receipt);
         } catch (ffdd.opsconsole.shared.exception.PhoneReplacementException ex) {
             // Preserve the phone command conflict contract through A2 and roll back its approval transaction.
             throw ex;
         } catch (BizException ex) {
             return ApiResult.fail(ex.getCode(), ex.getMessage());
         }
+    }
+
+    private ApiResult<AuditOperationTicket> legacyTicketReceipt(String key, String operation, String verb,
+            String operationId, long actorId, Object request, com.fasterxml.jackson.databind.node.ObjectNode fields) {
+        String action = switch (verb) {
+            case "PROPOSE" -> A2_OPERATION_PROPOSED;
+            case "EXECUTED" -> A2_OPERATION_EXECUTED;
+            case "APPROVE" -> "A2_OPERATION_APPROVED";
+            case "REJECT" -> "A2_OPERATION_REJECTED";
+            case "WITHDRAW" -> "A2_OPERATION_WITHDRAWN";
+            default -> throw new IllegalArgumentException(verb);
+        };
+        var audit = auditLogService.findA2CommandAudit(actorId, key, action, operationId);
+        if (audit == null) return null;
+        if (fields == null || !StringUtils.hasText(audit.actorUsername())
+                || (operationId != null && !operationId.equals(audit.operationId()))) {
+            return ApiResult.fail(409, "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+        }
+        String legacyHash = commandHash(audit.actorUsername(), operation, request);
+        var recovered = idempotencyService.recoveryResult(A2_COMMAND, key, legacyHash, AuditOperationTicket.class);
+        if (recovered.status() == AdminIdempotencyService.RecoveryStatus.MISMATCH
+                && !Objects.equals(fields.path("operator").asText(null), audit.actorUsername())) {
+            fields.put("operator", audit.actorUsername());
+            legacyHash = commandHash(audit.actorUsername(), operation, fields);
+            recovered = idempotencyService.recoveryResult(A2_COMMAND, key, legacyHash, AuditOperationTicket.class);
+        }
+        if (recovered.status() == AdminIdempotencyService.RecoveryStatus.MISMATCH && operationId == null) {
+            var ticket = ticketMapper.selectActiveByOperationId(audit.operationId());
+            if (ticket != null && !Objects.equals(fields.path("operatorRole").asText(null), ticket.getOperatorRole())) {
+                fields.put("operatorRole", ticket.getOperatorRole());
+                legacyHash = commandHash(audit.actorUsername(), operation, fields);
+                recovered = idempotencyService.recoveryResult(A2_COMMAND, key, legacyHash, AuditOperationTicket.class);
+            }
+        }
+        if (recovered.status() != AdminIdempotencyService.RecoveryStatus.SUCCEEDED) {
+            return ApiResult.fail(409, recovered.status() == AdminIdempotencyService.RecoveryStatus.MISMATCH
+                    ? "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH" : "IDEMPOTENCY_RESULT_UNKNOWN");
+        }
+        if (!audit.operationId().equals(recovered.response().id())) {
+            return ApiResult.fail(409, "IDEMPOTENCY_RESULT_UNKNOWN");
+        }
+        return ticketReceipt(recovered.response(), actorId, verb, operationId);
+    }
+
+    private ApiResult<AuditOperationTicket> ticketReceipt(AuditOperationTicket receipt, long actorId, String verb,
+            String operationId) {
+        if (!StringUtils.hasText(receipt.id()) || (operationId != null && !operationId.equals(receipt.id()))) {
+            return ApiResult.fail(409, "IDEMPOTENCY_RESULT_UNKNOWN");
+        }
+        var ticket = ticketMapper.selectActiveByOperationId(receipt.id());
+        if (ticket == null) return ApiResult.fail(409, "IDEMPOTENCY_RESULT_UNKNOWN");
+        var command = deserializeCommand(ticket.getCommandJson());
+        Long makerId = ticketMakerId(ticket, command);
+        boolean mine = Long.valueOf(actorId).equals(makerId);
+        if (operationId == null && !mine) return ApiResult.fail(409, "A2_MAKER_ID_UNVERIFIED");
+        if ("WITHDRAW".equals(verb) && !mine) return fail(OpsErrorCode.FORBIDDEN, "A2_WITHDRAW_MAKER_ONLY");
+        if ("PROPOSE".equals(verb) && G4CatalogApproval.supports(command)) {
+            if (!canReadOwnProposal(ticket, command, actorId)) return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
+            return ApiResult.ok(toTicket(ticket, true));
+        }
+        if (!accessPolicy.canAccessTicket(ticket, makerId)
+                && !("PROPOSE".equals(verb) && accessPolicy.canAccessOwnBusinessProposal(command, actorId))) {
+            return fail(OpsErrorCode.FORBIDDEN, OpsErrorCode.FORBIDDEN.name());
+        }
+        return ApiResult.ok(receipt.withMine(mine));
+    }
+
+    private boolean canReadOwnProposal(AuditOperationTicketEntity ticket, AuditReplayCommand command, long actorId) {
+        return (!G4CatalogApproval.supports(command) && accessPolicy.canAccessRecoveredProposal(ticket, actorId))
+                || accessPolicy.canAccessOwnBusinessProposal(command, actorId);
     }
 
     private <T> T requireSuccess(ApiResult<T> result) {
@@ -742,7 +854,7 @@ public class OpsAuditCenterService {
         return result.getData();
     }
 
-    private String commandHash(String actor, String operation, Object request) {
+    private String commandHash(Object actor, String operation, Object request) {
         try {
             Map<String, Object> envelope = new LinkedHashMap<>();
             envelope.put("actor", actor == null ? "unknown" : actor);
@@ -799,14 +911,15 @@ public class OpsAuditCenterService {
         if (ticket == null) {
             return fail(OpsErrorCode.VALIDATION_FAILED, "A2_OPERATION_NOT_FOUND");
         }
+        AuditReplayCommand ticketCommand = deserializeCommand(ticket.getCommandJson());
+        Long makerId = ticketMakerId(ticket, ticketCommand);
         // HTTP authorization evaluates the operation ID before entering this service. Recheck the
         // locked row here so internal callers and a row whose scope changes between those two
         // points cannot approve, reject, unlock, or replay a cross-domain operation.
-        if (!accessPolicy.canAccessTicket(ticket)) {
+        if (!accessPolicy.canAccessTicket(ticket, makerId)) {
             return fail(OpsErrorCode.FORBIDDEN, OpsErrorCode.FORBIDDEN.name());
         }
-        if (promotions != null && !java.util.Objects.equals(lockedRefundOrder,
-                refundOrderNo(deserializeCommand(ticket.getCommandJson())))) {
+        if (promotions != null && !Objects.equals(lockedRefundOrder, refundOrderNo(ticketCommand))) {
             return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A2_REFUND_COMMAND_CHANGED");
         }
         if (expectedStatus != null && !status(ticket.getStatus()).equalsIgnoreCase(expectedStatus.trim())) {
@@ -815,18 +928,14 @@ public class OpsAuditCenterService {
         if (!STATUS_PENDING.equals(status(ticket.getStatus()))) {
             return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A2_OPERATION_ALREADY_TERMINAL");
         }
-        AuditReplayCommand ticketCommand = deserializeCommand(ticket.getCommandJson());
-        CourseRewardReview rewardReview = CourseRewardReview.fromCommand(ticketCommand);
-        boolean makerMatches;
-        if (rewardReview != null) {
-            makerMatches = Long.valueOf(rewardReview.makerAdminId()).equals(A2ReplayContext.authenticatedAdminId());
-        } else if (G4CatalogApproval.supports(ticketCommand)) {
-            makerMatches = G4CatalogApproval.isMaker(ticketCommand, A2ReplayContext.authenticatedAdminId());
-        } else {
-            makerMatches = sameActor(ticket.getOperatorName(), authenticatedOperator);
-        }
+        if (makerId == null) return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A2_MAKER_ID_UNVERIFIED");
+        Long actorId = A2ReplayContext.authenticatedAdminId();
+        boolean makerMatches = makerId.equals(actorId);
         if (makerOnly && !makerMatches) {
             return fail(OpsErrorCode.FORBIDDEN, "A2_WITHDRAW_MAKER_ONLY");
+        }
+        if (!makerOnly && makerMatches) {
+            return fail(OpsErrorCode.FORBIDDEN, "A2_MAKER_CHECKER_REQUIRED");
         }
         AuditReplayCommand cmd = STATUS_APPROVED.equals(nextStatus) ? ticketCommand : null;
         Long avatarMaker = A2ReplayContext.isAvatarCommand(cmd) ? avatarMakerId(ticket.getCommandJson()) : null;
@@ -839,13 +948,9 @@ public class OpsAuditCenterService {
                     || !expectedTarget.equals(new AuditLockTarget(locks.get(0).getTargetDomain(),
                             locks.get(0).getTargetType(), locks.get(0).getTargetId())))
                 return fail(OpsErrorCode.VALIDATION_FAILED, "A2_AVATAR_TARGET_MISMATCH");
-            Long checker = A2ReplayContext.authenticatedAdminId();
-            if (avatarMaker == null || checker == null || !A2ReplayContext.hasAuthority("platform_a2_operation_approve")
+            if (avatarMaker == null || actorId == null || !A2ReplayContext.hasAuthority("platform_a2_operation_approve")
                     || !A2ReplayContext.hasAuthority("platform_a1_write"))
                 return fail(OpsErrorCode.FORBIDDEN, "A2_AVATAR_APPROVAL_REQUIRED");
-            if (avatarMaker.equals(checker)) return fail(OpsErrorCode.FORBIDDEN, "A2_MAKER_CHECKER_REQUIRED");
-        } else if (STATUS_APPROVED.equals(nextStatus) && makerMatches) {
-            return fail(OpsErrorCode.FORBIDDEN, "A2_MAKER_CHECKER_REQUIRED");
         }
         // approve 才回放目标域;reject/withdrawn 只删锁不回放(原值天然保持)
         if (STATUS_APPROVED.equals(nextStatus)) {
@@ -889,7 +994,7 @@ public class OpsAuditCenterService {
                     authenticatedOperator, request.reason().trim(), idempotencyKey.trim());
             if (avatarMaker != null) {
                 A2ReplayContext.enterAvatarApproval(ticket.getOperationId(), avatarMaker,
-                        A2ReplayContext.authenticatedAdminId(), deserializeCommand(ticket.getCommandJson()));
+                        actorId, deserializeCommand(ticket.getCommandJson()));
             } else if (LearningCourseActivationApproval.supports(cmd)) {
                 A2ReplayContext.enterCourseActivationApproval(ticket.getOperationId(), cmd);
             } else if (G4CatalogApproval.supports(cmd)) {
@@ -941,13 +1046,7 @@ public class OpsAuditCenterService {
                 .riskLevel(operationRiskLevel(ticket))
                 .detail(decisionDetail(ticket, nextStatus, idempotencyKey, request.reason()))
                 .build());
-        return ApiResult.ok(toTicket(ticket));
-    }
-
-    private boolean sameActor(String proposer, String checker) {
-        return proposer != null
-                && checker != null
-                && proposer.trim().equalsIgnoreCase(checker.trim());
+        return ApiResult.ok(toTicket(ticket, makerMatches));
     }
 
     private static boolean superAdminProposalCommand(AuditReplayCommand command) {
@@ -1164,18 +1263,50 @@ public class OpsAuditCenterService {
                         LinkedHashMap::new));
     }
 
-    private List<AuditOperationTicket> tickets(AuditLogQueryRequest filter) {
+    private List<AuditOperationTicketEntity> ticketRows(AuditLogQueryRequest filter, boolean ownOnly) {
         return ticketMapper.selectList(new LambdaQueryWrapper<AuditOperationTicketEntity>()
                         .eq(AuditOperationTicketEntity::getIsDeleted, 0)
                         .orderByDesc(AuditOperationTicketEntity::getCreatedAt)
                         .orderByDesc(AuditOperationTicketEntity::getId))
                 .stream()
-                .filter(row -> matches(row, filter))
-                .map(this::toTicket)
+                .filter(row -> matches(row, filter, ownOnly))
                 .toList();
     }
 
-    private AuditOperationTicket toTicket(AuditOperationTicketEntity row) {
+    private Map<String, Long> auditedMakers(List<AuditOperationTicketEntity> rows) {
+        if (rows.isEmpty()) return Map.of();
+        var ids = rows.stream().map(AuditOperationTicketEntity::getOperationId).toList();
+        return ticketMapper.selectMakerAudits(ids).stream().collect(Collectors.toMap(
+                AuditOperationTicketMapper.MakerAudit::operationId, AuditOperationTicketMapper.MakerAudit::makerId));
+    }
+
+    private Long ticketMakerId(AuditOperationTicketEntity ticket, AuditReplayCommand command) {
+        var audit = ticketMapper.selectMakerAudits(List.of(ticket.getOperationId()));
+        return ticketMakerId(ticket, command, audit.isEmpty() ? null : audit.get(0).makerId());
+    }
+
+    private Long ticketMakerId(AuditOperationTicketEntity ticket, AuditReplayCommand command, Long auditedMaker) {
+        // Only metadata bound by the server on write is a second source of maker identity.
+        CourseRewardReview reward = CourseRewardReview.fromCommand(command);
+        Long boundMaker = null;
+        if (reward != null) {
+            boundMaker = reward.makerAdminId();
+        } else if (G4CatalogApproval.supports(command)) {
+            boundMaker = G4CatalogApproval.makerId(command);
+        } else if (LearningCourseActivationApproval.supports(command)) {
+            boundMaker = LearningCourseActivationApproval.makerId(command);
+        } else if (A2ReplayContext.isAvatarCommand(command)) {
+            boundMaker = avatarMakerId(ticket.getCommandJson());
+        }
+        if (auditedMaker != null) {
+            return auditedMaker > 0 && (boundMaker == null || boundMaker.equals(auditedMaker)) ? auditedMaker : null;
+        }
+        return boundMaker != null && boundMaker > 0 ? boundMaker : null;
+    }
+
+    private record ViewerTicket(AuditOperationTicketEntity row, boolean mine) {}
+
+    private AuditOperationTicket toTicket(AuditOperationTicketEntity row, boolean mine) {
         return new AuditOperationTicket(
                 row.getOperationId(),
                 row.getAction(),
@@ -1188,7 +1319,7 @@ public class OpsAuditCenterService {
                 isTrue(row.getAmplifies()),
                 isTrue(row.getSos()),
                 row.getCreatedAt() == null ? row.getTimeLabel() : row.getCreatedAt().format(ISO),
-                isTrue(row.getMine()),
+                mine,
                 normalizeRoleGate(row.getRoleGate()),
                 row.getReason(),
                 status(row.getStatus()), phoneCalibrationProposal(row.getCommandJson()));
@@ -1228,12 +1359,12 @@ public class OpsAuditCenterService {
         return baseline;
     }
 
-    private List<AuditOperationHistory> history(List<AuditOperationTicket> tickets, AuditLogQueryRequest filter) {
+    private List<AuditOperationHistory> history(List<AuditOperationTicket> tickets, List<ViewerTicket> visible) {
         Set<String> visibleIds = tickets.stream().map(AuditOperationTicket::id).collect(Collectors.toSet());
         Map<String, AuditOperationTicket> ticketsById = tickets.stream()
                 .collect(Collectors.toMap(AuditOperationTicket::id, ticket -> ticket, (left, right) -> left));
-        List<AuditOperationTicketEntity> terminal = terminalTickets().stream()
-                .filter(ticket -> matches(ticket, filter))
+        List<AuditOperationTicketEntity> terminal = visible.stream().map(ViewerTicket::row)
+                .filter(ticket -> TERMINAL_STATUSES.contains(status(ticket.getStatus())))
                 .toList();
         Map<String, DecisionActor> decisionActors = decisionActors(terminal);
         Map<String, AuditOperationHistory> rowsByOperation = new LinkedHashMap<>();
@@ -1622,14 +1753,6 @@ public class OpsAuditCenterService {
         return Optional.ofNullable(ticketMapper.selectActiveByOperationIdForUpdate(normalized));
     }
 
-    private List<AuditOperationTicketEntity> terminalTickets() {
-        return ticketMapper.selectList(new LambdaQueryWrapper<AuditOperationTicketEntity>()
-                .eq(AuditOperationTicketEntity::getIsDeleted, 0)
-                .in(AuditOperationTicketEntity::getStatus, TERMINAL_STATUSES)
-                .orderByDesc(AuditOperationTicketEntity::getDecidedAt)
-                .orderByDesc(AuditOperationTicketEntity::getId));
-    }
-
     private boolean isTrue(Integer value) {
         return value != null && value == 1;
     }
@@ -1721,7 +1844,7 @@ public class OpsAuditCenterService {
                 .limit(10).map(entry -> new AuditStatsBucket(entry.getKey(), entry.getValue())).toList();
     }
 
-    private boolean matches(AuditOperationTicketEntity row, AuditLogQueryRequest filter) {
+    private boolean matches(AuditOperationTicketEntity row, AuditLogQueryRequest filter, boolean ownOnly) {
         if (filter == null) {
             return true;
         }
@@ -1733,7 +1856,7 @@ public class OpsAuditCenterService {
         if (StringUtils.hasText(filter.getDomain()) && !domain.equalsIgnoreCase(filter.getDomain().trim())) {
             return false;
         }
-        if (StringUtils.hasText(filter.getOperatorExact())
+        if (!ownOnly && StringUtils.hasText(filter.getOperatorExact())
                 && !filter.getOperatorExact().equalsIgnoreCase(row.getOperatorName() == null ? "" : row.getOperatorName())) {
             return false;
         }

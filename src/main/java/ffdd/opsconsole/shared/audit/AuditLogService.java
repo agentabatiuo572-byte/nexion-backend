@@ -101,9 +101,16 @@ public class AuditLogService {
     public String findA2ProposalId(long actorId, String key) {
         if (actorId < 1 || !StringUtils.hasText(key) || key.length() > 128)
             throw new BizException(422, "A2_PROPOSAL_KEY_INVALID");
-        List<String> ids = auditLogMapper.findA2ProposalIds(actorId, key.trim());
-        if (ids.size() > 1) throw new BizException(409, "A2_PROPOSAL_RESULT_AMBIGUOUS");
-        return ids.isEmpty() ? null : ids.get(0);
+        var audit = findA2CommandAudit(actorId, key, "A2_OPERATION_PROPOSED", null);
+        return audit == null ? null : audit.operationId();
+    }
+
+    public AuditLogMapper.A2CommandAudit findA2CommandAudit(long actorId, String key, String action, String operationId) {
+        var matches = auditLogMapper.findA2CommandAudits(actorId, key.trim(), action, operationId);
+        if (matches.size() > 1) {
+            throw new BizException(409, "A2_PROPOSAL_RESULT_AMBIGUOUS");
+        }
+        return matches.isEmpty() ? null : matches.get(0);
     }
 
     public List<AuditLogRecord> listForExport(AuditLogQueryRequest request, int maxRows) {
