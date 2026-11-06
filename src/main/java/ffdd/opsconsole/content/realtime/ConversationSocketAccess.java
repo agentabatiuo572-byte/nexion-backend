@@ -23,7 +23,25 @@ public class ConversationSocketAccess {
     private final ffdd.opsconsole.content.application.SupportSessionService sessions;
 
     public Authentication authenticate(String token, String audience) {
-        Authentication auth = authentication.authenticateSocketToken(token);
+        return requireAudience(authentication.authenticateSocketToken(token), audience);
+    }
+
+    public Authentication revalidate(String token, String audience) {
+        return requireAudience(authentication.revalidateSocketToken(token), audience);
+    }
+
+    public Authentication reauthenticate(Authentication current, String token, String audience) {
+        if (!"USER".equals(audience)) throw new BizException(401, "SOCKET_REAUTH_REJECTED");
+        Authentication next = revalidate(token, audience);
+        if (!current.getName().equals(next.getName()) || !authentication.isActiveSocketRefreshSuccessor(
+                Long.valueOf(next.getName()), (String) ((Map<?, ?>) current.getDetails()).get("sessionId"),
+                (String) ((Map<?, ?>) next.getDetails()).get("sessionId"))) {
+            throw new BizException(401, "SOCKET_REAUTH_REJECTED");
+        }
+        return next;
+    }
+
+    private Authentication requireAudience(Authentication auth, String audience) {
         Object type = ((Map<?, ?>) auth.getDetails()).get("subjectType");
         if (!audience.equals(type)) throw new BizException(403, "SOCKET_SUBJECT_MISMATCH");
         if (audience.equals("ADMIN")) {

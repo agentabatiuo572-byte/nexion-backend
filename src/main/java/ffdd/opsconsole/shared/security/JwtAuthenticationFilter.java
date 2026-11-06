@@ -5,6 +5,7 @@ import ffdd.opsconsole.user.infrastructure.UserEntity;
 import ffdd.opsconsole.user.mapper.UserOpsMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -18,7 +19,9 @@ import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
 import org.springframework.core.env.Environment;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
@@ -44,11 +47,15 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
+        String path = request.getRequestURI();
+        String context = request.getContextPath();
+        boolean recordActivity = !("POST".equals(request.getMethod()) && (context + "/api/app/support/realtime-ticket").equals(path)
+                || "GET".equals(request.getMethod()) && (context + "/ws/conversations").equals(path));
         String token = resolveToken(request);
         if (token != null) {
             try {
                 Claims claims = tokenProvider.parse(token);
-                if (isSessionActive(claims)) {
+                if (isSessionActive(claims, recordActivity)) {
                     List<SimpleGrantedAuthority> authorities = resolveAuthorities(claims);
                     UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
                             claims.getSubject(), null, authorities);
@@ -79,7 +86,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         }
         if (token == null) {
             try {
-                authenticateFromGatewayHeaders(request);
+                authenticateFromGatewayHeaders(request, recordActivity);
             } catch (SessionStoreUnavailableException ex) {
                 SecurityContextHolder.clearContext();
                 writeSessionStoreUnavailable(response, ex.subjectType());
@@ -89,7 +96,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         filterChain.doFilter(request, response);
     }
 
-    private void authenticateFromGatewayHeaders(HttpServletRequest request) {
+    private void authenticateFromGatewayHeaders(HttpServletRequest request, boolean recordActivity) {
         if (!gatewayProperties.isHeaderAuthenticationEnabled()
                 || !gatewayProperties.isTrustedProxy(request.getRemoteAddr())) {
             return;
@@ -125,12 +132,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                         || !Integer.valueOf(0).equals(user.getIsDeleted()) || blocklist.isBlocked(userId)
                         || userMapper.isPasswordResetRequired(userId)) return;
                 if (!supportedIdentity(user)) {
-                    revocations.revokeAll(userId);
+                    if (recordActivity) revocations.revokeAll(userId);
                     return;
                 }
-                int idleDays = configInt("auth.session.idle_ttl_days", 30, 7, 90);
-                if (authSessionMapper.touchActiveUserSession(sessionId.trim(), userId, idleDays) == 0
-                        && authSessionMapper.touchRecentlyRotatedUserSession(sessionId.trim(), userId, idleDays) == 0) return;
+                if (!isUserSessionActive(sessionId.trim(), userId, recordActivity)) return;
             } catch (RuntimeException ex) {
                 throw new SessionStoreUnavailableException(ex, "USER");
             }
@@ -179,7 +184,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         return authorization.substring(7);
     }
 
-    private boolean isSessionActive(Claims claims) {
+    private boolean isSessionActive(Claims claims, boolean recordActivity) {
         Object subjectTypeClaim = claims.get("subjectType");
         String subjectType = subjectTypeClaim == null ? "USER" : String.valueOf(subjectTypeClaim);
         if ("ADMIN".equals(subjectType)) {
@@ -221,24 +226,24 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             if (user == null || !audience.acceptsSandbox(user.getSandbox()) || !"ACTIVE".equals(user.getStatus())
                     || !Integer.valueOf(0).equals(user.getIsDeleted()) || blocklist.isBlocked(userId)
                     || userMapper.isPasswordResetRequired(userId)) {
-                revocations.revokeOwned(userId, sessionId);
+                if (recordActivity) revocations.revokeOwned(userId, sessionId);
                 return false;
             }
             if (!supportedIdentity(user)) {
-                revocations.revokeAll(userId);
+                if (recordActivity) revocations.revokeAll(userId);
                 return false;
             }
-            int idleDays = configInt("auth.session.idle_ttl_days", 30, 7, 90);
-            int activeCount = authSessionMapper.touchActiveUserSession(
-                    sessionId, userId, idleDays);
-            if (activeCount == 0) {
-                activeCount = authSessionMapper.touchRecentlyRotatedUserSession(
-                        sessionId, userId, idleDays);
-            }
-            return activeCount > 0;
+            return isUserSessionActive(sessionId, userId, recordActivity);
         } catch (RuntimeException ex) {
             throw new SessionStoreUnavailableException(ex, "USER");
         }
+    }
+
+    private boolean isUserSessionActive(String sessionId, Long userId, boolean recordActivity) {
+        int idleDays = configInt("auth.session.idle_ttl_days", 30, 7, 90);
+        if (!recordActivity) return authSessionMapper.isReadableUserSession(sessionId, userId, idleDays);
+        return authSessionMapper.touchActiveUserSession(sessionId, userId, idleDays) > 0
+                || authSessionMapper.touchRecentlyRotatedUserSession(sessionId, userId, idleDays) > 0;
     }
 
     private String sessionEndedReason(Claims claims) {
@@ -300,12 +305,25 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         private String subjectType() { return getMessage(); }
     }
 
-    /** Reuses the HTTP session, audience and current-permission checks for socket frames. */
-    public org.springframework.security.core.Authentication authenticateSocketToken(String token) {
-        Claims claims = tokenProvider.parse(token);
-        if (!isSessionActive(claims)) {
+    public Authentication authenticateSocketToken(String token) {
+        return authenticateSocketClaims(tokenProvider.parse(token), true);
+    }
+
+    /** Socket background checks read the session without extending it. */
+    public Authentication revalidateSocketToken(String token) {
+        Claims claims;
+        try {
+            claims = tokenProvider.parse(token);
+        } catch (JwtException | IllegalArgumentException ex) {
+            throw new BadCredentialsException("SOCKET_TOKEN_INVALID", ex);
+        }
+        return authenticateSocketClaims(claims, false);
+    }
+
+    private Authentication authenticateSocketClaims(Claims claims, boolean recordActivity) {
+        if (!isSessionActive(claims, recordActivity)) {
             String reason = sessionEndedReason(claims);
-            throw new org.springframework.security.authentication.BadCredentialsException(reason == null ? "SESSION_EXPIRED" : reason);
+            throw new BadCredentialsException(reason == null ? "SESSION_EXPIRED" : reason);
         }
         var authentication = new UsernamePasswordAuthenticationToken(claims.getSubject(), null, resolveAuthorities(claims));
         Map<String, String> details = new LinkedHashMap<>();
@@ -314,6 +332,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         details.put("sessionId", String.valueOf(claims.getOrDefault("sessionId", "")));
         authentication.setDetails(Map.copyOf(details));
         return authentication;
+    }
+
+    public boolean isActiveSocketRefreshSuccessor(Long userId, String previousSessionId, String sessionId) {
+        return authSessionMapper.isActiveRefreshSuccessor(previousSessionId, sessionId, userId,
+                configInt("auth.session.idle_ttl_days", 30, 7, 90));
     }
 
     private List<SimpleGrantedAuthority> extractAuthorities(Claims claims) {

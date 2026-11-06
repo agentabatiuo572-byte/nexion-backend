@@ -85,9 +85,31 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
     @Update("UPDATE nx_user_session SET session_ended_reason=#{reason} WHERE session_chain_id=#{chainId} AND session_ended_reason IS NULL")
     int endChain(@Param("chainId") String chainId, @Param("reason") String reason);
 
-    String FIXED_CONTEXT = "(session_group='H5' OR (session_group='APP' AND EXISTS (SELECT 1 FROM nx_app_session_state a "
+    String FIXED_CONTEXT_MATCH = "(session_group='H5' OR (session_group='APP' AND EXISTS (SELECT 1 FROM nx_app_session_state a "
             + "WHERE a.user_id=nx_user_session.user_id AND a.app_session_version=nx_user_session.app_session_version "
-            + "AND a.session_chain_id=nx_user_session.session_chain_id AND a.installation_id=nx_user_session.installation_id AND a.execution_supported=nx_user_session.execution_supported FOR UPDATE)))";
+            + "AND a.session_chain_id=nx_user_session.session_chain_id AND a.installation_id=nx_user_session.installation_id AND a.execution_supported=nx_user_session.execution_supported";
+    String FIXED_CONTEXT = FIXED_CONTEXT_MATCH + " FOR UPDATE)))";
+    String READ_SESSION_CONTEXT = "refresh_token_id=#{sessionId} AND user_id=#{userId} AND is_deleted=0 "
+            + "AND session_ended_reason IS NULL AND " + FIXED_CONTEXT_MATCH + ")))";
+    String LIVE_SESSION = "revoked_at IS NULL AND expires_at>DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR) "
+            + "AND COALESCE(last_active_at,created_at)>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL #{idleDays} DAY)";
+    String RECENT_ROTATION = "rotation_redeemed_at>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL 10 SECOND)";
+
+    @Select("SELECT EXISTS(SELECT 1 FROM nx_user_session WHERE " + READ_SESSION_CONTEXT
+            + " AND (" + LIVE_SESSION + " OR (" + RECENT_ROTATION + " AND rotated_to_id IS NOT NULL"
+            + " AND EXISTS(SELECT 1 FROM nx_user_session live WHERE live.user_id=nx_user_session.user_id"
+            + " AND live.session_chain_id=nx_user_session.session_chain_id AND live.is_deleted=0"
+            + " AND live.session_ended_reason IS NULL AND " + LIVE_SESSION + "))))")
+    boolean isReadableUserSession(@Param("sessionId") String sessionId, @Param("userId") Long userId,
+            @Param("idleDays") int idleDays);
+
+    @Select("SELECT EXISTS(SELECT 1 FROM nx_user_session WHERE " + READ_SESSION_CONTEXT + " AND " + LIVE_SESSION
+            + " AND EXISTS(SELECT 1 FROM nx_user_session prior WHERE prior.refresh_token_id=#{previousSessionId}"
+            + " AND prior.user_id=nx_user_session.user_id AND prior.session_chain_id=nx_user_session.session_chain_id"
+            + " AND prior.session_group=nx_user_session.session_group AND prior.rotated_to_id=nx_user_session.refresh_token_id"
+            + " AND prior.is_deleted=0 AND prior.session_ended_reason IS NULL AND " + RECENT_ROTATION + "))")
+    boolean isActiveRefreshSuccessor(@Param("previousSessionId") String previousSessionId,
+            @Param("sessionId") String sessionId, @Param("userId") Long userId, @Param("idleDays") int idleDays);
 
     @Select("SELECT COUNT(*) FROM nx_user_session WHERE refresh_token_id=#{sessionId} AND user_id=#{userId} "
             + "AND is_deleted=0 AND session_ended_reason IS NULL AND " + FIXED_CONTEXT + " FOR UPDATE")

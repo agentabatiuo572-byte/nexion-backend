@@ -2,6 +2,7 @@ package ffdd.opsconsole.content.realtime;
 
 import com.fasterxml.jackson.databind.*;
 import ffdd.opsconsole.content.application.ConversationMessageEvent;
+import ffdd.opsconsole.platform.dto.PlatformConfigChangedEvent;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import jakarta.annotation.PreDestroy;
@@ -12,6 +13,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.*;
@@ -24,15 +26,13 @@ public class ConversationSocketHandler extends TextWebSocketHandler {
     public void userViewCleared(ffdd.opsconsole.content.application.AppConversationManagementService.UserViewCleared event) {
         enqueue(() -> {
             for (Client c : clients.values()) {
-                if (c.auth == null || !"USER".equals(c.grant.audience())
-                        || !String.valueOf(event.userId()).equals(c.auth.getName())) continue;
-                try {
-                    c.auth = access.authenticate(c.grant.token(), c.grant.audience());
-                    for (String no : event.conversationNos()) {
-                        send(c, Map.of("type", "event", "eventId", UUID.randomUUID().toString(),
-                                "conversationNo", no, "eventType", "STATUS", "senderType", "SYSTEM"));
-                    }
-                } catch (Exception ex) { close(c, 4401); }
+                Identity identity=c.identity;
+                if (identity==null || !identity.grant.actor().equals("USER:" + event.userId())
+                        || revalidate(c)==null) continue;
+                for (String no : event.conversationNos()) {
+                    send(c, Map.of("type", "event", "eventId", UUID.randomUUID().toString(),
+                            "conversationNo", no, "eventType", "STATUS", "senderType", "SYSTEM"));
+                }
             }
         });
     }
@@ -40,11 +40,13 @@ public class ConversationSocketHandler extends TextWebSocketHandler {
     public void scopeChanged(ffdd.opsconsole.content.domain.SupportGroupFacts.ScopeChanged event) {
         enqueue(()-> {
             for(Client c:clients.values()) {
-                if(c.auth==null || !"ADMIN".equals(c.grant.audience())
-                        || event.affectedAdminIds().stream().noneMatch(id->String.valueOf(id).equals(c.auth.getName()))) continue;
+                Identity identity=c.identity;
+                if(identity==null || !"ADMIN".equals(identity.grant.audience())
+                        || event.affectedAdminIds().stream().noneMatch(id->String.valueOf(id).equals(identity.auth.getName()))) continue;
+                Authentication auth=revalidate(c);
+                if(auth==null)continue;
                 try {
-                    c.auth=access.authenticate(c.grant.token(),c.grant.audience());
-                    if(c.watching!=null && !access.canRead(c.auth,c.grant.audience(),c.watching)) {
+                    if(c.watching!=null && !access.canRead(auth,identity.grant.audience(),c.watching)) {
                         c.watching=null;c.typingUntil=0;
                     }
                     // A lost management group must not disconnect a still-authorized personal service.
@@ -58,14 +60,14 @@ public class ConversationSocketHandler extends TextWebSocketHandler {
     public void assignmentChanged(ffdd.opsconsole.content.application.SupportBindingService.SupportAssignmentChanged event) {
         enqueue(()-> {
             for(Client c:clients.values()) {
-                if(c.auth==null) continue;
-                String actor=c.auth.getName();
-                boolean customer="USER".equals(c.grant.audience()) && actor.equals(String.valueOf(event.customerId()));
-                boolean advisor="ADMIN".equals(c.grant.audience()) && (actor.equals(String.valueOf(event.current().agentAdminId()))
+                Identity identity=c.identity;
+                if(identity==null) continue;
+                String actor=identity.auth.getName();
+                boolean customer="USER".equals(identity.grant.audience()) && actor.equals(String.valueOf(event.customerId()));
+                boolean advisor="ADMIN".equals(identity.grant.audience()) && (actor.equals(String.valueOf(event.current().agentAdminId()))
                         || (event.previous()!=null && actor.equals(String.valueOf(event.previous().agentAdminId()))));
-                if(!customer && !advisor) continue;
+                if((!customer && !advisor) || revalidate(c)==null) continue;
                 try {
-                    c.auth=access.authenticate(c.grant.token(),c.grant.audience());
                     if(c.watching!=null && access.participants(c.watching).map(p->p.userId().equals(String.valueOf(event.customerId()))).orElse(false)) {
                         c.watching=null;c.typingUntil=0;
                     }
@@ -84,24 +86,24 @@ public class ConversationSocketHandler extends TextWebSocketHandler {
     private final ThreadPoolExecutor outbound=new ThreadPoolExecutor(1,1,0,TimeUnit.SECONDS,new ArrayBlockingQueue<>(2048),
             r->{Thread t=new Thread(r,"conversation-events");t.setDaemon(true);return t;});
 
+    private record Identity(ConversationSocketTickets.Grant grant, Authentication auth) {}
     private static final class Client {
         final WebSocketSession socket;
-        volatile ConversationSocketTickets.Grant grant;
-        volatile Authentication auth;
+        volatile Identity identity;
         volatile String watching;
         volatile long seen=System.currentTimeMillis(), typingUntil=0;
         long window=seen; int frames;
         Client(WebSocketSession socket){this.socket=new ConcurrentWebSocketSessionDecorator(socket,5000,262144);}
     }
     @Override public synchronized void afterConnectionEstablished(WebSocketSession session) throws Exception {
-        if(clients.size()>=2000 || clients.values().stream().filter(c->c.auth==null).count()>=100
-                || (session.getRemoteAddress()!=null && clients.values().stream().filter(c->c.auth==null && c.socket.getRemoteAddress()!=null
+        if(clients.size()>=2000 || clients.values().stream().filter(c->c.identity==null).count()>=100
+                || (session.getRemoteAddress()!=null && clients.values().stream().filter(c->c.identity==null && c.socket.getRemoteAddress()!=null
                     && c.socket.getRemoteAddress().getAddress().equals(session.getRemoteAddress().getAddress())).count()>=8)){
             session.close(CloseStatus.SERVICE_OVERLOAD);return;}
         session.setTextMessageSizeLimit(16384);
         Client client=new Client(session);clients.put(session.getId(),client);
         CompletableFuture.delayedExecutor(5,TimeUnit.SECONDS).execute(()->{
-            if(client.auth==null && clients.get(session.getId())==client)close(client,4401);
+            if(client.identity==null && clients.get(session.getId())==client)close(client,4401);
         });
     }
     @Override protected void handleTextMessage(WebSocketSession session,TextMessage message) {
@@ -113,53 +115,72 @@ public class ConversationSocketHandler extends TextWebSocketHandler {
             if(++c.frames>60)throw new BizException(429,"SOCKET_RATE_LIMIT");
             JsonNode frame=json.readTree(message.getPayload());
             String type=frame.path("type").asText();
-            if(c.grant==null){
-                if(!"auth".equals(type))throw new BizException(401,"SOCKET_AUTH_REQUIRED");
-                c.grant=tickets.consume(frame.path("ticket").asText());
-                c.auth=access.authenticate(c.grant.token(),c.grant.audience());
-                c.seen=now;send(c,Map.of("type","ready")); requestPresence();return;
+            String audience;
+            Authentication auth;
+            synchronized(c) {
+                if(clients.get(session.getId())!=c)return;
+                Identity current=c.identity;
+                if(current==null){
+                    if(!"auth".equals(type))throw new BizException(401,"SOCKET_AUTH_REQUIRED");
+                    var grant=tickets.consume(frame.path("ticket").asText());
+                    c.identity=new Identity(grant,access.revalidate(grant.token(),grant.audience()));
+                    c.seen=now;
+                    send(c,"USER".equals(grant.audience())?Map.of("type","ready","reauth",true):Map.of("type","ready"));
+                    requestPresence();return;
+                }
+                audience=current.grant.audience();
+                if("reauth".equals(type)) {
+                    var next=tickets.consume(frame.path("ticket").asText());
+                    if(!current.grant.actor().equals(next.actor()))throw new BizException(401,"SOCKET_REAUTH_REJECTED");
+                    c.identity=new Identity(next,access.reauthenticate(current.auth,next.token(),audience));
+                    c.seen=now;send(c,Map.of("type","reauth-ready"));return;
+                }
+                // Real commands retain the active-session write and its existing locks.
+                auth="command".equals(type)?access.authenticate(current.grant.token(),audience)
+                        :access.revalidate(current.grant.token(),audience);
+                c.seen=now;
             }
-            // A revoked login never survives through the lifetime of a socket.
-            c.auth=access.authenticate(c.grant.token(),c.grant.audience()); c.seen=now;
             switch(type){
                 case "ping" -> send(c,Map.of("type","pong"));
                 case "watch" -> {
                     String no=frame.path("conversationNo").asText(null);
-                    if(no!=null && !access.canRead(c.auth,c.grant.audience(),no))throw new BizException(404,"CONVERSATION_NOT_FOUND");
+                    if(no!=null && !access.canRead(auth,audience,no))throw new BizException(404,"CONVERSATION_NOT_FOUND");
                     c.watching=no;c.typingUntil=0;requestPresence();
                 }
                 case "typing" -> {
                     String no=frame.path("conversationNo").asText();
-                    if(!Objects.equals(c.watching,no) || !access.canWrite(c.auth,c.grant.audience(),no))throw new BizException(404,"CONVERSATION_NOT_FOUND");
-                    access.write(c.auth,c.grant.audience());
+                    if(!Objects.equals(c.watching,no) || !access.canWrite(auth,audience,no))throw new BizException(404,"CONVERSATION_NOT_FOUND");
+                    access.write(auth,audience);
                     c.typingUntil=frame.path("active").asBoolean()?now+5000:0;requestPresence();
                 }
                 case "command" -> {
                     requestId=frame.path("requestId").asText();
                     if(!requestId.matches("[A-Za-z0-9_-]{1,100}"))throw new BizException(400,"INVALID_REQUEST_ID");
-                    send(c,Map.of("type","ack","requestId",requestId,"result",commands.execute(c.auth,c.grant.audience(),frame)));
+                    send(c,Map.of("type","ack","requestId",requestId,"result",commands.execute(auth,audience,frame)));
                 }
                 default -> throw new BizException(400,"UNKNOWN_SOCKET_FRAME");
             }
         } catch(Exception e){
             int code=e instanceof BizException b?b.getCode():e instanceof AccessDeniedException?403:
-                    e instanceof org.springframework.security.core.AuthenticationException?401:500;
+                    e instanceof AuthenticationException?401:500;
             String reason=e instanceof BizException?e.getMessage():"SOCKET_REQUEST_FAILED";
             if(requestId!=null)send(c,Map.of("type","ack","requestId",requestId,"result",
                     e instanceof ffdd.opsconsole.content.application.SupportSessionService.Busy busy
                             ? ApiResult.fail(code,reason,busy.state()) : ApiResult.fail(code,reason)));
             else send(c,Map.of("type","error","code",code));
-            if(c.auth==null || code==401 || code==403 || code==429 || code==500)close(c,code==401||code==403?4401:1013);
+            if(c.identity==null || code==401 || code==403 || code==429 || code==500)close(c,code==401||code==403?4401:1013);
         }
     }
     @EventListener public void changed(ConversationMessageEvent event){
         Runnable push=()->enqueue(()->{
             String eventId=UUID.randomUUID().toString();
             for(Client c:clients.values()){
-                if(c.auth==null)continue;
+                Identity identity=c.identity;
+                if(identity==null)continue;
+                Authentication auth=revalidate(c);
+                if(auth==null)continue;
                 try{
-                    c.auth=access.authenticate(c.grant.token(),c.grant.audience());
-                    if(access.canRead(c.auth,c.grant.audience(),event.getConversationNo()))
+                    if(access.canRead(auth,identity.grant.audience(),event.getConversationNo()))
                         // Only invalidations cross this boundary; each UI reads its authorized projection.
                         send(c,Map.of("type","event","eventId",eventId,"conversationNo",event.getConversationNo(),
                                 "eventType","STATUS","senderType","SYSTEM"));
@@ -171,6 +192,30 @@ public class ConversationSocketHandler extends TextWebSocketHandler {
         // would lose events published from an existing afterCommit callback.
         push.run();
     }
+
+    @EventListener public void platformConfigChanged(PlatformConfigChangedEvent event) {
+        enqueue(()->{
+            var frame=Map.of("type","event","eventId",UUID.randomUUID().toString(),
+                    "eventType","PLATFORM_CONFIG_CHANGED","senderType","SYSTEM");
+            for(Client c:clients.values()) {
+                Identity identity=c.identity;
+                if(identity!=null && "USER".equals(identity.grant.audience()) && revalidate(c)!=null)send(c,frame);
+            }
+        });
+    }
+
+    private Authentication revalidate(Client c) {
+        // A background check must not close a socket based on a grant already replaced by reauth.
+        synchronized(c) {
+            Identity identity=c.identity;
+            if(identity==null || clients.get(c.socket.getId())!=c)return null;
+            try {
+                return access.revalidate(identity.grant.token(),identity.grant.audience());
+            } catch(BizException | AuthenticationException e) {close(c,4401);}
+            catch(RuntimeException e) {close(c,1013);}
+            return null;
+        }
+    }
     private boolean enqueue(Runnable work){
         try{outbound.execute(work);return true;}
         catch(RejectedExecutionException e){clients.values().forEach(c->close(c,1013));return false;}
@@ -178,8 +223,8 @@ public class ConversationSocketHandler extends TextWebSocketHandler {
     @Scheduled(fixedDelay=10000) public void heartbeat(){
         long now=System.currentTimeMillis();
         for(Client c:clients.values()){
-            if(now-c.seen>(c.auth==null?5000:60000)){close(c,1001);continue;}
-            if(c.auth!=null)try{c.auth=access.authenticate(c.grant.token(),c.grant.audience());}catch(Exception e){close(c,4401);}
+            if(now-c.seen>(c.identity==null?5000:60000)){close(c,1001);continue;}
+            revalidate(c);
         }
         requestPresence();
     }
@@ -191,29 +236,33 @@ public class ConversationSocketHandler extends TextWebSocketHandler {
     }
     private void broadcastPresence(){
         long now=System.currentTimeMillis();
-        List<Client> live=new ArrayList<>();
+        Map<Client,Authentication> live=new LinkedHashMap<>();
         Map<String,List<Client>> peers=new HashMap<>();
         // Index authenticated actors once, instead of looking up every viewer/peer pair in MySQL.
         for(Client c:clients.values()){
-            if(c.auth==null || now-c.seen>=60000)continue;
+            Identity identity=c.identity;
+            if(identity==null || now-c.seen>=60000)continue;
+            Authentication auth=revalidate(c);
+            if(auth==null)continue;
             try{
-                c.auth=access.authenticate(c.grant.token(),c.grant.audience());
-                live.add(c);
-                for(String key:access.presenceKeys(c.auth,c.grant.audience()))
+                live.put(c,auth);
+                for(String key:access.presenceKeys(auth,identity.grant.audience()))
                     peers.computeIfAbsent(key,k->new ArrayList<>()).add(c);
             }catch(Exception e){close(c,4401);}
         }
         Map<String,Optional<ConversationSocketAccess.Participants>> participants=new HashMap<>();
-        for(Client viewer:live){
+        for(var entry:live.entrySet()){
+            Client viewer=entry.getKey();
             String watching=viewer.watching;
-            if(viewer.auth==null || watching==null)continue;
+            if(watching==null)continue;
+            String audience=viewer.identity.grant.audience();
             try{
                 var scope=participants.computeIfAbsent(watching,access::participants).orElse(null);
-                if(scope==null || !scope.canRead(viewer.auth,viewer.grant.audience())){
+                if(scope==null || !scope.canRead(entry.getValue(),audience)){
                     if(Objects.equals(viewer.watching,watching)){viewer.watching=null;viewer.typingUntil=0;}
                     continue;
                 }
-                List<Client> matching=peers.getOrDefault(scope.peerKey(viewer.grant.audience()),List.of());
+                List<Client> matching=peers.getOrDefault(scope.peerKey(audience),List.of());
                 boolean online=!matching.isEmpty();
                 long typingRemaining=matching.stream()
                         .filter(peer->Objects.equals(peer.watching,watching))

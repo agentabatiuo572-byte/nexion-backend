@@ -20,7 +20,7 @@ public class ConversationSocketTickets {
     public synchronized String issue(String bearer, String audience) {
         if (bearer == null || !bearer.startsWith("Bearer ")) throw new BizException(401, "AUTH_REQUIRED");
         String token = bearer.substring(7);
-        var auth = access.authenticate(token, audience);
+        var auth = access.revalidate(token, audience);
         long now = Instant.now().toEpochMilli();
         tickets.entrySet().removeIf(e -> e.getValue().expiresAt() < now);
         if (tickets.size() >= 10000) throw new BizException(429, "SOCKET_CAPACITY");
