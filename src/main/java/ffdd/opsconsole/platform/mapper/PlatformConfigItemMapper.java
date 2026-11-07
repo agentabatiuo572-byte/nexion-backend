@@ -13,7 +13,8 @@ import java.util.Map;
 public interface PlatformConfigItemMapper extends BaseMapper<PlatformConfigItemEntity> {
     @Select("""
             SELECT config_key, config_value FROM nx_config_item
-             WHERE config_key IN ('auth.session.access_ttl_hours', 'auth.session.refresh_ttl_days')
+             WHERE config_key IN ('auth.session.access_ttl_hours', 'auth.session.refresh_ttl_days',
+                                  'auth.session.idle_ttl_days')
                AND status = 1 AND is_deleted = 0
             """)
     List<PlatformConfigItemEntity> selectSessionLifetimes();
