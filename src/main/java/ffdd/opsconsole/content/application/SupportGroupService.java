@@ -398,7 +398,10 @@ public class SupportGroupService {
         audit.recordRequired(AuditLogWriteRequest.builder().action("SUPPORT_GROUP_"+action).resourceType(resource).resourceId(String.valueOf(id)).actorId(ownership.actorId()).result("SUCCESS").detail(Map.of("operationId",key,"change",detail)).build());
     }
     @SuppressWarnings("unchecked") private <T> ApiResult<T> command(String scope,String key,Object request,String reason,Supplier<ApiResult<T>> action){
-        if(key==null||key.isBlank()||key.length()>96||reason==null||reason.trim().length()<6||reason.trim().length()>200)invalid();
+        if(key==null||key.isBlank()||key.length()>96||reason==null)invalid();
+        String cleanReason=reason.trim();
+        int reasonLength=cleanReason.codePointCount(0,cleanReason.length());
+        if(reasonLength<8||reasonLength>200)invalid();
         String hash;try{hash=HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(request.toString().getBytes(StandardCharsets.UTF_8)));}catch(java.security.NoSuchAlgorithmException e){throw new IllegalStateException(e);}
         return idempotency.execute("SUPPORT_GROUP_"+scope+":"+ownership.actorId(),key,hash,ApiResult.class,action::get);
     }

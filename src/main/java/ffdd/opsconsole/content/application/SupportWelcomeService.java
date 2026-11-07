@@ -68,8 +68,8 @@ public class SupportWelcomeService {
     }
 
     private String text(String value) {
-        String clean=value==null?"":value.strip();
-        if(clean.isEmpty() || clean.codePointCount(0,clean.length())>500) throw new BizException(422,"SUPPORT_WELCOME_TEXT_INVALID");
+        String clean=value==null?"":value.replaceAll("^[\\s\\p{Z}\\uFEFF]+|[\\s\\p{Z}\\uFEFF]+$", "");
+        if(clean.matches("[\\p{javaWhitespace}\\p{Z}\\uFEFF]*") || clean.codePointCount(0,clean.length())>500) throw new BizException(422,"SUPPORT_WELCOME_TEXT_INVALID");
         return clean;
     }
 

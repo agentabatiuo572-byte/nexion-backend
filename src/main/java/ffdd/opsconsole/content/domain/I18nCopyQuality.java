@@ -29,9 +29,9 @@ public final class I18nCopyQuality {
 
     public static List<String> integrityIssueCodes(I18nMessagePairView message) {
         var issues = new ArrayList<String>();
-        boolean hasZh = StringUtils.hasText(message.zh());
-        boolean hasEn = StringUtils.hasText(message.en());
-        boolean hasVi = StringUtils.hasText(message.vi());
+        boolean hasZh = hasCopyText(message.zh());
+        boolean hasEn = hasCopyText(message.en());
+        boolean hasVi = hasCopyText(message.vi());
         if (!hasZh) issues.add("missing-zh");
         if (!hasEn) issues.add("missing-en");
         if (!hasVi) issues.add("missing-vi");
@@ -59,7 +59,8 @@ public final class I18nCopyQuality {
 
     public static boolean isPlaceholderText(String value) {
         if (!StringUtils.hasText(value)) return false;
-        String bare = value.replaceAll("\\s+", "");
+        // ECMAScript whitespace matches the PC editor, including NBSP and BOM, but not NEL.
+        String bare = value.replaceAll("[\\s\\p{Z}\\uFEFF]+", "");
         // Short abbreviations such as AAA are valid copy; flag sustained filler only.
         if (bare.matches("(.)\\1{4,}")) return true;
         String compact = bare.replaceAll("\\p{Punct}+", "").toLowerCase(Locale.ROOT);
@@ -67,12 +68,16 @@ public final class I18nCopyQuality {
     }
 
     public static String publishError(String zh, String en, String vi) {
-        if (!StringUtils.hasText(zh) || !StringUtils.hasText(en) || !StringUtils.hasText(vi)) {
+        if (!hasCopyText(zh) || !hasCopyText(en) || !hasCopyText(vi)) {
             return "I18N_COPY_REQUIRED";
         }
         if (isPlaceholderText(zh) || isPlaceholderText(en) || isPlaceholderText(vi)) {
             return "I18N_PLACEHOLDER_TEXT_FORBIDDEN";
         }
         return RetiredBrandGate.anyCarriesRetiredBrand(zh, en, vi) ? RetiredBrandGate.REASON : null;
+    }
+
+    private static boolean hasCopyText(String value) {
+        return value != null && !value.matches("[\\p{javaWhitespace}\\p{Z}\\uFEFF]*");
     }
 }
