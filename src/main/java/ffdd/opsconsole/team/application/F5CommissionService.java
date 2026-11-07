@@ -80,7 +80,7 @@ public class F5CommissionService {
                 : null;
         long total = mapper.countEvents(
                 normalized.kind(), normalized.currency(), normalized.userId(), normalized.status(), normalized.cohort());
-        List<Map<String, Object>> sample = mapper.queryEvents(null, null, null, null, null, null, 200);
+        List<Map<String, Object>> sample = mapper.queryExportEvents(null, null, null, null, null, null, 200);
         List<Map<String, Object>> anomalies = anomalyViews(sample);
         List<Map<String, Object>> kindAggregates = mapper.aggregateCommissionKinds();
         List<Map<String, Object>> statusAggregates = mapper.aggregateCommissionStatuses();
@@ -344,7 +344,7 @@ public class F5CommissionService {
 
     public ApiResult<Map<String, Object>> anomalies(String type, Long cursor) {
         List<Map<String, Object>> anomalies = anomalyViews(
-                mapper.queryEvents(null, null, null, null, null, cursor, 200));
+                mapper.queryExportEvents(null, null, null, null, null, cursor, 200));
         if (StringUtils.hasText(type)) {
             String expected = type.trim().toLowerCase(Locale.ROOT);
             anomalies = anomalies.stream()
