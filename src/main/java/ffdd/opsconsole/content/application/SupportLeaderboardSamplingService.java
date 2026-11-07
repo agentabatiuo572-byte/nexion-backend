@@ -56,13 +56,14 @@ public class SupportLeaderboardSamplingService {
             Map<String,SupportLeaderboardCache.Entry> entries=new HashMap<>();
             try {entries.putAll(cache.current().entries());}
             catch(BizException failure){if(!Set.of("SUPPORT_LEADERBOARD_CACHE_NOT_READY","SUPPORT_LEADERBOARD_CACHE_INVALID").contains(failure.getMessage()))throw failure;}
-            Result result=sampleLocked(entries);
+            Result result=sampleLocked(entries,()->cache.renew(token));
+            cache.renew(token);
             if(!entries.isEmpty() && !cache.publish(token,new SupportLeaderboardCache.Generation(entries)))return empty("LEASE_LOST");
             return result;
         }catch(RuntimeException failure){warn("CACHE_FAILED",null,failure);return empty("CACHE_FAILED");}
         finally {try {cache.release(token);}catch(RuntimeException failure){warn("RELEASE_FAILED",null,failure);}}
     }
-    private Result sampleLocked(Map<String,SupportLeaderboardCache.Entry> entries) {
+    private Result sampleLocked(Map<String,SupportLeaderboardCache.Entry> entries,Runnable batchRead) {
         final Plan plan;
         try {plan=reads.execute(status->{int interval=SupportLeaderboardPolicy.REFRESH_MINUTES;
             Instant now=now();return new Plan(now,interval,contexts(now));});}
@@ -84,11 +85,12 @@ public class SupportLeaderboardSamplingService {
         final Prepared prepared;
         try {
             prepared=reads.execute(status->{
-                var captured=source.captureForSampling();
+                var captured=source.captureForSampling(batchRead);
                 Instant cutoff=captured.cutoff().toInstant(ZoneOffset.UTC);
                 NavigableMap<String,Context> current=contexts(cutoff);
                 List<Snapshot> snapshots=new ArrayList<>();int retired=0;
                 for(Context hint:due) {
+                    batchRead.run();
                     Context context=current.get(SupportLeaderboardPublicationService.streamKey(hint));
                     if(context==null){retired++;continue;}
                     var read=source.projectCaptured(captured,context);
@@ -102,6 +104,7 @@ public class SupportLeaderboardSamplingService {
         Objects.requireNonNull(prepared);
         int committed=0,superseded=0;
         for(Snapshot snapshot:prepared.snapshots()) {
+            batchRead.run();
             String key=SupportLeaderboardPublicationService.streamKey(snapshot.context());
             try {
                 List<Publication> baseline=reads.execute(status->publications.previousBusinessDay(snapshot.context()));

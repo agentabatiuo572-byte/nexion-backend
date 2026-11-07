@@ -65,7 +65,7 @@ public class SupportLeaderboardSourceService {
     @Transactional(readOnly=true,propagation=Propagation.MANDATORY)
     public Read readForAuthorizedLeaderboard(Context authorizedContext) {
         Objects.requireNonNull(authorizedContext);
-        CapturedFacts captured=captureMaterial();
+        CapturedFacts captured=captureMaterial(()->{});
         return projectCaptured(captured,authorizedContext);
     }
 
@@ -83,19 +83,23 @@ public class SupportLeaderboardSourceService {
     /** System sampling owns this RR boundary; it never forges a signed-in principal or private ReadScope. */
     @Transactional(readOnly=true,propagation=Propagation.MANDATORY)
     public CapturedFacts captureForSampling() {
+        return captureForSampling(()->{});
+    }
+    @Transactional(readOnly=true,propagation=Propagation.MANDATORY)
+    public CapturedFacts captureForSampling(Runnable batchRead) {
         if(!TransactionSynchronizationManager.isSynchronizationActive())
             throw new IllegalStateException("SUPPORT_LEADERBOARD_CAPTURE_SYNCHRONIZATION_REQUIRED");
-        return captureMaterial();
+        return captureMaterial(batchRead);
     }
 
-    private CapturedFacts captureMaterial() {
+    private CapturedFacts captureMaterial(Runnable batchRead) {
         requireReadBoundary();
         final LocalDateTime cutoff;
         final Evidence raw;
         try {
             cutoff=mapper.nowUtc();
             if (cutoff==null) throw failed();
-            raw=readEvidence();
+            raw=readEvidence(batchRead);
         } catch (DataAccessException ex) {throw failed();}
         TransactionSynchronization boundary=null;
         if(TransactionSynchronizationManager.isSynchronizationActive()) {
@@ -111,7 +115,7 @@ public class SupportLeaderboardSourceService {
             throw new IllegalStateException("SUPPORT_LEADERBOARD_CALLER_RR_REQUIRED");
     }
 
-    private Evidence readEvidence() {
+    private Evidence readEvidence(Runnable batchRead) {
             List<Account> accounts=ordered(mapper.accounts(),Account::id);
             List<QualificationInterval> qualifications=ordered(mapper.qualifications(),QualificationInterval::id);
             List<MemberInterval> memberships=ordered(mapper.memberships(),MemberInterval::id);
@@ -124,7 +128,7 @@ public class SupportLeaderboardSourceService {
             // No private ALL scope or writer is used: these IDs are explicit internal public-aggregate source subjects.
             SupportPaymentFacts.Snapshot financial=customers.isEmpty()?null:finance.readHistory(customers);
             if (!customers.isEmpty() && financial==null) throw failed();
-            NetSnapshot net=funds.readNetContributions(customers);
+            NetSnapshot net=funds.readNetContributions(customers,batchRead);
             if (net==null) throw failed();
             return new Evidence(accounts,qualifications,memberships,groups,bindings,customers,attributions,proofs,financial,net,
                 mapper.qualificationCutoverUtc());
