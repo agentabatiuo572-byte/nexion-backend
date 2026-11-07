@@ -399,6 +399,9 @@ public class AuditReplayBusinessPermissionGuard {
                 && !scopedMakerMayPropose(command, operation)) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_PERMISSION_DENIED:" + requiredAuthority);
         }
+        if ("H".equalsIgnoreCase(command.domain()) && "h2_trial_charge".equals(operation)) {
+            return ApiResult.fail(410, "TRIAL_EXPLICIT_PURCHASE_REQUIRED");
+        }
         if ("E".equalsIgnoreCase(command.domain()) && "e1_bundle_discount".equals(operation)) {
             return OpsDeviceService.validateBundleDiscountProposal(command.params());
         }
