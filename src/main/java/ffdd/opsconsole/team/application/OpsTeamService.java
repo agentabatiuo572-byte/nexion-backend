@@ -1716,10 +1716,9 @@ public class OpsTeamService implements AuditReplayable {
                 || !eventId.equals(locks.get(0).getTargetId())) {
             return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
         }
-        Map<String, Object> oldEvent = commissionEvents().stream()
-                .filter(row -> eventId.equals(row.get("id")))
-                .findFirst()
-                .orElse(null);
+        Long directEventId = parseLongFromMap(eventId.replaceFirst("^CM-", ""));
+        Map<String, Object> oldEvent = directEventId != null && eventId.equals("CM-" + directEventId)
+                ? commissionRepository.commissionEventById(directEventId) : null;
         if (oldEvent == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COMMISSION_EVENT_NOT_FOUND");
         }
@@ -1735,7 +1734,6 @@ public class OpsTeamService implements AuditReplayable {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
         var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
-        Long directEventId = Long.valueOf(eventId.replaceFirst("^CM-", ""));
         if (direct != null && direct.groupForEvent(directEventId) != null) {
             direct.changeStatus(directEventId, toCanonical, request.expectedVersion());
             if (!commissionRepository.recordCommissionOperation(eventId, fromCanonical+"_TO_"+toCanonical, idempotencyKey.trim(), request.expectedVersion(), actor(request.operator()), request.reason().trim())) throw new IllegalStateException("F5_OPERATION_AUDIT_CONFLICT");

@@ -213,6 +213,11 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     }
 
     @Override
+    public Map<String, Object> commissionEventById(long eventId) {
+        return mapper.commissionEventById(eventId);
+    }
+
+    @Override
     public List<Map<String, Object>> commissionKindSummary() {
         return mapper.commissionKindSummary();
     }
