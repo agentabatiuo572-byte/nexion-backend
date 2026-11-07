@@ -449,6 +449,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261106_k1_last_success.sql"),
   (Join-Path $root "scripts\migrations\20261106_k1_retired_release_params.sql"),
   (Join-Path $root "scripts\migrations\20261107_c2_impersonation_active_deadline.sql")
+  (Join-Path $root "scripts\migrations\20261107_b35_withdrawal_review_route.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
@@ -549,14 +550,14 @@ try {
     'd2_gross_fee', 'd2_nex_burned', 'd2_network_fee_rate', 'd2_network_fee_min', 'd2_network_fee_max',
     'd2_network_fee', 'd2_nex_fee_offset_rate', 'd2_fee_waived', 'd2_actual_fee', 'd2_net_receive',
     'd5_policy_version', 'd5_use_nex_fee_offset', 'd2_lifecycle_owner', 'd2_freeze_period',
-    'd2_routing_priority', 'd2_k3_risk_route', 'd2_k4_risk_score', 'd2_k4_model_version', 'd2_k4_as_of',
+    'd2_routing_priority', 'd2_submission_risk_route', 'd2_k3_risk_route', 'd2_k4_risk_score', 'd2_k4_model_version', 'd2_k4_as_of',
     'd2_k4_band_low_max', 'd2_k4_band_high_min', 'd2_k4_auto_escalate_score', 'failure_reason',
     'd2_previous_status', 'd2_pre_freeze_reason', 'terminal_reason', 'retriable', 'created_at', 'updated_at', 'is_deleted'
   )
   $withdrawalOrderColumnSql = ($withdrawalOrderColumns | ForEach-Object { "'$_'" }) -join ','
   $requiredWithdrawalColumnCount = & $MySql --default-character-set=utf8mb4 --protocol=tcp -N -B -h $databaseUri.Host -P $port -u $Username $database -e "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_withdrawal_order' AND COLUMN_NAME IN ($withdrawalOrderColumnSql);"
   if ($LASTEXITCODE -ne 0 -or (@($requiredWithdrawalColumnCount) -join "`n").Trim() -ne [string]$withdrawalOrderColumns.Count) {
-    throw "Withdrawal order schema startup postcondition failed: all $($withdrawalOrderColumns.Count) required columns must exist. Apply the controlled startup prerequisites, including 20261015_withdrawal_order_schema_readiness.sql and 20261105_d2_preserve_review_reason.sql. Backend startup has been stopped."
+    throw "Withdrawal order schema startup postcondition failed: all $($withdrawalOrderColumns.Count) required columns must exist. Apply the controlled startup prerequisites, including 20261015_withdrawal_order_schema_readiness.sql, 20261105_d2_preserve_review_reason.sql and 20261107_b35_withdrawal_review_route.sql. Backend startup has been stopped."
   }
   $requiredQuoteExpiryColumnCount = & $MySql --default-character-set=utf8mb4 --protocol=tcp -N -B -h $databaseUri.Host -P $port -u $Username $database -e "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_bank_payout_quote_expiry' AND COLUMN_NAME IN ('quote_no','expired_at');"
   if ($LASTEXITCODE -ne 0 -or (@($requiredQuoteExpiryColumnCount) -join "`n").Trim() -ne "2") {
