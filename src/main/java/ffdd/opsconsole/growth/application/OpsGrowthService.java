@@ -715,87 +715,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         if (guard != null) {
             return guard;
         }
-        String sid = normalizeTrialSessionId(sessionId);
-        if (trialSessionLockedByApproval(sid)) {
-            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-        }
-        if (!trialKillSwitchEnabled()) {
-            return validation("TRIAL_KILL_SWITCH_DISABLED");
-        }
-        if (questEventMapper.isEmpty()) {
-            return validation("TRIAL_SESSION_BUSINESS_TABLE_UNAVAILABLE");
-        }
-        Map<String, Object> locked = questEventMapper.get().lockTrialSession(sid);
-        if (locked == null || locked.isEmpty()) {
-            return validation("TRIAL_SESSION_NOT_FOUND");
-        }
-        String state = String.valueOf(locked.get("state")).toLowerCase(Locale.ROOT);
-        if (TRIAL_TERMINAL_STATES.contains(state)) {
-            return invalidState("TRIAL_SESSION_ALREADY_TERMINAL");
-        }
-        Long userId = locked.get("userId") instanceof Number number ? number.longValue() : null;
-        if (userId == null || userId <= 0) {
-            return validation("TRIAL_SESSION_USER_INVALID");
-        }
-        if (appTrialLifecycleService != null) {
-            ApiResult<Map<String, Object>> lifecycle =
-                    appTrialLifecycleService.charge(userId, idempotencyKey);
-            if (lifecycle.getCode() != 0) {
-                return lifecycle;
-            }
-            Map<String, Object> lifecycleData = lifecycle.getData() == null ? Map.of() : lifecycle.getData();
-            if (Boolean.FALSE.equals(lifecycleData.get("ok"))) {
-                return ApiResult.fail(422,
-                        String.valueOf(lifecycleData.getOrDefault("reason", "TRIAL_CHARGE_FAILED")),
-                        lifecycleData);
-            }
-            audit("H2_TRIAL_SESSION_CHARGED", "TRIAL_SESSION", sid, request.operator(), Map.of(
-                    "sessionId", sid,
-                    "userId", userId,
-                    "oldState", state,
-                    "newState", "redeemed",
-                    "reason", request.reason().trim(),
-                    "idempotencyKey", idempotencyKey.trim(),
-                    "lifecycle", lifecycleData));
-            Map<String, Object> response = trials().getData();
-            response.put("updated", Map.of("sessionId", sid, "state", "redeemed"));
-            return ApiResult.ok(response);
-        }
-        BigDecimal chargeAmount = parseDecimal(String.valueOf(locked.get("chargeAmount")), BigDecimal.ZERO);
-        BigDecimal walletBefore = questEventMapper.get().lockWalletUsdt(userId);
-        if (walletBefore == null || walletBefore.compareTo(chargeAmount) < 0) {
-            return validation("TRIAL_WALLET_INSUFFICIENT_FUNDS");
-        }
-        if (chargeAmount.signum() > 0) {
-            if (questEventMapper.get().debitWalletUsdt(userId, chargeAmount) != 1) {
-                throw new IllegalStateException("TRIAL_WALLET_DEBIT_CONFLICT");
-            }
-            String claimNo = String.valueOf(locked.get("claimNo"));
-            if (questEventMapper.get().insertTrialChargeLedger(
-                    userId,
-                    "H2-TRIAL-CHARGE-" + claimNo,
-                    chargeAmount,
-                    walletBefore.subtract(chargeAmount),
-                    sid) != 1) {
-                throw new IllegalStateException("TRIAL_LEDGER_WRITE_FAILED");
-            }
-        }
-        if (questEventMapper.get().transitionTrialSessionStatus(sid, "REDEEMED") != 1) {
-            throw new IllegalStateException("TRIAL_SESSION_STATE_CONFLICT");
-        }
-        audit("H2_TRIAL_SESSION_CHARGED", "TRIAL_SESSION", sid, request.operator(), Map.of(
-                "sessionId", sid,
-                "userId", userId,
-                "amountUsdt", chargeAmount,
-                "balanceBefore", walletBefore,
-                "balanceAfter", walletBefore.subtract(chargeAmount),
-                "oldState", state,
-                "newState", "redeemed",
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        Map<String, Object> response = trials().getData();
-        response.put("updated", Map.of("sessionId", sid, "state", "redeemed"));
-        return ApiResult.ok(response);
+        return ApiResult.fail(410, "TRIAL_EXPLICIT_PURCHASE_REQUIRED");
     }
 
     public ApiResult<Map<String, Object>> killTrialAutoPush(
@@ -6259,8 +6179,6 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 return cancelTrialSession(idem, str(p, "sid"), req);
             }
             case "h2_trial_charge" -> {
-                // 直接动 USDT OUT 台账,金额由 trialChargeAmount() 实时算,复用原方法保证一致;
-                // 前置闸门 trialKillSwitchEnabled()(J1 联动)由原方法保留。H 域无 @Transactional,无自调用代理问题。
                 GrowthConfigUpdateRequest req = new GrowthConfigUpdateRequest(null, null, reason, operator);
                 return chargeTrialSession(idem, str(p, "sid"), req);
             }
