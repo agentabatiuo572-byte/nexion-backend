@@ -1713,7 +1713,7 @@ public class AuditReplayBusinessPermissionGuard {
             case "c2_impersonate_start" -> {
                 Integer ttlMinutes = impersonationTtlMinutes(params.get("ttlMinutes"));
                 yield ttlMinutes == null ? null : userDescriptor(
-                        params, "发起模拟登录", "只读会话 · " + ttlMinutes + " 分钟", false, "user");
+                        params, "用户数据只读视图", "只读会话 · " + ttlMinutes + " 分钟", false, "user");
             }
             case "c2_blocklist_upsert" -> {
                 String kind = value(params, "kind").toUpperCase(Locale.ROOT);

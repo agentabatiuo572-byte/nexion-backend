@@ -936,7 +936,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                         Map.of("symbol", "UVT", "available", account.walletNex())));
                 screen.put("accountStatus", account.status());
                 screen.put("actions", Map.of("deposit", false, "withdraw", false, "transfer", false));
-                screen.put("readOnlyHint", "模拟登录只读模式，充值、提现和转账均不可操作");
+                screen.put("readOnlyHint", "用户数据只读视图，充值、提现和转账均不可操作");
             }
             case "DEVICES" -> {
                 screen.put("template", "H5_DEVICES");
