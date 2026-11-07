@@ -336,6 +336,11 @@ public class OpsAuditCenterService {
                 ticket.setOperatorRole("财务主管");
             } else if (H7VoucherDisposition.isOperation(command)) {
                 ticket.setOperatorRole(accessPolicy.authenticatedOperatorRoleLabel());
+            } else if ("F5".equals(descriptor.sourceDomain())) {
+                String actualRole = accessPolicy.current().roleCode();
+                ticket.setOperatorRole("FINANCE_LEAD".equals(actualRole) ? "财务主管"
+                        : "RISK_LEAD".equals(actualRole) ? "风控主管"
+                        : accessPolicy.authenticatedOperatorRoleLabel());
             } else if (!superAdminProposal && replayBusinessPermissionGuard.delegatedProposal()) {
                 ticket.setOperatorRole("风控");
             }
