@@ -81,7 +81,7 @@ public class DayOneInstanceFacadeAdapter implements DayOneInstanceFacade {
             if (stored == null) throw new IllegalStateException("DAY_ONE_SNAPSHOT_WRITE_UNAVAILABLE");
             return stored;
         }
-        String triReward = DayOneTriRewardPolicy.normalizePolicy(
+        String triReward = DayOneTriRewardPolicy.normalizeStoredPolicy(
                 mapper.lockConfigValue("growth.quest.day_one.tri_reward"));
         GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
         if (rhythm == null || !rhythm.reliable() || rhythm.currentMonth() <= 0
