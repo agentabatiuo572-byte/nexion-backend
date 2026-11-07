@@ -191,7 +191,7 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
 
     @Override
     public boolean insertAmbassadorBudgetGrants(Long applicationId, String operator) {
-        return mapper.insertAmbassadorBudgetGrants(applicationId, operator) == 4;
+        return mapper.insertAmbassadorBudgetGrants(applicationId, operator) == 1;
     }
 
     @Override

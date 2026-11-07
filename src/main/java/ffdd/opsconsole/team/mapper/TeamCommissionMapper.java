@@ -600,21 +600,17 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     @Insert("""
             INSERT INTO nx_team_ambassador_budget_grant
               (application_id, user_id, budget_type, amount_usdt, status, operator)
-            SELECT a.id, a.user_id, budget_type,
-                   CASE
-                     WHEN budget_type = 'KOL' THEN ROUND(a.requested_budget_usdt * a.kol_budget_pct / 100, 6)
-                     ELSE ROUND((a.requested_budget_usdt - (a.requested_budget_usdt * a.kol_budget_pct / 100)) / 3, 6)
-                   END,
+            SELECT a.id, a.user_id,
+                   CASE a.application_reason WHEN 'venue' THEN 'EVENT' WHEN 'kol' THEN 'KOL'
+                     WHEN 'print' THEN 'PROMOTION' WHEN 'dev' THEN 'DEV' END,
+                   a.requested_budget_usdt,
                    'ACTIVE', #{operator}
               FROM nx_team_ambassador_application a
-              JOIN (
-                    SELECT 'KOL' AS budget_type UNION ALL SELECT 'EVENT'
-                    UNION ALL SELECT 'TRAVEL' UNION ALL SELECT 'PROMOTION'
-                   ) types
              WHERE a.id = #{applicationId}
                AND a.is_deleted = 0
                AND UPPER(a.status) = 'APPROVED'
-            ON DUPLICATE KEY UPDATE updated_at = NOW()
+               AND a.application_reason IN ('venue','kol','print','dev')
+               AND a.requested_budget_usdt > 0
             """)
     int insertAmbassadorBudgetGrants(@Param("applicationId") Long applicationId,
                                      @Param("operator") String operator);

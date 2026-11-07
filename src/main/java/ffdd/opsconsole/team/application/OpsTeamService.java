@@ -249,6 +249,7 @@ public class OpsTeamService implements AuditReplayable {
     private final VRankSkuFulfillmentService skuFulfillmentService;
     private final LeaderboardPauseSnapshotService pauseSnapshots;
     private final VRankBootstrapService rankBootstrap;
+    private final AmbassadorMaterialService ambassadorMaterials;
 
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> binarySummary = binarySettlementSummary();
@@ -1247,7 +1248,9 @@ public class OpsTeamService implements AuditReplayable {
         return executeIdempotent(
                 "F_TEAM_CONFIG_UPDATE",
                 idempotencyKey,
-                requestHash("config", request.key(), request.value(), request.reason(), actor(request.operator())),
+                request.expectedMaterialRevision() == null
+                        ? requestHash("config", request.key(), request.value(), request.reason(), actor(request.operator()))
+                        : requestHash("config", request.key(), request.value(), request.reason(), actor(request.operator()), request.expectedMaterialRevision()),
                 () -> updateConfigInternal(idempotencyKey, request));
     }
 
@@ -1603,9 +1606,12 @@ public class OpsTeamService implements AuditReplayable {
         }
         String value = normalizeUiValue(request.value());
         String canonical = canonicalAmbassadorStatus(value);
-        // approved(开通 4 类预算额度)是资金放大动作,B1 红线下阻断;rejected(不开通预算)非放大。
-        if ("APPROVED".equals(canonical) && coverageBelowRedline()) {
-            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        if (!Set.of("APPROVED", "REJECTED").contains(canonical)) return ApiResult.fail(422, "AMBASSADOR_STATUS_INVALID");
+        if ("APPROVED".equals(canonical)) ambassadorMaterials.requireApproval(applicationId, request.expectedMaterialRevision());
+        // Final approval grants only the selected category, and still observes the B1 redline.
+        if ("APPROVED".equals(canonical)) {
+            var gate = validateFundPolicyCoverage();
+            if (gate.getCode() != 0) return ApiResult.fail(gate.getCode(), gate.getMessage());
         }
         if (!commissionRepository.updateAmbassadorStatus(label, canonical, actor(request.operator()), request.reason().trim())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "AMBASSADOR_APPLICATION_UPDATE_FAILED");
@@ -1620,7 +1626,8 @@ public class OpsTeamService implements AuditReplayable {
                 "applicationLabel", label,
                 "newValue", canonical,
                 "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
+                "idempotencyKey", idempotencyKey.trim(),
+                "materialRevision", request.expectedMaterialRevision() == null ? -1 : request.expectedMaterialRevision()), true);
         Map<String, Object> response = leadershipPool().getData();
         response.put("updated", Map.of("key", key, "source", "nx_team_ambassador_application", "newValue", canonical));
         return ApiResult.ok(response);
@@ -2420,7 +2427,12 @@ public class OpsTeamService implements AuditReplayable {
         pool.put("proUnlock", quotaUnlock("PRO"));
         pool.put("rackUnlock", quotaUnlock("RACK"));
         pool.put("ambassadorBands", ambassadorBands());
-        pool.put("ambassadorApplications", commissionRepository.ambassadorApplications(30));
+        pool.put("ambassadorApplications", commissionRepository.ambassadorApplications(30).stream().map(row -> {
+            Map<String, Object> view = new LinkedHashMap<>(row);
+            Long id = parseLongFromMap(row.get("id"));
+            if (id != null) view.putAll(ambassadorMaterials.adminListPacket(id));
+            return view;
+        }).toList());
         pool.put("ambassadorStatus", textValue(ambassador, "status", ""));
         pool.put("ambassadorPendingCount", intValue(ambassador.get("pendingCount"), 0));
         pool.put("ambassadorBudgetApprovedLabel", moneyLabel(decimalValue(ambassador.get("approvedBudgetUsd"), BigDecimal.ZERO)));
@@ -4378,7 +4390,8 @@ public class OpsTeamService implements AuditReplayable {
                 TeamCommissionConfigUpdateRequest req = new TeamCommissionConfigUpdateRequest(
                         key, str(p, "value"), reason, operator,
                         parseLongFromMap(p.containsKey("expectedMonthlyQuota")
-                                ? p.get("expectedMonthlyQuota") : p.get("expectedVersion")));
+                                ? p.get("expectedMonthlyQuota") : p.get("expectedVersion")),
+                        parseLongFromMap(p.get("expectedMaterialRevision")));
                 return updateUiConfig(idem, req, key);
             }
             case "f_config_batch" -> {

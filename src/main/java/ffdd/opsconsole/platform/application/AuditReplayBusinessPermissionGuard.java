@@ -141,6 +141,8 @@ public class AuditReplayBusinessPermissionGuard {
     @Autowired
     private TeamFundApproval teamFundApproval;
     @Autowired
+    private ffdd.opsconsole.team.application.AmbassadorMaterialService ambassadorMaterials;
+    @Autowired
     private G3MarketApproval g3MarketApproval;
     @Autowired
     private G4CatalogApproval g4CatalogApproval;
@@ -1316,6 +1318,19 @@ public class AuditReplayBusinessPermissionGuard {
 
     private DelegatedProposalDescriptor delegatedFDescriptor(
             String operation, Map<String, Object> params) {
+        if ("f_ui_config".equals(operation) && ffdd.opsconsole.team.application.AmbassadorMaterialService.isProposal(new AuditReplayCommand("F",operation,params))) {
+            var proposal=ambassadorMaterials.proposal(new AuditReplayCommand("F",operation,params));
+            String id=String.valueOf(proposal.get("applicationId"));
+            if (proposal.get("applicationDecision")==null) throw new ffdd.opsconsole.shared.exception.BizException(422,"AMBASSADOR_STATUS_INVALID");
+            boolean approve="APPROVE".equals(proposal.get("applicationDecision"));
+            if (approve && (proposal.get("expectedMaterialRevision")==null || !proposal.get("expectedMaterialRevision").equals(proposal.get("materialRevision"))))
+                throw new ffdd.opsconsole.shared.exception.BizException(409,"MATERIAL_REVISION_STALE");
+            String summary="类别 "+proposal.get("bucket")+"；申请 "+proposal.get("budgetUsdt")+" USDT；认可 "+proposal.get("recognizedBudgetUsdt")
+                    +" USDT；材料版本 "+proposal.get("materialRevision")+"；"+proposal.get("materialState");
+            return new DelegatedProposalDescriptor(approve?"批准区域大使申请":"驳回区域大使申请",id,summary,
+                    approve?"仅开通所选类别额度；执行时重核材料和覆盖率":"驳回原申请，不开通额度","F4",approve?"fund":"param",approve,
+                    new AuditLockTarget("F","ambassador_application",id));
+        }
         if ("f_vrank_bootstrap".equals(operation)) {
             var request = ffdd.opsconsole.team.dto.VRankBootstrapRequest.from(params);
             try {

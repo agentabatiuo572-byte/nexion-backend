@@ -230,6 +230,8 @@ SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('
 WHERE r.role_code IN ('FINANCE','FINANCE_LEAD','RISK','RISK_LEAD');
 -- G: finance+growth
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
+SELECT r.id,m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('F','F4') WHERE r.role_code='FINANCE_LEAD';
+INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'G%' WHERE r.role_code IN ('FINANCE','GROWTH');
 -- H: growth
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
