@@ -43,6 +43,7 @@ $migrations = @(
   # capabilities cannot be resurrected in a fresh acceptance database.
   (Join-Path $root "scripts\migrations\20260720_d3_treasury_closure.sql"),
   (Join-Path $root "scripts\migrations\20260807_nexion_hard_blockers.sql"),
+  (Join-Path $root "scripts\migrations\20261108_earnings_release_source_ref_index.sql"),
   (Join-Path $root "scripts\migrations\20260807_k6_evidence_hardening.sql"),
   (Join-Path $root "scripts\migrations\20260807_remove_kyc_runtime.sql"),
   (Join-Path $root "scripts\migrations\20260808_d7_payout_vnd_config.sql"),
