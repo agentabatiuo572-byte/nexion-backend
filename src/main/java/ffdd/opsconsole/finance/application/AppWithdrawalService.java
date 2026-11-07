@@ -195,7 +195,7 @@ public class AppWithdrawalService {
         boolean strong = D2WithdrawalReviewThreshold.applies(strongThreshold, requested);
         boolean small = requested.compareTo(policy.smallAmountThresholdUsd()) <= 0;
         boolean fast = small && !strong && score < facts.k4BandLowMax() && "pass".equals(decision.action());
-        String route = strong ? "manual" : toClientRiskRoute(finalRiskRoute(score, facts, decision));
+        String route = strong ? "manual" : toClientRiskRoute(finalRiskRoute(score, facts, decision, fast));
         List<String> reasons = new java.util.ArrayList<>();
         if (decision.held()) reasons.add("K3_ROUTE:" + decision.action());
         if (score >= facts.k4AutoEscalateScore()) reasons.add("K4_ESCALATED:" + score);
@@ -488,10 +488,10 @@ public class AppWithdrawalService {
         boolean strongReview = D2WithdrawalReviewThreshold.applies(strongReviewThreshold, amount);
         boolean smallAmountEligible = amount.compareTo(policy.smallAmountThresholdUsd()) <= 0;
         boolean zeroDayAutoReview = rhythm.withdrawCooldownDays() == 0;
-        boolean fastTrack = ((bankQuote == null && smallAmountEligible) || zeroDayAutoReview)
+        boolean fastTrack = (bankQuote == null || zeroDayAutoReview) && smallAmountEligible
                 && !strongReview && k4Score < riskFacts.k4BandLowMax()
                 && "pass".equals(riskDecision.action());
-        String riskRoute = strongReview ? "strong-review" : finalRiskRoute(k4Score, riskFacts, riskDecision);
+        String riskRoute = strongReview ? "strong-review" : finalRiskRoute(k4Score, riskFacts, riskDecision, fastTrack);
         // H1 cooldown remains authoritative: low-risk fast-track is auto-reviewed only after the hold expires.
         String status = frozen ? "FROZEN" : fastTrack ? "EXTENDED_HOLD"
                 : bankQuote != null ? (delayed ? "EXTENDED_HOLD" : "REVIEW_PENDING") : strongReview ? "REVIEW_PENDING"
@@ -518,7 +518,7 @@ public class AppWithdrawalService {
                 riskFacts.k4BandLowMax(), riskFacts.k4BandHighMin(), riskFacts.k4AutoEscalateScore(),
                 status, failureReason,
                 fastTrack ? "REVIEW_PASSED" : (bankQuote != null || frozen || delayed) ? "REVIEW_PENDING"
-                        : "fast-pass".equals(riskRoute) ? "REVIEW_PASSED" : null);
+                        : "fast-pass".equals(riskRoute) ? "REVIEW_PASSED" : null, riskRoute);
         if (mapper.insertWithdrawal(write) != 1) throw new BizException(409, "WITHDRAWAL_CREATE_CONFLICT");
         if (riskDecision.held()) {
             withdrawalRiskRuleFacade.recordDecision(riskContext, riskDecision);
@@ -669,13 +669,13 @@ public class AppWithdrawalService {
 
     private String finalRiskRoute(
             int k4Score, WithdrawalRiskFacts facts,
-            WithdrawalRiskDecision k3Decision) {
+            WithdrawalRiskDecision k3Decision, boolean fastTrack) {
         if ("freeze".equals(k3Decision.action())) return "freeze";
         if (k4Score >= facts.k4AutoEscalateScore()) return "escalated-manual";
         if (k4Score >= facts.k4BandHighMin()) return "high-manual";
         if (k3Decision.held()) return k3Decision.action();
         if (k4Score >= facts.k4BandLowMax()) return "manual";
-        return "fast-pass";
+        return fastTrack ? "fast-pass" : "manual";
     }
 
     private String riskRouteEvidence(

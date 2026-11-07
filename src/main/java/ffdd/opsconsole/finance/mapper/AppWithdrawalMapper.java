@@ -255,7 +255,7 @@ public interface AppWithdrawalMapper {
                d2_lifecycle_owner,d2_freeze_period,d2_routing_priority,d2_k3_risk_route,
                d2_k4_risk_score,d2_k4_model_version,d2_k4_as_of,
                d2_k4_band_low_max,d2_k4_band_high_min,d2_k4_auto_escalate_score,
-               failure_reason,d2_previous_status,
+               failure_reason,d2_previous_status,d2_submission_risk_route,
                created_at,updated_at,is_deleted)
             VALUES
                (#{userId},#{withdrawalNo},'USDT',#{chain},#{amount},#{actualFee},#{targetAddress},#{status},#{idempotencyKey},
@@ -265,7 +265,7 @@ public interface AppWithdrawalMapper {
                #{policyVersion},#{useNexFeeOffset},
                #{lifecycleOwner},#{freezePeriod},#{routingPriority},#{k3RiskRoute},
                #{k4RiskScore},#{k4ModelVersion},#{k4AsOf},#{k4BandLowMax},#{k4BandHighMin},#{k4AutoEscalateScore},
-               #{failureReason},#{previousStatus},NOW(),NOW(),0)
+               #{failureReason},#{previousStatus},#{submissionRiskRoute},NOW(),NOW(),0)
             """)
     int insertWithdrawal(WithdrawalWrite write);
 
@@ -278,10 +278,11 @@ public interface AppWithdrawalMapper {
                    w.d2_network_fee networkConfirmUsd,0 penaltyFee,
                    w.d2_actual_fee actualFee,w.d2_net_receive netReceive,w.created_at createdAt,
                    w.d5_policy_version policyVersion,w.d5_use_nex_fee_offset useNexFeeOffset,
+                   COALESCE(w.d2_submission_risk_route,
                    CASE WHEN UPPER(COALESCE(w.failure_reason,''))='A3_STRONG_REVIEW_THRESHOLD' THEN 'manual'
                         WHEN UPPER(COALESCE(w.d2_k3_risk_route,''))='PASS' THEN 'fast-pass'
                         WHEN UPPER(COALESCE(w.d2_k3_risk_route,''))='MANUAL' THEN 'manual'
-                        ELSE LOWER(COALESCE(w.d2_k3_risk_route,'manual')) END riskRoute,
+                        ELSE LOWER(COALESCE(w.d2_k3_risk_route,'manual')) END) riskRoute,
                    'server' idSource,
                    CASE WHEN UPPER(w.status) IN ('REFUNDED','REVIEW_REJECTED','REJECTED','FAILED','TX_FAILED','TX_ORPHANED','DEAD','ADDRESS_INVALID')
                         THEN COALESCE(w.terminal_reason,w.failure_reason) ELSE NULL END terminalReason,
@@ -334,10 +335,11 @@ public interface AppWithdrawalMapper {
                    w.d2_gross_fee grossFee,w.d2_nex_burned nexBurned,w.d2_fee_waived feeWaived,
                    w.d2_actual_fee actualFee,w.d2_net_receive netReceive,w.created_at createdAt,
                    w.d5_policy_version policyVersion,w.d5_use_nex_fee_offset useNexFeeOffset,
+                   COALESCE(w.d2_submission_risk_route,
                    CASE WHEN UPPER(COALESCE(w.failure_reason,''))='A3_STRONG_REVIEW_THRESHOLD' THEN 'manual'
                         WHEN UPPER(COALESCE(w.d2_k3_risk_route,''))='PASS' THEN 'fast-pass'
                         WHEN UPPER(COALESCE(w.d2_k3_risk_route,''))='MANUAL' THEN 'manual'
-                        ELSE LOWER(COALESCE(w.d2_k3_risk_route,'manual')) END riskRoute,
+                        ELSE LOWER(COALESCE(w.d2_k3_risk_route,'manual')) END) riskRoute,
                    'server' idSource,
                    CASE WHEN UPPER(w.status) IN ('REFUNDED','REVIEW_REJECTED','REJECTED','FAILED','TX_FAILED','TX_ORPHANED','DEAD','ADDRESS_INVALID')
                         THEN COALESCE(w.terminal_reason,w.failure_reason) ELSE NULL END terminalReason,
@@ -391,7 +393,7 @@ public interface AppWithdrawalMapper {
             String routingPriority, String k3RiskRoute,
             Integer k4RiskScore, String k4ModelVersion, LocalDateTime k4AsOf,
             Integer k4BandLowMax, Integer k4BandHighMin, Integer k4AutoEscalateScore,
-            String status, String failureReason, String previousStatus) { }
+            String status, String failureReason, String previousStatus, String submissionRiskRoute) { }
 
     record WithdrawalRiskFacts(
             String userNo,

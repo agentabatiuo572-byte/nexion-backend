@@ -17,12 +17,12 @@ public class WithdrawalAttemptSchemaInitializer implements SmartInitializingSing
             "d2_gross_fee", "d2_nex_burned", "d2_network_fee_rate", "d2_network_fee_min", "d2_network_fee_max",
             "d2_network_fee", "d2_nex_fee_offset_rate", "d2_fee_waived", "d2_actual_fee", "d2_net_receive",
             "d5_policy_version", "d5_use_nex_fee_offset", "d2_lifecycle_owner", "d2_freeze_period",
-            "d2_routing_priority", "d2_k3_risk_route", "d2_k4_risk_score", "d2_k4_model_version", "d2_k4_as_of",
+            "d2_routing_priority", "d2_submission_risk_route", "d2_k3_risk_route", "d2_k4_risk_score", "d2_k4_model_version", "d2_k4_as_of",
             "d2_k4_band_low_max", "d2_k4_band_high_min", "d2_k4_auto_escalate_score", "failure_reason",
             "d2_previous_status", "d2_pre_freeze_reason", "terminal_reason", "retriable", "created_at", "updated_at",
             "is_deleted");
     private static final String MIGRATION_GUIDANCE = "apply scripts/apply_startup_schema_migrations.ps1 "
-            + "(including 20261015_withdrawal_order_schema_readiness.sql and 20261105_d2_preserve_review_reason.sql) "
+            + "(including 20261015_withdrawal_order_schema_readiness.sql, 20261105_d2_preserve_review_reason.sql and 20261107_b35_withdrawal_review_route.sql) "
             + "before startup";
     private static final String QUOTE_EXPIRY_MIGRATION_GUIDANCE = "apply "
             + "scripts/migrations/20260916_bank_beneficiary_verification.sql before startup";
