@@ -45,7 +45,7 @@ public class SupportFundsReadService implements SupportFundsReadFacade {
             pending.add(roots.subList(offset,Math.min(offset+NET_READ_BATCH_SIZE,roots.size())));
         var customers=new ArrayList<NetCustomer>();var origins=new ArrayList<ContributionOrigin>();var changes=new ArrayList<ContributionChange>();
         while(!pending.isEmpty()) {
-            var batch=pending.removeFirst();var read=net.read(batch);
+            var batch=pending.removeFirst();var read=net.read(batch,batchRead);
             // The transaction keeps the same snapshot, but raw rows from earlier batches can be released.
             if(sqlSession!=null)sqlSession.clearCache();
             batchRead.run();
