@@ -71,6 +71,7 @@ public class AppHomeOverviewService {
     private final ComputeTaskProofVerifier proofVerifier;
     private final GrowthPublicStatsService publicStatsService;
     private final HomePurchaseEligibilityProbe purchaseEligibilityProbe;
+    private final HomeSharedSnapshotCache sharedSnapshotCache;
     private final Clock clock;
     private final Environment runtimeEnvironment;
 
@@ -135,9 +136,11 @@ public class AppHomeOverviewService {
             result.put("earnings", earnings);
             result.put("earningsLedgerMode", "SETTLED");
             result.put("earningsLedger", earningsLedger(mapper.earningsLedger(userId, sourceEnvironment)));
+            HomeSharedSnapshotCache.Snapshot sharedSnapshot = sharedSnapshotCache.current();
             List<MarketProductRow> marketProducts = safe(mapper.marketProducts());
             result.put("marketBoard", marketBoard(
-                    safe(mapper.marketTasks()), safe(mapper.marketTaskPriceHistory()), marketProducts));
+                    safe(mapper.marketTasks()), safe(sharedSnapshot == null
+                            ? mapper.marketTaskPriceHistory() : sharedSnapshot.marketTaskPriceHistory()), marketProducts));
             result.put("doTheMath", doTheMath(
                     userId, mapper.highestActiveDevice(userId, accountSandbox), marketProducts));
             result.put("weeklyPromo", promo());
@@ -151,7 +154,8 @@ public class AppHomeOverviewService {
             AppHomeOverviewMapper.OnGridSummary grid = mapper.onGrid(sourceEnvironment, accountSandbox);
             Long activeJobs = grid == null ? null : grid.activeJobs();
             if (activeJobs != null && runtimeEnvironment.getProperty("nexion.simulated-tasks.enabled", Boolean.class, false)) {
-                activeJobs += mapper.activeRuleSlots(sourceEnvironment, accountSandbox, now);
+                activeJobs += sharedSnapshot == null ? mapper.activeRuleSlots(sourceEnvironment, accountSandbox, now)
+                        : sharedSnapshot.activeRuleSlotsCount();
             }
             result.put("onGrid", linked("clients", clients(mapper.onGridClients(accountSandbox)),
                     "activeDevices", mapper.globalActiveDevices(accountSandbox),
