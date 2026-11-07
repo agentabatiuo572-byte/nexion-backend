@@ -857,7 +857,7 @@ public class OpsTreasuryService {
                 "BOOLEAN", "treasury_b", "B1 coverage redline alert acknowledgement");
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> createInjection(String idempotencyKey, TreasuryInjectionRequest request) {
         requireD3Command(idempotencyKey, request == null ? null : request.reason());
         BigDecimal requestedAmount = request.amount();
@@ -895,7 +895,7 @@ public class OpsTreasuryService {
      * in one database transaction. The caller is profile-gated; this method itself never bypasses the
      * normal D3 idempotency, audit or outbox path.
      */
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> ensureDevelopmentReserve(
             BigDecimal minimumReserveUsdt,
             LocalDate businessDay) {
@@ -970,6 +970,10 @@ public class OpsTreasuryService {
             ledgerRepository.recordReserveInjection(voucherNo, amount, reason, operator, idempotencyKey);
         } catch (DuplicateKeyException race) {
             throw new BizException(409, "VOUCHER_ALREADY_REGISTERED");
+        }
+        if (configFacade.activeValueForUpdate(B_ALERT_COVERAGE_ACK_KEY).map(Boolean::parseBoolean).orElse(false)
+                && readDualLedgerSnapshot(null, false).healthyForAlert()) {
+            saveCoverageAlertAcknowledgement(false);
         }
         auditRequired("D3_TREASURY_RESERVE_INJECTION", "TREASURY_RESERVE", voucherNo, operator, section(
                 "voucherNo", voucherNo,
