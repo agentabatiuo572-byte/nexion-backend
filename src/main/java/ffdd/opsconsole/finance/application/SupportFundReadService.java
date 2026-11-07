@@ -34,6 +34,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 @ApplicationService
 public class SupportFundReadService {
     private static final int MAX_COMPONENT_CUSTOMERS=4096;
+    private static final int OPERATION_DIRECTORY_BATCH=256;
+    private static final int OPERATION_JSON_BATCH=32;
     private static final String RAW_SHA=sha("SUPPORT_WALLET_JOURNAL_V1");
     private final SupportFundReadMapper mapper;
     private final SupportFundBirthReadFacade auth;
@@ -112,14 +114,22 @@ public class SupportFundReadService {
                 int previous=scope.size();opIds=mapper.operationIds(List.copyOf(scope));
                 if(opIds==null || opIds.stream().anyMatch(id->id==null || id<=0))throw bad(Gap.RECEIPT);
                 opIdSet=new HashSet<>(opIds);
-                partyRows=opIds.isEmpty()?List.of():mapper.parties(opIds);
+                partyRows=new ArrayList<>();
+                for(int from=0;from<opIds.size();from+=OPERATION_DIRECTORY_BATCH) {
+                    var page=mapper.parties(opIds.subList(from,Math.min(from+OPERATION_DIRECTORY_BATCH,opIds.size())));
+                    partyRows.addAll(page);
+                }
                 for(var row:partyRows) {require(opIdSet.contains(number(row,"operationId")) &&number(row,"customerId")>0,Gap.RECEIPT);scope.add(number(row,"customerId"));}
                 if(scope.size()>MAX_COMPONENT_CUSTOMERS)return unknown(roots,List.of(Gap.CLOSURE_LIMIT));
                 if(previous==scope.size())break;
             }while(true);
-            var ids=List.copyOf(scope);var ops=opIds.isEmpty()?List.<Map<String,Object>>of():mapper.operations(opIds);
+            var ids=List.copyOf(scope);var ops=new OperationRows(opIds,connection).rows;
             final var partyIndex=indexParties(partyRows);
-            var legs=opIds.isEmpty()?List.<Map<String,Object>>of():mapper.legs(opIds);
+            var legs=new ArrayList<Map<String,Object>>();
+            for(int from=0;from<opIds.size();from+=OPERATION_DIRECTORY_BATCH) {
+                var page=mapper.legs(opIds.subList(from,Math.min(from+OPERATION_DIRECTORY_BATCH,opIds.size())));
+                legs.addAll(page);
+            }
             require(ops.stream().map(row->number(row,"id")).toList().equals(opIds),Gap.RECEIPT);
             var legIndex=new HashMap<Long,List<Map<String,Object>>>();
             for(var leg:legs){
@@ -336,6 +346,53 @@ public class SupportFundReadService {
         }catch(EvidenceFailure ex) {return unknown(roots,List.of(ex.gap));}
         catch(org.springframework.dao.DataAccessException ex) {return unknown(roots,List.of(Gap.READ_FAILED));}
         catch(IllegalArgumentException | IllegalStateException | ArithmeticException ex) {return unknown(roots,List.of(Gap.READ_FAILED));}
+    }
+    /** Keeps the complete receipt directory, but only one page of original JSON, in the caller's physical snapshot. */
+    private final class OperationRows {
+        private final List<Long> ids;
+        private final Connection connection;
+        private final List<Map<String,Object>> rows=new ArrayList<>();
+        private int pageStart=-1;
+        private List<Map<String,Object>> page=List.of();
+        private OperationRows(List<Long> ids,Connection connection) {
+            this.ids=ids;this.connection=connection;
+            for(int from=0;from<ids.size();from+=OPERATION_DIRECTORY_BATCH) {
+                var pageIds=ids.subList(from,Math.min(from+OPERATION_DIRECTORY_BATCH,ids.size()));
+                var directory=mapper.operationDirectory(pageIds);
+                require(directory.stream().map(row->number(row,"id")).toList().equals(pageIds),Gap.RECEIPT);
+                for(var header:directory) {
+                    int index=rows.size();
+                    rows.add(new AbstractMap<>() {
+                        @Override public Object get(Object key) {
+                            return jsonField(key)?full(index).get(key):header.get(key);
+                        }
+                        @Override public boolean containsKey(Object key) {
+                            return jsonField(key)?full(index).containsKey(key):header.containsKey(key);
+                        }
+                        @Override public Set<Entry<String,Object>> entrySet() {
+                            return Collections.unmodifiableMap(full(index)).entrySet();
+                        }
+                    });
+                }
+            }
+        }
+        private Map<String,Object> full(int index) {
+            int start=index/OPERATION_JSON_BATCH*OPERATION_JSON_BATCH;
+            if(start!=pageStart) {
+                require(snapshot()==connection,Gap.READ_FAILED);
+                var pageIds=ids.subList(start,Math.min(start+OPERATION_JSON_BATCH,ids.size()));
+                // Each mapper query flushes MyBatis local rows before loading the next page.
+                page=List.of();pageStart=-1;
+                var fetched=mapper.operations(pageIds);
+                require(snapshot()==connection,Gap.READ_FAILED);
+                require(fetched.stream().map(row->number(row,"id")).toList().equals(pageIds),Gap.RECEIPT);
+                page=fetched;pageStart=start;
+            }
+            return page.get(index-pageStart);
+        }
+        private boolean jsonField(Object key) {
+            return "orderedEventsJson".equals(key)||"sourceSnapshotJson".equals(key)||"sourceProofJson".equals(key);
+        }
     }
     private Map<String,Integer> earningsPrecisions() {
         var precisions=new HashMap<String,Integer>();
