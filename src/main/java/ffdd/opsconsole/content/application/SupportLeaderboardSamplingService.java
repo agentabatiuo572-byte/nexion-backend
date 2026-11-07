@@ -28,6 +28,7 @@ public class SupportLeaderboardSamplingService {
     private final SupportLeaderboardPublicationService publications;
     private final SupportLeaderboardPublicationMapper publicationMapper;
     private final SupportLeaderboardCache cache;
+    private final SupportBackgroundLeaseHeartbeat heartbeats;
     private final ProductionSupportPathGuard production;
     private final TransactionTemplate reads;
     private final AtomicReference<String> afterKey=new AtomicReference<>("");
@@ -36,8 +37,17 @@ public class SupportLeaderboardSamplingService {
         SupportLeaderboardSourceService source,SupportLeaderboardPublicationService publications,
         SupportLeaderboardPublicationMapper publicationMapper,
         ProductionSupportPathGuard production,PlatformTransactionManager transactions,SupportLeaderboardCache cache) {
+        this(catalogue,clock,source,publications,publicationMapper,production,transactions,cache,null);
+    }
+    @org.springframework.beans.factory.annotation.Autowired
+    public SupportLeaderboardSamplingService(SupportLeaderboardSamplingMapper catalogue,SupportLeaderboardMapper clock,
+        SupportLeaderboardSourceService source,SupportLeaderboardPublicationService publications,
+        SupportLeaderboardPublicationMapper publicationMapper,
+        ProductionSupportPathGuard production,PlatformTransactionManager transactions,SupportLeaderboardCache cache,
+        SupportBackgroundLeaseHeartbeat heartbeats) {
         this.catalogue=catalogue;this.clock=clock;this.source=source;this.publications=publications;
         this.publicationMapper=publicationMapper;this.production=production;this.cache=cache;
+        this.heartbeats=heartbeats;
         reads=new TransactionTemplate(transactions);reads.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         reads.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);reads.setReadOnly(true);
     }
@@ -52,13 +62,14 @@ public class SupportLeaderboardSamplingService {
         String token;
         try {token=cache.tryLock();}catch(RuntimeException failure){warn("CACHE_FAILED",null,failure);return empty("CACHE_FAILED");}
         if(token==null)return empty("LOCKED");
-        try {
+        try(var lease=heartbeats==null?SupportBackgroundLeaseHeartbeat.foreground(()->cache.renew(token)):heartbeats.start(()->cache.renew(token))) {
             Map<String,SupportLeaderboardCache.Entry> entries=new HashMap<>();
             try {entries.putAll(cache.current().entries());}
             catch(BizException failure){if(!Set.of("SUPPORT_LEADERBOARD_CACHE_NOT_READY","SUPPORT_LEADERBOARD_CACHE_INVALID").contains(failure.getMessage()))throw failure;}
-            Result result=sampleLocked(entries,()->cache.renew(token));
-            cache.renew(token);
-            if(!entries.isEmpty() && !cache.publish(token,new SupportLeaderboardCache.Generation(entries)))return empty("LEASE_LOST");
+            Result result=sampleLocked(entries,lease::renew);
+            if(!entries.isEmpty()) {
+                if(!cache.publish(token,new SupportLeaderboardCache.Generation(entries),()->{lease.finish();cache.renew(token);}))return empty("LEASE_LOST");
+            } else {lease.finish();cache.renew(token);}
             return result;
         }catch(RuntimeException failure){warn("CACHE_FAILED",null,failure);return empty("CACHE_FAILED");}
         finally {try {cache.release(token);}catch(RuntimeException failure){warn("RELEASE_FAILED",null,failure);}}
