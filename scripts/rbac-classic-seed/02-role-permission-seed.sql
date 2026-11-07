@@ -322,11 +322,16 @@ WHERE r.role_code='GROWTH' AND LEFT(p.permission_code,22) <> 'network_f5_commiss
   AND p.permission_code NOT IN (
       'network_f1_promote_user', 'network_f1_reward_reissue', 'network_f1_reward_reverse',
       'network_f3_engine_pause', 'network_f4_ambassador_approve', 'network_f4_pool_fund',
+      'network_f4_ambassador_material_review', 'network_f4_ambassador_finance_review',
       'network_f1_permanent_protection', 'network_f2_policy_amplify', 'network_f2_royalty_rate',
       'network_f2_write', 'network_f3_match_rate', 'network_f3_write'
   )
   AND p.status=1 AND p.is_deleted=0;
 -- F5 职责矩阵：财务/风控/审计可读；冻结解冻归风控主管与财务主管，暂停归风控主管，
+INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
+SELECT r.id,p.id FROM nx_admin_role r JOIN nx_admin_permission p
+WHERE r.role_code='FINANCE_LEAD' AND p.permission_code IN ('network_f4_read','network_f4_ambassador_finance_review')
+  AND p.status=1 AND p.is_deleted=0;
 -- 放钱（解锁/支付、补发）与冲正归财务主管；异常阈值归增长与风控主管。
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p

@@ -28,6 +28,8 @@ public class AppAmbassadorApplicationService {
     private final AppAmbassadorApplicationMapper mapper;
     private final Environment environment;
     private final AppAmbassadorPolicyService policyService;
+    @Autowired
+    private AmbassadorMaterialService materials;
 
     @Autowired
     public AppAmbassadorApplicationService(AppAmbassadorApplicationMapper mapper, Environment environment,
@@ -133,6 +135,7 @@ public class AppAmbassadorApplicationService {
         result.put("submittedAt", row.submittedAt().atZone(BUSINESS_ZONE).toInstant().toString());
         result.put("source", "server"); result.put("sourceEnvironment", row.sourceEnvironment());
         result.put("runId", row.runId());
+        if (materials != null) result.putAll(materials.summary(row.id()));
         return result;
     }
 

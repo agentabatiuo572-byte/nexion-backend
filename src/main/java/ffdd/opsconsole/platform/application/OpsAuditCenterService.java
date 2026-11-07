@@ -135,6 +135,8 @@ public class OpsAuditCenterService {
     private final OpsI18nLearningService learning;
     @Autowired
     private OpsGrowthService growth;
+    @Autowired
+    private ffdd.opsconsole.team.application.AmbassadorMaterialService ambassadorMaterials;
 
     public OpsAuditCenterService(PlatformConfigRepository configRepository, AuditLogService auditLogService,
             OpsReadTimeSeedPolicy readTimeSeedPolicy, AuditOperationTicketMapper ticketMapper,
@@ -1472,8 +1474,11 @@ public class OpsAuditCenterService {
                 status(row.getStatus()), phoneCalibrationProposal(command),
                 OpsKillSwitchService.RESTORE_OPERATION.equals(metadata.operationCode()) && isTrue(row.getAmplifies())
                         || command != null && "K".equals(command.domain())
-                            && ("k1_cluster_release".equals(command.op()) || "k1_cluster_cleared".equals(command.op())),
-                metadata.operationCode(), metadata.fundEffect(), metadata.refundOrderNo(), retiredOperation(command));
+                            && ("k1_cluster_release".equals(command.op()) || "k1_cluster_cleared".equals(command.op()))
+                        || ffdd.opsconsole.team.application.AmbassadorMaterialService.isProposal(command)
+                            && Set.of("approved","通过","已批").contains(Objects.toString(command.params().get("value"),"").trim().toLowerCase(Locale.ROOT)),
+                metadata.operationCode(), metadata.fundEffect(), metadata.refundOrderNo(), retiredOperation(command),
+                ambassadorMaterials.queueProposal(command));
     }
 
     private boolean retiredOperation(AuditReplayCommand command) {

@@ -5,6 +5,8 @@ public record TeamCommissionConfigUpdateRequest(
         String value,
         String reason,
         String operator,
-        Long expectedVersion) {
-    public TeamCommissionConfigUpdateRequest(String key,String value,String reason,String operator){this(key,value,reason,operator,null);}
+        Long expectedVersion,
+        Long expectedMaterialRevision) {
+    public TeamCommissionConfigUpdateRequest(String key,String value,String reason,String operator){this(key,value,reason,operator,null,null);}
+    public TeamCommissionConfigUpdateRequest(String key,String value,String reason,String operator,Long expectedVersion){this(key,value,reason,operator,expectedVersion,null);}
 }

@@ -4,6 +4,7 @@ import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditStatsBucket;
 import ffdd.opsconsole.shared.audit.AuditStatsSummaryResponse;
 import java.util.List;
+import java.util.Map;
 
 public record AuditCenterOverview(
         AuditOperationStats stats,
@@ -47,12 +48,13 @@ public record AuditCenterOverview(
             String operationCode,
             FundEffect fundEffect,
             String refundOrderNo,
-            boolean retiredOperation) {
+            boolean retiredOperation,
+            Map<String,Object> ambassadorMaterialProposal) {
         public AuditOperationTicket withViewerMetadata(boolean ownedByViewer, String code, FundEffect effect,
                                                        String orderNo, boolean retired) {
             return new AuditOperationTicket(id, action, obj, beforeValue, afterValue, operator, operatorRole,
                     type, amplifies, sos, ts, ownedByViewer, roleGate, reason, status, phoneCalibrationProposal,
-                    coverageCheckOnApproval, code, effect, orderNo, retired);
+                    coverageCheckOnApproval, code, effect, orderNo, retired, ambassadorMaterialProposal);
         }
     }
 
