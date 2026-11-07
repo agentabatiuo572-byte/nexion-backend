@@ -27,6 +27,7 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
     private final ProductionSupportPathGuard guard;
     private final TransactionTemplate reads;
     private final SupportAnalyticsRedisStore store;
+    private final SupportBackgroundLeaseHeartbeat heartbeats;
     private final ObjectProvider<SupportAnalyticsService> compiler;
     private final SupportAnalyticsCacheCodec codec=new SupportAnalyticsCacheCodec();
     private final AtomicReference<Decoded> decoded=new AtomicReference<>();
@@ -35,7 +36,14 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
     public SupportAnalyticsFactSampler(SupportAnalyticsFactMapper mapper,FinanceSupportPaymentFactsFacade payments,
             SupportFundsReadFacade funds,ProductionSupportPathGuard guard,PlatformTransactionManager transactions,
             SupportAnalyticsRedisStore store,ObjectProvider<SupportAnalyticsService> compiler) {
+        this(mapper,payments,funds,guard,transactions,store,compiler,null);
+    }
+    @org.springframework.beans.factory.annotation.Autowired
+    public SupportAnalyticsFactSampler(SupportAnalyticsFactMapper mapper,FinanceSupportPaymentFactsFacade payments,
+            SupportFundsReadFacade funds,ProductionSupportPathGuard guard,PlatformTransactionManager transactions,
+            SupportAnalyticsRedisStore store,ObjectProvider<SupportAnalyticsService> compiler,SupportBackgroundLeaseHeartbeat heartbeats) {
         this.mapper=mapper;this.payments=payments;this.funds=funds;this.guard=guard;this.store=store;this.compiler=compiler;
+        this.heartbeats=heartbeats;
         reads=new TransactionTemplate(transactions);reads.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         reads.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);reads.setReadOnly(true);
     }
@@ -64,18 +72,20 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
     void refresh() {
         String token=store.tryLock();if(token==null)return;
         long startedAt=System.nanoTime();
-        try {
+        try(var lease=heartbeats==null?SupportBackgroundLeaseHeartbeat.foreground(()->store.renew(token)):heartbeats.start(()->store.renew(token))) {
             SupportAnalyticsFactSnapshot next=reads.execute(status->{
                 Instant asOf=Objects.requireNonNull(mapper.nowUtc()).toInstant(ZoneOffset.UTC);
                 var ids=List.copyOf(mapper.productionCustomers());
                 var payment=ids.isEmpty()?new SupportPaymentFacts.Snapshot(List.of(),List.of(),List.of(),"Asia/Shanghai",asOf):payments.readHistory(ids);
-                store.renew(token);
-                var contributions=funds.readNetContributions(ids,()->store.renew(token));
+                lease.renew();
+                var contributions=funds.readNetContributions(ids,lease::renew);
                 var raw=new SupportAnalyticsFactSnapshot(asOf,ids,payment,contributions,mapper.attributions(),mapper.attributionProofs());
                 return compiler.getObject().compileForCache(raw);
             });
-            store.renew(token);
+            lease.renew();
             String json=codec.encode(Objects.requireNonNull(next));
+            lease.finish();
+            store.renew(token);
             boolean published=store.publish(token,json);
             LOG.info("Support analytics minute generation published={} subjects={} durationMs={} asOf={}",published,next.subjects().size(),(System.nanoTime()-startedAt)/1_000_000,next.asOf());
         } finally {store.release(token);}
