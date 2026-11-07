@@ -42,6 +42,9 @@ public interface SupportFundReadMapper {
         +"source_environment sourceEnvironment,ordered_events orderedEventsJson,source_snapshot sourceSnapshotJson,"
         +"source_proof sourceProofJson,receipt_sha256 receiptSha256,protocol_version protocolVersion,recorded_db_utc recordedDbUtc "
         +"FROM nx_support_fund_operation";
+    String OPS_DIRECTORY="SELECT id,op_key operationKey,business_type businessType,phase,source_table sourceTable,source_key sourceKey,"
+        +"source_environment sourceEnvironment,receipt_sha256 receiptSha256,protocol_version protocolVersion,recorded_db_utc recordedDbUtc "
+        +"FROM nx_support_fund_operation";
 
     @Select("SELECT UTC_TIMESTAMP(6)") @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
     LocalDateTime observedAt();
@@ -62,6 +65,8 @@ public interface SupportFundReadMapper {
     List<Long> operationIds(@Param("ids") List<Long> ids);
     @Select("<script>"+OPS+" WHERE id IN "+IDS+" ORDER BY id</script>") @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
     List<Map<String,Object>> operations(@Param("ids") List<Long> ids);
+    @Select("<script>"+OPS_DIRECTORY+" WHERE id IN "+IDS+" ORDER BY id</script>") @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
+    List<Map<String,Object>> operationDirectory(@Param("ids") List<Long> ids);
     @Select("<script>SELECT operation_id operationId,customer_id customerId FROM nx_support_fund_operation_party WHERE operation_id IN "
         +IDS+" ORDER BY operation_id,customer_id</script>") @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
     List<Map<String,Object>> parties(@Param("ids") List<Long> ids);
