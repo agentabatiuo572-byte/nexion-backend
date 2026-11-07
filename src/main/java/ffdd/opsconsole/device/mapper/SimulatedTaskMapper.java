@@ -72,6 +72,8 @@ public interface SimulatedTaskMapper {
     List<RuntimeRow> runtimesByUser(@Param("userId")long userId);
     @Select(TASK+" WHERE task_no=#{taskNo} FOR UPDATE")
     TaskRow lockTask(@Param("taskNo")String taskNo);
+    @Select("SELECT EXISTS(SELECT 1 FROM nx_simulated_task WHERE user_id=#{userId} AND user_device_id=#{deviceId} AND generation=#{generation})")
+    boolean hasGenerationTasks(@Param("userId")long userId,@Param("deviceId")long deviceId,@Param("generation")long generation);
     @Select(TASK+" WHERE task_no=#{taskNo}")
     TaskRow task(@Param("taskNo")String taskNo);
     @Select("<script>"+TASK+" WHERE user_id=#{userId} AND task_no IN <foreach collection='taskNos' item='no' open='(' separator=',' close=')'>#{no}</foreach></script>")
