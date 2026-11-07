@@ -56,9 +56,12 @@ public class AuthenticatedPrincipalRateLimitFilter extends OncePerRequestFilter 
             return;
         }
         try {
-            long configured = Long.parseLong(config.activeValue(PlatformGlobalRateLimitFilter.CONFIG_KEY)
-                    .orElseThrow().trim());
-            if (configured < 100 || configured > 1_000_000) throw new IllegalArgumentException("range");
+            Long configured = (Long) request.getAttribute(PlatformGlobalRateLimitFilter.VALIDATED_LIMIT_ATTRIBUTE);
+            if (configured == null) {
+                configured = Long.parseLong(config.activeValue(PlatformGlobalRateLimitFilter.CONFIG_KEY)
+                        .orElseThrow().trim());
+                if (configured < 100 || configured > 1_000_000) throw new IllegalArgumentException("range");
+            }
             long limit = Math.max(20, configured / 10);
             long minute = Instant.now().getEpochSecond() / 60;
             String key = "ops:principal-rate:subject-" + digest(authentication.getName())

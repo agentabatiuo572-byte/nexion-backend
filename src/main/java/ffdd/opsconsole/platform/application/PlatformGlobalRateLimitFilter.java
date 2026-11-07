@@ -26,6 +26,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @RequiredArgsConstructor
 public class PlatformGlobalRateLimitFilter extends OncePerRequestFilter {
     static final String CONFIG_KEY = "platform.global_rate_limit_per_minute";
+    static final String VALIDATED_LIMIT_ATTRIBUTE = PlatformGlobalRateLimitFilter.class.getName() + ".validatedLimit";
     private final PlatformConfigFacade config;
     private final StringRedisTemplate redis;
 
@@ -48,6 +49,7 @@ public class PlatformGlobalRateLimitFilter extends OncePerRequestFilter {
         try {
             long limit = Long.parseLong(config.activeValue(CONFIG_KEY).orElseThrow().trim());
             if (limit < 100 || limit > 1_000_000) throw new IllegalArgumentException("range");
+            request.setAttribute(VALIDATED_LIMIT_ATTRIBUTE, limit);
             RouteBudget budget = budget(request, limit);
             long minute = Instant.now().getEpochSecond() / 60;
             String prefix = "ops:global-rate:" + budget.name() + ":";
