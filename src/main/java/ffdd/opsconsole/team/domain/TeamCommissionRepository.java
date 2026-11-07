@@ -78,6 +78,8 @@ public interface TeamCommissionRepository {
 
     List<Map<String, Object>> commissionEvents(int limit);
 
+    Map<String, Object> commissionEventById(long eventId);
+
     List<Map<String, Object>> commissionKindSummary();
 
     List<Map<String, Object>> commissionAuditFeed(int limit);

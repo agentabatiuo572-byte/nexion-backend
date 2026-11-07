@@ -885,6 +885,23 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     List<Map<String, Object>> commissionEvents(@Param("limit") int limit);
 
     @Select("""
+            SELECT status, version,
+                   CONCAT('U', LPAD(user_id, GREATEST(8, CHAR_LENGTH(CAST(user_id AS CHAR))), '0')) AS user,
+                   CASE
+                     WHEN UPPER(status) = 'FROZEN' THEN 'frozen'
+                     WHEN UPPER(status) = 'REJECTED' THEN 'rejected'
+                     WHEN UPPER(status) IN ('REVERSED', 'ROLLBACK') THEN '异常回退'
+                     WHEN UPPER(status) IN ('UNLOCKED', 'AVAILABLE', 'SETTLED', 'PAID') THEN '可提'
+                     WHEN UPPER(status) IN ('COOLING', 'PENDING')
+                       AND unlock_at IS NOT NULL AND unlock_at <= NOW() THEN '可提'
+                     ELSE '计提'
+                   END AS state
+              FROM nx_commission_event
+             WHERE id = #{eventId} AND is_deleted = 0
+            """)
+    Map<String, Object> commissionEventById(@Param("eventId") long eventId);
+
+    @Select("""
             SELECT LOWER(commission_type) AS `key`,
                    UPPER(commission_type) AS code,
                    CASE LOWER(commission_type)
