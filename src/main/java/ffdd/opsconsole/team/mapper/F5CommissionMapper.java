@@ -73,7 +73,7 @@ public interface F5CommissionMapper {
                    DATE_FORMAT(COALESCE(e.updated_at, e.created_at), '%Y-%m-%d %H:%i:%s') AS settledAt,
                    CASE
                      WHEN LOWER(e.commission_type) IN ('network', 'binary', 'direct_purchase', 'direct_device_earning')
-                       THEN GREATEST(0, DATEDIFF(e.unlock_at, NOW()))
+                       THEN GREATEST(0, COALESCE(DATEDIFF(e.unlock_at, NOW()), 0))
                      ELSE 0
                    END AS coolingDaysLeft,
                    CASE
