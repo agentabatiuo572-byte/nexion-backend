@@ -27,7 +27,7 @@ final class DayOneTriRewardPolicy {
                 || eligibilityHours > 720L) {
             throw new BizException(503, "H3_DAY_ONE_REWARD_POLICY_UNAVAILABLE");
         }
-        BigDecimal[] rewards = parse(rawPolicy);
+        BigDecimal[] rewards = parse(storedPolicy(rawPolicy));
         long age = Math.max(0L, accountAgeHours);
         return age < fullRewardHours ? rewards[0]
                 : age < eligibilityHours ? rewards[1] : rewards[2];
@@ -39,6 +39,15 @@ final class DayOneTriRewardPolicy {
             throw unavailable();
         }
         return plain(rewards[0]) + " / " + plain(rewards[1]) + " / " + plain(rewards[2]) + " UVT";
+    }
+
+    static String normalizeStoredPolicy(String rawPolicy) {
+        return normalizePolicy(storedPolicy(rawPolicy));
+    }
+
+    /** Project only the legacy asset suffix when reading stored policies. */
+    private static String storedPolicy(String rawPolicy) {
+        return rawPolicy == null ? null : rawPolicy.replaceFirst("(?i)\\s+NEX\\s*$", " UVT");
     }
 
     static boolean increases(String before, String after) {
