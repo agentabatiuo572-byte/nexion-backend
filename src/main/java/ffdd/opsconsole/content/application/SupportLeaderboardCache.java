@@ -80,8 +80,12 @@ public class SupportLeaderboardCache {
         }catch(DataAccessException ex){throw unavailable();}
     }
     public boolean publish(String token,Generation generation) {
+        return publish(token,generation,()->{});
+    }
+    public boolean publish(String token,Generation generation,Runnable beforeWrite) {
         try {
             String payload=json.writeValueAsString(generation);
+            beforeWrite.run();
             boolean published=Long.valueOf(1).equals(redis.execute(PUBLISH,List.of(LOCK,KEY),token,payload));
             if(published)decoded.set(new Decoded(payload,generation));return published;
         }catch(java.io.IOException ex){throw new IllegalArgumentException("Invalid cache generation",ex);}
