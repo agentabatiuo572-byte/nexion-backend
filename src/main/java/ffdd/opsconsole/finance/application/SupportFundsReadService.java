@@ -40,7 +40,7 @@ public class SupportFundsReadService implements SupportFundsReadFacade {
             pending.add(roots.subList(offset,Math.min(offset+NET_READ_BATCH_SIZE,roots.size())));
         var customers=new ArrayList<NetCustomer>();var origins=new ArrayList<ContributionOrigin>();var changes=new ArrayList<ContributionChange>();
         while(!pending.isEmpty()) {
-            var batch=pending.removeFirst();var read=net.read(batch);
+            var batch=pending.removeFirst();var read=net.read(batch,batchRead);
             batchRead.run();
             // Unrelated roots must not push a valid connected component over its closure limit.
             if(batch.size()>1 && read.customers().size()==batch.size() && read.customers().stream()

@@ -103,6 +103,9 @@ public class SupportFundReadService {
         this.computeV2=new ComputeV2FundEvidence(computeV2Mapper,new ObjectMapper().findAndRegisterModules());
     }
     public NetSnapshot read(Collection<Long> requested) {
+        return read(requested,()->{});
+    }
+    public NetSnapshot read(Collection<Long> requested,Runnable batchRead) {
         if(requested==null || requested.stream().anyMatch(id->id==null || id<=0))throw new IllegalArgumentException("Explicit positive customer scope required");
         var roots=List.copyOf(new TreeSet<>(requested));
         if(roots.isEmpty())return new NetSnapshot(List.of(),List.of(),List.of());
@@ -118,17 +121,19 @@ public class SupportFundReadService {
                 for(int from=0;from<opIds.size();from+=OPERATION_DIRECTORY_BATCH) {
                     var page=mapper.parties(opIds.subList(from,Math.min(from+OPERATION_DIRECTORY_BATCH,opIds.size())));
                     partyRows.addAll(page);
+                    batchRead.run();
                 }
                 for(var row:partyRows) {require(opIdSet.contains(number(row,"operationId")) &&number(row,"customerId")>0,Gap.RECEIPT);scope.add(number(row,"customerId"));}
                 if(scope.size()>MAX_COMPONENT_CUSTOMERS)return unknown(roots,List.of(Gap.CLOSURE_LIMIT));
                 if(previous==scope.size())break;
             }while(true);
-            var ids=List.copyOf(scope);var ops=new OperationRows(opIds,connection).rows;
+            var ids=List.copyOf(scope);var ops=new OperationRows(opIds,connection,batchRead).rows;
             final var partyIndex=indexParties(partyRows);
             var legs=new ArrayList<Map<String,Object>>();
             for(int from=0;from<opIds.size();from+=OPERATION_DIRECTORY_BATCH) {
                 var page=mapper.legs(opIds.subList(from,Math.min(from+OPERATION_DIRECTORY_BATCH,opIds.size())));
                 legs.addAll(page);
+                batchRead.run();
             }
             require(ops.stream().map(row->number(row,"id")).toList().equals(opIds),Gap.RECEIPT);
             var legIndex=new HashMap<Long,List<Map<String,Object>>>();
@@ -351,11 +356,12 @@ public class SupportFundReadService {
     private final class OperationRows {
         private final List<Long> ids;
         private final Connection connection;
+        private final Runnable batchRead;
         private final List<Map<String,Object>> rows=new ArrayList<>();
         private int pageStart=-1;
         private List<Map<String,Object>> page=List.of();
-        private OperationRows(List<Long> ids,Connection connection) {
-            this.ids=ids;this.connection=connection;
+        private OperationRows(List<Long> ids,Connection connection,Runnable batchRead) {
+            this.ids=ids;this.connection=connection;this.batchRead=batchRead;
             for(int from=0;from<ids.size();from+=OPERATION_DIRECTORY_BATCH) {
                 var pageIds=ids.subList(from,Math.min(from+OPERATION_DIRECTORY_BATCH,ids.size()));
                 var directory=mapper.operationDirectory(pageIds);
@@ -374,6 +380,7 @@ public class SupportFundReadService {
                         }
                     });
                 }
+                batchRead.run();
             }
         }
         private Map<String,Object> full(int index) {
@@ -387,6 +394,7 @@ public class SupportFundReadService {
                 require(snapshot()==connection,Gap.READ_FAILED);
                 require(fetched.stream().map(row->number(row,"id")).toList().equals(pageIds),Gap.RECEIPT);
                 page=fetched;pageStart=start;
+                batchRead.run();
             }
             return page.get(index-pageStart);
         }
