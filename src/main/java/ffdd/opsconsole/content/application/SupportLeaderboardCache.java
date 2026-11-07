@@ -73,6 +73,12 @@ public class SupportLeaderboardCache {
         try{return Boolean.TRUE.equals(redis.opsForValue().setIfAbsent(LOCK,token,LEASE))?token:null;}
         catch(DataAccessException ex){throw unavailable();}
     }
+    public void renew(String token) {
+        try {
+            if(!Long.valueOf(1).equals(redis.execute(SupportAnalyticsRedisStore.RENEW,List.of(LOCK),token,Long.toString(LEASE.toMillis()))))
+                throw new BizException(503,"SUPPORT_LEADERBOARD_CACHE_LEASE_LOST");
+        }catch(DataAccessException ex){throw unavailable();}
+    }
     public boolean publish(String token,Generation generation) {
         try {
             String payload=json.writeValueAsString(generation);

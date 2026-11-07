@@ -340,6 +340,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261104_h4_holding_retire.sql")
   (Join-Path $root "scripts\migrations\20261011_support_fund_journal.sql")
   (Join-Path $root "scripts\migrations\20261011_support_fund_operations.sql")
+  (Join-Path $root "scripts\migrations\20261107_support_fund_operation_directory_index.sql")
   (Join-Path $root "scripts\migrations\20261011_support_fund_operation_party.sql")
   # Old local reader definitions and interrupted grants are restored at this position.
   (Join-Path $root "scripts\migrations\20261011_support_fund_schema_reader.sql")
