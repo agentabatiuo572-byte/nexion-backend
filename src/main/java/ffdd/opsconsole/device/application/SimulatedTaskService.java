@@ -153,7 +153,7 @@ public class SimulatedTaskService implements SchedulingConfigurer {
         if(candidates.isEmpty())initialCursor.set(0);
         for(var candidate:candidates){
             if(stopping)return;
-            initialCursor.set(candidate.deviceId());advancedInitial|=processInitial(candidate,observed);
+            initialCursor.set(candidate.deviceId());advancedInitial|=processInitial(candidate);
         }
         moreWork=(candidates.size()==BATCH_SIZE && advancedInitial) || ((advancedDue || advancedInitial) && mapper.hasDue(now()));
     }
@@ -195,7 +195,7 @@ public class SimulatedTaskService implements SchedulingConfigurer {
         }
     }
 
-    private boolean processInitial(Candidate candidate,LocalDateTime observed) {
+    private boolean processInitial(Candidate candidate) {
         try {
             transaction.execute(status->{
                 var device=owned(candidate.userId(),candidate.deviceId());
@@ -204,9 +204,9 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                 if(runtime!=null)requireIdentity(device,runtime);
                 if(runtime!=null && (!Set.of("STOPPED","EXPIRED").contains(runtime.state())
                         || !"DEVICE_PAUSED".equals(runtime.lastError()) && !device.activatedAt().isAfter(runtime.intervalStartedAt())))return null;
-                startInterval(device,runtime,observed,null);return null;
+                startInterval(device,runtime,now(),null);return null;
             });
-            return Boolean.TRUE.equals(transaction.execute(status->advanceCandidate(owned(candidate.userId(),candidate.deviceId()),observed,true)));
+            return Boolean.TRUE.equals(transaction.execute(status->advanceCandidate(owned(candidate.userId(),candidate.deviceId()),now(),true)));
         } catch(RuntimeException failure) {
             defer(candidate.deviceId(),null,failure);
             return false;
@@ -218,6 +218,21 @@ public class SimulatedTaskService implements SchedulingConfigurer {
         if(runtime==null)return false;
         requireIdentity(device,runtime);
         if(!initial && (runtime.nextActionAt()==null || runtime.nextActionAt().isAfter(observed)))return false;
+        if(!initial && "ERROR".equals(runtime.state()) && "IllegalArgumentException".equals(runtime.lastError())
+                && !runtime.phone() && runtime.currentTaskNo()==null && runtime.stopAt()==null
+                && !runtime.stopAfterCurrent() && runtime.finishAfterAt()==null
+                && runtime.intervalStartedAt().equals(runtime.nextStartAt()) && active(device) && !device.pendingDeactivate()) {
+            LocalDateTime recoveredAt=now();
+            LocalDateTime lifecycleStartedAt=device.purchasedAt()!=null?device.purchasedAt():device.activatedAt();
+            if(lifecycleStartedAt!=null && lifecycleStartedAt.isAfter(runtime.nextStartAt())
+                    && !lifecycleStartedAt.isAfter(recoveredAt)
+                    && !mapper.hasGenerationTasks(runtime.userId(),runtime.deviceId(),runtime.generation())) {
+                runtime=new RuntimeRow(runtime.deviceId(),runtime.userId(),runtime.instanceNo(),runtime.productCode(),runtime.phone(),
+                        runtime.generation(),recoveredAt,runtime.phoneValidUntil(),runtime.stopAt(),runtime.stopAfterCurrent(),
+                        runtime.finishAfterAt(),recoveredAt,runtime.currentTaskNo(),recoveredAt,"RUNNING",null);
+                observed=recoveredAt;
+            }
+        }
         var after=advance(device,runtime,observed);
         return !Objects.equals(after.currentTaskNo(),runtime.currentTaskNo())
                 || !Objects.equals(after.nextStartAt(),runtime.nextStartAt()) || !after.state().equals(runtime.state());
