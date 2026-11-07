@@ -145,8 +145,10 @@ public class OpsPlatformParamRegistryService {
         if ("admin_system_health".equalsIgnoreCase(item.configGroup())) {
             return liveHealthRow(canonicalKey, displayName, owner);
         }
-        boolean retired = ComputeConfigRegistry.coeffKey("h5BaseFactor").equals(canonicalKey);
-        String description = retired ? "已退役，值固定为 0，历史数据也不再生效。" : secret
+        boolean h5Retired = ComputeConfigRegistry.coeffKey("h5BaseFactor").equals(canonicalKey);
+        boolean retired = h5Retired || ComputeConfigRegistry.coeffKey("continuityFullHours").equals(canonicalKey);
+        String description = h5Retired ? "已退役，值固定为 0，历史数据也不再生效。"
+                : retired ? "已退役，仅兼容读取，不参与收益计算。" : secret
                 ? "这个敏感参数在「" + owner.label() + "」设置；这里只显示是否已配置，不显示具体值。"
                 : "这个参数在「" + owner.label() + "」设置；这里只显示当前值。";
         String valueType = secret
@@ -161,7 +163,7 @@ public class OpsPlatformParamRegistryService {
                 owner.code(),
                 owner.label(),
                 owner.route(),
-                retired ? "0" : secret ? "已配置（敏感值已隐藏）"
+                h5Retired ? "0" : secret ? "已配置（敏感值已隐藏）"
                         : "E.compute.phoneCalibration.policy".equals(canonicalKey)
                         ? phonePolicySummary(item.configValue())
                         : "risk.k1.release.releaseMode".equals(canonicalKey) ? "manual_only"
@@ -426,6 +428,7 @@ public class OpsPlatformParamRegistryService {
         if (ComputeConfigRegistry.phoneBindingKey("replacementWindowDays").equals(key)) return "手机换绑滚动窗口天数";
         if (ComputeConfigRegistry.phoneBindingKey("maxReplacementsInWindow").equals(key)) return "手机换绑窗口内次数上限";
         if (ComputeConfigRegistry.coeffKey("h5BaseFactor").equals(key)) return "H5 基础托管系数（已退役）";
+        if (ComputeConfigRegistry.coeffKey("continuityFullHours").equals(key)) return "连续在线满额时长（已退役）";
         String normalized = lower(key);
         if (normalized.startsWith("finance.topup.channel.")) {
             String[] parts = key.split("\\.");

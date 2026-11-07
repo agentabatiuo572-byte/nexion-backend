@@ -445,6 +445,10 @@ public class AuditReplayBusinessPermissionGuard {
                 return ApiResult.fail(invalid.getCode(), invalid.getMessage());
             }
         }
+        if ("E".equalsIgnoreCase(command.domain()) && "e6_compute_config".equals(operation)
+                && !ComputeConfigRegistry.isComputeParamKey(value(command.params(), "paramKey"))) {
+            return ApiResult.fail(422, "COMPUTE_PARAM_KEY_INVALID");
+        }
         if ("E".equalsIgnoreCase(command.domain()) && "e6_compute_config_batch".equals(operation)) {
             TreeMap<String, Object> values = canonicalComputeBatchValues(command.params());
             if (values == null) return ApiResult.fail(422, "COMPUTE_PARAM_KEY_INVALID");

@@ -155,7 +155,7 @@ public class OpsAuditCenterService {
     public ApiResult<AuditOperationTicket> proposalByIdempotencyKey(String key) {
         long actorId = accessPolicy.requireProposalReader();
         String operationId = auditLogService.findA2ProposalId(actorId, key);
-        if (operationId == null) return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
+        if (operationId == null) return ApiResult.fail(404, "A2_PROPOSAL_NOT_FOUND");
         AuditOperationTicketEntity ticket = ticketMapper.selectActiveByOperationId(operationId);
         if (ticket == null) return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
         AuditReplayCommand command = deserializeCommand(ticket.getCommandJson());
@@ -904,7 +904,7 @@ public class OpsAuditCenterService {
         }
         var metadata = ticketMetadata(ticket, command);
         return ApiResult.ok(receipt.withViewerMetadata(mine, metadata.operationCode(), metadata.fundEffect(),
-                metadata.refundOrderNo()));
+                metadata.refundOrderNo(), retiredOperation(command)));
     }
 
     private boolean canReadOwnProposal(AuditOperationTicketEntity ticket, AuditReplayCommand command, long actorId) {
@@ -1434,6 +1434,10 @@ public class OpsAuditCenterService {
         if ("H".equals(domain) && H7VoucherDisposition.isOperation(command)) {
             return new TicketMetadata(command.op(), null, null);
         }
+        if ("H".equals(domain) && command != null && "H".equals(command.domain())
+                && "h2_trial_charge".equals(command.op())) {
+            return new TicketMetadata("h2_trial_charge", null, null);
+        }
         if ("J".equals(domain) && OpsKillSwitchService.isRestoreCommand(command)) {
             return new TicketMetadata(OpsKillSwitchService.RESTORE_OPERATION, null, null);
         }
@@ -1469,7 +1473,21 @@ public class OpsAuditCenterService {
                 OpsKillSwitchService.RESTORE_OPERATION.equals(metadata.operationCode()) && isTrue(row.getAmplifies())
                         || command != null && "K".equals(command.domain())
                             && ("k1_cluster_release".equals(command.op()) || "k1_cluster_cleared".equals(command.op())),
-                metadata.operationCode(), metadata.fundEffect(), metadata.refundOrderNo());
+                metadata.operationCode(), metadata.fundEffect(), metadata.refundOrderNo(), retiredOperation(command));
+    }
+
+    private boolean retiredOperation(AuditReplayCommand command) {
+        if (command == null) return false;
+        if ("H".equals(command.domain()) && "h2_trial_charge".equals(command.op())) return true;
+        if (!"E".equals(command.domain()) || command.params() == null) return false;
+        if ("e6_compute_config".equals(command.op())) {
+            return ffdd.opsconsole.device.domain.ComputeConfigRegistry.isCoefficientParamKey(
+                    Objects.toString(command.params().get("paramKey"), ""));
+        }
+        return "e6_compute_config_batch".equals(command.op())
+                && command.params().get("values") instanceof Map<?, ?> values
+                && values.keySet().stream().anyMatch(key -> key instanceof String text
+                    && ffdd.opsconsole.device.domain.ComputeConfigRegistry.isCoefficientParamKey(text));
     }
 
     private String phoneCalibrationProposal(AuditReplayCommand command) {
