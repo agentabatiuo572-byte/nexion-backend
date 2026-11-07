@@ -629,21 +629,26 @@ public class OpsTreasuryService {
     private byte[] reconciliationCsvPayload() {
         Map<String, Object> reserve = reserve().getData();
         Map<String, Object> liabilities = liabilities(false).getData();
-        String csv = "item,amount_usdt,as_of\r\n"
-                + "reserve," + reserve.get("reserveTotalUsdt") + "," + reserve.get("asOf") + "\r\n"
-                + "liabilities," + liabilities.get("totalUsdt") + "," + liabilities.get("asOf") + "\r\n"
-                + "net_exposure," + ((BigDecimal) reserve.get("reserveTotalUsdt")).subtract((BigDecimal) liabilities.get("totalUsdt")) + "," + reserve.get("asOf") + "\r\n";
+        BigDecimal liabilityTotal = (BigDecimal) liabilities.get("valuedTotalUsdt");
+        Object status = liabilities.get("valuationStatus");
+        String csv = "item,amount_usdt,as_of,valuation_status\r\n"
+                + "reserve," + reserve.get("reserveTotalUsdt") + "," + reserve.get("asOf") + ",AVAILABLE\r\n"
+                + "liabilities," + (liabilityTotal == null ? "" : liabilityTotal) + "," + liabilities.get("asOf") + "," + status + "\r\n"
+                + "net_exposure," + (liabilityTotal == null ? "" : ((BigDecimal) reserve.get("reserveTotalUsdt")).subtract(liabilityTotal)) + "," + reserve.get("asOf") + "," + status + "\r\n";
         return ("\ufeff" + csv).getBytes(StandardCharsets.UTF_8);
     }
 
     @SuppressWarnings("unchecked")
     private byte[] liabilitiesCsvPayload() {
-        List<Map<String, Object>> rows = (List<Map<String, Object>>) liabilities(true).getData().get("breakdown");
-        StringBuilder csv = new StringBuilder("\ufeffcategory,label,amount_usdt,share,source\r\n");
+        Map<String, Object> liabilities = liabilities(true).getData();
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) liabilities.get("breakdown");
+        StringBuilder csv = new StringBuilder("\ufeffcategory,label,amount_usdt,share,source,valuation_status\r\n");
         for (Map<String, Object> row : rows) {
+            Object amount = row.get("valuedAmountUsdt");
+            Object share = row.get("valuedShare");
             csv.append(csvCell(row.get("category"))).append(',').append(csvCell(liabilityExportLabel(row.get("category"), row.get("label")))).append(',')
-                    .append(row.get("amountUsdt")).append(',').append(row.get("share")).append(',')
-                    .append(csvCell(row.get("source"))).append("\r\n");
+                    .append(amount == null ? "" : amount).append(',').append(share == null ? "" : share).append(',')
+                    .append(csvCell(row.get("source"))).append(',').append(liabilities.get("valuationStatus")).append("\r\n");
         }
         return csv.toString().getBytes(StandardCharsets.UTF_8);
     }
