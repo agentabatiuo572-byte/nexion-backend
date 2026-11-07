@@ -25,18 +25,6 @@ CREATE TABLE IF NOT EXISTS nx_test_cloud_request (
   CONSTRAINT chk_test_cloud_request_generation CHECK (generation >= 1)
 ) ENGINE=InnoDB;
 
--- Early installations used the request identity as the primary key. Upgrade it
--- atomically, preserving that identity and every historical request field.
-SET @test_cloud_request_upgrade_sql = IF((
-  SELECT COUNT(*) FROM information_schema.COLUMNS
-  WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_test_cloud_request' AND COLUMN_NAME='id'
-)=0,
-  'ALTER TABLE nx_test_cloud_request DROP PRIMARY KEY, ADD COLUMN id BIGINT NOT NULL AUTO_INCREMENT FIRST, ADD PRIMARY KEY (id), ADD UNIQUE KEY uk_test_cloud_request_identity (executor_id,operation,key_hash)',
-  'SELECT 1');
-PREPARE test_cloud_request_upgrade_stmt FROM @test_cloud_request_upgrade_sql;
-EXECUTE test_cloud_request_upgrade_stmt;
-DEALLOCATE PREPARE test_cloud_request_upgrade_stmt;
-
 CREATE TABLE IF NOT EXISTS nx_test_cloud_resource_guard (
   id INT NOT NULL PRIMARY KEY
 ) ENGINE=InnoDB;
