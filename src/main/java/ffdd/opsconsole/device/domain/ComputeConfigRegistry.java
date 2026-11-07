@@ -27,8 +27,8 @@ public final class ComputeConfigRegistry {
     public static final List<CoeffDef> COEFFICIENTS = List.of(
         new CoeffDef("h5BaseFactor", "H5 基础托管系数（已退役）", "0", "只读兼容值",
             "手机任务不在 H5 执行，此字段固定为零。", "不可修改。"),
-        new CoeffDef("continuityFullHours", "连续在线满额时长", "2", "小时",
-            "App 连续在线达此时长后稳定性加成升至满额 1.0。", "调短=更快满额;调长=需更久连续在线。"));
+        new CoeffDef("continuityFullHours", "连续在线满额时长（已退役）", "2", "小时",
+            "已退役，仅兼容读取，不参与收益计算。", "不可修改，不参与任务收益计算。"));
 
     public record YieldDef(String key, String label, String defaultVal, String unit) {}
     public static final List<YieldDef> YIELD_ESTIMATE = List.of(
@@ -120,8 +120,7 @@ public final class ComputeConfigRegistry {
     private static Set<String> exactParamKeys() {
         Set<String> keys = new LinkedHashSet<>();
         FLAGS.forEach(flag -> keys.add(flagKey(flag.key())));
-        COEFFICIENTS.stream().filter(coeff -> !"h5BaseFactor".equals(coeff.key()))
-                .forEach(coeff -> keys.add(coeffKey(coeff.key())));
+        // Historical online coefficients remain readable, but cannot be published again.
         keys.add(phoneBindingKey("allowReplacement"));
         keys.add(phoneBindingKey("minReplacementIntervalDays"));
         keys.add(phoneBindingKey("replacementWindowDays"));

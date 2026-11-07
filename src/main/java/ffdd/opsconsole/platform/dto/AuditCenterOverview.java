@@ -46,12 +46,13 @@ public record AuditCenterOverview(
             boolean coverageCheckOnApproval,
             String operationCode,
             FundEffect fundEffect,
-            String refundOrderNo) {
+            String refundOrderNo,
+            boolean retiredOperation) {
         public AuditOperationTicket withViewerMetadata(boolean ownedByViewer, String code, FundEffect effect,
-                                                       String orderNo) {
+                                                       String orderNo, boolean retired) {
             return new AuditOperationTicket(id, action, obj, beforeValue, afterValue, operator, operatorRole,
                     type, amplifies, sos, ts, ownedByViewer, roleGate, reason, status, phoneCalibrationProposal,
-                    coverageCheckOnApproval, code, effect, orderNo);
+                    coverageCheckOnApproval, code, effect, orderNo, retired);
         }
     }
 
