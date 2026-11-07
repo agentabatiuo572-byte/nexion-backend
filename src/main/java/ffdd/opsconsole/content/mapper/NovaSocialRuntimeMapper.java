@@ -137,6 +137,7 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
             """)
     LocalDateTime latestNotificationAtByType(@Param("notificationType") String notificationType);
 
+    // Materialize at most limit narrow rows before reading JSON and the other event fields.
     @Select("""
             <script>
             SELECT e.event_id sourceEventId,
@@ -146,24 +147,29 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
                    e.account_age_months accountAgeMonths,
                    COALESCE(e.cohort, '') cohort,
                    COALESCE(e.event_ts, e.created_at) occurredAt
-              FROM nx_event_outbox e
-             WHERE e.is_deleted = 0
-               AND e.is_server_authoritative = 1
-               AND (e.analytics_event = 0 OR e.schema_registered = 1)
-               AND e.status != 'DEAD'
-               AND e.event_name IN
-               <foreach item="eventName" collection="eventNames" open="(" separator="," close=")">
-                   #{eventName}
-               </foreach>
-               AND NOT EXISTS (
-                   SELECT 1
-                     FROM nx_nova_business_event_receipt r
-                    WHERE r.channel_key = #{channel}
-                      AND r.source_event_id = e.event_id
-                       AND r.status != 'PROCESSING'
-               )
-             ORDER BY COALESCE(e.event_ts, e.created_at), e.id
-             LIMIT #{limit}
+              FROM (
+                SELECT candidate.id, COALESCE(candidate.event_ts, candidate.created_at) occurred_at
+                  FROM nx_event_outbox candidate
+                 WHERE candidate.is_deleted = 0
+                   AND candidate.is_server_authoritative = 1
+                   AND (candidate.analytics_event = 0 OR candidate.schema_registered = 1)
+                   AND candidate.status != 'DEAD'
+                   AND candidate.event_name IN
+                   <foreach item="eventName" collection="eventNames" open="(" separator="," close=")">
+                       #{eventName}
+                   </foreach>
+                   AND NOT EXISTS (
+                       SELECT 1
+                         FROM nx_nova_business_event_receipt r
+                        WHERE r.channel_key = #{channel}
+                          AND r.source_event_id = candidate.event_id
+                          AND r.status != 'PROCESSING'
+                   )
+                 ORDER BY COALESCE(candidate.event_ts, candidate.created_at), candidate.id
+                 LIMIT #{limit}
+              ) selected
+              JOIN nx_event_outbox e ON e.id = selected.id
+             ORDER BY selected.occurred_at, selected.id
             </script>
             """)
     List<NovaBusinessEventFact> pendingBusinessFacts(
