@@ -21,6 +21,12 @@ import org.springframework.web.bind.annotation.RestController;
 public class CregisDepositController {
     private final CregisDepositService service;
 
+    @GetMapping("/policy")
+    public ApiResult<Map<String,Object>> policy(Authentication auth) {
+        user(auth);
+        return ApiResult.ok(service.networkPolicy());
+    }
+
     @GetMapping("/address")
     public ApiResult<Map<String, Object>> address(@RequestParam String network, Authentication auth) {
         CregisNetwork selected;

@@ -67,6 +67,7 @@ public class AppWithdrawalService {
     private final ffdd.opsconsole.finance.mapper.BankWithdrawalMapper bankWithdrawalMapper;
     private final WithdrawalRiskTimePolicy riskTimePolicy;
     private final ffdd.opsconsole.finance.cregis.CregisPayoutControl providerPayout;
+    private final WithdrawalNetworkPolicy networkPolicy;
 
     public ApiResult<Map<String, Object>> list(Long userId) {
         return list(userId, 1, 50);
@@ -264,6 +265,7 @@ public class AppWithdrawalService {
             Long userId, BigDecimal amount, String chain, String address, String policyVersion,
             boolean useNexFeeOffset, String idempotencyKey) {
         requireProductionWithdrawalSubject(userId);
+        networkPolicy.lockBeforeUser();
         if (userId == null || mapper.lockActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
         BigDecimal normalizedAmount = money(amount);
         String normalizedChain = normalizeChain(chain);
@@ -372,6 +374,7 @@ public class AppWithdrawalService {
         if (!withdrawGateEnabled()) {
             return ApiResult.fail(409, "WITHDRAWAL_KILL_SWITCH_DISABLED");
         }
+        if(bankQuote==null)networkPolicy.requireEnabledForWrite(chain);
         PolicySnapshot policy = currentPolicy();
         if (!StringUtils.hasText(requestedPolicyVersion)
                 || !policy.policyVersion().equals(requestedPolicyVersion.trim())) {
@@ -760,30 +763,13 @@ public class AppWithdrawalService {
                 || payoutSlaHours < 1 || payoutSlaHours > 168) {
             throw new BizException(503, "D5_WD01_CONFIG_INVALID");
         }
-        boolean payoutAllowed = cryptoPayoutAllowed();
-        List<String> enabled = payoutAllowed
-                ? CHAINS.stream().sorted().filter(chain -> !providerMode() || ("USDT-BEP20".equals(chain) || "USDT-ERC20".equals(chain))
-                        && providerPayout.enabled(CregisNetwork.fromNetwork(chain.substring(5))))
-                    .filter(this::networkEnabled).toList() : List.of();
+        List<String> enabled = networkPolicy.enabledNetworks();
 
         String versionMaterial = version + "|" + fees + "|" + nexOffsetRate.stripTrailingZeros().toPlainString()
                 + "|" + smallAmountThresholdUsd.stripTrailingZeros().toPlainString()
                 + "|" + payoutSlaHours + "|" + enabled;
         return new PolicySnapshot(version, Map.copyOf(fees), nexOffsetRate, smallAmountThresholdUsd,
                 payoutSlaHours, enabled, hash(versionMaterial));
-    }
-
-    private boolean networkEnabled(String chain) {
-        String key = switch (chain) {
-            case "USDT-TRC20" -> "withdrawal.trc20.enabled";
-            case "USDT-BEP20" -> "withdrawal.bep20.enabled";
-            case "USDT-ERC20" -> "withdrawal.erc20.enabled";
-            default -> throw new BizException(422, "WITHDRAWAL_CHAIN_INVALID");
-        };
-        return config.activeValue(key).map(String::trim).map(String::toLowerCase)
-                .filter(Set.of("true", "false", "1", "0", "on", "off")::contains)
-                .map(Set.of("true", "1", "on")::contains)
-                .orElseThrow(() -> new BizException(503, "D5_NETWORK_CONFIG_UNAVAILABLE"));
     }
 
     private boolean cryptoPayoutAllowed() {

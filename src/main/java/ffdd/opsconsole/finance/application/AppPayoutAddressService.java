@@ -35,6 +35,7 @@ public class AppPayoutAddressService {
     private static final int CHANGE_COOLDOWN_DAYS = 7;
     private static final int EFFECTIVE_DELAY_HOURS = 24;
     private final AppPayoutAddressMapper mapper;
+    private final WithdrawalNetworkPolicy networkPolicy;
     private final UserOtpDeliveryService otpDelivery;
     private final AuditLogService audit;
     private final AdminIdempotencyService idempotency;
@@ -117,8 +118,9 @@ public class AppPayoutAddressService {
 
     private ApiResult<Map<String, Object>> saveOnce(
             Long userId, String network, String address, String challenge, String code, Scope scope) {
-        // Use the same user-first mutex as withdrawal submission. READ_COMMITTED
-        // makes the count below observe withdrawals committed while this lock waited.
+        // Match dispatch and settlement: shared gate before the user mutex.
+        // READ_COMMITTED observes withdrawals committed while the user lock waited.
+        if(!scope.sandbox())networkPolicy.requireEnabledForWrite(network);
         requireActiveUserLock(userId, scope);
         boolean otpValid = scope.sandbox()
                 ? otpAttempts.verifyAndConsumeSandbox(scope.runId(), userId, challenge, code)

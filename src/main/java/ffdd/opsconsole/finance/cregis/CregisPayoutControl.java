@@ -58,6 +58,10 @@ public class CregisPayoutControl {
         return result;
     }
 
+    public String recoveryReason(CregisNetwork network) {
+        String reason=recoveryReason();
+        return reason!=null?reason:db.recentCompleteReconcileCountForNetwork(network,config.getProjectId())==1?null:"RECONCILIATION_REQUIRED";
+    }
     public boolean enabled() { return Boolean.TRUE.equals(capability().get("enabled")); }
     public boolean configured(CregisNetwork network) {
         return network != null && configured() && StringUtils.hasText(config.rpcUrl(network))

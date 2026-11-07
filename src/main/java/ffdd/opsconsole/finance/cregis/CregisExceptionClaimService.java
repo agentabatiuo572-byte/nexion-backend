@@ -134,7 +134,7 @@ public class CregisExceptionClaimService {
         boolean repair=gate!=null && "BLOCKED".equals(gate.get("state"))
                 && ("CREGIS_UNRESOLVED_EXPOSURE_500".equals(gate.get("switchReason"))
                 || "CREGIS_DEPOSIT_INCIDENT".equals(gate.get("switchReason")) && "UNATTRIBUTED_HOLD".equals(e.sourceStatus()));
-        if(!config.isDepositCreditEnabled() || (!automatic && !repair)
+        if(!config.isDepositCreditEnabled() || !deposits.networkDepositEnabledLocked(CregisNetwork.BEP20) || (!automatic && !repair)
                 || db.otherCritical(config.getProjectId(),e.source().cid())!=0
                 || deposits.disputedDeliveryCountForProject(config.getProjectId())!=0
                 || deposits.criticalHeldDepositCount(config.getProjectId())!=0

@@ -1015,11 +1015,64 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     int createSwitchCase(@Param("projectId") long projectId, @Param("version") long version,
                          @Param("assign") int assign, @Param("credit") int credit, @Param("payout") int payout,
                          @Param("reason") String reason, @Param("makerId") long makerId);
+    @Select("SELECT network,deposit_enabled AS depositEnabled,version,updated_at AS updatedAt FROM nx_cregis_network_switch WHERE network=#{network.network,javaType=java.lang.String}")
+    Map<String,Object> networkSwitch(@Param("network") CregisNetwork network);
+
+    @Select("SELECT network,deposit_enabled AS depositEnabled,version,updated_at AS updatedAt FROM nx_cregis_network_switch WHERE network=#{network.network,javaType=java.lang.String} FOR UPDATE")
+    Map<String,Object> lockNetworkSwitch(@Param("network") CregisNetwork network);
+
+    default boolean networkDepositEnabled(CregisNetwork network) {
+        var row=networkSwitch(network);
+        return row!=null && (Boolean.TRUE.equals(row.get("depositEnabled")) || row.get("depositEnabled") instanceof Number value && value.intValue()==1);
+    }
+    default boolean networkDepositEnabledLocked(CregisNetwork network) {
+        var row=lockNetworkSwitch(network);
+        return row!=null && (Boolean.TRUE.equals(row.get("depositEnabled")) || row.get("depositEnabled") instanceof Number value && value.intValue()==1);
+    }
+    @Select("SELECT config_value FROM nx_config_item WHERE config_key=#{key} AND is_deleted=0 AND status=1")
+    String withdrawalNetworkPermission(@Param("key") String key);
+
+    @Select("SELECT config_value FROM nx_config_item WHERE config_key=#{key} AND is_deleted=0 AND status=1 FOR SHARE")
+    String lockWithdrawalNetworkPermission(@Param("key") String key);
+
+    @Select("SELECT COUNT(*) FROM nx_cregis_network_switch WHERE network IN ('BEP20','ERC20') AND deposit_enabled IN (0,1) AND version>=0")
+    int networkSwitchCount();
+
+    @Select("""
+            SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE()
+              AND ((TABLE_NAME='nx_cregis_network_switch' AND COLUMN_NAME IN ('network','deposit_enabled','version','updated_at'))
+                OR (TABLE_NAME='nx_cregis_switch_case' AND COLUMN_NAME IN ('network','expected_network_version','before_deposit_enabled')))
+            """)
+    int networkSwitchSchemaCount();
+
+    @Update("UPDATE nx_cregis_network_switch SET deposit_enabled=#{deposit},version=version+1 WHERE network=#{network.network,javaType=java.lang.String} AND version=#{version}")
+    int setNetworkSwitch(@Param("network") CregisNetwork network,@Param("deposit") int deposit,@Param("version") long version);
+
+    @Update("UPDATE nx_cregis_network_switch SET deposit_enabled=0,version=version+1 WHERE network<>#{network.network,javaType=java.lang.String} AND deposit_enabled<>0")
+    int keepOtherNetworksPaused(@Param("network") CregisNetwork network);
+
+    @Update("UPDATE nx_cregis_network_switch SET deposit_enabled=0,version=version+1")
+    int emergencyOffNetworks();
+
+    @Insert("""
+            INSERT INTO nx_cregis_switch_case
+              (project_id,expected_version,network,expected_network_version,before_deposit_enabled,
+               assign_enabled,credit_enabled,payout_enabled,reason,maker_id,status)
+            VALUES(#{projectId},#{version},#{network.network,javaType=java.lang.String},#{networkVersion},#{beforeDeposit},
+                   #{deposit},#{deposit},#{payout},#{reason},#{actor},'MAKER_DONE')
+            """)
+    int createNetworkSwitchCase(@Param("projectId") long projectId,@Param("version") long version,
+            @Param("network") CregisNetwork network,@Param("networkVersion") long networkVersion,
+            @Param("beforeDeposit") int beforeDeposit,
+            @Param("deposit") int deposit,@Param("payout") int payout,@Param("reason") String reason,@Param("actor") long actor);
+
     @Select("SELECT LAST_INSERT_ID()")
     Long lastInsertId();
     @Select("""
             SELECT id,project_id AS projectId,expected_version AS expectedVersion,
               assign_enabled AS assignEnabled,credit_enabled AS creditEnabled,payout_enabled AS payoutEnabled,
+              network,expected_network_version AS expectedNetworkVersion,
+              before_deposit_enabled AS beforeDepositEnabled,
               reason,maker_id AS makerId,status
             FROM nx_cregis_switch_case WHERE id=#{id} FOR UPDATE
             """)
@@ -1027,6 +1080,8 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     @Select("""
             SELECT id,expected_version AS expectedVersion,assign_enabled AS assignEnabled,
               credit_enabled AS creditEnabled,payout_enabled AS payoutEnabled,reason,
+              network,expected_network_version AS expectedNetworkVersion,
+              before_deposit_enabled AS beforeDepositEnabled,
               maker_id AS makerId,checker_id AS checkerId,status,
               created_at AS createdAt,checked_at AS checkedAt
             FROM nx_cregis_switch_case WHERE project_id=#{projectId}

@@ -86,8 +86,8 @@ public class CregisDepositService {
 
     public Map<String, Object> address(CregisNetwork network,long userId) {
         if (userId <= 0) throw new BizException(401, "USER_AUTH_REQUIRED");
-        if ((!config.depositNetworkEnabled(network) || (network==CregisNetwork.ERC20 && !config.networkConfigured(network))) || !config.isDepositEnabled() || !config.isDepositCreditEnabled()
-                || config.getMode() != CregisProperties.Mode.PROVIDER)
+        if (config.getMode()!=CregisProperties.Mode.PROVIDER || !config.isDepositEnabled() || !config.isDepositCreditEnabled()
+                || !config.networkConfigured(network) || !depositEnabled(network))
             return Map.of("enabled", false, "creditEnabled", false,
                     "network", network.network(), "reason", "CREGIS_DEPOSIT_PAUSED");
         if(network==CregisNetwork.ERC20) {
@@ -105,7 +105,7 @@ public class CregisDepositService {
             if (((Number) row.get("projectId")).longValue() != config.getProjectId())
                 throw new BizException(409, "CREGIS_PROJECT_ADDRESS_CONFLICT");
             Map<String, Object> gate = db.provisionGate();
-            if (gate == null || !"IDLE".equals(gate.get("state")) || !on(gate, "assignEnabled"))
+            if (gate == null || !"IDLE".equals(gate.get("state")) || !on(gate, "assignEnabled") || !depositEnabled(network))
                 return Map.of("enabled", false, "creditEnabled", false,
                         "network", network.network(), "reason", "CREGIS_DEPOSIT_PAUSED");
             if ("READY".equals(row.get("state"))) return Map.of(
@@ -147,7 +147,7 @@ public class CregisDepositService {
         Instant proofDeadline=Instant.now().plusSeconds(5);
         Map<String, Object> assigned = transactions.execute(ignored -> {
             Map<String, Object> gate = db.lockProvisionGate();
-            if (gate == null || !"IDLE".equals(gate.get("state")) || !on(gate, "assignEnabled"))
+            if (gate == null || !"IDLE".equals(gate.get("state")) || !on(gate, "assignEnabled") || !depositEnabledLocked(network))
                 throw new BizException(503, "CREGIS_ADDRESS_POOL_PAUSED");
             if (tripLocked()) return null;
             List<Map<String, Object>> current = db.addressForUser(userId, network.chainId());
@@ -169,6 +169,7 @@ public class CregisDepositService {
         if (!"READY".equals(assigned.get("state")))
             throw new BizException(409, "CREGIS_ADDRESS_REQUIRES_REVIEW");
         Map<String, Object> currentGate = db.provisionGate();
+        if(!depositEnabled(network)) return Map.of("enabled",false,"creditEnabled",false,"network",network.network(),"reason","CREGIS_DEPOSIT_PAUSED");
         boolean creditEnabled = config.isDepositCreditEnabled() && currentGate != null
                 && "IDLE".equals(currentGate.get("state")) && on(currentGate, "assignEnabled")
                 && on(currentGate, "creditEnabled");
@@ -176,6 +177,37 @@ public class CregisDepositService {
                 "network", network.network(), "address", assigned.get("address"),
                 "confirmations", currentPolicy.confirmations(), "feeUsdt", currentPolicy.feeUsdt(), "minDepositUsdt", currentPolicy.minDepositUsdt(),
                 "feeUsdtExact", currentPolicy.feeUsdt().toPlainString(), "minDepositUsdtExact", currentPolicy.minDepositUsdt().toPlainString());
+    }
+
+    /** Read-only metadata: does not call address(), allocation, pool maintenance or risk mutations. */
+    public Map<String,Object> networkPolicy() {
+        var policy=policies.current();var rows=new java.util.ArrayList<Map<String,Object>>();
+        var gate=config.getMode()==CregisProperties.Mode.PROVIDER?db.provisionGate():null;
+        for(var network:CregisNetwork.values()) {
+            var business=config.getMode()==CregisProperties.Mode.PROVIDER?db.networkSwitch(network):null;
+            String reason=depositDisabledReason(network,business,gate);
+            var row=new java.util.LinkedHashMap<String,Object>();row.put("network",network.network());
+            row.put("enabled",reason==null);row.put("disabledReason",reason);row.put("confirmations",policy.confirmations());
+            row.put("feeUsdt",policy.feeUsdt());row.put("minDepositUsdt",policy.minDepositUsdt());
+            row.put("feeUsdtExact",policy.feeUsdt().toPlainString());row.put("minDepositUsdtExact",policy.minDepositUsdt().toPlainString());rows.add(row);
+        }
+        return Map.of("networks",rows);
+    }
+    private String depositDisabledReason(CregisNetwork network,Map<String,Object> business,Map<String,Object> gate) {
+        if(config.getMode()!=CregisProperties.Mode.PROVIDER || !config.isDepositEnabled() || !config.isDepositCreditEnabled()
+                || !config.depositNetworkEnabled(network) || !config.networkConfigured(network))return "NOT_CONFIGURED";
+        if(business==null)return "NETWORK_SWITCH_MISSING";
+        if(!on(business,"depositEnabled"))return "NETWORK_SWITCH_OFF";
+        if(gate==null || !"IDLE".equals(gate.get("state")))return "RISK_HOLD";
+        return !on(gate,"assignEnabled") || !on(gate,"creditEnabled")?"GLOBAL_SWITCH_OFF":null;
+    }
+
+    private boolean depositEnabled(CregisNetwork network) {
+        return config.depositNetworkEnabled(network) && db.networkDepositEnabled(network);
+    }
+
+    private boolean depositEnabledLocked(CregisNetwork network) {
+        return config.depositNetworkEnabled(network) && db.networkDepositEnabledLocked(network);
     }
 
     private Map<String,Object> preparingAddress(CregisNetwork network) {
@@ -187,7 +219,7 @@ public class CregisDepositService {
     @Scheduled(fixedDelayString = "${NEXION_CREGIS_POOL_MAINTENANCE_MS:10000}")
     public void maintainAddressPool() {
         if(!poolMaintenanceRunning.compareAndSet(false,true)) return;
-        try { for(var network:CregisNetwork.values()) if(config.networkConfigured(network) && config.depositNetworkEnabled(network)) maintainAddressPool(network); }
+        try { for(var network:CregisNetwork.values()) if(config.networkConfigured(network) && depositEnabled(network)) maintainAddressPool(network); }
         finally { poolMaintenanceRunning.set(false); }
     }
     private void maintainAddressPool(CregisNetwork network) {
@@ -232,12 +264,12 @@ public class CregisDepositService {
     }
 
     private int enqueuePoolAddresses(CregisNetwork network,boolean automatic) {
-        if (!config.depositNetworkEnabled(network) || !config.networkConfigured(network) || config.getMode() != CregisProperties.Mode.PROVIDER || config.getProjectId() <= 0
+        if (!depositEnabled(network) || !config.networkConfigured(network) || config.getMode() != CregisProperties.Mode.PROVIDER || config.getProjectId() <= 0
                 || config.getDepositConfirmations() < 15) throw new BizException(503,"CREGIS_PROVISION_NOT_CONFIGURED");
         return transactions.execute(ignored -> {
             Map<String,Object> gate=db.lockProvisionGate();
             if(gate==null || !"IDLE".equals(gate.get("state")) || !on(gate,"assignEnabled") || !on(gate,"creditEnabled")
-                    || tripLocked()) return 0;
+                    || !depositEnabledLocked(network) || tripLocked()) return 0;
             var raw=db.poolPolicy(network);var policy=CregisAddressPoolPolicy.from(raw);
             if((automatic && !policy.enabled()) || submissionCoolingDown(raw)) return 0;
             int available=db.availableAddressCount(config.getProjectId(),network.chainId());
@@ -271,7 +303,7 @@ public class CregisDepositService {
         long creationBlock=chain.head(network).number();
         Map<String,Object> request=transactions.execute(ignored->{
             var gate=db.lockProvisionGate();
-            if(gate==null || !"IDLE".equals(gate.get("state")) || !on(gate,"assignEnabled") || !on(gate,"creditEnabled") || tripLocked()) return null;
+            if(gate==null || !"IDLE".equals(gate.get("state")) || !on(gate,"assignEnabled") || !on(gate,"creditEnabled") || !depositEnabledLocked(network) || tripLocked()) return null;
             var raw=db.poolPolicy(network);var policy=CregisAddressPoolPolicy.from(raw);
             if(submissionCoolingDown(raw) || db.submittingAddressCount(config.getProjectId(),network.chainId())>=policy.concurrency()) return null;
             var row=db.lockQueuedAddress(config.getProjectId(),network.chainId());
@@ -352,6 +384,17 @@ public class CregisDepositService {
         status.put("depositCreditEnabled", config.isDepositCreditEnabled());
         status.put("providerPayout", payouts.capability());
         status.put("networkCapabilities",payouts.networkCapabilities());
+        var networkSwitches=new java.util.ArrayList<Map<String,Object>>();
+        for(var network:CregisNetwork.values()) {
+            var raw=db.networkSwitch(network);
+            if(raw==null)throw new IllegalStateException("CREGIS_NETWORK_SWITCH_MISSING");
+            var row=new java.util.LinkedHashMap<String,Object>(raw);row.put("depositEnabled",on(raw,"depositEnabled"));
+            String reason=depositDisabledReason(network,raw,gate);
+            row.put("depositAvailable",reason==null);row.put("depositDisabledReason",reason);
+            row.put("addressAvailable",db.availableAddressCount(config.getProjectId(),network.chainId())>0);
+            networkSwitches.add(row);
+        }
+        status.put("networkSwitches",networkSwitches);
         Map<String, Object> addressPool = new java.util.LinkedHashMap<>(db.addressPool(config.getProjectId(), CregisNetwork.BEP20.chainId()));
         addressPool.put("available", true);
         addressPool.put("limit", 0); // Zero means no account/address-count cap.
@@ -375,8 +418,8 @@ public class CregisDepositService {
             pool.put("reserveTarget",policy.target());pool.put("lowWatermark",policy.lowWatermark());
             pool.put("batchSize",policy.batchSize());pool.put("concurrency",policy.concurrency());
             pool.put("lastError",raw.get("lastError"));pool.put("retryAfter",raw.get("retryAfter"));
-            pool.put("available",config.networkConfigured(network) && config.depositNetworkEnabled(network));pool.put("limit",0);
-            pool.put("automatic",policy.enabled() && config.isDepositEnabled() && config.isDepositCreditEnabled() && config.depositNetworkEnabled(network));
+            pool.put("available",config.networkConfigured(network) && depositEnabled(network));pool.put("limit",0);
+            pool.put("automatic",policy.enabled() && config.isDepositEnabled() && config.isDepositCreditEnabled() && depositEnabled(network));
             addressPools.put(network.network(),pool);
         }
         status.put("addressPools",addressPools);
@@ -955,7 +998,7 @@ public class CregisDepositService {
             throw new IllegalStateException("CREGIS_CREDIT_DISABLED");
         requireReviewProofFresh(proof);
         CregisNetwork network=proof.network();
-        if(!config.depositNetworkEnabled(network)) throw new IllegalStateException("CREGIS_CREDIT_DISABLED");
+        if(!depositEnabledLocked(network)) throw new IllegalStateException("CREGIS_CREDIT_DISABLED");
         List<Map<String, Object>> matches = db.lockEvent(network,config.getProjectId(), cid);
         if (matches.size() != 1 || !"REVIEW_HOLD".equals(matches.get(0).get("status")))
             throw new IllegalStateException("CREGIS_REVIEW_EVENT_CHANGED");
@@ -1044,7 +1087,7 @@ public class CregisDepositService {
         if (db.disputedDeliveryCount(cid) != 0) return false;
         List<Map<String, Object>> existing = db.lockEvent(network,config.getProjectId(), cid);
         if (!existing.isEmpty()) return settle(network,deliveryId, userId, cid, txid, address, amount, proof);
-        if (config.depositNetworkEnabled(network) && config.isDepositCreditEnabled() && "IDLE".equals(gate.get("state"))
+        if (depositEnabledLocked(network) && config.isDepositCreditEnabled() && "IDLE".equals(gate.get("state"))
                 && on(gate, "creditEnabled")
                 && !hasBlockingPendingDelivery(network,deliveryId, cid, txid, address, amount, proof.blockNumber())) {
             if (settle(network,deliveryId, userId, cid, txid, address, amount, proof)) return true;
@@ -1096,7 +1139,7 @@ public class CregisDepositService {
         Map<String, Object> gate = db.lockProvisionGate();
         if (gate == null) throw new IllegalStateException("CREGIS_DEPOSIT_RISK_GATE_MISSING");
         if (tripLocked()) return false;
-        if (!config.depositNetworkEnabled(network) || !"IDLE".equals(gate.get("state")) || !on(gate, "creditEnabled")
+        if (!depositEnabledLocked(network) || !"IDLE".equals(gate.get("state")) || !on(gate, "creditEnabled")
                 || hasBlockingPendingDelivery(network,deliveryId, cid, txid, address, amount, proof.blockNumber())) return false;
         var exceptionSource = new CregisExceptionSourceService.Source(config.getProjectId(), cid, txid,
                 proof.logIndex(), address, amount,network);
