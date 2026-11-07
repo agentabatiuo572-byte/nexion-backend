@@ -389,6 +389,7 @@ $migrations = @(
   # This adds schema/pool state only; enabling ERC20 still requires explicit configuration.
   (Join-Path $root "scripts\migrations\20261031_z_cregis_erc20_network.sql")
   (Join-Path $root "scripts\migrations\20261031_test_cloud_request_journal.sql")
+  (Join-Path $root "scripts\migrations\20261107_test_cloud_request_id_forward.sql")
   # The unresolved-request index depends on the journal table above.
   (Join-Path $root "scripts\migrations\20261101_compute_v2_resource_index.sql")
   # Shared device readers need this evidence table; the migration writes no TEST incident data.
