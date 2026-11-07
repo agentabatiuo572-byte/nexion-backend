@@ -19,7 +19,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 @RequiredArgsConstructor
 @Slf4j
 class SessionLifetimeCache {
-    private static final String KEY = "nexion:auth:session-lifetimes:v1";
+    private static final String KEY = "nexion:auth:session-lifetimes:v2";
     private static final Duration TTL = Duration.ofSeconds(30);
     private static final DefaultRedisScript<Long> FILL = new DefaultRedisScript<>("""
             local current = redis.call('GET', KEYS[1]) or ''
@@ -40,9 +40,9 @@ class SessionLifetimeCache {
         }
         if (observed != null) {
             String[] values = observed.split(",", -1);
-            if (values.length == 2) {
-                SessionLifetimes cached = SessionLifetimes.from(values[0], values[1]);
-                if (observed.equals(cached.accessHours() + "," + cached.refreshDays())) return cached;
+            if (values.length == 3) {
+                SessionLifetimes cached = SessionLifetimes.from(values[0], values[1], values[2]);
+                if (observed.equals(cached.accessHours() + "," + cached.refreshDays() + "," + cached.idleDays())) return cached;
             }
         }
         SessionLifetimes fresh = load();
@@ -52,7 +52,7 @@ class SessionLifetimeCache {
                         .equals(TransactionSynchronizationManager.getCurrentTransactionIsolationLevel())) {
             try {
                 redis.execute(FILL, List.of(KEY), observed == null ? "" : observed,
-                        fresh.accessHours() + "," + fresh.refreshDays(), Long.toString(TTL.toSeconds()));
+                        fresh.accessHours() + "," + fresh.refreshDays() + "," + fresh.idleDays(), Long.toString(TTL.toSeconds()));
             } catch (DataAccessException ex) {
                 log.debug("Session lifetime cache fill unavailable", ex);
             }
@@ -63,15 +63,18 @@ class SessionLifetimeCache {
     private SessionLifetimes load() {
         String access = null;
         String refresh = null;
+        String idle = null;
         for (var item : mapper.selectSessionLifetimes()) {
             if (SessionLifetimes.ACCESS_KEY.equals(item.getConfigKey())) access = item.getConfigValue();
             if (SessionLifetimes.REFRESH_KEY.equals(item.getConfigKey())) refresh = item.getConfigValue();
+            if (SessionLifetimes.IDLE_KEY.equals(item.getConfigKey())) idle = item.getConfigValue();
         }
-        return SessionLifetimes.from(access, refresh);
+        return SessionLifetimes.from(access, refresh, idle);
     }
 
     void invalidateAfterCommit(String configKey) {
-        if (!SessionLifetimes.ACCESS_KEY.equals(configKey) && !SessionLifetimes.REFRESH_KEY.equals(configKey)) return;
+        if (!SessionLifetimes.ACCESS_KEY.equals(configKey) && !SessionLifetimes.REFRESH_KEY.equals(configKey)
+                && !SessionLifetimes.IDLE_KEY.equals(configKey)) return;
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override public void afterCommit() {

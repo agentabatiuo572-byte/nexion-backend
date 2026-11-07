@@ -9,16 +9,19 @@ public interface PlatformConfigFacade extends DomainFacade {
 
     default SessionLifetimes sessionLifetimes() {
         return SessionLifetimes.from(activeValue(SessionLifetimes.ACCESS_KEY).orElse(null),
-                activeValue(SessionLifetimes.REFRESH_KEY).orElse(null));
+                activeValue(SessionLifetimes.REFRESH_KEY).orElse(null),
+                activeValue(SessionLifetimes.IDLE_KEY).orElse(null));
     }
 
-    record SessionLifetimes(int accessHours, int refreshDays) {
+    record SessionLifetimes(int accessHours, int refreshDays, int idleDays) {
         public static final String ACCESS_KEY = "auth.session.access_ttl_hours";
         public static final String REFRESH_KEY = "auth.session.refresh_ttl_days";
-        public static final SessionLifetimes DEFAULT = new SessionLifetimes(4, 30);
+        public static final String IDLE_KEY = "auth.session.idle_ttl_days";
+        public static final SessionLifetimes DEFAULT = new SessionLifetimes(4, 30, 30);
 
-        public static SessionLifetimes from(String access, String refresh) {
-            return new SessionLifetimes(bounded(access, 4, 1, 24), bounded(refresh, 30, 7, 90));
+        public static SessionLifetimes from(String access, String refresh, String idle) {
+            return new SessionLifetimes(bounded(access, 4, 1, 24), bounded(refresh, 30, 7, 90),
+                    bounded(idle, 30, 7, 90));
         }
 
         private static int bounded(String raw, int fallback, int min, int max) {
