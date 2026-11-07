@@ -90,6 +90,9 @@ public class PurchasePaymentService {
         var gate=db.one("SELECT state,CAST(assign_enabled AS UNSIGNED) assign_enabled,CAST(credit_enabled AS UNSIGNED) credit_enabled FROM nx_cregis_provision_gate WHERE id=1"+(lock?" FOR UPDATE":""));
         if(gate==null||!"IDLE".equals(gate.get("state"))||number(gate.get("credit_enabled"))!=1||assignment&&number(gate.get("assign_enabled"))!=1)
             throw new BizException(409,"CREGIS_DIRECT_PAYMENT_PAUSED");
+        var networkGate=db.one("SELECT CAST(deposit_enabled AS UNSIGNED) deposit_enabled FROM nx_cregis_network_switch WHERE network=?"+(lock?" FOR UPDATE":""),network.network());
+        if(networkGate==null || number(networkGate.get("deposit_enabled"))!=1)
+            throw new BizException(409,"CREGIS_DIRECT_PAYMENT_PAUSED");
     }
     private Map<String,Object> dedicatedAddress(CregisNetwork network){
         var candidate=db.one("SELECT id,address FROM nx_cregis_deposit_address WHERE project_id=? AND chain_id=? AND state='UNASSIGNED' AND user_id IS NULL AND purpose='WALLET_TOPUP' ORDER BY id LIMIT 1",cr.getProjectId(),network.chainId());
@@ -593,8 +596,18 @@ public class PurchasePaymentService {
                 "reason",row.get("reason"),"version",row.get("version"),"expiresAt",deadline(row).toString(),"deadlineAt",deadline(row).toString(),"confirmationGraceEndsAt",graceEnd(row.get("payment_method"),deadline(row)).toString()));
         if(row.get("provider_expires_at")!=null)result.put("expirationTime",instant(row.get("provider_expires_at")).toString());
         if(row.get("payment_url")!=null&&"AWAITING_PAYMENT".equals(row.get("status"))&&now().isBefore(paymentDeadline(row)))result.put("paymentUrl",row.get("payment_url"));
-        if(row.get("address")!=null&&(admin||now().isBefore(paymentDeadline(row))))result.put("address",row.get("address"));
-        result.put("paymentAllowed","AWAITING_PAYMENT".equals(row.get("status"))&&now().isBefore(paymentDeadline(row)));
+        boolean networkOpen=true;
+        if(cregis(row.get("payment_method"))) {
+            var network=network(row.get("payment_method"));
+            var global=db.one("SELECT state,CAST(assign_enabled AS UNSIGNED) assign_enabled,CAST(credit_enabled AS UNSIGNED) credit_enabled FROM nx_cregis_provision_gate WHERE id=1");
+            var business=db.one("SELECT CAST(deposit_enabled AS UNSIGNED) deposit_enabled FROM nx_cregis_network_switch WHERE network=?",network.network());
+            networkOpen=cr.getMode()==CregisProperties.Mode.PROVIDER && cr.isDepositEnabled() && cr.isDepositCreditEnabled()
+                    && cr.depositNetworkEnabled(network) && global!=null && "IDLE".equals(global.get("state"))
+                    && number(global.get("assign_enabled"))==1 && number(global.get("credit_enabled"))==1
+                    && business!=null && number(business.get("deposit_enabled"))==1;
+        }
+        if(row.get("address")!=null&&(admin||networkOpen&&now().isBefore(paymentDeadline(row))))result.put("address",row.get("address"));
+        result.put("paymentAllowed",networkOpen&&"AWAITING_PAYMENT".equals(row.get("status"))&&now().isBefore(paymentDeadline(row)));
         result.put("fulfilmentStatus",row.get("receipt_json")==null?"NOT_DELIVERED":"DELIVERED");
         if(row.get("receipt_json")!=null){
             var receipt=parse(row.get("receipt_json"));

@@ -133,6 +133,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private final Clock clock;
     private final WithdrawalRiskTimePolicy riskTimePolicy;
     private final ffdd.opsconsole.finance.cregis.CregisDepositPolicyService depositPolicies;
+    private final WithdrawalNetworkPolicy networkPolicy;
 
     public ApiResult<Map<String, Object>> topupOverview() {
         ensureD1FallbackSeedData();
@@ -2279,6 +2280,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         response.put("balanceMaxRatio", owned.get("balanceMaxRatio"));
         response.put("networkConfirmFeeUsd", d5NetworkFees(owned));
         response.put("networkEnabled", currentD5NetworkEnabledValues());
+        var networkStatuses=networkPolicy.statuses();
+        response.put("effectiveNetworks",networkStatuses.stream().filter(row->Boolean.TRUE.equals(row.get("enabled"))).map(row->row.get("network")).toList());
+        response.put("networkStatus",networkStatuses);
         response.put("nexFeeOffsetRate", owned.get("nexFeeOffsetRate"));
         response.put("smallAmountThresholdUsd", owned.get("smallAmountThresholdUsd"));
         response.put("payoutSlaHours", owned.get("payoutSlaHours").intValueExact());

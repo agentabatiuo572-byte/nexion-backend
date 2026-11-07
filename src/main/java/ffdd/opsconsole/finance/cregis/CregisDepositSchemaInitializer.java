@@ -24,7 +24,8 @@ public class CregisDepositSchemaInitializer implements ApplicationRunner {
                     || mapper.legacyAddressCount() != 0 || mapper.legacyCreditedEventCount() != 0
                     || mapper.policySchemaTableCount() != 4 || mapper.policySchemaColumnCount() != 8
                     || mapper.depositPolicyInstallCount() != 1
-                    || mapper.depositPolicyLockCount() != 1 || mapper.depositPolicyCount() < 1 || mapper.incompletePolicySnapshotCount() != 0))
+                    || mapper.depositPolicyLockCount() != 1 || mapper.depositPolicyCount() < 1 || mapper.incompletePolicySnapshotCount() != 0
+                    || mapper.networkSwitchSchemaCount()!=7 || mapper.networkSwitchCount() != 2))
             throw new IllegalStateException("CREGIS_DEPOSIT_SCHEMA_OR_LEGACY_DATA_REQUIRES_REVIEW");
     }
 }

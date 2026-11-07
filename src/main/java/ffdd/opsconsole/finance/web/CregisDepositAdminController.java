@@ -18,6 +18,9 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestHeader;
+import static ffdd.opsconsole.promotion.domain.PromotionValues.hash;
+import static ffdd.opsconsole.promotion.domain.PromotionValues.values;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -28,6 +31,7 @@ public class CregisDepositAdminController {
     private final CregisDepositReconciliation reconciliation;
     private final CregisDepositReviewService reviews;
     private final CregisDepositSwitchService switches;
+    private final ffdd.opsconsole.shared.idempotency.AdminIdempotencyService commands;
     private final ffdd.opsconsole.finance.cregis.CregisAddressPoolPolicyService poolPolicies;
 
     private final ffdd.opsconsole.finance.cregis.CregisDepositPolicyService depositPolicies;
@@ -122,11 +126,24 @@ public class CregisDepositAdminController {
     @PostMapping("/switch-cases")
     @PreAuthorize("hasAuthority('finance_d1_channel_manage')")
     public ApiResult<Map<String, Object>> proposeSwitch(@RequestBody SwitchProposal request,
-            Authentication auth) {
+            @RequestHeader(value="Idempotency-Key",required=false) String key,Authentication auth) {
         long id = admin(auth);
         try {
-            return ApiResult.ok(switches.propose(id, request.expectedVersion(),
-                    request.assignEnabled(), request.creditEnabled(), request.payoutEnabled(), request.reason()));
+            if(request.network()!=null) {
+                if(request.depositEnabled()==null || request.payoutEnabled()!=null || request.expectedNetworkVersion()==null
+                        || request.assignEnabled()!=null || request.creditEnabled()!=null)
+                    throw new BizException(422,"CREGIS_SWITCH_REQUEST_INVALID");
+                ffdd.opsconsole.finance.cregis.CregisNetwork network;
+                try {network=ffdd.opsconsole.finance.cregis.CregisNetwork.fromNetwork(request.network());}
+                catch(IllegalArgumentException invalid){throw new BizException(422,"CREGIS_NETWORK_UNSUPPORTED");}
+                return ApiResult.ok(commands.executeRetained("CREGIS_SWITCH:PROPOSE:"+id,key,hash(request),Map.class,
+                        ()->switches.proposeNetwork(id,request.expectedVersion(),network,
+                        request.expectedNetworkVersion(),request.depositEnabled(),request.reason())));
+            }
+            if(request.payoutEnabled()==null || request.assignEnabled()!=null || request.creditEnabled()!=null || request.depositEnabled()!=null || request.expectedNetworkVersion()!=null)
+                throw new BizException(422,"CREGIS_SWITCH_NETWORK_REQUIRED");
+            return ApiResult.ok(commands.executeRetained("CREGIS_SWITCH:PROPOSE:"+id,key,hash(request),Map.class,
+                    ()->switches.proposePayout(id,request.expectedVersion(),request.payoutEnabled(),request.reason())));
         } catch (BizException rejected) {
             switches.auditRejected(id, "PROPOSE", rejected.getMessage());
             throw rejected;
@@ -136,10 +153,11 @@ public class CregisDepositAdminController {
     @PostMapping("/switch-cases/{caseId}/decision")
     @PreAuthorize("hasAuthority('finance_d1_channel_manage')")
     public ApiResult<Map<String, Object>> decideSwitch(@PathVariable long caseId,
-            @RequestBody SwitchDecision request, Authentication auth) {
+            @RequestBody SwitchDecision request,@RequestHeader(value="Idempotency-Key",required=false) String key, Authentication auth) {
         long id = admin(auth);
         try {
-            return ApiResult.ok(switches.check(id, caseId, request.decision(), request.reason()));
+            return ApiResult.ok(commands.executeRetained("CREGIS_SWITCH:DECIDE:"+id,key,hash(values("caseId",caseId,"body",request)),Map.class,
+                    ()->switches.check(id,caseId,request.decision(),request.reason())));
         } catch (BizException rejected) {
             switches.auditRejected(id, "DECIDE", rejected.getMessage());
             throw rejected;
@@ -149,10 +167,11 @@ public class CregisDepositAdminController {
     @PostMapping("/switches/emergency-off")
     @PreAuthorize("hasAuthority('finance_d1_channel_manage')")
     public ApiResult<Map<String, Object>> emergencyOff(@RequestBody EmergencyOff request,
-            Authentication auth) {
+            @RequestHeader(value="Idempotency-Key",required=false) String key,Authentication auth) {
         long id = admin(auth);
         try {
-            return ApiResult.ok(switches.emergencyOff(id, request.expectedVersion(), request.reason()));
+            return ApiResult.ok(commands.executeRetained("CREGIS_SWITCH:EMERGENCY:"+id,key,hash(request),Map.class,
+                    ()->switches.emergencyOff(id,request.expectedVersion(),request.reason())));
         } catch (BizException rejected) {
             switches.auditRejected(id, "EMERGENCY_OFF", rejected.getMessage());
             throw rejected;
@@ -201,8 +220,9 @@ public class CregisDepositAdminController {
 
     public record ReviewProposal(long cid, String reason, String evidenceHash) { }
     public record ReviewDecision(long expectedVersion, String decision, String reason) { }
-    public record SwitchProposal(long expectedVersion, boolean assignEnabled,
-                                 boolean creditEnabled, Boolean payoutEnabled, String reason) { }
+    public record SwitchProposal(long expectedVersion, Boolean assignEnabled,
+                                 Boolean creditEnabled, Boolean payoutEnabled, String reason,
+                                 String network,Boolean depositEnabled,Long expectedNetworkVersion) { }
     public record SwitchDecision(String decision, String reason) { }
     public record EmergencyOff(long expectedVersion, String reason) { }
 }
