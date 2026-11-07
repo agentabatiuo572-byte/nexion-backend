@@ -240,7 +240,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     }
 
     private boolean isUserSessionActive(String sessionId, Long userId, boolean recordActivity) {
-        int idleDays = configInt("auth.session.idle_ttl_days", 30, 7, 90);
+        int idleDays = userSessionIdleTtlDays();
         if (!recordActivity) return authSessionMapper.isReadableUserSession(sessionId, userId, idleDays);
         return authSessionMapper.touchActiveUserSession(sessionId, userId, idleDays) > 0
                 || authSessionMapper.touchRecentlyRotatedUserSession(sessionId, userId, idleDays) > 0;
@@ -264,7 +264,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             var now = java.time.LocalDateTime.now(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE);
             var lastActive = session.getLastActiveAt() == null ? session.getCreatedAt() : session.getLastActiveAt();
             if (session.getExpiresAt() == null || !session.getExpiresAt().isAfter(now)
-                    || lastActive == null || !lastActive.plusDays(configInt("auth.session.idle_ttl_days", 30, 7, 90)).isAfter(now))
+                    || lastActive == null || !lastActive.plusDays(userSessionIdleTtlDays()).isAfter(now))
                 return "SESSION_EXPIRED";
             if (session.getRotationRedeemedAt() != null) return "SESSION_ROTATED";
             return session.getRevokedAt() != null ? "SECURITY_REVOKED" : "REAUTH_REQUIRED";
@@ -273,16 +273,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         }
     }
 
-    private int configInt(String key, int fallback, int min, int max) {
+    private int userSessionIdleTtlDays() {
         try {
-            int value = configFacade.activeValue(key)
-                    .filter(StringUtils::hasText)
-                    .map(String::trim)
-                    .map(Integer::parseInt)
-                    .orElse(fallback);
-            return value < min || value > max ? fallback : value;
+            return configFacade.sessionLifetimes().idleDays();
         } catch (RuntimeException ignored) {
-            return fallback;
+            return 30;
         }
     }
 
@@ -336,7 +331,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     public boolean isActiveSocketRefreshSuccessor(Long userId, String previousSessionId, String sessionId) {
         return authSessionMapper.isActiveRefreshSuccessor(previousSessionId, sessionId, userId,
-                configInt("auth.session.idle_ttl_days", 30, 7, 90));
+                userSessionIdleTtlDays());
     }
 
     private List<SimpleGrantedAuthority> extractAuthorities(Claims claims) {
