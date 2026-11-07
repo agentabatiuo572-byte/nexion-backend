@@ -137,6 +137,7 @@ $migrations = @(
   # App task-assignment previews use the per-device recent-task index on upgraded databases too.
   (Join-Path $root "scripts\migrations\20260907_task_assignment_recent_read_index.sql"),
   (Join-Path $root "scripts\migrations\20260914_polling_read_indexes.sql"),
+  (Join-Path $root "scripts\migrations\20261107_nova_business_candidate_index.sql"),
   (Join-Path $root "scripts\migrations\20260914_wallet_reconciliation_read_index.sql"),
   (Join-Path $root "scripts\migrations\20260914_task_assignment_active_read_index.sql"),
   # App compute-receipt cursor reads retain per-user issued high-water boundaries.

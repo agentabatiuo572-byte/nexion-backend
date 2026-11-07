@@ -1090,26 +1090,25 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                    AND completed_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
                  GROUP BY user_id
                 HAVING COUNT(*) >= 3
-            ), commissions AS (
-                SELECT c.user_id, COUNT(*) AS commission_count
+            ), counts AS (
+                SELECT a.user_id, a.tradein_count,
+                       (SELECT COUNT(*)
+                          FROM nx_commission_event c
+                         WHERE c.user_id = a.user_id
+                           AND c.is_deleted = 0
+                           AND c.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+                           AND UPPER(c.status) NOT IN ('FAILED','REJECTED','CANCELLED')
+                           AND c.amount_usdt > 0) AS commission_count,
+                       (SELECT COUNT(*)
+                          FROM nx_wallet_ledger l
+                         WHERE l.user_id = a.user_id
+                           AND l.is_deleted = 0
+                           AND l.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+                           AND UPPER(l.biz_type) LIKE '%GIFT%'
+                           AND UPPER(l.status) IN ('POSTED','SUCCESS','COMPLETED')
+                           AND UPPER(l.direction) = 'IN'
+                           AND l.amount > 0) AS gift_count
                   FROM tradein_candidates a
-                  JOIN nx_commission_event c ON c.user_id = a.user_id
-                 WHERE c.is_deleted = 0
-                   AND c.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-                   AND UPPER(c.status) NOT IN ('FAILED','REJECTED','CANCELLED')
-                   AND c.amount_usdt > 0
-                 GROUP BY c.user_id
-            ), gifts AS (
-                SELECT l.user_id, COUNT(*) AS gift_count
-                  FROM tradein_candidates a
-                  JOIN nx_wallet_ledger l ON l.user_id = a.user_id
-                 WHERE l.is_deleted = 0
-                   AND l.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-                   AND UPPER(l.biz_type) LIKE '%GIFT%'
-                   AND UPPER(l.status) IN ('POSTED','SUCCESS','COMPLETED')
-                   AND UPPER(l.direction) = 'IN'
-                   AND l.amount > 0
-                 GROUP BY l.user_id
             )
             SELECT CONCAT('K2-E3-U', a.user_id) AS rowId,
                    'tradein' AS viewKey,
@@ -1120,16 +1119,14 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                    '近 30 天' AS cell3,
                    CONCAT(a.tradein_count, ' 次高频下架置换') AS cell4,
                    CONCAT_WS(' / ',
-                       CASE WHEN c.commission_count > 0 THEN CONCAT(c.commission_count, ' 笔返佣') END,
-                       CASE WHEN l.gift_count > 0 THEN CONCAT(l.gift_count, ' 笔礼金') END) AS cell5,
+                       CASE WHEN a.commission_count > 0 THEN CONCAT(a.commission_count, ' 笔返佣') END,
+                       CASE WHEN a.gift_count > 0 THEN CONCAT(a.gift_count, ' 笔礼金') END) AS cell5,
                    NULL AS cell6,
                    3 AS level,
                    'flag' AS actionsCsv,
                    NULL AS disposition,NULL AS version,NULL AS clusterStatus,NULL AS clusterVersion
-              FROM tradein_candidates a
-              LEFT JOIN commissions c ON c.user_id = a.user_id
-              LEFT JOIN gifts l ON l.user_id = a.user_id
-             WHERE c.user_id IS NOT NULL OR l.user_id IS NOT NULL
+              FROM counts a
+             WHERE a.commission_count > 0 OR a.gift_count > 0
             """)
     List<RiskArbitrageRowRecord> e3TradeinArbitrageProjection();
 
