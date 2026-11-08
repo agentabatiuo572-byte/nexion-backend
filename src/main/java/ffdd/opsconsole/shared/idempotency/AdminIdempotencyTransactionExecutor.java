@@ -200,13 +200,22 @@ public class AdminIdempotencyTransactionExecutor {
         return completeClaim(recordId, action);
     }
 
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    public <T> T runClaimedIndependent(Long recordId, Supplier<T> action) {
+        return completeClaim(recordId, action, false);
+    }
+
     @Transactional(isolation = Isolation.REPEATABLE_READ, timeout = 10, rollbackFor = Exception.class)
     public <T> T runClaimedRepeatableRead(Long recordId, Supplier<T> action) {
         return completeClaim(recordId, action);
     }
 
     private <T> T completeClaim(Long recordId, Supplier<T> action) {
-        org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+        return completeClaim(recordId, action, true);
+    }
+
+    private <T> T completeClaim(Long recordId, Supplier<T> action, boolean rollbackSafe) {
+        if (rollbackSafe) org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
                 new org.springframework.transaction.support.TransactionSynchronization() {
                     @Override
                     public void afterCompletion(int status) {

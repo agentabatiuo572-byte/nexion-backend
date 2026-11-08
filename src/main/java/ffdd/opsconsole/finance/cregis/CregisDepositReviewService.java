@@ -10,6 +10,8 @@ import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
@@ -40,6 +42,7 @@ public class CregisDepositReviewService {
         return preflight(eventId).summary();
     }
 
+    @Transactional(propagation=Propagation.NOT_SUPPORTED)
     public Map<String, Object> propose(long adminId, long cid, String reason, String evidenceHash) {
         requireAdmin(adminId);
         requireReason(reason);
@@ -69,6 +72,7 @@ public class CregisDepositReviewService {
         });
     }
 
+    @Transactional(propagation=Propagation.NOT_SUPPORTED)
     public Map<String, Object> check(long adminId, long caseId, long expectedVersion,
                                       String decision, String reason) {
         requireAdmin(adminId);
