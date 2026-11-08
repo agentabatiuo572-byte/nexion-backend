@@ -21,7 +21,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-/** Read-only BSC receipt proof. A callback or provider trade never credits by itself. */
+/** Read-only receipt proof router. EVM proofs remain here; TRON uses native solidified reads. */
 @Component
 public final class BscDepositProof {
     private static final Logger log = LoggerFactory.getLogger(BscDepositProof.class);
@@ -31,8 +31,13 @@ public final class BscDepositProof {
     private final ObjectMapper json;
     private final HttpClient http;
     private final Predicate<URI> loopbackAllowed;
+    private TronDepositProof tron;
 
     @Autowired
+    public BscDepositProof(CregisProperties properties, ObjectMapper json, TronDepositProof tron) {
+        this(properties,json); this.tron=tron;
+    }
+
     public BscDepositProof(CregisProperties properties, ObjectMapper json) {
         this(properties, json, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build(), false);
     }
@@ -62,6 +67,7 @@ public final class BscDepositProof {
 
     /** Exact log identity; transaction.from is deliberately never used as token ownership. */
     public TransferProof verifyExact(CregisNetwork network,String txid,int logIndex,String address,BigDecimal amount,Long expectedBlock) {
+        if(network==CregisNetwork.TRC20)return tron.verifyExact(txid,logIndex,address,amount,expectedBlock);
         String normalized=hash(txid);
         if(logIndex<0 || address==null || !address.matches("(?i)0x[0-9a-f]{40}")
                 || amount==null || amount.signum()<=0 || amount.stripTrailingZeros().scale()>6
@@ -120,6 +126,7 @@ public final class BscDepositProof {
     /** A relocated index needs the original token sender and exactly one matching Transfer. */
     public ReorgProof inspectCanonical(CregisNetwork network,String txid,int logIndex,String address,BigDecimal amount,
                                        long originalBlock,String originalHash,String expectedFrom) {
+        if(network==CregisNetwork.TRC20)return tron.inspectCanonical(txid,logIndex,address,amount,originalBlock,originalHash,expectedFrom);
         if(originalBlock<0 || originalHash==null || logIndex<0 || address==null
                 || !address.matches("(?i)0x[0-9a-f]{40}") || amount==null || amount.signum()<=0) throw invalid();
         String normalized=hash(txid), oldHash=hash(originalHash);
@@ -172,6 +179,7 @@ public final class BscDepositProof {
 
     /** One bounded RPC batch; total user/address count is not capped. */
     public List<Observation> scan(CregisNetwork network,long from, long to, List<String> addresses) {
+        if(network==CregisNetwork.TRC20)return tron.scan(from,to,addresses);
         if (from < 0 || to < from || to - from >= properties.getChainScanBlocks() || addresses == null
                 || addresses.isEmpty() || addresses.size() > 60) throw invalid();
         validateNetwork(network);
@@ -209,7 +217,16 @@ public final class BscDepositProof {
         return List.copyOf(found);
     }
 
+    public long finalizedHeight(CregisNetwork network,int confirmations) {
+        return network==CregisNetwork.TRC20 ? tron.finalizedHeight(confirmations) : head(network).number()-confirmations+1;
+    }
+
+    public Head allocationHead(CregisNetwork network) {
+        return network==CregisNetwork.TRC20 ? tron.allocationHead() : head(network);
+    }
+
     public Head head(CregisNetwork network) {
+        if(network==CregisNetwork.TRC20)return tron.head();
         if (hexLong(call(network,"eth_chainId", "[]").asText()) != hexLong(network.rpcChainId())) throw invalid();
         long height = hexLong(call(network,"eth_blockNumber", "[]").asText());
         JsonNode block = call(network,"eth_getBlockByNumber", "[\"" + hex(height) + "\",false]");
@@ -218,6 +235,7 @@ public final class BscDepositProof {
     }
 
     public String blockHash(CregisNetwork network,long number) {
+        if(network==CregisNetwork.TRC20)return tron.blockHash(number);
         if (number < 0) throw invalid();
         JsonNode block = call(network,"eth_getBlockByNumber", "[\"" + hex(number) + "\",false]");
         if (!block.isObject() || hexLong(block.path("number").asText()) != number) throw invalid();
@@ -226,12 +244,14 @@ public final class BscDepositProof {
 
     /** Canonical block timestamp is payment evidence; local query time is not. */
     public java.time.Instant blockTime(CregisNetwork network,long number,String expectedHash) {
+        if(network==CregisNetwork.TRC20)return tron.blockTime(number,expectedHash);
         JsonNode block=call(network,"eth_getBlockByNumber","[\""+hex(number)+"\",false]");
         if(!block.isObject()||hexLong(block.path("number").asText())!=number||!hash(block.path("hash").asText()).equalsIgnoreCase(expectedHash))throw invalid();
         return java.time.Instant.ofEpochSecond(hexLong(block.path("timestamp").asText()));
     }
 
     public boolean zeroUsdtBalance(CregisNetwork network,String address) {
+        if(network==CregisNetwork.TRC20)return tron.zeroUsdtBalance(address);
         if (address == null || !address.matches("(?i)0x[0-9a-f]{40}")) throw invalid();
         validateNetwork(network);
         String data = "0x70a08231" + "0".repeat(24) + address.substring(2).toLowerCase(Locale.ROOT);
@@ -244,6 +264,7 @@ public final class BscDepositProof {
     public record PreparationBalance(String usdt, String bnb, long blockNumber, String blockHash) { }
 
     public PreparationBalance preparationBalance(CregisNetwork network,String address) {
+        if(network==CregisNetwork.TRC20)throw new IllegalStateException("CREGIS_PREPARATION_NETWORK_UNSUPPORTED");
         if (address == null || !address.matches("(?i)0x[0-9a-f]{40}")) throw invalid();
         Head at = head(network);
         String tag = hex(at.number());
@@ -260,11 +281,13 @@ public final class BscDepositProof {
     }
 
     public Optional<Proof> verify(CregisNetwork network,String txid, String address, BigDecimal amount, long callbackHeight) {
+        if(network==CregisNetwork.TRC20)return tron.verify(txid,address,amount,callbackHeight);
         return verifyTransfer(network,txid, address, amount, callbackHeight, true);
     }
 
     /** A payout height comes from the real receipt; pending canonical confirmations remain observable. */
     public Optional<Proof> verifyPayout(CregisNetwork network,String txid, String address, BigDecimal amount) {
+        if(network==CregisNetwork.TRC20)return tron.verify(txid,address,amount,null);
         String normalized = txid != null && txid.matches("(?i)[0-9a-f]{64}") ? "0x" + txid : txid;
         return verifyTransfer(network,normalized, address, amount, null, false);
     }

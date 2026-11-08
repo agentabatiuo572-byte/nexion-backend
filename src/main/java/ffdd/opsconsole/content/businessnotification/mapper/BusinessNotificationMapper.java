@@ -40,7 +40,7 @@ public interface BusinessNotificationMapper {
           SELECT CONCAT('DEPOSIT:',d.id),d.user_id,'FUNDS_RESULT','deposit','/pages/me/wallet-bills'
           FROM nx_deposit_order d JOIN nx_business_notification_control b ON b.id=1
           WHERE d.is_deleted=0 AND d.status='CREDITED' AND d.ledger_id IS NOT NULL
-            AND d.credited_at>=b.baseline_at AND d.chain_name='CREGIS_USDT_BEP20'
+            AND d.credited_at>=b.baseline_at AND d.chain_name IN ('CREGIS_USDT_BEP20','CREGIS_USDT_TRC20')
           UNION ALL
           SELECT CONCAT('SECURITY_EVENT:',e.event_type,':',SHA2(COALESCE(
               NULLIF(JSON_UNQUOTE(JSON_EXTRACT(e.payload,'$.sessionChainId')),'null'),e.event_id),256)),

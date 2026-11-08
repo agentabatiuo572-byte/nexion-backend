@@ -66,7 +66,7 @@ public class WithdrawalPayoutExecutor {
         if (mode == CregisProperties.Mode.PROVIDER && !payouts.enabled()) return;
         LocalDateTime now = LocalDateTime.now(BusinessCalendar.STORAGE_ZONE);
         for (var candidate : mapper.claimable(now, 50)) {
-            if(mode==CregisProperties.Mode.PROVIDER && java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(candidate.chain())) {
+            if(mode==CregisProperties.Mode.PROVIDER && java.util.Set.of("USDT-BEP20","USDT-ERC20","USDT-TRC20").contains(candidate.chain())) {
                 WithdrawalPayoutMapper.PayoutRow claimed;
                 try { claimed=dispatchGuard.begin(candidate,now); }
                 catch(RuntimeException unavailable) { continue; } // No HTTP request starts on a failed admission.
@@ -111,7 +111,7 @@ public class WithdrawalPayoutExecutor {
     }
 
     private void dispatch(WithdrawalPayoutMapper.PayoutRow row,boolean providerIntentPersisted) {
-        if (!java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(row.chain())) {
+        if (!java.util.Set.of("USDT-BEP20","USDT-ERC20","USDT-TRC20").contains(row.chain())) {
             finalizer.retry(row, "CREGIS_CHAIN_UNSUPPORTED");
             return;
         }

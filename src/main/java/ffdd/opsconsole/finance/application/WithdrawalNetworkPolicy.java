@@ -24,7 +24,7 @@ public class WithdrawalNetworkPolicy {
             boolean configured=Set.of("true","1","on").contains(value);
             String reason=!configured?"NETWORK_SWITCH_OFF"
                     :cregis.getMode()==CregisProperties.Mode.DISABLED?"NOT_CONFIGURED"
-                    :cregis.getMode()==CregisProperties.Mode.PROVIDER && "TRC20".equals(network)?"NETWORK_UNSUPPORTED":null;
+                    :null;
             if(reason==null && cregis.getMode()==CregisProperties.Mode.PROVIDER)
                 reason=(String)payouts.capability(CregisNetwork.fromNetwork(network)).get("disabledReason");
             var row=new LinkedHashMap<String,Object>();row.put("network","USDT-"+network);row.put("configured",configured);
@@ -46,6 +46,9 @@ public class WithdrawalNetworkPolicy {
             if(gate==null || !"IDLE".equals(gate.get("state")) || !(Boolean.TRUE.equals(gate.get("payoutEnabled"))
                     || gate.get("payoutEnabled") instanceof Number n && n.intValue()==1))throw new BizException(409,"WITHDRAWAL_NETWORK_DISABLED");
         }
+        String primary=db.lockWithdrawalEmergency("killswitch.withdraw");
+        if(!ffdd.opsconsole.emergency.domain.KillSwitchState.parse(primary==null?db.lockWithdrawalEmergency("emergency.killswitch.withdraw"):primary))
+            throw new BizException(409,"WITHDRAWAL_KILL_SWITCH_DISABLED");
         String value=db.lockWithdrawalNetworkPermission("withdrawal."+chain.substring(5).toLowerCase(Locale.ROOT)+".enabled");
         if(value==null || !Set.of("true","1","on").contains(value.trim().toLowerCase(Locale.ROOT)) || !enabledNetworks().contains(chain))
             throw new BizException(409,"WITHDRAWAL_NETWORK_DISABLED");

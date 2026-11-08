@@ -15,7 +15,7 @@ public class CregisDepositSchemaInitializer implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) {
         if (properties.getMode() == CregisProperties.Mode.PROVIDER
-                && (mapper.networkSchemaColumnCount()!=6 || mapper.networkUniqueIndexCount()!=6 || mapper.networkPoolStateCount()!=1
+                && (mapper.networkSchemaColumnCount()!=6 || mapper.networkUniqueIndexCount()!=6 || mapper.networkPoolStateCount()!=2
                     || mapper.schemaTableCount() != 8 || mapper.controlTableCount() != 5
                     || mapper.controlColumnCount() != 5 || mapper.deliveryEvidenceColumnCount() != 4
                     || mapper.schemaUniqueIndexCount() != 4
@@ -25,7 +25,7 @@ public class CregisDepositSchemaInitializer implements ApplicationRunner {
                     || mapper.policySchemaTableCount() != 4 || mapper.policySchemaColumnCount() != 8
                     || mapper.depositPolicyInstallCount() != 1
                     || mapper.depositPolicyLockCount() != 1 || mapper.depositPolicyCount() < 1 || mapper.incompletePolicySnapshotCount() != 0
-                    || mapper.networkSwitchSchemaCount()!=7 || mapper.networkSwitchCount() != 2))
+                    || mapper.networkSwitchSchemaCount()!=7 || mapper.networkSwitchCount() != 3))
             throw new IllegalStateException("CREGIS_DEPOSIT_SCHEMA_OR_LEGACY_DATA_REQUIRES_REVIEW");
     }
 }

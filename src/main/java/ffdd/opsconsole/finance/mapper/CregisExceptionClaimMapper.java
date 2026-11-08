@@ -7,7 +7,7 @@ import org.apache.ibatis.annotations.*;
 
 @Mapper
 public interface CregisExceptionClaimMapper extends BaseMapper<Object> {
-    @Insert("INSERT INTO nx_cregis_exception_claim(case_no,project_id,source_type,source_id,cid,txid,log_index,address,from_address,gross_amount,target_user_id,challenge_id,evidence_hash,maker_id,reason,policy_version,policy_fee_usdt) VALUES(#{r.caseNo},#{r.projectId},#{r.sourceType},#{r.sourceId},#{r.cid},#{r.txid},#{r.logIndex},#{r.address},#{r.fromAddress},#{r.grossAmount},#{r.targetUserId},#{r.challengeId},#{r.evidenceHash},#{r.makerId},#{r.reason},#{r.policyVersion},#{r.policyFeeUsdt})")
+    @Insert("INSERT INTO nx_cregis_exception_claim(case_no,project_id,chain_id,source_type,source_id,cid,txid,log_index,address,from_address,gross_amount,target_user_id,challenge_id,evidence_hash,maker_id,reason,policy_version,policy_fee_usdt) VALUES(#{r.caseNo},#{r.projectId},#{r.chainId},#{r.sourceType},#{r.sourceId},#{r.cid},#{r.txid},#{r.logIndex},#{r.address},#{r.fromAddress},#{r.grossAmount},#{r.targetUserId},#{r.challengeId},#{r.evidenceHash},#{r.makerId},#{r.reason},#{r.policyVersion},#{r.policyFeeUsdt})")
     int insertCase(@Param("r") Map<String,Object> row);
     @Select("SELECT LAST_INSERT_ID()") Long lastId();
     @Select("SELECT * FROM nx_cregis_exception_claim WHERE project_id=#{project} AND id=#{id}")
@@ -21,9 +21,9 @@ public interface CregisExceptionClaimMapper extends BaseMapper<Object> {
     int decide(@Param("project") long project,@Param("id") long id,@Param("version") long version,@Param("actor") long actor,@Param("state") String state,@Param("reason") String reason);
     @Select("SELECT COUNT(*) FROM nx_cregis_risk_alert WHERE project_id=#{project} AND resolved_at IS NULL AND severity IN ('P0','P1') AND NOT(kind='UNRESOLVED_EXPOSURE' AND alert_key='unresolved-exposure-500') AND NOT(kind='PROVIDER_ORPHAN' AND alert_key=CONCAT('orphan-cid-',#{cid}))")
     int otherCritical(@Param("project") long project,@Param("cid") long cid);
-    @Select("SELECT COUNT(*) FROM nx_cregis_deposit_delivery WHERE accepted=1 AND processed_at IS NULL AND NOT(chain_id='2510' AND cid<=>#{cid} AND txid<=>#{txid} AND address<=>#{address} AND gross_amount<=>#{amount} AND signature_valid<=>1 AND timestamp_valid<=>1 AND ip_valid<=>1)")
-    int otherPending(@Param("cid") long cid,@Param("txid") String txid,@Param("address") String address,@Param("amount") java.math.BigDecimal amount);
-    @Select("SELECT id,txid,log_index logIndex,address,raw_amount grossAmount,block_number blockNumber,status FROM nx_cregis_chain_observation WHERE project_id=#{project} AND chain_id='2510' AND id=#{id} FOR UPDATE")
+    @Select("SELECT COUNT(*) FROM nx_cregis_deposit_delivery WHERE accepted=1 AND processed_at IS NULL AND NOT(chain_id=#{chainId} AND cid<=>#{cid} AND txid<=>#{txid} AND address<=>#{address} AND gross_amount<=>#{amount} AND signature_valid<=>1 AND timestamp_valid<=>1 AND ip_valid<=>1)")
+    int otherPending(@Param("chainId") String chainId,@Param("cid") long cid,@Param("txid") String txid,@Param("address") String address,@Param("amount") java.math.BigDecimal amount);
+    @Select("SELECT id,txid,log_index logIndex,address,raw_amount grossAmount,block_number blockNumber,status FROM nx_cregis_chain_observation WHERE project_id=#{project} AND chain_id=#{chainId} AND id=#{id} FOR UPDATE")
     @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
-    Map<String,Object> lockObservation(@Param("project") long project,@Param("id") long id);
+    Map<String,Object> lockObservation(@Param("chainId") String chainId,@Param("project") long project,@Param("id") long id);
 }

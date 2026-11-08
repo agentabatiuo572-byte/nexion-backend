@@ -211,9 +211,9 @@ public class CregisReorgResolutionService {
             var trades=router.provider().depositsByTxid(network,text(row,"txid"));
             if(trades.size()!=1 || trades.get(0).cid()!=id(row,"cid") || trades.get(0).status()!=1
                     || !network.chainId().equals(trades.get(0).chainId())
-                    || !network.tokenId().equalsIgnoreCase(trades.get(0).tokenId())
+                    || !network.tokenMatches(trades.get(0).tokenId())
                     || !text(row,"txid").equalsIgnoreCase(trades.get(0).txid())
-                    || !text(row,"address").equalsIgnoreCase(trades.get(0).address())
+                    || !network.addressEquals(text(row,"address"),trades.get(0).address())
                     || trades.get(0).amount().compareTo(money(row,"grossAmount"))!=0)throw conflict("PROVIDER_CONFLICT");
         }
         var wallet=required(db.wallet(id(row,"userId")));

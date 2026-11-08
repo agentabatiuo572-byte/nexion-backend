@@ -19,7 +19,11 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     int networkSchemaColumnCount();
     @Select("SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND (TABLE_NAME='nx_cregis_deposit_event' AND INDEX_NAME='uk_cregis_event_log' AND COLUMN_NAME='chain_id' OR TABLE_NAME='nx_cregis_chain_observation' AND INDEX_NAME='uk_cregis_observation_log' AND COLUMN_NAME='chain_id' OR TABLE_NAME='nx_cregis_exception_source' AND INDEX_NAME='PRIMARY' AND COLUMN_NAME='chain_id' OR TABLE_NAME='nx_deposit_order' AND INDEX_NAME='uk_deposit_chain_tx_asset_log' AND COLUMN_NAME='chain_name' OR TABLE_NAME='nx_purchase_payment_intent' AND INDEX_NAME='uk_purchase_address' AND COLUMN_NAME='payment_method' OR TABLE_NAME='nx_purchase_payment_arrival' AND INDEX_NAME='uk_purchase_arrival' AND COLUMN_NAME='chain_id') AND NON_UNIQUE=0")
     int networkUniqueIndexCount();
-    @Select("SELECT COUNT(*) FROM nx_cregis_address_pool_policy WHERE id=2")
+    @Select("SELECT EXISTS(SELECT 1 FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{network.chainId,javaType=java.lang.String}) OR EXISTS(SELECT 1 FROM nx_cregis_deposit_event WHERE project_id=#{projectId} AND chain_id=#{network.chainId,javaType=java.lang.String}) OR EXISTS(SELECT 1 FROM nx_cregis_chain_observation WHERE project_id=#{projectId} AND chain_id=#{network.chainId,javaType=java.lang.String}) OR EXISTS(SELECT 1 FROM nx_cregis_deposit_delivery WHERE chain_id=#{network.chainId,javaType=java.lang.String}) OR EXISTS(SELECT 1 FROM nx_cregis_exception_source WHERE project_id=#{projectId} AND chain_id=#{network.chainId,javaType=java.lang.String}) OR EXISTS(SELECT 1 FROM nx_withdrawal_order WHERE chain=CONCAT('USDT-',#{network.network,javaType=java.lang.String}) AND is_deleted=0 AND d5_payout_source='provider')")
+    boolean hasNetworkActivity(@Param("network") CregisNetwork network,@Param("projectId") long projectId);
+    @Select("SELECT CASE WHEN is_deleted=0 THEN setting_value END FROM nx_emergency_control_setting WHERE setting_key=#{key} FOR SHARE")
+    String lockWithdrawalEmergency(@Param("key") String key);
+    @Select("SELECT COUNT(*) FROM nx_cregis_address_pool_policy WHERE id IN (2,3)")
     int networkPoolStateCount();
     @Select("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ('nx_cregis_deposit_policy','nx_cregis_deposit_policy_snapshot','nx_cregis_deposit_policy_lock','nx_cregis_deposit_policy_install')")
     int policySchemaTableCount();
@@ -33,12 +37,12 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     int depositPolicyLockCount();
     @Select("""
         SELECT (SELECT COUNT(*) FROM nx_cregis_deposit_event e WHERE NOT EXISTS
-          (SELECT 1 FROM nx_cregis_deposit_policy_snapshot s WHERE s.project_id=e.project_id AND s.txid=CASE WHEN LOWER(e.txid) LIKE '0x%' THEN LOWER(e.txid) ELSE CONCAT('0x',LOWER(e.txid)) END AND s.chain_id=CASE e.chain_id WHEN '60' THEN 'ETH' ELSE 'BSC' END AND s.token_id=CASE e.chain_id WHEN '60' THEN 'USDT-ERC20' ELSE 'USDT-BEP20' END))
+          (SELECT 1 FROM nx_cregis_deposit_policy_snapshot s WHERE s.project_id=e.project_id AND s.txid=CASE WHEN e.chain_id='195' THEN LOWER(e.txid) WHEN LOWER(e.txid) LIKE '0x%' THEN LOWER(e.txid) ELSE CONCAT('0x',LOWER(e.txid)) END AND s.chain_id=CASE e.chain_id WHEN '60' THEN 'ETH' WHEN '195' THEN 'TRON' ELSE 'BSC' END AND s.token_id=CASE e.chain_id WHEN '60' THEN 'USDT-ERC20' WHEN '195' THEN 'USDT-TRC20' ELSE 'USDT-BEP20' END))
         + (SELECT COUNT(*) FROM nx_cregis_chain_observation o WHERE NOT EXISTS
-          (SELECT 1 FROM nx_cregis_deposit_policy_snapshot s WHERE s.project_id=o.project_id AND s.txid=CASE WHEN LOWER(o.txid) LIKE '0x%' THEN LOWER(o.txid) ELSE CONCAT('0x',LOWER(o.txid)) END AND s.chain_id=CASE o.chain_id WHEN '60' THEN 'ETH' ELSE 'BSC' END AND s.token_id=CASE o.chain_id WHEN '60' THEN 'USDT-ERC20' ELSE 'USDT-BEP20' END))
+          (SELECT 1 FROM nx_cregis_deposit_policy_snapshot s WHERE s.project_id=o.project_id AND s.txid=CASE WHEN o.chain_id='195' THEN LOWER(o.txid) WHEN LOWER(o.txid) LIKE '0x%' THEN LOWER(o.txid) ELSE CONCAT('0x',LOWER(o.txid)) END AND s.chain_id=CASE o.chain_id WHEN '60' THEN 'ETH' WHEN '195' THEN 'TRON' ELSE 'BSC' END AND s.token_id=CASE o.chain_id WHEN '60' THEN 'USDT-ERC20' WHEN '195' THEN 'USDT-TRC20' ELSE 'USDT-BEP20' END))
         + (SELECT COUNT(*) FROM nx_cregis_deposit_delivery d WHERE d.accepted=1 AND
           (JSON_VALID(d.raw_json)=0 OR d.txid IS NULL OR NOT EXISTS
-           (SELECT 1 FROM nx_cregis_deposit_policy_snapshot s WHERE s.project_id=CAST(JSON_UNQUOTE(JSON_EXTRACT(d.raw_json,'$.pid')) AS UNSIGNED) AND s.txid=CASE WHEN LOWER(d.txid) LIKE '0x%' THEN LOWER(d.txid) ELSE CONCAT('0x',LOWER(d.txid)) END AND s.chain_id=CASE d.chain_id WHEN '60' THEN 'ETH' ELSE 'BSC' END AND s.token_id=CASE d.chain_id WHEN '60' THEN 'USDT-ERC20' ELSE 'USDT-BEP20' END)))
+           (SELECT 1 FROM nx_cregis_deposit_policy_snapshot s WHERE s.project_id=CAST(JSON_UNQUOTE(JSON_EXTRACT(d.raw_json,'$.pid')) AS UNSIGNED) AND s.txid=CASE WHEN d.chain_id='195' THEN LOWER(d.txid) WHEN LOWER(d.txid) LIKE '0x%' THEN LOWER(d.txid) ELSE CONCAT('0x',LOWER(d.txid)) END AND s.chain_id=CASE d.chain_id WHEN '60' THEN 'ETH' WHEN '195' THEN 'TRON' ELSE 'BSC' END AND s.token_id=CASE d.chain_id WHEN '60' THEN 'USDT-ERC20' WHEN '195' THEN 'USDT-TRC20' ELSE 'USDT-BEP20' END)))
         + (SELECT COUNT(*) FROM nx_cregis_deposit_policy_snapshot s LEFT JOIN nx_cregis_deposit_policy p ON p.version=s.policy_version WHERE p.version IS NULL OR s.required_confirmations<15)
         """)
     long incompletePolicySnapshotCount();
@@ -284,15 +288,15 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
                           AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.pid'))=CAST(#{projectId} AS CHAR)
                           AND JSON_TYPE(JSON_EXTRACT(payload,'$.cid'))='INTEGER'
                           AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.cid'))=CAST(cid AS CHAR)
-                          AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.chain_id'))=d.chain_id AND d.chain_id IN ('2510','60')
-                          AND LOWER(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.token_id')))=CASE d.chain_id WHEN '60' THEN '0xdac17f958d2ee523a2206206994597c13d831ec7' ELSE '0x55d398326f99059ff775485246999027b3197955' END
+                          AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.chain_id'))=d.chain_id AND d.chain_id IN ('2510','60','195')
+                          AND (d.chain_id='195' AND BINARY JSON_UNQUOTE(JSON_EXTRACT(payload,'$.token_id'))=BINARY 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t' OR d.chain_id IN ('2510','60') AND LOWER(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.token_id')))=CASE d.chain_id WHEN '60' THEN '0xdac17f958d2ee523a2206206994597c13d831ec7' ELSE '0x55d398326f99059ff775485246999027b3197955' END)
                           AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.currency'))) IN
-                            ('USDT',CASE d.chain_id WHEN '60' THEN 'USDT-ERC20' ELSE 'USDT-BEP20' END,CASE d.chain_id WHEN '60' THEN '60@0XDAC17F958D2EE523A2206206994597C13D831EC7' ELSE '2510@0X55D398326F99059FF775485246999027B3197955' END)
+                            ('USDT',CASE d.chain_id WHEN '60' THEN 'USDT-ERC20' WHEN '195' THEN 'USDT-TRC20' ELSE 'USDT-BEP20' END,CASE d.chain_id WHEN '60' THEN '60@0XDAC17F958D2EE523A2206206994597C13D831EC7' WHEN '195' THEN '195@TR7NHQJEKQXGTCI8Q8ZY4PL8OTSZGJLJ6T' ELSE '2510@0X55D398326F99059FF775485246999027B3197955' END)
                           AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.status'))='1'
                           AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.block_height')) REGEXP '^[0-9]{1,16}$'
                           AND LOWER(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.txid'))) REGEXP '^(0x)?[0-9a-f]{64}$'
-                          AND CONCAT('0x',RIGHT(LOWER(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.txid'))),64))=LOWER(txid)
-                          AND LOWER(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.address')))=LOWER(address)
+                          AND CASE WHEN d.chain_id='195' THEN LOWER(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.txid'))) ELSE CONCAT('0x',RIGHT(LOWER(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.txid'))),64)) END=LOWER(txid)
+                          AND CASE WHEN d.chain_id='195' THEN BINARY JSON_UNQUOTE(JSON_EXTRACT(payload,'$.address'))=BINARY address ELSE LOWER(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.address')))=LOWER(address) END
                           AND gross_amount>0
                           AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.nonce')) REGEXP '^[A-Za-z0-9]{6}$'
                           AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.sign')) REGEXP '^[0-9a-fA-F]{32}$'
@@ -532,7 +536,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
 
     @Select("""
             SELECT * FROM (
-              SELECT CONCAT('CR-',e.cid) AS depositId,e.txid AS txHash,e.address,CASE e.chain_id WHEN '60' THEN 'ERC20' ELSE 'BEP20' END AS network,
+              SELECT CONCAT('CR-',e.cid) AS depositId,e.txid AS txHash,e.address,CASE e.chain_id WHEN '60' THEN 'ERC20' WHEN '195' THEN 'TRC20' ELSE 'BEP20' END AS network,
                      e.gross_amount AS grossAmountUsdt,
                       CASE WHEN e.status IN ('CREDITED','REORG_INVESTIGATING','PROVIDER_CONFLICT_HOLD')
                            THEN e.net_amount ELSE 0 END AS creditedUsdt,
@@ -541,19 +545,19 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
                      GREATEST(s.required_confirmations,#{safetyFloor}) AS requiredConfirmations
                 FROM nx_cregis_deposit_event e
                 LEFT JOIN nx_cregis_deposit_policy_snapshot s ON s.project_id=e.project_id
-                 AND s.chain_id=CASE e.chain_id WHEN '60' THEN 'ETH' ELSE 'BSC' END AND s.token_id=CASE e.chain_id WHEN '60' THEN 'USDT-ERC20' ELSE 'USDT-BEP20' END
-                 AND s.txid=CASE WHEN LOWER(e.txid) LIKE '0x%' THEN LOWER(e.txid) ELSE CONCAT('0x',LOWER(e.txid)) END
+                 AND s.chain_id=CASE e.chain_id WHEN '60' THEN 'ETH' WHEN '195' THEN 'TRON' ELSE 'BSC' END AND s.token_id=CASE e.chain_id WHEN '60' THEN 'USDT-ERC20' WHEN '195' THEN 'USDT-TRC20' ELSE 'USDT-BEP20' END
+                 AND s.txid=CASE WHEN e.chain_id='195' THEN LOWER(e.txid) WHEN LOWER(e.txid) LIKE '0x%' THEN LOWER(e.txid) ELSE CONCAT('0x',LOWER(e.txid)) END
                WHERE e.user_id=#{userId} AND e.project_id=#{projectId}
               UNION ALL
-              SELECT CONCAT('CR-',d.cid),d.txid,d.address,CASE d.chain_id WHEN '60' THEN 'ERC20' ELSE 'BEP20' END,d.gross_amount,0,0,'CONFIRMING',
+              SELECT CONCAT('CR-',d.cid),d.txid,d.address,CASE d.chain_id WHEN '60' THEN 'ERC20' WHEN '195' THEN 'TRC20' ELSE 'BEP20' END,d.gross_amount,0,0,'CONFIRMING',
                      UNIX_TIMESTAMP(MIN(d.created_at))*1000,NULL,
                      GREATEST(s.required_confirmations,#{safetyFloor})
                 FROM nx_cregis_deposit_delivery d
                 JOIN nx_cregis_deposit_address a ON a.project_id=#{projectId} AND a.address=d.address AND a.chain_id=d.chain_id
                  AND a.user_id=#{userId} AND a.state='READY'
                 LEFT JOIN nx_cregis_deposit_policy_snapshot s ON s.project_id=#{projectId}
-                 AND s.chain_id=CASE d.chain_id WHEN '60' THEN 'ETH' ELSE 'BSC' END AND s.token_id=CASE d.chain_id WHEN '60' THEN 'USDT-ERC20' ELSE 'USDT-BEP20' END
-                 AND s.txid=CASE WHEN LOWER(d.txid) LIKE '0x%' THEN LOWER(d.txid) ELSE CONCAT('0x',LOWER(d.txid)) END
+                 AND s.chain_id=CASE d.chain_id WHEN '60' THEN 'ETH' WHEN '195' THEN 'TRON' ELSE 'BSC' END AND s.token_id=CASE d.chain_id WHEN '60' THEN 'USDT-ERC20' WHEN '195' THEN 'USDT-TRC20' ELSE 'USDT-BEP20' END
+                 AND s.txid=CASE WHEN d.chain_id='195' THEN LOWER(d.txid) WHEN LOWER(d.txid) LIKE '0x%' THEN LOWER(d.txid) ELSE CONCAT('0x',LOWER(d.txid)) END
                WHERE d.accepted=1 AND d.processed_at IS NULL AND d.cid IS NOT NULL
                  AND NOT EXISTS (SELECT 1 FROM nx_cregis_deposit_event e
                                   WHERE e.project_id=#{projectId} AND e.chain_id=d.chain_id AND e.cid=d.cid)
@@ -564,7 +568,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
                                        @Param("safetyFloor") int safetyFloor);
 
     @Select("""
-            SELECT CAST(e.id AS CHAR) AS id,CAST(e.cid AS CHAR) AS cid,CASE e.chain_id WHEN '60' THEN 'ERC20' ELSE 'BEP20' END AS network,
+            SELECT CAST(e.id AS CHAR) AS id,CAST(e.cid AS CHAR) AS cid,CASE e.chain_id WHEN '60' THEN 'ERC20' WHEN '195' THEN 'TRC20' ELSE 'BEP20' END AS network,
                    CAST(e.user_id AS CHAR) AS userId,e.txid,e.log_index AS logIndex,e.address,
                    CAST(e.gross_amount AS CHAR) AS grossAmount,
                    CAST(e.fee_amount AS CHAR) AS feeAmount,
@@ -574,7 +578,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
               FROM nx_cregis_deposit_event e
               LEFT JOIN nx_deposit_order d ON d.ledger_id=e.ledger_id AND d.is_deleted=0
                AND d.user_id=e.user_id AND d.deposit_no=CONCAT('CR-',e.cid)
-               AND d.chain_name=CASE e.chain_id WHEN '60' THEN 'CREGIS_USDT_ERC20' ELSE 'CREGIS_USDT_BEP20' END AND d.chain_tx_hash=e.txid
+               AND d.chain_name=CASE e.chain_id WHEN '60' THEN 'CREGIS_USDT_ERC20' WHEN '195' THEN 'CREGIS_USDT_TRC20' ELSE 'CREGIS_USDT_BEP20' END AND d.chain_tx_hash=e.txid
                AND d.chain_log_index=e.log_index
              WHERE e.project_id=#{projectId} AND (#{beforeId}=0 OR e.id<#{beforeId})
              ORDER BY e.id DESC LIMIT #{limit}
@@ -921,7 +925,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             """)
     int failReconcileRun(@Param("runId") String runId, @Param("reason") String reason);
     @Select("""
-            SELECT chain_id AS chainId,CASE chain_id WHEN '60' THEN 'ERC20' ELSE 'BEP20' END AS network,run_id AS runId,window_start AS windowStart,window_end AS windowEnd,
+            SELECT chain_id AS chainId,CASE chain_id WHEN '60' THEN 'ERC20' WHEN '195' THEN 'TRC20' ELSE 'BEP20' END AS network,run_id AS runId,window_start AS windowStart,window_end AS windowEnd,
               status,provider_total AS providerTotal,row_count AS rowCount,
               unique_cid_count AS uniqueCidCount,full_row_hash AS fullRowHash,
               stable_passes AS stablePasses,chain_cursor_block AS chainCursorBlock,
@@ -989,7 +993,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
               c.created_at AS createdAt,c.checked_at AS checkedAt
             FROM nx_cregis_review_case c
               JOIN nx_cregis_deposit_event e ON e.id=c.event_id
-              LEFT JOIN nx_cregis_deposit_policy_snapshot s ON s.project_id=e.project_id AND s.chain_id=CASE e.chain_id WHEN '60' THEN 'ETH' ELSE 'BSC' END AND s.token_id=CASE e.chain_id WHEN '60' THEN 'USDT-ERC20' ELSE 'USDT-BEP20' END AND s.txid=e.txid
+              LEFT JOIN nx_cregis_deposit_policy_snapshot s ON s.project_id=e.project_id AND s.chain_id=CASE e.chain_id WHEN '60' THEN 'ETH' WHEN '195' THEN 'TRON' ELSE 'BSC' END AND s.token_id=CASE e.chain_id WHEN '60' THEN 'USDT-ERC20' WHEN '195' THEN 'USDT-TRC20' ELSE 'USDT-BEP20' END AND s.txid=e.txid
               LEFT JOIN nx_cregis_deposit_policy p ON p.version=s.policy_version
             WHERE c.project_id=#{projectId} AND c.status='MAKER_DONE'
               AND (#{beforeId}=0 OR c.id<#{beforeId})
@@ -1035,7 +1039,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     @Select("SELECT config_value FROM nx_config_item WHERE config_key=#{key} AND is_deleted=0 AND status=1 FOR SHARE")
     String lockWithdrawalNetworkPermission(@Param("key") String key);
 
-    @Select("SELECT COUNT(*) FROM nx_cregis_network_switch WHERE network IN ('BEP20','ERC20') AND deposit_enabled IN (0,1) AND version>=0")
+    @Select("SELECT COUNT(*) FROM nx_cregis_network_switch WHERE network IN ('BEP20','ERC20','TRC20') AND deposit_enabled IN (0,1) AND version>=0")
     int networkSwitchCount();
 
     @Select("""

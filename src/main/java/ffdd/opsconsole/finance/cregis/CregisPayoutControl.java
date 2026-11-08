@@ -16,13 +16,14 @@ public class CregisPayoutControl {
     private final CregisProperties config;
     private final CregisDepositMapper db;
     private final CregisGatewayRouter router;
+    private final BscDepositProof chain;
 
     public boolean configured() {
         return config.getMode() == CregisProperties.Mode.PROVIDER && config.isPayoutEnabled()
                 && config.getProjectId() > 0 && config.getDepositConfirmations() >= 15
                 && StringUtils.hasText(config.getBaseUrl()) && StringUtils.hasText(config.getApiKey())
                 && StringUtils.hasText(config.getCallbackBaseUrl())
-                && (StringUtils.hasText(config.getBscRpcUrl()) || StringUtils.hasText(config.getEthereumRpcUrl()))
+                && (StringUtils.hasText(config.getBscRpcUrl()) || StringUtils.hasText(config.getEthereumRpcUrl()) || StringUtils.hasText(config.getTronRpcUrl()))
                 && config.getCallbackSourceIps() != null
                 && Arrays.stream(config.getCallbackSourceIps().split(",")).anyMatch(StringUtils::hasText);
     }
@@ -65,7 +66,7 @@ public class CregisPayoutControl {
     public boolean enabled() { return Boolean.TRUE.equals(capability().get("enabled")); }
     public boolean configured(CregisNetwork network) {
         return network != null && configured() && StringUtils.hasText(config.rpcUrl(network))
-                && (network != CregisNetwork.ERC20 || config.isErc20PayoutEnabled());
+                && config.payoutNetworkEnabled(network);
     }
     /** Address support and payout support are distinct Cregis project permissions. */
     public Map<String,Object> capability(CregisNetwork network) {
@@ -77,9 +78,13 @@ public class CregisPayoutControl {
         if (configured && reason == null) {
             try {
                 if (router.provider().projectCoins().stream().noneMatch(coin -> coin.payoutEnabled()
-                        && network.chainId().equals(coin.chainId()) && network.tokenId().equalsIgnoreCase(coin.tokenId())))
+                        && network.chainId().equals(coin.chainId()) && network.tokenMatches(coin.tokenId())))
                     reason = "PAYOUT_ASSET_UNAVAILABLE";
             } catch (RuntimeException unavailable) { reason = "PROVIDER_CAPABILITY_UNAVAILABLE"; }
+        }
+        if(configured && reason==null && network==CregisNetwork.TRC20) {
+            try { chain.head(network); }
+            catch(RuntimeException unavailable) { reason="CHAIN_PROOF_UNAVAILABLE"; }
         }
         result.put("network", network.network()); result.put("configured", configured);
         result.put("enabled", reason == null); result.put("disabledReason", reason);
