@@ -17,6 +17,7 @@ public class AdminCommandInvestigationEntity extends BaseEntity {
     private String originalMethod;
     private String originalPath;
     private String originalTarget;
+    private String originalTargets;
     private Long originalAdminId;
     private Long investigatorId;
     private LocalDateTime investigatedAt;

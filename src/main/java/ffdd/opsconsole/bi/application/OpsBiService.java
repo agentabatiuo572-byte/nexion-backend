@@ -751,6 +751,15 @@ public class OpsBiService implements AuditReplayable {
         if (normalizedAction == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "UNSUPPORTED_L_REPORT_ACTION");
         }
+        BiReportView originReport = StringUtils.hasText(reportId) ? reportRepository.findReport(reportId.trim()).orElse(null) : null;
+        if (originReport != null && "KPI_SERIES".equals(normalizeText(originReport.type()))) {
+            return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.executeBoundTargets(
+                    "L_BI_REPORT_ACTION_" + normalizedAction, idempotencyKey.trim(),
+                    reportActionRequestHash(reportId, normalizedAction, request), ApiResult.class, "bi_l1_read",
+                    List.of(new ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target(
+                            normalizedAction, "L1", "report", originReport.reportId())),
+                    () -> reportActionOnce(reportId, normalizedAction, idempotencyKey.trim(), request));
+        }
         return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
                 "L_BI_REPORT_ACTION_" + normalizedAction,
                 idempotencyKey.trim(),

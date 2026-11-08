@@ -1990,6 +1990,16 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private ApiResult<Map<String, Object>> idempotentK1(
             String scope, String idempotencyKey, String requestHash,
             java.util.function.Supplier<ApiResult<Map<String, Object>>> action) {
+        if (scope.startsWith("K1_CLUSTER_STATUS:") || scope.startsWith("K1_CLUSTER_REVIEW:")) {
+            int separator = scope.indexOf(':');
+            String suppliedId = scope.substring(separator + 1);
+            String actualId = riskRepository.multiAccountClusterState(suppliedId)
+                    .map(RiskOpsRepository.MultiAccountClusterState::clusterId).orElse(suppliedId);
+            return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.executeBoundTargets(
+                    scope, idempotencyKey.trim(), requestHash, ApiResult.class, "risk_k1_read",
+                    java.util.List.of(new ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target(
+                            scope.substring(0, separator), "K1", "cluster", actualId)), (java.util.function.Supplier) action);
+        }
         return idempotentCommand(scope, idempotencyKey, requestHash, action);
     }
 

@@ -779,11 +779,13 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         String operator = AdminActorResolver.resolve(request.operator());
         String requestHash = sha256(String.join("|",
                 "D2_CONFIRM", normalizedNo, txHash, request.reason().trim(), operator));
-        return (ApiResult<WithdrawalOrderView>) (ApiResult) idempotencyService.execute(
+        var originOrder = withdrawalRecoveryTarget(normalizedNo);
+        return (ApiResult<WithdrawalOrderView>) (ApiResult) idempotencyService.executeBoundTargets(
                 "D2_CONFIRM_" + normalizedNo,
                 idempotencyKey.trim(),
                 requestHash,
-                ApiResult.class,
+                ApiResult.class, "finance_d2_read", List.of(
+                        new ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target("CONFIRM", "D2", "withdrawal", originOrder.id())),
                 () -> confirmWithdrawalOnce(normalizedNo, txHash, request.reason().trim(), operator));
     }
 
@@ -874,13 +876,18 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (!Set.of("APPROVE", "REJECT", "DELAY", "FREEZE").contains(action)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "WITHDRAWAL_BATCH_ACTION_INVALID");
         }
+        var recoveryTargets = canonicalIds.stream().map(this::withdrawalRecoveryTarget).distinct()
+                .sorted(java.util.Comparator.comparing(ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target::id)).toList();
+        var executionIds = recoveryTargets.stream().map(ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target::id).toList();
+        String requestHash = d2CompatibleRequestHash("D2_BATCH_" + action, idempotencyKey.trim(),
+                d2BatchRequestHash(action, canonicalIds, request), d2BatchRequestHash(action, executionIds, request));
         @SuppressWarnings({"rawtypes", "unchecked"})
-        ApiResult<Map<String, Object>> result = (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
+        ApiResult<Map<String, Object>> result = (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.executeBoundTargets(
                 "D2_BATCH_" + action,
                 idempotencyKey.trim(),
-                d2BatchRequestHash(action, canonicalIds, request),
-                ApiResult.class,
-                () -> executeD2Batch(idempotencyKey.trim(), request, action, canonicalIds));
+                requestHash,
+                ApiResult.class, "finance_d2_read", recoveryTargets,
+                () -> executeD2Batch(idempotencyKey.trim(), request, action, executionIds));
         return result;
     }
 
@@ -942,11 +949,14 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             String idempotencyKey,
             WithdrawalReviewRequest request,
             BigDecimal batchThreshold) {
-        ApiResult<WithdrawalOrderView> result = (ApiResult<WithdrawalOrderView>) (ApiResult) idempotencyService.execute(
+        var recoveryTarget = withdrawalRecoveryTarget(withdrawalNo);
+        String requestHash = d2CompatibleRequestHash("D2_REVIEW_" + withdrawalNo, idempotencyKey,
+                d2RequestHash(withdrawalNo, request), d2RequestHash(recoveryTarget.id(), request));
+        ApiResult<WithdrawalOrderView> result = (ApiResult<WithdrawalOrderView>) (ApiResult) idempotencyService.executeBoundTargets(
                 "D2_REVIEW_" + withdrawalNo,
                 idempotencyKey,
-                d2RequestHash(withdrawalNo, request),
-                ApiResult.class,
+                requestHash,
+                ApiResult.class, "finance_d2_read", List.of(recoveryTarget),
                 () -> executeD2ReviewOnce(withdrawalNo, idempotencyKey, request, batchThreshold));
         // These exact replies occur before any withdrawal/reserve mutation. Older
         // durable receipts used 503; project their known rejection as 409 even on
@@ -956,6 +966,19 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             return ApiResult.fail(409, result.getMessage());
         }
         return result;
+    }
+
+    private ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target withdrawalRecoveryTarget(String suppliedNo) {
+        var original = withdrawalRepository.findByWithdrawalNo(suppliedNo).orElse(null);
+        return new ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target(
+                "REVIEW", "D2", "withdrawal", original == null ? suppliedNo : original.withdrawalNo());
+    }
+
+    private String d2CompatibleRequestHash(String scope, String key, String legacyHash, String canonicalHash) {
+        if (legacyHash.equals(canonicalHash)) return canonicalHash;
+        var existing = idempotencyService.recoveryStatus(scope, key, legacyHash);
+        return existing == AdminIdempotencyService.RecoveryStatus.NOT_FOUND || existing == AdminIdempotencyService.RecoveryStatus.MISMATCH
+                ? canonicalHash : legacyHash;
     }
 
     private ApiResult<WithdrawalOrderView> executeD2ReviewOnce(

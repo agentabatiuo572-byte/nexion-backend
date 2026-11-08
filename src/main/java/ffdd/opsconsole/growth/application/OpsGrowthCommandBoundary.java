@@ -22,6 +22,7 @@ import org.springframework.stereotype.Service;
 public class OpsGrowthCommandBoundary {
     private final AdminIdempotencyService idempotency;
     private final EventOutboxService outbox;
+    private final java.util.Optional<ffdd.opsconsole.growth.mapper.GrowthQuestEventMapper> trialSessions;
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     public ApiResult<Map<String, Object>> execute(
@@ -44,24 +45,34 @@ public class OpsGrowthCommandBoundary {
             }
         }
         String requestHash = hash(scope + "|" + requestText);
+        Supplier<ApiResult<Map<String, Object>>> commandAction = () -> {
+            ApiResult<Map<String, Object>> result = action.get();
+            if (result != null && result.getCode() == 0) {
+                outbox.publish("GROWTH_COMMAND", normalizedModule + ":" + normalizedTarget,
+                        "admin.growth_config_changed", Map.of(
+                                "module_id", normalizedModule, "operation", normalizedOperation,
+                                "target_id", normalizedTarget, "idempotency_key", idempotencyKey.trim()));
+            }
+            return result;
+        };
         try {
+            if ("H2".equals(normalizedModule)) {
+                String actualTarget = normalizedTarget;
+                if (java.util.Set.of("TRIAL_SESSION_CANCEL", "TRIAL_SESSION_CHARGE").contains(normalizedOperation)) {
+                    actualTarget = trialSessions.map(mapper -> mapper.trialSession(normalizedTarget))
+                            .map(row -> (String) row.get("sid")).orElse(normalizedTarget);
+                }
+                return (ApiResult<Map<String, Object>>) idempotency.executeBoundTargets(scope, idempotencyKey,
+                        requestHash, ApiResult.class, "growth_h2_read", java.util.List.of(
+                                new ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target(
+                                        normalizedOperation, "H2", "trial_target", actualTarget)), (Supplier) commandAction);
+            }
             return (ApiResult<Map<String, Object>>) idempotency.execute(
                     scope,
                     idempotencyKey,
                     requestHash,
                     ApiResult.class,
-                    (Supplier) () -> {
-                        ApiResult<Map<String, Object>> result = action.get();
-                        if (result != null && result.getCode() == 0) {
-                            outbox.publish("GROWTH_COMMAND", normalizedModule + ":" + normalizedTarget,
-                                    "admin.growth_config_changed", Map.of(
-                                            "module_id", normalizedModule,
-                                            "operation", normalizedOperation,
-                                            "target_id", normalizedTarget,
-                                            "idempotency_key", idempotencyKey.trim()));
-                        }
-                        return result;
-                    });
+                    (Supplier) commandAction);
         } catch (PessimisticLockingFailureException ex) {
             if ("H3".equals(normalizedModule) && "QUEST_CONFIG_UPDATE".equals(normalizedOperation)) {
                 return ApiResult.fail(422, "QUEST_CONFIG_STALE");

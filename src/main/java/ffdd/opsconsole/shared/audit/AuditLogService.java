@@ -247,6 +247,12 @@ public class AuditLogService {
         boolean retentionExecutorAudit = action.startsWith("A2_AUDIT_RETENTION_");
         Integer retentionMonths = retentionExecutorAudit ? null : a2RuntimePolicy.retentionMonths();
         LocalDateTime expireAt = retentionMonths == null ? null : LocalDateTime.now().plusMonths(retentionMonths);
+        var detail = sanitizer.withRequiredSchemaVersion(request.getDetail(), a2RuntimePolicy.schemaVersion());
+        // Reserved correlation is always server-owned, including when the caller supplies the same key.
+        detail.remove("_adminCommand");
+        var command = ffdd.opsconsole.shared.idempotency.AdminIdempotencyExecutionContext.current();
+        if (command != null) detail.put("_adminCommand", Map.of("recordId", command.recordId(),
+                "scope", command.scope(), "commandKey", command.commandKey(), "requestHash", command.requestHash()));
         return new AuditLogMapper.AuditLogWrite(
                 firstText(request.getTraceId(), AuditTraceContext.currentTraceId(), requestTraceId(servletRequest)),
                 applicationNameProperties.getName(),
@@ -263,8 +269,7 @@ public class AuditLogService {
                 firstText(request.getPath(), servletRequest == null ? null : servletRequest.getRequestURI()),
                 normalizeCode(request.getResult(), "SUCCESS"),
                 normalizeCode(request.getRiskLevel(), "INFO"),
-                sanitizer.toSafeJson(sanitizer.withRequiredSchemaVersion(
-                        request.getDetail(), a2RuntimePolicy.schemaVersion())),
+                sanitizer.toSafeJson(detail),
                 retentionMonths,
                 expireAt);
     }

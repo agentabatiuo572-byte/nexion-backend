@@ -822,19 +822,23 @@ public class OpsAuditCenterService {
             }
             // Retained claims keep successful keys across expiry and fence an unresolved processing lease.
             String originAuthority = null;
-            String originTarget = null;
+            List<ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target> originTargets = List.of();
             if (request instanceof AuditOperationProposalRequest value) {
                 originAuthority = value.command() == null || value.command().op() == null ? null
                         : ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.readAuthority(value.command().op().toUpperCase(Locale.ROOT));
                 var targets = value.targets() != null && !value.targets().isEmpty() ? value.targets()
                         : value.target() == null ? List.<AuditLockTarget>of() : List.of(value.target());
+                if (targets.isEmpty() && originAuthority != null) targets = replayBusinessPermissionGuard.investigationTargets(value.command());
                 if (!targets.isEmpty() && value.command() != null && value.command().op() != null
                         && targets.stream().allMatch(target -> target != null && target.domain() != null
                                 && target.type() != null && target.id() != null)) {
-                    originTarget = commandHash("B38_TARGET", verb + ":" + value.command().op(), targets.stream()
+                    originTargets = targets.stream()
                             .distinct()
                             .sorted(java.util.Comparator.comparing(AuditLockTarget::domain)
-                                    .thenComparing(AuditLockTarget::type).thenComparing(AuditLockTarget::id)).toList());
+                                    .thenComparing(AuditLockTarget::type).thenComparing(AuditLockTarget::id))
+                            .map(target -> new ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target(
+                                    "A2_" + verb + ":" + value.command().op().toLowerCase(Locale.ROOT),
+                                    target.domain().trim().toUpperCase(Locale.ROOT), target.type().trim().toLowerCase(Locale.ROOT), target.id().trim())).toList();
                 }
             } else if (operationId != null) {
                 var originalTicket = ticketMapper.selectActiveByOperationId(operationId);
@@ -842,11 +846,12 @@ public class OpsAuditCenterService {
                     var originalCommand = deserializeCommand(originalTicket.getCommandJson());
                     originAuthority = originalCommand == null || originalCommand.op() == null ? null
                             : ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.readAuthority(originalCommand.op().toUpperCase(Locale.ROOT));
-                    originTarget = verb + ":" + operationId;
+                    originTargets = List.of(new ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target(
+                            "A2_" + verb, "A2", "operation", operationId));
                 }
             }
-            var receipt = idempotencyService.executeBound(A2_COMMAND, idempotencyKey, requestHash,
-                    AuditOperationTicket.class, originAuthority, originTarget, () -> requireSuccess(action.get()));
+            var receipt = idempotencyService.executeBoundTargets(A2_COMMAND, idempotencyKey, requestHash,
+                    AuditOperationTicket.class, originAuthority, originTargets, () -> requireSuccess(action.get()));
             if (catalogProposal) {
                 return proposalByIdempotencyKey(idempotencyKey);
             }

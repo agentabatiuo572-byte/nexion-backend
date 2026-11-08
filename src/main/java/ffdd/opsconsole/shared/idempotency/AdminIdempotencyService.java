@@ -51,6 +51,13 @@ public class AdminIdempotencyService {
                 AdminCommandOrigin.current(scope, readAuthority, target));
     }
 
+    public <T> T executeBoundTargets(String scope, String key, String requestHash, Class<T> responseType,
+                                     String readAuthority, java.util.List<AdminCommandOrigin.Target> targets,
+                                     Supplier<T> action) {
+        return execute(scope, key, requestHash, responseType, action, true, false,
+                AdminCommandOrigin.current(scope, readAuthority, null, targets));
+    }
+
     /** Read-only recovery information. Callers must derive the scope from the authenticated actor. */
     public RecoveryStatus recoveryStatus(String scope, String idempotencyKey, String requestHash) {
         return transactionExecutor.recoveryStatus(normalizeScope(scope), normalizeIdempotencyKey(idempotencyKey),

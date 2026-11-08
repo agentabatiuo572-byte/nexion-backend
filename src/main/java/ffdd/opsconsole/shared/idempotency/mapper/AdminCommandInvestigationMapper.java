@@ -51,9 +51,24 @@ public interface AdminCommandInvestigationMapper extends BaseMapper<AdminCommand
                AND actor_id=#{original.originAdminId}
                AND method=#{original.originMethod} AND BINARY path=BINARY #{original.originPath}
                AND created_at >= #{original.createdAt}
-               AND BINARY JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.idempotencyKey'))=BINARY #{original.idempotencyKey}
+               AND JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$._adminCommand.recordId'))=CAST(#{original.id} AS CHAR)
+               AND BINARY JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$._adminCommand.scope'))=BINARY #{original.scope}
+               AND BINARY JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$._adminCommand.commandKey'))=BINARY #{original.idempotencyKey}
+               AND BINARY JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$._adminCommand.requestHash'))=BINARY #{original.requestHash}
              LIMIT 1
             """)
     AuditLogRecord successEvidence(@Param("auditId") long auditId,
                                   @Param("original") AdminIdempotencyRecordEntity original);
+
+    @Select("""
+            SELECT DISTINCT resource_id FROM nx_audit_log
+             WHERE is_deleted=0 AND resource_type='A2_OPERATION' AND result='SUCCESS' AND actor_type='ADMIN'
+               AND actor_id=#{original.originAdminId}
+               AND JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$._adminCommand.recordId'))=CAST(#{original.id} AS CHAR)
+               AND BINARY JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$._adminCommand.scope'))=BINARY #{original.scope}
+               AND BINARY JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$._adminCommand.commandKey'))=BINARY #{original.idempotencyKey}
+               AND BINARY JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$._adminCommand.requestHash'))=BINARY #{original.requestHash}
+             LIMIT 2
+            """)
+    List<String> originalA2Operations(@Param("original") AdminIdempotencyRecordEntity original);
 }

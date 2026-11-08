@@ -5390,6 +5390,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     @SuppressWarnings({"rawtypes", "unchecked"})
     private <T> ApiResult<T> deviceIdempotent(
             String scope, String idempotencyKey, String resourceId, Object request, Supplier<ApiResult<T>> action) {
+        if (scope.startsWith("E4_")) {
+            var original = catalogRepository.findOrder(resourceId).orElse(null);
+            return (ApiResult<T>) (ApiResult) idempotencyService.executeBoundTargets(
+                    scope, idempotencyKey.trim(), e1RequestHash(scope, resourceId, request), ApiResult.class, "device_e4_read",
+                    List.of(new ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target(
+                            scope, "E4", "device_order", original == null ? resourceId : original.orderNo())), (Supplier) action);
+        }
         return (ApiResult<T>) (ApiResult) idempotencyService.execute(
                 scope,
                 idempotencyKey.trim(),

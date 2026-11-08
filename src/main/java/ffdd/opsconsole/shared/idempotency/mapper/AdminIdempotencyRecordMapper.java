@@ -17,6 +17,7 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
                    origin_method AS originMethod,
                    origin_path AS originPath,
                    origin_target AS originTarget,
+                   origin_targets AS originTargets,
                    origin_read_authority AS originReadAuthority,
                    rollback_confirmed AS rollbackConfirmed,
                    status,
@@ -46,6 +47,7 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
                    origin_method AS originMethod,
                    origin_path AS originPath,
                    origin_target AS originTarget,
+                   origin_targets AS originTargets,
                    origin_read_authority AS originReadAuthority,
                    rollback_confirmed AS rollbackConfirmed,
                    status,
@@ -76,6 +78,7 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
                    origin_method AS originMethod,
                    origin_path AS originPath,
                    origin_target AS originTarget,
+                   origin_targets AS originTargets,
                    origin_read_authority AS originReadAuthority,
                    rollback_confirmed AS rollbackConfirmed,
                    status,
@@ -104,6 +107,7 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
                    origin_method AS originMethod,
                    origin_path AS originPath,
                    origin_target AS originTarget,
+                   origin_targets AS originTargets,
                    origin_read_authority AS originReadAuthority,
                    rollback_confirmed AS rollbackConfirmed,
                    status,
@@ -171,6 +175,19 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
             """)
     int countUnresolvedOrigin(@Param("scope") String scope, @Param("method") String method,
                               @Param("path") String path, @Param("target") String target, @Param("key") String key);
+
+    @Select("""
+            <script>
+            SELECT COUNT(*) FROM nx_admin_idempotency_record
+             WHERE is_deleted=0 AND origin_targets IS NOT NULL
+               AND JSON_OVERLAPS(origin_targets, CAST(#{targets} AS JSON))
+               AND NOT (scope=#{scope} AND BINARY idempotency_key=BINARY #{key})
+               AND (status='UNKNOWN' OR (status='PROCESSING' AND id NOT IN
+                 <foreach collection='ancestors' item='id' open='(' separator=',' close=')'>#{id}</foreach>))
+            </script>
+            """)
+    int countUnresolvedTargets(@Param("targets") String targets, @Param("scope") String scope,
+            @Param("key") String key, @Param("ancestors") List<Long> ancestors);
 
     @Update("""
             UPDATE nx_admin_idempotency_record

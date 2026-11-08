@@ -38,7 +38,7 @@ public class AuditLogSanitizer {
     }
 
     @SuppressWarnings("unchecked")
-    public Object withRequiredSchemaVersion(Object detail, String schemaVersion) {
+    public Map<String, Object> withRequiredSchemaVersion(Object detail, String schemaVersion) {
         Map<String, Object> envelope = new LinkedHashMap<>();
         if (detail instanceof Map<?, ?> map) {
             map.forEach((key, value) -> envelope.put(String.valueOf(key), value));
@@ -107,6 +107,9 @@ public class AuditLogSanitizer {
         clipped.put("preview", json.substring(0, Math.min(3500, json.length())));
         if (sanitized instanceof Map<?, ?> map && map.get("schemaVersion") != null) {
             clipped.put("schemaVersion", String.valueOf(map.get("schemaVersion")));
+        }
+        if (sanitized instanceof Map<?, ?> map && map.get("_adminCommand") != null) {
+            clipped.put("_adminCommand", map.get("_adminCommand"));
         }
         try {
             return objectMapper.writeValueAsString(clipped);

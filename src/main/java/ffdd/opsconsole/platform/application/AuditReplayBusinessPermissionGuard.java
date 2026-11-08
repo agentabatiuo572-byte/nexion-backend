@@ -1192,6 +1192,14 @@ public class AuditReplayBusinessPermissionGuard {
         return ApiResult.ok(descriptor(action, accountId, afterValue, false, "A1", "A", "account", accountId));
     }
 
+    /** Canonical business objects for recovery fencing; never treats a collection route as an object. */
+    List<AuditLockTarget> investigationTargets(AuditReplayCommand command) {
+        var targets = delegatedTargets(command);
+        if (targets != null) return targets;
+        var descriptor = delegatedDescriptor(command);
+        return descriptor == null || descriptor.target() == null ? List.of() : List.of(descriptor.target());
+    }
+
     private DelegatedProposalDescriptor delegatedDescriptor(AuditReplayCommand command) {
         if (command == null || command.domain() == null || command.op() == null) {
             return null;
