@@ -590,10 +590,10 @@ public class OpsTrustDisclosureService implements AuditReplayable {
             String idempotencyKey, DisclosureJurisdictionCatalogRequest request) {
         ApiResult<Void> guard = requireJurisdictionCatalogRequest(null, idempotencyKey, request, false);
         if (guard != null) return fail(guard);
-        JurisdictionCatalogMutationResult result = idempotencyService.execute(
+        JurisdictionCatalogMutationResult result = idempotencyService.executeBound(
                 "I5_JURISDICTION_CREATE", idempotencyKey.trim(),
                 DisclosureContentHash.ofParts(request.code(), request.name(), String.valueOf(request)),
-                JurisdictionCatalogMutationResult.class,
+                JurisdictionCatalogMutationResult.class, "content_i5_read", request.code().trim().toUpperCase(Locale.ROOT),
                 () -> JurisdictionCatalogMutationResult.from(doCreateJurisdiction(idempotencyKey, request)));
         return result.toApiResult();
     }

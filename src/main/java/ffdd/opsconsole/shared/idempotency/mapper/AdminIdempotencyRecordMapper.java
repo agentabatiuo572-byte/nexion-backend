@@ -13,6 +13,12 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
                    scope,
                    idempotency_key AS idempotencyKey,
                    request_hash AS requestHash,
+                   origin_admin_id AS originAdminId,
+                   origin_method AS originMethod,
+                   origin_path AS originPath,
+                   origin_target AS originTarget,
+                   origin_read_authority AS originReadAuthority,
+                   rollback_confirmed AS rollbackConfirmed,
                    status,
                    response_json AS responseJson,
                    error_message AS errorMessage,
@@ -36,6 +42,12 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
                    scope,
                    idempotency_key AS idempotencyKey,
                    request_hash AS requestHash,
+                   origin_admin_id AS originAdminId,
+                   origin_method AS originMethod,
+                   origin_path AS originPath,
+                   origin_target AS originTarget,
+                   origin_read_authority AS originReadAuthority,
+                   rollback_confirmed AS rollbackConfirmed,
                    status,
                    response_json AS responseJson,
                    error_message AS errorMessage,
@@ -60,6 +72,12 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
                    scope,
                    idempotency_key AS idempotencyKey,
                    request_hash AS requestHash,
+                   origin_admin_id AS originAdminId,
+                   origin_method AS originMethod,
+                   origin_path AS originPath,
+                   origin_target AS originTarget,
+                   origin_read_authority AS originReadAuthority,
+                   rollback_confirmed AS rollbackConfirmed,
                    status,
                    response_json AS responseJson,
                    error_message AS errorMessage,
@@ -82,6 +100,12 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
                    scope,
                    idempotency_key AS idempotencyKey,
                    request_hash AS requestHash,
+                   origin_admin_id AS originAdminId,
+                   origin_method AS originMethod,
+                   origin_path AS originPath,
+                   origin_target AS originTarget,
+                   origin_read_authority AS originReadAuthority,
+                   rollback_confirmed AS rollbackConfirmed,
                    status,
                    response_json AS responseJson,
                    error_message AS errorMessage,
@@ -107,6 +131,7 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
             UPDATE nx_admin_idempotency_record
                SET request_hash = #{requestHash},
                    status = 'PROCESSING',
+                   rollback_confirmed = 0,
                    response_json = NULL,
                    error_message = NULL,
                    expires_at = #{expiresAt},
@@ -114,6 +139,7 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
                    updated_at = NOW()
              WHERE id = #{id}
                AND (expires_at <= NOW() OR is_deleted = 1)
+               AND status NOT IN ('PROCESSING','UNKNOWN','CONFIRMED_SUCCEEDED','CONFIRMED_NOT_EXECUTED')
             """)
     int resetExpiredById(@Param("id") Long id,
                          @Param("requestHash") String requestHash,
@@ -123,6 +149,7 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
             UPDATE nx_admin_idempotency_record
                SET request_hash = #{requestHash},
                    status = 'PROCESSING',
+                   rollback_confirmed = 0,
                    response_json = NULL,
                    error_message = NULL,
                    expires_at = #{expiresAt},
@@ -134,6 +161,16 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
     int resetFailedById(@Param("id") Long id,
                         @Param("requestHash") String requestHash,
                         @Param("expiresAt") java.time.LocalDateTime expiresAt);
+
+    @Select("""
+            SELECT COUNT(*) FROM nx_admin_idempotency_record
+             WHERE scope=#{scope} AND origin_method=#{method} AND BINARY origin_path=BINARY #{path}
+               AND BINARY origin_target=BINARY #{target}
+               AND BINARY idempotency_key != BINARY #{key} AND is_deleted=0
+               AND status IN ('UNKNOWN','PROCESSING')
+            """)
+    int countUnresolvedOrigin(@Param("scope") String scope, @Param("method") String method,
+                              @Param("path") String path, @Param("target") String target, @Param("key") String key);
 
     @Update("""
             UPDATE nx_admin_idempotency_record
@@ -157,6 +194,12 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
                AND is_deleted = 0
             """)
     int markFailed(@Param("id") Long id, @Param("errorMessage") String errorMessage);
+
+    @Update("""
+            UPDATE nx_admin_idempotency_record SET rollback_confirmed=1, updated_at=NOW()
+             WHERE id=#{id} AND status IN ('PROCESSING','FAILED','UNKNOWN') AND is_deleted=0
+            """)
+    int markRollbackConfirmed(@Param("id") long id);
 
     /**
      * A PROCESSING row past its lease may be the result of a process crash after

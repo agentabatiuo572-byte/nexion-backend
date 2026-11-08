@@ -614,6 +614,12 @@ public class OpsBiService implements AuditReplayable {
                     OpsErrorCode.RETIRED_FEATURE.httpStatus(),
                     "NETWORK_TREE_EXPORT_NOT_AVAILABLE");
         }
+        if ("KPI_SERIES".equals(reportType)) {
+            String target = sha256(reportType + ":" + adminId + ":" + l1ExportSelection(request));
+            return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.executeBound(
+                    "L_BI_REPORT_CREATE", idempotencyKey.trim(), reportRequestHash(request), ApiResult.class,
+                    "bi_l1_read", target, () -> createReportOnce(idempotencyKey.trim(), request));
+        }
         return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
                 "L_BI_REPORT_CREATE",
                 idempotencyKey.trim(),

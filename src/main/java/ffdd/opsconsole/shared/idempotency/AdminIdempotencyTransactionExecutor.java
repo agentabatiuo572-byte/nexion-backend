@@ -30,6 +30,7 @@ public class AdminIdempotencyTransactionExecutor {
     private final AdminIdempotencyRecordMapper recordMapper;
     private final ObjectMapper objectMapper;
     private final AdminIdempotencyExpiryTransitionExecutor expiryTransitionExecutor;
+    private final AdminIdempotencyRollbackEvidence rollbackEvidence;
 
     /** Never claims, resets, deserializes a response, or executes a business action. */
     @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
@@ -48,6 +49,9 @@ public class AdminIdempotencyTransactionExecutor {
                     ? AdminIdempotencyService.RecoveryStatus.SUCCEEDED : AdminIdempotencyService.RecoveryStatus.UNKNOWN;
             case STATUS_FAILED -> AdminIdempotencyService.RecoveryStatus.FAILED;
             case STATUS_PROCESSING -> AdminIdempotencyService.RecoveryStatus.PROCESSING;
+            case "CONFIRMED_SUCCEEDED" -> StringUtils.hasText(record.getResponseJson())
+                    ? AdminIdempotencyService.RecoveryStatus.SUCCEEDED : AdminIdempotencyService.RecoveryStatus.CONFIRMED_SUCCEEDED;
+            case "CONFIRMED_NOT_EXECUTED" -> AdminIdempotencyService.RecoveryStatus.CONFIRMED_NOT_EXECUTED;
             default -> AdminIdempotencyService.RecoveryStatus.UNKNOWN;
         };
     }
@@ -86,8 +90,22 @@ public class AdminIdempotencyTransactionExecutor {
         return claimInternal(scope, idempotencyKey, requestHash, expiresAt, responseType, false);
     }
 
+    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
+    public <T> Claim<T> claimBound(String scope, String key, String requestHash, LocalDateTime expiresAt,
+                                  Class<T> responseType, boolean retainSuccess, AdminCommandOrigin origin) {
+        return claimInternal(scope, key, requestHash, expiresAt, responseType, retainSuccess, origin);
+    }
+
     private <T> Claim<T> claimInternal(String scope, String idempotencyKey, String requestHash,
                                       LocalDateTime expiresAt, Class<T> responseType, boolean retainSuccess) {
+        AdminCommandOrigin origin = AdminCommandOrigin.current(scope);
+        return claimInternal(scope, idempotencyKey, requestHash, expiresAt, responseType, retainSuccess, origin);
+    }
+
+    private <T> Claim<T> claimInternal(String scope, String idempotencyKey, String requestHash,
+                                      LocalDateTime expiresAt, Class<T> responseType, boolean retainSuccess,
+                                      AdminCommandOrigin origin) {
+        retainSuccess = retainSuccess || origin != null;
         AdminIdempotencyRecordEntity record = null;
         AdminIdempotencyRecordEntity existing = recordMapper.selectActive(scope, idempotencyKey);
         if (existing != null) {
@@ -97,7 +115,9 @@ public class AdminIdempotencyTransactionExecutor {
         AdminIdempotencyRecordEntity current = record == null
                 ? recordMapper.selectCurrent(scope, idempotencyKey)
                 : null;
-        if (retainSuccess && current != null
+        if (current != null && current.getStatus().startsWith("CONFIRMED_")) {
+            return resolveKnownRecord(current, requestHash, expiresAt, responseType);
+        } else if (current != null && (retainSuccess || current.getOriginAdminId() != null)
                 && (STATUS_SUCCEEDED.equals(current.getStatus()) || STATUS_FAILED.equals(current.getStatus()))) {
             // Never recycle a retained success; FAILED retries use a status CAS,
             // so a concurrent completion cannot be overwritten by an expiry reset.
@@ -132,6 +152,10 @@ public class AdminIdempotencyTransactionExecutor {
             }
             throw conflict("IDEMPOTENCY_RECLAIM_CONFLICT");
         } else if (record == null) {
+            if (origin != null && origin.target() != null && recordMapper.countUnresolvedOrigin(
+                    scope, origin.method(), origin.path(), origin.target(), idempotencyKey) > 0) {
+                throw conflict("IDEMPOTENCY_ORIGINAL_OPERATION_REQUIRES_INVESTIGATION");
+            }
             record = new AdminIdempotencyRecordEntity();
             record.setScope(scope);
             record.setIdempotencyKey(idempotencyKey);
@@ -139,6 +163,14 @@ public class AdminIdempotencyTransactionExecutor {
             record.setStatus(STATUS_PROCESSING);
             record.setExpiresAt(expiresAt);
             record.setIsDeleted(0);
+            if (origin != null) {
+                record.setOriginAdminId(origin.actorId());
+                record.setOriginMethod(origin.method());
+                record.setOriginPath(origin.path());
+                record.setOriginTarget(origin.target());
+                record.setOriginReadAuthority(origin.readAuthority());
+            }
+            record.setRollbackConfirmed(0);
             try {
                 recordMapper.insert(record);
             } catch (DuplicateKeyException ex) {
@@ -168,6 +200,13 @@ public class AdminIdempotencyTransactionExecutor {
     }
 
     private <T> T completeClaim(Long recordId, Supplier<T> action) {
+        org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override
+                    public void afterCompletion(int status) {
+                        if (status == STATUS_ROLLED_BACK) rollbackEvidence.record(recordId);
+                    }
+                });
         T result = action.get();
         if (recordMapper.markSucceeded(recordId, writeJson(result)) != 1) {
             throw conflict("IDEMPOTENCY_SUCCESS_STATE_LOST");
@@ -193,6 +232,10 @@ public class AdminIdempotencyTransactionExecutor {
         if (!requestHash.equals(record.getRequestHash())) {
             return Claim.replayed(replay(record, requestHash, responseType));
         }
+        if (record.getOriginTarget() != null && recordMapper.countUnresolvedOrigin(record.getScope(),
+                record.getOriginMethod(), record.getOriginPath(), record.getOriginTarget(), record.getIdempotencyKey()) > 0) {
+            throw conflict("IDEMPOTENCY_ORIGINAL_OPERATION_REQUIRES_INVESTIGATION");
+        }
         if (recordMapper.resetFailedById(record.getId(), requestHash, expiresAt) == 1) {
             return Claim.claimed(record.getId());
         }
@@ -208,7 +251,8 @@ public class AdminIdempotencyTransactionExecutor {
         if (!requestHash.equals(record.getRequestHash())) {
             throw conflict("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
         }
-        if (STATUS_SUCCEEDED.equals(record.getStatus()) && StringUtils.hasText(record.getResponseJson())) {
+        if ((STATUS_SUCCEEDED.equals(record.getStatus()) || "CONFIRMED_SUCCEEDED".equals(record.getStatus()))
+                && StringUtils.hasText(record.getResponseJson())) {
             return readJson(record.getResponseJson(), responseType);
         }
         if (STATUS_FAILED.equals(record.getStatus())) {
@@ -216,6 +260,9 @@ public class AdminIdempotencyTransactionExecutor {
         }
         if (STATUS_UNKNOWN.equals(record.getStatus())) {
             throw conflict("IDEMPOTENCY_RESULT_UNKNOWN");
+        }
+        if (record.getStatus().startsWith("CONFIRMED_")) {
+            throw conflict("IDEMPOTENCY_INVESTIGATION_" + record.getStatus());
         }
         throw conflict("IDEMPOTENCY_REQUEST_IN_PROGRESS");
     }

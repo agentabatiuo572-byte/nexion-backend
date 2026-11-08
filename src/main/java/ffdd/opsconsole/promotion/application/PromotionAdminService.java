@@ -97,7 +97,7 @@ public class PromotionAdminService {
         if(record==null)return receipt("missing-"+sha256(key).substring(0,24),operation,target,key,"NOT_FOUND",null,null,Instant.now());
         var result=idempotency.recoveryResult(scope,key,text(record.get("request_hash")),Map.class);
         if(result.response()!=null)return map(result.response());
-        String state=switch(result.status()){case SUCCEEDED,UNKNOWN,MISMATCH->"OUTCOME_UNKNOWN";case PROCESSING->"PROCESSING";case FAILED->"FAILED";case NOT_FOUND->"NOT_FOUND";};
+        String state=switch(result.status()){case SUCCEEDED,UNKNOWN,MISMATCH,CONFIRMED_SUCCEEDED,CONFIRMED_NOT_EXECUTED->"OUTCOME_UNKNOWN";case PROCESSING->"PROCESSING";case FAILED->"FAILED";case NOT_FOUND->"NOT_FOUND";};
         return receipt("recovery-"+sha256(key).substring(0,24),operation,target,key,state,null,
             "FAILED".equals(state)?values("code",409,"message","PROMOTION_COMMAND_FAILED","data",null):null,instant(record.get("created_at")));
     }

@@ -44,13 +44,21 @@ public class AdminIdempotencyService {
         return execute(scope, idempotencyKey, requestHash, responseType, action, true, true);
     }
 
+    /** Typed collection commands supply an exact business target, never a collection-wide fence. */
+    public <T> T executeBound(String scope, String key, String requestHash, Class<T> responseType,
+                              String readAuthority, String target, Supplier<T> action) {
+        return execute(scope, key, requestHash, responseType, action, true, false,
+                AdminCommandOrigin.current(scope, readAuthority, target));
+    }
+
     /** Read-only recovery information. Callers must derive the scope from the authenticated actor. */
     public RecoveryStatus recoveryStatus(String scope, String idempotencyKey, String requestHash) {
         return transactionExecutor.recoveryStatus(normalizeScope(scope), normalizeIdempotencyKey(idempotencyKey),
                 normalizeRequired(requestHash, "IDEMPOTENCY_REQUEST_HASH_REQUIRED"));
     }
 
-    public enum RecoveryStatus { SUCCEEDED, FAILED, PROCESSING, UNKNOWN, NOT_FOUND, MISMATCH }
+    public enum RecoveryStatus { SUCCEEDED, FAILED, PROCESSING, UNKNOWN, NOT_FOUND, MISMATCH,
+        CONFIRMED_SUCCEEDED, CONFIRMED_NOT_EXECUTED }
 
     /** Reads an owned receipt without reclaiming even an expired key. Callers must project only safe fields. */
     public <T> RecoveryResult<T> recoveryResult(String scope, String idempotencyKey, String requestHash,
@@ -68,6 +76,12 @@ public class AdminIdempotencyService {
 
     private <T> T execute(String scope, String idempotencyKey, String requestHash, Class<T> responseType,
                           Supplier<T> action, boolean retainSuccess, boolean repeatableRead) {
+        return execute(scope, idempotencyKey, requestHash, responseType, action, retainSuccess, repeatableRead,
+                AdminCommandOrigin.current(scope));
+    }
+
+    private <T> T execute(String scope, String idempotencyKey, String requestHash, Class<T> responseType,
+                          Supplier<T> action, boolean retainSuccess, boolean repeatableRead, AdminCommandOrigin origin) {
         String normalizedScope = normalizeScope(scope);
         String normalizedKey = normalizeIdempotencyKey(idempotencyKey);
         String normalizedHash = normalizeRequired(requestHash, "IDEMPOTENCY_REQUEST_HASH_REQUIRED");
@@ -75,9 +89,8 @@ public class AdminIdempotencyService {
         LocalDateTime expiresAt = LocalDateTime.now(clock)
                 .truncatedTo(ChronoUnit.SECONDS)
                 .plus(DEFAULT_TTL);
-        AdminIdempotencyTransactionExecutor.Claim<T> claim = retainSuccess
-                ? transactionExecutor.claimRetained(normalizedScope, normalizedKey, normalizedHash, expiresAt, responseType)
-                : transactionExecutor.claim(normalizedScope, normalizedKey, normalizedHash, expiresAt, responseType);
+        AdminIdempotencyTransactionExecutor.Claim<T> claim = transactionExecutor.claimBound(
+                normalizedScope, normalizedKey, normalizedHash, expiresAt, responseType, retainSuccess, origin);
         if (!claim.executeAction()) {
             return claim.replayResponse();
         }
