@@ -213,7 +213,7 @@ public class AdminIdempotencyTransactionExecutor {
                         if (status == STATUS_ROLLED_BACK) rollbackEvidence.record(recordId);
                     }
                 });
-        var original = recordMapper.selectById(recordId);
+        var original = recordMapper.selectCurrentByIdForUpdate(recordId);
         if (original == null || !STATUS_PROCESSING.equals(original.getStatus())) throw conflict("IDEMPOTENCY_CLAIM_STATE_LOST");
         var previous = AdminIdempotencyExecutionContext.enter(original);
         try {

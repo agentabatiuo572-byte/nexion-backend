@@ -4,10 +4,20 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyRecordEntity;
 import java.util.List;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotencyRecordEntity> {
+    /** Current read: an outer REPEATABLE_READ snapshot may predate the independently committed claim. */
+    @Options(flushCache = Options.FlushCachePolicy.TRUE, useCache = false)
+    @Select("""
+            SELECT * FROM nx_admin_idempotency_record
+             WHERE id=#{id} AND is_deleted=0
+             LIMIT 1 FOR UPDATE
+            """)
+    AdminIdempotencyRecordEntity selectCurrentByIdForUpdate(@Param("id") Long id);
+
     @Select("""
             SELECT id,
                    scope,
