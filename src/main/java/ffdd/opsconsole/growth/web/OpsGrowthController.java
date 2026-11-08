@@ -131,15 +131,6 @@ public class OpsGrowthController {
                 () -> growthService.chargeTrialSession(idempotencyKey, sessionId, request));
     }
 
-    @PostMapping("/trials/auto-push/kill")
-    @PreAuthorize("hasAuthority('growth_h2_write')")
-    public ApiResult<Map<String, Object>> killTrialAutoPush(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody GrowthConfigUpdateRequest request) {
-        return commandBoundary.execute("H2", "AUTO_PUSH_KILL", "AUTO_PUSH", idempotencyKey, request,
-                () -> growthService.killTrialAutoPush(idempotencyKey, request));
-    }
-
     @GetMapping("/quest-events")
     @PreAuthorize("hasAuthority('growth_h3_read') and hasAuthority('growth_h4_read')")
     public ApiResult<Map<String, Object>> questEvents() {
