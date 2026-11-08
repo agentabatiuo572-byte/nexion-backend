@@ -271,12 +271,12 @@ public interface AppWithdrawalMapper {
 
     @Select("""
             SELECT w.withdrawal_no withdrawalNo,w.amount,w.fee,w.chain,w.target_address targetAddress,
-                   w.status,w.d2_hold_until holdUntil,w.d2_penalty_fee_rate penaltyFeeRate,
+                   w.status,w.d2_hold_until holdUntil,w.d5_payout_due_at payoutDueAt,w.d2_penalty_fee_rate penaltyFeeRate,
                    w.d2_network_fee_rate networkFeeRate,w.d2_network_fee_min networkFeeMin,
                    w.d2_network_fee_max networkFeeMax,w.d2_network_fee networkFee,
                    w.d2_gross_fee grossFee,w.d2_nex_burned nexBurned,w.d2_fee_waived feeWaived,
                    w.d2_network_fee networkConfirmUsd,0 penaltyFee,
-                   w.d2_actual_fee actualFee,w.d2_net_receive netReceive,w.created_at createdAt,
+                   w.d2_actual_fee actualFee,w.d2_net_receive netReceive,w.created_at createdAt,w.completed_at confirmedAt,
                    w.d5_policy_version policyVersion,w.d5_use_nex_fee_offset useNexFeeOffset,
                    COALESCE(w.d2_submission_risk_route,
                    CASE WHEN UPPER(COALESCE(w.failure_reason,''))='A3_STRONG_REVIEW_THRESHOLD' THEN 'manual'
@@ -328,12 +328,12 @@ public interface AppWithdrawalMapper {
 
     @Select("""
             SELECT w.withdrawal_no withdrawalNo,w.amount,w.fee,w.chain,w.target_address targetAddress,
-                   w.status,w.d2_hold_until holdUntil,w.d2_penalty_fee_rate penaltyFeeRate,
+                   w.status,w.d2_hold_until holdUntil,w.d5_payout_due_at payoutDueAt,w.d2_penalty_fee_rate penaltyFeeRate,
                    w.d2_network_fee_rate networkFeeRate,w.d2_network_fee_min networkFeeMin,
                    w.d2_network_fee_max networkFeeMax,w.d2_network_fee networkFee,
                    w.d2_network_fee networkConfirmUsd,0 penaltyFee,
                    w.d2_gross_fee grossFee,w.d2_nex_burned nexBurned,w.d2_fee_waived feeWaived,
-                   w.d2_actual_fee actualFee,w.d2_net_receive netReceive,w.created_at createdAt,
+                   w.d2_actual_fee actualFee,w.d2_net_receive netReceive,w.created_at createdAt,w.completed_at confirmedAt,
                    w.d5_policy_version policyVersion,w.d5_use_nex_fee_offset useNexFeeOffset,
                    COALESCE(w.d2_submission_risk_route,
                    CASE WHEN UPPER(COALESCE(w.failure_reason,''))='A3_STRONG_REVIEW_THRESHOLD' THEN 'manual'
