@@ -306,6 +306,51 @@ public class AppWithdrawalService {
         return result;
     }
 
+    /** Shares the submit/abandon user mutex; never claims a key, repairs a fence, or writes business data. */
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public ApiResult<Map<String, Object>> readAttempt(Long userId, String idempotencyKey) {
+        requireProductionWithdrawalSubject(userId);
+        if (userId == null || mapper.lockActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
+        String key = requireKey(idempotencyKey);
+        AppWithdrawalMapper.WithdrawalAttemptRow attempt = mapper.lockWithdrawalAttempt(userId, key);
+        String withdrawalNo = mapper.readWithdrawalNoByIdempotencyKey(userId, key);
+        // Canonical ownership and the original key must both match, even if an old fence is incomplete.
+        if (StringUtils.hasText(withdrawalNo)) {
+            Map<String, Object> withdrawal = mapper.userWithdrawal(userId, withdrawalNo);
+            if (withdrawal != null) {
+                addComplianceSnapshots(userId, List.of(withdrawal));
+                return ApiResult.ok(linked("state", "COMMITTED", "withdrawalNo", withdrawalNo,
+                        "withdrawal", withdrawal, "canRetrySameKey", false));
+            }
+            return ApiResult.ok(linked("state", "UNKNOWN", "canRetrySameKey", false));
+        }
+        if (attempt == null) {
+            // A foreign key and an unseen key have exactly the same response. Do not inspect a foreign receipt.
+            return ApiResult.fail(404, "WITHDRAWAL_ATTEMPT_NOT_FOUND",
+                    linked("state", "NOT_SEEN", "canRetrySameKey", true));
+        }
+        if ("ABANDONED".equals(attempt.status())) {
+            return ApiResult.ok(linked("state", "REJECTED", "reasonCode", 409,
+                    "reason", "WITHDRAWAL_ATTEMPT_ABANDONED", "canRetrySameKey", false));
+        }
+        if ("ACTIVE".equals(attempt.status())) {
+            var recovery = idempotency.recoveryResult("USER_WITHDRAWAL_SUBMIT", key,
+                    attempt.requestHash(), ApiResult.class);
+            if (recovery.status() == AdminIdempotencyService.RecoveryStatus.PROCESSING) {
+                return ApiResult.ok(linked("state", "PROCESSING", "canRetrySameKey", false));
+            }
+            ApiResult<?> receipt = recovery.response();
+            if (recovery.status() == AdminIdempotencyService.RecoveryStatus.SUCCEEDED && receipt != null
+                    && receipt.getCode() != 0 && StringUtils.hasText(receipt.getMessage())) {
+                return ApiResult.ok(linked("state", "REJECTED", "reasonCode", receipt.getCode(),
+                        "reason", receipt.getMessage(), "canRetrySameKey", false));
+            }
+        }
+        // FAILED only retains an exception class, not a business refusal. Missing/corrupt/conflicting
+        // receipts or a COMMITTED fence without its owned order never authorize retiring the local attempt.
+        return ApiResult.ok(linked("state", "UNKNOWN", "canRetrySameKey", false));
+    }
+
     @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> abandonAttempt(
             Long userId, String idempotencyKey, BigDecimal amount, String chain, String address,
