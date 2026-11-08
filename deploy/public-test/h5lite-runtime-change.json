@@ -39,7 +39,7 @@
     },
     "updater": {
       "automatic_restore_scope": "only changed targets; preserved external files are backed up with automatic_restore=false",
-      "sha256": "1e5e622f4c9b7a3a4a2cc39b43d5ac83ec36368e387492e021096f00f005552c"
+      "sha256": "a5fd5e4d3c772774a90f1303a62167c7c2c259415b714d1d1c0816087124274b"
     }
   },
   "scope": "reviewed host-specific upgrade; eight unchanged closure pins come only from the verified 2026-11-08 host lock",
