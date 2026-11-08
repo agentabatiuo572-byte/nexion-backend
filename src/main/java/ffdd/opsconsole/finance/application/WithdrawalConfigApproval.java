@@ -95,8 +95,8 @@ public class WithdrawalConfigApproval {
         }
         if (D6.equals(command.op())) {
             long makerId = ((Number) maker).longValue();
-            if (!administrators.isActiveAdministrator(makerId)
-                    || !permissions.getPermissionCodes(makerId).contains("finance_d6_manage")
+            if ((executeChange && (!administrators.isActiveAdministrator(makerId)
+                    || !permissions.getPermissionCodes(makerId).contains("finance_d6_manage")))
                     || !permissions.getPermissionCodes(adminId).containsAll(
                             Set.of("finance_d6_manage", "platform_a2_operation_approve"))) {
                 return ApiResult.fail(403, "D6_FX_QUOTE_APPROVAL_FORBIDDEN");
