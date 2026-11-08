@@ -1764,6 +1764,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<DeviceOrderView> refundOrder(String orderNo, String idempotencyKey, DeviceOrderActionRequest request) {
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(A2ReplayContext.operationId())) {
+            return ApiResult.fail(409, "E4_REFUND_APPROVAL_REQUIRED");
+        }
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("E", "device_order", orderNo) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
