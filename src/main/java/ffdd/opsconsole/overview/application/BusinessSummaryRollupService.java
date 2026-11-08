@@ -20,7 +20,7 @@ public class BusinessSummaryRollupService {
     public void refresh() {
         var state=mapper.lockState();
         LocalDateTime asOf=LocalDateTime.ofInstant(clock.instant(),BusinessCalendar.STORAGE_ZONE);
-        String signature=BusinessCalendar.legacy().versions().toString();
+        String signature="B36_20261109_V2:"+BusinessCalendar.legacy().versions();
         boolean rebuild=state.asOf()==null || !signature.equals(state.calendarSignature());
         var dates=new ArrayList<>(mapper.dirtyDates(rebuild?null:state.asOf().minusSeconds(1),asOf));
         LocalDate today=BusinessCalendar.legacy().dateAtStorage(asOf);

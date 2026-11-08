@@ -36,6 +36,7 @@ public interface BusinessSummaryMapper extends BaseMapper<Object> {
     @Select("<script>WITH changed_users AS (" + """
             SELECT id AS user_id FROM nx_user WHERE #{since} IS NULL OR updated_at>=#{since}
             UNION SELECT user_id FROM nx_wallet_ledger WHERE #{since} IS NULL OR updated_at>=#{since}
+            UNION SELECT user_id FROM nx_wallet_bill WHERE #{since} IS NULL OR created_at>=#{since}
             UNION SELECT user_id FROM nx_deposit_order WHERE #{since} IS NULL OR updated_at>=#{since}
             UNION SELECT user_id FROM nx_payment_record WHERE #{since} IS NULL OR updated_at>=#{since}
             UNION SELECT user_id FROM nx_vietqr_reconciliation WHERE #{since} IS NULL OR updated_at>=#{since}
