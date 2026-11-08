@@ -2,8 +2,11 @@ package ffdd.opsconsole.finance.web;
 
 import ffdd.opsconsole.finance.cregis.CregisExceptionClaimService;
 import ffdd.opsconsole.finance.cregis.CregisExceptionOwnershipService;
+import ffdd.opsconsole.finance.cregis.CregisExceptionAdminGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import static ffdd.opsconsole.promotion.domain.PromotionValues.hash;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -14,11 +17,17 @@ import org.springframework.web.bind.annotation.*;
 public class CregisExceptionClaimController {
     private final CregisExceptionClaimService claims;
     private final CregisExceptionOwnershipService ownership;
+    private final CregisExceptionAdminGuard admins;
+    private final AdminIdempotencyService commands;
     @PostMapping("/exception-ownership/challenges")
     @PreAuthorize("hasAuthority('finance_d1_read') and hasAuthority('finance_d1_channel_manage')")
-    public ApiResult<CregisExceptionOwnershipService.Challenge> challenge(@RequestBody ChallengeRequest r) {
-        return ApiResult.ok(ownership.prepare(new CregisExceptionOwnershipService.SourceRef(r.sourceType(),id(r.sourceId())),
-                r.action(),r.targetUserId()==null?null:id(r.targetUserId())));
+    public ApiResult<CregisExceptionOwnershipService.Challenge> challenge(@RequestBody ChallengeRequest r,
+            @RequestHeader(value="Idempotency-Key",required=false) String key) {
+        long actor=admins.require(true);
+        return ApiResult.ok(commands.executeRetained("CREGIS_OWNERSHIP_CHALLENGE:"+actor,key,hash(r),
+                CregisExceptionOwnershipService.Challenge.class,
+                ()->ownership.prepare(new CregisExceptionOwnershipService.SourceRef(r.sourceType(),id(r.sourceId())),
+                r.action(),r.targetUserId()==null?null:id(r.targetUserId()))));
     }
     @GetMapping("/exception-claims")
     @PreAuthorize("hasAuthority('finance_d1_read')")

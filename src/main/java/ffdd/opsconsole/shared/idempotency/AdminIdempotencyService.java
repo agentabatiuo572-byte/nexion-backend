@@ -39,6 +39,11 @@ public class AdminIdempotencyService {
         return execute(scope, idempotencyKey, requestHash, responseType, action, true);
     }
 
+    /** The action owns independent commits; failure to retain its receipt must never authorize another execution. */
+    public <T> T executeRetainedIndependent(String scope, String key, String requestHash, Class<T> responseType, Supplier<T> action) {
+        return execute(scope, key, requestHash, responseType, action, true, false, AdminCommandOrigin.current(scope), true);
+    }
+
     /** Retain the financial result while fencing a bounded, shared evidence range. */
     public <T> T executeRetainedRepeatableRead(String scope, String idempotencyKey, String requestHash, Class<T> responseType, Supplier<T> action) {
         return execute(scope, idempotencyKey, requestHash, responseType, action, true, true);
@@ -89,6 +94,12 @@ public class AdminIdempotencyService {
 
     private <T> T execute(String scope, String idempotencyKey, String requestHash, Class<T> responseType,
                           Supplier<T> action, boolean retainSuccess, boolean repeatableRead, AdminCommandOrigin origin) {
+        return execute(scope, idempotencyKey, requestHash, responseType, action, retainSuccess, repeatableRead, origin, false);
+    }
+
+    private <T> T execute(String scope, String idempotencyKey, String requestHash, Class<T> responseType,
+                          Supplier<T> action, boolean retainSuccess, boolean repeatableRead, AdminCommandOrigin origin,
+                          boolean independentAction) {
         String normalizedScope = normalizeScope(scope);
         String normalizedKey = normalizeIdempotencyKey(idempotencyKey);
         String normalizedHash = normalizeRequired(requestHash, "IDEMPOTENCY_REQUEST_HASH_REQUIRED");
@@ -111,7 +122,7 @@ public class AdminIdempotencyService {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCompletion(int status) {
-                    if (status != STATUS_ROLLED_BACK) return;
+                    if (status != STATUS_ROLLED_BACK || independentAction) return;
                     try {
                         transactionExecutor.markFailed(claim.recordId(), "EnclosingTransactionRolledBack");
                     } catch (RuntimeException failure) {
@@ -122,10 +133,11 @@ public class AdminIdempotencyService {
             });
         }
         try {
-            return repeatableRead ? transactionExecutor.runClaimedRepeatableRead(claim.recordId(), action)
+            return independentAction ? transactionExecutor.runClaimedIndependent(claim.recordId(), action)
+                    : repeatableRead ? transactionExecutor.runClaimedRepeatableRead(claim.recordId(), action)
                     : transactionExecutor.runClaimed(claim.recordId(), action);
         } catch (RuntimeException ex) {
-            if (joinedTransaction) throw ex;
+            if (joinedTransaction || independentAction) throw ex;
             try {
                 transactionExecutor.markFailed(claim.recordId(), errorSummary(ex));
             } catch (RuntimeException markFailedError) {

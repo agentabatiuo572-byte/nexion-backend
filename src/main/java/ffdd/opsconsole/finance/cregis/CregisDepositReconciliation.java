@@ -17,6 +17,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /** Closed, overlapping provider windows; a failed page or chain pass never advances the watermark. */
@@ -47,6 +49,7 @@ public class CregisDepositReconciliation {
         }
     }
 
+    @Transactional(propagation=Propagation.NOT_SUPPORTED)
     public Map<String, Object> runOnce(CregisNetwork network) {
         if (config.getMode() != CregisProperties.Mode.PROVIDER)
             throw new IllegalStateException("CREGIS_PROVIDER_DISABLED");
