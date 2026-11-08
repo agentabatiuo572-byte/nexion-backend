@@ -14,9 +14,15 @@ record WithdrawalCompliancePolicy(boolean enabled, int cooldownDays, int month, 
     static final String HOLD_OWNER = "H1_COMPLIANCE_HOLD";
 
     static WithdrawalCompliancePolicy require(GrowthRhythmSnapshot rhythm) {
+        var policy = read(rhythm);
+        if (policy == null) throw new BizException(503, "H1_WITHDRAWAL_DIAL_UNAVAILABLE");
+        return policy;
+    }
+
+    static WithdrawalCompliancePolicy read(GrowthRhythmSnapshot rhythm) {
         if (rhythm == null || !rhythm.reliable() || rhythm.currentMonth() < 1
                 || !StringUtils.hasText(rhythm.currentPhase()) || rhythm.withdrawCooldownDays() < 0) {
-            throw new BizException(503, "H1_WITHDRAWAL_DIAL_UNAVAILABLE");
+            return null;
         }
         return new WithdrawalCompliancePolicy(rhythm.complianceHoldEnabled(), rhythm.withdrawCooldownDays(),
                 rhythm.currentMonth(), rhythm.currentPhase());

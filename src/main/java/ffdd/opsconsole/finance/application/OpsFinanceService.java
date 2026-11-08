@@ -1132,10 +1132,11 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     @Transactional(rollbackFor = Exception.class)
     public int releaseExpiredD2Lifecycles(LocalDateTime now) {
         LocalDateTime effectiveNow = now == null ? LocalDateTime.now(clock) : now;
-        var compliance = WithdrawalCompliancePolicy.require(growthRhythmFacade.snapshot());
+        var compliance = WithdrawalCompliancePolicy.read(growthRhythmFacade.snapshot());
         int released = 0;
         for (String withdrawalNo : withdrawalRepository.findExpiredLifecycleNos(
-                effectiveNow, compliance.enabled(), compliance.cooldownDays())) {
+                effectiveNow, compliance == null ? null : compliance.enabled(),
+                compliance == null ? 0 : compliance.cooldownDays())) {
             if (releaseDueD2Lifecycle(
                     withdrawalNo, effectiveNow, "system:d2-scheduler", D2_SCHEDULED_EXPIRY, null)
                     == D2LifecycleReleaseResult.RELEASED) {
@@ -1167,10 +1168,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         boolean scopedH1Hold = WithdrawalCompliancePolicy.supports(order.chain())
                 && D2WithdrawalStateMachine.EXTENDED_HOLD.equals(D2WithdrawalStateMachine.canonical(order.status()))
                 && WithdrawalCompliancePolicy.h1Hold(order.lifecycleOwner(), order.previousStatus());
-        LocalDateTime effectiveHoldUntil = scopedH1Hold
-                ? WithdrawalCompliancePolicy.require(growthRhythmFacade.snapshot())
-                    .holdUntil(order.chain(), order.amount(), order.createdAt())
-                : order.holdUntil();
+        var compliance = scopedH1Hold ? WithdrawalCompliancePolicy.read(growthRhythmFacade.snapshot()) : null;
+        LocalDateTime effectiveHoldUntil = compliance == null ? order.holdUntil()
+                : compliance.holdUntil(order.chain(), order.amount(), order.createdAt());
         if (effectiveHoldUntil.isAfter(effectiveNow)) return D2LifecycleReleaseResult.NOT_DUE;
         if (isWithdrawalLockedByA2(order.withdrawalNo())) {
             return D2LifecycleReleaseResult.LOCKED;
@@ -1181,7 +1181,10 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         boolean h1FastTrack = Set.of("H1_PHASE_COOLDOWN", "H1_ZERO_DAY_AUTO_REVIEW").contains(trimToEmpty(order.lifecycleOwner()))
                 && D2WithdrawalStateMachine.REVIEW_PASSED.equals(
                         D2WithdrawalStateMachine.canonical(order.previousStatus()));
-        D2ExpiryDecision decision = h1FastTrack
+        D2ExpiryDecision decision = scopedH1Hold && compliance == null
+                ? new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
+                        "H1_WITHDRAWAL_DIAL_UNAVAILABLE", "withdraw.review_due", null)
+                : h1FastTrack
                 ? h1FastTrackDecision(order, effectiveNow)
                 : new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
                         "scheduled-review-due", "withdraw.review_due", null);
