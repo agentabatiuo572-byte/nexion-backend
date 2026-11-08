@@ -1951,8 +1951,8 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                     () -> executeAssetAdjustment(userId, idempotencyKey, request, false));
         } catch (DuplicateKeyException ex) {
             c3FailureAudit("C3_ASSET_ADJUSTMENT_REJECTED", String.valueOf(userId), userId, actor,
-                    "C3_ALREADY_REVERSED", idempotencyKey);
-            throw new BizException(409, "C3_ALREADY_REVERSED");
+                    "C3_ADJUSTMENT_CREATE_CONFLICT", idempotencyKey);
+            throw new BizException(409, "C3_ADJUSTMENT_CREATE_CONFLICT");
         } catch (RuntimeException ex) {
             c3FailureAudit("C3_ASSET_ADJUSTMENT_FAILED", String.valueOf(userId), userId, actor,
                     text(ex.getMessage()), idempotencyKey);
@@ -1966,72 +1966,13 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             String idempotencyKey,
             UserAssetAdjustmentRequest request) {
         String actor = operator(request == null ? null : request.operator());
-        ApiResult<Map<String, Object>> guard = requireC3Command(userId, idempotencyKey, request);
+        ApiResult<Map<String, Object>> guard = requireC3Authority("user_c3_adjust_create");
         if (guard != null) {
             c3FailureAudit("C3_LARGE_ADJUSTMENT_REQUEST_REJECTED", String.valueOf(userId), userId, actor,
                     guard.getMessage(), idempotencyKey);
             return guard;
         }
-        try {
-            return idempotentC3("C3_LARGE_ADJUSTMENT_REQUEST", idempotencyKey, c3Fingerprint(userId, request, null), () -> {
-                UserAccountView account = userRepository.findById(userId).orElse(null);
-                if (account == null) {
-                    return c3Reject(404, "USER_NOT_FOUND", String.valueOf(userId), userId, actor, idempotencyKey);
-                }
-                String asset;
-                String direction;
-                BigDecimal amount;
-                String reasonCode;
-                String evidenceRef;
-                try {
-                    asset = normalizeAsset(request.asset());
-                    direction = normalizeDirection(request.direction());
-                    amount = positiveAmount(request.amount());
-                    reasonCode = normalizeC3ReasonCode(request.reasonCode(), request.referenceType(), request.referenceId());
-                    evidenceRef = requireC3Evidence(request.evidenceRef());
-                } catch (IllegalArgumentException ex) {
-                    return c3Reject(400, ex.getMessage(), String.valueOf(userId), userId, actor, idempotencyKey);
-                }
-                TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-                BigDecimal nexRate = c3NexUsdRate(coverage);
-                if ("UVT".equals(asset) && nexRate.signum() <= 0) {
-                    return c3Reject(422, "C3_NEX_PRICE_UNAVAILABLE", String.valueOf(userId), userId, actor, idempotencyKey);
-                }
-                BigDecimal amountUsd = ("USDT".equals(asset) ? amount : amount.multiply(nexRate))
-                        .setScale(8, RoundingMode.HALF_UP).stripTrailingZeros();
-                if (amount.scale() > 6 || amountUsd.compareTo(C3_MAX_AMOUNT_USD) > 0) {
-                    return c3Reject(400, "C3_AMOUNT_EXCEEDS_LIMIT", String.valueOf(userId), userId, actor, idempotencyKey);
-                }
-                if (amountUsd.compareTo(C3_LARGE_THRESHOLD_USD) <= 0) {
-                    return c3Reject(400, "C3_LARGE_REQUEST_THRESHOLD_NOT_REACHED", String.valueOf(userId), userId, actor, idempotencyKey);
-                }
-                if (!"SUPPORT".equals(normalizeRole(roleResolver.resolveCode()))) {
-                    return c3Reject(403, "C3_LARGE_REQUEST_SUPPORT_ONLY", String.valueOf(userId), userId, actor, idempotencyKey);
-                }
-                String requestNo = "REQ-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase(Locale.ROOT);
-                userRepository.createAssetAdjustment(
-                        requestNo, userId, asset, direction, amount, amountUsd, reasonCode, request.reason().trim(),
-                        evidenceRef, idempotencyKey.trim(), null, actor);
-                c3RequiredAudit("C3_LARGE_ADJUSTMENT_REQUESTED", requestNo, userId, actor, Map.of(
-                        "asset", asset,
-                        "direction", direction,
-                        "amount", amount,
-                        "amountUsd", amountUsd,
-                        "reasonCode", reasonCode,
-                        "reason", request.reason().trim(),
-                        "evidenceRef", evidenceRef,
-                        "idempotencyKey", idempotencyKey.trim()));
-                return ApiResult.ok(Map.of(
-                        "requestNo", requestNo,
-                        "adjustmentNo", requestNo,
-                        "status", "PENDING_REVIEW",
-                        "amountUsd", amountUsd));
-            });
-        } catch (RuntimeException ex) {
-            c3FailureAudit("C3_LARGE_ADJUSTMENT_REQUEST_FAILED", String.valueOf(userId), userId, actor,
-                    text(ex.getMessage()), idempotencyKey);
-            throw ex;
-        }
+        return c3Reject(410, "C3_LARGE_REQUEST_RETIRED", String.valueOf(userId), userId, actor, idempotencyKey);
     }
 
     private ApiResult<Map<String, Object>> executeAssetAdjustment(

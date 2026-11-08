@@ -29,7 +29,7 @@ public record UserProfileListView(
     public static UserProfileListView from(UserAccountView value, String roleCode) {
         String role = roleCode == null ? "" : roleCode.trim().toUpperCase(Locale.ROOT);
         boolean full = Set.of("SUPER_ADMIN", "RISK", "AUDITOR").contains(role);
-        boolean canFinance = full || Set.of("FINANCE", "SUPPORT").contains(role);
+        boolean canFinance = full || Set.of("FINANCE", "FINANCE_LEAD", "SUPPORT").contains(role);
         boolean canSeeRiskBand = full || "SUPPORT".equals(role);
         boolean canSeeDevices = full || "SUPPORT".equals(role);
         return new UserProfileListView(
