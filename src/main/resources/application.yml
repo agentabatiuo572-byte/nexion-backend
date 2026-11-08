@@ -121,6 +121,7 @@ nexion:
       ethereum-rpc-url: ${NEXION_CREGIS_ETHEREUM_RPC_URL:}
       tron-rpc-url: ${NEXION_CREGIS_TRON_RPC_URL:}
       tron-api-key: ${NEXION_CREGIS_TRON_API_KEY:}
+      tron-request-min-interval-ms: ${NEXION_CREGIS_TRON_REQUEST_MIN_INTERVAL_MS:500}
       deposit-confirmations: ${NEXION_CREGIS_DEPOSIT_CONFIRMATIONS:15}
       chain-scan-blocks: ${NEXION_CREGIS_CHAIN_SCAN_BLOCKS:500}
     hdpay:
