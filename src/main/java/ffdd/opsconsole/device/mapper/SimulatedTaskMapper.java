@@ -69,6 +69,9 @@ public interface SimulatedTaskMapper {
     DeviceRow lockDevice(@Param("userId")long userId,@Param("deviceId")long deviceId);
     @Select(DEVICE+" AND (d.ownership_status='OWNED' OR "+REFUNDED_DEVICE+") FOR UPDATE OF d,r FOR SHARE OF dc")
     DeviceRow lockSettlementDevice(@Param("userId")long userId,@Param("deviceId")long deviceId);
+    @Select("SELECT EXISTS(SELECT 1 FROM nx_user_device d WHERE d.id=#{deviceId} AND d.user_id=#{userId}"
+            +" AND d.is_deleted=0 AND d.source_environment='PRODUCTION' AND d.run_id='' AND "+REFUNDED_DEVICE+")")
+    boolean refundedOrderDevice(@Param("userId")long userId,@Param("deviceId")long deviceId);
     @Select("SELECT user_id userId,id deviceId FROM nx_user_device WHERE id=#{deviceId} AND is_deleted=0 AND source_environment='PRODUCTION' AND run_id='' AND UPPER(ownership_status)='OWNED'")
     Candidate subject(@Param("deviceId")long deviceId);
     @Select("SELECT id walletId,fund_incarnation incarnation FROM nx_user_wallet WHERE user_id=#{userId} AND sandbox=0 AND is_deleted=0 FOR UPDATE")
