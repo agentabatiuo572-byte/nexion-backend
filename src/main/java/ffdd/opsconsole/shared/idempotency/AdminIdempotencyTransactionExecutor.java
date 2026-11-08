@@ -109,19 +109,19 @@ public class AdminIdempotencyTransactionExecutor {
         AdminIdempotencyRecordEntity record = null;
         AdminIdempotencyRecordEntity existing = recordMapper.selectActive(scope, idempotencyKey);
         if (existing != null) {
-            return resolveKnownRecord(existing, requestHash, expiresAt, responseType);
+            return resolveKnownRecord(existing, requestHash, expiresAt, responseType, origin);
         }
 
         AdminIdempotencyRecordEntity current = record == null
                 ? recordMapper.selectCurrent(scope, idempotencyKey)
                 : null;
         if (current != null && current.getStatus().startsWith("CONFIRMED_")) {
-            return resolveKnownRecord(current, requestHash, expiresAt, responseType);
+            return resolveKnownRecord(current, requestHash, expiresAt, responseType, origin);
         } else if (current != null && (retainSuccess || current.getOriginAdminId() != null)
                 && (STATUS_SUCCEEDED.equals(current.getStatus()) || STATUS_FAILED.equals(current.getStatus()))) {
             // Never recycle a retained success; FAILED retries use a status CAS,
             // so a concurrent completion cannot be overwritten by an expiry reset.
-            return resolveKnownRecord(current, requestHash, expiresAt, responseType);
+            return resolveKnownRecord(current, requestHash, expiresAt, responseType, origin);
         } else if (record == null && current != null && STATUS_UNKNOWN.equals(current.getStatus())) {
             throw conflict("IDEMPOTENCY_RESULT_UNKNOWN");
         } else if (record == null && current != null && STATUS_PROCESSING.equals(current.getStatus())
@@ -141,7 +141,7 @@ public class AdminIdempotencyTransactionExecutor {
             // A different instance may have reached a known terminal state
             // while our CAS raced. Preserve that state rather than degrading
             // it to UNKNOWN; PROCESSING still responds as in-progress.
-            return resolveKnownRecord(refreshed, requestHash, expiresAt, responseType);
+            return resolveKnownRecord(refreshed, requestHash, expiresAt, responseType, origin);
         } else if (record == null && current != null
                 && recordMapper.resetExpiredById(current.getId(), requestHash, expiresAt) == 1) {
             record = current;
@@ -152,6 +152,11 @@ public class AdminIdempotencyTransactionExecutor {
             }
             throw conflict("IDEMPOTENCY_RECLAIM_CONFLICT");
         } else if (record == null) {
+            String targetsJson = origin == null || origin.targets().isEmpty() ? null : writeJson(origin.targets());
+            if (targetsJson != null && recordMapper.countUnresolvedTargets(targetsJson, scope, idempotencyKey,
+                    permittedBatchParent(scope, idempotencyKey, targetsJson)) > 0) {
+                throw conflict("IDEMPOTENCY_ORIGINAL_OPERATION_REQUIRES_INVESTIGATION");
+            }
             if (origin != null && origin.target() != null && recordMapper.countUnresolvedOrigin(
                     scope, origin.method(), origin.path(), origin.target(), idempotencyKey) > 0) {
                 throw conflict("IDEMPOTENCY_ORIGINAL_OPERATION_REQUIRES_INVESTIGATION");
@@ -168,6 +173,7 @@ public class AdminIdempotencyTransactionExecutor {
                 record.setOriginMethod(origin.method());
                 record.setOriginPath(origin.path());
                 record.setOriginTarget(origin.target());
+                record.setOriginTargets(targetsJson);
                 record.setOriginReadAuthority(origin.readAuthority());
             }
             record.setRollbackConfirmed(0);
@@ -207,11 +213,18 @@ public class AdminIdempotencyTransactionExecutor {
                         if (status == STATUS_ROLLED_BACK) rollbackEvidence.record(recordId);
                     }
                 });
-        T result = action.get();
-        if (recordMapper.markSucceeded(recordId, writeJson(result)) != 1) {
-            throw conflict("IDEMPOTENCY_SUCCESS_STATE_LOST");
+        var original = recordMapper.selectById(recordId);
+        if (original == null || !STATUS_PROCESSING.equals(original.getStatus())) throw conflict("IDEMPOTENCY_CLAIM_STATE_LOST");
+        var previous = AdminIdempotencyExecutionContext.enter(original);
+        try {
+            T result = action.get();
+            if (recordMapper.markSucceeded(recordId, writeJson(result)) != 1) {
+                throw conflict("IDEMPOTENCY_SUCCESS_STATE_LOST");
+            }
+            return result;
+        } finally {
+            AdminIdempotencyExecutionContext.restore(previous);
         }
-        return result;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
@@ -225,15 +238,27 @@ public class AdminIdempotencyTransactionExecutor {
             AdminIdempotencyRecordEntity record,
             String requestHash,
             LocalDateTime expiresAt,
-            Class<T> responseType) {
+            Class<T> responseType,
+            AdminCommandOrigin origin) {
         if (!STATUS_FAILED.equals(record.getStatus())) {
             return Claim.replayed(replay(record, requestHash, responseType));
         }
         if (!requestHash.equals(record.getRequestHash())) {
             return Claim.replayed(replay(record, requestHash, responseType));
         }
+        if (origin != null && !origin.targets().isEmpty()) {
+            String currentTargets = writeJson(origin.targets());
+            if (recordMapper.countUnresolvedTargets(currentTargets, record.getScope(), record.getIdempotencyKey(),
+                    permittedBatchParent(record.getScope(), record.getIdempotencyKey(), currentTargets)) > 0)
+                throw conflict("IDEMPOTENCY_ORIGINAL_OPERATION_REQUIRES_INVESTIGATION");
+        }
         if (record.getOriginTarget() != null && recordMapper.countUnresolvedOrigin(record.getScope(),
                 record.getOriginMethod(), record.getOriginPath(), record.getOriginTarget(), record.getIdempotencyKey()) > 0) {
+            throw conflict("IDEMPOTENCY_ORIGINAL_OPERATION_REQUIRES_INVESTIGATION");
+        }
+        if (record.getOriginTargets() != null && recordMapper.countUnresolvedTargets(record.getOriginTargets(),
+                record.getScope(), record.getIdempotencyKey(), permittedBatchParent(
+                        record.getScope(), record.getIdempotencyKey(), record.getOriginTargets())) > 0) {
             throw conflict("IDEMPOTENCY_ORIGINAL_OPERATION_REQUIRES_INVESTIGATION");
         }
         if (recordMapper.resetFailedById(record.getId(), requestHash, expiresAt) == 1) {
@@ -265,6 +290,33 @@ public class AdminIdempotencyTransactionExecutor {
             throw conflict("IDEMPOTENCY_INVESTIGATION_" + record.getStatus());
         }
         throw conflict("IDEMPOTENCY_REQUEST_IN_PROGRESS");
+    }
+
+    /** Only the existing D2 batch-to-selected-review child relation may share its parent's PROCESSING fence. */
+    private java.util.List<Long> permittedBatchParent(String scope, String key, String targetsJson) {
+        var parent = AdminIdempotencyExecutionContext.current();
+        if (parent == null || !java.util.Set.of("D2_BATCH_APPROVE", "D2_BATCH_REJECT", "D2_BATCH_DELAY", "D2_BATCH_FREEZE").contains(parent.scope())
+                || !scope.startsWith("D2_REVIEW_") || targetsJson == null || parent.targetsJson() == null)
+            return java.util.List.of(-1L);
+        try {
+            var child = objectMapper.readTree(targetsJson);
+            if (!child.isArray() || child.size() != 1 || !"REVIEW".equals(child.get(0).path("action").asText())
+                    || !"D2".equals(child.get(0).path("domain").asText()) || !"withdrawal".equals(child.get(0).path("type").asText()))
+                return java.util.List.of(-1L);
+            String childId = child.get(0).path("id").asText();
+            if (!scope.equals("D2_REVIEW_" + childId.toUpperCase(java.util.Locale.ROOT))) return java.util.List.of(-1L);
+            String expectedKey = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(
+                    ("D2_ITEM|" + parent.commandKey() + "|" + childId).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+            if (!expectedKey.equals(key)) return java.util.List.of(-1L);
+            for (var target : objectMapper.readTree(parent.targetsJson())) {
+                if (target.equals(child.get(0))) return java.util.List.of(parent.recordId());
+            }
+            return java.util.List.of(-1L);
+        } catch (JsonProcessingException invalid) {
+            return java.util.List.of(-1L);
+        } catch (java.security.NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException("SHA256_UNAVAILABLE", unavailable);
+        }
     }
 
     private String writeJson(Object value) {

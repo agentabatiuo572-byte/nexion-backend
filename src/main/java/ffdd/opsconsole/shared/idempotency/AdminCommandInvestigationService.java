@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.platform.application.A2AccessPolicy;
 import ffdd.opsconsole.platform.mapper.AuditOperationTicketMapper;
+import ffdd.opsconsole.platform.infrastructure.AuditOperationTicketEntity;
 import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -12,6 +13,7 @@ import ffdd.opsconsole.shared.idempotency.mapper.AdminCommandInvestigationMapper
 import ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper;
 import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
+import ffdd.opsconsole.shared.security.SuperAdminAuthorization;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.Map;
@@ -32,6 +34,7 @@ public class AdminCommandInvestigationService {
     private final AdminCommandInvestigationMapper investigations;
     private final AdminPermissionCache permissions;
     private final AdminOperatorRoleResolver administrators;
+    private final SuperAdminAuthorization superAdministrators;
     private final AuditLogService audit;
     private final A2AccessPolicy a2;
     private final AuditOperationTicketMapper tickets;
@@ -42,7 +45,7 @@ public class AdminCommandInvestigationService {
                           String evidenceReference, Long evidenceAuditId) {}
 
     public record Receipt(long originalRecordId, String scope, String commandKey, String requestHash,
-                          String originalMethod, String originalPath, String originalTarget, long originalAdminId,
+                          String originalMethod, String originalPath, String originalTarget, String originalTargets, long originalAdminId,
                           String originalStatus, boolean locked, boolean newOperationAllowed,
                           AdminCommandInvestigationEntity investigation) {}
 
@@ -54,7 +57,7 @@ public class AdminCommandInvestigationService {
                 || !Set.of("POST", "PUT", "PATCH", "DELETE").contains(String.valueOf(method))
                 || path == null || !path.startsWith("/api/admin/") || path.length() > 512)
             throw new BizException(422, "INVESTIGATION_ORIGINAL_LOCATOR_INVALID");
-        boolean investigator = permissions.getPermissionCodes(actor).contains(INVESTIGATE);
+        boolean investigator = isInvestigator(actor);
         return investigations.findOriginals(key, method, path, actor, investigator).stream()
                 .filter(original -> AdminCommandOrigin.supported(original.getScope()) && original.getOriginAdminId() != null
                         && StringUtils.hasText(original.getOriginReadAuthority()))
@@ -82,7 +85,7 @@ public class AdminCommandInvestigationService {
     @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public Receipt investigate(Request request) {
         long actor = requireAdmin();
-        if (!permissions.getPermissionCodes(actor).contains(INVESTIGATE)) throw denied();
+        if (!isInvestigator(actor)) throw denied();
         if (request == null) throw new BizException(422, "INVESTIGATION_REQUEST_REQUIRED");
         validateIdentity(request.scope(), request.commandKey(), request.requestHash(), true);
         requireInitialReader(request.scope(), actor);
@@ -97,6 +100,10 @@ public class AdminCommandInvestigationService {
         if (original.getStatus().startsWith("CONFIRMED_")) return receipt(original, latest);
         // An active writer owns its outcome. A manual investigation must not abort or race that writer.
         if ("PROCESSING".equals(original.getStatus())) throw new BizException(409, "INVESTIGATION_COMMAND_STILL_PROCESSING");
+        boolean known = Set.of("SUCCEEDED", "FAILED").contains(original.getStatus());
+        if (known && ("STILL_UNKNOWN".equals(request.conclusion())
+                || "NOT_EXECUTED".equals(request.conclusion()) && !provenNotExecuted(original)))
+            throw new BizException(409, "INVESTIGATION_KNOWN_RESULT_CONFLICT");
 
         var entry = new AdminCommandInvestigationEntity();
         entry.setOriginalRecordId(original.getId());
@@ -106,6 +113,7 @@ public class AdminCommandInvestigationService {
         entry.setOriginalMethod(original.getOriginMethod());
         entry.setOriginalPath(original.getOriginPath());
         entry.setOriginalTarget(original.getOriginTarget());
+        entry.setOriginalTargets(original.getOriginTargets());
         entry.setOriginalAdminId(original.getOriginAdminId());
         entry.setInvestigatorId(actor);
         entry.setInvestigatedAt(LocalDateTime.now(clock));
@@ -146,6 +154,8 @@ public class AdminCommandInvestigationService {
             entry.setFactAction(original.getScope());
         }
         requireFactReader(original, entry);
+        if (known && "STILL_UNKNOWN".equals(entry.getConclusion()))
+            throw new BizException(409, "INVESTIGATION_KNOWN_RESULT_CONFLICT");
         String state = switch (entry.getConclusion()) {
             case "SUCCEEDED" -> "CONFIRMED_SUCCEEDED";
             case "NOT_EXECUTED" -> "CONFIRMED_NOT_EXECUTED";
@@ -166,7 +176,7 @@ public class AdminCommandInvestigationService {
     }
 
     private boolean successfulReceipt(AdminIdempotencyRecordEntity original) {
-        if (!StringUtils.hasText(original.getResponseJson())) return false;
+        if (!"SUCCEEDED".equals(original.getStatus()) || !StringUtils.hasText(original.getResponseJson())) return false;
         try {
             var value = json.readTree(original.getResponseJson());
             if (value == null || !value.isObject() || value.isEmpty()) return false;
@@ -192,12 +202,14 @@ public class AdminCommandInvestigationService {
         if (original.getResponseJson() == null) return Integer.valueOf(1).equals(original.getRollbackConfirmed());
         try {
             var response = json.readTree(original.getResponseJson());
-            if (response.path("code").asInt(0) != 409) return false;
+            int code = response.path("code").asInt(0);
             String reason = response.path("message").asText("");
             // These exact local branches return before any business write. Other errors prove nothing.
-            return "I5_JURISDICTION_CREATE".equals(original.getScope()) && "DISCLOSURE_JURISDICTION_CODE_EXISTS".equals(reason)
-                    || "I5_JURISDICTION_UPDATE".equals(original.getScope()) && Set.of(
-                            "DISCLOSURE_JURISDICTION_NOT_FOUND", "DISCLOSURE_JURISDICTION_ARCHIVED").contains(reason);
+            return "I5_JURISDICTION_CREATE".equals(original.getScope()) && code == 409
+                    && "DISCLOSURE_JURISDICTION_CODE_EXISTS".equals(reason)
+                    || "I5_JURISDICTION_UPDATE".equals(original.getScope())
+                    && (code == 404 && "DISCLOSURE_JURISDICTION_NOT_FOUND".equals(reason)
+                        || code == 409 && "DISCLOSURE_JURISDICTION_ARCHIVED".equals(reason));
         } catch (JsonProcessingException invalid) { return false; }
     }
 
@@ -209,6 +221,8 @@ public class AdminCommandInvestigationService {
                         "A2_OPERATION_REJECTED", "A2_OPERATION_WITHDRAWN").contains(action);
         if ("L_BI_REPORT_CREATE".equals(scope)) return "BI_REPORT".equals(fact.getResourceType())
                 && Set.of("L_BI_REPORT_CREATE", "ADMIN.REPORT_EXPORTED").contains(action);
+        if (scope.startsWith("L_BI_REPORT_ACTION_")) return "BI_REPORT".equals(fact.getResourceType())
+                && action.equals("L_BI_REPORT_" + scope.substring("L_BI_REPORT_ACTION_".length()));
         return Set.of("D2_WITHDRAWAL_CHAIN_CONFIRMED", "D2_WITHDRAWAL_REVIEW_APPROVE", "D2_WITHDRAWAL_REVIEW_REJECT",
                 "D2_WITHDRAWAL_REVIEW_REFUND", "D2_WITHDRAWAL_REVIEW_DELAY", "D2_WITHDRAWAL_REVIEW_FREEZE",
                 "D3_FORECAST_CONFIG_CHANGED", "D3_TREASURY_RESERVE_INJECTION", "D3_RECONCILIATION_EXPORTED", "D3_LIABILITIES_EXPORTED", "D3_SENSITIVE_EXPORT_A2_AUDITED",
@@ -232,8 +246,44 @@ public class AdminCommandInvestigationService {
     private void requireReader(AdminIdempotencyRecordEntity original, long actor) {
         Set<String> grants = permissions.getPermissionCodes(actor);
         if (!grants.contains(original.getOriginReadAuthority())
-                || !Long.valueOf(actor).equals(original.getOriginAdminId()) && !grants.contains(INVESTIGATE)) throw denied();
-        if ("A2_COMMAND".equals(original.getScope())) a2.requireProposalReader();
+                || !Long.valueOf(actor).equals(original.getOriginAdminId()) && !isInvestigator(actor)) throw denied();
+        if ("A2_COMMAND".equals(original.getScope())) {
+            a2.requireProposalReader();
+            var ticket = originalA2Ticket(original);
+            if (ticket != null) {
+                if (!a2.canAccessTicket(ticket)) throw denied();
+            } else {
+                var scope = a2.current();
+                String authority = original.getOriginReadAuthority();
+                String domain = authority.substring(authority.indexOf('_') + 1, authority.indexOf('_') + 2).toUpperCase(java.util.Locale.ROOT);
+                if (scope.ownActorOnly() ? !Long.valueOf(actor).equals(original.getOriginAdminId()) : !scope.canSee(domain, null)) throw denied();
+            }
+        }
+    }
+
+    private AuditOperationTicketEntity originalA2Ticket(AdminIdempotencyRecordEntity original) {
+        if (StringUtils.hasText(original.getResponseJson())) {
+            try {
+                String id = json.readTree(original.getResponseJson()).path("id").asText("");
+                if (!id.isEmpty()) {
+                    var ticket = tickets.selectActiveByOperationId(id);
+                    if (ticket != null) return ticket;
+                }
+            } catch (JsonProcessingException invalid) { /* Unreadable receipts grant no row visibility. */ }
+        }
+        if (StringUtils.hasText(original.getOriginTargets())) {
+            try {
+                for (var target : json.readTree(original.getOriginTargets())) {
+                    if ("A2".equals(target.path("domain").asText()) && "operation".equals(target.path("type").asText())) {
+                        var ticket = tickets.selectActiveByOperationId(target.path("id").asText());
+                        if (ticket != null) return ticket;
+                    }
+                }
+            } catch (JsonProcessingException invalid) { /* Unreadable targets grant no row visibility. */ }
+        }
+        var ids = investigations.originalA2Operations(original);
+        if (ids.size() > 1) throw denied();
+        return ids.isEmpty() ? null : tickets.selectActiveByOperationId(ids.get(0));
     }
 
     private void requireInitialReader(String scope, long actor) {
@@ -256,6 +306,11 @@ public class AdminCommandInvestigationService {
         return actor;
     }
 
+    private boolean isInvestigator(long actor) {
+        return superAdministrators.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())
+                && permissions.getPermissionCodes(actor).contains(INVESTIGATE);
+    }
+
     private AdminIdempotencyRecordEntity requireOriginal(AdminIdempotencyRecordEntity original, String hash) {
         if (original == null || !Integer.valueOf(0).equals(original.getIsDeleted()))
             throw new BizException(409, "INVESTIGATION_ORIGINAL_NOT_FOUND_REMAINS_LOCKED");
@@ -273,10 +328,10 @@ public class AdminCommandInvestigationService {
     }
 
     private Receipt receipt(AdminIdempotencyRecordEntity original, AdminCommandInvestigationEntity latest) {
-        boolean terminal = original.getStatus().startsWith("CONFIRMED_");
+        boolean locked = Set.of("UNKNOWN", "PROCESSING").contains(original.getStatus());
         return new Receipt(original.getId(), original.getScope(), original.getIdempotencyKey(), original.getRequestHash(),
-                original.getOriginMethod(), original.getOriginPath(), original.getOriginTarget(), original.getOriginAdminId(),
-                original.getStatus(), !terminal, "CONFIRMED_NOT_EXECUTED".equals(original.getStatus()), latest);
+                original.getOriginMethod(), original.getOriginPath(), original.getOriginTarget(), original.getOriginTargets(), original.getOriginAdminId(),
+                original.getStatus(), locked, "CONFIRMED_NOT_EXECUTED".equals(original.getStatus()), latest);
     }
 
     private BizException denied() { return new BizException(403, "COMMAND_INVESTIGATION_FORBIDDEN"); }

@@ -226,11 +226,12 @@ public class OpsKillSwitchService {
             return validationFailed("DISPOSITION_PLAN_REQUIRED");
         }
         String operator = authenticatedOperator(request.operator());
-        return idempotent(
+        return idempotentTargets(
                 enable ? "J1_RESTORE:" + A2ReplayContext.operationId() : "J1_TOGGLE:" + normalizedKey,
                 idempotencyKey,
                 requestHash(normalizedKey, String.valueOf(enable), request.reason(), operator,
                         request.triggerBasis(), request.dispositionPlan()),
+                List.of(new ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target("TOGGLE", "J1", "kill_switch", normalizedKey)),
                 () -> {
                     if (enable && !expectedLastChange.equals(activeValue(lastChangeConfigKey(normalizedKey)).orElse(""))) {
                         return ApiResult.fail(409, "J1_RESTORE_STALE");
@@ -350,11 +351,13 @@ public class OpsKillSwitchService {
             }
         }
         String operator = authenticatedOperator(request.operator());
-        return idempotent(
+        return idempotentTargets(
                 "J1_BATCH_DISABLE",
                 idempotencyKey,
                 requestHash(String.join(",", keys), request.reason(), operator, request.triggerBasis(),
                         request.regulatoryContext(), request.dispositionPlan()),
+                keys.stream().map(key -> new ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target(
+                        "TOGGLE", "J1", "kill_switch", key)).toList(),
                 () -> emergencyDisableOnce(keys, idempotencyKey, request, operator));
     }
 
@@ -901,6 +904,14 @@ public class OpsKillSwitchService {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), "REASON_LENGTH_INVALID");
         }
         return null;
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private ApiResult<Map<String, Object>> idempotentTargets(String scope, String key, String requestHash,
+            List<ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target> targets,
+            Supplier<ApiResult<Map<String, Object>>> action) {
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.executeBoundTargets(
+                scope, key, requestHash, ApiResult.class, "emergency_j1_read", targets, (Supplier) action);
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})

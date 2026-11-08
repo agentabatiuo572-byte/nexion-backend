@@ -25,6 +25,7 @@ public class AdminIdempotencyRecordEntity extends BaseEntity {
     private String originMethod;
     private String originPath;
     private String originTarget;
+    private String originTargets;
     private String originReadAuthority;
     private Integer rollbackConfirmed;
 
