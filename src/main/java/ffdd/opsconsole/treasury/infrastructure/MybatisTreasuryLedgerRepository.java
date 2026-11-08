@@ -229,11 +229,20 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
     public void recordWithdrawalReserve(
             String withdrawalNo, BigDecimal amountUsd, String reason, String operator, String idempotencyKey) {
         String safeWithdrawalNo = safeBiz(withdrawalNo);
+        String reserveNo = compactKey("RSV-WD-", safeWithdrawalNo, 64);
+        String voucherNo = compactKey("WD-", safeWithdrawalNo, 96);
+        BigDecimal amount = nz(amountUsd).setScale(6, java.math.RoundingMode.UNNECESSARY);
+        var existing = mapper.lockReserveEntries(reserveNo, voucherNo);
+        if (!existing.isEmpty()) {
+            // Returning an unsent approval to compliance review must retain its original cash reservation.
+            requireReserveEntry(existing, reserveNo, voucherNo, "OUT", amount, null);
+            return;
+        }
         if (mapper.insertTopupReserveEntry(
-                compactKey("RSV-WD-", safeWithdrawalNo, 64),
-                compactKey("WD-", safeWithdrawalNo, 96),
+                reserveNo,
+                voucherNo,
                 "OUT",
-                nz(amountUsd).setScale(6, java.math.RoundingMode.UNNECESSARY),
+                amount,
                 trim(reason),
                 trim(operator),
                 trim(idempotencyKey)) != 1) {

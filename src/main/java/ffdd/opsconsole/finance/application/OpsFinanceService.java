@@ -964,6 +964,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         }
         String action = request.action().trim().toUpperCase(Locale.ROOT);
         D2CurrentRisk currentRisk = null;
+        WithdrawalCompliancePolicy compliance = null;
         boolean strongReview = false;
         if (withdrawalPayoutFinalizer.providerDispatchStarted(withdrawalNo,order.userId()))
             return ApiResult.fail(409,"CREGIS_PAYOUT_ALREADY_DISPATCHED");
@@ -982,6 +983,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             if (recipientBlock != null) return ApiResult.fail(409, recipientBlock);
         }
         if ("APPROVE".equals(action)) {
+            if (WithdrawalCompliancePolicy.supports(order.chain()))
+                compliance = WithdrawalCompliancePolicy.require(growthRhythmFacade.snapshot());
             BigDecimal threshold = batchThreshold == null ? D2WithdrawalReviewThreshold.require(configFacade) : batchThreshold;
             strongReview = D2WithdrawalReviewThreshold.applies(threshold, order.amount());
             currentRisk = currentD2Risk(order, LocalDateTime.now(clock));
@@ -1039,12 +1042,13 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         String failureReason = d2FailureReason(action, request);
         LocalDateTime reviewAt = Set.of("DELAY", "FREEZE").contains(action)
                 ? parseD2ReviewAt(request.reviewAt()) : null;
-        // Approval must leave a dispatch deadline. Preserve the existing H1 hold;
-        // legacy/manual-review orders without one become due at the business clock.
+        // Scoped USDT approvals have already passed the current compliance window.
         if ("APPROVE".equals(action)) {
-            reviewAt = order.holdUntil() != null ? order.holdUntil() : LocalDateTime.now(clock);
+            reviewAt = compliance != null ? LocalDateTime.now(clock)
+                    : order.holdUntil() != null ? order.holdUntil() : LocalDateTime.now(clock);
         }
-        String owner = Set.of("DELAY", "FREEZE").contains(action) ? request.owner().trim() : null;
+        String owner = Set.of("DELAY", "FREEZE").contains(action) ? request.owner().trim()
+                : compliance != null && compliance.reviewRequired(order.chain()) ? compliance.approvalOwner() : null;
         String period = "FREEZE".equals(action) ? request.period().trim().toUpperCase(Locale.ROOT) : null;
         String previousStatus = "FREEZE".equals(action) ? D2WithdrawalStateMachine.canonical(order.status()) : null;
         if (Set.of("REJECT", "REFUND").contains(action)) {
@@ -1112,6 +1116,11 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         detail.put("period", trimToEmpty(request.period()));
         detail.put("owner", trimToEmpty(request.owner()));
         detail.put("reviewAt", trimToEmpty(request.reviewAt()));
+        if (compliance != null) {
+            detail.put("complianceReviewRequired", compliance.reviewRequired(order.chain()));
+            detail.put("complianceRuleVersion", compliance.versionMaterial());
+            detail.put("complianceApprovalOwner", trimToEmpty(owner));
+        }
         auditRequired("D2_WITHDRAWAL_REVIEW_" + action, "WITHDRAWAL", order.withdrawalNo(), authenticatedOperator, detail);
         if (!"REJECT".equals(action)) {
             publishD2Event(order, "withdraw." + d2EventAction(action), newStatus, request.reason().trim(), request);
@@ -1123,8 +1132,10 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     @Transactional(rollbackFor = Exception.class)
     public int releaseExpiredD2Lifecycles(LocalDateTime now) {
         LocalDateTime effectiveNow = now == null ? LocalDateTime.now(clock) : now;
+        var compliance = WithdrawalCompliancePolicy.require(growthRhythmFacade.snapshot());
         int released = 0;
-        for (String withdrawalNo : withdrawalRepository.findExpiredLifecycleNos(effectiveNow)) {
+        for (String withdrawalNo : withdrawalRepository.findExpiredLifecycleNos(
+                effectiveNow, compliance.enabled(), compliance.cooldownDays())) {
             if (releaseDueD2Lifecycle(
                     withdrawalNo, effectiveNow, "system:d2-scheduler", D2_SCHEDULED_EXPIRY, null)
                     == D2LifecycleReleaseResult.RELEASED) {
@@ -1149,11 +1160,18 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         WithdrawalOrderView order = withdrawalRepository.findByWithdrawalNo(withdrawalNo).orElse(null);
         if (order == null
                 || order.holdUntil() == null
-                || order.holdUntil().isAfter(effectiveNow)
                 || !Set.of(D2WithdrawalStateMachine.EXTENDED_HOLD, D2WithdrawalStateMachine.FROZEN)
                         .contains(D2WithdrawalStateMachine.canonical(order.status()))) {
             return D2LifecycleReleaseResult.NOT_DUE;
         }
+        boolean scopedH1Hold = WithdrawalCompliancePolicy.supports(order.chain())
+                && D2WithdrawalStateMachine.EXTENDED_HOLD.equals(D2WithdrawalStateMachine.canonical(order.status()))
+                && WithdrawalCompliancePolicy.h1Hold(order.lifecycleOwner(), order.previousStatus());
+        LocalDateTime effectiveHoldUntil = scopedH1Hold
+                ? WithdrawalCompliancePolicy.require(growthRhythmFacade.snapshot())
+                    .holdUntil(order.chain(), order.amount(), order.createdAt())
+                : order.holdUntil();
+        if (effectiveHoldUntil.isAfter(effectiveNow)) return D2LifecycleReleaseResult.NOT_DUE;
         if (isWithdrawalLockedByA2(order.withdrawalNo())) {
             return D2LifecycleReleaseResult.LOCKED;
         }
@@ -1173,6 +1191,13 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                     order.withdrawalNo(), order.status(), decision.status(), decision.reason(),
                     decision.nextReviewAt(), "K3_EXPIRY_DELAY", "K3_DELAY_ONCE",
                     D2WithdrawalStateMachine.REVIEW_PENDING);
+        } else if (scopedH1Hold && order.holdUntil().isAfter(effectiveNow)) {
+            // Only H1-owned USDT windows may end early after the switch or amount policy changes.
+            transitioned = withdrawalRepository.transitionStatusWithLifecycle(
+                    order.withdrawalNo(), order.status(), decision.status(),
+                    D2WithdrawalStateMachine.REVIEW_PASSED.equals(decision.status()) ? null : decision.reason(),
+                    D2WithdrawalStateMachine.REVIEW_PASSED.equals(decision.status()) ? effectiveNow : null,
+                    null, null, null);
         } else {
             transitioned = withdrawalRepository.releaseExpiredLifecycle(
                     order.withdrawalNo(), order.status(), decision.status(),
@@ -1196,6 +1221,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         detail.put("to", decision.status());
         detail.put("owner", trimToEmpty(order.lifecycleOwner()));
         detail.put("reviewAt", order.holdUntil());
+        detail.put("effectiveReviewAt", effectiveHoldUntil);
         detail.put("period", trimToEmpty(order.freezePeriod()));
         detail.put("cause", decision.reason());
         detail.put("trigger", canonicalTrigger);
@@ -1885,7 +1911,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
                     D2WithdrawalReviewThreshold.UNAVAILABLE, "withdraw.review_due", null);
         boolean zeroDayAutoReview = "H1_ZERO_DAY_AUTO_REVIEW".equals(order.lifecycleOwner());
-        if ((zeroDayAutoReview && rhythm.withdrawCooldownDays() != 0) || order.amount() == null
+        boolean scopedUsdt = WithdrawalCompliancePolicy.supports(order.chain());
+        if ((!scopedUsdt && zeroDayAutoReview && rhythm.withdrawCooldownDays() != 0) || order.amount() == null
                 || D2WithdrawalReviewThreshold.applies(threshold, order.amount()))
             return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
                     "WITHDRAWAL_AUTO_REVIEW_POLICY_CHANGED", "withdraw.review_due", null);
@@ -1932,6 +1959,10 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (!"LOW".equals(currentRisk.k4Priority())) {
             return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
                     "K4_FAST_TRACK_NO_LONGER_ELIGIBLE", "withdraw.review_due", null);
+        }
+        if (scopedUsdt && WithdrawalCompliancePolicy.require(rhythm).reviewRequired(order.chain())) {
+            return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
+                    WithdrawalCompliancePolicy.REVIEW_REQUIRED, "withdraw.review_due", null);
         }
         String gateReason = approvalBlockReason(order, withdrawalDailyLimitCount(), effectiveNow);
         if (gateReason != null) {
@@ -2129,7 +2160,16 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (withdrawGeoEmergencyBlocked() || withdrawGeoEndpointBlocked(order)) {
             return "WITHDRAWAL_GEO_BLOCKED";
         }
-        if (order.holdUntil() != null && order.holdUntil().isAfter(effectiveNow)) {
+        LocalDateTime holdUntil = order.holdUntil();
+        if (WithdrawalCompliancePolicy.supports(order.chain())) {
+            LocalDateTime complianceUntil = WithdrawalCompliancePolicy.require(growthRhythmFacade.snapshot())
+                    .holdUntil(order.chain(), order.amount(), order.createdAt());
+            boolean independentHold = StringUtils.hasText(order.lifecycleOwner())
+                    && !WithdrawalCompliancePolicy.h1Hold(order.lifecycleOwner(), order.previousStatus())
+                    && !order.lifecycleOwner().startsWith("H1_COMPLIANCE_APPROVED:");
+            if (!independentHold || holdUntil == null || complianceUntil.isAfter(holdUntil)) holdUntil = complianceUntil;
+        }
+        if (holdUntil != null && holdUntil.isAfter(effectiveNow)) {
             return "WITHDRAWAL_COOLDOWN_ACTIVE";
         }
         String coverageBlockReason = coverageBlockReason();
@@ -2289,6 +2329,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         response.put("cooldownDays", rhythm.withdrawCooldownDays());
         response.put("penaltyFeeRate", rhythm.withdrawPenaltyFeeRate().movePointLeft(2));
         response.put("complianceHoldEnabled", rhythm.complianceHoldEnabled());
+        response.put("complianceReviewThresholdUsdt", WithdrawalCompliancePolicy.REVIEW_THRESHOLD_USDT);
         response.put("currentPhase", rhythm.currentPhase());
         response.put("currentMonth", rhythm.currentMonth());
         response.put("coverageRatio", coverage.coverageRatio());
@@ -2304,7 +2345,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 Map.entry("payoutSlaHours", "d5"),
                 Map.entry("cooldownDays", "phase-h1"),
                 Map.entry("penaltyFeeRate", "phase-h1"),
-                Map.entry("complianceHoldEnabled", "phase-h1")));
+                Map.entry("complianceHoldEnabled", "phase-h1"),
+                Map.entry("complianceReviewThresholdUsdt", "compliance-rule")));
         return response;
     }
 

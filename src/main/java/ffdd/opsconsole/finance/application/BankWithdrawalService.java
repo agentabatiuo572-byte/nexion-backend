@@ -184,7 +184,7 @@ public class BankWithdrawalService {
         String snapshot = cipher.encrypt(cipher.decrypt(recipient.recipientCipher(), beneficiaryAad(userId, recipient.beneficiaryNo())), quoteAad(userId, quoteNo));
         Quote quote = new Quote(quoteNo, userId, recipient.beneficiaryNo(), recipient.version(), recipient.bankCode(), recipient.maskedAccount(),
                 snapshot, price.amount(), price.fee(), price.net(), price.rate(), price.vnd(),
-                Long.parseLong(config.get("version").toString()), policy.getData().get("policyVersion").toString(), now,
+                Long.parseLong(config.get("version").toString()), withdrawals.bankPolicyVersion(), now,
                 now.plusMinutes(Long.parseLong(config.get("quoteTtlMinWithdraw").toString())), null);
         if (bank.insertQuote(quote) != 1) throw error(409, "BANK_QUOTE_CONFLICT");
         return ApiResult.ok(quoteView(quote));

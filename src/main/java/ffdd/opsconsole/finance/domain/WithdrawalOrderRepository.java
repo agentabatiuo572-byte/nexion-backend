@@ -68,7 +68,7 @@ public interface WithdrawalOrderRepository {
         return 0;
     }
 
-    default List<String> findExpiredLifecycleNos(LocalDateTime now) {
+    default List<String> findExpiredLifecycleNos(LocalDateTime now, boolean complianceEnabled, int cooldownDays) {
         return List.of();
     }
 

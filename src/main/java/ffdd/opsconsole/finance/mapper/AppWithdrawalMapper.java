@@ -363,6 +363,44 @@ public interface AppWithdrawalMapper {
     Map<String, Object> userWithdrawal(@Param("userId") Long userId,
                                        @Param("withdrawalNo") String withdrawalNo);
 
+    /** Submission audit is immutable; do not reinterpret a historical order using today's H1 dials. */
+    @Select("""
+            <script>
+            SELECT snapshot.withdrawalNo,
+                   CASE WHEN JSON_EXTRACT(snapshot.detailJson,'$.compliance_review_required') IS NULL THEN NULL
+                        ELSE JSON_UNQUOTE(JSON_EXTRACT(snapshot.detailJson,'$.compliance_review_required'))='true'
+                        END complianceReviewRequired,
+                   CASE WHEN JSON_EXTRACT(snapshot.detailJson,'$.compliance_hold_applies') IS NULL THEN NULL
+                        ELSE JSON_UNQUOTE(JSON_EXTRACT(snapshot.detailJson,'$.compliance_hold_applies'))='true'
+                        END complianceHoldApplies,
+                   CAST(JSON_UNQUOTE(JSON_EXTRACT(snapshot.detailJson,'$.compliance_hold_days')) AS UNSIGNED) complianceHoldDays
+              FROM (
+                SELECT resource_id withdrawalNo,detail_json detailJson
+                  FROM nx_audit_log
+                 WHERE action='D2_WITHDRAWAL_SUBMITTED' AND resource_type='WITHDRAWAL'
+                   AND user_id=#{userId} AND result='SUCCESS' AND is_deleted=0
+                   AND resource_id IN
+                   <foreach collection='withdrawalNos' item='withdrawalNo' open='(' separator=',' close=')'>
+                     #{withdrawalNo}
+                   </foreach>
+                UNION ALL
+                SELECT JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) withdrawalNo,
+                       JSON_EXTRACT(cold_payload,'$.detail') detailJson
+                  FROM nx_audit_log_archive
+                 WHERE JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))='D2_WITHDRAWAL_SUBMITTED'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceType'))='WITHDRAWAL'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.userId'))=CAST(#{userId} AS CHAR)
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.result'))='SUCCESS'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) IN
+                   <foreach collection='withdrawalNos' item='withdrawalNo' open='(' separator=',' close=')'>
+                     #{withdrawalNo}
+                   </foreach>
+              ) snapshot
+            </script>
+            """)
+    List<WithdrawalComplianceSnapshot> withdrawalComplianceSnapshots(
+            @Param("userId") Long userId, @Param("withdrawalNos") List<String> withdrawalNos);
+
     @Select("""
             SELECT COALESCE((SELECT config_value FROM nx_config_item
                               WHERE config_key='growth.phase.current' AND status=1 AND is_deleted=0 LIMIT 1),'P1') phase,
@@ -380,6 +418,9 @@ public interface AppWithdrawalMapper {
 
     record WithdrawalAttemptRow(Long userId, String idempotencyKey, String requestHash,
                                 String status, String withdrawalNo) { }
+
+    record WithdrawalComplianceSnapshot(String withdrawalNo, Boolean complianceReviewRequired,
+                                        Boolean complianceHoldApplies, Integer complianceHoldDays) { }
 
     record WithdrawalWrite(
             Long userId, String withdrawalNo, String chain, BigDecimal amount, String targetAddress,

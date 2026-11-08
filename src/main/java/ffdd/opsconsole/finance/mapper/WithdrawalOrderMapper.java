@@ -605,16 +605,25 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
     int releaseExpiredHolds(@Param("now") LocalDateTime now);
 
     @Select("""
-            SELECT withdrawal_no
-              FROM nx_withdrawal_order
-             WHERE status IN ('EXTENDED_HOLD', 'FROZEN')
-               AND d2_hold_until IS NOT NULL
-               AND d2_hold_until <= #{now}
-               AND is_deleted = 0
-             ORDER BY d2_hold_until, id
+            SELECT withdrawal_no FROM (
+                SELECT withdrawal_no,id,
+                       CASE WHEN status='EXTENDED_HOLD' AND chain IN ('USDT-BEP20','USDT-ERC20')
+                                  AND ((d2_lifecycle_owner IN ('H1_PHASE_COOLDOWN','H1_ZERO_DAY_AUTO_REVIEW')
+                                        AND d2_previous_status='REVIEW_PASSED')
+                                       OR (d2_lifecycle_owner='H1_COMPLIANCE_HOLD' AND d2_previous_status='REVIEW_PENDING'))
+                            THEN TIMESTAMPADD(DAY,CASE WHEN #{complianceEnabled} AND amount>1000
+                                                       THEN #{cooldownDays} ELSE 0 END,created_at)
+                            ELSE d2_hold_until END effective_hold_until
+                  FROM nx_withdrawal_order
+                 WHERE status IN ('EXTENDED_HOLD','FROZEN') AND d2_hold_until IS NOT NULL AND is_deleted=0
+            ) lifecycle
+             WHERE effective_hold_until<=#{now}
+             ORDER BY effective_hold_until,id
              LIMIT 500
             """)
-    List<String> findExpiredLifecycleNos(@Param("now") LocalDateTime now);
+    List<String> findExpiredLifecycleNos(@Param("now") LocalDateTime now,
+                                        @Param("complianceEnabled") boolean complianceEnabled,
+                                        @Param("cooldownDays") int cooldownDays);
 
     @Update("""
             UPDATE nx_withdrawal_order
