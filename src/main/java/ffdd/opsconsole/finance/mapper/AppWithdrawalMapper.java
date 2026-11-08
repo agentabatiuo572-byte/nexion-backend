@@ -80,6 +80,15 @@ public interface AppWithdrawalMapper {
             SELECT withdrawal_no
               FROM nx_withdrawal_order
              WHERE user_id=#{userId} AND d2_idempotency_key=#{idempotencyKey} AND is_deleted=0
+             ORDER BY id ASC LIMIT 1
+            """)
+    String readWithdrawalNoByIdempotencyKey(@Param("userId") Long userId,
+                                           @Param("idempotencyKey") String idempotencyKey);
+
+    @Select("""
+            SELECT withdrawal_no
+              FROM nx_withdrawal_order
+             WHERE user_id=#{userId} AND d2_idempotency_key=#{idempotencyKey} AND is_deleted=0
              LIMIT 1 FOR UPDATE
             """)
     String findWithdrawalNoByIdempotencyKey(@Param("userId") Long userId,

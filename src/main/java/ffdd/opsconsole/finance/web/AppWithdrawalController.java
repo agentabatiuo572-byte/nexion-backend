@@ -63,6 +63,13 @@ public class AppWithdrawalController {
                         Boolean.TRUE.equals(request.useNexFeeOffset()), idempotencyKey);
     }
 
+    @GetMapping("/attempts/{idempotencyKey}")
+    public ApiResult<Map<String, Object>> readAttempt(
+            @PathVariable String idempotencyKey, Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? unauthorized() : service.readAttempt(userId, idempotencyKey);
+    }
+
     @PostMapping("/attempts/{idempotencyKey}/abandon")
     public ApiResult<Map<String, Object>> abandonAttempt(
             @PathVariable String idempotencyKey,
