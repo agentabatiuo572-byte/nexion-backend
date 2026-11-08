@@ -1268,20 +1268,16 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     }
 
     private ApiResult<Void> requireSessionRevokeAuthorization(
-            AdminAccountOverview.OperatorRecord actor,
-            AdminAccountOverview.OperatorRecord target) {
-        if (actor == null) {
-            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "FORCE_LOGOUT_ROLE_FORBIDDEN");
-        }
-        if (actor.id().equals(target.id())) {
-            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "FORCE_LOGOUT_SELF_FORBIDDEN");
-        }
-        if (!SESSION_REVOKE_ROLES.contains(actor.role())) {
-            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "FORCE_LOGOUT_ROLE_FORBIDDEN");
-        }
-        if ("super".equals(target.role())) {
-            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "FORCE_LOGOUT_SUPER_TARGET_FORBIDDEN");
-        }
+            AdminAccountOverview.OperatorRecord actor, AdminAccountOverview.OperatorRecord target) {
+        return requireSessionRevokeAuthorization(actor == null ? null : actor.id(), actor == null ? null : actor.role(),
+                target.id(), target.role());
+    }
+
+    private ApiResult<Void> requireSessionRevokeAuthorization(String actorId, String actorRole, String targetId, String targetRole) {
+        if (actorId == null) return ApiResult.fail(403, "FORCE_LOGOUT_ROLE_FORBIDDEN");
+        if (actorId.equals(targetId)) return ApiResult.fail(403, "FORCE_LOGOUT_SELF_FORBIDDEN");
+        if (!SESSION_REVOKE_ROLES.contains(actorRole)) return ApiResult.fail(403, "FORCE_LOGOUT_ROLE_FORBIDDEN");
+        if ("super".equals(targetRole)) return ApiResult.fail(403, "FORCE_LOGOUT_SUPER_TARGET_FORBIDDEN");
         return null;
     }
 
@@ -1308,11 +1304,11 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     private ApiResult<Void> requireSuperAuthorization(
             List<AdminAccountOverview.OperatorRecord> operators,
             String message) {
-        AdminAccountOverview.OperatorRecord actor = authenticatedOperator(operators).orElse(null);
-        if (actor != null && "super".equals(actor.role())) {
-            return null;
-        }
-        return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), message);
+        return requireSuperAuthorization(authenticatedOperator(operators).map(AdminAccountOverview.OperatorRecord::role).orElse(null), message);
+    }
+
+    private ApiResult<Void> requireSuperAuthorization(String actorRole, String message) {
+        return "super".equals(actorRole) ? null : ApiResult.fail(403, message);
     }
 
     private void persistAvatarGender(Long adminId,String gender) {
@@ -1637,6 +1633,36 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     @Override
     public String domain() {
         return "A";
+    }
+
+    private String authorizationRole(String accountId) {
+        Long id = parseAccountId(accountId).orElse(null);
+        AdminEntity admin = id == null ? null : adminMapper.selectById(id);
+        return admin == null || !Integer.valueOf(0).equals(admin.getIsDeleted()) ? null
+                : roleFromRelation(id).orElseGet(() -> defaultRole(admin));
+    }
+
+    @Override
+    public ApiResult<Void> validateReplayPermission(AuditReplayCommand cmd) {
+        String actorId = authenticatedAdminId().map(String::valueOf).orElse(null);
+        String actorRole = authorizationRole(actorId);
+        if ("a1_account_force_logout".equals(cmd.op())) {
+            String targetId = str(cmd.params() == null ? Map.of() : cmd.params(), "accountId");
+            String targetRole = authorizationRole(targetId);
+            if (targetRole == null) return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
+            var denied = requireSessionRevokeAuthorization(actorId, actorRole, targetId, targetRole);
+            return denied == null ? ApiResult.ok() : denied;
+        }
+        String reason = switch (cmd.op()) {
+            case "a1_account_create", "a1_account_change_role" -> "ROLE_ASSIGNMENT_FORBIDDEN";
+            case "a1_account_update_profile" -> "ACCOUNT_PROFILE_UPDATE_FORBIDDEN";
+            case "a1_account_status_update" -> "ACCOUNT_STATUS_FORBIDDEN";
+            case "a1_account_reset_2fa" -> "ACCOUNT_2FA_RESET_FORBIDDEN";
+            case "a1_security_baseline_update" -> "SECURITY_BASELINE_FORBIDDEN";
+            default -> null;
+        };
+        var denied = reason == null ? null : requireSuperAuthorization(actorRole, reason);
+        return denied == null ? ApiResult.ok() : denied;
     }
 
     @Override
