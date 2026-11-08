@@ -3,6 +3,7 @@ package ffdd.opsconsole.platform.dto;
 import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditStatsBucket;
 import ffdd.opsconsole.shared.audit.AuditStatsSummaryResponse;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 
@@ -49,12 +50,15 @@ public record AuditCenterOverview(
             FundEffect fundEffect,
             String refundOrderNo,
             boolean retiredOperation,
-            Map<String,Object> ambassadorMaterialProposal) {
+            Map<String,Object> ambassadorMaterialProposal,
+            BigDecimal originalAmountUsdt,
+            BigDecimal refundAmountUsdt) {
         public AuditOperationTicket withViewerMetadata(boolean ownedByViewer, String code, FundEffect effect,
                                                        String orderNo, boolean retired) {
             return new AuditOperationTicket(id, action, obj, beforeValue, afterValue, operator, operatorRole,
                     type, amplifies, sos, ts, ownedByViewer, roleGate, reason, status, phoneCalibrationProposal,
-                    coverageCheckOnApproval, code, effect, orderNo, retired, ambassadorMaterialProposal);
+                    coverageCheckOnApproval, code, effect, orderNo, retired, ambassadorMaterialProposal,
+                    originalAmountUsdt, refundAmountUsdt);
         }
     }
 

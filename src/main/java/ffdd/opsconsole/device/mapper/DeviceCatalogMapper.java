@@ -189,7 +189,11 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                 FLOOR(MOD(TIMESTAMPDIFF(MINUTE,o.created_at,NOW()),1440) / 60),'小时')
             END AS ageText,
             o.created_at AS orderedAt,
-            o.updated_at AS updatedAt
+            o.updated_at AS updatedAt,
+            COALESCE(o.refund_amount_usdt,(SELECT wb.amount FROM nx_wallet_bill wb
+              WHERE wb.user_id=o.user_id AND wb.deleted=0 AND wb.bill_no=CONCAT('E4-BILL-',o.order_no)
+                AND wb.type='ORDER_REFUND' AND wb.token='USDT' AND wb.direction='IN' AND wb.amount>0
+              ORDER BY wb.occurred_at DESC,wb.id DESC LIMIT 1)) AS refundAmountUsdt
             """;
 
     String GENERATION_GATE_COLUMNS = """
@@ -1656,6 +1660,9 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
 
     @Update("UPDATE nx_order SET refund_reason_code=#{refundReasonCode} WHERE order_no=#{orderNo} AND is_deleted=0")
     int updateOrderRefundReason(@Param("orderNo") String orderNo, @Param("refundReasonCode") String refundReasonCode);
+
+    @Update("UPDATE nx_order SET refund_amount_usdt=#{refundAmountUsdt} WHERE order_no=#{orderNo} AND is_deleted=0 AND order_status='REFUNDED'")
+    int updateOrderRefundAmount(@Param("orderNo") String orderNo, @Param("refundAmountUsdt") BigDecimal refundAmountUsdt);
 
     @Update("UPDATE nx_order SET close_reason_code=#{closeReasonCode} WHERE order_no=#{orderNo} AND is_deleted=0")
     int updateOrderCloseReason(@Param("orderNo") String orderNo, @Param("closeReasonCode") String closeReasonCode);

@@ -394,7 +394,9 @@ public class PromotionOrderService {
         Map<String,Object> order=db.order(orderNo,false);List<Map<String,Object>> rows=db.reservations(orderNo,true);if(rows.isEmpty())return;
         require("REFUNDED".equals(order.get("payment_status"))||"REFUNDED".equals(order.get("order_status")),"PROMOTION_REFUND_NOT_CONFIRMED");
         Map<String,Object> ledger=db.requiredRow("SELECT * FROM nx_wallet_ledger WHERE biz_no=? AND user_id=? AND biz_type='ORDER_REFUND' AND asset='USDT' AND direction='IN' AND status='SUCCESS'",refundLedgerBizNo,order.get("user_id"));
-        require(decimal(ledger.get("amount")).compareTo(decimal(order.get("amount_usdt")))==0,"PROMOTION_REFUND_LEDGER_MISMATCH");
+        BigDecimal actual=decimal(ledger.get("amount")),paid=decimal(order.get("amount_usdt"));
+        Object recorded=order.get("refund_amount_usdt");
+        require(actual.signum()>0&&actual.compareTo(paid)<=0&&actual.compareTo(recorded==null?paid:decimal(recorded))==0,"PROMOTION_REFUND_LEDGER_MISMATCH");
         String refundNo="E4:"+sha256(orderNo);
         List<Map<String,Object>> holds=db.list("SELECT * FROM nx_promotion_refund_hold WHERE order_no=? AND status IN ('HELD','OUTCOME_UNKNOWN','EXECUTED') ORDER BY refund_request_id FOR UPDATE",orderNo);
         if(holds.isEmpty())changed(db.write("INSERT INTO nx_promotion_refund_hold(refund_request_id,order_no,source_type,source_id,source_event_id,status,refund_no,refund_ledger_biz_no,evidence_json,reason) VALUES(?,?,'E4_REFUND',?,?,'EXECUTED',?,?,?,'Canonical E4 wallet refund confirmed')",

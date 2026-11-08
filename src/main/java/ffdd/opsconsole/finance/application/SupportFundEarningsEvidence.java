@@ -173,7 +173,7 @@ public class SupportFundEarningsEvidence {
             &&refund.kind()==ffdd.opsconsole.finance.facade.SupportPaymentFacts.Kind.DEVICE_PURCHASE_REFUND
             &&refund.customerId()==number(reward.path("customerId")) &&order.equals(refund.orderNo())
             &&text(source.path("factId")).equals(refund.originalFactId()) &&"USDT".equals(refund.currency())
-            &&decimal(source.path("amount")).compareTo(refund.amount())==0 &&refund.ledgerId()>0);
+            &&refund.amount().signum()>0 &&decimal(source.path("amount")).compareTo(refund.amount())>=0 &&refund.ledgerId()>0);
         require(("H2_TRIAL_REMAINDER".equals(type) &&"USDT".equals(asset) &&(claim+":REMAINDER").equals(text(reward.path("sourceRef"))))
             ||("H2_TRIAL_BONUS".equals(type) &&"UVT".equals(asset) &&(claim+":NEX").equals(text(reward.path("sourceRef")))));
         require(equal(reward.path("entryNo"),current.get("entryNo")) &&equal(reward.path("customerId"),current.get("userId"))

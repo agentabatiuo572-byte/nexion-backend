@@ -444,6 +444,13 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     }
 
     @Override
+    public void recordOrderRefundAmount(String orderNo, BigDecimal refundAmountUsdt) {
+        if (mapper.updateOrderRefundAmount(orderNo, refundAmountUsdt) != 1) {
+            throw new ffdd.opsconsole.shared.exception.BizException(409, "ORDER_REFUND_AMOUNT_CONFLICT");
+        }
+    }
+
+    @Override
     public void recordOrderCloseReason(String orderNo, String closeReasonCode) {
         mapper.updateOrderCloseReason(orderNo, closeReasonCode);
     }

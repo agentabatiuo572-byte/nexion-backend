@@ -14,5 +14,13 @@ public record DeviceOrderView(
         String dcLocation,
         String ageText,
         LocalDateTime orderedAt,
-        LocalDateTime updatedAt) {
+        LocalDateTime updatedAt,
+        BigDecimal refundAmountUsdt) {
+
+    public DeviceOrderView(String orderNo, String userNo, String skuId, String skuName, String skuSource,
+                           BigDecimal amount, String state, String dcLocation, String ageText,
+                           LocalDateTime orderedAt, LocalDateTime updatedAt) {
+        this(orderNo, userNo, skuId, skuName, skuSource, amount, state, dcLocation, ageText,
+                orderedAt, updatedAt, null);
+    }
 }
