@@ -1,8 +1,9 @@
 # H5 Lite independent TEST release
 
 2026-11-08. Approved scope: publish the existing `h5-lite` branch at
-`https://18.142.169.24/h5-lite/`. This document and candidate source do not claim
-installation, a Jenkins build, public deployment or business acceptance.
+`https://18.142.169.24/h5-lite/`. Record installation, a Jenkins build, public
+deployment and business acceptance separately; this procedure defines their
+requirements rather than serving as an acceptance receipt.
 
 | Component | Repository | Only branch | Jenkins job | Artifact | Loopback slots |
 | --- | --- | --- | --- | --- | --- |
@@ -104,8 +105,8 @@ After root review and commit, record the immutable full backend commit SHA and
 independently approved SHA256 of each new file, the change manifest, any one-time
 operator updater, and the staged host-specific runtime lock **outside** the
 downloaded content. Download only from that commit. Verify those pins before
-executing an updater. This uncommitted candidate has no approved immutable
-publication SHA yet; no placeholder SHA authorizes installation.
+executing an updater. Record that reviewed immutable publication SHA and the
+approved external pins before installation; a placeholder SHA never authorizes it.
 
 ## Narrow owner installation and recovery contract
 
@@ -225,8 +226,8 @@ all other identity checks remain part of the comparison.
 /usr/bin/python3 -I /mnt/test-scratch/uvel-tests/be27-lite-test-entry-20261108/update_h5lite_test.py /mnt/test-scratch/uvel-tests/be27-lite-test-entry-20261108/stage-REVIEW_ID NEW_LOCK_SHA256 NEW_RESOURCE_SHA256
 ```
 
-This entry is not ready to invoke until the exact staged source and lock hashes
-are frozen by independent review. On a write failure it restores original bytes
+Invoke this entry only after independent review freezes the exact staged source,
+lock hashes and immutable source commit. On a write failure it restores original bytes
 and modes from its root-only backup and removes only its empty new job/root;
 uncertain restore or CI/timer recovery leaves polling held and prints the backup
 path. An interrupted process requires that backup's exact path/identity/hash
@@ -237,7 +238,8 @@ Its manifest marks these `automatic_restore=false`: drift in those external
 files leaves polling/CI held for operator comparison with the saved originals;
 the updater never overwrites an unknown external change automatically.
 
-Candidate pins for independent review (no immutable publication commit yet):
+Artifact pins for independent operator verification (record the reviewed
+immutable source commit separately):
 
 | Artifact | SHA256 |
 | --- | --- |
