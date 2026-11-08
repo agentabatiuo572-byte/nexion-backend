@@ -343,7 +343,8 @@ public class AmbassadorMaterialService {
     }
     private Map<String,Object> reviewView(Review review) {
         Map<String,Object> result=new LinkedHashMap<>(); result.put("status",review==null?"PENDING":review.status());
-        result.put("reviewerLabel",review==null?null:review.reviewerLabel()); result.put("reviewedAt",review==null?null:review.reviewedAt());
+        result.put("reviewerLabel",review==null?null:review.reviewerLabel());
+        result.put("reviewedAt",review==null || review.reviewedAt()==null?null:review.reviewedAt().atZone(BusinessCalendar.STORAGE_ZONE).toInstant().toString());
         result.put("reason",review==null?null:review.reason()); result.put("verifiedAttendees",review==null?null:review.verifiedAttendees());
         result.put("recognizedBudgetUsdt",review==null?null:review.recognizedBudgetUsdt()); return result;
     }
