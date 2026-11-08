@@ -16,6 +16,7 @@ import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.shared.security.SuperAdminAuthorization;
 import java.time.Clock;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.Map;
 import java.util.List;
 import java.util.Set;
@@ -116,7 +117,7 @@ public class AdminCommandInvestigationService {
         entry.setOriginalTargets(original.getOriginTargets());
         entry.setOriginalAdminId(original.getOriginAdminId());
         entry.setInvestigatorId(actor);
-        entry.setInvestigatedAt(LocalDateTime.now(clock));
+        entry.setInvestigatedAt(LocalDateTime.now(clock).truncatedTo(ChronoUnit.SECONDS));
         entry.setRequestedConclusion(request.conclusion());
         entry.setEvidenceReference(request.evidenceReference().trim());
         entry.setConclusion("STILL_UNKNOWN");
