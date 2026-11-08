@@ -72,9 +72,6 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/devices")
 @RequiredArgsConstructor
 public class OpsDeviceController {
-    private static final String DIRECT_E4_REFUND = "hasAuthority('device_e4_order_refund')"
-            + " && (@superAdminAuthorization.isSuperAdmin(authentication)"
-            + " || @adminPermissionCache.hasGrantOutsideRole(authentication.name, 'device_e4_order_refund', 'FINANCE_LEAD'))";
     private final OpsDeviceService deviceService;
     @Autowired
     private PendingApprovalProjection pendingApprovals;
@@ -328,21 +325,21 @@ public class OpsDeviceController {
     public record PendingOrderDetailView(@JsonUnwrapped DeviceOrderDetailView detail, PendingApproval pendingApproval) {}
 
     @PatchMapping("/orders/{orderNo}/refund")
-    @PreAuthorize(DIRECT_E4_REFUND)
+    @PreAuthorize("hasAuthority('device_e4_order_refund')")
     public ApiResult<DeviceOrderView> refundOrder(
             @PathVariable String orderNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody DeviceOrderActionRequest request) {
-        return deviceService.refundOrder(orderNo, idempotencyKey, request);
+        return ApiResult.fail(409, "E4_REFUND_APPROVAL_REQUIRED");
     }
 
     @PostMapping("/orders/{orderNo}/refund")
-    @PreAuthorize(DIRECT_E4_REFUND)
+    @PreAuthorize("hasAuthority('device_e4_order_refund')")
     public ApiResult<DeviceOrderView> refundOrderPost(
             @PathVariable String orderNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody DeviceOrderActionRequest request) {
-        return deviceService.refundOrder(orderNo, idempotencyKey, request);
+        return ApiResult.fail(409, "E4_REFUND_APPROVAL_REQUIRED");
     }
 
     @PatchMapping("/orders/{orderNo}/cancel")

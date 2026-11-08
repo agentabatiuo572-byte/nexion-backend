@@ -503,7 +503,7 @@ WHERE r.role_code='CONTENT'
   AND p.permission_code IN ('service_m5_read','service_m5_write')
   AND p.status=1 AND p.is_deleted=0;
 
--- 内置 SUPPORT 仅客服域；全局知识库/话术配置写入不随客服角色授予。
+-- SUPPORT retains only service permissions plus the scoped single-user ledger read.
 -- 重跑 seed 收紧旧默认关系；自定义角色与其它角色的显式授权保持原集合。
 DELETE rp FROM nx_admin_role_permission rp
 JOIN nx_admin_role r ON r.id=rp.role_id AND r.role_code='SUPPORT';
@@ -511,7 +511,8 @@ INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
 WHERE r.role_code='SUPPORT'
   AND p.permission_code IN ('service_m1_read','service_m1_write','service_m2_read','service_m2_write',
-                            'service_m3_read','service_m3_write','service_m4_read','service_m5_read')
+                            'service_m3_read','service_m3_write','service_m4_read','service_m5_read',
+                            'finance_d4_user_read')
   AND p.status=1 AND p.is_deleted=0;
 
 -- 2026-07-25 高保真真实接口同步：新增高敏权限始终显式授权，避免域前缀通配扩大权限。
@@ -571,3 +572,22 @@ JOIN nx_admin_permission inherited ON inherited.id=rp.permission_id
       'overview_b4_export'
   )
 WHERE lead_role.role_code='FINANCE_LEAD' AND lead_role.is_deleted=0;
+
+-- B38 exact deltas; restore soft-deleted bindings on every seed run.
+UPDATE nx_admin_role_permission rp
+JOIN nx_admin_role r ON r.id=rp.role_id
+JOIN nx_admin_permission p ON p.id=rp.permission_id
+SET rp.is_deleted=1
+WHERE (r.role_code='FINANCE_LEAD' AND p.permission_code='platform_a2_operation_approve')
+   OR (r.role_code='GROWTH' AND p.permission_code IN ('device_e4_order_refund','finance_d6_read'))
+   OR (r.role_code='RISK' AND p.permission_code IN ('content_i5_write','content_i5_disclosure_publish','content_i5_gate_adjust'));
+
+INSERT INTO nx_admin_role_permission (role_id,permission_id,is_deleted)
+SELECT r.id,p.id,0 FROM nx_admin_role r JOIN nx_admin_permission p
+WHERE r.status=1 AND r.is_deleted=0 AND p.status=1 AND p.is_deleted=0
+  AND ((r.role_code='FINANCE_LEAD' AND p.permission_code='platform_a2_read')
+    OR (r.role_code IN ('SUPER_ADMIN','FINANCE_LEAD') AND p.permission_code IN ('device_e4_read','device_e4_order_refund'))
+    OR (r.role_code='SUPPORT' AND p.permission_code='finance_d4_user_read')
+    OR (r.role_code='RISK' AND p.permission_code='content_i5_read')
+    OR (r.role_code IN ('SUPER_ADMIN','FINANCE','FINANCE_LEAD','RISK','AUDITOR') AND p.permission_code='finance_d6_read'))
+ON DUPLICATE KEY UPDATE is_deleted=0, updated_at=NOW();

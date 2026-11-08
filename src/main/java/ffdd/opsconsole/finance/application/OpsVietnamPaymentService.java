@@ -10,6 +10,7 @@ import ffdd.opsconsole.finance.dto.VietQrReconciliationCommandRequest;
 import ffdd.opsconsole.finance.dto.VietQrReceiptRegistrationRequest;
 import ffdd.opsconsole.finance.mapper.AppVietQrIntentMapper;
 import ffdd.opsconsole.finance.mapper.VietnamPaymentMapper;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -49,6 +50,7 @@ public class OpsVietnamPaymentService {
     private final AppVietQrIntentMapper appIntentMapper;
     private final EventOutboxService outboxService;
     private final VietQrReceiptEvidenceService receiptEvidenceService;
+    private final PayoutVndConfigService payoutVnd;
     private final Clock clock;
 
     @Transactional
@@ -145,7 +147,36 @@ public class OpsVietnamPaymentService {
         Map<String, Object> config = requiredMap(mapper.findFxQuoteConfig(), "FX_QUOTE_CONFIG_UNAVAILABLE");
         Map<String, Object> response = fxSnapshot(config);
         response.put("history", safeList(mapper.listFxQuoteHistory()));
+        Map<String, Object> approval = mapper.findLatestFxApproval();
+        if (approval != null) approval.put("applied", "approved".equalsIgnoreCase(String.valueOf(approval.get("status"))));
+        response.put("approval", approval);
         return ApiResult.ok(response);
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> previewFxQuote(FxQuoteUpdateRequest request) {
+        validateMutation("preview", request == null ? null : request.expectedVersion(),
+                request == null ? null : request.reason());
+        validateFx(request);
+        Map<String, Object> before = requiredMap(mapper.findFxQuoteConfig(), "FX_QUOTE_CONFIG_UNAVAILABLE");
+        if (longValue(before.get("version")) != request.expectedVersion()) conflict("FX_QUOTE_VERSION_CONFLICT");
+        boolean baseIncrease = decimal(before.get("baseRateVndPerUsdt")).compareTo(request.baseRateVndPerUsdt()) < 0;
+        boolean lowerQuote = VietnamPaymentPolicy.quoteRate(decimal(before.get("baseRateVndPerUsdt")),
+                decimal(before.get("buySpreadPct"))).compareTo(VietnamPaymentPolicy.quoteRate(
+                        request.baseRateVndPerUsdt(), request.buySpreadPct())) > 0;
+        if (!baseIncrease && !lowerQuote) return ApiResult.fail(422, "D6_FX_QUOTE_NOT_APPROVAL_DIRECTION");
+        if (baseIncrease && !payoutVnd.coverageHealthy()) return ApiResult.fail(409, "D6_TREASURY_COVERAGE_BLOCKED");
+        Map<String, Object> next = new LinkedHashMap<>();
+        next.put("version", request.expectedVersion() + 1);
+        next.put("baseRateVndPerUsdt", request.baseRateVndPerUsdt());
+        next.put("buySpreadPct", request.buySpreadPct());
+        next.put("lockWindowMinutes", request.lockWindowMinutes());
+        return ApiResult.ok(Map.of(
+                "before", fxAuditValues(before).toString(), "after", fxAuditValues(next).toString(),
+                "current", fxSnapshot(before), "proposed", fxSnapshot(next),
+                "approvalRequired", true, "baseRateIncrease", baseIncrease,
+                "rechargeQuoteDecrease", lowerQuote, "fundingCheckRequired", baseIncrease,
+                "fundingCheckPassed", true));
     }
 
     @Transactional
@@ -168,6 +199,18 @@ public class OpsVietnamPaymentService {
                                     .compareTo(request.buySpreadPct()) == 0
                             && intValue(before.get("lockWindowMinutes")) == request.lockWindowMinutes()) {
                         throw new BizException(422, "FX_QUOTE_NO_CHANGES");
+                    }
+                    boolean baseIncrease = decimal(before.get("baseRateVndPerUsdt")).compareTo(request.baseRateVndPerUsdt()) < 0;
+                    boolean lowerQuote = VietnamPaymentPolicy.quoteRate(decimal(before.get("baseRateVndPerUsdt")),
+                            decimal(before.get("buySpreadPct"))).compareTo(VietnamPaymentPolicy.quoteRate(
+                                    request.baseRateVndPerUsdt(), request.buySpreadPct())) > 0;
+                    if (baseIncrease || lowerQuote) {
+                        if (!A2ReplayContext.isReplaying() || A2ReplayContext.operationId() == null) {
+                            throw new BizException(409, "D6_FX_QUOTE_APPROVAL_REQUIRED");
+                        }
+                        if (baseIncrease && !payoutVnd.coverageHealthy()) {
+                            throw new BizException(409, "D6_TREASURY_COVERAGE_BLOCKED");
+                        }
                     }
                     if (mapper.updateFxQuoteConfig(
                             request.baseRateVndPerUsdt().setScale(0, RoundingMode.UNNECESSARY),
@@ -200,6 +243,8 @@ public class OpsVietnamPaymentService {
                             "operator", actor));
                     Map<String, Object> response = fxSnapshot(updated);
                     response.put("history", safeList(mapper.listFxQuoteHistory()));
+                    response.put("applied", true);
+                    response.put("operationId", A2ReplayContext.operationId());
                     return ApiResult.ok(response);
                 });
         return result;
@@ -232,6 +277,7 @@ public class OpsVietnamPaymentService {
                 BigDecimal.valueOf(35_000), "FX_BASE_RATE_OUT_OF_RANGE");
         requireRange(request.buySpreadPct(), BigDecimal.ZERO, BigDecimal.valueOf(3),
                 "FX_SPREAD_OUT_OF_RANGE");
+        if (request.buySpreadPct().stripTrailingZeros().scale() > 2) validation("FX_SPREAD_OUT_OF_RANGE");
         requireIntRange(request.lockWindowMinutes(), 5, 120, "FX_LOCK_WINDOW_OUT_OF_RANGE");
     }
 
