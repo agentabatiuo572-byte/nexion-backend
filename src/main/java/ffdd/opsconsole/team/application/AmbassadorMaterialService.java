@@ -23,6 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.*;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.env.Environment;
@@ -118,7 +119,7 @@ public class AmbassadorMaterialService {
                 || request.attachments()==null || request.attachments().isEmpty() || request.attachments().size()>12
                 || request.statement()==null || request.statement().isBlank() || request.statement().length()>4000)
             throw invalid("AMBASSADOR_MATERIAL_SUBMISSION_INVALID");
-        return (ApiResult<Map<String,Object>>) idempotency.executeRetained("F4_MATERIAL_SUBMIT:"+user+":"+id,key,hash(encode(request)),ApiResult.class,()->{
+        return normalizeReviewTimes((ApiResult<Map<String,Object>>) idempotency.executeRetained("F4_MATERIAL_SUBMIT:"+user+":"+id,key,hash(encode(request)),ApiResult.class,()->{
             var app=owned(user,id,true); pending(app);
             var current=mapper.current(id); long revision=current==null?0:current.revision();
             if(request.expectedMaterialRevision()!=revision) throw new BizException(409,"MATERIAL_REVISION_STALE");
@@ -148,7 +149,7 @@ public class AmbassadorMaterialService {
             auditRequired("F4_AMBASSADOR_MATERIAL_SUBMITTED",app,Map.of("materialRevision",revision+1,"previousRevision",revision,
                     "bucket",bucket,"budgetUsdt",budget,"idempotencyKey",key),"USER");
             return ApiResult.ok(packet(required(id,false),null));
-        });
+        }));
     }
 
     @SuppressWarnings("unchecked")
@@ -160,7 +161,7 @@ public class AmbassadorMaterialService {
             throw invalid("AMBASSADOR_MATERIAL_REVIEW_INVALID");
         String authority="BUSINESS".equals(request.stage())?BUSINESS:FINANCE;
         long admin=requireAdmin(authority);
-        return (ApiResult<Map<String,Object>>) idempotency.executeRetained("F4_MATERIAL_REVIEW:"+admin+":"+id,key,hash(encode(request)),ApiResult.class,()->{
+        return normalizeReviewTimes((ApiResult<Map<String,Object>>) idempotency.executeRetained("F4_MATERIAL_REVIEW:"+admin+":"+id,key,hash(encode(request)),ApiResult.class,()->{
             requireAdmin(authority);
             var app=required(id,true); pending(app);
             var current=mapper.current(id);
@@ -187,7 +188,7 @@ public class AmbassadorMaterialService {
             detail.put("recognizedBudgetUsdt",request.recognizedBudgetUsdt()); detail.put("missingKinds",requestedMissing); detail.put("idempotencyKey",key);
             auditRequired("F4_AMBASSADOR_MATERIAL_REVIEWED",app,detail,"ADMIN");
             return ApiResult.ok(packet(app,admin));
-        });
+        }));
     }
 
     /** Called inside the existing final status transaction before its UPDATE and budget INSERT. */
@@ -347,6 +348,19 @@ public class AmbassadorMaterialService {
         result.put("reviewedAt",review==null || review.reviewedAt()==null?null:review.reviewedAt().atZone(BusinessCalendar.STORAGE_ZONE).toInstant().toString());
         result.put("reason",review==null?null:review.reason()); result.put("verifiedAttendees",review==null?null:review.verifiedAttendees());
         result.put("recognizedBudgetUsdt",review==null?null:review.recognizedBudgetUsdt()); return result;
+    }
+    @SuppressWarnings("unchecked")
+    private ApiResult<Map<String,Object>> normalizeReviewTimes(ApiResult<Map<String,Object>> response) {
+        var packet=response.getData();
+        List<Map<String,Object>> reviews=new ArrayList<>((List<Map<String,Object>>)packet.get("reviewHistory"));
+        reviews.add((Map<String,Object>)packet.get("businessReview"));
+        reviews.add((Map<String,Object>)packet.get("financeReview"));
+        for(var review:reviews) {
+            String value=(String)review.get("reviewedAt");
+            if(value!=null && !value.endsWith("Z"))
+                review.put("reviewedAt",LocalDateTime.parse(value.replace(' ','T')).atZone(BusinessCalendar.STORAGE_ZONE).toInstant().toString());
+        }
+        return response;
     }
     private void auditRequired(String action,Application app,Map<String,Object> detail,String subject) {
         audit.recordRequired(AuditLogWriteRequest.builder().action(action).resourceType("AMBASSADOR_APPLICATION").resourceId(String.valueOf(app.id()))
