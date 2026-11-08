@@ -29,9 +29,9 @@ public class SupportFundDeviceEvidence {
         JsonNode proof=ffdd.opsconsole.common.domain.LegacyUvtProof.current(originalProof);
         require("SUPPORT_DEVICE_EARNING".equals(op.get("businessType"))&&"CREDIT".equals(op.get("phase"))&&"PRODUCTION".equals(op.get("sourceEnvironment"))&&"nx_compute_receipt".equals(op.get("sourceTable")));
         String no=text(op.get("sourceKey"));long id=number(op.get("id"));require(id>0&&key(no).equals(op.get("operationKey"))&&number(one(input.operations(),"operationKey",key(no)).get("id"))==id);
-        keys(source,Set.of("schemaVersion","receipt","tasks","ledgers","earningEvents"));keys(proof,Set.of("schemaVersion","walletStages","eventIds"));require(Set.of("SUPPORT_DEVICE_EARNING_V1","SUPPORT_DEVICE_EARNING_V2").contains(text(source.path("schemaVersion")))&&text(source.path("schemaVersion")).equals(text(proof.path("schemaVersion"))));
+        keys(source,Set.of("schemaVersion","receipt","tasks","ledgers","earningEvents"));keys(proof,Set.of("schemaVersion","walletStages","eventIds"));require(Set.of("SUPPORT_DEVICE_EARNING_V1","SUPPORT_DEVICE_EARNING_V2","SUPPORT_DEVICE_EARNING_V3").contains(text(source.path("schemaVersion")))&&text(source.path("schemaVersion")).equals(text(proof.path("schemaVersion"))));
         require(equal(codec.readCurrentProof(text(op.get("sourceSnapshotJson"))),source)&&equal(codec.readCurrentProof(text(op.get("sourceProofJson"))),proof));
-        var originals=source(input.sources(),no);require((originals.simulation==null?"SUPPORT_DEVICE_EARNING_V1":"SUPPORT_DEVICE_EARNING_V2").equals(text(source.path("schemaVersion")))&&equal(source.path("receipt"),originals.receipt)&&equal(source.path("tasks"),List.of(originals.task))&&equal(source.path("ledgers"),originals.ledgers)&&equal(source.path("earningEvents"),originals.earnings));
+        var originals=source(input.sources(),no);require((originals.simulation==null?"SUPPORT_DEVICE_EARNING_V1":originals.simulation.targetSnapshotJson()==null?"SUPPORT_DEVICE_EARNING_V2":"SUPPORT_DEVICE_EARNING_V3").equals(text(source.path("schemaVersion")))&&equal(source.path("receipt"),originals.receipt)&&equal(source.path("tasks"),List.of(originals.task))&&equal(source.path("ledgers"),originals.ledgers)&&equal(source.path("earningEvents"),originals.earnings));
         var completed=time(originals.receipt.get("completedAt"));stored(time(originals.task.get("completedAt")),completed,"nx_compute_task.completed_at",input);
         if(originals.simulation==null)stored(time(originals.task.get("proofConsumedAt")),completed,"nx_compute_task.proof_consumed_at",input);
         var posted=originals.simulation==null?completed:originals.simulation.postedAt();
@@ -111,8 +111,18 @@ public class SupportFundDeviceEvidence {
             &&simulation.walletId()>0&&text(simulation.walletIncarnation()).matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
             &&Set.of("USDT","UVT").contains(simulation.asset()));
         var base=money(simulation.baseReward());var reward=money(simulation.rewardAmount());var frozenDaily=money(simulation.cloudDailyNex());
-        require(base.signum()>=0&&reward.signum()>=0&&frozenDaily.signum()>=0&&simulation.e3Multiplier().signum()>=0
-            &&base.multiply(simulation.e3Multiplier()).setScale(6,java.math.RoundingMode.HALF_UP).compareTo(reward)==0);
+        require(base.signum()>=0&&reward.signum()>=0&&frozenDaily.signum()>=0&&simulation.e3Multiplier().signum()>=0);
+        if(simulation.targetSnapshotJson()==null) {
+            require(simulation.targetCycleStart()==null && base.multiply(simulation.e3Multiplier()).setScale(6,java.math.RoundingMode.HALF_UP).compareTo(reward)==0);
+        } else {
+            var snapshot=targetSnapshot(simulation.targetSnapshotJson());
+            require("USDT".equals(simulation.asset()) && base.signum()>0 && simulation.durationSeconds()<=3600
+                &&snapshot.cycleStart().equals(simulation.targetCycleStart()) && !simulation.dueAt().isBefore(snapshot.cycleStart())
+                &&simulation.dueAt().isBefore(snapshot.cycleEnd()) && snapshot.baseReward().compareTo(base)==0
+                &&snapshot.durationSeconds()==simulation.durationSeconds() && snapshot.reward().compareTo(reward)==0
+                &&snapshot.capacityPct().movePointLeft(2).compareTo(simulation.e3Multiplier())==0
+                &&ffdd.opsconsole.device.application.DeviceMonthlyTargetPacing.recompute(snapshot).compareTo(reward)==0);
+        }
         var usd=money(r.get("rewardUsdt"));var nex=money(r.get("rewardNex"));
         var baseNex="UVT".equals(simulation.asset())?reward:BigDecimal.ZERO;var dailyNex=nex.subtract(baseNex);
         require(usd.signum()>=0&&nex.signum()>=0&&usd.compareTo("USDT".equals(simulation.asset())?reward:BigDecimal.ZERO)==0
@@ -145,6 +155,10 @@ public class SupportFundDeviceEvidence {
             if(amount.signum()>0)events.add(new Event(key(no)+":"+("USDT".equals(asset)?"USDT":"NEX"),Action.EARNINGS,null,new Account(customer,asset,"available"),null,amount,null));
         }
         return new Original(r,t,ledgers,earnings,List.copyOf(events),simulation);
+    }
+    private ffdd.opsconsole.device.application.DeviceMonthlyTargetPacing.Snapshot targetSnapshot(String value) {
+        try {return json.readValue(value,ffdd.opsconsole.device.application.DeviceMonthlyTargetPacing.Snapshot.class);}
+        catch(com.fasterxml.jackson.core.JsonProcessingException invalid){throw failure();}
     }
     private void wallet(JsonNode w,Map<String,Object> raw,String side,String incarnation,long revision){keys(w,Set.of("id","customerId","incarnation","revision","version","usdtAvailable","nexAvailable","cregisRiskHeld","pendingWithdraw","sandbox","deleted","createdAt"));require(incarnation.equals(text(w.path("incarnation")))&&number(w.path("revision"))==revision);
         for(var pair:Map.of("id","Id","customerId","UserId","version","Version","usdtAvailable","UsdtAvailable","nexAvailable","NexAvailable","cregisRiskHeld","CregisRiskHeld","pendingWithdraw","PendingWithdraw","createdAt","CreatedAt").entrySet())require(equal(w.path(pair.getKey()),raw.get(side+pair.getValue())));require(zero(w.path("sandbox"))&&zero(w.path("deleted"))&&zero(raw.get(side+"Sandbox"))&&zero(raw.get(side+"IsDeleted")));}

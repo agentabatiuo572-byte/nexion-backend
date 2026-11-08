@@ -1289,6 +1289,8 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS WHERE C
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS nx_product (
+  monthly_target_usdt DECIMAL(12,2) NULL,
+  monthly_target_band_pct DECIMAL(4,1) NULL,
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   product_no VARCHAR(64) NOT NULL,
   name VARCHAR(128) NOT NULL,
@@ -1321,8 +1323,8 @@ CREATE TABLE IF NOT EXISTS nx_product (
   trust_json TEXT NULL,
   faq_json TEXT NULL,
   phone_compare_json TEXT NULL,
-  share_yield_min DECIMAL(10,4) NULL,
-  share_yield_max DECIMAL(10,4) NULL,
+  share_yield_min DECIMAL(24,4) NULL,
+  share_yield_max DECIMAL(24,4) NULL,
   superseded_by_product_no VARCHAR(64) NULL,
   unlock_phase VARCHAR(32) NULL,
   sold_count INT NOT NULL DEFAULT 0,
@@ -1412,11 +1414,11 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'share_yield_min') = 0,
-  'ALTER TABLE nx_product ADD COLUMN share_yield_min DECIMAL(10,4) NULL AFTER phone_compare_json',
+  'ALTER TABLE nx_product ADD COLUMN share_yield_min DECIMAL(24,4) NULL AFTER phone_compare_json',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'share_yield_max') = 0,
-  'ALTER TABLE nx_product ADD COLUMN share_yield_max DECIMAL(10,4) NULL AFTER share_yield_min',
+  'ALTER TABLE nx_product ADD COLUMN share_yield_max DECIMAL(24,4) NULL AFTER share_yield_min',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'superseded_by_product_no') = 0,
@@ -3315,6 +3317,8 @@ ON DUPLICATE KEY UPDATE
   status = IF(is_deleted = 0 AND (status IS NULL OR TRIM(status)=''), VALUES(status), status);
 
 CREATE TABLE IF NOT EXISTS nx_admin_device_sku (
+  monthly_target_usdt DECIMAL(12,2) NULL,
+  monthly_target_band_pct DECIMAL(4,1) NULL,
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   sku_id VARCHAR(64) NOT NULL,
   name VARCHAR(128) NOT NULL,
@@ -3331,10 +3335,10 @@ CREATE TABLE IF NOT EXISTS nx_admin_device_sku (
   phone_daily_earn DECIMAL(18,6) NULL,
   phone_daily_earn_nex DECIMAL(18,6) NULL,
   price DECIMAL(18,4) NOT NULL DEFAULT 0,
-  daily_earn DECIMAL(18,4) NOT NULL DEFAULT 0,
+  daily_earn DECIMAL(18,6) NOT NULL DEFAULT 0,
   daily_earn_nex DECIMAL(18,4) NOT NULL DEFAULT 0,
-  share_yield_min DECIMAL(9,4) NULL,
-  share_yield_max DECIMAL(9,4) NULL,
+  share_yield_min DECIMAL(24,4) NULL,
+  share_yield_max DECIMAL(24,4) NULL,
   base_rate VARCHAR(128) NULL,
   sold BIGINT NULL,
   stock_text VARCHAR(32) NOT NULL DEFAULT '0',
@@ -6554,6 +6558,8 @@ CREATE TABLE IF NOT EXISTS nx_behavior_sandbox_fact (
 -- Commerce callback state is isolated; money movements reuse the authoritative
 -- nx_funds_sandbox_wallet and nx_funds_sandbox_ledger tables above.
 CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_catalog (
+  monthly_target_usdt DECIMAL(12,2) NULL,
+  monthly_target_band_pct DECIMAL(4,1) NULL,
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   product_id BIGINT NOT NULL,
   product_no VARCHAR(96) NOT NULL,
@@ -7559,6 +7565,8 @@ CREATE TABLE IF NOT EXISTS nx_sim_task_type_version (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS nx_sim_product_task_policy_version (
+  monthly_target_usdt DECIMAL(12,2) NULL,
+  monthly_target_band_pct DECIMAL(4,1) NULL,
   product_key VARCHAR(64) NOT NULL,
   version BIGINT NOT NULL,
   effective_at DATETIME(6) NOT NULL,
@@ -7599,6 +7607,8 @@ CREATE TABLE IF NOT EXISTS nx_simulated_device_runtime (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS nx_simulated_task (
+  target_cycle_start DATETIME(6) NULL,
+  target_snapshot_json JSON NULL,
   task_no VARCHAR(64) NOT NULL PRIMARY KEY,
   receipt_no VARCHAR(64) NOT NULL,
   user_id BIGINT NOT NULL,
@@ -7640,4 +7650,28 @@ CREATE TABLE IF NOT EXISTS nx_simulated_task (
   CONSTRAINT chk_simulated_asset CHECK(asset IN ('USDT','UVT')),
   CONSTRAINT chk_simulated_reward CHECK(base_reward>=0 AND reward_amount>=0),
   CONSTRAINT chk_simulated_status CHECK(status IN ('RUNNING','COMPLETED','CANCELLED'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS nx_sim_device_target_cycle (
+  user_device_id BIGINT NOT NULL,
+  cycle_start DATETIME(6) NOT NULL,
+  cycle_end DATETIME(6) NOT NULL,
+  cycle_index INT NOT NULL,
+  user_id BIGINT NOT NULL,
+  instance_no VARCHAR(96) NOT NULL,
+  algorithm VARCHAR(32) NOT NULL,
+  u DECIMAL(30,24) NOT NULL,
+  weights_json JSON NOT NULL,
+  p DECIMAL(50,24) NOT NULL DEFAULT 0,
+  lo DECIMAL(50,24) NOT NULL DEFAULT 0,
+  hi DECIMAL(50,24) NOT NULL DEFAULT 0,
+  allocated_usdt DECIMAL(24,6) NOT NULL DEFAULT 0,
+  credited_usdt DECIMAL(24,6) NOT NULL DEFAULT 0,
+  first_product_version BIGINT NOT NULL,
+  first_e3_version BIGINT NOT NULL,
+  first_monthly_target_usdt DECIMAL(12,2) NOT NULL,
+  first_monthly_target_band_pct DECIMAL(4,1) NOT NULL,
+  first_capacity_pct DECIMAL(18,6) NOT NULL,
+  config_changed TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY(user_device_id,cycle_start)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

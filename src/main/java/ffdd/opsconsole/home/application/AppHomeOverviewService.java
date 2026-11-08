@@ -73,6 +73,7 @@ public class AppHomeOverviewService {
     private final HomePurchaseEligibilityProbe purchaseEligibilityProbe;
     private final HomeSharedSnapshotCache sharedSnapshotCache;
     private final Clock clock;
+    private final ffdd.opsconsole.device.application.DeviceMonthlyTargetReadService monthlyTargets;
     private final Environment runtimeEnvironment;
 
     @Transactional(readOnly = true)
@@ -142,7 +143,7 @@ public class AppHomeOverviewService {
                     safe(mapper.marketTasks()), safe(sharedSnapshot == null
                             ? mapper.marketTaskPriceHistory() : sharedSnapshot.marketTaskPriceHistory()), marketProducts));
             result.put("doTheMath", doTheMath(
-                    userId, mapper.highestActiveDevice(userId, accountSandbox), marketProducts));
+                    userId, highestCurrentDevice(userId, accountSandbox), marketProducts));
             result.put("weeklyPromo", promo());
             AppHomeOverviewMapper.PaidSummary paid = mapper.cumulativePaid(userId, accountSandbox);
             Long activeDevices = mapper.activeDevices(userId, accountSandbox);
@@ -276,6 +277,16 @@ public class AppHomeOverviewService {
             }
         }
         return linked("workloads", workloads, "deviceRankings", rankings);
+    }
+
+    private OwnedDeviceRow highestCurrentDevice(Long userId,boolean sandbox) {
+        var candidates=mapper.activeDeviceCandidates(userId,sandbox);
+        var current=monthlyTargets.projections(candidates.stream().map(OwnedDeviceRow::id).toList());
+        return candidates.stream().map(d->{
+            var p=current.get(d.id());
+            return p==null || p.target()==null ? d : new OwnedDeviceRow(d.name(),d.productCode(),d.productTier(),d.deviceType(),p.daily(),d.id());
+        }).filter(d->d.dailyUsdt()!=null && d.dailyUsdt().signum()>0)
+            .max(java.util.Comparator.comparing(OwnedDeviceRow::dailyUsdt).thenComparing(d->-d.id())).orElse(null);
     }
 
     private Map<String, Object> doTheMath(Long userId, OwnedDeviceRow base, List<MarketProductRow> products) {

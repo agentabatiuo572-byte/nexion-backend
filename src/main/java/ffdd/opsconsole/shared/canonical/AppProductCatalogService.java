@@ -138,7 +138,7 @@ public class AppProductCatalogService {
                     seed.generation(), seed.gpuModel(), seed.vramTotalGb(), seed.hashrate(), seed.dailyUsdt(), seed.dailyNex(), seed.tagline(), seed.badge(), seed.unlockPhase(),
                     seed.power(), seed.datacenter(), seed.uptime(), seed.warranty(), seed.phoneDailyEarn(), seed.phoneDailyEarnNex(),
                     seed.featuresJson(), seed.aiImageGenPerMin(), seed.aiLlmTokensPerSec(), seed.aiVideoMinPerHour(),
-                    seed.aiFineTuneMins(), seed.aiUnlocks(), seed.purchaseGateJson(), seed.inventoryMode(), runId));
+                    seed.aiFineTuneMins(), seed.aiUnlocks(), seed.purchaseGateJson(), seed.inventoryMode(), runId,seed.monthlyTargetUsdt(),seed.monthlyTargetBandPct()));
             commerceAcceptanceSandboxMapper.pruneCatalog(runId);
             List<CommerceAcceptanceSandboxMapper.SandboxCatalogProduct> targets = commerceAcceptanceSandboxMapper.listSandboxCatalog(runId);
             if (targets == null) return ApiResult.fail(500, "COMMERCE_SANDBOX_CATALOG_INVALID");
@@ -162,7 +162,7 @@ public class AppProductCatalogService {
                 target.unlockPhase(), target.updatedAt(), target.power(), target.datacenter(), target.uptime(), target.warranty(),
                 target.phoneDailyEarn(), target.phoneDailyEarnNex(), target.featuresJson(),
                 target.aiImageGenPerMin(), target.aiLlmTokensPerSec(), target.aiVideoMinPerHour(), target.aiFineTuneMins(), target.aiUnlocks(),
-                target.purchaseGateJson(), null, null, target.inventoryMode(), null, null, target.computePoints()),
+                target.purchaseGateJson(), null, null, target.inventoryMode(), null, null, target.computePoints(),target.monthlyTargetUsdt(),target.monthlyTargetBandPct()),
                 productReleasePolicy.evaluate(target.productNo(), target.unlockPhase()));
     }
 
@@ -220,9 +220,14 @@ public class AppProductCatalogService {
         item.put("warranty", DeviceSkuSpecifications.display(target.warranty()));
         item.put("phoneDailyEarn", DeviceSkuSpecifications.dailyDisplay(target.phoneDailyEarn(), "USDT/day"));
         item.put("phoneDailyEarnNEX", DeviceSkuSpecifications.dailyDisplay(target.phoneDailyEarnNex(), "UVT/day"));
-        // Share has an E1 annual range, not a guaranteed USD/day amount.
-        // Keep the legacy numeric field protocol-compatible without leaking it to clients.
-        item.put("dailyEarn", share ? BigDecimal.ZERO : target.dailyUsdt());
+        // Untargeted Share keeps its legacy annual-reference branch; targeted hardware shares the T/30 estimate.
+        item.put("dailyEarn", target.monthlyTargetUsdt()!=null ? ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.daily(target.monthlyTargetUsdt())
+                : share ? BigDecimal.ZERO : target.dailyUsdt());
+        item.put("monthlyEstimateUsdt",target.monthlyTargetUsdt());
+        item.put("dailyEstimateLowUsdt",target.monthlyTargetUsdt()==null || !share ? null : target.monthlyTargetUsdt()
+                .multiply(BigDecimal.ONE.subtract(target.monthlyTargetBandPct().movePointLeft(2))).divide(BigDecimal.valueOf(30),6,java.math.RoundingMode.HALF_UP));
+        item.put("dailyEstimateHighUsdt",target.monthlyTargetUsdt()==null || !share ? null : target.monthlyTargetUsdt()
+                .multiply(BigDecimal.ONE.add(target.monthlyTargetBandPct().movePointLeft(2))).divide(BigDecimal.valueOf(30),6,java.math.RoundingMode.HALF_UP));
         item.put("dailyEarnNEX", target.dailyNex());
         item.put("shareYieldMin", shareYieldAvailable ? shareYield.minPct() : null);
         item.put("shareYieldMax", shareYieldAvailable ? shareYield.maxPct() : null);

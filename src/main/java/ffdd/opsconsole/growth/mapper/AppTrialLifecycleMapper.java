@@ -93,7 +93,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
     @Select("""
             SELECT id,product_no productNo,name,tier,price_usdt priceUsdt,stock,unlock_phase unlockPhase,
                    product_type productType,inventory_mode inventoryMode,
-                   estimated_daily_usdt estimatedDailyUsdt,daily_nex dailyNex
+                   estimated_daily_usdt estimatedDailyUsdt,daily_nex dailyNex,monthly_target_usdt monthlyTargetUsdt
               FROM nx_product
              WHERE product_no=#{productNo} AND is_deleted=0
                AND COALESCE(store_visible,1)=1
@@ -106,7 +106,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
     @Select("""
             SELECT id,product_no productNo,name,tier,price_usdt priceUsdt,stock,unlock_phase unlockPhase,
                    product_type productType,inventory_mode inventoryMode,
-                   estimated_daily_usdt estimatedDailyUsdt,daily_nex dailyNex
+                   estimated_daily_usdt estimatedDailyUsdt,daily_nex dailyNex,monthly_target_usdt monthlyTargetUsdt
               FROM nx_product
              WHERE product_no=#{productNo} AND is_deleted=0
                AND COALESCE(store_visible,1)=1 AND trial_eligible=1
@@ -132,7 +132,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
     @Select("""
             SELECT id,product_no productNo,name,tier,price_usdt priceUsdt,stock,unlock_phase unlockPhase,
                    product_type productType,inventory_mode inventoryMode,
-                   estimated_daily_usdt estimatedDailyUsdt,daily_nex dailyNex
+                   estimated_daily_usdt estimatedDailyUsdt,daily_nex dailyNex,monthly_target_usdt monthlyTargetUsdt
               FROM nx_product
              WHERE product_no=#{productNo} AND is_deleted=0
                AND COALESCE(store_visible,1)=1
@@ -489,7 +489,13 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
 
     record ConversionProduct(Long id, String productNo, String name, String tier, BigDecimal priceUsdt,
                              Integer stock, String unlockPhase, String productType, String inventoryMode,
+                             BigDecimal estimatedDailyUsdt, BigDecimal dailyNex, BigDecimal monthlyTargetUsdt) {
+    public ConversionProduct(Long id, String productNo, String name, String tier, BigDecimal priceUsdt,
+                             Integer stock, String unlockPhase, String productType, String inventoryMode,
                              BigDecimal estimatedDailyUsdt, BigDecimal dailyNex) {
+        this(id,productNo,name,tier,priceUsdt,stock,unlockPhase,productType,inventoryMode,estimatedDailyUsdt,dailyNex,null);
+    }
+
         /** 旧 9 参形态:不携带收益的调用点(测试与历史 SQL)仍按此构造,收益视为未配置。 */
         public ConversionProduct(Long id, String productNo, String name, String tier, BigDecimal priceUsdt,
                                  Integer stock, String unlockPhase, String productType, String inventoryMode) {
