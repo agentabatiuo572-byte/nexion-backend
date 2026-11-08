@@ -43,6 +43,12 @@ Bash 直接读取 PowerShell 的 `$migrations` 清单，新增启动必需的迁
 
 空库安装验收应在人工测试准备前，用有权管理员读取 `GET /api/admin/finance/fx-quote` 并核对该单例；已有配置重跑前后逐字段对照。该后置只补 D6，不恢复其他历史业务种子，也不属于受管发布的 `scripts/migrations` 目录。详见 [D6 空库初始化 PRD](../../docs/PRD/D6-空库汇率配置初始化-20261109.md)。
 
+### D5 提现 canonical 配置
+
+`post.txt` 同时执行 `fresh_db/07_d5_withdrawal_config.sql`，只补缺失的每日次数 2、余额比例 0.80、历史费用率 0.02、费用下限 0.50／上限 20.00 USDT、聚合版本 1，以及明确关闭的 TRC20／ERC20 配置开关。六项数值来自原 D5 迁移；新空库没有已批准的默认开通证据时不自动打开通道。已有 BEP20、费用、运营值、状态和软删除行均不由该文件覆盖，后续开通仍沿原 D5 审批和服务商／资金闸规则。
+
+D5 还依赖 H1 当前节奏：启动链已有 24 个月八拨盘，但未找到 `H1.rhythm.totalMonths`、`H1.rhythm.currentMonth`、`H1.rhythm.phaseProgressPct`、`growth.phase.current` 的初始化 INSERT，不能由旧代码中的展示默认值推断初态。本次不补 H1；完整服务验收前须核实其真实配置。分别验证新空库整链调用和单独重跑新增 D5 文件的原值保留；旧启动迁移自身的元数据 UPDATE 不属于新增补种的保留承诺。详见 [D5 空库初始化 PRD](../../docs/PRD/D5-空库提现参数初始化-20261109.md)。
+
 ## 首次登录后
 
 - **超管 MFA**：首次登录要求绑定一次性验证码（TOTP），请保存密钥。
