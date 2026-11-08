@@ -42,43 +42,10 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
                    failure_reason='H1_COMPLIANCE_REVIEW_REQUIRED',next_broadcast_at=NULL,
                    d5_payout_lease_until=NULL,updated_at=#{now}
              WHERE withdrawal_no=#{withdrawalNo} AND status='REVIEW_PASSED' AND is_deleted=0
-               AND chain IN ('USDT-BEP20','USDT-ERC20') AND d5_payout_source IS NULL AND d5_provider_cid IS NULL
+               AND chain IN ('USDT-BEP20','USDT-ERC20','USDT-TRC20') AND d5_payout_source IS NULL AND d5_provider_cid IS NULL
             """)
     int returnToComplianceReview(@Param("withdrawalNo") String withdrawalNo,
                                  @Param("holdUntil") LocalDateTime holdUntil, @Param("now") LocalDateTime now);
-
-    @Select("""
-            SELECT detail_json FROM nx_audit_log WHERE action='D2_WITHDRAWAL_SUBMITTED'
-              AND resource_type='WITHDRAWAL' AND resource_id=#{withdrawalNo} AND biz_no=#{withdrawalNo}
-              AND user_id=#{userId} AND result='SUCCESS' AND is_deleted=0
-            UNION ALL
-            SELECT JSON_EXTRACT(cold_payload,'$.detail') FROM nx_audit_log_archive
-             WHERE JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))='D2_WITHDRAWAL_SUBMITTED'
-               AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceType'))='WITHDRAWAL'
-               AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId'))=#{withdrawalNo}
-               AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.bizNo'))=#{withdrawalNo}
-               AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.userId'))=CAST(#{userId} AS CHAR)
-               AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.result'))='SUCCESS'
-            """)
-    List<String> originalSubmissionDetails(@Param("withdrawalNo") String withdrawalNo,@Param("userId") Long userId);
-
-    @Update("""
-            UPDATE nx_withdrawal_order SET status='EXTENDED_HOLD',d2_hold_until=#{holdUntil},
-                   d2_lifecycle_owner=#{owner},d2_previous_status=#{previous},
-                   d2_version=d2_version+1,failure_reason='H1_TRC20_PHASE_WINDOW',next_broadcast_at=NULL,updated_at=#{now}
-             WHERE withdrawal_no=#{withdrawalNo} AND chain='USDT-TRC20' AND status='REVIEW_PASSED'
-               AND is_deleted=0 AND d5_payout_source IS NULL AND d5_provider_cid IS NULL
-            """)
-    int returnToTrcPhaseHold(@Param("withdrawalNo") String withdrawalNo,@Param("holdUntil") LocalDateTime holdUntil,
-                             @Param("owner") String owner,@Param("previous") String previous,@Param("now") LocalDateTime now);
-
-    @Update("""
-            UPDATE nx_withdrawal_order SET status='REVIEW_PENDING',failure_reason=#{reason},
-                   d2_version=d2_version+1,next_broadcast_at=NULL,d5_payout_lease_until=NULL,updated_at=#{now}
-             WHERE withdrawal_no=#{withdrawalNo} AND chain='USDT-TRC20' AND status='REVIEW_PASSED'
-               AND is_deleted=0 AND d5_payout_source IS NULL AND d5_provider_cid IS NULL
-            """)
-    int returnToTrcReview(@Param("withdrawalNo") String withdrawalNo,@Param("reason") String reason,@Param("now") LocalDateTime now);
 
     record ComplianceDispatchState(String status, String lifecycleOwner, LocalDateTime createdAt,LocalDateTime holdUntil,
                                    String payoutSource, Long providerCid) { }

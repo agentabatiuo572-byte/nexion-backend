@@ -113,7 +113,6 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private static final Pattern FIRST_DECIMAL = Pattern.compile("(\\d+(?:\\.\\d+)?)");
     private final PlatformConfigFacade configFacade;
     private final GrowthRhythmFacade growthRhythmFacade;
-    private final Trc20WithdrawalWindow trc20Window;
     private final EmergencyControlRepository emergencyRepository;
     private final TreasuryCoverageFacade coverageFacade;
     private final WithdrawalOrderRepository withdrawalRepository;
@@ -2192,11 +2191,6 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             return "WITHDRAWAL_GEO_BLOCKED";
         }
         LocalDateTime holdUntil = order.holdUntil();
-        if ("USDT-TRC20".equals(order.chain())) {
-            var window=trc20Window.read(order.withdrawalNo(),order.userId(),order.createdAt());
-            if(window.unavailableReason()!=null)return window.unavailableReason();
-            if(holdUntil==null || window.deadline().isAfter(holdUntil))holdUntil=window.deadline();
-        }
         if (WithdrawalCompliancePolicy.supports(order.chain())) {
             LocalDateTime complianceUntil = WithdrawalCompliancePolicy.require(growthRhythmFacade.snapshot())
                     .holdUntil(order.chain(), order.amount(), order.createdAt());

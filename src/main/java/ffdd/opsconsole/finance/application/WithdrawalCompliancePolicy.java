@@ -29,7 +29,7 @@ record WithdrawalCompliancePolicy(boolean enabled, int cooldownDays, int month, 
     }
 
     static boolean supports(String chain) {
-        return Set.of("USDT-BEP20", "USDT-ERC20").contains(chain);
+        return Set.of("USDT-BEP20", "USDT-ERC20", "USDT-TRC20").contains(chain);
     }
 
     static boolean h1Hold(String owner, String previousStatus) {
@@ -56,7 +56,7 @@ record WithdrawalCompliancePolicy(boolean enabled, int cooldownDays, int month, 
     }
 
     String versionMaterial() {
-        return "H1-COMPLIANCE-20261108|" + month + "|" + phase + "|" + enabled + "|" + cooldownDays
+        return "H1-COMPLIANCE-THREE-NETWORKS-20261108|" + month + "|" + phase + "|" + enabled + "|" + cooldownDays
                 + "|" + REVIEW_THRESHOLD_USDT;
     }
 

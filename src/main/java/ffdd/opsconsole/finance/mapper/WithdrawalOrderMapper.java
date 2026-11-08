@@ -608,7 +608,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
             SELECT withdrawal_no FROM (
                 SELECT withdrawal_no,id,
                        CASE WHEN #{complianceEnabled,jdbcType=BOOLEAN} IS NOT NULL
-                                  AND status='EXTENDED_HOLD' AND chain IN ('USDT-BEP20','USDT-ERC20')
+                                  AND status='EXTENDED_HOLD' AND chain IN ('USDT-BEP20','USDT-ERC20','USDT-TRC20')
                                   AND ((d2_lifecycle_owner IN ('H1_PHASE_COOLDOWN','H1_ZERO_DAY_AUTO_REVIEW')
                                         AND d2_previous_status='REVIEW_PASSED')
                                        OR (d2_lifecycle_owner='H1_COMPLIANCE_HOLD' AND d2_previous_status='REVIEW_PENDING'))

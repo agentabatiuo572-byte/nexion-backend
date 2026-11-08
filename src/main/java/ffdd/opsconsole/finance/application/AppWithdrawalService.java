@@ -155,8 +155,8 @@ public class AppWithdrawalService {
         PolicySnapshot policy = currentPolicy();
         WithdrawalCompliancePolicy compliance = WithdrawalCompliancePolicy.require(policy.rhythm());
         boolean complianceReviewRequired = compliance.reviewRequired(normalizedChain);
-        boolean complianceHoldApplies = "USDT-TRC20".equals(normalizedChain) ? compliance.cooldownDays()>0 : compliance.holdApplies(normalizedChain, requested);
-        int complianceHoldDays = "USDT-TRC20".equals(normalizedChain) ? compliance.cooldownDays() : compliance.holdDays(normalizedChain, requested);
+        boolean complianceHoldApplies = compliance.holdApplies(normalizedChain, requested);
+        int complianceHoldDays = compliance.holdDays(normalizedChain, requested);
         if (!StringUtils.hasText(requestedPolicyVersion)
                 || !policy.policyVersion().equals(requestedPolicyVersion.trim())) {
             return ApiResult.fail(409, "WITHDRAWAL_POLICY_VERSION_CONFLICT",
@@ -436,8 +436,8 @@ public class AppWithdrawalService {
         GrowthRhythmSnapshot rhythm = policy.rhythm();
         WithdrawalCompliancePolicy compliance = WithdrawalCompliancePolicy.require(rhythm);
         boolean complianceReviewRequired = bankQuote == null && compliance.reviewRequired(chain);
-        boolean complianceHoldApplies = bankQuote == null && ("USDT-TRC20".equals(chain) ? compliance.cooldownDays()>0 : compliance.holdApplies(chain, amount));
-        int complianceHoldDays = bankQuote == null ? "USDT-TRC20".equals(chain) ? compliance.cooldownDays() : compliance.holdDays(chain, amount) : 0;
+        boolean complianceHoldApplies = bankQuote == null && compliance.holdApplies(chain, amount);
+        int complianceHoldDays = bankQuote == null ? compliance.holdDays(chain, amount) : 0;
         // Legacy D2 fee snapshot columns also carry the bank channel fee; posting uses a distinct BANK_FEE type.
         BigDecimal networkFee = (bankQuote == null ? policy.networkConfirmFeeUsd().get(networkKey(chain)) : bankQuote.feeUsdt())
                 .setScale(6, RoundingMode.UNNECESSARY);
@@ -797,7 +797,7 @@ public class AppWithdrawalService {
                 + "|" + smallAmountThresholdUsd.stripTrailingZeros().toPlainString()
                 + "|" + payoutSlaHours + "|" + enabled;
         return new PolicySnapshot(version, Map.copyOf(fees), nexOffsetRate, smallAmountThresholdUsd,
-                payoutSlaHours, enabled, rhythm, hash(versionMaterial), hash(versionMaterial + "|" + compliance.versionMaterial()+"|TRC20_PHASE_ORIGINAL_N_V1"));
+                payoutSlaHours, enabled, rhythm, hash(versionMaterial), hash(versionMaterial + "|" + compliance.versionMaterial()));
     }
 
     /** D7 keeps its existing D5-only quote contract; USDT compliance policy does not change bank routing. */
