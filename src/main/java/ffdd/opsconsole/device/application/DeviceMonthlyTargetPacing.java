@@ -17,6 +17,7 @@ public final class DeviceMonthlyTargetPacing {
     public static final int SCALE = 24;
     public static final int CONTRIBUTION_SCALE = 12;
     public static final int D_CAP = 7200;
+    public static final BigDecimal MAX_REWARD = new BigDecimal("999999999999.999999");
     public static final BigDecimal QUANTUM = new BigDecimal("0.000001");
     private static final BigDecimal LOW = new BigDecimal("0.7"), HIGH = new BigDecimal("1.3");
     private static final BigDecimal ONE = BigDecimal.ONE, ZERO = BigDecimal.ZERO;
@@ -128,6 +129,13 @@ public final class DeviceMonthlyTargetPacing {
 
     public static boolean eligible(String asset,BigDecimal baseReward,int durationSeconds) {
         return "USDT".equals(asset) && baseReward.signum()>0 && durationSeconds>0 && durationSeconds<=D_CAP;
+    }
+
+    /** Conservative admission bound: shortest month, longest task, maximum weight/band/correction. */
+    public static BigDecimal rewardBound(BigDecimal target, BigDecimal bandPct, BigDecimal capacityPct) {
+        return target.multiply(capacityPct.movePointLeft(2)).multiply(BigDecimal.valueOf(D_CAP))
+                .multiply(HIGH).multiply(ONE.add(bandPct.movePointLeft(2))).multiply(new BigDecimal("1.5"))
+                .divide(BigDecimal.valueOf(28L * 86400), 6, RoundingMode.CEILING);
     }
 
     public static Snapshot quote(Schedule schedule, State before, LocalDateTime start, LocalDateTime due,

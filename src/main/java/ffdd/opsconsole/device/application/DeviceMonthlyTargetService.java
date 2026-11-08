@@ -40,6 +40,8 @@ public class DeviceMonthlyTargetService {
         var anchor=device.purchasedAt()!=null?device.purchasedAt():device.activatedAt();
         var cycle=DeviceMonthlyTargetPacing.cycleAt(anchor,due);
         var capacity=E3DeviceCapacityPolicy.project(device.productCode(),device.deviceType(),anchor,device.activatedAt(),cycle.start(),policy.e3Config()).capacityPct();
+        if(capacity.compareTo(DeviceMonthlyTargetPacing.MAX_REWARD)>0)
+            throw new MonthlyTargetRewardOutOfRangeException(List.of(device.productCode()));
         // A settled predecessor proves this PK exists. Never lock a potentially missing key under RR.
         if(!cycle.start().equals(knownCycleStart)) {
             var schedule=DeviceMonthlyTargetPacing.schedule(device.deviceId(),cycle);
@@ -55,10 +57,15 @@ public class DeviceMonthlyTargetService {
         for(var t:pool) {base=base.add(t.baseReward());duration+=t.durationSeconds();}
         var snapshot=DeviceMonthlyTargetPacing.quote(schedule,state,start,due,policy.monthlyTargetUsdt(),policy.monthlyTargetBandPct(),capacity,
                 type.baseReward(),type.durationSeconds(),DeviceMonthlyTargetPacing.divide(base,BigDecimal.valueOf(duration)));
+        // Throw before allocation/task persistence; the caller rolls back even a newly inserted cycle.
+        String compact=DeviceMonthlyTargetPacing.compact(snapshot);
+        if(snapshot.reward().signum()<0 || snapshot.reward().compareTo(DeviceMonthlyTargetPacing.MAX_REWARD)>0
+                || compact.getBytes(java.nio.charset.StandardCharsets.UTF_8).length+3>200)
+            throw new MonthlyTargetRewardOutOfRangeException(List.of(device.productCode()));
         save(row,state.add(snapshot),row.configChanged() || row.firstMonthlyTargetUsdt().compareTo(policy.monthlyTargetUsdt())!=0
                 ||row.firstMonthlyTargetBandPct().compareTo(policy.monthlyTargetBandPct())!=0||row.firstCapacityPct().compareTo(capacity)!=0
                 ||row.firstE3Version()!=policy.e3Version());
-        return new Quote(cycle.start(),encode(DeviceMonthlyTargetPacing.compact(snapshot)),snapshot.reward(),capacity);
+        return new Quote(cycle.start(),encode(compact),snapshot.reward(),capacity);
     }
     @Transactional(propagation=Propagation.MANDATORY)
     public void cancel(TaskRow task) {

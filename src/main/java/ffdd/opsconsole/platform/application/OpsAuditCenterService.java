@@ -49,6 +49,7 @@ import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.device.application.MonthlyTargetPoolException;
+import ffdd.opsconsole.device.application.MonthlyTargetRewardOutOfRangeException;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.growth.application.H8RewardParamApproval;
@@ -501,7 +502,7 @@ public class OpsAuditCenterService {
                     stored.put("avatarMakerAdminId", maker);
                 }
                 ticket.setCommandJson(objectMapper.writeValueAsString(stored));
-            } catch (MonthlyTargetPoolException ex) {
+            } catch (MonthlyTargetPoolException | MonthlyTargetRewardOutOfRangeException ex) {
                 throw ex; // The HTTP exception boundary preserves affectedSkuIds.
             } catch (BizException ex) {
                 return ApiResult.fail(ex.getCode(), ex.getMessage());
@@ -870,7 +871,7 @@ public class OpsAuditCenterService {
                 return proposalByIdempotencyKey(idempotencyKey);
             }
             return ApiResult.ok(receipt);
-        } catch (MonthlyTargetPoolException ex) {
+        } catch (MonthlyTargetPoolException | MonthlyTargetRewardOutOfRangeException ex) {
             throw ex; // Idempotency has rolled back; preserve the structured approval rejection.
         } catch (ffdd.opsconsole.shared.exception.PhoneReplacementException ex) {
             // Preserve the phone command conflict contract through A2 and roll back its approval transaction.
@@ -966,6 +967,7 @@ public class OpsAuditCenterService {
     private <T> T requireSuccess(ApiResult<T> result) {
         if (result == null || result.getCode() != 0) {
             if(result!=null && "MONTHLY_TARGET_POOL_INELIGIBLE".equals(result.getMessage()))throw MonthlyTargetPoolException.fromResult(result);
+            if(result!=null && "MONTHLY_TARGET_REWARD_OUT_OF_RANGE".equals(result.getMessage()))throw MonthlyTargetRewardOutOfRangeException.fromResult(result);
             throw new BizException(result == null ? 500 : result.getCode(),
                     result == null ? "A2_COMMAND_FAILED" : result.getMessage());
         }
@@ -1155,6 +1157,7 @@ public class OpsAuditCenterService {
                 ApiResult<?> replayResult = replayDispatcher.dispatch(cmd, ctx);
                 if (replayResult.getCode() != 0) {
                     if("MONTHLY_TARGET_POOL_INELIGIBLE".equals(replayResult.getMessage()))throw MonthlyTargetPoolException.fromResult(replayResult);
+                    if("MONTHLY_TARGET_REWARD_OUT_OF_RANGE".equals(replayResult.getMessage()))throw MonthlyTargetRewardOutOfRangeException.fromResult(replayResult);
                     // 回放失败:不删锁、不改状态、目标域域方法已 return fail 未写入 → ticket 保持 pending,原值保持
                     return ApiResult.fail(replayResult.getCode(), replayResult.getMessage());
                 }

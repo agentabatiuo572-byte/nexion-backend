@@ -137,7 +137,8 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                     d.pending_deactivate AS pendingDeactivate,
                     (NOT EXISTS (SELECT 1 FROM nx_simulated_device_runtime sim WHERE sim.user_device_id=d.id)
                      AND NOT EXISTS (SELECT 1 FROM nx_product p WHERE p.product_no=d.product_code
-                                      AND p.monthly_target_usdt IS NOT NULL)) AS developmentDispatchAllowed
+                                      AND p.monthly_target_usdt IS NOT NULL)) AS developmentDispatchAllowed,
+                    EXISTS (SELECT 1 FROM nx_simulated_device_runtime sim WHERE sim.user_device_id=d.id) AS simulatedRuntimePresent
               FROM nx_user_device d
               JOIN nx_user u ON u.id=d.user_id AND u.sandbox=0
                             AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
@@ -157,6 +158,8 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                )
                AND ((NOT EXISTS (SELECT 1 FROM nx_simulated_device_runtime sim WHERE sim.user_device_id=d.id)
                      AND NOT EXISTS (SELECT 1 FROM nx_product p WHERE p.product_no=d.product_code AND p.monthly_target_usdt IS NOT NULL))
+                    OR (d.pending_deactivate=1 AND NOT EXISTS
+                        (SELECT 1 FROM nx_simulated_device_runtime sim WHERE sim.user_device_id=d.id))
                     OR EXISTS (SELECT 1 FROM nx_compute_task t WHERE t.user_device_id=d.id AND t.user_id=d.user_id
                                AND t.task_no LIKE 'DEV-TASK-%' AND t.status IN ('CLAIMED','RUNNING')
                                AND t.source_environment='PRODUCTION' AND t.is_deleted=0))
@@ -188,7 +191,8 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                     d.pending_deactivate AS pendingDeactivate,
                     (NOT EXISTS (SELECT 1 FROM nx_simulated_device_runtime sim WHERE sim.user_device_id=d.id)
                      AND NOT EXISTS (SELECT 1 FROM nx_product p WHERE p.product_no=d.product_code
-                                      AND p.monthly_target_usdt IS NOT NULL)) AS developmentDispatchAllowed
+                                      AND p.monthly_target_usdt IS NOT NULL)) AS developmentDispatchAllowed,
+                    EXISTS (SELECT 1 FROM nx_simulated_device_runtime sim WHERE sim.user_device_id=d.id) AS simulatedRuntimePresent
               FROM nx_user_device d
               JOIN nx_user u ON u.id=d.user_id AND u.sandbox=0
                             AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
@@ -564,13 +568,13 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
             LocalDateTime purchasedAt,
             LocalDateTime activatedAt,
             BigDecimal dailyUsdt,
-            Boolean pendingDeactivate, boolean developmentDispatchAllowed) {
+            Boolean pendingDeactivate, boolean developmentDispatchAllowed, boolean simulatedRuntimePresent) {
         public DevelopmentTaskDevice(Long userId, Long userDeviceId, String instanceNo, String deviceName,
                 String modelName, String productCode, String deviceType, String status, Long rowVersion,
                 Integer vramTotalGb, LocalDateTime purchasedAt, LocalDateTime activatedAt, BigDecimal dailyUsdt,
                 Boolean pendingDeactivate) {
             this(userId,userDeviceId,instanceNo,deviceName,modelName,productCode,deviceType,status,rowVersion,
-                    vramTotalGb,purchasedAt,activatedAt,dailyUsdt,pendingDeactivate,true);
+                    vramTotalGb,purchasedAt,activatedAt,dailyUsdt,pendingDeactivate,true,false);
         }
     }
 
