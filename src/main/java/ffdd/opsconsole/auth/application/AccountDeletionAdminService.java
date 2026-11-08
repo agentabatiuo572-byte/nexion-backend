@@ -198,7 +198,8 @@ public class AccountDeletionAdminService {
     private AccountDeletionAdminView view(Map<String, Object> row, boolean sessionsRevoked, boolean accountDisabled) {
         return new AccountDeletionAdminView(text(row, "requestNo"), numberObject(row, "userId"), text(row, "status"),
                 number(row, "version"), date(row, "requestedAt"), date(row, "reviewedAt"), date(row, "completedAt"),
-                textNullable(row, "reason"), textNullable(row, "blockReason"), sessionsRevoked, accountDisabled);
+                textNullable(row, "reason"), textNullable(row, "originalReason"), textNullable(row, "blockReason"),
+                sessionsRevoked, accountDisabled);
     }
 
     private void audit(String action, Map<String, Object> row, String reason) {

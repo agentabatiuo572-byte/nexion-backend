@@ -1,4 +1,4 @@
 package ffdd.opsconsole.auth.dto;
 
-public record AppAccountDeletionRequest(String currentPassword, String confirmation) {
+public record AppAccountDeletionRequest(String currentPassword, String confirmation, String reason) {
 }

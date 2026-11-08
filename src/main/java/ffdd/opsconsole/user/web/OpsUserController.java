@@ -164,6 +164,15 @@ public class OpsUserController {
         return userService.accountActionAccount(userKey);
     }
 
+    @GetMapping("/account-actions/accounts")
+    @PreAuthorize("hasAuthority('user_c2_read')")
+    public ApiResult<PageResult<ffdd.opsconsole.user.domain.UserAccountActionListView>> accountActionAccounts(
+            @RequestParam(defaultValue = "FROZEN") String status,
+            @RequestParam(defaultValue = "1") int pageNum,
+            @RequestParam(defaultValue = "20") int pageSize) {
+        return userService.accountActionAccounts(status, pageNum, pageSize);
+    }
+
     @GetMapping("/account-actions/accounts/{userKey}/context")
     @PreAuthorize("hasAuthority('user_c2_read')")
     public ApiResult<UserAccountActionContext> accountActionContext(@PathVariable String userKey) {

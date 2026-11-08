@@ -98,7 +98,6 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     private static final String WITHDRAW_MIN_BALANCE_MIRROR_KEY = "withdrawal.nex_gate.min_balance_nex";
     private static final String WITHDRAW_HOLD_DAYS_MIRROR_KEY = "withdrawal.nex_gate.hold_days";
     private static final String WITHDRAW_STAKING_DISCLOSURE_GATE_KEY = "disclosure.gate.staking";
-    private static final String TRIAL_AUTO_PUSH_KILLED_KEY = "growth.trial.auto_push_killed";
     private static final String TRIAL_KILLSWITCH_KEY = "killswitch.trial";
     private static final String TRIAL_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.trial";
     private static final String LEGACY_TRIAL_PRODUCT_ID = "device-trial-standard";
@@ -144,6 +143,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     private static final List<Integer> RHYTHM_TOTAL_OPTIONS = List.of(9, 12, 15, 18, 24);
     private static final List<Integer> RHYTHM_PHASE_WEIGHTS = List.of(2, 2, 3, 1, 2, 2);
     private static final Set<String> PHASE_CONTROL_KEYS = Set.of("schedule", "pin", "override");
+    private static final Set<String> RETIRED_TRIAL_AUTO_PUSH_KEYS = Set.of(
+            "autoPushEnabled", "autoPushDelayMs", "autoPushCooldownHours", "autoPushMaxPerSession");
     private static final List<String> TRIAL_PARAM_KEYS = List.of(
             "trialDays",
             "graceDays",
@@ -160,10 +161,6 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             "shadowDailyNEX",
             "cooldownDays",
             "phaseOpen",
-            "autoPushEnabled",
-            "autoPushDelayMs",
-            "autoPushCooldownHours",
-            "autoPushMaxPerSession",
             "seatsLeftToday",
             "earlyPurchaseDiscountUSD");
     private static final Set<String> TRIAL_TERMINAL_STATES = Set.of("cancelled", "redeemed", "failed");
@@ -559,7 +556,6 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     }
 
     private ApiResult<Map<String, Object>> trials(int requestedPageNum, int requestedPageSize, boolean includePendingApproval) {
-        ensureTrialSeedData();
         int pageNum = Math.max(1, requestedPageNum);
         int pageSize = Math.max(1, Math.min(requestedPageSize, 100));
         long totalSessions = growthCount(GrowthQuestEventMapper::countTrialSessions);
@@ -578,7 +574,6 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 "total", totalSessions,
                 "pageNum", pageNum,
                 "pageSize", pageSize));
-        response.put("autoPushKilled", trialAutoPushKilled());
         response.put("j1TrialGate", trialKillSwitch());
         response.put("serverOnlyFields", List.of("chargeFailRate"));
         response.put("coverage", coverage());
@@ -587,7 +582,6 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 "nx_growth_trial_daily_quota",
                 "nx_growth_trial_gate",
                 "nx_trial_claim",
-                "nx_config_item:" + TRIAL_AUTO_PUSH_KILLED_KEY,
                 "nx_config_item:" + TRIAL_KILLSWITCH_KEY));
         return ApiResult.ok(response);
     }
@@ -600,6 +594,9 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if (RETIRED_TRIAL_AUTO_PUSH_KEYS.contains(paramKey == null ? "" : paramKey.trim())) {
+            return validation("TRIAL_AUTO_PUSH_CONFIG_RETIRED");
         }
         String key = normalizeTrialParamKey(paramKey);
         if (Set.of("phaseOpen", "trialPriceUSD", "autoChargeAtEnd", "chargeFailRate", "actualSeatsLeftToday").contains(key)) {
@@ -716,24 +713,6 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             return guard;
         }
         return ApiResult.fail(410, "TRIAL_EXPLICIT_PURCHASE_REQUIRED");
-    }
-
-    public ApiResult<Map<String, Object>> killTrialAutoPush(
-            String idempotencyKey,
-            GrowthConfigUpdateRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        configFacade.upsertAdminValue(TRIAL_AUTO_PUSH_KILLED_KEY, "true", "BOOLEAN", "growth", "H2 auto-push kill switch");
-        audit("H2_TRIAL_AUTO_PUSH_KILLED", "TRIAL_AUTO_PUSH", TRIAL_AUTO_PUSH_KILLED_KEY, request.operator(), Map.of(
-                "killed", true,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        Map<String, Object> response = trials().getData();
-        response.put("autoPushKilled", true);
-        response.put("updated", Map.of("configKey", TRIAL_AUTO_PUSH_KILLED_KEY, "killed", true));
-        return ApiResult.ok(response);
     }
 
     public ApiResult<Map<String, Object>> questEvents() {
@@ -3697,6 +3676,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 .orElse("");
         String livePrice = liveTrialProductPrice(productNo, trialProducts);
         List<Map<String, Object>> params = new ArrayList<>(policies.stream()
+                .filter(row -> !RETIRED_TRIAL_AUTO_PUSH_KEYS.contains(stringValue(row.get("key"), "")))
                 .filter(row -> !"autoChargeAtEnd".equals(row.get("key"))
                         && !"actualSeatsLeftToday".equals(row.get("key")))
                 .map(row -> {
@@ -3971,10 +3951,6 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         return sid.substring("trial-".length());
     }
 
-    private boolean trialAutoPushKilled() {
-        return Boolean.TRUE.equals(parseBooleanValue(configFacade.activeValue(TRIAL_AUTO_PUSH_KILLED_KEY).orElse("false")));
-    }
-
     private Map<String, Object> trialKillSwitch() {
         boolean enabled = trialKillSwitchEnabled();
         Map<String, Object> gate = new LinkedHashMap<>();
@@ -4021,7 +3997,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         if (isTrialDayParam(key)) {
             return normalizeTrialDayParam(key, value).toPlainString();
         }
-        if (Set.of("autoChargeAtEnd", "phaseOpen", "autoPushEnabled").contains(key)) {
+        if (Set.of("autoChargeAtEnd", "phaseOpen").contains(key)) {
             return normalizeTrialAutoCharge(value);
         }
         if ("earlyPurchaseDiscountUSD".equals(key)) {
@@ -4037,9 +4013,6 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         }
         if (Set.of("discountCapUSD", "trialOffsetCapUSD", "highQualityThresholdUSD", "trialPriceUSD", "shadowDailyUSD", "shadowDailyNEX").contains(key)) {
             return bounded(parseDecimal(value.replace("$", "").replace(",", "")), BigDecimal.ZERO, new BigDecimal("1000000")).stripTrailingZeros().toPlainString();
-        }
-        if (Set.of("autoPushDelayMs", "autoPushCooldownHours", "autoPushMaxPerSession").contains(key)) {
-            return wholeDays(parseDecimal(value), 0, 86400000).toPlainString();
         }
         if ("seatsLeftToday".equals(key)) {
             if (!value.matches("[0-9]+")) {
@@ -4256,18 +4229,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         }
     }
 
-    private void ensureTrialSeedData() {
-        if (readTimeBusinessSeedsDisabled()) {
-            return;
-        }
-        seedIfMissing(TRIAL_AUTO_PUSH_KILLED_KEY, "false", "BOOLEAN", "growth", "H2 auto-push seed");
-    }
-
     private String trialParamValueType(String key) {
         return Set.of("discountRate", "discountCapUSD", "trialOffsetCapUSD", "earlyPurchaseDiscountUSD",
                 "highQualityThresholdUSD", "chargeFailRate",
-                "trialPriceUSD", "shadowDailyUSD", "shadowDailyNEX", "autoPushDelayMs",
-                "autoPushCooldownHours", "autoPushMaxPerSession", "seatsLeftToday").contains(key)
+                "trialPriceUSD", "shadowDailyUSD", "shadowDailyNEX", "seatsLeftToday").contains(key)
                 || isTrialDayParam(key) ? "NUMBER" : "STRING";
     }
 

@@ -358,6 +358,10 @@ public class AppUserSecurityService {
         if (request == null || !"DELETE".equals(request.confirmation())) {
             throw new BizException(422, "ACCOUNT_DELETION_CONFIRMATION_REQUIRED");
         }
+        String originalReason = StringUtils.hasText(request.reason()) ? request.reason().trim() : null;
+        if (originalReason != null && originalReason.length() > 255) {
+            throw new BizException(422, "ACCOUNT_DELETION_REASON_INVALID");
+        }
         verifyCurrentPassword(userId, request.currentPassword(), "ACCOUNT_DELETION_REQUEST");
         Map<String, Object> existing = securityMapper.latestAccountDeletionRequest(userId);
         if (existing != null && Set.of("REQUESTED", "IN_REVIEW", "BLOCKED", "COMPLETED").contains(
@@ -366,7 +370,7 @@ public class AppUserSecurityService {
         }
         String requestNo = "ADR-" + UUID.randomUUID().toString().replace("-", "");
         int inserted = securityMapper.insertAccountDeletionRequest(
-                requestNo, userId, idempotencyKey.trim());
+                requestNo, userId, idempotencyKey.trim(), originalReason);
         Map<String, Object> authoritative = securityMapper.accountDeletionRequestForUpdate(
                 userId, idempotencyKey.trim());
         if (authoritative == null && inserted == 0) {
@@ -406,15 +410,16 @@ public class AppUserSecurityService {
         if (securityMapper.transitionAccountDeletion(requestNo, status, "CANCELLED", version, reason, null) != 1) {
             throw new BizException(409, "ACCOUNT_DELETION_CONCURRENT_UPDATE");
         }
-        Map<String, Object> updated = securityMapper.accountDeletionRequestForUpdate(userId, idempotencyKey.trim());
-        if (updated == null) updated = securityMapper.latestAccountDeletionRequest(userId);
+        Map<String, Object> updated = securityMapper.accountDeletionByRequestNo(requestNo);
         recordRequired(userId, "USER_ACCOUNT_DELETION_CANCELLED", "USER_ACCOUNT_DELETION", requestNo,
                 Map.of("status", "CANCELLED", "reason", reason));
         return immutableMap(updated);
     }
 
     private Map<String, Object> immutableMap(Map<String, Object> value) {
-        return Collections.unmodifiableMap(new LinkedHashMap<>(value));
+        Map<String, Object> copy = new LinkedHashMap<>(value);
+        copy.putIfAbsent("originalReason", null);
+        return Collections.unmodifiableMap(copy);
     }
 
     private AppSecurityStateResponse.Session toResponse(UserSessionEntity row, boolean current) {

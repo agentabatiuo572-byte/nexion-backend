@@ -60,18 +60,19 @@ public interface AppUserSecurityMapper extends BaseMapper<AppUserSecurityEntity>
 
     @Insert("""
             INSERT IGNORE INTO nx_user_account_deletion_request(
-                request_no,user_id,idempotency_key,status,requested_at,created_at,updated_at,is_deleted)
-            VALUES(#{requestNo},#{userId},#{idempotencyKey},'REQUESTED',NOW(),NOW(),NOW(),0)
+                request_no,user_id,idempotency_key,status,original_reason,requested_at,created_at,updated_at,is_deleted)
+            VALUES(#{requestNo},#{userId},#{idempotencyKey},'REQUESTED',#{originalReason},NOW(),NOW(),NOW(),0)
             """)
     int insertAccountDeletionRequest(
             @Param("requestNo") String requestNo,
             @Param("userId") Long userId,
-            @Param("idempotencyKey") String idempotencyKey);
+            @Param("idempotencyKey") String idempotencyKey,
+            @Param("originalReason") String originalReason);
 
     @Select("""
             SELECT request_no AS requestNo,user_id AS userId,status,version,
                    requested_at AS requestedAt,reviewed_at AS reviewedAt,
-                   completed_at AS completedAt,reason,reviewed_by AS reviewedBy,
+                   completed_at AS completedAt,reason,original_reason AS originalReason,reviewed_by AS reviewedBy,
                    cancelled_at AS cancelledAt,block_reason AS blockReason
               FROM nx_user_account_deletion_request
              WHERE request_no=#{requestNo} AND is_deleted=0
@@ -82,7 +83,7 @@ public interface AppUserSecurityMapper extends BaseMapper<AppUserSecurityEntity>
     @Select("""
             SELECT request_no AS requestNo,user_id AS userId,status,version,
                    requested_at AS requestedAt,reviewed_at AS reviewedAt,
-                   completed_at AS completedAt,reason,reviewed_by AS reviewedBy,
+                   completed_at AS completedAt,reason,original_reason AS originalReason,reviewed_by AS reviewedBy,
                    cancelled_at AS cancelledAt,block_reason AS blockReason
               FROM nx_user_account_deletion_request
              WHERE request_no=#{requestNo} AND is_deleted=0
@@ -93,7 +94,7 @@ public interface AppUserSecurityMapper extends BaseMapper<AppUserSecurityEntity>
     @Select("""
             SELECT request_no AS requestNo,user_id AS userId,status,version,
                    requested_at AS requestedAt,reviewed_at AS reviewedAt,
-                   completed_at AS completedAt,reason,block_reason AS blockReason,
+                   completed_at AS completedAt,reason,original_reason AS originalReason,block_reason AS blockReason,
                    cancelled_at AS cancelledAt
               FROM nx_user_account_deletion_request
              WHERE is_deleted=0
@@ -114,7 +115,7 @@ public interface AppUserSecurityMapper extends BaseMapper<AppUserSecurityEntity>
 
     @Select("""
             SELECT request_no AS requestNo,status,version,requested_at AS requestedAt,
-                   reviewed_at AS reviewedAt,completed_at AS completedAt,reason,
+                   reviewed_at AS reviewedAt,completed_at AS completedAt,reason,original_reason AS originalReason,
                    block_reason AS blockReason,cancelled_at AS cancelledAt
               FROM nx_user_account_deletion_request
              WHERE user_id=#{userId} AND idempotency_key=#{idempotencyKey} AND is_deleted=0
@@ -126,7 +127,7 @@ public interface AppUserSecurityMapper extends BaseMapper<AppUserSecurityEntity>
 
     @Select("""
             SELECT request_no AS requestNo,status,version,requested_at AS requestedAt,
-                   reviewed_at AS reviewedAt,completed_at AS completedAt,reason,
+                   reviewed_at AS reviewedAt,completed_at AS completedAt,reason,original_reason AS originalReason,
                    block_reason AS blockReason,cancelled_at AS cancelledAt
               FROM nx_user_account_deletion_request
              WHERE user_id=#{userId} AND is_deleted=0

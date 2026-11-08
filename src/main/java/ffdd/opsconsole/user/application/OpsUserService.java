@@ -25,6 +25,7 @@ import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.user.domain.UserAccountActionOverview;
+import ffdd.opsconsole.user.domain.UserAccountActionListView;
 import ffdd.opsconsole.user.domain.UserAccountActionContext;
 import ffdd.opsconsole.user.domain.UserAccountListEntryView;
 import ffdd.opsconsole.user.domain.UserAccountView;
@@ -268,6 +269,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                     "次数 5-20，时长 12-48 小时"));
 
     private final UserOpsRepository userRepository;
+    private final ffdd.opsconsole.user.mapper.UserAccountActionMapper accountActionMapper;
     private final TreasuryCoverageFacade coverageFacade;
     private final PlatformConfigFacade configFacade;
     private final FinanceWithdrawalControlFacade financeWithdrawalControlFacade;
@@ -806,6 +808,22 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
 
     public ApiResult<UserAccountActionOverview> accountActionOverview() {
         return ApiResult.ok(loadAccountActionOverview());
+    }
+
+    @Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+    public ApiResult<PageResult<UserAccountActionListView>> accountActionAccounts(
+            String status, int pageNum, int pageSize) {
+        String normalized = status == null ? "FROZEN" : status.trim().toUpperCase(Locale.ROOT);
+        if (!Set.of("ACTIVE", "FROZEN", "BANNED", "RESTRICTED", "DISABLED").contains(normalized)) {
+            return ApiResult.fail(422, "ACCOUNT_ACTION_STATUS_INVALID");
+        }
+        if (pageNum < 1 || pageNum > 100_000 || pageSize < 1 || pageSize > 100) {
+            return ApiResult.fail(422, "ACCOUNT_ACTION_PAGE_INVALID");
+        }
+        long total = accountActionMapper.countAccounts(normalized);
+        List<UserAccountActionListView> records = accountActionMapper.pageAccounts(
+                normalized, (pageNum - 1) * pageSize, pageSize);
+        return ApiResult.ok(new PageResult<>(total, pageNum, pageSize, records));
     }
 
     public ApiResult<UserAccountView> accountActionAccount(String userKey) {

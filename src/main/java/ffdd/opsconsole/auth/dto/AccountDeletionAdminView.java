@@ -11,6 +11,7 @@ public record AccountDeletionAdminView(
         LocalDateTime reviewedAt,
         LocalDateTime completedAt,
         String reason,
+        String originalReason,
         String blockReason,
         boolean sessionsRevoked,
         boolean accountDisabled) {

@@ -26,6 +26,7 @@ import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.treasury.application.OpsTreasuryService;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.user.domain.UserAccountView;
+import ffdd.opsconsole.user.domain.UserLatestFundActivityView;
 import ffdd.opsconsole.user.domain.UserNotificationView;
 import ffdd.opsconsole.user.domain.UserOpsRepository;
 import ffdd.opsconsole.user.domain.UserSecurityStatusView;
@@ -51,6 +52,11 @@ public class OpsUser360Service {
             "nx_user",
             "nx_user_session",
             "nx_deposit_order",
+            "nx_payment_record",
+            "nx_topup_card_admission",
+            "nx_vietqr_intent",
+            "nx_vietqr_reconciliation",
+            "nx_hdpay_payin_order",
             "nx_withdrawal_order",
             "nx_wallet_ledger",
             "nx_user_device",
@@ -68,6 +74,7 @@ public class OpsUser360Service {
     private final OpsRiskService riskService;
     private final AuditLogService auditLogService;
     private final UserOpsRepository userRepository;
+    private final ffdd.opsconsole.user.mapper.UserLatestFundActivityMapper latestFundActivityMapper;
     private final AdminOperatorRoleResolver roleResolver;
     private final EventOutboxService outboxService;
     private final ffdd.opsconsole.finance.application.FinanceSupportReadService financeSupport;
@@ -168,6 +175,13 @@ public class OpsUser360Service {
         Map<String, Object> withdrawalSection = withdrawals(withdrawals.getRecords(),totals,role);
         withdrawalSection.put("total",withdrawals.getTotal());
         sourceStatus(withdrawalSection, withdrawalRead);
+        Read<UserLatestFundActivityView> latestDepositRead = canFinance
+                ? read(() -> ApiResult.ok(latestFundActivityMapper.latestDeposit(userId,
+                        java.time.LocalDateTime.ofInstant(Instant.now(), ffdd.opsconsole.shared.config.BusinessCalendar.STORAGE_ZONE))))
+                : Read.hiddenRead();
+        Read<UserLatestFundActivityView> latestWithdrawalRead = canFinance
+                ? read(() -> ApiResult.ok(latestFundActivityMapper.latestWithdrawal(userId)))
+                : Read.hiddenRead();
         Map<String, Object> teamSection = canGrowth
                 ? safeSection(() -> team(userId))
                 : hiddenSection();
@@ -227,6 +241,12 @@ public class OpsUser360Service {
                         "media URLs must come from nx_admin media upload APIs",
                         "sunset products are historical compatibility only"));
         trimForRole(response, role, full, canFinance, canGrowth, canDevices, canCommerce);
+        if (canFinance) {
+            response.put("latestDeposit", latestDepositRead.value());
+            response.put("latestDepositStatus", latestDepositRead.ready() ? "READY" : "ERROR");
+            response.put("latestWithdrawal", latestWithdrawalRead.value());
+            response.put("latestWithdrawalStatus", latestWithdrawalRead.ready() ? "READY" : "ERROR");
+        }
         List<String> cardsViewed = response.keySet().stream()
                 .filter(key -> !Set.of("sources", "redlines", "hub").contains(key))
                 .toList();
