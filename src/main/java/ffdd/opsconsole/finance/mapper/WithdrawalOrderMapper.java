@@ -607,11 +607,12 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
     @Select("""
             SELECT withdrawal_no FROM (
                 SELECT withdrawal_no,id,
-                       CASE WHEN status='EXTENDED_HOLD' AND chain IN ('USDT-BEP20','USDT-ERC20')
+                       CASE WHEN #{complianceEnabled,jdbcType=BOOLEAN} IS NOT NULL
+                                  AND status='EXTENDED_HOLD' AND chain IN ('USDT-BEP20','USDT-ERC20')
                                   AND ((d2_lifecycle_owner IN ('H1_PHASE_COOLDOWN','H1_ZERO_DAY_AUTO_REVIEW')
                                         AND d2_previous_status='REVIEW_PASSED')
                                        OR (d2_lifecycle_owner='H1_COMPLIANCE_HOLD' AND d2_previous_status='REVIEW_PENDING'))
-                            THEN TIMESTAMPADD(DAY,CASE WHEN #{complianceEnabled} AND amount>1000
+                            THEN TIMESTAMPADD(DAY,CASE WHEN #{complianceEnabled,jdbcType=BOOLEAN} AND amount>1000
                                                        THEN #{cooldownDays} ELSE 0 END,created_at)
                             ELSE d2_hold_until END effective_hold_until
                   FROM nx_withdrawal_order
@@ -622,7 +623,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
              LIMIT 500
             """)
     List<String> findExpiredLifecycleNos(@Param("now") LocalDateTime now,
-                                        @Param("complianceEnabled") boolean complianceEnabled,
+                                        @Param("complianceEnabled") Boolean complianceEnabled,
                                         @Param("cooldownDays") int cooldownDays);
 
     @Update("""
