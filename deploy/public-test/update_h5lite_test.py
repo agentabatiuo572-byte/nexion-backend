@@ -130,6 +130,7 @@ def container(name):
         '"pid":{{json .State.Pid}},"memory":{{json .HostConfig.Memory}},'
         '"swap":{{json .HostConfig.MemorySwap}},"mounts":{{json .Mounts}}}', name))
     require(value['running'] is True and value['pid'] > 0, 'CI_NOT_RUNNING')
+    value['mounts'] = sorted(value['mounts'], key=lambda mount: mount['Destination'])
     return value
 
 

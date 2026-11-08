@@ -217,6 +217,9 @@ their lock/config pins, the separately pinned resource controller, the two CI
 bound files without changing their inodes, and the new Lite job/state/root.
 It preserves the exact original budget, retirement/CI receipts, existing jobs,
 nginx, file modes/owners and prior timer state; AUTO remains absent.
+Container identity comparisons sort Docker's mount list by destination because
+inspect can return the same mounts in different orders; every mount field and
+all other identity checks remain part of the comparison.
 
 ```text
 /usr/bin/python3 -I /mnt/test-scratch/uvel-tests/be27-lite-test-entry-20261108/update_h5lite_test.py /mnt/test-scratch/uvel-tests/be27-lite-test-entry-20261108/stage-REVIEW_ID NEW_LOCK_SHA256 NEW_RESOURCE_SHA256
@@ -240,7 +243,7 @@ Candidate pins for independent review (no immutable publication commit yet):
 | --- | --- |
 | New host-specific lock | `4fceecda7653f32a20b5754e1ae7addf557b55b22c7b15102431718a5a094603` |
 | Resource controller outside closure | `b27930659907643b66b9b960681a506ec67d481f3c548bd2069c4b7df084b5f2` |
-| One-time updater outside closure | `a5fd5e4d3c772774a90f1303a62167c7c2c259415b714d1d1c0816087124274b` |
+| One-time updater outside closure | `0fe3ae652ad390cef8d20b88442a11913e30722ae7c334772e7f2d207b6e7cf6` |
 
 The new CI source preserves the live bound script's cgroup ancestry and 20%
 memory checks, exact backend Maven limits/skip flag and existing
