@@ -591,3 +591,16 @@ WHERE r.status=1 AND r.is_deleted=0 AND p.status=1 AND p.is_deleted=0
     OR (r.role_code='RISK' AND p.permission_code='content_i5_read')
     OR (r.role_code IN ('SUPER_ADMIN','FINANCE','FINANCE_LEAD','RISK','AUDITOR') AND p.permission_code='finance_d6_read'))
 ON DUPLICATE KEY UPDATE is_deleted=0, updated_at=NOW();
+
+-- B38-BE-03 user decision: only active SUPER_ADMIN may investigate unknown results.
+UPDATE nx_admin_role_permission rp
+JOIN nx_admin_role r ON r.id=rp.role_id
+JOIN nx_admin_permission p ON p.id=rp.permission_id
+SET rp.is_deleted=1,rp.updated_at=NOW()
+WHERE p.permission_code='platform_a2_unknown_investigate' AND r.role_code<>'SUPER_ADMIN';
+
+INSERT INTO nx_admin_role_permission (role_id,permission_id,is_deleted)
+SELECT r.id,p.id,0 FROM nx_admin_role r JOIN nx_admin_permission p
+WHERE r.role_code='SUPER_ADMIN' AND r.status=1 AND r.is_deleted=0
+  AND p.permission_code='platform_a2_unknown_investigate' AND p.status=1 AND p.is_deleted=0
+ON DUPLICATE KEY UPDATE is_deleted=0,updated_at=NOW();
