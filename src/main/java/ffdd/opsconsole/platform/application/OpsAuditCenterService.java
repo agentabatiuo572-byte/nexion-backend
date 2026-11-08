@@ -327,7 +327,8 @@ public class OpsAuditCenterService {
         if (descriptor != null) {
             boolean j1Restore = OpsKillSwitchService.isRestoreCommand(command);
             boolean superAdminProposal = j1Restore || "A1".equals(descriptor.sourceDomain())
-                    || superAdminProposalCommand(command) || A4RegistryApproval.supports(command);
+                    || superAdminProposalCommand(command) || A4RegistryApproval.supports(command)
+                    || AuditReplayBusinessPermissionGuard.isE4Refund(command);
             ticket.setAction(descriptor.action());
             ticket.setObjectText(descriptor.objectId());
             ticket.setBeforeValue(H4GrowthApproval.supports(command) ? "H4 original configuration: " + descriptor.objectId() : descriptor.beforeValue());
@@ -335,7 +336,7 @@ public class OpsAuditCenterService {
             if (j1Restore) {
                 ticket.setOperatorRole(normalizeOptionalText(accessPolicy.current().roleCode(), "运营员", 32));
             } else if (AuditReplayBusinessPermissionGuard.isE4Refund(command)) {
-                ticket.setOperatorRole("财务主管");
+                ticket.setOperatorRole(accessPolicy.authenticatedOperatorRoleLabel());
             } else if (H7VoucherDisposition.isOperation(command)) {
                 ticket.setOperatorRole(accessPolicy.authenticatedOperatorRoleLabel());
             } else if ("F5".equals(descriptor.sourceDomain())) {

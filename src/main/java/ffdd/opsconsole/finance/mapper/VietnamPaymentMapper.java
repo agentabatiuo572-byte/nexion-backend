@@ -414,6 +414,18 @@ public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
     Map<String, Object> findFxQuoteConfig();
 
     @Select("""
+            SELECT t.operation_id AS operationId, t.status, t.operator_name AS submittedBy,
+                   t.created_at AS submittedAt, t.decided_at AS decidedAt,
+                   CAST(JSON_UNQUOTE(JSON_EXTRACT(t.command_json, '$.params.values.expectedVersion')) AS UNSIGNED) AS expectedVersion
+              FROM nx_audit_operation_ticket t
+             WHERE t.source_domain = 'D' AND t.is_deleted = 0
+               AND JSON_UNQUOTE(JSON_EXTRACT(t.command_json, '$.domain')) = 'D'
+               AND JSON_UNQUOTE(JSON_EXTRACT(t.command_json, '$.op')) = 'd6_fx_quote'
+             ORDER BY t.id DESC LIMIT 1
+            """)
+    Map<String, Object> findLatestFxApproval();
+
+    @Select("""
             SELECT id, base_rate_before AS beforeBaseRateVndPerUsdt,
                    base_rate_after AS baseRateVndPerUsdt,
                    buy_spread_before AS beforeBuySpreadPct,

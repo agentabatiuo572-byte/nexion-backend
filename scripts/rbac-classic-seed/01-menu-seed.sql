@@ -256,12 +256,12 @@ JOIN nx_admin_menu m ON m.id=rm.menu_id
 WHERE m.menu_code LIKE 'M%';
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'M%' WHERE r.role_code='RISK';
--- 内置 SUPPORT 仅客服域；重跑 seed 收紧旧默认关系，不改其它角色或账号角色关系。
+-- SUPPORT keeps the scoped D4 read entry as well as service menus.
 DELETE rm FROM nx_admin_role_menu rm
 JOIN nx_admin_role r ON r.id=rm.role_id AND r.role_code='SUPPORT';
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m
-WHERE r.role_code='SUPPORT' AND m.menu_code IN ('M','M1','M2','M3','M4','M5');
+WHERE r.role_code='SUPPORT' AND m.menu_code IN ('M','M1','M2','M3','M4','M5','D','D4');
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('M','M5') WHERE r.role_code='CONTENT';
 -- B: 非客服业务角色态势概览。
@@ -287,3 +287,18 @@ JOIN nx_admin_role_menu rm ON rm.role_id=finance_role.id AND rm.is_deleted=0
 WHERE lead_role.role_code='FINANCE_LEAD' AND lead_role.is_deleted=0;
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('L','L1','L2','L4','L5','L6') WHERE r.role_code='GROWTH';
+
+-- B38 menu reachability follows exact read grants, including upgraded soft-deleted rows.
+UPDATE nx_admin_role_menu rm
+JOIN nx_admin_role r ON r.id=rm.role_id
+JOIN nx_admin_menu m ON m.id=rm.menu_id
+SET rm.is_deleted=1
+WHERE r.role_code IN ('GROWTH','CONFIG_ADMIN','CONTENT','SUPPORT') AND m.menu_code='D6';
+INSERT INTO nx_admin_role_menu (role_id,menu_id,is_deleted)
+SELECT r.id,m.id,0 FROM nx_admin_role r JOIN nx_admin_menu m
+WHERE r.status=1 AND r.is_deleted=0 AND m.status=1 AND m.is_deleted=0
+  AND ((r.role_code='FINANCE_LEAD' AND m.menu_code IN ('A','A2','E','E4'))
+    OR (r.role_code='SUPPORT' AND m.menu_code IN ('D','D4'))
+    OR (r.role_code='RISK' AND m.menu_code IN ('I','I5'))
+    OR (r.role_code IN ('SUPER_ADMIN','FINANCE','FINANCE_LEAD','RISK','AUDITOR') AND m.menu_code IN ('D','D6')))
+ON DUPLICATE KEY UPDATE is_deleted=0, updated_at=NOW();

@@ -299,6 +299,13 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     public ApiResult<Void> validateProposal(AuditReplayCommand command) {
+        if (isE4Refund(command)) {
+            Long actor = A2ReplayContext.authenticatedAdminId();
+            boolean authorizedRole = superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())
+                    || permissions.getPermissionGrantRoles(actor, E4_REFUND_AUTHORITY).contains("FINANCE_LEAD");
+            return authorizedRole && permissions.getPermissionCodes(actor).contains(E4_REFUND_AUTHORITY)
+                    ? ApiResult.ok() : ApiResult.fail(403, "E4_REFUND_MAKER_FORBIDDEN");
+        }
         if (command != null && OpsNexMarketService.isRetiredStakingReplay(command.domain(), command.op())) {
             return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), OpsErrorCode.RETIRED_FEATURE.name());
         }
@@ -564,6 +571,7 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     ApiResult<Void> validateRejection(AuditReplayCommand command) {
+        if (isE4Refund(command)) return validateRefundChecker();
         if (A4RegistryApproval.isOperation(command)) {
             return a4RegistryApproval.validateChecker();
         }
@@ -624,6 +632,7 @@ public class AuditReplayBusinessPermissionGuard {
      * Other commands retain their existing replay-time business guard.
      */
     public ApiResult<Void> validateApproval(AuditReplayCommand command) {
+        if (isE4Refund(command)) return validateRefundChecker();
         if (isF5StatusUiAlias(command)) {
             return ApiResult.fail(422, "F5_COMMISSION_STATUS_COMMAND_REQUIRED");
         }
@@ -713,6 +722,13 @@ public class AuditReplayBusinessPermissionGuard {
             OpsTeamService.validateBinaryUiConfig(value(command.params(), "key"), value(command.params(), "value"));
         }
         return ApiResult.ok();
+    }
+
+    private ApiResult<Void> validateRefundChecker() {
+        return superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())
+                && permissions.getPermissionCodes(A2ReplayContext.authenticatedAdminId())
+                        .containsAll(Set.of("platform_a2_operation_approve", E4_REFUND_AUTHORITY))
+                ? ApiResult.ok() : ApiResult.fail(403, "E4_REFUND_APPROVAL_FORBIDDEN");
     }
 
     private ApiResult<Void> validateCourseRewardChecker() {
@@ -1079,16 +1095,14 @@ public class AuditReplayBusinessPermissionGuard {
             if (preview.getCode() != 0) return ApiResult.fail(preview.getCode(), preview.getMessage());
             var values = preview.getData();
             return ApiResult.ok(new DelegatedProposalDescriptor(
-                    "D5".equals(source) ? "放宽提现参数" : "放宽越南盾提现参数", target.id(),
+                    "D5".equals(source) ? "放宽提现参数" : "D6".equals(source) ? "调整敏感汇率" : "放宽越南盾提现参数", target.id(),
                     (String) values.get("before"), (String) values.get("after"), source, "fund", true, target));
         }
         if (command != null && "A".equals(command.domain())
                 && A1_ACCOUNT_PROPOSAL_AUTHORITIES.containsKey(text(command.op()))) {
             return validateA1AccountProposalContext(request, command, delegated);
         }
-        if (isE4Refund(command) && permissions
-                .getPermissionGrantRoles(A2ReplayContext.authenticatedAdminId(), E4_REFUND_AUTHORITY).equals(Set.of("FINANCE_LEAD"))
-                && !superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())) {
+        if (isE4Refund(command)) {
             Object rawOrderNo = command.params() == null ? null : command.params().get("orderNo");
             if (!(rawOrderNo instanceof String suppliedOrderNo) || suppliedOrderNo.isBlank()) {
                 return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");

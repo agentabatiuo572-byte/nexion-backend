@@ -1,9 +1,12 @@
 package ffdd.opsconsole.platform.application;
 
 import ffdd.opsconsole.emergency.application.OpsKillSwitchService;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
 import ffdd.opsconsole.content.application.OpsI18nLearningService;
+import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
 
 import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.growth.application.H8RewardParamApproval;
@@ -64,6 +67,7 @@ public class A2AccessPolicy {
     private final AdminOperatorRoleResolver roleResolver;
     private final AuditOperationTicketMapper ticketMapper;
     private final ffdd.opsconsole.shared.security.AdminPermissionCache permissions;
+    private final ObjectMapper objectMapper;
     @Autowired
     private AuditReplayBusinessPermissionGuard replayBusinessPermissionGuard;
 
@@ -123,7 +127,7 @@ public class A2AccessPolicy {
     private Scope scope(String role, String actor, List<String> domains) {
         return switch (role == null ? "" : role.toUpperCase(Locale.ROOT)) {
             case "SUPER_ADMIN", "AUDITOR" -> new Scope(role, actor, null, false);
-            case "FINANCE" -> new Scope(role, actor, List.of("D"), false);
+            case "FINANCE", "FINANCE_LEAD" -> new Scope(role, actor, List.of("D"), false);
             case "RISK" -> new Scope(role, actor, List.of("C", "K"), false);
             case "GROWTH" -> new Scope(role, actor, List.of("E", "H"), false);
             case "CONTENT" -> new Scope(role, actor, List.of("I"), false);
@@ -163,6 +167,10 @@ public class A2AccessPolicy {
     }
 
     boolean canAccessOwnBusinessProposal(AuditReplayCommand command, long actorId) {
+        if (WithdrawalConfigApproval.supports(command)
+                && replayBusinessPermissionGuard.canReadOwnFinanceProposal(command, actorId, permissions.getPermissionCodes(actorId))) {
+            return true;
+        }
         if (A4RegistryApproval.supports(command)) {
             return permissions.getPermissionCodes(actorId).contains(A4RegistryApproval.MAKER_AUTHORITY);
         }
@@ -263,7 +271,7 @@ public class A2AccessPolicy {
     /** Rechecks the row selected under the decision transaction's lock. */
     public boolean canAccessTicket(AuditOperationTicketEntity ticket) {
         Scope scope = current();
-        Long makerId = ticket != null && scope.ownActorOnly()
+        Long makerId = ticket != null && (scope.ownActorOnly() || "FINANCE_LEAD".equals(scope.roleCode()))
                 ? ticketMapper.selectMakerAudits(List.of(ticket.getOperationId())).stream().findFirst()
                         .map(AuditOperationTicketMapper.MakerAudit::makerId).orElse(null)
                 : null;
@@ -281,6 +289,16 @@ public class A2AccessPolicy {
         char first = Character.toUpperCase(ticket.getSourceDomain().trim().charAt(0));
         if (first < 'A' || first > 'M') {
             return false;
+        }
+        if ("FINANCE_LEAD".equals(scope.roleCode()) && first == 'E' && makerId != null && StringUtils.hasText(ticket.getCommandJson())
+                && makerId.equals(A2ReplayContext.authenticatedAdminId())
+                && permissions.getPermissionCodes(makerId).contains(AuditReplayBusinessPermissionGuard.E4_REFUND_AUTHORITY)) {
+            try {
+                var command = objectMapper.readTree(ticket.getCommandJson());
+                return "E".equals(command.path("domain").asText()) && "e4_order_refund".equals(command.path("op").asText());
+            } catch (JsonProcessingException invalidCommand) {
+                return false;
+            }
         }
         return scope.ownActorOnly()
                 ? makerId != null && makerId.equals(A2ReplayContext.authenticatedAdminId())

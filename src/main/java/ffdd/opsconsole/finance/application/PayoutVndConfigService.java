@@ -302,7 +302,8 @@ public class PayoutVndConfigService {
                 || decimal(after.get("maxAmountUsd")).compareTo(decimal(before.get("maxAmountUsd"))) > 0;
     }
 
-    private boolean coverageHealthy() {
+    /** Shared D7 funding gate; D6 base-price increases must meet the same reliability requirements. */
+    public boolean coverageHealthy() {
         try {
             TreasuryCoverageSnapshot snapshot = coverage.snapshot();
             return snapshot != null && snapshot.reliable() && snapshot.coverageRatio() != null
