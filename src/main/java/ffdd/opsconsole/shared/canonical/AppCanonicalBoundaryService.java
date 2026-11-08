@@ -594,6 +594,7 @@ public class AppCanonicalBoundaryService {
                 "activatedAt", epochMillis(device.activatedAt()), "deactivatedAt", epochMillis(device.deactivatedAt()),
                 "purchasedAt", epochMillis(device.purchasedAt()),
                 "dailyUsdt", dailyUsdt, "dailyNex", dailyNex,
+                "monthlyTargetActive", device.monthlyTargetUsdt()!=null,
                 "capabilityTops", capabilityTops, "capabilityTier", capabilityTier,
                 "gpuModel", device.gpuModel(), "vramTotalGb", device.vramTotalGb(),
                 "basePowerW", device.basePowerW(), "location", device.location(),

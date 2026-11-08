@@ -43,6 +43,7 @@ public interface DeviceMonthlyTargetMapper {
               algorithm,u,weights_json,first_product_version,first_e3_version,first_monthly_target_usdt,first_monthly_target_band_pct,first_capacity_pct)
             VALUES(#{deviceId},#{cycleStart},#{cycleEnd},#{cycleIndex},#{userId},#{instanceNo},#{algorithm},#{u},#{weightsJson},
               #{firstProductVersion},#{firstE3Version},#{firstMonthlyTargetUsdt},#{firstMonthlyTargetBandPct},#{firstCapacityPct})
+            ON DUPLICATE KEY UPDATE user_device_id=VALUES(user_device_id)
             """)
     int insert(Row row);
     @Update("""

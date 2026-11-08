@@ -116,12 +116,12 @@ public class SupportFundDeviceEvidence {
             require(simulation.targetCycleStart()==null && base.multiply(simulation.e3Multiplier()).setScale(6,java.math.RoundingMode.HALF_UP).compareTo(reward)==0);
         } else {
             var snapshot=targetSnapshot(simulation.targetSnapshotJson());
-            require("USDT".equals(simulation.asset()) && base.signum()>0 && simulation.durationSeconds()<=3600
-                &&snapshot.cycleStart().equals(simulation.targetCycleStart()) && !simulation.dueAt().isBefore(snapshot.cycleStart())
-                &&simulation.dueAt().isBefore(snapshot.cycleEnd()) && snapshot.baseReward().compareTo(base)==0
-                &&snapshot.durationSeconds()==simulation.durationSeconds() && snapshot.reward().compareTo(reward)==0
-                &&snapshot.capacityPct().movePointLeft(2).compareTo(simulation.e3Multiplier())==0
-                &&ffdd.opsconsole.device.application.DeviceMonthlyTargetPacing.recompute(snapshot).compareTo(reward)==0);
+            require("USDT".equals(simulation.asset()) && base.signum()>0
+                &&simulation.durationSeconds()<=ffdd.opsconsole.device.application.DeviceMonthlyTargetPacing.D_CAP
+                &&simulation.targetCycleStart()!=null && !simulation.dueAt().isBefore(simulation.targetCycleStart())
+                &&snapshot.cycleSeconds()>=28*86400 && snapshot.cycleSeconds()<=31*86400
+                &&simulation.dueAt().isBefore(simulation.targetCycleStart().plusSeconds(snapshot.cycleSeconds()))
+                &&ffdd.opsconsole.device.application.DeviceMonthlyTargetPacing.recompute(snapshot,base,simulation.durationSeconds()).compareTo(reward)==0);
         }
         var usd=money(r.get("rewardUsdt"));var nex=money(r.get("rewardNex"));
         var baseNex="UVT".equals(simulation.asset())?reward:BigDecimal.ZERO;var dailyNex=nex.subtract(baseNex);
@@ -156,8 +156,8 @@ public class SupportFundDeviceEvidence {
         }
         return new Original(r,t,ledgers,earnings,List.copyOf(events),simulation);
     }
-    private ffdd.opsconsole.device.application.DeviceMonthlyTargetPacing.Snapshot targetSnapshot(String value) {
-        try {return json.readValue(value,ffdd.opsconsole.device.application.DeviceMonthlyTargetPacing.Snapshot.class);}
+    private ffdd.opsconsole.device.application.DeviceMonthlyTargetPacing.Evidence targetSnapshot(String value) {
+        try {return ffdd.opsconsole.device.application.DeviceMonthlyTargetPacing.evidence(json.readValue(value,String.class));}
         catch(com.fasterxml.jackson.core.JsonProcessingException invalid){throw failure();}
     }
     private void wallet(JsonNode w,Map<String,Object> raw,String side,String incarnation,long revision){keys(w,Set.of("id","customerId","incarnation","revision","version","usdtAvailable","nexAvailable","cregisRiskHeld","pendingWithdraw","sandbox","deleted","createdAt"));require(incarnation.equals(text(w.path("incarnation")))&&number(w.path("revision"))==revision);

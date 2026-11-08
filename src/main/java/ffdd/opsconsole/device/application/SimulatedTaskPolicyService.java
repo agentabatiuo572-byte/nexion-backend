@@ -14,6 +14,7 @@ import java.time.LocalDateTime;
 import java.util.*;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.beans.factory.ObjectProvider;
 
 /** Published configuration history; reads never publish or repair a missing past version. */
@@ -25,6 +26,8 @@ public class SimulatedTaskPolicyService {
     private final ObjectProvider<DeviceOpsRepository> devices;
     private final ObjectMapper json;
     private final Clock clock;
+    private final SimulatedTaskPolicyHistory historyLoader;
+    private final java.util.concurrent.atomic.AtomicReference<SimulatedTaskPolicyHistory.History> history = new java.util.concurrent.atomic.AtomicReference<>();
     public record TaskTypeSnapshot(String taskTypeId,long typeVersion,String name,String taskClass,
             int durationSeconds,BigDecimal baseReward,String asset,boolean enabled) { }
     public record PolicyVersion(String productKey,long version,LocalDateTime effectiveAt,
@@ -34,7 +37,44 @@ public class SimulatedTaskPolicyService {
     public record ProductView(List<String> allowedTaskTypeIds,List<String> allowedTaskClasses,long productTaskPolicyVersion,
             LocalDateTime productTaskPolicyEffectiveAt) { }
 
+    @Transactional(readOnly=true)
     public PolicyVersion policyAt(String productKey,LocalDateTime at) {
+        var snapshot=historyAtCallerEpoch();
+        return snapshot==null?policyAtDatabase(productKey,at):policyAt(snapshot,productKey,at);
+    }
+    private SimulatedTaskPolicyHistory.History historyAtCallerEpoch() {
+        long epoch=mapper.epoch(); // Plain PK read in the caller's RR snapshot; no hot-path lock.
+        var snapshot=history.get();
+        if(snapshot==null || epoch>snapshot.epoch()) {
+            var loaded=historyLoader.load();
+            snapshot=history.accumulateAndGet(loaded,(old,next)->old==null||next.epoch()>old.epoch()?next:old);
+        }
+        // An older RR view, or a publication not yet committed, must resolve against its own DB view.
+        return snapshot.epoch()==epoch && snapshot.cacheable()?snapshot:null;
+    }
+    private PolicyVersion policyAt(SimulatedTaskPolicyHistory.History history,String key,LocalDateTime at) {
+        ProductVersion product=null;
+        for(var p:history.products()) if(p.productKey().equals(key)&&!p.effectiveAt().isAfter(at)) product=p;
+        if(product==null)throw new BizException(422,"SIMULATED_PRODUCT_POLICY_HISTORY_MISSING");
+        E3Version e3=null;
+        for(var e:history.e3()) if(!e.effectiveAt().isAfter(at)) e3=e;
+        if(e3==null)throw new BizException(422,"SIMULATED_E3_POLICY_HISTORY_MISSING");
+        var current=new LinkedHashMap<String,TypeVersion>();
+        for(var type:history.types()) if(!type.effectiveAt().isAfter(at)) current.put(type.taskTypeId(),type);
+        boolean byClass=product.allowedTaskClassesJson()!=null;
+        var scope=strings(byClass?product.allowedTaskClassesJson():product.allowedTaskTypeIdsJson());
+        var versions=current.values().stream().filter(t->scope.contains(byClass?t.taskClass():t.taskTypeId())).toList();
+        if(!byClass&&versions.size()!=scope.size())throw new BizException(422,"SIMULATED_TASK_TYPE_HISTORY_MISSING");
+        var effective=product.effectiveAt().isAfter(e3.effectiveAt())?product.effectiveAt():e3.effectiveAt();
+        var types=new ArrayList<TaskTypeSnapshot>();
+        for(var t:versions) {
+            if(t.effectiveAt().isAfter(effective))effective=t.effectiveAt();
+            types.add(new TaskTypeSnapshot(t.taskTypeId(),t.version(),t.name(),t.taskClass(),t.durationSeconds(),t.baseReward(),t.asset(),t.enabled()));
+        }
+        return new PolicyVersion(key,product.version(),effective,List.copyOf(types),e3.version(),
+                Map.copyOf(decode(e3.configJson(),new TypeReference<Map<String,String>>(){})),product.monthlyTargetUsdt(),product.monthlyTargetBandPct());
+    }
+    PolicyVersion policyAtDatabase(String productKey,LocalDateTime at) {
         var product=mapper.productAt(productKey,at);
         if(product==null)throw new BizException(422,"SIMULATED_PRODUCT_POLICY_HISTORY_MISSING");
         var e3=mapper.e3At(at);
@@ -59,7 +99,26 @@ public class SimulatedTaskPolicyService {
                 Map.copyOf(decode(e3.configJson(),new TypeReference<Map<String,String>>(){})),product.monthlyTargetUsdt(),product.monthlyTargetBandPct());
     }
 
+    @Transactional(readOnly=true)
     public PolicyVersion nextPolicyAfter(String productKey,LocalDateTime after,LocalDateTime notAfter) {
+        var snapshot=historyAtCallerEpoch();
+        if(snapshot==null)return nextPolicyAfterDatabase(productKey,after,notAfter);
+        ProductVersion product=null; LocalDateTime next=null;
+        for(var p:snapshot.products()) if(p.productKey().equals(productKey)) {
+            if(!p.effectiveAt().isAfter(after))product=p;
+            else if(!p.effectiveAt().isAfter(notAfter)&&(next==null||p.effectiveAt().isBefore(next)))next=p.effectiveAt();
+        }
+        for(var e:snapshot.e3()) if(e.effectiveAt().isAfter(after)&&!e.effectiveAt().isAfter(notAfter)
+                &&(next==null||e.effectiveAt().isBefore(next)))next=e.effectiveAt();
+        if(product!=null) {
+            boolean byClass=product.allowedTaskClassesJson()!=null;
+            var scope=strings(byClass?product.allowedTaskClassesJson():product.allowedTaskTypeIdsJson());
+            for(var t:snapshot.types()) if(scope.contains(byClass?t.taskClass():t.taskTypeId())&&t.effectiveAt().isAfter(after)
+                    &&!t.effectiveAt().isAfter(notAfter)&&(next==null||t.effectiveAt().isBefore(next)))next=t.effectiveAt();
+        }
+        return next==null?null:policyAt(snapshot,productKey,next);
+    }
+    PolicyVersion nextPolicyAfterDatabase(String productKey,LocalDateTime after,LocalDateTime notAfter) {
         var product=mapper.productAt(productKey,after);
         LocalDateTime next=mapper.nextProduct(productKey,after,notAfter);
         var e3=mapper.nextE3(after,notAfter);
@@ -72,7 +131,7 @@ public class SimulatedTaskPolicyService {
                 if(type!=null&&(next==null||type.isBefore(next)))next=type;
             }
         }
-        return next==null?null:policyAt(productKey,next);
+        return next==null?null:policyAtDatabase(productKey,next);
     }
 
     public TypeView typeView(String taskId) {

@@ -280,6 +280,7 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                         runtime.finishAfterAt(),runtime.nextStartAt(),runtime.currentTaskNo(),runtime.nextActionAt(),runtime.state(),"DEVICE_PAUSED");
             }
         }
+        LocalDateTime knownTargetCycleStart=null;
         for(int n=0;n<CATCH_UP_LIMIT;n++) {
             if(runtime.currentTaskNo()==null) {
                 if(runtime.stopAfterCurrent() && !runtime.nextStartAt().isBefore(runtime.finishAfterAt())
@@ -319,7 +320,7 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                 DeviceMonthlyTargetService.Quote target=null;
                 if(policy.monthlyTargetUsdt()!=null) {
                     if(phone(device))throw error(422,"MONTHLY_TARGET_DEVICE_INELIGIBLE");
-                    target=monthlyTargets.reserve(device,policy,runtime.nextStartAt(),type,pool);
+                    target=monthlyTargets.reserve(device,policy,runtime.nextStartAt(),type,pool,knownTargetCycleStart);
                     reward=target.reward();
                 }
                 var wallet=wallets.get(0);String suffix=UUID.randomUUID().toString().replace("-","").toUpperCase(Locale.ROOT);
@@ -340,6 +341,7 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                 LocalDateTime posted=now();
                 if(mapper.completeTask(task.taskNo(),posted)!=1)throw error(409,"SIMULATED_TASK_SETTLEMENT_CONFLICT");
                 settlement.settle(task,posted);
+                knownTargetCycleStart=task.targetCycleStart();
                 runtime=save(runtime,task.dueAt(),null,task.dueAt(),"RUNNING",null);
                 if(runtime.stopAfterCurrent() && !task.dueAt().isBefore(runtime.finishAfterAt())
                         || device.pendingDeactivate() && !runtime.stopAfterCurrent() && runtime.stopAt()==null)
