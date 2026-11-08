@@ -234,6 +234,9 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     @Select("""
             SELECT COUNT(*)
               FROM nx_admin_risk_score_user rs
+              JOIN nx_user u
+                ON rs.user_no = CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0'))
+               AND u.is_deleted = 0
               JOIN (
                     SELECT model_version,band_high_min
                       FROM nx_admin_risk_score_model

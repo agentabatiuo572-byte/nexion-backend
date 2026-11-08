@@ -114,8 +114,9 @@ WHERE r.role_code='RISK'
 DELETE rp FROM nx_admin_role_permission rp
 JOIN nx_admin_role r ON r.id=rp.role_id
 JOIN nx_admin_permission p ON p.id=rp.permission_id
-WHERE r.role_code <> 'SUPER_ADMIN'
-  AND p.permission_code IN ('user_c3_write','user_c3_adjust_create','user_c3_adjust_approve','user_c3_adjust_reverse');
+WHERE (r.role_code <> 'SUPER_ADMIN'
+       AND p.permission_code IN ('user_c3_write','user_c3_adjust_create','user_c3_adjust_approve','user_c3_adjust_reverse'))
+   OR (r.role_code='SUPPORT' AND LEFT(p.permission_code,8)='user_c3_');
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
 WHERE r.role_code IN ('FINANCE','FINANCE_LEAD','RISK','AUDITOR')
