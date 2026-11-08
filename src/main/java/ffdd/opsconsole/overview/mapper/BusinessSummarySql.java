@@ -15,9 +15,9 @@ public final class BusinessSummarySql {
             , deposits AS (
                 SELECT l.user_id, l.created_at AS occurred_at, l.amount,
                        CASE WHEN l.biz_type='CARD_TOPUP' THEN 'CARD'
-                            WHEN UPPER(d.chain_name) IN ('BEP20','BSC','BNB SMART CHAIN') THEN 'BEP20'
-                            WHEN UPPER(d.chain_name) IN ('ERC20','ETH','ETHEREUM') THEN 'ERC20'
-                            WHEN UPPER(d.chain_name) IN ('TRC20','TRON') THEN 'TRC20'
+                            WHEN UPPER(d.chain_name) IN ('CREGIS_USDT_BEP20','BEP20','BSC','BNB SMART CHAIN') THEN 'BEP20'
+                            WHEN UPPER(d.chain_name) IN ('CREGIS_USDT_ERC20','ERC20','ETH','ETHEREUM') THEN 'ERC20'
+                            WHEN UPPER(d.chain_name) IN ('CREGIS_USDT_TRC20','TRC20','TRON') THEN 'TRC20'
                             ELSE 'OTHER' END AS channel
                   FROM nx_wallet_ledger l
                   LEFT JOIN nx_deposit_order d ON d.ledger_id=l.id AND d.user_id=l.user_id
