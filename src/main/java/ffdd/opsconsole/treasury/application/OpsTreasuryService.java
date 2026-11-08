@@ -884,11 +884,11 @@ public class OpsTreasuryService {
         if (!StringUtils.hasText(operator)) {
             throw new BizException(400, OpsErrorCode.OPERATOR_REQUIRED.name());
         }
-        return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.executeBound(
                 D3_RESERVE_INJECTION_IDEMPOTENCY_SCOPE,
                 idempotencyKey,
                 reserveInjectionRequestHash(amount, voucherNo, reason, operator),
-                ApiResult.class,
+                ApiResult.class, "finance_d3_read", voucherNo.toUpperCase(Locale.ROOT),
                 () -> createInjectionNew(idempotencyKey.trim(), amount, voucherNo, reason, operator));
     }
 

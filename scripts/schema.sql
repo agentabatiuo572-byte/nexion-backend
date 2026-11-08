@@ -2335,6 +2335,12 @@ CREATE TABLE IF NOT EXISTS nx_admin_idempotency_record (
   idempotency_key VARCHAR(128) NOT NULL,
   request_hash CHAR(64) NOT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'PROCESSING',
+  origin_admin_id BIGINT NULL,
+  origin_method VARCHAR(12) NULL,
+  origin_path VARCHAR(512) NULL,
+  origin_target VARCHAR(512) NULL,
+  origin_read_authority VARCHAR(96) NULL,
+  rollback_confirmed TINYINT NOT NULL DEFAULT 0,
   response_json JSON NULL,
   error_message VARCHAR(512) NULL,
   expires_at DATETIME NOT NULL,
@@ -2342,10 +2348,36 @@ CREATE TABLE IF NOT EXISTS nx_admin_idempotency_record (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_admin_idem_scope_key (scope, idempotency_key),
+  KEY idx_admin_idem_origin_state (scope, origin_method, origin_path(128), status, is_deleted),
   KEY idx_admin_idem_expires (expires_at),
   KEY idx_admin_idem_status (status, updated_at),
   KEY idx_admin_idem_status_expires_deleted (status, expires_at, is_deleted),
   KEY idx_admin_idem_expiry_claim (status, is_deleted, expires_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_admin_command_investigation (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  original_record_id BIGINT NOT NULL,
+  scope VARCHAR(96) NOT NULL,
+  command_key VARCHAR(128) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  original_method VARCHAR(12) NOT NULL,
+  original_path VARCHAR(512) NOT NULL,
+  original_target VARCHAR(512) NULL,
+  original_admin_id BIGINT NOT NULL,
+  investigator_id BIGINT NOT NULL,
+  investigated_at DATETIME NOT NULL,
+  requested_conclusion VARCHAR(32) NOT NULL,
+  conclusion VARCHAR(32) NOT NULL,
+  evidence_reference VARCHAR(512) NOT NULL,
+  evidence_type VARCHAR(96) NOT NULL,
+  fact_type VARCHAR(96) NULL,
+  fact_id VARCHAR(255) NULL,
+  fact_action VARCHAR(160) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_command_investigation_original (original_record_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_audit_log (

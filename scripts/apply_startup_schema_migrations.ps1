@@ -32,6 +32,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260730_f5_commission_anomaly_event_schema.sql"),
   (Join-Path $root "scripts\migrations\20260801_admin_idempotency_expiry_recovery.sql"),
   (Join-Path $root "scripts\migrations\20260801_admin_idempotency_expiry_claim_index.sql"),
+  (Join-Path $root "scripts\migrations\20261108_b38_unknown_operation_investigation.sql"),
   # The canonical schema intentionally keeps the pre-D2 withdrawal shape. D5
   # migrations below address columns created by this rerunnable prerequisite,
   # so a fresh database must apply it before the 20260807 hard blockers.

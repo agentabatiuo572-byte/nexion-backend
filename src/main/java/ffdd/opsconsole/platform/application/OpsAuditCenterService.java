@@ -821,8 +821,32 @@ public class OpsAuditCenterService {
                 if (legacy != null) return legacy;
             }
             // Retained claims keep successful keys across expiry and fence an unresolved processing lease.
-            var receipt = idempotencyService.executeRetained(A2_COMMAND, idempotencyKey, requestHash,
-                    AuditOperationTicket.class, () -> requireSuccess(action.get()));
+            String originAuthority = null;
+            String originTarget = null;
+            if (request instanceof AuditOperationProposalRequest value) {
+                originAuthority = value.command() == null || value.command().op() == null ? null
+                        : ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.readAuthority(value.command().op().toUpperCase(Locale.ROOT));
+                var targets = value.targets() != null && !value.targets().isEmpty() ? value.targets()
+                        : value.target() == null ? List.<AuditLockTarget>of() : List.of(value.target());
+                if (!targets.isEmpty() && value.command() != null && value.command().op() != null
+                        && targets.stream().allMatch(target -> target != null && target.domain() != null
+                                && target.type() != null && target.id() != null)) {
+                    originTarget = commandHash("B38_TARGET", verb + ":" + value.command().op(), targets.stream()
+                            .distinct()
+                            .sorted(java.util.Comparator.comparing(AuditLockTarget::domain)
+                                    .thenComparing(AuditLockTarget::type).thenComparing(AuditLockTarget::id)).toList());
+                }
+            } else if (operationId != null) {
+                var originalTicket = ticketMapper.selectActiveByOperationId(operationId);
+                if (originalTicket != null) {
+                    var originalCommand = deserializeCommand(originalTicket.getCommandJson());
+                    originAuthority = originalCommand == null || originalCommand.op() == null ? null
+                            : ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.readAuthority(originalCommand.op().toUpperCase(Locale.ROOT));
+                    originTarget = verb + ":" + operationId;
+                }
+            }
+            var receipt = idempotencyService.executeBound(A2_COMMAND, idempotencyKey, requestHash,
+                    AuditOperationTicket.class, originAuthority, originTarget, () -> requireSuccess(action.get()));
             if (catalogProposal) {
                 return proposalByIdempotencyKey(idempotencyKey);
             }
