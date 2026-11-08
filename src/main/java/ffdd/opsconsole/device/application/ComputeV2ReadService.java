@@ -133,6 +133,30 @@ public class ComputeV2ReadService {
     }
 
     private ComputeV2Runtime.PendingSummary unpostedSummary(long userId,ComputeV2Runtime.PendingVerifiedSnapshot snapshot) {
+        return unpostedSummary(userId,snapshot,null);
+    }
+
+    public record RefundRuntime(ComputeV2Runtime.PendingSummary completedPending,long unfinishedTaskCount) { }
+
+    /** Reads retained work even after the order's device has been reclaimed. */
+    public RefundRuntime refundRuntime(long userId,Set<Long> deviceIds) {
+        if(deviceIds.isEmpty())return new RefundRuntime(new ComputeV2Runtime.PendingSummary(0,0,0,0),0);
+        if(runtime.isEmpty())throw new BizException(503,"COMPUTE_V2_STATE_UNAVAILABLE");
+        var snapshot=runtime.get().pendingVerifiedSnapshot(userId);
+        long unfinished=0;
+        for(long deviceId:deviceIds) {
+            var view=runtime.get().view(userId,deviceId).orElse(null);
+            if(view==null)continue;
+            if(runtime.get().completionPending(view.event().taskNo(),view.event().generation())
+                    && view.event().kind()!=ComputeV2Event.Kind.VERIFIED)
+                throw new BizException(503,"COMPUTE_V2_COMPLETION_OUTCOME_UNKNOWN");
+            if(!Set.of("COMPLETED","FAILED","HISTORICAL").contains(view.status()))unfinished++;
+        }
+        return new RefundRuntime(unpostedSummary(userId,snapshot,deviceIds),unfinished);
+    }
+
+    private ComputeV2Runtime.PendingSummary unpostedSummary(long userId,ComputeV2Runtime.PendingVerifiedSnapshot snapshot,
+                                                            Set<Long> deviceIds) {
         if (snapshot==null || snapshot.summary()==null || snapshot.events()==null || snapshot.events().size()>30_000) invalid();
         var events=new LinkedHashMap<String,ComputeV2Event>();
         long usdt=0,nex=0,nexCount=0;
@@ -147,6 +171,15 @@ public class ComputeV2ReadService {
             var summary=snapshot.summary();
             if (usdt!=summary.pendingUsdtMicros() || nex!=summary.pendingNexMicros()
                     || events.size()!=summary.pendingTaskCount() || nexCount!=summary.pendingNexTaskCount()) invalid();
+            if(deviceIds!=null) {
+                events.values().removeIf(event->!deviceIds.contains(event.deviceId()));
+                usdt=0;nex=0;nexCount=0;
+                for(var event:events.values()) {
+                    usdt=Math.addExact(usdt,event.task().rewardUsdtMicros());
+                    nex=Math.addExact(nex,event.evidence().rewardNexMicros());
+                    if(event.evidence().rewardNexMicros()>0)nexCount++;
+                }
+            }
             long count=events.size();
             var ids=new ArrayList<>(events.keySet());
             var committedAssets=new HashMap<String,Set<String>>();
