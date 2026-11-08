@@ -1,10 +1,14 @@
 import jenkins.model.Jenkins
 import org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition
+import org.jenkinsci.plugins.workflow.job.WorkflowJob
+import org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty
+import jenkins.model.BuildDiscarderProperty
+import hudson.tasks.LogRotator
 
 def j = Jenkins.get()
 def marker = new File(j.rootDir, 'nexgrid-release-v1-jobs-configured')
 if (!j.isUseSecurity() || j.numExecutors != 0) throw new IllegalStateException('CONTROLLER_SECURITY_REQUIRED')
-def repositories = [backend:'nexion-backend', pc:'nexion-frontend-pc', uniapp:'nexion-frontend-uniapp']
+def repositories = [backend:'nexion-backend', pc:'nexion-frontend-pc', uniapp:'nexion-frontend-uniapp', h5lite:'nexion-frontend-uniapp']
 if (marker.exists()) return
 def template = new File('/opt/nexgrid-ci/main.pipeline.groovy').getText('UTF-8')
 if (!template.contains('RELEASE_ARTIFACT_READY') || template.contains('DEPLOYMENT_HELD')) {
@@ -13,6 +17,11 @@ if (!template.contains('RELEASE_ARTIFACT_READY') || template.contains('DEPLOYMEN
 def originals = [:]
 repositories.each { kind, repo ->
     def job = j.getItemByFullName("nexgrid-${kind}-test")
+    if (kind == 'h5lite') {
+        if (job != null) throw new IllegalStateException('LITE_JOB_MUST_BE_NEW')
+        originals[kind] = null
+        return
+    }
     if (job == null || job.isBuilding() || job.isInQueue()) throw new IllegalStateException('IDLE_EXISTING_JOB_REQUIRED')
     if (!(job.definition instanceof CpsFlowDefinition) || !job.definition.script.contains('DEPLOYMENT_HELD')) {
         throw new IllegalStateException('EXPECTED_OLD_HOLD_REQUIRED')
@@ -23,6 +32,11 @@ repositories.each { kind, repo ->
 try {
 repositories.each { kind, repo ->
     def job = j.getItemByFullName("nexgrid-${kind}-test")
+    if (kind == 'h5lite') {
+        job = j.createProject(WorkflowJob, 'nexgrid-h5lite-test')
+        job.addProperty(new DisableConcurrentBuildsJobProperty())
+        job.addProperty(new BuildDiscarderProperty(new LogRotator(-1, 10, -1, 5)))
+    }
     def script = template.replace('@KIND@', kind).replace('@REPO@', "https://github.com/agentabatiuo572-byte/${repo}.git")
     job.setDefinition(new CpsFlowDefinition(script, true))
     job.setDescription('test CI; independent host broker verifies health/rollback before promotion. CI SUCCESS alone does not mean deployed.')
@@ -32,6 +46,10 @@ marker.setText('test release v1 configured; host auto deployment remains disable
 } catch (Exception failure) {
     originals.each { kind, previous ->
         def job = j.getItemByFullName("nexgrid-${kind}-test")
+        if (previous == null) {
+            if (job != null) job.delete()
+            return
+        }
         job.setDefinition(previous.definition)
         job.setDescription(previous.description)
         job.save()

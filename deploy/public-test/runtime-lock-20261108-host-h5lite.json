@@ -1,0 +1,18 @@
+{
+  "files": {
+    "40-release-jobs.groovy": "53a8ceef0c6a86691395ad17dddab114d9dae269b26ce337cc46897101bd87dc",
+    "ci-build.sh": "c36aa893ee426c2a3499e9ca20c116bffa6f032d0b7420a50589830df60b7ad6",
+    "database_migrations.py": "3452485f429c1d814e6e97b146fff01c692c30e9926330e2f5c5bfd048cc5ca8",
+    "h5-nginx.conf": "0b291c257f8fba985ad825ad203b6cd552e94414bd1e081fa895dacb5c02bea5",
+    "install_release.py": "00d988c27cd8b9817b36e6000ec82a9be2dc543a81d2650bc1871bfb1868de05",
+    "main.pipeline.groovy": "5b63bf6e00fb4f359d92edd5fe22efd7a4948088fc28c88519fbe8162191ddfb",
+    "nexgrid-release.service": "f55ac71a37d3f3d43762d4407c7bddc5dd1635ea96d0642dd087b4c2b9d65948",
+    "nexgrid-release.timer": "fe71ef88cdfcd950b11d802475f5d8e4fba2eb88504438dc9fec2421960357f8",
+    "public-test-policy.properties": "a18130bdffb1272d116b28a90a1cc42e3154c2f1f205f31f62f2426ed1e7d469",
+    "release_broker.py": "8b6d4e49e3ebb3fddf5cce4e471ac362e33aeb53968041fe861585ec26bd3ec4",
+    "schema_fingerprint.py": "1b585c87e0c00110328ea409e1b695de8ce0b523b5fd3452426bdac918e3a3b2",
+    "test-server.yml": "c8acdad7994b84473ff48c9183be91babe72b480ec283e1260f944330c332762",
+    "trusted_entry.py": "8ff6ec1013de85c60248e179085a2d3e8b89c1dd37bdd74b436f0d3c7d4e0148"
+  },
+  "version": 1
+}

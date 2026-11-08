@@ -21,7 +21,8 @@ RUNTIME = Path("/run/uvel-task-control")
 STATE = Path("/var/lib/uvel-task-control")
 JOBS = Path("/var/lib/docker/volumes/nexgrid_jenkins_home/_data/jobs")
 RELEASE_STATE = Path("/srv/nexgrid/cd/state.json")
-COMPONENTS = ("backend", "pc", "uniapp")
+SEALED_COMPONENTS = ("backend", "pc", "uniapp")
+COMPONENTS = (*SEALED_COMPONENTS, "h5lite")
 STOPPED_SPARE = "uvel-cloud-bge-model-fleet-7"
 STOPPED_MODAL_FLEET = {f"uvel-cloud-bge-model-fleet-{number}" for number in range(2, 8)}
 V2_SERVICE = "uvel-compute-v2-worker.service"
@@ -119,7 +120,9 @@ def load_config():
             and (not models if retired else len(models) >= value["maxActiveExecutors"] or modal_profile),
             "EXECUTOR_RESERVATION_REQUIRED")
     require(value.get("buildControl", {}).get("type") == "docker", "CI_CONTAINER_LIMIT_REQUIRED")
-    require(set(value.get("buildRequests", {})) == set(COMPONENTS)
+    # Retirement receipts seal the original three requests. Extend only the
+    # already approved CI_10_GIB effective profile, never its persisted budget.
+    require(set(value.get("buildRequests", {})) == set(SEALED_COMPONENTS)
             and all(type(size) is int and 0 < size <= value["buildBudgetBytes"] for size in value["buildRequests"].values()),
             "BUILD_REQUESTS_INVALID")
     require(isinstance(value.get("workerServices"), list)
@@ -268,6 +271,7 @@ def snapshot(config):
 
 def admit_build(config, component, number):
     require(number > 0, "BUILD_NUMBER_REQUIRED")
+    require(component in config["buildRequests"], "COMPONENT_BUILD_NOT_CONFIGURED")
     require(config.get("buildsEnabled", True) is True, "HEAVY_BUILDS_DISABLED_BY_BUDGET")
     with locked():
         require(not drain_pending(), "RELEASE_DRAIN_ACTIVE")

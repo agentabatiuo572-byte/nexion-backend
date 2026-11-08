@@ -1,13 +1,14 @@
 node('nexgrid-ci') {
+  def branch = '@KIND@' == 'h5lite' ? 'h5-lite' : 'test'
   timeout(time: 40, unit: 'MINUTES') {
     try {
       stage('Isolation preflight') {
         sh 'bash /opt/nexgrid-ci/ci-network-check.sh'
       }
-      stage('Checkout test') {
+      stage('Checkout TEST source') {
         deleteDir()
-        checkout([$class: 'GitSCM', branches: [[name: '*/test']],
-          userRemoteConfigs: [[url: '@REPO@', refspec: '+refs/heads/test:refs/remotes/origin/test']],
+        checkout([$class: 'GitSCM', branches: [[name: "*/${branch}"]],
+          userRemoteConfigs: [[url: '@REPO@', refspec: "+refs/heads/${branch}:refs/remotes/origin/${branch}"]],
           extensions: [[$class: 'CloneOption', shallow: true, depth: 1, noTags: true, honorRefspec: true, timeout: 10]]])
       }
       stage('TEST contracts and build') {

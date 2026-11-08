@@ -1,0 +1,48 @@
+{
+  "changes": {
+    "40-release-jobs.groovy": {
+      "new_sha256": "53a8ceef0c6a86691395ad17dddab114d9dae269b26ce337cc46897101bd87dc",
+      "old_sha256": "33ebc3dd3598e854c205d40771ef3943587c5737a5d984a202b352896aa3da83",
+      "repository_baseline_sha256": "56b46186eb9e8ecc0bd4ebf9bb733c1c41f8285cea84b51346414047b6556082"
+    },
+    "ci-build.sh": {
+      "new_sha256": "c36aa893ee426c2a3499e9ca20c116bffa6f032d0b7420a50589830df60b7ad6",
+      "old_sha256": "ab997ab8866cc0af4f1a269d02ff94e00db85a5e457af4149d7550e8b0784144",
+      "repository_baseline_sha256": "3772341eb549aadbdcae2d18e5aa25a1b6ffab99588d1744832856026eeb9e64"
+    },
+    "install_release.py": {
+      "new_sha256": "00d988c27cd8b9817b36e6000ec82a9be2dc543a81d2650bc1871bfb1868de05",
+      "old_sha256": "72d04ef04e753f0698c0382f6cbf8b2d8c2ade1bab52d2d6b798e2f3ead2a626",
+      "repository_baseline_sha256": "27f4d34e5120bcbaea290c8dd499711755340cc7fcbd7af7334e1ca2ba7e6d71"
+    },
+    "main.pipeline.groovy": {
+      "new_sha256": "5b63bf6e00fb4f359d92edd5fe22efd7a4948088fc28c88519fbe8162191ddfb",
+      "old_sha256": "ecc862d7833c627c413a5c8e2db82939a10cdb338c6301f72faa8a60b6d3ce45",
+      "repository_baseline_sha256": "b743929bba6e8faadd039c71f97c2256c55d6f4fa4ae9b3380fd970607c68a5c"
+    },
+    "release_broker.py": {
+      "new_sha256": "8b6d4e49e3ebb3fddf5cce4e471ac362e33aeb53968041fe861585ec26bd3ec4",
+      "old_sha256": "3533eaa68bf5a7b21fbbe942097f35306ce1ac5151b50bbe33991d576946751b",
+      "repository_baseline_sha256": "3533eaa68bf5a7b21fbbe942097f35306ce1ac5151b50bbe33991d576946751b"
+    }
+  },
+  "host_old_lock_sha256": "61929e7cb3f57d3b2772748fa7fb27155c3cb0e53f6ee2f3b086a47665163cf3",
+  "new_host_lock_sha256": "4fceecda7653f32a20b5754e1ae7addf557b55b22c7b15102431718a5a094603",
+  "outside_closure": {
+    "ci_bound": {
+      "new_sha256": "c36aa893ee426c2a3499e9ca20c116bffa6f032d0b7420a50589830df60b7ad6",
+      "old_sha256": "2de25be6d6fc4460b99fd52e7e985195bc9ad025b15cd279ef0d3e1b5f216bbe"
+    },
+    "resource_control": {
+      "new_sha256": "b27930659907643b66b9b960681a506ec67d481f3c548bd2069c4b7df084b5f2",
+      "old_sha256": "129569c7d164de4c3402995dc87424f4c838a304bc5eeb788793b9ec419b09d7"
+    },
+    "updater": {
+      "automatic_restore_scope": "only changed targets; preserved external files are backed up with automatic_restore=false",
+      "sha256": "1e5e622f4c9b7a3a4a2cc39b43d5ac83ec36368e387492e021096f00f005552c"
+    }
+  },
+  "scope": "reviewed host-specific upgrade; eight unchanged closure pins come only from the verified 2026-11-08 host lock",
+  "source_baseline_commit": "2e3e301883b2364e8530efeafa4440eecac87a3a",
+  "version": 1
+}

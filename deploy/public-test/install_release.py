@@ -32,7 +32,7 @@ def mkdir(path, mode):
 
 
 def idle_jobs():
-    for kind in b.ARTIFACTS:
+    for kind in ('backend', 'pc', 'uniapp'):
         job = b.JOBS / f'nexgrid-{kind}-test'
         numbers = [int(p.name) for p in (job / 'builds').iterdir() if p.name.isdigit()]
         if numbers:
@@ -43,6 +43,8 @@ def idle_jobs():
 
 def install_ci():
     b.require(not BACKUP.exists(), 'CI_INSTALL_ALREADY_STARTED')
+    lite_job = b.JOBS / 'nexgrid-h5lite-test'
+    b.require(not lite_job.exists() and not lite_job.is_symlink(), 'LITE_JOB_MUST_BE_NEW')
     idle_jobs()
     b.require((HOME / 'queue.xml').exists(), 'JENKINS_QUEUE_FILE_REQUIRED')
     mkdir(BACKUP, 0o700)
@@ -50,7 +52,7 @@ def install_ci():
     for name in old:
         shutil.copyfile(LEGACY / name, BACKUP / name)
         (BACKUP / name).chmod(0o600)
-    for kind in b.ARTIFACTS:
+    for kind in ('backend', 'pc', 'uniapp'):
         shutil.copyfile(b.JOBS / f'nexgrid-{kind}-test/config.xml', BACKUP / f'{kind}-job.xml')
         (BACKUP / f'{kind}-job.xml').chmod(0o600)
     print('CI_BACKUP_READY; stopping only idle Jenkins controller and agent', flush=True)
@@ -68,16 +70,23 @@ def install_ci():
         b.run('docker', 'stop', '--time', '30', 'nexgrid-ci-agent', 'nexgrid-jenkins', timeout=100)
         for name in old:
             b.atomic_write(LEGACY / name, (BACKUP / name).read_bytes(), 0o644)
-        for kind in b.ARTIFACTS:
+        for kind in ('backend', 'pc', 'uniapp'):
             target = b.JOBS / f'nexgrid-{kind}-test/config.xml'
             b.atomic_write(target, (BACKUP / f'{kind}-job.xml').read_bytes(), 0o644)
             os.chown(target, 1000, 1000)
+        if lite_job.exists():
+            b.require(not lite_job.is_symlink() and lite_job.resolve() == lite_job,
+                      'LITE_JOB_PATH_REJECTED')
+            b.require(not (lite_job / 'builds').exists()
+                      or not any(path.name.isdigit() for path in (lite_job / 'builds').iterdir()),
+                      'LITE_JOB_HAS_BUILDS_OPERATOR_REQUIRED')
+            shutil.rmtree(lite_job)
         (HOME / 'nexgrid-release-v1-jobs-configured').unlink(missing_ok=True)
         if hook.exists():
             hook.rename(hook.with_suffix('.groovy.failed'))
         recreate_ci()
         raise
-    print('CI_RESTARTED; verify the release hook marker and all three builds before host setup', flush=True)
+    print('CI_RESTARTED; verify the release hook marker and all four builds before host setup', flush=True)
 
 
 def recreate_ci():
@@ -152,7 +161,8 @@ def prepare_host():
     state = {'nginx_sha256': b.digest(b.NGINX),
              'backend': {'build': 0, 'sha': 'legacy-v4', 'port': 8110},
              'pc': {'build': 0, 'sha': 'legacy-v4', 'port': 3002, 'container': 'nexgrid-pc'},
-             'uniapp': {'build': 0, 'sha': 'legacy-v4', 'port': 8081, 'container': 'nexgrid-uniapp'}}
+             'uniapp': {'build': 0, 'sha': 'legacy-v4', 'port': 8081, 'container': 'nexgrid-uniapp'},
+             'h5lite': {'build': 0, 'sha': None, 'port': None, 'container': None}}
     b.save(b.ROOT / 'state.json', state)
     for name in ['nexgrid-release.service', 'nexgrid-release.timer']:
         b.atomic_write(Path('/etc/systemd/system') / name, (b.INSTALL / name).read_bytes(), 0o644)
