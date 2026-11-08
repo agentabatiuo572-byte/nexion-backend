@@ -24,7 +24,7 @@ public interface DeviceOrderRefundImpactMapper {
                                 COALESCE(r.phone_valid_until,#{asOf})) AS cutoff
               FROM devices d JOIN nx_simulated_task t ON t.user_device_id=d.id AND t.user_id=d.user_id
               JOIN nx_simulated_device_runtime r ON r.user_device_id=d.id AND r.user_id=d.user_id
-                AND r.instance_no=t.instance_no AND d.instance_no=t.instance_no
+                AND r.instance_no=t.instance_no AND d.instance_no=t.instance_no COLLATE utf8mb4_0900_ai_ci
                 AND r.generation=t.generation AND r.current_task_no=t.task_no
               WHERE t.status='RUNNING' AND t.completed_at IS NULL AND t.posted_at IS NULL
                 AND NOT EXISTS (SELECT 1 FROM nx_compute_retired_task rt
@@ -37,7 +37,7 @@ public interface DeviceOrderRefundImpactMapper {
                   WHERE rt.user_id=t.user_id AND rt.task_no=t.task_no COLLATE utf8mb4_0900_ai_ci)
                 AND NOT EXISTS (SELECT 1 FROM nx_simulated_device_runtime r
                   WHERE r.user_device_id=d.id AND r.user_id=d.user_id AND r.instance_no=t.instance_no
-                    AND d.instance_no=t.instance_no
+                    AND d.instance_no=t.instance_no COLLATE utf8mb4_0900_ai_ci
                     AND r.generation=t.generation AND r.current_task_no=t.task_no)
             ), facts AS (
               SELECT 'PENDING' bucket,t.task_no,COALESCE(r.reward_usdt,t.reward_usdt) usdt,COALESCE(r.reward_nex,0) uvt
@@ -50,7 +50,7 @@ public interface DeviceOrderRefundImpactMapper {
                 AND (r.id IS NULL OR UPPER(r.earning_status) NOT IN ('POSTED','SUCCESS','SETTLED','CREDITED','PAID'))
                 AND NOT EXISTS (SELECT 1 FROM nx_compute_retired_task rt WHERE rt.task_id=t.id)
               UNION ALL
-              SELECT 'PENDING',t.task_no,CASE WHEN t.asset='USDT' THEN t.reward_amount ELSE 0 END,
+              SELECT 'PENDING',t.task_no COLLATE utf8mb4_0900_ai_ci,CASE WHEN t.asset='USDT' THEN t.reward_amount ELSE 0 END,
                 (CASE WHEN t.asset='UVT' THEN t.reward_amount ELSE 0 END)
                 + CASE WHEN t.cloud_daily_nex>0 AND NOT EXISTS (
                     SELECT 1 FROM nx_wallet_ledger l WHERE l.user_id=t.user_id AND l.asset='UVT' AND l.direction='IN'
@@ -65,7 +65,7 @@ public interface DeviceOrderRefundImpactMapper {
                 AND t.status IN ('CLAIMED','RUNNING','PAUSED') AND t.completed_at IS NULL AND t.proof_consumed_at IS NULL
                 AND NOT EXISTS (SELECT 1 FROM nx_compute_retired_task rt WHERE rt.task_id=t.id)
               UNION ALL
-              SELECT 'UNFINISHED',task_no,0,0 FROM simulated WHERE due_at>cutoff
+              SELECT 'UNFINISHED',task_no COLLATE utf8mb4_0900_ai_ci,0,0 FROM simulated WHERE due_at>cutoff
               UNION ALL
               SELECT 'STOPPED',t.task_no,0,0 FROM devices d
               JOIN nx_compute_task t ON t.user_device_id=d.id AND t.user_id=d.user_id
@@ -73,7 +73,7 @@ public interface DeviceOrderRefundImpactMapper {
                 AND t.task_no NOT LIKE 'CV2-%' AND t.task_no NOT LIKE 'SIM-%'
                 AND NOT EXISTS (SELECT 1 FROM nx_compute_retired_task rt WHERE rt.task_id=t.id)
               UNION ALL
-              SELECT 'STOPPED',t.task_no,0,0 FROM devices d
+              SELECT 'STOPPED',t.task_no COLLATE utf8mb4_0900_ai_ci,0,0 FROM devices d
               JOIN nx_simulated_task t ON t.user_device_id=d.id AND t.user_id=d.user_id
               WHERE t.status='CANCELLED' AND t.cancel_reason='ORDER_REFUND'
                 AND NOT EXISTS (SELECT 1 FROM nx_compute_retired_task rt
