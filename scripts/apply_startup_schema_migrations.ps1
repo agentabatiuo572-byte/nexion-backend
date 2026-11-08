@@ -465,6 +465,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261109_b37_order_refund_amount.sql")
   (Join-Path $root "scripts\migrations\20261109_b36_business_summary.sql")
   (Join-Path $root "scripts\migrations\20261109_b43_c2_account_reads_and_original_reason.sql")
+  (Join-Path $root "scripts\migrations\20261109_i5_read_token_time_precision.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
