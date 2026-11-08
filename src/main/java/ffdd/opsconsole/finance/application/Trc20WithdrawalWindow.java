@@ -30,5 +30,5 @@ class Trc20WithdrawalWindow {
         if(createdAt==null)return invalid();
         return new Window(createdAt.plusDays(days),days,!originals.isEmpty(),null);
     }
-    private Window invalid() { return new Window(null,null,true,"TRC20_ORIGINAL_PHASE_SNAPSHOT_INVALID"); }
+    private Window invalid() { return new Window(null,null,true,"TRC20_WINDOW_SNAPSHOT_INVALID"); }
 }
