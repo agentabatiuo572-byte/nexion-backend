@@ -2,7 +2,12 @@
 set -euo pipefail
 bash /opt/nexgrid-ci/ci-network-check.sh
 kind=${1:?kind required}
-test "$(git rev-parse HEAD)" = "$(git rev-parse refs/remotes/origin/test)"
+case "$kind" in
+  h5lite) branch=h5-lite ;;
+  backend|pc|uniapp) branch=test ;;
+  *) echo 'Unknown build kind' >&2; exit 33 ;;
+esac
+test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/remotes/origin/$branch")"
 # Idle CI has only 1 GiB; official drain must reserve 3 GiB before any build.
 # Check every visible cgroup v2 ancestor, not just an unlimited child.
 if ! LC_ALL=C /usr/bin/awk '
@@ -71,7 +76,7 @@ case "$kind" in
     export MAVEN_OPTS='-Xms128m -Xmx768m -XX:MaxMetaspaceSize=384m'
     export JAVA_TOOL_OPTIONS='-Djava.io.tmpdir=/home/jenkins/agent/tmp'
     # Compile/package only; business acceptance uses E2E and system business flows.
-    mvn -B -ntp -s /opt/nexgrid-ci/maven-settings.xml -Dmaven.test.skip=true '-DargLine=-Xms64m -Xmx768m -XX:MaxMetaspaceSize=384m' package
+    mvn -B -ntp -s /opt/nexgrid-ci/maven-settings.xml '-DargLine=-Xms64m -Xmx768m -XX:MaxMetaspaceSize=384m' -Dmaven.test.skip=true package
     cp target/nexion-backend-0.0.1-SNAPSHOT.jar artifacts/backend.jar
     ;;
   pc)
@@ -83,21 +88,26 @@ case "$kind" in
     # Dereference build-local dependency links; the host extractor rejects every link.
     tar -h --exclude='.env*' --exclude='*/.env*' --exclude='*/.bin' --exclude='*/cache' -czf artifacts/pc-build.tgz -C .next/standalone .
     ;;
-  uniapp)
+  uniapp|h5lite)
+    base=/app/
+    if [ "$kind" = h5lite ]; then
+      base=/h5-lite/
+      export VITE_NEXGRID_API_BASE_URL=https://18.142.169.24
+    fi
     npm ci --legacy-peer-deps --ignore-scripts --no-audit --no-fund
     npm run type-check
-    npm run build:h5:prod -- --base /app/
-    node - <<'JS'
+    npm run build:h5:prod -- --base "$base"
+    node - "$kind" "$base" <<'JS'
 const fs = require('node:fs');
 const file = 'dist/build/h5/index.html';
 let html = fs.readFileSync(file, 'utf8');
-if (!html.includes('/app/assets/')) throw new Error('H5_PUBLIC_BASE_REQUIRED');
-if (!html.includes('https://db-ip.com')) {
+if (!html.includes(process.argv[3]+'assets/')) throw new Error('H5_PUBLIC_BASE_REQUIRED');
+if (process.argv[2] === 'uniapp' && !html.includes('https://db-ip.com')) {
   html = html.replace('</body>', '<a href="https://db-ip.com" target="_blank" rel="noopener noreferrer" style="position:fixed;bottom:2px;left:6px;z-index:10;font:9px sans-serif;color:#8b929c">IP Geolocation by DB-IP</a></body>');
 }
 fs.writeFileSync(file, html);
 JS
-    tar -czf artifacts/uniapp-h5-build.tgz -C dist/build/h5 .
+    tar -czf "artifacts/$kind-h5-build.tgz" -C dist/build/h5 .
     ;;
   *) echo 'Unknown build kind' >&2; exit 33 ;;
 esac
@@ -107,15 +117,17 @@ node - "$kind" "$schema" <<'JS'
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const kind = process.argv[2];
-const artifact = {backend:'backend.jar',pc:'pc-build.tgz',uniapp:'uniapp-h5-build.tgz'}[kind];
+const artifact = {backend:'backend.jar',pc:'pc-build.tgz',uniapp:'uniapp-h5-build.tgz',h5lite:'h5lite-h5-build.tgz'}[kind];
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const schema = process.argv[3];
-const manifest = {version:1,component:kind,branch:'test',sha:fs.readFileSync('artifacts/test-sha.txt','utf8').trim(),
+const manifest = {version:1,component:kind,branch:kind === 'h5lite' ? 'h5-lite' : 'test',sha:fs.readFileSync('artifacts/test-sha.txt','utf8').trim(),
   artifact,sha256:hash(fs.readFileSync('artifacts/'+artifact)),schema};
 if (kind === 'backend') {
   manifest.tree = fs.readFileSync('artifacts/test-tree.txt','utf8').trim();
+  manifest.publicationNative = 'OWNER_ADMISSION_REQUIRED';
 }
 fs.writeFileSync('artifacts/release.json', JSON.stringify(manifest, null, 2)+'\n');
 JS
 (cd artifacts && shopt -s nullglob && sha256sum test-sha.txt test-tree.txt release.json *.jar *.tgz | tee SHA256SUMS)
 echo 'RELEASE_ARTIFACT_READY: isolated CI passed; host broker independently controls promotion and rollback.'
+if [ "$kind" = backend ]; then echo 'PUBLICATION_NATIVE_HOLD: normal build success needs independent root owner admission before promotion.'; fi

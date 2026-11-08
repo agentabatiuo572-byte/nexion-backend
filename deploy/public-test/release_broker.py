@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Host-owned release broker. Never run from Jenkins or execute repository scripts as root.
 
-Controller build metadata authorizes one of three fixed artifacts. Build code is untrusted;
+Controller build metadata authorizes one of four fixed artifacts. Build code is untrusted;
 it gets no host socket, credentials or deployment API. Installation/activation is manual.
 """
 import argparse
@@ -27,8 +27,12 @@ INSTALL = Path('/srv/jenkins/release')
 JOBS = Path('/var/lib/docker/volumes/nexgrid_jenkins_home/_data/jobs')
 NGINX = Path('/etc/nginx/sites-available/nexgrid-public')
 DROPIN = Path('/etc/systemd/system/nexgrid-backend.service.d/50-public-test-release.conf')
-ARTIFACTS = {'backend': 'backend.jar', 'pc': 'pc-build.tgz', 'uniapp': 'uniapp-h5-build.tgz'}
-REPOS = {'backend': 'nexion-backend', 'pc': 'nexion-frontend-pc', 'uniapp': 'nexion-frontend-uniapp'}
+ARTIFACTS = {'backend': 'backend.jar', 'pc': 'pc-build.tgz', 'uniapp': 'uniapp-h5-build.tgz',
+             'h5lite': 'h5lite-h5-build.tgz'}
+REPOS = {'backend': 'nexion-backend', 'pc': 'nexion-frontend-pc', 'uniapp': 'nexion-frontend-uniapp',
+         'h5lite': 'nexion-frontend-uniapp'}
+BRANCHES = {'backend': 'test', 'pc': 'test', 'uniapp': 'test', 'h5lite': 'h5-lite'}
+PORTS = {'pc': (3003, 3004), 'uniapp': (8082, 8083), 'h5lite': (8084, 8085)}
 MAX_EXPANDED = 1024 * 1024 * 1024
 MAX_ARCHIVE = 300 * 1024 * 1024
 SHA = re.compile(r'[0-9a-f]{40}')
@@ -118,7 +122,7 @@ def xml_root(data):
     return ET.fromstring(data)
 
 
-def build_identity(data):
+def build_identity(data, component):
     root = xml_root(data)
     require(root.tag == 'flow-build' and root.findtext('result') == 'SUCCESS'
             and root.findtext('completed') == 'true', 'BUILD_NOT_SUCCESSFUL')
@@ -127,8 +131,9 @@ def build_identity(data):
     require(len(builds) == 1, 'SCM_IDENTITY_AMBIGUOUS')
     shas = {e.text for e in builds[0].iter() if e.tag in ('sha1', 'SHA1') and e.text}
     names = {e.text for e in builds[0].iter('name')}
+    branch = BRANCHES[component]
     require(len(shas) == 1 and all(SHA.fullmatch(s or '') for s in shas)
-            and names and names <= {'origin/test', 'refs/remotes/origin/test'}, 'SCM_TEST_REQUIRED')
+            and names and names <= {f'origin/{branch}', f'refs/remotes/origin/{branch}'}, 'SCM_BRANCH_REQUIRED')
     return shas.pop()
 
 
@@ -138,7 +143,7 @@ def build_identity(data):
 
 def validate_manifest(manifest, component, sha):
     require(manifest.get('version') == 1 and manifest.get('component') == component
-            and manifest.get('branch') == 'test' and manifest.get('sha') == sha
+            and manifest.get('branch') == BRANCHES[component] and manifest.get('sha') == sha
             and manifest.get('artifact') == ARTIFACTS[component]
             and HASH.fullmatch(manifest.get('sha256', ''))
             and HASH.fullmatch(manifest.get('schema', '')), 'RELEASE_MANIFEST_REJECTED')
@@ -149,6 +154,18 @@ def swap_upstream(text, old, new):
     before = f'proxy_pass http://127.0.0.1:{old}'
     require(before in text, 'NGINX_UPSTREAM_DRIFT')
     return re.sub(re.escape(before) + r'(?=[/;])', f'proxy_pass http://127.0.0.1:{new}', text)
+
+
+def first_lite_upstream(text, port):
+    marker = '    include /srv/jenkins/install/jenkins-location.conf;'
+    require('/h5-lite' not in text and text.count(marker) == 1, 'LITE_INGRESS_DRIFT')
+    # The trailing slash strips only this prefix; API/auth/ws remain at the root.
+    route = ('    location = /h5-lite { return 308 /h5-lite/; }\n'
+             '    location ^~ /h5-lite/ {\n'
+             '        include /etc/nginx/snippets/nexgrid-proxy.conf;\n'
+             f'        proxy_pass http://127.0.0.1:{port}/;\n'
+             '    }\n')
+    return text.replace(marker, route + marker)
 
 
 def transaction(apply, verify, rollback, verify_old, after_rollback=lambda: None):
@@ -241,8 +258,12 @@ def health(component, port, attempts=30):
                 require(assets, 'FRONTEND_ASSETS_MISSING')
                 for asset in assets[:10]:
                     require(asset.startswith('/'), 'FRONTEND_ASSET_ORIGIN_REJECTED')
-                    if component == 'uniapp' and asset.startswith('/app/'):
-                        asset = asset[4:]
+                    if component in ('uniapp', 'h5lite'):
+                        prefix = '/h5-lite/' if component == 'h5lite' else '/app/'
+                        if component == 'h5lite':
+                            require(asset.startswith(prefix), 'LITE_PUBLIC_BASE_REQUIRED')
+                        if asset.startswith(prefix):
+                            asset = asset[len(prefix) - 1:]
                     fetch(base + asset)
             return
         except (Rejected, OSError, ValueError):
@@ -264,22 +285,33 @@ def restore(journal):
         health('backend', 8110)
     else:
         old_name = journal['old_state'][component]['container']
-        if run('docker', 'inspect', old_name, '--format', '{{.State.Running}}') != 'true':
-            run('docker', 'start', old_name)
-        health(component, journal['old_port'])
+        if old_name:
+            if run('docker', 'inspect', old_name, '--format', '{{.State.Running}}') != 'true':
+                run('docker', 'start', old_name)
+            health(component, journal['old_port'])
         atomic_write(NGINX, journal['old_nginx'], 0o644)
         run('nginx', '-t')
         run('systemctl', 'reload', 'nginx')
-        health(component, journal['old_port'])
+        previous_health(journal)
         # Only the exact failed candidate created by this transaction is stopped.
         stop_candidate(journal['candidate'])
 
 
+def previous_health(journal):
+    if journal['component'] == 'h5lite' and journal['old_port'] is None:
+        require(NGINX.read_text() == journal['old_nginx'] and '/h5-lite' not in journal['old_nginx'],
+                'LITE_ABSENT_RESTORE_FAILED')
+    else:
+        health(journal['component'], journal['old_port'])
+
+
 def stop_candidate(name):
-    require(re.fullmatch(r'nexgrid-cd-(pc|uniapp)-[0-9]+(?:-rollback)?', name), 'CANDIDATE_NAME_REJECTED')
+    require(re.fullmatch(r'nexgrid-cd-(pc|uniapp|h5lite)-[0-9]+(?:-rollback)?', name), 'CANDIDATE_NAME_REJECTED')
     existing = run('docker', 'ps', '-a', '--format', '{{.Names}}').splitlines()
     if name in existing:
         run('docker', 'stop', '--time', '15', name)
+        if name.startswith('nexgrid-cd-h5lite-'):
+            run('docker', 'rm', name)
 
 
 def backend_current_release(root):
@@ -369,7 +401,7 @@ def finish_commit(journal):
     if component != 'backend':
         old_name = journal['old_state'][component]['container']
         existing = run('docker', 'ps', '-a', '--format', '{{.Names}}').splitlines()
-        if old_name in existing:
+        if old_name and old_name in existing:
             run('docker', 'stop', '--time', '20', old_name)
     (ROOT / 'transaction.json').unlink(missing_ok=True)
     sync_directory(ROOT)
@@ -524,7 +556,7 @@ def stage_release(component, build, destination, manifest, config, journal, port
     return release
 
 
-def apply_with_rollback(journal, apply, port, old_port):
+def apply_with_rollback(journal, apply, port):
     if journal.get('database'):
         try:
             apply()
@@ -545,7 +577,7 @@ def apply_with_rollback(journal, apply, port, old_port):
 
     try:
         transaction(apply, lambda: health(journal['component'], port), lambda: restore(journal),
-                    lambda: health(journal['component'], old_port), restored_ok)
+                    lambda: previous_health(journal), restored_ok)
     except BaseException as error:
         if restored:
             raise ComponentFailed('ROLLED_BACK: ' + failure_reason(error)) from None
@@ -560,11 +592,12 @@ def promote(component, number, config, state, rollback_check=False):
     require(digest(job / 'config.xml') == config['job_hashes'][component], 'JOB_CONFIGURATION_DRIFT')
     build = job / 'builds' / str(number)
     metadata = safe_read(build / 'build.xml', 8 * 1024 * 1024)
-    sha = build_identity(metadata)
+    sha = build_identity(metadata, component)
     manifest = validate_manifest(json.loads(safe_read(build / 'archive/artifacts/release.json', 4096)), component, sha)
     url = f'https://github.com/agentabatiuo572-byte/{REPOS[component]}.git'
-    remote = run('git', 'ls-remote', url, 'refs/heads/test', timeout=30).split()
-    require(len(remote) == 2 and remote == [sha, 'refs/heads/test'], 'BUILD_IS_NOT_CURRENT_TEST')
+    ref = 'refs/heads/' + BRANCHES[component]
+    remote = run('git', 'ls-remote', url, ref, timeout=30).split()
+    require(len(remote) == 2 and remote == [sha, ref], 'BUILD_IS_NOT_CURRENT_TEST')
     # GitHub test is the user's approved business source. Mapper/startup/source
     # changes do not require a second fingerprint approval. Versioned SQL runs
     # through the host-owned backup/once-only migration runner, never a root shell.
@@ -573,19 +606,24 @@ def promote(component, number, config, state, rollback_check=False):
     require(not destination.exists(), 'RELEASE_ALREADY_STAGED')
     require(shutil.disk_usage(ROOT).free > 12 * 1024**3, 'RELEASE_DISK_LOW')
     current = state[component]
-    journal = {'component': component, 'build': number, 'sha': sha, 'phase': 'STAGING',
+    if component == 'h5lite' and current['port'] is None and not rollback_check:
+        proof_path = ROOT / 'rollback-verified.json'
+        proof = json.loads(proof_path.read_text()).get(component, {}) if proof_path.exists() else {}
+        require(proof.get('sha') == sha and proof.get('build') == number
+                and proof.get('old_state') == current, 'FIRST_LITE_ROLLBACK_REQUIRED')
+    journal = {'component': component, 'build': number, 'sha': sha, 'phase': 'STAGING', 'old_port': current['port'],
                'staged_path': str(destination), 'old_state': json.loads(json.dumps(state))}
     if component == 'backend':
         journal.update(old_target=str((ROOT / 'backend/current').resolve()),
                        old_dropin=DROPIN.read_text() if DROPIN.exists() else None)
         port = 8110
     else:
-        ports = [3003, 3004] if component == 'pc' else [8082, 8083]
-        port = next(p for p in ports if p != current['port'])
+        port = next(p for p in PORTS[component] if p != current['port'])
         candidate = f'nexgrid-cd-{component}-{number}{suffix}'
         old_nginx = NGINX.read_text()
         require(hashlib.sha256(old_nginx.encode()).hexdigest() == state['nginx_sha256'], 'NGINX_CONFIGURATION_DRIFT')
-        changed = swap_upstream(old_nginx, current['port'], port)
+        changed = (first_lite_upstream(old_nginx, port) if component == 'h5lite' and current['port'] is None
+                   else swap_upstream(old_nginx, current['port'], port))
         journal.update(old_nginx=old_nginx, old_port=current['port'], candidate=candidate)
     save(ROOT / 'transaction.json', journal)
     try:
@@ -622,12 +660,13 @@ def promote(component, number, config, state, rollback_check=False):
         require(not (ROOT / 'AUTO_ENABLED').exists(), 'ROLLBACK_CHECK_REQUIRES_AUTO_HELD')
         # Exercise the real cutover and actual restore functions. A durable
         # APPLYING journal ensures a crash restores the old release, too.
+        apply_with_rollback(journal, apply, port)
         try:
-            apply()
-            health(component, port)
-        finally:
             restore(journal)
-        health(component, current['port'])
+        except BaseException:
+            save(ROOT / 'HALTED.json', {'reason': 'ROLLBACK_INCOMPLETE_OPERATOR_REQUIRED', **journal})
+            raise
+        previous_health(journal)
         save(ROOT / 'state.json', journal['old_state'])
         proof_path = ROOT / 'rollback-verified.json'
         proof = json.loads(proof_path.read_text()) if proof_path.exists() else {}
@@ -638,7 +677,7 @@ def promote(component, number, config, state, rollback_check=False):
         sync_directory(ROOT)
         print(json.dumps({'event': 'ROLLBACK_VERIFIED', 'component': component, 'sha': sha}), flush=True)
         return
-    apply_with_rollback(journal, apply, port, current['port'])
+    apply_with_rollback(journal, apply, port)
     new_state = {**current, 'build': number, 'sha': sha, 'port': port, 'release': str(release)}
     if component == 'backend':
         new_state.update(tree=manifest.get('tree'))
@@ -670,7 +709,7 @@ def poll(config, state):
             if previous.get('build') == latest and previous.get('retryable') is False:
                 continue  # A failed artifact needs a new build, not repeated cutovers.
             try:
-                build_identity(safe_read(builds / str(latest) / 'build.xml', 8 * 1024 * 1024))
+                build_identity(safe_read(builds / str(latest) / 'build.xml', 8 * 1024 * 1024), component)
             except (Rejected, FileNotFoundError):
                 continue  # queued/running/failed/unstable cannot replace the live release
             promote(component, latest, config, state)

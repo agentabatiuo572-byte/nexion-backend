@@ -1,6 +1,7 @@
 # GitHub test to TEST release
 
-Business source of truth is each repository's GitHub test. Do not merge old server
+Business source of truth is each repository's GitHub test, except the independent
+H5 Lite TEST component, which only accepts GitHub h5-lite. Do not merge old server
 uploads or local uncommitted work into CI. Preserve existing data, media, model/KB
 storage, credentials, administrator MFA and login channels.
 
@@ -11,6 +12,13 @@ has no host socket, business secrets or deployment API. A root-owned broker acce
 completed SUCCESS builds from pinned job definitions, verifies current test SCM
 identity and artifact digest, then runs business code as existing non-root users.
 Main and controller administrators are trusted; this is not a reproducible-build proof.
+
+H5 Lite uses `nexgrid-h5lite-test`, artifact `h5lite-h5-build.tgz`, and the sole
+public prefix `https://18.142.169.24/h5-lite/`. Its 8084/8085 slots, release history
+and initially absent state are independent of App H5. See
+[the Lite operator upgrade and first-release procedure](README-h5lite-test.md)
+before installing; the legacy `install ci/host` commands below are not an upgrade
+path for an existing host.
 
 The operator bootstrap must independently pin every runtime file and runtime-lock.json
 by SHA256 and download from one reviewed immutable GitHub commit into a fresh
