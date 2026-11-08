@@ -30,9 +30,10 @@ public class OpsD1BankOrderController {
     @GetMapping
     @PreAuthorize("hasAuthority('finance_d1_read')")
     public ApiResult<Map<String, Object>> list(@RequestParam(required = false) String paymentRail,
-            @RequestParam(required = false) String status, @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String status, @RequestParam(required = false) String settlementStatus,
+            @RequestParam(required = false) String keyword,
             @RequestParam(required = false) Integer pageNum, @RequestParam(required = false) Integer pageSize) {
-        return service.list(paymentRail, status, keyword, pageNum, pageSize);
+        return service.list(paymentRail, status, settlementStatus, keyword, pageNum, pageSize);
     }
 
     @PostMapping("/{intentNo}/manual-credit")

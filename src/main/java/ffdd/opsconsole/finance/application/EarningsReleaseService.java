@@ -362,6 +362,7 @@ public class EarningsReleaseService {
                     Map<String,Object> item = new LinkedHashMap<>();
                     item.put("entryNo", row.entryNo());
                     item.put("userId", row.userId());
+                    item.put("userNo", row.userNo());
                     item.put("clusterId", row.clusterId());
                     item.put("sourceType", row.sourceType());
                     item.put("sourceRef", row.sourceRef());

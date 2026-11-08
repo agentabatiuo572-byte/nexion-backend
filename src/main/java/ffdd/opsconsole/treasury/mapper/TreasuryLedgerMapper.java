@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.shared.canonical.mapper.GenesisEmissionSql;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository.CommissionCoverageAmounts;
+import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository.LedgerBalance;
 import ffdd.opsconsole.treasury.infrastructure.WalletLedgerEntity;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -820,6 +821,21 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
              LIMIT #{limit}
             """)
     List<TreasuryLedgerBillView> userLedgerRows(@Param("userId") Long userId, @Param("limit") int limit);
+
+    @Select("""
+            SELECT asset, balance_after AS balanceAfter
+              FROM (
+                SELECT asset, balance_after,
+                       ROW_NUMBER() OVER (PARTITION BY asset ORDER BY created_at DESC, id DESC) AS row_num
+                  FROM nx_wallet_ledger
+                 WHERE user_id=#{userId} AND is_deleted=0 AND created_at < #{before}
+                   AND UPPER(TRIM(status)) IN ('SUCCESS','POSTED','COMPLETED','CONFIRMED')
+              ) settled
+             WHERE row_num=1
+             ORDER BY asset
+            """)
+    List<LedgerBalance> settledBalancesBefore(@Param("userId") Long userId,
+                                             @Param("before") LocalDateTime before);
 
     // Posting holds the account/asset ledger mutex. A locking read sees the last committed
     // posting even when the outer transaction opened a repeatable-read snapshot earlier.

@@ -67,8 +67,16 @@ public class D1BankOrderService {
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public ApiResult<Map<String, Object>> list(String paymentRail, String status, String keyword,
                                               Integer pageNum, Integer pageSize) {
+        return list(paymentRail, status, null, keyword, pageNum, pageSize);
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public ApiResult<Map<String, Object>> list(String paymentRail, String status, String settlementStatus,
+                                              String keyword, Integer pageNum, Integer pageSize) {
         String rail = filter(paymentRail, Set.of("MANUAL", "HDPAY"), "D1_BANK_ORDER_RAIL_INVALID");
         String state = filter(status, STATUSES, "D1_BANK_ORDER_STATUS_INVALID");
+        String settlement = filter(settlementStatus, Set.of("UNSETTLED", "MANUAL_REVIEW", "CREDITED"),
+                "D1_BANK_ORDER_SETTLEMENT_STATUS_INVALID");
         String search = text(keyword);
         if (search.length() > 128) validation("D1_BANK_ORDER_KEYWORD_INVALID");
         int page = pageNum == null ? 1 : Math.max(1, pageNum);
@@ -76,12 +84,14 @@ public class D1BankOrderService {
         long offset = (long) (page - 1) * size;
         if (offset > Integer.MAX_VALUE) validation("D1_BANK_ORDER_PAGE_INVALID");
         LocalDateTime asOf = LocalDateTime.now(clock);
-        long total = orders.countOrders(rail, state, search.isEmpty() ? null : search, asOf);
+        long total = orders.countOrders(rail, state, settlement, search.isEmpty() ? null : search, asOf);
+        long manualReviewCount = orders.countOrders(rail, state, "MANUAL_REVIEW", search.isEmpty() ? null : search, asOf);
         List<Map<String, Object>> records = orders.listOrders(
-                rail, state, search.isEmpty() ? null : search, asOf, size, (int) offset)
+                rail, state, settlement, search.isEmpty() ? null : search, asOf, size, (int) offset)
                 .stream().map(this::project).toList();
         return ApiResult.ok(Map.of("records", records, "pageNum", page, "pageSize", size,
-                "total", total, "source", "nx_vietqr_intent", "asOf", asOf));
+                "total", total, "manualReviewCount", manualReviewCount,
+                "source", "nx_vietqr_intent", "asOf", asOf));
     }
 
     public ApiResult<Map<String, Object>> manualCredit(String intentNo, String key, HdPayManualCreditRequest request) {

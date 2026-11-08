@@ -30,7 +30,7 @@ public interface D1BankOrderMapper extends BaseMapper<Object> {
     String CANDIDATES = """
             WITH candidate_orders AS (
               SELECT i.intent_no AS intentNo, i.payment_rail AS paymentRail, i.user_id AS userId,
-                     i.memo_code AS memoCode, i.created_at AS createdAt,
+                     i.memo_code AS memoCode, i.created_at AS createdAt, h.settlement_status AS settlementStatus,
             """ + DISPLAY_STATUS + """
                      AS status
                 FROM nx_vietqr_intent i
@@ -44,6 +44,7 @@ public interface D1BankOrderMapper extends BaseMapper<Object> {
              FROM candidate_orders
             WHERE (#{paymentRail} IS NULL OR paymentRail=#{paymentRail})
               AND (#{status} IS NULL OR status=#{status})
+              AND (#{settlementStatus} IS NULL OR settlementStatus=#{settlementStatus})
               AND (#{keyword} IS NULL OR intentNo LIKE CONCAT('%',#{keyword},'%')
                    OR memoCode LIKE CONCAT('%',#{keyword},'%') OR CAST(userId AS CHAR)=#{keyword})
             """;
@@ -155,12 +156,23 @@ public interface D1BankOrderMapper extends BaseMapper<Object> {
             """;
     @Select(CANDIDATES + " SELECT COUNT(*) " + FILTER)
     long countOrders(@Param("paymentRail") String paymentRail, @Param("status") String status,
+                     @Param("settlementStatus") String settlementStatus,
                      @Param("keyword") String keyword, @Param("asOf") LocalDateTime asOf);
+
+    default long countOrders(String paymentRail, String status, String keyword, LocalDateTime asOf) {
+        return countOrders(paymentRail, status, null, keyword, asOf);
+    }
 
     @Select(CANDIDATES + PAGE + ORDERS + " SELECT * FROM bank_orders ORDER BY createdAt DESC, intentNo DESC")
     List<Map<String, Object>> listOrders(@Param("paymentRail") String paymentRail, @Param("status") String status,
+            @Param("settlementStatus") String settlementStatus,
             @Param("keyword") String keyword, @Param("asOf") LocalDateTime asOf,
             @Param("limit") int limit, @Param("offset") int offset);
+
+    default List<Map<String, Object>> listOrders(String paymentRail, String status, String keyword,
+                                                LocalDateTime asOf, int limit, int offset) {
+        return listOrders(paymentRail, status, null, keyword, asOf, limit, offset);
+    }
 
     @Select("""
             SELECT (SELECT COUNT(*) FROM nx_wallet_ledger l WHERE l.biz_no=#{intentNo})

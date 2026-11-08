@@ -496,6 +496,11 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
     }
 
     @Override
+    public List<LedgerBalance> settledBalancesBefore(Long userId, java.time.LocalDateTime before) {
+        return mapper.settledBalancesBefore(userId, before);
+    }
+
+    @Override
     public Optional<BigDecimal> currentUserBalance(Long userId, String asset) {
         return Optional.ofNullable(mapper.currentUserBalance(userId, trim(asset))).map(this::nz);
     }

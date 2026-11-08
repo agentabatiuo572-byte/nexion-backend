@@ -161,13 +161,17 @@ public interface EarningsReleaseMapper {
     ProtectedEntry lockProtectedEntry(@Param("entryNo") String entryNo);
     @Select("""
             <script>
-            SELECT entry_no entryNo,user_id userId,cluster_id clusterId,source_type sourceType,
-                   source_ref sourceRef,asset,amount-recovered_amount AS amount,bucket,created_at createdAt
-              FROM nx_earnings_release_entry
-             WHERE bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND amount>recovered_amount AND is_deleted=0
-             <if test="userId != null">AND user_id=#{userId}</if>
-             <if test="clusterId != null and clusterId != ''">AND cluster_id=#{clusterId}</if>
-             ORDER BY id ASC LIMIT #{limit}
+            SELECT e.entry_no entryNo,e.user_id userId,
+                   CONCAT('U',LPAD(u.id,GREATEST(8,LENGTH(CAST(u.id AS CHAR))),'0')) AS userNo,
+                   e.cluster_id clusterId,e.source_type sourceType,e.source_ref sourceRef,
+                   e.asset,e.amount-e.recovered_amount AS amount,e.bucket,e.created_at createdAt
+              FROM nx_earnings_release_entry e
+              LEFT JOIN nx_user u ON u.id=e.user_id AND u.is_deleted=0
+             WHERE e.bucket IN ('pending_review','bonus_locked') AND e.status='ACTIVE'
+               AND e.amount>e.recovered_amount AND e.is_deleted=0
+             <if test="userId != null">AND e.user_id=#{userId}</if>
+             <if test="clusterId != null and clusterId != ''">AND e.cluster_id=#{clusterId}</if>
+             ORDER BY e.id ASC LIMIT #{limit}
             </script>
             """)
     List<ProtectedEntryView> protectedEntryViews(@Param("userId") Long userId,
@@ -186,7 +190,7 @@ public interface EarningsReleaseMapper {
                          String status,String idempotencyKey,String sourceEnvironment,Integer isDeleted){}
     record BucketAmount(String asset,String bucket,BigDecimal amount){}
     record ProtectedEntry(String entryNo,Long userId,String clusterId,String asset,BigDecimal amount,String bucket){}
-    record ProtectedEntryView(String entryNo,Long userId,String clusterId,String sourceType,String sourceRef,
+    record ProtectedEntryView(String entryNo,Long userId,String userNo,String clusterId,String sourceType,String sourceRef,
                               String asset,BigDecimal amount,String bucket,LocalDateTime createdAt){}
     record RiskCluster(String clusterId,Integer accountCount,String status){}
     record RecoveryWallet(Long walletId,BigDecimal usdtAvailable,BigDecimal nexAvailable,BigDecimal usdtDebited,BigDecimal nexDebited){}

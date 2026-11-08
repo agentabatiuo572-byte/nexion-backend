@@ -196,6 +196,12 @@ public interface TreasuryLedgerRepository {
 
     List<TreasuryLedgerBillView> userLedgerRows(Long userId, int limit);
 
+    record LedgerBalance(String asset, BigDecimal balanceAfter) { }
+
+    default List<LedgerBalance> settledBalancesBefore(Long userId, LocalDateTime before) {
+        throw new UnsupportedOperationException("SETTLED_OPENING_BALANCE_READER_NOT_IMPLEMENTED");
+    }
+
     Optional<BigDecimal> currentUserBalance(Long userId, String asset);
 
     default Optional<BigDecimal> actualUserBalance(Long userId, String asset) {
