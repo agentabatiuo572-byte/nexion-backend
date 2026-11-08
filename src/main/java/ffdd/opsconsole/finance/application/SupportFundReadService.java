@@ -129,8 +129,10 @@ public class SupportFundReadService {
                 if(scope.size()>MAX_COMPONENT_CUSTOMERS)return unknown(roots,List.of(Gap.CLOSURE_LIMIT));
                 if(previous==scope.size())break;
             }while(true);
-            var ids=List.copyOf(scope);var ops=new OperationRows(opIds,connection,batchRead).rows;
+            var ids=List.copyOf(scope);
             final var partyIndex=indexParties(partyRows);
+            var components=components(scope,partyRows);
+            var ops=new OperationRows(opIds,components,partyIndex,connection,batchRead).rows;
             var legs=new ArrayList<Map<String,Object>>();
             for(int from=0;from<opIds.size();from+=OPERATION_DIRECTORY_BATCH) {
                 var page=mapper.legs(opIds.subList(from,Math.min(from+OPERATION_DIRECTORY_BATCH,opIds.size())));
@@ -187,7 +189,7 @@ public class SupportFundReadService {
             var result=new ArrayList<NetCustomer>();
             var publicOrigins=new ArrayList<ContributionOrigin>();var publicChanges=new ArrayList<ContributionChange>();
             // Validate peers internally. Only the caller's roots and their original contributions leave this service.
-            for(var component:components(scope,partyRows)) {
+            for(var component:components) {
                 var componentRoots=roots.stream().filter(component::contains).toList();if(componentRoots.isEmpty())continue;
                 var gaps=new ArrayList<Gap>();var tail=new HashMap<Long,Cash>();var verified=new ArrayList<Operation>();
                 var originFacts=new HashMap<String,String>();var holdings=new ArrayList<Holding>();
@@ -354,9 +356,10 @@ public class SupportFundReadService {
         catch(org.springframework.dao.DataAccessException ex) {return unknown(roots,List.of(Gap.READ_FAILED));}
         catch(IllegalArgumentException | IllegalStateException | ArithmeticException ex) {return unknown(roots,List.of(Gap.READ_FAILED));}
     }
-    /** Keeps the complete receipt directory and a bounded set of recent JSON pages in the caller's physical snapshot. */
+    /** Keeps global directory order while grouping bounded JSON pages by component in the caller's physical snapshot. */
     private final class OperationRows {
-        private final List<Long> ids;
+        private final List<Long> jsonIds;
+        private final int[] jsonPositions;
         private final Connection connection;
         private final Runnable batchRead;
         private final List<Map<String,Object>> rows=new ArrayList<>();
@@ -364,8 +367,27 @@ public class SupportFundReadService {
         private List<Map<String,Object>> page=List.of();
         private final LinkedHashMap<Integer,OperationPage> recentPages=new LinkedHashMap<>(8,0.75f,true);
         private long recentPageBytes;
-        private OperationRows(List<Long> ids,Connection connection,Runnable batchRead) {
-            this.ids=ids;this.connection=connection;this.batchRead=batchRead;
+        private OperationRows(List<Long> ids,List<Set<Long>> components,Map<Long,List<Long>> partyIndex,
+                Connection connection,Runnable batchRead) {
+            this.connection=connection;this.batchRead=batchRead;
+            var componentByCustomer=new HashMap<Long,Integer>();
+            for(int component=0;component<components.size();component++)
+                for(long customer:components.get(component))componentByCustomer.put(customer,component);
+            var groupedIds=new TreeMap<Integer,List<Long>>();
+            for(var id:ids) {
+                var owners=parties(id,partyIndex);
+                int component=owners.isEmpty()?components.size():componentByCustomer.get(owners.get(0));
+                groupedIds.computeIfAbsent(component,key->new ArrayList<>()).add(id);
+            }
+            jsonIds=new ArrayList<>(ids.size());
+            for(var group:groupedIds.values())jsonIds.addAll(group);
+            jsonPositions=new int[ids.size()];
+            for(int from=0;from<jsonIds.size();from+=OPERATION_JSON_BATCH) {
+                int end=Math.min(from+OPERATION_JSON_BATCH,jsonIds.size());
+                jsonIds.subList(from,end).sort(Long::compareTo);
+                for(int position=from;position<end;position++)
+                    jsonPositions[Collections.binarySearch(ids,jsonIds.get(position))]=position;
+            }
             for(int from=0;from<ids.size();from+=OPERATION_DIRECTORY_BATCH) {
                 var pageIds=ids.subList(from,Math.min(from+OPERATION_DIRECTORY_BATCH,ids.size()));
                 var directory=mapper.operationDirectory(pageIds);
@@ -388,16 +410,17 @@ public class SupportFundReadService {
             }
         }
         private Map<String,Object> full(int index) {
-            int start=index/OPERATION_JSON_BATCH*OPERATION_JSON_BATCH;
+            int position=jsonPositions[index];
+            int start=position/OPERATION_JSON_BATCH*OPERATION_JSON_BATCH;
             if(start!=pageStart) {
                 require(snapshot()==connection,Gap.READ_FAILED);
                 var cached=recentPages.get(start);
                 if(cached!=null) {
                     page=cached.rows();pageStart=start;
                     batchRead.run();
-                    return page.get(index-pageStart);
+                    return page.get(position-pageStart);
                 }
-                var pageIds=ids.subList(start,Math.min(start+OPERATION_JSON_BATCH,ids.size()));
+                var pageIds=jsonIds.subList(start,Math.min(start+OPERATION_JSON_BATCH,jsonIds.size()));
                 // Each mapper query flushes MyBatis local rows before loading the next page.
                 page=List.of();pageStart=-1;
                 var fetched=mapper.operations(pageIds);
@@ -420,7 +443,7 @@ public class SupportFundReadService {
                 page=fetched;pageStart=start;
                 batchRead.run();
             }
-            return page.get(index-pageStart);
+            return page.get(position-pageStart);
         }
         private record OperationPage(List<Map<String,Object>> rows,long bytes) { }
         private boolean jsonField(Object key) {
