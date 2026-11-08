@@ -187,10 +187,11 @@ public class SupportFundJournalBindingService implements SupportFundJournalFacad
     }
 
     private Map<String,Object> receipt(ReceiptInput input, List<Long> scope) {
-        return receipt(input, scope, true);
+        return receipt(input, scope, true, null);
     }
 
-    private Map<String,Object> receipt(ReceiptInput input, List<Long> scope, boolean validateEvents) {
+    private Map<String,Object> receipt(ReceiptInput input, List<Long> scope, boolean validateEvents,
+            Map<String,ReceiptJson> readJson) {
         if (input == null) throw new IllegalArgumentException("Missing formal receipt");
         key(input.operationKey(), 192, false);
         key(input.businessType(), 64, true);
@@ -226,6 +227,11 @@ public class SupportFundJournalBindingService implements SupportFundJournalFacad
         receipt.put("orderedEventsJson", canonical(events).toString());
         receipt.put("sourceSnapshotJson", canonical(snapshot).toString());
         receipt.put("sourceProofJson", canonical(proof).toString()); receipt.put("protocolVersion", PROTOCOL);
+        if (readJson != null) {
+            readJson.put(input.orderedEventsJson(), new ReceiptJson(events, (String) receipt.get("orderedEventsJson")));
+            readJson.put(input.sourceSnapshotJson(), new ReceiptJson(snapshot, (String) receipt.get("sourceSnapshotJson")));
+            readJson.put(input.sourceProofJson(), new ReceiptJson(proof, (String) receipt.get("sourceProofJson")));
+        }
         return receipt;
     }
 
@@ -242,12 +248,19 @@ public class SupportFundJournalBindingService implements SupportFundJournalFacad
     }
 
     private long exactReceipt(Map<String,Object> actual, Map<String,Object> expected) {
+        return exactReceipt(actual, expected, Map.of());
+    }
+
+    private long exactReceipt(Map<String,Object> actual, Map<String,Object> expected, Map<String,ReceiptJson> readJson) {
         if (actual == null) throw failure("FUND_OPERATION_RECEIPT_MISSING");
         long id = positive(actual, "id");
         time(actual, "recordedDbUtc");
         for (Map.Entry<String,Object> entry : expected.entrySet()) {
             String value = string(actual, entry.getKey());
-            if (entry.getKey().endsWith("Json")) value = canonical(read(value)).toString();
+            if (entry.getKey().endsWith("Json")) {
+                var parsed = readJson.get(value);
+                value = parsed == null ? canonical(read(value)).toString() : parsed.canonical();
+            }
             if (!entry.getValue().equals(value)) throw failure("CONFLICTING_FUND_OPERATION_RECEIPT");
         }
         return id;
@@ -423,14 +436,15 @@ public class SupportFundJournalBindingService implements SupportFundJournalFacad
         }
         // Authenticate the original JSON/digest before constructing current Account records.
         // A legacy NEX Account cannot be deserialized under the current UVT-only writer contract.
-        Map<String,Object> expected = receipt(input, parties, false);
+        var readJson = new java.util.HashMap<String,ReceiptJson>();
+        Map<String,Object> expected = receipt(input, parties, false, readJson);
         ObjectNode digest = json.valueToTree(expected);
         digest.set("customerIds",json.valueToTree(parties)); digest.set("legs",json.valueToTree(legs));
         expected.put("receiptSha256",sha(canonical(digest).toString()));
-        exactReceipt(row,expected);
+        exactReceipt(row,expected,readJson);
         var result = new ArrayList<Event>();
         var ids = new HashSet<String>();
-        for (JsonNode node:read(input.orderedEventsJson())) {
+        for (JsonNode node:readJson.get(input.orderedEventsJson()).original()) {
             try {
                 Event event = decodeEvent(ffdd.opsconsole.common.domain.LegacyUvtProof.current(node));
                 SupportFundAllocation.validate(event);
@@ -458,6 +472,7 @@ public class SupportFundJournalBindingService implements SupportFundJournalFacad
         }
         return decoded;
     }
+    private record ReceiptJson(JsonNode original,String canonical) { }
     private record ReceiptCacheKey(ReceiptInput input,String receiptSha256,List<Long> parties,List<Leg> legs) { }
     private record ReceiptCacheEntry(List<Event> events,long bytes) { }
     private record Physical(ConnectionHolder holder, Connection connection) {}
