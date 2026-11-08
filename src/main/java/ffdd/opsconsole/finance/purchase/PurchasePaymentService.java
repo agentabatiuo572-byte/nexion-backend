@@ -62,15 +62,16 @@ public class PurchasePaymentService {
         if(row==null||!"ACTIVE".equals(row.get("status"))||number(row.get("sandbox"))!=0)
             throw new BizException(403,"PURCHASE_PAYMENT_USER_UNAVAILABLE");
     }
-    private static boolean cregis(Object method){return Set.of("CREGIS_USDT_BSC","CREGIS_USDT_ERC20").contains(method);}
+    private static boolean cregis(Object method){return Set.of("CREGIS_USDT_BSC","CREGIS_USDT_ERC20","CREGIS_USDT_TRC20").contains(method);}
     private static CregisNetwork network(Object method){
         return switch(text(method)){
             case "CREGIS_USDT_BSC" -> CregisNetwork.BEP20;
             case "CREGIS_USDT_ERC20" -> CregisNetwork.ERC20;
+            case "CREGIS_USDT_TRC20" -> CregisNetwork.TRC20;
             default -> throw new BizException(422,"PURCHASE_PAYMENT_METHOD_INVALID");
         };
     }
-    private static String method(CregisNetwork network){return network==CregisNetwork.BEP20?"CREGIS_USDT_BSC":"CREGIS_USDT_ERC20";}
+    private static String method(CregisNetwork network){return network==CregisNetwork.BEP20?"CREGIS_USDT_BSC":"CREGIS_USDT_"+network.network();}
     private void ready(String method){
         if("HDPAY_BANK".equals(method)){
             if(!hd.ready())throw new BizException(503,"HDPAY_CONFIGURATION_INCOMPLETE");
@@ -80,7 +81,7 @@ public class PurchasePaymentService {
             if(cr.getMode()!=CregisProperties.Mode.PROVIDER||!cr.isDepositEnabled()||!cr.isDepositCreditEnabled()||cr.getProjectId()<=0||cr.confirmations(network)<15||!cr.networkConfigured(network)||!cr.depositNetworkEnabled(network))
                 throw new BizException(503,"CREGIS_DIRECT_PAYMENT_UNAVAILABLE");
             if(crGateway.provider().projectCoins().stream().noneMatch(coin->coin.addressEnabled()
-                    &&network.chainId().equals(coin.chainId())&&network.tokenId().equalsIgnoreCase(coin.tokenId())))
+                    &&network.chainId().equals(coin.chainId())&&network.tokenMatches(coin.tokenId())))
                 throw new BizException(503,"CREGIS_DIRECT_PAYMENT_ASSET_UNAVAILABLE");
             cregisGate(network,true,false);
         }else throw new BizException(422,"PURCHASE_PAYMENT_METHOD_INVALID");
@@ -101,7 +102,7 @@ public class PurchasePaymentService {
         if(!crGateway.provider().addressBelongs(network.chainId(),address)
                 ||!crGateway.provider().zeroAddressBalance(network.currency(),address)||!chain.zeroUsdtBalance(network,address))
             throw new BizException(409,"CREGIS_DIRECT_ADDRESS_REQUIRES_REVIEW");
-        var head=chain.head(network);if(!head.hash().equalsIgnoreCase(chain.blockHash(network,head.number())))throw new BizException(503,"CREGIS_DIRECT_ALLOCATION_ANCHOR_INVALID");
+        var head=chain.allocationHead(network);if(!head.hash().equalsIgnoreCase(chain.blockHash(network,head.number())))throw new BizException(503,"CREGIS_DIRECT_ALLOCATION_ANCHOR_INVALID");
         candidate.put("allocationBlock",head.number());candidate.put("allocationHash",head.hash());candidate.put("proofExpiresAt",now().plusSeconds(5));
         return candidate;
     }
@@ -129,7 +130,7 @@ public class PurchasePaymentService {
             String id=id("PPQ-");Instant deadline=deadline(kind,payload,pricingAt);
             if(!deadline.isAfter(now()))throw new BizException(409,"ORDER_PAYMENT_EXPIRED");
             Instant expires=pricingAt.plusSeconds(900);if(expires.isAfter(deadline))expires=deadline;
-            var quote=values("paymentQuoteId",id,"kind",kind,"paymentMethod",method,"network","HDPAY_BANK".equals(method)?"VND_BANK":network(method)==CregisNetwork.BEP20?"BSC":"ERC20",
+            var quote=values("paymentQuoteId",id,"kind",kind,"paymentMethod",method,"network","HDPAY_BANK".equals(method)?"VND_BANK":network(method)==CregisNetwork.BEP20?"BSC":network(method).network(),
                     "subtotalUsdt",subtotal.toPlainString(),"businessAmountUsdt",pricing.get("businessAmountUsdt"),
                     "roundingAdjustmentUsdt",subtotal.subtract(new BigDecimal(text(pricing.get("businessAmountUsdt")))).setScale(6,RoundingMode.UNNECESSARY).toPlainString(),"channelFeeRatePct",rate.toPlainString(),"channelFeeFixed",fixed.toPlainString(),
                     "channelFeeUsdt",fee.toPlainString(),"networkConfirmFeeUsdt",network.toPlainString(),"totalUsdt",total.toPlainString(),
@@ -299,18 +300,18 @@ public class PurchasePaymentService {
     public boolean observeBscCallback(Map<String,Object> callback){return observeCregisCallback(callback);}
     public boolean observeCregisCallback(Map<String,Object> callback){
         var network=CregisNetwork.fromAsset(text(callback.get("chain_id")),text(callback.get("token_id")));
-        var row=db.one("SELECT * FROM nx_purchase_payment_intent WHERE address=LOWER(?) AND payment_method=? AND provider_project=?",callback.get("address"),method(network),cr.getProjectId());
+        var row=db.one("SELECT * FROM nx_purchase_payment_intent WHERE address=? AND payment_method=? AND provider_project=?",network.normalizeAddress(text(callback.get("address"))),method(network),cr.getProjectId());
         if(row==null)return false;refresh(row);return true;
     }
     public boolean ownsBscAddress(String address){return ownsCregisAddress(CregisNetwork.BEP20,address);}
     public boolean ownsCregisAddress(CregisNetwork network,String address){
-        return db.one("SELECT intent_no FROM nx_purchase_payment_intent WHERE address=LOWER(?) AND payment_method=? AND provider_project=?",address,method(network),cr.getProjectId())!=null;
+        return db.one("SELECT intent_no FROM nx_purchase_payment_intent WHERE address=? AND payment_method=? AND provider_project=?",network.normalizeAddress(address),method(network),cr.getProjectId())!=null;
     }
     public Boolean materializeBscProviderRow(CregisGateway.DepositRow incoming){return materializeCregisProviderRow(incoming);}
     /** The provider asset selects the intent rail; the same hex address on another chain is a different owner. */
     public Boolean materializeCregisProviderRow(CregisGateway.DepositRow incoming){
         var network=CregisNetwork.fromAsset(incoming.chainId(),incoming.tokenId());
-        var intent=db.one("SELECT * FROM nx_purchase_payment_intent WHERE address=LOWER(?) AND payment_method=? AND provider_project=?",incoming.address(),method(network),cr.getProjectId());
+        var intent=db.one("SELECT * FROM nx_purchase_payment_intent WHERE address=? AND payment_method=? AND provider_project=?",incoming.address(),method(network),cr.getProjectId());
         if(intent==null)return null;if(incoming.status()!=1)return incoming.status()!=0;
         var matching=chain.scan(network,incoming.blockHeight(),incoming.blockHeight(),List.of(incoming.address())).stream()
                 .filter(log->log.txid().equalsIgnoreCase(incoming.txid())&&log.amount().compareTo(incoming.amount())==0).toList();
@@ -318,8 +319,8 @@ public class PurchasePaymentService {
         var log=matching.get(0);var proof=chain.verifyExact(network,log.txid(),log.logIndex(),incoming.address(),incoming.amount(),incoming.blockHeight());
         if(proof==null)return false;
         var fresh=crGateway.provider().depositsByTxid(network,incoming.txid()).stream().filter(row->row.cid()==incoming.cid()&&row.status()==1
-                &&row.address().equalsIgnoreCase(incoming.address())&&row.amount().compareTo(incoming.amount())==0
-                &&network.chainId().equals(row.chainId())&&network.tokenId().equalsIgnoreCase(row.tokenId())).toList();
+                &&network.addressEquals(row.address(),incoming.address())&&row.amount().compareTo(incoming.amount())==0
+                &&network.chainId().equals(row.chainId())&&network.tokenMatches(row.tokenId())).toList();
         if(fresh.size()!=1)return false;
         recordBscArrival(intent,log,proof);refresh(db.one(SELECT,intent.get("intent_no")));return true;
     }
@@ -413,12 +414,12 @@ public class PurchasePaymentService {
     private void observeBsc(Map<String,Object> row){
         var network=network(row.get("payment_method"));
         String address=text(row.get("address"));if(address.isBlank()||cr.getMode()!=CregisProperties.Mode.PROVIDER||number(row.get("provider_project"))!=cr.getProjectId())return;
-        long from=number(row.get("scan_block")),head=chain.head(network).number()-Math.max(15,cr.confirmations(network))+1;
+        long from=number(row.get("scan_block")),head=chain.finalizedHeight(network,Math.max(15,cr.confirmations(network)));
         if(head<from)return;long to=Math.min(head,from+Math.min(399,cr.getChainScanBlocks()-1));
         for(var incoming:chain.scan(network,from,to,List.of(address))){
             var proof=chain.verifyExact(network,incoming.txid(),incoming.logIndex(),address,incoming.amount(),incoming.blockNumber());if(proof==null)return;
             var trades=crGateway.provider().depositsByTxid(network,incoming.txid()).stream().filter(t->t.status()==1&&network.chainId().equals(t.chainId())
-                    &&network.tokenId().equalsIgnoreCase(t.tokenId())&&address.equalsIgnoreCase(t.address())&&incoming.amount().compareTo(t.amount())==0).toList();
+                    &&network.tokenMatches(t.tokenId())&&network.addressEquals(address,t.address())&&incoming.amount().compareTo(t.amount())==0).toList();
             if(trades.size()!=1)return;
             recordBscArrival(row,incoming,proof);
         }
@@ -532,7 +533,7 @@ public class PurchasePaymentService {
             var proof=chain.verifyExact(network,txid,(int)number(incoming.get("log_index")),text(intent.get("address")),amount,number(incoming.get("block_number")));
             if(proof==null||!proof.blockHash().equalsIgnoreCase(text(incoming.get("block_hash"))))return false;
             var trades=crGateway.provider().depositsByTxid(network,txid).stream().filter(t->t.status()==1&&network.chainId().equals(t.chainId())
-                    &&network.tokenId().equalsIgnoreCase(t.tokenId())&&text(intent.get("address")).equalsIgnoreCase(t.address())&&amount.compareTo(t.amount())==0).toList();
+                    &&network.tokenMatches(t.tokenId())&&network.addressEquals(text(intent.get("address")),t.address())&&amount.compareTo(t.amount())==0).toList();
             return trades.size()==1&&amount.compareTo(new BigDecimal(text(parse(intent.get("quote_json")).get("totalUsdt"))))==0;
         }catch(RuntimeException unavailable){return false;}
     }

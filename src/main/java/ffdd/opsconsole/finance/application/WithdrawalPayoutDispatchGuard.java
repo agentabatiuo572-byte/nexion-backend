@@ -24,12 +24,13 @@ public class WithdrawalPayoutDispatchGuard {
     private final CregisPayoutControl payouts;
     private final GrowthRhythmFacade growthRhythm;
     private final AuditLogService audit;
+    private final Trc20WithdrawalWindow trc20Window;
 
     @Transactional(isolation = Isolation.REPEATABLE_READ, rollbackFor = Exception.class)
     public WithdrawalPayoutMapper.PayoutRow begin(WithdrawalPayoutMapper.PayoutRow candidate,LocalDateTime now) {
         var gate=deposits.lockProvisionGate();
         if(gate==null || !"IDLE".equals(gate.get("state")) || !on(gate.get("payoutEnabled")) || !payouts.enabled())return null;
-        if(candidate.userId()==null || !java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(candidate.chain()))return null;
+        if(candidate.userId()==null || !java.util.Set.of("USDT-BEP20","USDT-ERC20","USDT-TRC20").contains(candidate.chain()))return null;
         var network=CregisNetwork.fromNetwork(candidate.chain().substring(5));
         String enabled=mapper.lockNetworkPayoutEnabled("withdrawal."+network.network().toLowerCase(java.util.Locale.ROOT)+".enabled");
         if(enabled==null || !java.util.Set.of("true","1","on").contains(enabled.trim().toLowerCase(java.util.Locale.ROOT))
@@ -70,6 +71,33 @@ public class WithdrawalPayoutDispatchGuard {
 
     /** An old automatic approval is recoverable through the ordinary, authorized D2 review queue. */
     private boolean complianceAllowsFirstPayout(WithdrawalPayoutMapper.PayoutRow candidate, LocalDateTime now) {
+        if ("USDT-TRC20".equals(candidate.chain())) {
+            var current=mapper.lockComplianceDispatchState(candidate.withdrawalNo());
+            if(current==null || !"REVIEW_PASSED".equals(current.status()) || current.payoutSource()!=null || current.providerCid()!=null)return false;
+            var window=trc20Window.read(candidate.withdrawalNo(),candidate.userId(),current.createdAt());
+            if(window.unavailableReason()!=null) {
+                if(mapper.returnToTrcReview(candidate.withdrawalNo(),window.unavailableReason(),now)==1)
+                    audit.recordRequired(AuditLogWriteRequest.builder().action("D2_WITHDRAWAL_TRC20_PHASE_UNAVAILABLE")
+                            .resourceType("WITHDRAWAL").resourceId(candidate.withdrawalNo()).bizNo(candidate.withdrawalNo()).userId(candidate.userId())
+                            .actorType("SYSTEM").actorUsername("withdrawal-payout-admission").riskLevel("HIGH").result("SUCCESS")
+                            .detail(Map.of("from",current.status(),"to","REVIEW_PENDING","cause",window.unavailableReason(),"fundsUnchanged",true)).build());
+                return false;
+            }
+            int days=window.days();
+            LocalDateTime deadline=window.deadline();
+            if(current.holdUntil()!=null && current.holdUntil().isAfter(deadline))deadline=current.holdUntil();
+            if(!deadline.isAfter(now))return true;
+            boolean independent=current.lifecycleOwner()!=null && !current.lifecycleOwner().isBlank()
+                    && !java.util.Set.of("H1_PHASE_COOLDOWN","H1_ZERO_DAY_AUTO_REVIEW").contains(current.lifecycleOwner());
+            if(mapper.returnToTrcPhaseHold(candidate.withdrawalNo(),deadline,independent?current.lifecycleOwner():"H1_PHASE_COOLDOWN",
+                    independent?"REVIEW_PENDING":"REVIEW_PASSED",now)==1)
+                audit.recordRequired(AuditLogWriteRequest.builder().action("D2_WITHDRAWAL_TRC20_PHASE_REQUIRED")
+                        .resourceType("WITHDRAWAL").resourceId(candidate.withdrawalNo()).bizNo(candidate.withdrawalNo()).userId(candidate.userId())
+                        .actorType("SYSTEM").actorUsername("withdrawal-payout-admission").riskLevel("HIGH").result("SUCCESS")
+                        .detail(Map.of("from",current.status(),"to","EXTENDED_HOLD","cooldownDays",days,
+                                "originalSnapshot",window.originalSnapshot(),"holdUntil",deadline,"fundsUnchanged",true)).build());
+            return false;
+        }
         if (!WithdrawalCompliancePolicy.supports(candidate.chain())) return true;
         var current = mapper.lockComplianceDispatchState(candidate.withdrawalNo());
         if (current == null || !"REVIEW_PASSED".equals(current.status())

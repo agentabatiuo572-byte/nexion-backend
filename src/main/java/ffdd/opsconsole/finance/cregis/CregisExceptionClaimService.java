@@ -58,7 +58,7 @@ public class CregisExceptionClaimService {
         if(prior.status()!=AdminIdempotencyService.RecoveryStatus.NOT_FOUND && prior.status()!=AdminIdempotencyService.RecoveryStatus.FAILED)throw fail("CREGIS_EXCEPTION_COMMAND_PENDING_OR_CONFLICT");
         var verified=ownership.verify(challenge,signature,"CLAIM_CREDIT",target);
         var evidence=verified.evidence();requireClaimable(evidence);
-        var policy=policies.snapshot(config.getProjectId(),evidence.source().txid());
+        var policy=policies.snapshot(evidence.source().network(),config.getProjectId(),evidence.source().txid());
         if(!policyEvidence(evidence,policy).equals(evidenceHash))throw fail("CREGIS_EXCEPTION_EVIDENCE_CHANGED");
         String caseNo="CL-"+challenge.replace("-","");
         return idempotency.executeRetained(scope,key,hash,Map.class,()->{
@@ -66,7 +66,7 @@ public class CregisExceptionClaimService {
             sources.reserve(evidence.source(),"CLAIM",caseNo);lockObservation(evidence);requireUnlocked(evidence.source().cid(),target);
             ownership.consume(verified,caseNo);
             var row=new LinkedHashMap<String,Object>();row.put("caseNo",caseNo);row.put("projectId",config.getProjectId());
-            row.put("sourceType",evidence.ref().type());row.put("sourceId",evidence.ref().id());row.put("cid",evidence.source().cid());
+            row.put("chainId",evidence.source().network().chainId());row.put("sourceType",evidence.ref().type());row.put("sourceId",evidence.ref().id());row.put("cid",evidence.source().cid());
             row.put("txid",evidence.source().txid());row.put("logIndex",evidence.source().logIndex());row.put("address",evidence.source().address());
             row.put("fromAddress",evidence.fromAddress());row.put("grossAmount",evidence.source().grossAmount());row.put("targetUserId",target);
             row.put("challengeId",challenge);row.put("evidenceHash",evidence.evidenceHash());row.put("policyVersion",policy.version());row.put("policyFeeUsdt",policy.feeUsdt());row.put("makerId",actor);row.put("reason",reason.trim());
@@ -97,7 +97,7 @@ public class CregisExceptionClaimService {
                 requireClaimable(evidence);gate(evidence);ownership.requireFresh(evidence);lockObservation(evidence);
                 if(!evidence.evidenceHash().equals(row.get("evidence_hash")))throw fail("CREGIS_EXCEPTION_EVIDENCE_CHANGED");
                 ownership.requireConsumed((String)row.get("challenge_id"),caseNo,"CLAIM_CREDIT",target,evidence.evidenceHash());
-                var policy=policies.snapshot(config.getProjectId(),evidence.source().txid());
+                var policy=policies.snapshot(evidence.source().network(),config.getProjectId(),evidence.source().txid());
                 if (policy.version()!=((Number)row.get("policy_version")).longValue() || policy.feeUsdt().compareTo((BigDecimal)row.get("policy_fee_usdt"))!=0 || evidence.confirmations()<policy.confirmations()) throw fail("CREGIS_EXCEPTION_POLICY_CHANGED");
                 credit(evidence,target,caseNo,policy);
             } else sources.release(source,"CLAIM",caseNo);
@@ -112,18 +112,18 @@ public class CregisExceptionClaimService {
         ownership.requireTargetActive(target);
         var s=e.source();BigDecimal net=s.grossAmount().subtract(policy.feeUsdt());if(net.signum()<=0)throw fail("CREGIS_EXCEPTION_CLAIM_NOT_ALLOWED");String bizNo="CR-"+s.cid();
         var prepared=attribution.prepare(target,SupportPaymentFacts.Source.DEPOSIT_ORDER,bizNo,Long.toString(config.getProjectId()));
-        if(deposits.insertEvent(target,config.getProjectId(),s.cid(),s.txid(),s.logIndex(),s.address(),s.grossAmount(),policy.feeUsdt(),net,
+        if(deposits.insertEvent(s.network(),target,config.getProjectId(),s.cid(),s.txid(),s.logIndex(),s.address(),s.grossAmount(),policy.feeUsdt(),net,
                 e.blockNumber(),e.blockHash(),e.confirmations(),"CREDITED")!=1)throw fail("CREGIS_EVENT_INSERT_FAILED");
-        if(deposits.recordTransferSender(config.getProjectId(),s.cid(),e.fromAddress())!=1)throw fail("CREGIS_TRANSFER_SENDER_SNAPSHOT_FAILED");
+        if(deposits.recordTransferSender(s.network(),config.getProjectId(),s.cid(),e.fromAddress())!=1)throw fail("CREGIS_TRANSFER_SENDER_SNAPSHOT_FAILED");
         var wallet=deposits.lockWallet(target);if(wallet==null)throw fail("CREGIS_WALLET_MISSING");
         ownership.requireFresh(e);attribution.beforeCash(prepared);
         if(deposits.creditWallet(net,target,((Number)wallet.get("version")).longValue())!=1)throw fail("CREGIS_WALLET_CONFLICT");
         BigDecimal after=((BigDecimal)wallet.get("usdtAvailable")).add(net);
         if(attribution.insertLedger(prepared,net,after,"Verified ownership claim "+reference)!=1)throw fail("CREGIS_LEDGER_INSERT_FAILED");
         treasury.recordTopupReserve(bizNo,net,"CREGIS:"+s.cid());
-        Long ledgerId=deposits.ledgerId(bizNo),eventId=deposits.eventId(config.getProjectId(),s.cid());
+        Long ledgerId=deposits.ledgerId(bizNo),eventId=deposits.eventId(s.network(),config.getProjectId(),s.cid());
         if(ledgerId==null || eventId==null || deposits.linkLedger(ledgerId,eventId)!=1
-                || deposits.insertDepositOrder(target,bizNo,s.txid(),s.logIndex(),net,e.confirmations(),ledgerId)!=1)throw fail("CREGIS_LEDGER_LINK_FAILED");
+                || deposits.insertDepositOrder(s.network(),target,bizNo,s.txid(),s.logIndex(),net,e.confirmations(),ledgerId)!=1)throw fail("CREGIS_LEDGER_LINK_FAILED");
         attribution.record(prepared);sources.complete(s,"CLAIM",reference,"CREDITED");ownership.requireFresh(e);
     }
     private void gate(CregisExceptionOwnershipService.Evidence e) {
@@ -134,11 +134,11 @@ public class CregisExceptionClaimService {
         boolean repair=gate!=null && "BLOCKED".equals(gate.get("state"))
                 && ("CREGIS_UNRESOLVED_EXPOSURE_500".equals(gate.get("switchReason"))
                 || "CREGIS_DEPOSIT_INCIDENT".equals(gate.get("switchReason")) && "UNATTRIBUTED_HOLD".equals(e.sourceStatus()));
-        if(!config.isDepositCreditEnabled() || !deposits.networkDepositEnabledLocked(CregisNetwork.BEP20) || (!automatic && !repair)
+        if(!config.isDepositCreditEnabled() || !deposits.networkDepositEnabledLocked(e.source().network()) || !config.depositNetworkEnabled(e.source().network()) || (!automatic && !repair)
                 || db.otherCritical(config.getProjectId(),e.source().cid())!=0
                 || deposits.disputedDeliveryCountForProject(config.getProjectId())!=0
                 || deposits.criticalHeldDepositCount(config.getProjectId())!=0
-                || db.otherPending(e.source().cid(),e.source().txid(),e.source().address(),e.source().grossAmount())!=0)
+                || db.otherPending(e.source().network().chainId(),e.source().cid(),e.source().txid(),e.source().address(),e.source().grossAmount())!=0)
             throw fail("CREGIS_EXCEPTION_RISK_GATE_BLOCKED");
     }
     private void requireUnlocked(long cid,long user) {
@@ -146,25 +146,25 @@ public class CregisExceptionClaimService {
                 || locks.countActiveByTarget("C","user",Long.toString(user))>0))throw fail("CREGIS_EXCEPTION_OBJECT_LOCKED_BY_A2");
     }
     private void lockObservation(CregisExceptionOwnershipService.Evidence e) {
-        var row=db.lockObservation(config.getProjectId(),e.ref().id());
+        var row=db.lockObservation(e.source().network().chainId(),config.getProjectId(),e.ref().id());
         if(row==null || !"UNATTRIBUTED_HOLD".equals(row.get("status")) || !e.source().txid().equalsIgnoreCase((String)row.get("txid"))
                 || e.source().logIndex()!=((Number)row.get("logIndex")).intValue()
-                || !e.source().address().equalsIgnoreCase((String)row.get("address"))
+                || !e.source().network().addressEquals(e.source().address(),(String)row.get("address"))
                 || e.source().grossAmount().compareTo(new BigDecimal(String.valueOf(row.get("grossAmount"))))!=0
                 || e.blockNumber()!=((Number)row.get("blockNumber")).longValue())throw fail("CREGIS_EXCEPTION_SOURCE_CHANGED");
     }
     private void requireClaimable(CregisExceptionOwnershipService.Evidence e) {
         if(e==null || !"OBSERVATION".equals(e.ref().type()) || !"UNATTRIBUTED_HOLD".equals(e.sourceStatus())
-                || e.source().grossAmount().compareTo(policies.snapshot(config.getProjectId(),e.source().txid()).feeUsdt())<=0
-                || e.confirmations()<policies.snapshot(config.getProjectId(),e.source().txid()).confirmations())throw fail("CREGIS_EXCEPTION_CLAIM_NOT_ALLOWED");
+                || e.source().grossAmount().compareTo(policies.snapshot(e.source().network(),config.getProjectId(),e.source().txid()).feeUsdt())<=0
+                || e.confirmations()<policies.snapshot(e.source().network(),config.getProjectId(),e.source().txid()).confirmations())throw fail("CREGIS_EXCEPTION_CLAIM_NOT_ALLOWED");
     }
     private void requireCase(Map<String,Object> row,long actor,long version) {
         if(row==null || !"MAKER_DONE".equals(row.get("state")) || ((Number)row.get("version")).longValue()!=version)throw fail("CREGIS_EXCEPTION_VERSION_CHANGED");
         if(((Number)row.get("maker_id")).longValue()==actor)throw new BizException(403,"CREGIS_EXCEPTION_DIFFERENT_CHECKER_REQUIRED");
     }
-    private CregisExceptionSourceService.Source source(Map<String,Object> r) {return new CregisExceptionSourceService.Source(config.getProjectId(),((Number)r.get("cid")).longValue(),(String)r.get("txid"),((Number)r.get("log_index")).intValue(),(String)r.get("address"),(BigDecimal)r.get("gross_amount"));}
+    private CregisExceptionSourceService.Source source(Map<String,Object> r) {return new CregisExceptionSourceService.Source(config.getProjectId(),((Number)r.get("cid")).longValue(),(String)r.get("txid"),((Number)r.get("log_index")).intValue(),(String)r.get("address"),(BigDecimal)r.get("gross_amount"),CregisNetwork.fromChainId(String.valueOf(r.get("chain_id"))));}
     private Map<String,Object> preview(CregisExceptionOwnershipService.Evidence e,long target) {
-        var s=e.source();var policy=policies.snapshot(config.getProjectId(),s.txid());return Map.ofEntries(Map.entry("sourceType",e.ref().type()),Map.entry("sourceId",Long.toString(e.ref().id())),
+        var s=e.source();var policy=policies.snapshot(s.network(),config.getProjectId(),s.txid());return Map.ofEntries(Map.entry("sourceType",e.ref().type()),Map.entry("sourceId",Long.toString(e.ref().id())),
                 Map.entry("targetUserId",Long.toString(target)),Map.entry("cid",Long.toString(s.cid())),Map.entry("txid",s.txid()),Map.entry("logIndex",s.logIndex()),
                 Map.entry("address",s.address()),Map.entry("fromAddress",e.fromAddress()),Map.entry("grossAmount",s.grossAmount().toPlainString()),
                 Map.entry("feeAmount",policy.feeUsdt().toPlainString()),Map.entry("netAmount",s.grossAmount().subtract(policy.feeUsdt()).toPlainString()),

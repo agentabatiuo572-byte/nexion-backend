@@ -53,31 +53,32 @@ public class CregisExceptionOwnershipService {
             throw fail("CREGIS_PROVIDER_DISABLED");
         Map<String,Object> row="EVENT".equals(ref.type())?db.event(config.getProjectId(),ref.id()):db.observation(config.getProjectId(),ref.id());
         if(row==null) throw fail("CREGIS_EXCEPTION_SOURCE_MISSING");
-        if(row.get("chainId")!=null && !CregisNetwork.BEP20.chainId().equals(String.valueOf(row.get("chainId")))) throw fail("CREGIS_EXCEPTION_NETWORK_UNSUPPORTED");
+        CregisNetwork network=row.get("chainId")==null?CregisNetwork.BEP20:CregisNetwork.fromChainId(String.valueOf(row.get("chainId")));
+        if(network==CregisNetwork.ERC20)throw fail("CREGIS_EXCEPTION_NETWORK_UNSUPPORTED");
         String state=String.valueOf(row.get("status"));
         if("EVENT".equals(ref.type()) && !java.util.Set.of("DUST_HOLD","REVIEW_HOLD").contains(state)
                 || "OBSERVATION".equals(ref.type()) && !"UNATTRIBUTED_HOLD".equals(state)) throw fail("CREGIS_EXCEPTION_SOURCE_CHANGED");
-        String txid=normalizeTx((String)row.get("txid"));
+        String txid=network.normalizeTxid((String)row.get("txid"));
         int index=((Number)row.get("logIndex")).intValue();
-        String address=((String)row.get("address")).toLowerCase(java.util.Locale.ROOT);
+        String address=network.normalizeAddress((String)row.get("address"));
         BigDecimal amount=new BigDecimal(String.valueOf(row.get("grossAmount")));
         long height=((Number)row.get("blockNumber")).longValue();
-        Map<String,Object> allocation=db.address(config.getProjectId(),address);
+        Map<String,Object> allocation=db.address(network.chainId(),config.getProjectId(),address);
         if(allocation==null || allocation.get("creationBlock")==null
                 || height<=((Number)allocation.get("creationBlock")).longValue()) throw fail("CREGIS_EXCEPTION_PROJECT_ADDRESS_UNVERIFIED");
-        if(!router.provider().addressBelongs(CregisConstants.BSC_CHAIN_ID,address)) throw fail("CREGIS_EXCEPTION_PROJECT_ADDRESS_UNVERIFIED");
-        var proof=chain.verifyExact(txid,index,address,amount,height);
+        if(!router.provider().addressBelongs(network.chainId(),address)) throw fail("CREGIS_EXCEPTION_PROJECT_ADDRESS_UNVERIFIED");
+        var proof=chain.verifyExact(network,txid,index,address,amount,height);
         if(proof==null || proof.confirmations()<Math.max(15,config.getDepositConfirmations())) throw fail("CREGIS_EXCEPTION_CHAIN_NOT_FINAL");
         if(!proof.senderEoa()) throw fail("CREGIS_EXCEPTION_EOA_OWNERSHIP_REQUIRED");
         if(row.get("blockHash")!=null && !proof.blockHash().equalsIgnoreCase((String)row.get("blockHash"))) throw fail("CREGIS_EXCEPTION_CHAIN_CHANGED");
-        var matches=router.provider().depositsByTxid(txid).stream().filter(t->t.status()==1
-                && txid.equalsIgnoreCase(normalizeTx(t.txid())) && address.equalsIgnoreCase(t.address())
+        var matches=router.provider().depositsByTxid(network,txid).stream().filter(t->t.status()==1
+                && txid.equals(network.normalizeTxid(t.txid())) && network.addressEquals(address,t.address())
                 && amount.compareTo(t.amount())==0 && (row.get("cid")==null || ((Number)row.get("cid")).longValue()==t.cid())).toList();
         if(matches.size()!=1) throw fail("CREGIS_EXCEPTION_PROVIDER_MISMATCH");
         var trade=matches.get(0);
-        if(!CregisConstants.BSC_CHAIN_ID.equals(trade.chainId()) || !CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(trade.tokenId()))
+        if(!network.chainId().equals(trade.chainId()) || !network.tokenMatches(trade.tokenId()))
             throw fail("CREGIS_EXCEPTION_PROVIDER_MISMATCH");
-        Map<String,Object> existing=db.eventByLog(config.getProjectId(),txid,index);
+        Map<String,Object> existing=db.eventByLog(network.chainId(),config.getProjectId(),txid,index);
         if(existing!=null && (!"EVENT".equals(ref.type()) || ((Number)existing.get("id")).longValue()!=ref.id()))
             throw fail("CREGIS_EXCEPTION_SOURCE_ALREADY_ATTRIBUTED");
         var existingCid=db.eventByCid(config.getProjectId(),trade.cid());
@@ -88,10 +89,10 @@ public class CregisExceptionOwnershipService {
             if(user==null || !(allocation.get("userId") instanceof Number owner) || owner.longValue()!=user
                     || !(allocation.get("allocationBlock") instanceof Number at) || height<=at.longValue()
                     || !(allocation.get("allocationHash") instanceof String anchor)
-                    || !anchor.equalsIgnoreCase(chain.blockHash(at.longValue()))) throw fail("CREGIS_EXCEPTION_OWNER_CONFLICT");
+                    || !anchor.equalsIgnoreCase(chain.blockHash(network,at.longValue()))) throw fail("CREGIS_EXCEPTION_OWNER_CONFLICT");
         } else if(allocation.get("userId") instanceof Number && allocation.get("allocationBlock") instanceof Number at
                 && height>at.longValue()) throw fail("CREGIS_EXCEPTION_SOURCE_ALREADY_ATTRIBUTED");
-        var source=new CregisExceptionSourceService.Source(config.getProjectId(),trade.cid(),txid,index,address,amount);
+        var source=new CregisExceptionSourceService.Source(config.getProjectId(),trade.cid(),txid,index,address,amount,network);
         String hash=sha(String.join("|","CREGIS_EXCEPTION_V1",deployment(),ref.type(),Long.toString(ref.id()),
                 Long.toString(source.projectId()),Long.toString(source.cid()),txid,Integer.toString(index),address,
                 amount.stripTrailingZeros().toPlainString(),proof.fromAddress(),Long.toString(height),proof.blockHash(),state,
@@ -113,8 +114,8 @@ public class CregisExceptionOwnershipService {
     }
     private String message(Evidence proof,String id,String action,Long targetUserId,Instant expires) {
         return String.join("\n","UVEL Cregis ownership authorization v1","Issuer: "+deployment(),
-                "Action: "+action,"Project: "+config.getProjectId(),"Chain: 2510 / BSC 56",
-                "Token: "+CregisConstants.USDT_BEP20_TOKEN_ID,"Transaction: "+proof.source().txid(),
+                "Action: "+action,"Project: "+config.getProjectId(),proof.source().network()==CregisNetwork.BEP20?"Chain: 2510 / BSC 56":"Chain: "+proof.source().network().chainId()+" / "+proof.source().network().network(),
+                "Token: "+proof.source().network().tokenId(),"Transaction: "+proof.source().txid(),
                 "Log index: "+proof.source().logIndex(),"Amount USDT: "+proof.source().grossAmount().stripTrailingZeros().toPlainString(),
                 "Deposit recipient: "+proof.source().address(),"Transfer sender: "+proof.fromAddress(),
                 "Target UVEL user: "+(targetUserId==null?"NONE":targetUserId),"Evidence: "+proof.evidenceHash(),
@@ -130,9 +131,10 @@ public class CregisExceptionOwnershipService {
         Evidence evidence=preflight(new SourceRef((String)challenge.get("source_type"),((Number)challenge.get("source_id")).longValue()));
         if(!evidence.evidenceHash().equals(challenge.get("evidence_hash"))) throw fail("CREGIS_EXCEPTION_EVIDENCE_CHANGED");
         requireMessage(challenge,evidence,action,targetUserId);
-        String signer=recoverSigner((String)challenge.get("message"),signature);
-        if(!evidence.fromAddress().equalsIgnoreCase(signer)) throw fail("CREGIS_EXCEPTION_SIGNATURE_INVALID");
+        String signer=recoverSigner((String)challenge.get("message"),signature,evidence.source().network());
+        if(!evidence.source().network().addressEquals(evidence.fromAddress(),signer)) throw fail("CREGIS_EXCEPTION_SIGNATURE_INVALID");
         String normalized=signature.toLowerCase(java.util.Locale.ROOT);
+        if(!normalized.startsWith("0x"))normalized="0x"+normalized;
         return new VerifiedOwnership(challengeId,action,targetUserId,evidence,sha(normalized),normalized);
     }
 
@@ -143,8 +145,8 @@ public class CregisExceptionOwnershipService {
         requireChallenge(challenge,verified.action(),verified.targetUserId());
         if(!verified.evidence().evidenceHash().equals(challenge.get("evidence_hash"))) throw fail("CREGIS_EXCEPTION_EVIDENCE_CHANGED");
         requireMessage(challenge,verified.evidence(),verified.action(),verified.targetUserId());
-        String signer=recoverSigner((String)challenge.get("message"),verified.signature());
-        if(!verified.evidence().fromAddress().equalsIgnoreCase(signer)
+        String signer=recoverSigner((String)challenge.get("message"),verified.signature(),verified.evidence().source().network());
+        if(!verified.evidence().source().network().addressEquals(verified.evidence().fromAddress(),signer)
                 || !sha(verified.signature()).equals(verified.signatureHash()))throw fail("CREGIS_EXCEPTION_SIGNATURE_INVALID");
         if(reference==null || reference.isBlank() || reference.length()>96) throw fail("CREGIS_EXCEPTION_REQUEST_INVALID");
         if(challenge.get("consumed_ref")!=null) {
@@ -175,8 +177,9 @@ public class CregisExceptionOwnershipService {
     }
     private void requireReceipt(Map<String,Object> row) {
         String message=(String)row.get("message"),signer=(String)row.get("signer");
-        if(signer==null || !signer.matches("(?i)0x[0-9a-f]{40}") || message==null
-                || !recoverSigner(message,(String)row.get("consumed_signature")).equalsIgnoreCase(signer)
+        CregisNetwork network=message!=null && java.util.Arrays.asList(message.split("\n",-1)).contains("Chain: 195 / TRC20")?CregisNetwork.TRC20:CregisNetwork.BEP20;
+        if(!network.validAddress(signer) || message==null
+                || !network.addressEquals(recoverSigner(message,(String)row.get("consumed_signature"),network),signer)
                 || row.get("consumed_at")==null || expiry(row.get("consumed_at")).isAfter(expiry(row.get("expires_at"))))
             throw fail("CREGIS_EXCEPTION_OWNERSHIP_RECEIPT_MISMATCH");
         var lines=java.util.Arrays.asList(message.split("\n",-1));
@@ -216,8 +219,10 @@ public class CregisExceptionOwnershipService {
             return "https://"+uri.getHost().toLowerCase(java.util.Locale.ROOT)+port+path.replaceAll("/+$","")+" | project="+config.getProjectId();
         } catch(IllegalArgumentException invalid){throw fail("CREGIS_EXCEPTION_DEPLOYMENT_UNVERIFIED");}
     }
-    static String recoverSigner(String message,String signature) {
+    static String recoverSigner(String message,String signature) { return recoverSigner(message,signature,CregisNetwork.BEP20); }
+    static String recoverSigner(String message,String signature,CregisNetwork network) {
         try {
+            if(network==CregisNetwork.TRC20 && signature!=null && signature.matches("(?i)[0-9a-f]{130}"))signature="0x"+signature;
             if(message==null || signature==null || !signature.matches("(?i)0x[0-9a-f]{130}")) throw new IllegalArgumentException();
             byte[] sig=HexFormat.of().parseHex(signature.substring(2));
             BigInteger r=new BigInteger(1,java.util.Arrays.copyOfRange(sig,0,32));
@@ -230,16 +235,16 @@ public class CregisExceptionOwnershipService {
             var R=curve.getCurve().decodePoint(encoded);
             if(!R.multiply(n).isInfinity()) throw new IllegalArgumentException();
             byte[] body=message.getBytes(StandardCharsets.UTF_8);
-            byte[] prefix=("\u0019Ethereum Signed Message:\n"+body.length).getBytes(StandardCharsets.UTF_8);
+            byte[] prefix=((network==CregisNetwork.TRC20?"\u0019TRON Signed Message:\n":"\u0019Ethereum Signed Message:\n")+body.length).getBytes(StandardCharsets.UTF_8);
             byte[] joined=new byte[prefix.length+body.length];System.arraycopy(prefix,0,joined,0,prefix.length);System.arraycopy(body,0,joined,prefix.length,body.length);
             BigInteger e=new BigInteger(1,keccak(joined));
             var pub=ECAlgorithms.sumOfTwoMultiplies(curve.getG(),e.negate().mod(n),R,s).multiply(r.modInverse(n)).normalize().getEncoded(false);
             byte[] hashed=keccak(java.util.Arrays.copyOfRange(pub,1,pub.length));
-            return "0x"+HexFormat.of().formatHex(java.util.Arrays.copyOfRange(hashed,12,32));
+            String hex=HexFormat.of().formatHex(java.util.Arrays.copyOfRange(hashed,12,32));
+            return network==CregisNetwork.TRC20?TronAddress.fromHex("41"+hex):"0x"+hex;
         } catch(RuntimeException invalid){throw fail("CREGIS_EXCEPTION_SIGNATURE_INVALID");}
     }
     private static byte[] keccak(byte[] bytes){var digest=new KeccakDigest(256);digest.update(bytes,0,bytes.length);byte[] result=new byte[32];digest.doFinal(result,0);return result;}
     static String sha(String text){try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8)));}catch(Exception e){throw new IllegalStateException(e);}}
-    private static String normalizeTx(String txid){if(txid==null || !txid.matches("(?i)(0x)?[0-9a-f]{64}"))throw fail("CREGIS_EXCEPTION_SOURCE_INVALID");return "0x"+txid.replaceFirst("(?i)^0x","").toLowerCase(java.util.Locale.ROOT);}
     private static BizException fail(String message){return new BizException(409,message);}
 }

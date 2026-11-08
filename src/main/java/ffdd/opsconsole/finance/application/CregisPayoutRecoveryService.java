@@ -32,7 +32,7 @@ public class CregisPayoutRecoveryService {
     public Detail detail(String withdrawalNo) {
         requireAdmin(false);
         var row = mapper.payout(withdrawalNo);
-        if (row == null || !java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(row.chain())) throw new BizException(404, "WITHDRAWAL_NOT_FOUND");
+        if (row == null || !java.util.Set.of("USDT-BEP20","USDT-ERC20","USDT-TRC20").contains(row.chain())) throw new BizException(404, "WITHDRAWAL_NOT_FOUND");
         return new Detail(row.withdrawalNo(), row.payoutSource(),
                 row.providerCid() == null ? null : row.providerCid().toString(), row.status(),
                 "provider".equals(row.payoutSource()) && "TX_ORPHANED".equals(row.status())
@@ -58,7 +58,7 @@ public class CregisPayoutRecoveryService {
             throw new BizException(409, "CREGIS_PAYOUT_RECOVERY_IN_PROGRESS_OR_CONFLICT");
         var row = mapper.payout(withdrawalNo);
         if (row == null) throw new BizException(404, "WITHDRAWAL_NOT_FOUND");
-        if (!java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(row.chain()) || !"provider".equals(row.payoutSource())
+        if (!java.util.Set.of("USDT-BEP20","USDT-ERC20","USDT-TRC20").contains(row.chain()) || !"provider".equals(row.payoutSource())
                 || row.providerIdempotencyKey() == null || row.providerIdempotencyKey().isBlank()
                 || (row.providerCid() != null && row.providerCid() != cid)
                 || !("TX_ORPHANED".equals(row.status()) || row.providerCid() != null
@@ -77,10 +77,10 @@ public class CregisPayoutRecoveryService {
         }
         if (observed == null || observed.cid() != cid || observed.status() == null
                 || !CregisNetwork.fromNetwork(row.chain().substring(5)).chainId().equals(observed.chainId())
-                || !CregisNetwork.fromNetwork(row.chain().substring(5)).tokenId().equalsIgnoreCase(observed.tokenId())
-                || !CregisNetwork.fromNetwork(row.chain().substring(5)).currency().equalsIgnoreCase(observed.currency())
+                || !CregisNetwork.fromNetwork(row.chain().substring(5)).tokenMatches(observed.tokenId())
+                || !CregisNetwork.fromNetwork(row.chain().substring(5)).currencyMatches(observed.currency())
                 || !row.providerIdempotencyKey().equals(observed.thirdPartyId())
-                || !row.targetAddress().equalsIgnoreCase(observed.address()) || observed.amount() == null
+                || !CregisNetwork.fromNetwork(row.chain().substring(5)).addressEquals(row.targetAddress(),observed.address()) || observed.amount() == null
                 || row.netReceive() == null || row.netReceive().compareTo(observed.amount()) != 0)
             throw new BizException(409, "CREGIS_PAYOUT_RECOVERY_EVIDENCE_CONFLICT");
         String actor = AdminActorResolver.resolve(null);

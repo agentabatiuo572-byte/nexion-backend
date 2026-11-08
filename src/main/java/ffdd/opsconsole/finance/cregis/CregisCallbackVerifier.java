@@ -36,7 +36,7 @@ public final class CregisCallbackVerifier {
             return invalid("VERIFIER_NOT_CONFIGURED");
         }
         if (expected.cid() <= 0 || text(expected.thirdPartyId()) == null
-                || text(expected.address()) == null || !EVM_ADDRESS.matcher(expected.address()).matches()
+                || text(expected.address()) == null || !expected.network().validAddress(expected.address())
                 || CregisAmount.normalizePositive(expected.amount()) == null) {
             return invalid("EXPECTED_PAYOUT_INVALID");
         }
@@ -52,7 +52,7 @@ public final class CregisCallbackVerifier {
         if (pid == null || cid == null || cid <= 0 || timestamp == null || status == null
                 || nonce == null || !nonce.matches("[A-Za-z0-9]{6}")
                 || signature == null || thirdPartyId == null || thirdPartyId.length() > 128
-                || address == null || !EVM_ADDRESS.matcher(address).matches() || amount == null) {
+                || address == null || !expected.network().validAddress(address) || amount == null) {
             return invalid("CALLBACK_SCHEMA_INVALID");
         }
         if (pid != projectId) return invalid("PROJECT_ID_MISMATCH");
@@ -66,20 +66,20 @@ public final class CregisCallbackVerifier {
         }
         if (status < 0 || status > 7) return invalid("STATUS_INVALID");
         if (!expected.network().chainId().equals(text(callback.get("chain_id")))
-                || !expected.network().tokenId().equalsIgnoreCase(text(callback.get("token_id")))
+                || !expected.network().tokenMatches(text(callback.get("token_id")))
                 || !supportedCurrency(expected.network(),text(callback.get("currency")))) {
             return invalid("ASSET_SCOPE_MISMATCH");
         }
         if (cid.longValue() != expected.cid()
                 || !thirdPartyId.equals(expected.thirdPartyId())
-                || !address.equalsIgnoreCase(expected.address())
+                || !expected.network().addressEquals(address,expected.address())
                 || amount.compareTo(expected.amount()) != 0) {
             return invalid("PAYOUT_SNAPSHOT_MISMATCH");
         }
         Object rawTxid = callback.get("txid");
         String txid = text(rawTxid);
         if ((rawTxid != null && txid == null)
-                || (txid != null && !BSC_TXID.matcher(txid).matches())
+                || (txid != null && !expected.network().validTxid(txid))
                 || (status == CregisGateway.PayoutStatus.SUCCEEDED.providerCode() && txid == null)) {
             return invalid("CALLBACK_SCHEMA_INVALID");
         }
@@ -87,8 +87,7 @@ public final class CregisCallbackVerifier {
     }
 
     private boolean supportedCurrency(CregisNetwork network,String currency) {
-        return network.currency().equalsIgnoreCase(currency)
-                || network.policyTokenId().equalsIgnoreCase(currency);
+        return network.currencyMatches(currency);
     }
 
     private Long integer(Object value) {

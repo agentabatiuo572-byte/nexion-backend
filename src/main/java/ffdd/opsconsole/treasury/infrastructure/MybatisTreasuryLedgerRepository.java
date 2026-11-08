@@ -288,7 +288,7 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
     @Transactional(rollbackFor = Exception.class)
     public void reverseBep20WithdrawalReserve(String withdrawalNo, BigDecimal amountUsd, LocalDateTime now) {
         var order = mapper.lockReserveWithdrawal(withdrawalNo);
-        if (order == null || !java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(order.chain()) || !"FAILED".equals(order.status())
+        if (order == null || !java.util.Set.of("USDT-BEP20","USDT-ERC20","USDT-TRC20").contains(order.chain()) || !"FAILED".equals(order.status())
                 || !"provider".equals(order.payoutSource()) || (order.txid() != null && !order.txid().isBlank()))
             throw new IllegalStateException("BEP20_RESERVE_RETURN_STATE_INVALID");
         returnBep20Reserve(withdrawalNo, order, amountUsd, now, false);
@@ -371,7 +371,7 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
         if (order == null || !java.util.Objects.equals(userId, order.userId()) || order.amount() == null
                 || order.amount().compareTo(safeAmount) != 0)
             throw new IllegalStateException("WITHDRAWAL_REFUND_ORDER_MISMATCH");
-        if (java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(order.chain())) {
+        if (java.util.Set.of("USDT-BEP20","USDT-ERC20","USDT-TRC20").contains(order.chain())) {
             WalletLedgerEntity manualRefund = mapper.findLedgerEntry(
                     compactKey("D2-REFUND-", safeBiz(withdrawalNo), 96), "USDT", "IN");
             if (manualRefund != null) {
@@ -379,7 +379,7 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
                 throw new BizException(409, "WITHDRAWAL_ALREADY_REFUNDED");
             }
         }
-        if (java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(order.chain())) {
+        if (java.util.Set.of("USDT-BEP20","USDT-ERC20","USDT-TRC20").contains(order.chain())) {
             if (!("REVIEW_REJECTED".equals(order.status()) || "REFUNDED".equals(order.status()))
                     || (order.txid() != null && !order.txid().isBlank())
                     || (order.payoutSource() != null && !order.payoutSource().isBlank()))

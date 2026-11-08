@@ -40,7 +40,7 @@ public class WithdrawalPayoutCallbackService {
         String providerKey = text(callback == null ? null : callback.get("third_party_id"));
         if (providerKey == null) return ApiResult.fail(422, "CREGIS_CALLBACK_SCHEMA_INVALID");
         WithdrawalPayoutMapper.PayoutRow row = mapper.payoutByProviderKey(providerKey);
-        if (row == null || !java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(row.chain())
+        if (row == null || !java.util.Set.of("USDT-BEP20","USDT-ERC20","USDT-TRC20").contains(row.chain())
                 || (row.payoutSource() != null && !"provider".equals(row.payoutSource()))) {
             return ApiResult.fail(404, "CREGIS_PAYOUT_NOT_FOUND");
         }
@@ -57,6 +57,7 @@ public class WithdrawalPayoutCallbackService {
 
         int providerStatus = ((Number) callback.get("status")).intValue();
         String txid = text(callback.get("txid"));
+        if(txid!=null)txid=CregisNetwork.fromNetwork(row.chain().substring(5)).normalizeTxid(txid);
         String payloadHash = callbackHash(callback);
         String eventNo = "CREGIS-CB-" + payloadHash.substring(0, 48);
         LocalDateTime now = LocalDateTime.now(clock);
@@ -110,7 +111,8 @@ public class WithdrawalPayoutCallbackService {
                 CregisGateway.PayoutOrder queried = router.provider().queryPayout(new CregisGateway.PayoutQuery(
                         event.providerCid(), row.providerIdempotencyKey(), row.targetAddress(), row.netReceive(), CregisNetwork.fromNetwork(row.chain().substring(5)).currency()));
                 if (queried.status() != CregisGateway.PayoutStatus.SUCCEEDED
-                        || queried.txid() == null || !queried.txid().equalsIgnoreCase(event.txid())) {
+                        || queried.txid() == null || !CregisNetwork.fromNetwork(row.chain().substring(5)).normalizeTxid(queried.txid())
+                                .equals(CregisNetwork.fromNetwork(row.chain().substring(5)).normalizeTxid(event.txid()))) {
                     throw new IllegalStateException("CREGIS_SUCCESS_NOT_CONFIRMED_BY_QUERY");
                 }
                 // Provider success is not chain finality. Until an RPC receipt/confirmation observer

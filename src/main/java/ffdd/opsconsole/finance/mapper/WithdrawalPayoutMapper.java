@@ -24,7 +24,7 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
     Long lockCashCustomer(@Param("userId") Long userId);
 
     @Select("""
-            SELECT status,d2_lifecycle_owner lifecycleOwner,created_at createdAt,
+            SELECT status,d2_lifecycle_owner lifecycleOwner,created_at createdAt,d2_hold_until holdUntil,
                    d5_payout_source payoutSource,d5_provider_cid providerCid
               FROM nx_withdrawal_order
              WHERE withdrawal_no=#{withdrawalNo} AND is_deleted=0 FOR UPDATE
@@ -47,7 +47,40 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
     int returnToComplianceReview(@Param("withdrawalNo") String withdrawalNo,
                                  @Param("holdUntil") LocalDateTime holdUntil, @Param("now") LocalDateTime now);
 
-    record ComplianceDispatchState(String status, String lifecycleOwner, LocalDateTime createdAt,
+    @Select("""
+            SELECT detail_json FROM nx_audit_log WHERE action='D2_WITHDRAWAL_SUBMITTED'
+              AND resource_type='WITHDRAWAL' AND resource_id=#{withdrawalNo} AND biz_no=#{withdrawalNo}
+              AND user_id=#{userId} AND result='SUCCESS' AND is_deleted=0
+            UNION ALL
+            SELECT JSON_EXTRACT(cold_payload,'$.detail') FROM nx_audit_log_archive
+             WHERE JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))='D2_WITHDRAWAL_SUBMITTED'
+               AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceType'))='WITHDRAWAL'
+               AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId'))=#{withdrawalNo}
+               AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.bizNo'))=#{withdrawalNo}
+               AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.userId'))=CAST(#{userId} AS CHAR)
+               AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.result'))='SUCCESS'
+            """)
+    List<String> originalSubmissionDetails(@Param("withdrawalNo") String withdrawalNo,@Param("userId") Long userId);
+
+    @Update("""
+            UPDATE nx_withdrawal_order SET status='EXTENDED_HOLD',d2_hold_until=#{holdUntil},
+                   d2_lifecycle_owner=#{owner},d2_previous_status=#{previous},
+                   d2_version=d2_version+1,failure_reason='H1_TRC20_PHASE_WINDOW',next_broadcast_at=NULL,updated_at=#{now}
+             WHERE withdrawal_no=#{withdrawalNo} AND chain='USDT-TRC20' AND status='REVIEW_PASSED'
+               AND is_deleted=0 AND d5_payout_source IS NULL AND d5_provider_cid IS NULL
+            """)
+    int returnToTrcPhaseHold(@Param("withdrawalNo") String withdrawalNo,@Param("holdUntil") LocalDateTime holdUntil,
+                             @Param("owner") String owner,@Param("previous") String previous,@Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_withdrawal_order SET status='REVIEW_PENDING',failure_reason=#{reason},
+                   d2_version=d2_version+1,next_broadcast_at=NULL,d5_payout_lease_until=NULL,updated_at=#{now}
+             WHERE withdrawal_no=#{withdrawalNo} AND chain='USDT-TRC20' AND status='REVIEW_PASSED'
+               AND is_deleted=0 AND d5_payout_source IS NULL AND d5_provider_cid IS NULL
+            """)
+    int returnToTrcReview(@Param("withdrawalNo") String withdrawalNo,@Param("reason") String reason,@Param("now") LocalDateTime now);
+
+    record ComplianceDispatchState(String status, String lifecycleOwner, LocalDateTime createdAt,LocalDateTime holdUntil,
                                    String payoutSource, Long providerCid) { }
 
     @Select("""
@@ -229,7 +262,7 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
               FROM nx_withdrawal_order
              WHERE (status='PROCESSING' OR (status='FROZEN' AND c2_frozen_by_user_status=1
                     AND c2_previous_status='PROCESSING')) AND d5_payout_lease_until<=#{now} AND is_deleted=0
-               AND chain IN ('USDT-BEP20','USDT-ERC20') AND (d5_payout_source IS NULL OR d5_payout_source='provider')
+               AND chain IN ('USDT-BEP20','USDT-ERC20','USDT-TRC20') AND (d5_payout_source IS NULL OR d5_payout_source='provider')
              ORDER BY id LIMIT #{limit}
             """)
     List<PayoutRow> expiredProviderAttempts(@Param("now") LocalDateTime now, @Param("limit") int limit);

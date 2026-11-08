@@ -207,7 +207,7 @@ public class AppPayoutAddressService {
     private String normalizeAddress(String network, String value) {
         String address = value == null ? "" : value.trim();
         boolean valid = "USDT-TRC20".equals(network)
-                ? address.matches("^T[1-9A-HJ-NP-Za-km-z]{33}$")
+                ? address.startsWith("T") && ffdd.opsconsole.finance.cregis.CregisNetwork.TRC20.validAddress(address)
                 : address.matches("^0x[0-9a-fA-F]{40}$");
         if (!valid) throw new BizException(422, "PAYOUT_ADDRESS_FORMAT_INVALID");
         return address;

@@ -35,11 +35,14 @@ public class CregisProperties {
     private boolean depositCreditEnabled;
     /** Separate approval for new Ethereum address issuance and wallet credit. */
     private boolean erc20DepositEnabled;
-    public boolean depositNetworkEnabled(CregisNetwork network) { return network==CregisNetwork.BEP20 || erc20DepositEnabled; }
+    private boolean trc20DepositEnabled;
+    public boolean depositNetworkEnabled(CregisNetwork network) { return switch(network) { case BEP20 -> true; case ERC20 -> erc20DepositEnabled; case TRC20 -> trc20DepositEnabled; }; }
     /** Provider payout transport approval; the independent D1 maker/checker database switch is also required. */
     private boolean payoutEnabled;
     /** Explicit Ethereum outbound transport approval; existing BSC approvals never enable a new network. */
     private boolean erc20PayoutEnabled;
+    private boolean trc20PayoutEnabled;
+    public boolean payoutNetworkEnabled(CregisNetwork network) { return switch(network) { case BEP20 -> true; case ERC20 -> erc20PayoutEnabled; case TRC20 -> trc20PayoutEnabled; }; }
     /** Separate operator approval for the automatic collection/forward transport. Never enabled by a migration. */
     private boolean autoForwardEnabled;
     /** Exact Cregis callback egress IPs; empty rejects callbacks until verified with vendor. */
@@ -50,9 +53,14 @@ public class CregisProperties {
     /** Independent read-only Ethereum mainnet endpoint. No BSC fallback is permitted. */
     @ToString.Exclude
     private String ethereumRpcUrl = "";
+    /** Independent TRON native HTTP API origin; wallet and walletsolidity reads only. */
+    @ToString.Exclude
+    private String tronRpcUrl = "";
+    @ToString.Exclude
+    private String tronApiKey = "";
     private int depositConfirmations = 15;
     public int confirmations(CregisNetwork network) { return getDepositConfirmations(); }
-    public String rpcUrl(CregisNetwork network) { return network==CregisNetwork.BEP20 ? bscRpcUrl : ethereumRpcUrl; }
+    public String rpcUrl(CregisNetwork network) { return switch(network) { case BEP20 -> bscRpcUrl; case ERC20 -> ethereumRpcUrl; case TRC20 -> tronRpcUrl; }; }
     public boolean networkConfigured(CregisNetwork network) { return rpcUrl(network)!=null && !rpcUrl(network).isBlank(); }
     /** Historical RPC batch includes the existing 100-block overlap. */
     private int chainScanBlocks = 500;

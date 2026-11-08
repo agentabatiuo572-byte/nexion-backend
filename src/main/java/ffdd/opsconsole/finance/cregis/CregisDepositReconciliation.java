@@ -29,6 +29,8 @@ public class CregisDepositReconciliation {
     private final CregisDepositMapper db;
     private final CregisDepositService deposits;
     private final PlatformTransactionManager txManager;
+    private final CregisPayoutControl payouts;
+    private final ffdd.opsconsole.shared.audit.AuditLogService audit;
 
     public List<Map<String, Object>> runs() {
         return config.getMode() == CregisProperties.Mode.PROVIDER
@@ -39,7 +41,7 @@ public class CregisDepositReconciliation {
     public void scheduled() {
         if (config.getMode() != CregisProperties.Mode.PROVIDER) return;
         for(var network:CregisNetwork.values()) {
-            if(!config.networkConfigured(network)) continue;
+            if(!config.networkConfigured(network) && !db.hasNetworkActivity(network,config.getProjectId())) continue;
             try { runOnce(network); }
             catch(RuntimeException failure) { /* Recorded per-network run; continue the other chain. */ }
         }
@@ -49,6 +51,8 @@ public class CregisDepositReconciliation {
         if (config.getMode() != CregisProperties.Mode.PROVIDER)
             throw new IllegalStateException("CREGIS_PROVIDER_DISABLED");
         Long first = db.firstAddressSecond(network,config.getProjectId());
+        boolean bootstrap=first==null && network==CregisNetwork.TRC20 && config.networkConfigured(network);
+        if(bootstrap)first=Instant.now().getEpochSecond();
         if (first == null) return Map.of("status", "NO_ADDRESSES");
         db.ensureWatermark(network,Math.max(1, first - 3600));
         Long prior = db.reconcileWatermark(network);
@@ -65,11 +69,20 @@ public class CregisDepositReconciliation {
         try {
             db.failInterruptedReconcileRuns(network,config.getProjectId(), runId);
             db.createReconcileRun(network,runId, config.getProjectId(), start, end);
+            if(bootstrap) {
+                if(db.hasNetworkActivity(network,config.getProjectId()) || payouts.recoveryReason()!=null
+                        || db.unresolvedExposure(config.getProjectId()).signum()!=0
+                        || router.provider().projectCoins().stream().noneMatch(coin->coin.addressEnabled()
+                            && network.chainId().equals(coin.chainId()) && network.tokenMatches(coin.tokenId())))
+                    throw new IllegalStateException("CREGIS_TRC20_BOOTSTRAP_NOT_EMPTY_OR_READY");
+            }
             Snapshot firstPass = snapshot(network,start, end);
             Snapshot secondPass = snapshot(network,start, end);
             if (firstPass.total != secondPass.total || !firstPass.hash.equals(secondPass.hash))
                 throw new IllegalStateException("CREGIS_RECONCILE_PROVIDER_DRIFT");
-            long finalized = chain.head(network).number() - config.getDepositConfirmations() + 1;
+            if(bootstrap && (firstPass.total!=0 || secondPass.total!=0))
+                throw new IllegalStateException("CREGIS_TRC20_BOOTSTRAP_PROVIDER_NOT_EMPTY");
+            long finalized = chain.finalizedHeight(network,config.getDepositConfirmations());
             if (finalized >= 0) deposits.scanTrackedAddresses(network,finalized);
             Long cursor = db.cursor(network);
             if (finalized < 0 || cursor == null || cursor <= finalized)
@@ -79,9 +92,12 @@ public class CregisDepositReconciliation {
                 if (row.status() == 0 || !deposits.materializeProviderRow(row))
                     throw new IllegalStateException("CREGIS_RECONCILE_ROW_UNRESOLVED");
             }
-            deposits.auditCreditedProviderRows();
+            deposits.auditCreditedProviderRows(network);
             TransactionTemplate tx = new TransactionTemplate(txManager);
             tx.executeWithoutResult(ignored -> {
+                if(bootstrap && (db.lockProvisionGate()==null || db.hasNetworkActivity(network,config.getProjectId())
+                        || payouts.recoveryReason()!=null || db.unresolvedExposure(config.getProjectId()).signum()!=0))
+                    throw new IllegalStateException("CREGIS_TRC20_BOOTSTRAP_NOT_EMPTY_OR_READY");
                 Long locked = db.lockReconcileWatermark(network);
                 if (locked == null || !locked.equals(prior))
                     throw new IllegalStateException("CREGIS_RECONCILE_WATERMARK_CONFLICT");
@@ -89,10 +105,15 @@ public class CregisDepositReconciliation {
                         secondPass.rows.size(), secondPass.hash, cursor, chainHash) != 1
                         || db.advanceReconcileWatermark(network,prior, end, runId) != 1)
                     throw new IllegalStateException("CREGIS_RECONCILE_COMMIT_FAILED");
+                if(bootstrap)audit.recordRequired(ffdd.opsconsole.shared.audit.AuditLogWriteRequest.builder()
+                        .action("CREGIS_TRC20_EMPTY_POOL_RECONCILED").resourceType("CREGIS_RECONCILE").resourceId(runId)
+                        .actorType("SYSTEM").actorUsername("cregis-reconciliation").riskLevel("HIGH").result("SUCCESS")
+                        .detail(Map.of("source","EMPTY_POOL_BOOTSTRAP","network",network.network(),"windowStart",start,
+                                "windowEnd",end,"providerRows",0,"chainCursorBlock",cursor,"chainCursorHash",chainHash)).build());
             });
             return Map.of("runId", runId, "status", "COMPLETE", "windowStart", start,
                     "windowEnd", end, "total", secondPass.total, "fullRowHash", secondPass.hash,
-                    "chainCursorBlock", cursor, "chainCursorHash", chainHash);
+                    "chainCursorBlock", cursor, "chainCursorHash", chainHash,"bootstrap",bootstrap);
         } catch (RuntimeException failure) {
             db.failReconcileRun(runId, code(failure));
             throw failure;

@@ -19,12 +19,12 @@ public class CregisExceptionSourceService {
     public record Source(long projectId,long cid,String txid,int logIndex,String address,BigDecimal grossAmount,CregisNetwork network) {
         public Source(long projectId,long cid,String txid,int logIndex,String address,BigDecimal grossAmount) { this(projectId,cid,txid,logIndex,address,grossAmount,CregisNetwork.BEP20); }
         public Source {
-            if(network==null || projectId<=0 || cid<=0 || logIndex<0 || txid==null || !txid.matches("(?i)(0x)?[0-9a-f]{64}")
-                    || address==null || !address.matches("(?i)0x[0-9a-f]{40}") || CregisAmount.normalizePositive(grossAmount)==null
+            if(network==null || projectId<=0 || cid<=0 || logIndex<0 || !network.validTxid(txid)
+                    || !network.validAddress(address) || CregisAmount.normalizePositive(grossAmount)==null
                     || grossAmount.stripTrailingZeros().scale()>6 || grossAmount.compareTo(new BigDecimal("999999999999.999999"))>0)
                 throw new BizException(422,"CREGIS_EXCEPTION_SOURCE_INVALID");
-            txid="0x"+txid.replaceFirst("(?i)^0x","").toLowerCase(java.util.Locale.ROOT);
-            address=address.toLowerCase(java.util.Locale.ROOT);
+            txid=network.normalizeTxid(txid);
+            address=network.normalizeAddress(address);
         }
     }
     @Transactional(propagation=Propagation.MANDATORY,rollbackFor=Exception.class)
@@ -79,7 +79,7 @@ public class CregisExceptionSourceService {
         if(event==null || ((Number)event.get("cid")).longValue()!=original.cid() || event.get("ledgerId")==null
                 || !original.txid().equalsIgnoreCase(String.valueOf(event.get("txid")))
                 || ((Number)event.get("logIndex")).intValue()!=original.logIndex()
-                || !original.address().equalsIgnoreCase(String.valueOf(event.get("address")))
+                || !original.network().addressEquals(original.address(),String.valueOf(event.get("address")))
                 || original.grossAmount().compareTo((BigDecimal)event.get("grossAmount"))!=0
                 || !java.util.Set.of("CREDITED","REORG_HOLD","REORG_INVESTIGATING","REORG_REVERSED","PROVIDER_CONFLICT_HOLD").contains(String.valueOf(event.get("status")))) throw conflict();
         var prior=locked(original);
@@ -96,7 +96,7 @@ public class CregisExceptionSourceService {
         if(db.directPurchaseAddress(s))throw new BizException(409,"CREGIS_DIRECT_PURCHASE_SEPARATE_REVIEW");
         db.ensure(s); var row=db.lock(s);
         if(row==null || ((Number)row.get("cid")).longValue()!=s.cid()
-                || !s.address().equalsIgnoreCase((String)row.get("address"))
+                || !s.network().addressEquals(s.address(),(String)row.get("address"))
                 || s.grossAmount().compareTo((BigDecimal)row.get("grossAmount"))!=0) throw conflict();
         return row;
     }
