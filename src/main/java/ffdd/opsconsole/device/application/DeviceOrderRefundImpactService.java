@@ -35,6 +35,10 @@ public class DeviceOrderRefundImpactService {
             unavailable=failure instanceof BizException business ? business.getMessage() : "COMPUTE_V2_STATE_UNAVAILABLE";
         }
         var totals=mapper.totals(orderNo,userId,asOf);
+        if(totals.unresolvedSimulatedCount()>0) {
+            runtime=null;
+            unavailable="SIMULATED_TASK_RUNTIME_UNRESOLVED";
+        }
         TaskEarnings pending=null;
         Long unfinished=null;
         if(runtime!=null) {

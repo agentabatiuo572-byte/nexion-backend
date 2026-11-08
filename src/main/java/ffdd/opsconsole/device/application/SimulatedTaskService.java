@@ -263,8 +263,8 @@ public class SimulatedTaskService implements SchedulingConfigurer {
         cutoff=earlier(cutoff,device.deactivatedAt());
         String stopReason=runtime.phone() && runtime.phoneValidUntil()!=null && runtime.phoneValidUntil().equals(cutoff)
                 ?"PHONE_VALIDITY_EXPIRED":"DEVICE_STOPPED";
-        if("ORDER_REFUND".equals(runtime.lastError()))stopReason="ORDER_REFUND";
         if("DEVICE_PAUSED".equals(runtime.lastError()) && Objects.equals(runtime.stopAt(),cutoff))stopReason="DEVICE_PAUSED";
+        if(device.deactivatedAt()!=null && mapper.refundedOrderDevice(device.userId(),device.deviceId()))stopReason="ORDER_REFUND";
         if(!active(device) && device.deactivatedAt()==null) {
             LocalDateTime pausedAt=observed;
             if(device.dispatchPaused())pausedAt=earlier(pausedAt,device.dcUpdatedAt());

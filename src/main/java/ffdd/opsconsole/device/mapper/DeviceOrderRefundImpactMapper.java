@@ -9,7 +9,8 @@ import org.apache.ibatis.annotations.Select;
 @Mapper
 public interface DeviceOrderRefundImpactMapper {
     record Totals(long completedPendingCount,BigDecimal pendingUsdt,BigDecimal pendingUvt,
-                  long unfinishedCount,long stoppedCount,long creditedCount,BigDecimal creditedUsdt,BigDecimal creditedUvt) { }
+                  long unfinishedCount,long stoppedCount,long creditedCount,BigDecimal creditedUsdt,BigDecimal creditedUvt,
+                  long unresolvedSimulatedCount) { }
 
     @Select("""
             WITH devices AS (
@@ -23,10 +24,21 @@ public interface DeviceOrderRefundImpactMapper {
                                 COALESCE(r.phone_valid_until,#{asOf})) AS cutoff
               FROM devices d JOIN nx_simulated_task t ON t.user_device_id=d.id AND t.user_id=d.user_id
               JOIN nx_simulated_device_runtime r ON r.user_device_id=d.id AND r.user_id=d.user_id
-                AND r.instance_no=t.instance_no AND r.generation=t.generation AND r.current_task_no=t.task_no
+                AND r.instance_no=t.instance_no AND d.instance_no=t.instance_no
+                AND r.generation=t.generation AND r.current_task_no=t.task_no
               WHERE t.status='RUNNING' AND t.completed_at IS NULL AND t.posted_at IS NULL
                 AND NOT EXISTS (SELECT 1 FROM nx_compute_retired_task rt
                   WHERE rt.user_id=t.user_id AND rt.task_no=t.task_no COLLATE utf8mb4_0900_ai_ci)
+            ), unresolved_simulated AS (
+              SELECT t.task_no FROM devices d
+              JOIN nx_simulated_task t ON t.user_device_id=d.id AND t.user_id=d.user_id
+              WHERE t.status='RUNNING' AND t.completed_at IS NULL AND t.posted_at IS NULL
+                AND NOT EXISTS (SELECT 1 FROM nx_compute_retired_task rt
+                  WHERE rt.user_id=t.user_id AND rt.task_no=t.task_no COLLATE utf8mb4_0900_ai_ci)
+                AND NOT EXISTS (SELECT 1 FROM nx_simulated_device_runtime r
+                  WHERE r.user_device_id=d.id AND r.user_id=d.user_id AND r.instance_no=t.instance_no
+                    AND d.instance_no=t.instance_no
+                    AND r.generation=t.generation AND r.current_task_no=t.task_no)
             ), facts AS (
               SELECT 'PENDING' bucket,t.task_no,COALESCE(r.reward_usdt,t.reward_usdt) usdt,COALESCE(r.reward_nex,0) uvt
               FROM devices d JOIN nx_compute_task t ON t.user_device_id=d.id AND t.user_id=d.user_id
@@ -85,7 +97,8 @@ public interface DeviceOrderRefundImpactMapper {
                    COALESCE(SUM(bucket='STOPPED'),0) stoppedCount,
                    COALESCE(SUM(bucket='CREDITED'),0) creditedCount,
                    COALESCE(SUM(CASE WHEN bucket='CREDITED' THEN usdt ELSE 0 END),0) creditedUsdt,
-                   COALESCE(SUM(CASE WHEN bucket='CREDITED' THEN uvt ELSE 0 END),0) creditedUvt
+                   COALESCE(SUM(CASE WHEN bucket='CREDITED' THEN uvt ELSE 0 END),0) creditedUvt,
+                   (SELECT COUNT(*) FROM unresolved_simulated) unresolvedSimulatedCount
             FROM facts
             """)
     Totals totals(@Param("orderNo")String orderNo,@Param("userId")long userId,@Param("asOf")LocalDateTime asOf);
