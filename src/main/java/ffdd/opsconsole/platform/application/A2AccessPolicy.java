@@ -167,6 +167,13 @@ public class A2AccessPolicy {
     }
 
     boolean canAccessOwnBusinessProposal(AuditReplayCommand command, long actorId) {
+        if (command != null && "C".equalsIgnoreCase(command.domain())
+                && ("c2_account_freeze".equals(command.op()) || "c2_account_unfreeze".equals(command.op()))) {
+            // Both recovery callers have already verified the original maker's numeric ID.
+            Set<String> grants = permissions.getPermissionCodes(actorId);
+            return roleResolver.isActiveAdministrator(actorId) && grants.contains("platform_a2_proposal_create")
+                    && grants.contains("user_" + command.op());
+        }
         if (WithdrawalConfigApproval.supports(command)
                 && replayBusinessPermissionGuard.canReadOwnFinanceProposal(command, actorId, permissions.getPermissionCodes(actorId))) {
             return true;
