@@ -114,7 +114,7 @@ public class CregisDepositSwitchService {
         return new TransactionTemplate(txManager).execute(ignored->{
             var gate=db.lockProvisionGate();if(gate==null || number(gate,"version")!=version)throw fail("CREGIS_SWITCH_VERSION_CHANGED");
             if(db.forceEmergencyOff("EMERGENCY:"+reason.trim(),version)!=1)throw fail("CREGIS_SWITCH_VERSION_CHANGED");
-            if(db.emergencyOffNetworks()!=2)throw new IllegalStateException("CREGIS_NETWORK_SWITCH_MISSING");
+            if(db.emergencyOffNetworks()!=CregisNetwork.values().length)throw new IllegalStateException("CREGIS_NETWORK_SWITCH_MISSING");
             db.insertRiskAlert(config.getProjectId(),"manual-emergency-"+version,"P0","MANUAL_EMERGENCY_OFF","admin="+actor+",reason="+reason.trim());
             audit.recordRequired(entry("CREGIS_SWITCH_EMERGENCY_OFF",0,actor,Map.of("reason",reason.trim(),"expectedVersion",version)));
             return Map.of("state","BLOCKED","assignEnabled",false,"creditEnabled",false,"payoutEnabled",false,"version",version+1);
