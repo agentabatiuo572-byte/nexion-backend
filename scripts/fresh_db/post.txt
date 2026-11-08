@@ -1,4 +1,6 @@
 # Run after the startup chain: runtime table prerequisites and migrations that depend on them.
+# The Vietnam payment DDL prerequisite intentionally omits this required D6 singleton.
+fresh_db/06_d6_fx_quote_config.sql
 fresh_db/ddl-20260720_d1_finance_closure.sql
 fresh_db/ddl-20260722_f1_vrank_promotion_engine.sql
 fresh_db/ddl-20260722_g2_g3_closure.sql
