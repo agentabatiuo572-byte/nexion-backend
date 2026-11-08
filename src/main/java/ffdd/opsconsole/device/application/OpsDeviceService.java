@@ -250,6 +250,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper calibrationMapper;
     @org.springframework.beans.factory.annotation.Autowired
     private SimulatedTaskPolicyService simulationPolicies;
+    @org.springframework.beans.factory.annotation.Autowired
+    private DeviceOrderRefundImpactService refundImpacts;
 
     public OpsDeviceService(SupportPaymentAttributionFacade paymentAttribution,
             DeviceOpsRepository deviceRepository, DeviceCatalogRepository catalogRepository,
@@ -1737,6 +1739,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         // 仅暴露当前真正可执行的渠道。原支付渠道需要 PSP 退款适配器，未接通前必须失败关闭，
         // 也不能在控制台给运营一个注定失败的选项。
         List<String> channels = List.of("WALLET");
+        var devices=catalogRepository.listOrderDevices(normalizedOrderNo);
         return ApiResult.ok(new DeviceOrderDetailView(
                 order,
                 facts.userId(),
@@ -1759,7 +1762,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 projected,
                 refundAllowed,
                 channels,
-                catalogRepository.listOrderDevices(normalizedOrderNo)));
+                devices,
+                refundImpacts.read(normalizedOrderNo,facts.userId(),facts.orderType(),devices)));
     }
 
     @Transactional(rollbackFor = Exception.class)

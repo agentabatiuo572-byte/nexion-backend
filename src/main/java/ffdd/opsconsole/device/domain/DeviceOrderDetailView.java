@@ -26,7 +26,12 @@ public record DeviceOrderDetailView(
         BigDecimal coverageProjected,
         boolean refundAllowed,
         List<String> refundChannels,
-        List<OrderDevice> devices) {
+        List<OrderDevice> devices,
+        RefundImpact refundImpact) {
+    public record TaskEarnings(long taskCount, BigDecimal usdtAmount, BigDecimal uvtAmount) { }
+    public record RefundImpact(String scope, LocalDateTime asOf, TaskEarnings completedPending,
+                               Long unfinishedTaskCount, long stoppedTaskCount, TaskEarnings creditedRetained,
+                               boolean runtimeComplete, String runtimeUnavailableReason) { }
     public record OrderDevice(Long deviceId, String deviceInstanceNo, String kind, String sourceChannel,
                               String status, String ownershipStatus) {
     }

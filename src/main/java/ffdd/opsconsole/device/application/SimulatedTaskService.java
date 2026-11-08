@@ -184,7 +184,8 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                 if (candidate == null) return DueResult.EMPTY;
                 claimed.set(candidate);
                 if (!candidate.activeAccount()) throw error(403,"SIMULATED_ACCOUNT_NOT_ACTIVE");
-                var device = ownedDevice(candidate.userId(),candidate.deviceId());
+                var device = mapper.lockSettlementDevice(candidate.userId(),candidate.deviceId());
+                if(device==null)throw error(403,"SIMULATED_DEVICE_NOT_SETTLEABLE");
                 return advanceCandidate(device,observed,false) ? DueResult.ADVANCED : DueResult.UNCHANGED;
             });
         } catch (RuntimeException failure) {
@@ -262,6 +263,7 @@ public class SimulatedTaskService implements SchedulingConfigurer {
         cutoff=earlier(cutoff,device.deactivatedAt());
         String stopReason=runtime.phone() && runtime.phoneValidUntil()!=null && runtime.phoneValidUntil().equals(cutoff)
                 ?"PHONE_VALIDITY_EXPIRED":"DEVICE_STOPPED";
+        if("ORDER_REFUND".equals(runtime.lastError()))stopReason="ORDER_REFUND";
         if("DEVICE_PAUSED".equals(runtime.lastError()) && Objects.equals(runtime.stopAt(),cutoff))stopReason="DEVICE_PAUSED";
         if(!active(device) && device.deactivatedAt()==null) {
             LocalDateTime pausedAt=observed;
@@ -334,7 +336,7 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                 runtime=save(runtime,task.dueAt(),null,task.dueAt(),"RUNNING",null);
                 if(runtime.stopAfterCurrent() && !task.dueAt().isBefore(runtime.finishAfterAt())
                         || device.pendingDeactivate() && !runtime.stopAfterCurrent() && runtime.stopAt()==null)
-                    return save(runtime,task.dueAt(),null,null,"STOPPED","AFTER_CURRENT");
+                    return save(runtime,task.dueAt(),null,null,"STOPPED","ORDER_REFUND".equals(stopReason)?"ORDER_REFUND":"AFTER_CURRENT");
                 continue;
             }
             if(cutoff!=null && !cutoff.isAfter(observed)) {

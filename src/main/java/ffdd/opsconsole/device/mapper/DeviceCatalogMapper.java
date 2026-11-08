@@ -1692,18 +1692,28 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                 AND t.source_environment='PRODUCTION' AND t.is_deleted=0
                 AND t.status IN ('CLAIMED','RUNNING','PAUSED') AND t.completed_at IS NULL AND t.proof_consumed_at IS NULL
                 AND NOT EXISTS(SELECT 1 FROM nx_compute_retired_task a WHERE a.task_id=t.id)
+              LEFT JOIN nx_simulated_device_runtime sr ON sr.user_device_id=d.id AND sr.user_id=d.user_id
+                AND (sr.state NOT IN ('STOPPED','EXPIRED') OR sr.current_task_no IS NOT NULL OR sr.next_action_at IS NOT NULL)
               LEFT JOIN nx_simulated_task s ON s.user_device_id=d.id AND s.user_id=d.user_id
                 AND s.status='RUNNING' AND s.completed_at IS NULL AND s.posted_at IS NULL
+                AND (UPPER(o.order_type)='TRIAL_CONVERT' OR sr.user_device_id IS NULL
+                     OR NOT (s.task_no <=> sr.current_task_no))
                 AND NOT EXISTS(SELECT 1 FROM nx_compute_retired_task a WHERE a.user_id=s.user_id AND a.task_no=s.task_no COLLATE utf8mb4_0900_ai_ci)
               LEFT JOIN nx_user_device_runtime r ON r.user_device_id=d.id AND r.is_deleted=0
                 AND (r.online_status<>'OFFLINE' OR r.active_task_no IS NOT NULL)
-              LEFT JOIN nx_simulated_device_runtime sr ON sr.user_device_id=d.id AND sr.user_id=d.user_id
-                AND (sr.state NOT IN ('STOPPED','EXPIRED') OR sr.current_task_no IS NOT NULL OR sr.next_action_at IS NOT NULL)
                SET t.status='CANCELLED',t.last_error='ORDER_REFUND',t.next_retry_at=NULL,t.updated_at=#{now},
                    s.status='CANCELLED',s.cancel_reason='ORDER_REFUND',
                    r.online_status='OFFLINE',r.paused_reason='ORDER_REFUND',r.active_task_no=NULL,r.updated_at=#{now},
-                   sr.state='STOPPED',sr.stop_at=COALESCE(sr.stop_at,d.deactivated_at,#{now}),sr.stop_after_current=0,
-                   sr.finish_after_at=NULL,sr.current_task_no=NULL,sr.next_action_at=NULL,sr.last_error='ORDER_REFUND'
+                   sr.state=CASE WHEN UPPER(o.order_type)<>'TRIAL_CONVERT' AND sr.current_task_no IS NOT NULL
+                                 THEN 'CLOSING' ELSE 'STOPPED' END,
+                   sr.stop_at=CASE WHEN UPPER(o.order_type)='TRIAL_CONVERT' THEN COALESCE(sr.stop_at,d.deactivated_at,#{now})
+                                   ELSE LEAST(COALESCE(sr.stop_at,#{now}),COALESCE(d.deactivated_at,#{now}),#{now}) END,
+                   sr.stop_after_current=CASE WHEN UPPER(o.order_type)<>'TRIAL_CONVERT' THEN 1 ELSE 0 END,
+                   sr.finish_after_at=CASE WHEN UPPER(o.order_type)<>'TRIAL_CONVERT' THEN sr.next_start_at ELSE NULL END,
+                   sr.next_action_at=CASE WHEN UPPER(o.order_type)<>'TRIAL_CONVERT' AND sr.current_task_no IS NOT NULL
+                                         THEN #{now} ELSE NULL END,
+                   sr.current_task_no=CASE WHEN UPPER(o.order_type)<>'TRIAL_CONVERT' THEN sr.current_task_no ELSE NULL END,
+                   sr.last_error='ORDER_REFUND'
              WHERE d.source_order_no=#{orderNo} AND d.is_deleted=0 AND d.ownership_status='REFUNDED'
                AND d.source_environment='PRODUCTION' AND d.run_id='' AND d.source_channel<>'PROMOTION_GIFT'
                AND o.is_deleted=0 AND o.payment_status='REFUNDED' AND o.order_status='REFUNDED'
