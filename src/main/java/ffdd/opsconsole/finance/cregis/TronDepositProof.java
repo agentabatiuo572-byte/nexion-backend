@@ -11,11 +11,14 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import org.springframework.stereotype.Component;
 import static ffdd.opsconsole.finance.cregis.BscDepositProof.*;
 
@@ -28,6 +31,7 @@ public final class TronDepositProof {
     private final CregisProperties config;
     private final ObjectMapper json;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
+    private long lastRequestNanos;
 
     public TronDepositProof(CregisProperties config,ObjectMapper json) { this.config=config; this.json=json; }
 
@@ -214,7 +218,7 @@ public final class TronDepositProof {
         for(JsonNode transaction:transactions)if(!ids.add(NETWORK.normalizeTxid(transaction.path("txID").asText())))throw invalid();
         return ids;
     }
-    private JsonNode call(String path,Map<String,?> body) {
+    private synchronized JsonNode call(String path,Map<String,?> body) {
         URI base;
         try { base=URI.create(config.getTronRpcUrl()); }
         catch(IllegalArgumentException invalid){throw unavailable();}
@@ -225,17 +229,51 @@ public final class TronDepositProof {
             HttpRequest.Builder request=HttpRequest.newBuilder(endpoint).timeout(Duration.ofSeconds(8)).header("Content-Type","application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body)));
             if(config.getTronApiKey()!=null && !config.getTronApiKey().isBlank())request.header("TRON-PRO-API-KEY",config.getTronApiKey());
-            HttpResponse<InputStream> response=http.send(request.build(),HttpResponse.BodyHandlers.ofInputStream());
-            try(InputStream stream=response.body()) {
-                byte[] bytes=stream.readNBytes(8_388_609);
-                if(response.statusCode()!=200 || bytes.length>8_388_608)throw unavailable();
-                JsonNode value=json.readTree(bytes);
-                if(value==null || value.has("Error") || value.has("error"))throw unavailable();
-                return value;
+            HttpRequest prepared=request.build();
+            long intervalNanos=TimeUnit.MILLISECONDS.toNanos(config.getTronRequestMinIntervalMs());
+            // One shared TRON reader serializes requests; no chain proof or balance result is cached.
+            for(int attempt=0;attempt<2;attempt++) {
+                if(lastRequestNanos!=0)TimeUnit.NANOSECONDS.sleep(Math.max(0,intervalNanos-(System.nanoTime()-lastRequestNanos)));
+                lastRequestNanos=System.nanoTime();
+                HttpResponse<InputStream> response=http.send(prepared,HttpResponse.BodyHandlers.ofInputStream());
+                long retryWait=-1;
+                try(InputStream stream=response.body()) {
+                    if(response.statusCode()==429 && attempt==0)retryWait=retryAfterMillis(response);
+                    if(response.statusCode()!=200 && retryWait<0)
+                        throw unavailable(new java.io.IOException("TRON_HTTP_STATUS_"+response.statusCode()));
+                    if(retryWait<0) {
+                        byte[] bytes=stream.readNBytes(8_388_609);
+                        if(bytes.length>8_388_608)throw unavailable(new java.io.IOException("TRON_RESPONSE_TOO_LARGE"));
+                        JsonNode value;
+                        try { value=json.readTree(bytes); }
+                        catch(com.fasterxml.jackson.core.JsonProcessingException invalid) {
+                            // Parser exception messages can quote the response body; retain only a safe diagnostic.
+                            throw unavailable(new java.io.IOException("TRON_RESPONSE_JSON_INVALID_"+invalid.getClass().getSimpleName()));
+                        }
+                        if(value==null || value.has("Error") || value.has("error"))
+                            throw unavailable(new java.io.IOException("TRON_RESPONSE_REJECTED"));
+                        return value;
+                    }
+                }
+                TimeUnit.MILLISECONDS.sleep(retryWait);
             }
-        } catch(InterruptedException interrupted) { Thread.currentThread().interrupt();throw unavailable(); }
-        catch(java.io.IOException invalid) { throw unavailable(); }
+            throw unavailable(new java.io.IOException("TRON_RATE_LIMIT_RETRY_EXHAUSTED"));
+        } catch(InterruptedException interrupted) { Thread.currentThread().interrupt();throw unavailable(interrupted); }
+        catch(java.io.IOException invalid) { throw unavailable(invalid); }
+    }
+    private long retryAfterMillis(HttpResponse<?> response) {
+        String value=response.headers().firstValue("Retry-After").orElse("").trim();
+        if(value.isEmpty())return 1000;
+        if(value.matches("[0-9]+")) {
+            BigInteger seconds=new BigInteger(value);
+            return seconds.compareTo(BigInteger.valueOf(5))>0 ? -1 : Math.max(1000,seconds.longValue()*1000);
+        }
+        try {
+            long millis=Duration.between(Instant.now(),ZonedDateTime.parse(value,DateTimeFormatter.RFC_1123_DATE_TIME).toInstant()).toMillis();
+            return millis>5000 ? -1 : Math.max(1000,millis);
+        } catch(java.time.DateTimeException | ArithmeticException invalid) { return 1000; }
     }
     private static IllegalStateException invalid() { return new IllegalStateException("CREGIS_TRON_PROOF_INVALID"); }
     private static IllegalStateException unavailable() { return new IllegalStateException("CREGIS_TRON_PROOF_UNAVAILABLE"); }
+    private static IllegalStateException unavailable(Throwable cause) { return new IllegalStateException("CREGIS_TRON_PROOF_UNAVAILABLE",cause); }
 }

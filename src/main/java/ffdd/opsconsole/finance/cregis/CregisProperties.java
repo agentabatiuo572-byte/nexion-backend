@@ -58,6 +58,12 @@ public class CregisProperties {
     private String tronRpcUrl = "";
     @ToString.Exclude
     private String tronApiKey = "";
+    /** Shared native TRON request spacing, including proof reads from concurrent business paths. */
+    private int tronRequestMinIntervalMs = 500;
+    public int getTronRequestMinIntervalMs() {
+        if (tronRequestMinIntervalMs <= 0) throw new IllegalStateException("CREGIS_TRON_REQUEST_INTERVAL_INVALID");
+        return tronRequestMinIntervalMs;
+    }
     private int depositConfirmations = 15;
     public int confirmations(CregisNetwork network) { return getDepositConfirmations(); }
     public String rpcUrl(CregisNetwork network) { return switch(network) { case BEP20 -> bscRpcUrl; case ERC20 -> ethereumRpcUrl; case TRC20 -> tronRpcUrl; }; }
