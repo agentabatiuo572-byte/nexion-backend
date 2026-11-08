@@ -9,6 +9,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.content.application.SupportOwnershipService;
 import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.emergency.domain.KillSwitchState;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -124,6 +125,7 @@ public class OpsTreasuryService {
     private final ObjectMapper objectMapper;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final A2RuntimePolicy a2RuntimePolicy;
+    private final SupportOwnershipService supportOwnership;
 
     public ApiResult<Map<String, Object>> overview(int days) {
         ensureD3FallbackSeedData();
@@ -1305,6 +1307,7 @@ public class OpsTreasuryService {
         if (userId == null || userId <= 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
         }
+        if (supportOwnership.currentSupportReader()) supportOwnership.customerQueryScope(userId);
         if (!ledgerRepository.userExists(userId)) {
             throw new BizException(404, "USER_NOT_FOUND");
         }
@@ -1363,6 +1366,7 @@ public class OpsTreasuryService {
         if (userId == null || userId <= 0) {
             return ApiResult.fail(400, "USER_ID_REQUIRED");
         }
+        if (supportOwnership.currentSupportReader()) supportOwnership.customerQueryScope(userId);
         if (!ledgerRepository.userExists(userId)) {
             throw new BizException(404, "USER_NOT_FOUND");
         }
@@ -1378,8 +1382,14 @@ public class OpsTreasuryService {
                 .sorted(java.util.Comparator.comparing(TreasuryLedgerBillView::createdAt)
                         .thenComparing(TreasuryLedgerBillView::id))
                 .toList();
-        Map<String, BigDecimal> previous = new LinkedHashMap<>();
-        Map<String, BigDecimal> latestLedger = new LinkedHashMap<>();
+        Map<String, BigDecimal> openingBalances = new LinkedHashMap<>();
+        if (from != null) {
+            for (var balance : ledgerRepository.settledBalancesBefore(userId, from)) {
+                openingBalances.put(balance.asset(), safe(balance.balanceAfter()));
+            }
+        }
+        Map<String, BigDecimal> previous = new LinkedHashMap<>(openingBalances);
+        Map<String, BigDecimal> latestLedger = new LinkedHashMap<>(openingBalances);
         List<Map<String, Object>> rows = new ArrayList<>();
         int breakCount = 0;
         int unsettledCount = 0;
@@ -1435,6 +1445,8 @@ public class OpsTreasuryService {
                 "userId", userId,
                 "total", total,
                 "rows", rows,
+                "openingBalances", openingBalances,
+                "closingBalances", latestLedger,
                 "breakCount", breakCount,
                 "unsettledCount", unsettledCount,
                 "reconciliationScope", reconciliationScope,
