@@ -36,6 +36,8 @@ public class SupportFundReadService {
     private static final int MAX_COMPONENT_CUSTOMERS=4096;
     private static final int OPERATION_DIRECTORY_BATCH=256;
     private static final int OPERATION_JSON_BATCH=32;
+    private static final int OPERATION_JSON_CACHE_PAGES=8;
+    private static final long OPERATION_JSON_CACHE_BYTES=8L*1024*1024;
     private static final String RAW_SHA=sha("SUPPORT_WALLET_JOURNAL_V1");
     private final SupportFundReadMapper mapper;
     private final SupportFundBirthReadFacade auth;
@@ -352,7 +354,7 @@ public class SupportFundReadService {
         catch(org.springframework.dao.DataAccessException ex) {return unknown(roots,List.of(Gap.READ_FAILED));}
         catch(IllegalArgumentException | IllegalStateException | ArithmeticException ex) {return unknown(roots,List.of(Gap.READ_FAILED));}
     }
-    /** Keeps the complete receipt directory, but only one page of original JSON, in the caller's physical snapshot. */
+    /** Keeps the complete receipt directory and a bounded set of recent JSON pages in the caller's physical snapshot. */
     private final class OperationRows {
         private final List<Long> ids;
         private final Connection connection;
@@ -360,6 +362,8 @@ public class SupportFundReadService {
         private final List<Map<String,Object>> rows=new ArrayList<>();
         private int pageStart=-1;
         private List<Map<String,Object>> page=List.of();
+        private final LinkedHashMap<Integer,OperationPage> recentPages=new LinkedHashMap<>(8,0.75f,true);
+        private long recentPageBytes;
         private OperationRows(List<Long> ids,Connection connection,Runnable batchRead) {
             this.ids=ids;this.connection=connection;this.batchRead=batchRead;
             for(int from=0;from<ids.size();from+=OPERATION_DIRECTORY_BATCH) {
@@ -387,17 +391,38 @@ public class SupportFundReadService {
             int start=index/OPERATION_JSON_BATCH*OPERATION_JSON_BATCH;
             if(start!=pageStart) {
                 require(snapshot()==connection,Gap.READ_FAILED);
+                var cached=recentPages.get(start);
+                if(cached!=null) {
+                    page=cached.rows();pageStart=start;
+                    batchRead.run();
+                    return page.get(index-pageStart);
+                }
                 var pageIds=ids.subList(start,Math.min(start+OPERATION_JSON_BATCH,ids.size()));
                 // Each mapper query flushes MyBatis local rows before loading the next page.
                 page=List.of();pageStart=-1;
                 var fetched=mapper.operations(pageIds);
                 require(snapshot()==connection,Gap.READ_FAILED);
                 require(fetched.stream().map(row->number(row,"id")).toList().equals(pageIds),Gap.RECEIPT);
+                long bytes=256L;
+                for(var row:fetched) {
+                    bytes+=2048L;
+                    for(var value:row.values())if(value instanceof String text)bytes+=4L*text.length();
+                }
+                if(bytes>OPERATION_JSON_CACHE_BYTES) {
+                    recentPages.clear();recentPageBytes=0;
+                }else {
+                    while(recentPages.size()>=OPERATION_JSON_CACHE_PAGES ||recentPageBytes+bytes>OPERATION_JSON_CACHE_BYTES) {
+                        var oldest=recentPages.entrySet().iterator();var entry=oldest.next();
+                        recentPageBytes-=entry.getValue().bytes();oldest.remove();
+                    }
+                    recentPages.put(start,new OperationPage(fetched,bytes));recentPageBytes+=bytes;
+                }
                 page=fetched;pageStart=start;
                 batchRead.run();
             }
             return page.get(index-pageStart);
         }
+        private record OperationPage(List<Map<String,Object>> rows,long bytes) { }
         private boolean jsonField(Object key) {
             return "orderedEventsJson".equals(key)||"sourceSnapshotJson".equals(key)||"sourceProofJson".equals(key);
         }
@@ -497,7 +522,7 @@ public class SupportFundReadService {
             &&eventId.equals(payload.path("event_id").asText()) &&"auth.register_completed".equals(payload.path("event_name").asText())
             &&payload.path("is_server_authoritative").isBoolean() &&payload.path("is_server_authoritative").booleanValue()
             &&number(payload.path("schema_revision"),Gap.AUTH_BIRTH)==number(event,"schemaRevision"),Gap.AUTH_BIRTH);
-        require(codec.canonical(codec.read(text(op,"sourceSnapshotJson"))).path("birthJournal").equals(tree(raw)),Gap.AUTH_BIRTH);
+        require(codec.canonical(source).path("birthJournal").equals(tree(raw)),Gap.AUTH_BIRTH);
     }
     private Stamp payment(Map<String,Object> op,JsonNode source,JsonNode proof,List<Event> events,SupportPaymentFacts.Snapshot history,
             List<Map<String,Object>> ledgers,
