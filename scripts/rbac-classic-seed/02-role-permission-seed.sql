@@ -605,3 +605,14 @@ SELECT r.id,p.id,0 FROM nx_admin_role r JOIN nx_admin_permission p
 WHERE r.role_code='SUPER_ADMIN' AND r.status=1 AND r.is_deleted=0
   AND p.permission_code='platform_a2_unknown_investigate' AND p.status=1 AND p.is_deleted=0
 ON DUPLICATE KEY UPDATE is_deleted=0,updated_at=NOW();
+
+-- B36: the overview prefix and FINANCE inheritance must not widen this sales-only exception.
+DELETE rp FROM nx_admin_role_permission rp
+JOIN nx_admin_role r ON r.id=rp.role_id
+JOIN nx_admin_permission p ON p.id=rp.permission_id
+WHERE p.permission_code='overview_b0_sales_read' AND r.role_code NOT IN ('SUPER_ADMIN','GROWTH');
+INSERT INTO nx_admin_role_permission(role_id,permission_id,is_deleted)
+SELECT r.id,p.id,0 FROM nx_admin_role r JOIN nx_admin_permission p
+WHERE r.role_code IN ('SUPER_ADMIN','GROWTH') AND r.status=1 AND r.is_deleted=0
+  AND p.permission_code='overview_b0_sales_read' AND p.status=1 AND p.is_deleted=0
+ON DUPLICATE KEY UPDATE is_deleted=0,updated_at=NOW();

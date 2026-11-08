@@ -439,8 +439,14 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
              <if test='query.walletUsdtMax != null'>AND COALESCE(w.usdt_available, 0) &lt;= #{query.walletUsdtMax}</if>
              <if test='query.walletNexMin != null'>AND COALESCE(w.nex_available, 0) &gt;= #{query.walletNexMin}</if>
              <if test='query.walletNexMax != null'>AND COALESCE(w.nex_available, 0) &lt;= #{query.walletNexMax}</if>
-             <if test='query.joinedFrom != null and query.joinedFrom != ""'>AND u.created_at &gt;= CONCAT(#{query.joinedFrom}, ' 00:00:00')</if>
-             <if test='query.joinedTo != null and query.joinedTo != ""'>AND u.created_at &lt; DATE_ADD(CONCAT(#{query.joinedTo}, ' 00:00:00'), INTERVAL 1 DAY)</if>
+             <if test='query.joinedFrom != null and query.joinedFrom.trim() != ""'>
+               <bind name='joinedFromBound' value='@ffdd.opsconsole.shared.config.BusinessCalendar@legacy().storageStart(@java.time.LocalDate@parse(query.joinedFrom.trim()))'/>
+               AND u.created_at &gt;= #{joinedFromBound}
+             </if>
+             <if test='query.joinedTo != null and query.joinedTo.trim() != ""'>
+               <bind name='joinedToBound' value='@ffdd.opsconsole.shared.config.BusinessCalendar@legacy().storageStart(@java.time.LocalDate@parse(query.joinedTo.trim()).plusDays(1))'/>
+               AND u.created_at &lt; #{joinedToBound}
+             </if>
             """;
     String PROFILE_FROM = " FROM nx_user u " + PROFILE_JOINS;
     String SCOPED_PROFILE_FROM = " FROM nx_user u JOIN nx_user scope_customer ON scope_customer.id=u.id " + PROFILE_JOINS;

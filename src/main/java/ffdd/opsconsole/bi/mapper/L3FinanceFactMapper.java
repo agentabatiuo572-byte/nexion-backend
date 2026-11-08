@@ -17,6 +17,7 @@ public interface L3FinanceFactMapper extends BaseMapper<Object> {
     String DEVICE_SALES_COHORT = """
               FROM nx_order
              WHERE is_deleted = 0
+               AND NOT EXISTS (SELECT 1 FROM nx_user u WHERE u.id=nx_order.user_id AND u.sandbox=1)
                AND payment_status = 'PAID'
                AND order_status = 'COMPLETED'
                AND COALESCE(paid_at, created_at) >= #{from}
@@ -47,16 +48,20 @@ public interface L3FinanceFactMapper extends BaseMapper<Object> {
                     ON p.wallet_ledger_id=l.id AND p.is_deleted=0 AND p.user_id=l.user_id
                    AND p.amount_usdt=l.amount AND l.biz_type='CARD_TOPUP' AND l.biz_no=p.payment_no
                  WHERE l.is_deleted=0 AND l.asset='USDT' AND l.direction='IN' AND l.status='SUCCESS'
+                   AND NOT EXISTS (SELECT 1 FROM nx_user u WHERE u.id=l.user_id AND u.sandbox=1)
                    AND l.created_at >= #{from} AND l.created_at < #{to}
                    AND (d.id IS NOT NULL OR p.id IS NOT NULL)
                 UNION ALL
                 SELECT ledger_created_at, settled_usdt, 1
                   FROM hdpay_credited
                  WHERE ledger_created_at >= #{from} AND ledger_created_at < #{to}
+                   AND NOT EXISTS (SELECT 1 FROM nx_user u WHERE u.id=hdpay_credited.user_id AND u.sandbox=1)
                 UNION ALL
                 SELECT completed_at, amount, 0
                   FROM nx_withdrawal_order
                  WHERE is_deleted=0 AND asset='USDT' AND status IN ('CONFIRMED','SUCCESS')
+                   AND (d5_payout_source IS NULL OR d5_payout_source NOT IN ('mock','dev-simulator'))
+                   AND NOT EXISTS (SELECT 1 FROM nx_user u WHERE u.id=nx_withdrawal_order.user_id AND u.sandbox=1)
                    AND completed_at >= #{from} AND completed_at < #{to}
             )
             SELECT
@@ -78,6 +83,7 @@ public interface L3FinanceFactMapper extends BaseMapper<Object> {
             SELECT COALESCE(SUM(amount), 0)
               FROM nx_wallet_ledger
              WHERE is_deleted = 0
+               AND NOT EXISTS (SELECT 1 FROM nx_user u WHERE u.id=nx_wallet_ledger.user_id AND u.sandbox=1)
                AND biz_type = 'TEAM_COMMISSION'
                AND status IN ('PENDING', 'POSTED', 'SUCCESS')
                AND created_at >= #{from}
@@ -94,6 +100,7 @@ public interface L3FinanceFactMapper extends BaseMapper<Object> {
                      END), 0)
               FROM nx_exchange_order
              WHERE is_deleted = 0
+               AND NOT EXISTS (SELECT 1 FROM nx_user u WHERE u.id=nx_exchange_order.user_id AND u.sandbox=1)
                AND status = 'COMPLETED'
                AND created_at >= #{from}
                AND created_at < #{to}
@@ -104,6 +111,7 @@ public interface L3FinanceFactMapper extends BaseMapper<Object> {
             SELECT COALESCE(SUM(amount), 0)
               FROM nx_wallet_ledger
              WHERE is_deleted = 0
+               AND NOT EXISTS (SELECT 1 FROM nx_user u WHERE u.id=nx_wallet_ledger.user_id AND u.sandbox=1)
                AND biz_type IN ('COMPUTE_MATCHING_FEE', 'COMPUTE_SERVICE_FEE', 'TASK_SERVICE_FEE')
                AND direction = 'IN'
                AND status IN ('POSTED', 'SUCCESS')
