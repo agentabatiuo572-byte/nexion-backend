@@ -1114,13 +1114,10 @@ public class AuditReplayBusinessPermissionGuard {
                     || (request.targets() != null && !request.targets().isEmpty())) {
                 return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
             }
-            var detail = devices.order(orderNo);
-            if (detail.getCode() != 0) return ApiResult.fail(detail.getCode(), detail.getMessage());
-            var order = detail.getData().order();
-            if (!orderNo.equals(order.orderNo())) {
-                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
-            }
-            return ApiResult.ok(new DelegatedProposalDescriptor("退款设备订单", orderNo, order.state(), "已退款",
+            var review = devices.refundProposalReview(command, request.reason());
+            return ApiResult.ok(new DelegatedProposalDescriptor("退款设备订单", orderNo,
+                    review.state() + " · 原金额 " + review.originalAmountUsdt().toPlainString() + " USDT",
+                    "终态退款 · 实退 " + review.refundAmountUsdt().toPlainString() + " USDT",
                     "E4", "fund", true, target));
         }
         if (command != null && Set.of("f_direct_referral_policy","f_seven_layer_activation").contains(command.op())

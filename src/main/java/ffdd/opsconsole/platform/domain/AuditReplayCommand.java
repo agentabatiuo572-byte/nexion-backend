@@ -17,7 +17,7 @@ public record AuditReplayCommand(
         public Object deserialize(JsonParser parser, DeserializationContext context) throws IOException {
             if (parser.currentToken() == JsonToken.VALUE_NUMBER_FLOAT
                     && switch (parser.currentName()) {
-                        case "twoItemsPct", "threeItemsPct", "fourPlusItemsPct" -> true;
+                        case "twoItemsPct", "threeItemsPct", "fourPlusItemsPct", "refundAmountUsdt", "originalAmountUsdt" -> true;
                         default -> false;
                     }) {
                 return parser.getDecimalValue();

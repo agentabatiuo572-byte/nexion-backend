@@ -380,6 +380,14 @@ public class OpsAuditCenterService {
                 && request.targets().stream().anyMatch(PendingApprovalProjection::coversTarget))) {
             return fail(OpsErrorCode.VALIDATION_FAILED, "A2_TARGET_MISMATCH");
         }
+        if (AuditReplayBusinessPermissionGuard.isE4Refund(command)) {
+            var review = devices.refundProposalReview(command, reason);
+            Map<String, Object> params = new LinkedHashMap<>(command.params());
+            // New tickets freeze both authoritative amounts; pre-B37 tickets keep their omitted/full replay.
+            params.put("originalAmountUsdt", review.originalAmountUsdt());
+            params.put("refundAmountUsdt", review.refundAmountUsdt());
+            command = new AuditReplayCommand(command.domain(), command.op(), params);
+        }
         CourseRewardReview rewardReview = null;
         if (OpsI18nLearningService.isCourseRewardAdjustment(command)) {
             Long makerId = A2ReplayContext.authenticatedAdminId();
@@ -1486,6 +1494,11 @@ public class OpsAuditCenterService {
     private AuditOperationTicket toTicket(AuditOperationTicketEntity row, boolean mine) {
         AuditReplayCommand command = deserializeCommand(row.getCommandJson());
         var metadata = ticketMetadata(row, command);
+        var refund = metadata.refundOrderNo() == null ? Map.<String, Object>of() : command.params();
+        BigDecimal originalAmount = refund.get("originalAmountUsdt") instanceof Number amount
+                ? new BigDecimal(amount.toString()) : null;
+        BigDecimal refundAmount = refund.get("refundAmountUsdt") instanceof Number amount
+                ? new BigDecimal(amount.toString()) : null;
         return new AuditOperationTicket(
                 row.getOperationId(),
                 row.getAction(),
@@ -1508,7 +1521,7 @@ public class OpsAuditCenterService {
                         || ffdd.opsconsole.team.application.AmbassadorMaterialService.isProposal(command)
                             && Set.of("approved","通过","已批").contains(Objects.toString(command.params().get("value"),"").trim().toLowerCase(Locale.ROOT)),
                 metadata.operationCode(), metadata.fundEffect(), metadata.refundOrderNo(), retiredOperation(command),
-                ambassadorMaterials.queueProposal(command));
+                ambassadorMaterials.queueProposal(command), originalAmount, refundAmount);
     }
 
     private boolean retiredOperation(AuditReplayCommand command) {

@@ -42,11 +42,12 @@ public final class SupportPaymentSourceSql {
         <foreach collection='customerIds' item='customer' open='(' separator=',' close=')'>#{customer}</foreach></script>
         """;
     static final String HISTORY_REFUND_ORIGINS="""
-        <script>SELECT o.user_id customerId,o.order_no orderNo,o.amount_usdt amount,l.id ledgerId,l.created_at ledgerAt,
+        <script>SELECT o.user_id customerId,o.order_no orderNo,o.amount_usdt amount,
+          COALESCE(o.refund_amount_usdt,o.amount_usdt) refundAmount,l.id ledgerId,l.created_at ledgerAt,
           (SELECT COUNT(DISTINCT a.id,h.id) FROM
         """+HISTORY_AUDITS+"""
           a JOIN nx_order_state_history h ON h.to_state='refunded'
-            AND h.from_state IN ('paid','provisioning','provisioning_failed','activated')
+            AND h.from_state IN ('paid','provisioning','provisioning_failed','activated','inventory')
             AND h.from_state=JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.fromState'))
             AND h.operator=a.actorUsername AND h.reason=JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.reason'))
             AND h.idempotency_key=JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.idempotencyKey'))
@@ -59,6 +60,11 @@ public final class SupportPaymentSourceSql {
             AND JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.refundChannel'))='WALLET'
             AND JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.amount')) REGEXP '^[0-9]{1,12}([.][0-9]{1,6})?$'
             AND CAST(JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.amount')) AS DECIMAL(18,6))=o.amount_usdt
+            AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.refundAmountUsdt')),
+                         JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.amount'))) REGEXP '^[0-9]{1,12}([.][0-9]{1,6})?$'
+            AND CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.refundAmountUsdt')),
+                             JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.amount'))) AS DECIMAL(18,6))
+                  =COALESCE(o.refund_amount_usdt,o.amount_usdt)
             AND (CASE WHEN LOCATE('key_hash',LOWER(COALESCE(l.remark,'')))>0
                        OR LOWER(COALESCE(l.remark,'')) LIKE 'e4 order refund | key%'
                  THEN BINARY h.operator=BINARY a.actorUsername
@@ -77,7 +83,8 @@ public final class SupportPaymentSourceSql {
                      AND BINARY l.remark=BINARY CONCAT('E4 order refund | orderNo=',o.order_no,' | operator=',h.operator,
                           ' | reason=',h.reason,' | key=',h.idempotency_key)) END)
             AND l.user_id=o.user_id AND l.biz_type='ORDER_REFUND' AND l.status='SUCCESS'
-            AND l.direction='IN' AND l.asset='USDT' AND l.is_deleted=0 AND l.amount=o.amount_usdt) proofCount
+            AND l.direction='IN' AND l.asset='USDT' AND l.is_deleted=0
+            AND l.amount=COALESCE(o.refund_amount_usdt,o.amount_usdt) AND l.amount>0 AND l.amount&lt;=o.amount_usdt) proofCount
         FROM nx_order o LEFT JOIN nx_wallet_ledger l ON l.biz_no=CONCAT('E4-REFUND-',o.order_no) AND l.biz_type='ORDER_REFUND'
         WHERE o.user_id IN <foreach collection='customerIds' item='customer' open='(' separator=',' close=')'>#{customer}</foreach>
           AND (UPPER(COALESCE(o.order_status,''))='REFUNDED' OR UPPER(COALESCE(o.payment_status,''))='REFUNDED'

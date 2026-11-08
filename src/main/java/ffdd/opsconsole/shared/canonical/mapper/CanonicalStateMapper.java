@@ -978,13 +978,13 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                        AND wb.type = 'ORDER_REFUND' AND wb.token = 'USDT'
                        AND wb.direction = 'IN' AND wb.amount > 0
                      ORDER BY wb.occurred_at DESC, wb.id DESC LIMIT 1) AS refundedAt,
-                   (SELECT wb.amount
+                   COALESCE(o.refund_amount_usdt,(SELECT wb.amount
                      FROM nx_wallet_bill wb
                      WHERE wb.user_id = o.user_id AND wb.deleted = 0
                        AND wb.bill_no = CONCAT('E4-BILL-', o.order_no)
                        AND wb.type = 'ORDER_REFUND' AND wb.token = 'USDT'
                        AND wb.direction = 'IN' AND wb.amount > 0
-                     ORDER BY wb.occurred_at DESC, wb.id DESC LIMIT 1) AS refundAmountUsdt,
+                     ORDER BY wb.occurred_at DESC, wb.id DESC LIMIT 1)) AS refundAmountUsdt,
                    CASE WHEN EXISTS (
                        SELECT 1 FROM nx_wallet_bill wb
                         WHERE wb.user_id = o.user_id AND wb.deleted = 0

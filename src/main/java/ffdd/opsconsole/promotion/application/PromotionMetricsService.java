@@ -180,16 +180,19 @@ public class PromotionMetricsService {
         return breakdownPage(result,groupings,groupBy,offset,limit);
     }
     private List<Map<String,Object>> orderSales(Map<String,Object> order,BigDecimal paid,BigDecimal refunded){
-        require(refunded.signum()==0||refunded.compareTo(paid)==0,"PROMOTION_REPORT_REFUND_AMOUNT_MISMATCH");
+        require(refunded.signum()>=0&&refunded.compareTo(paid)<=0,"PROMOTION_REPORT_REFUND_AMOUNT_MISMATCH");
         var reservation=db.requiredRow("SELECT snapshot_json FROM nx_promotion_reservation WHERE order_no=? ORDER BY reservation_id LIMIT 1",order.get("order_no"));
         var quoted=maps(map(parse(reservation.get("snapshot_json")).get("public")).get("items"));
         var lines=db.list("SELECT id,product_no,product_name,quantity FROM nx_order_item WHERE order_no=? ORDER BY sort_order,id",order.get("order_no"));
         require(lines.size()==quoted.size()&&!lines.isEmpty(),"PROMOTION_REPORT_ORDER_ITEMS_MISMATCH");
-        var result=new ArrayList<Map<String,Object>>();var products=new HashSet<String>();BigDecimal sum=BigDecimal.ZERO;
+        var result=new ArrayList<Map<String,Object>>();var products=new HashSet<String>();BigDecimal sum=BigDecimal.ZERO,allocatedRefund=BigDecimal.ZERO;
         for(var line:lines){String product=text(line.get("product_no"));var matches=quoted.stream().filter(item->product.equals(item.get("productNo"))).toList();
             require(products.add(product)&&matches.size()==1&&number(line.get("quantity"))==number(matches.get(0).get("quantity")),"PROMOTION_REPORT_ORDER_ITEMS_MISMATCH");
             // Canonical line_amount_usdt is pre-discount; use the frozen quote's exact allocation.
-            BigDecimal amount=amount(matches.get(0).get("payableUsdt"));sum=sum.add(amount);BigDecimal returned=refunded.signum()==0?BigDecimal.ZERO:amount;
+            BigDecimal amount=amount(matches.get(0).get("payableUsdt"));sum=sum.add(amount);
+            // Cumulative allocation preserves the exact refund total, including the last USDT micro.
+            BigDecimal returned=refunded.signum()==0?BigDecimal.ZERO:refunded.multiply(sum).divide(paid,6,java.math.RoundingMode.DOWN).subtract(allocatedRefund);
+            allocatedRefund=allocatedRefund.add(returned);
             result.add(values("lineId",text(line.get("id")),"purchaseProductNo",product,"productName",text(line.get("product_name")),"grossPaidUsdt",money(amount),"refundUsdt",money(returned),"netReceivedUsdt",money(amount.subtract(returned))));
         }
         require(sum.compareTo(paid)==0,"PROMOTION_REPORT_ORDER_AMOUNT_MISMATCH");return result;

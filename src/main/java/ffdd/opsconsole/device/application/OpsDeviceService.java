@@ -1789,9 +1789,45 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             refundReasonCode = reason.name();
         }
         DeviceOrderActionRequest trusted = new DeviceOrderActionRequest(
-                request.terminalState(), request.refundChannel(), request.reason().trim(), actor, refundReasonCode);
+                request.terminalState(), request.refundChannel(), request.reason().trim(), actor, refundReasonCode, null,
+                request.refundAmountUsdt() == null ? null : request.refundAmountUsdt().stripTrailingZeros());
         return deviceIdempotent("E4_ORDER_REFUND", idempotencyKey, normalizeId(orderNo), trusted,
                 () -> transitionOrder(orderNo, idempotencyKey, trusted, "refunded", "E4_ORDER_REFUNDED"));
+    }
+
+    public record OrderRefundReview(String state, BigDecimal originalAmountUsdt, BigDecimal refundAmountUsdt) {}
+
+    /** The same refundable ceiling and amount validation serve A2 review and execution. */
+    public OrderRefundReview refundProposalReview(AuditReplayCommand command, String reason) {
+        String orderNo = normalizeId(str(command.params(), "orderNo"));
+        var order = catalogRepository.findOrder(orderNo).orElseThrow(() -> new BizException(404, "ORDER_NOT_FOUND"));
+        var facts = catalogRepository.findOrderFacts(orderNo).orElseThrow(() -> new BizException(404, "ORDER_NOT_FOUND"));
+        if (!ORDER_REFUNDABLE_STATES.contains(normalizeOrderState(order.state()))) {
+            throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+        return new OrderRefundReview(order.state(), facts.amountUsdt(),
+                refundAmount(facts, refundAmountParam(command.params()), reason));
+    }
+
+    private static BigDecimal refundAmountParam(Map<String, Object> params) {
+        BigDecimal amount = decimal(params, "refundAmountUsdt");
+        if (params.get("refundAmountUsdt") != null && amount == null) {
+            throw new BizException(422, "E4_REFUND_AMOUNT_INVALID");
+        }
+        return amount;
+    }
+
+    private static BigDecimal refundAmount(DeviceOrderFacts facts, BigDecimal requested, String reason) {
+        BigDecimal full = facts.amountUsdt();
+        BigDecimal amount = requested == null ? full : requested;
+        if (full == null || amount == null || amount.signum() <= 0 || amount.compareTo(full) > 0
+                || amount.stripTrailingZeros().scale() > 6) {
+            throw new BizException(422, "E4_REFUND_AMOUNT_INVALID");
+        }
+        if (amount.compareTo(full) < 0 && !StringUtils.hasText(reason)) {
+            throw new BizException(422, "E4_REFUND_REASON_REQUIRED");
+        }
+        return amount.setScale(6);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -3909,6 +3945,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (before == null || facts == null) {
             return ApiResult.fail(404, "ORDER_NOT_FOUND");
         }
+        BigDecimal refundAmount = "refunded".equals(toState)
+                ? refundAmount(facts, request.refundAmountUsdt(), request.reason()) : null;
         String fromState = normalizeOrderState(before.state());
         if (toState.equals(fromState)) {
             return ApiResult.ok(before);
@@ -3920,7 +3958,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         if ("refunded".equals(toState)) {
             TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-            if (refundCoverageBlocked(coverage, facts.amountUsdt())) {
+            if (refundCoverageBlocked(coverage, refundAmount)) {
                 return ApiResult.fail(
                         OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                         OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
@@ -3950,14 +3988,16 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (!catalogRepository.rollbackRefundedOrderAssets(normalizedOrderNo, now)) {
                 throw new BizException(409, "SKU_STOCK_RESTORE_CONFLICT");
             }
+            catalogRepository.recordOrderRefundAmount(normalizedOrderNo, refundAmount);
             settlement = refundSettlementFacade.settle(
                     normalizedOrderNo,
                     facts.userId(),
-                    facts.amountUsdt(),
+                    refundAmount,
                     StringUtils.hasText(request.refundChannel()) ? request.refundChannel() : "WALLET",
                     request.reason().trim(),
                     request.operator(),
                     idempotencyKey.trim(), prepared);
+            updated = catalogRepository.findOrder(normalizedOrderNo).orElseThrow(() -> new BizException(409, "ORDER_STATE_CONFLICT"));
             if (StringUtils.hasText(request.refundReasonCode())) {
                 catalogRepository.recordOrderRefundReason(normalizedOrderNo, request.refundReasonCode());
             }
@@ -3976,6 +4016,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 "fromState", fromState,
                 "toState", toState,
                 "amount", before.amount(),
+                "originalAmountUsdt", settlement == null ? null : facts.amountUsdt(),
+                "refundAmountUsdt", refundAmount,
                 "refundChannel", settlement == null ? null : settlement.channel(),
                 "walletBefore", settlement == null ? null : settlement.walletBefore(),
                 "walletAfter", settlement == null ? null : settlement.walletAfter(),
@@ -4035,7 +4077,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         Map<String, Object> payload = detail(
                 "orderId", orderNo,
                 "userId", facts.userId(),
-                "amount", facts.amountUsdt(),
+                "amount", after.refundAmountUsdt(),
                 "refundChannel", settlement.channel(),
                 "cumulativeDepositAdjusted", cumulativeAdjusted,
                 "operator", request.operator(),
@@ -5418,6 +5460,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     private String e1RequestHash(String scope, String resourceId, Object request) {
         String payload=String.valueOf(request);
+        if (request instanceof DeviceOrderActionRequest order && order.refundAmountUsdt() == null) {
+            // Tickets/receipts created before B37 must retain their original hash when amount is omitted.
+            payload = payload.substring(0, payload.length() - ", refundAmountUsdt=null]".length()) + "]";
+        }
         Object dto=request instanceof Map<?,?> wrapper?wrapper.get("request"):request;
         if(dto instanceof DeviceSkuUpsertRequest sku && sku.allowedTaskClasses()==null ||
                 dto instanceof ffdd.opsconsole.device.dto.PhoneTaskPolicyUpdateRequest phone && phone.allowedTaskClasses()==null) {
@@ -5697,7 +5743,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
             case "e4_order_refund" -> {
                 DeviceOrderActionRequest req = new DeviceOrderActionRequest(
-                        str(p, "terminalState"), str(p, "refundChannel"), reason, operator, str(p, "refundReasonCode"));
+                        str(p, "terminalState"), str(p, "refundChannel"), reason, operator, str(p, "refundReasonCode"), null,
+                        refundAmountParam(p));
                 return refundOrder(str(p, "orderNo"), idem, req);
             }
             case "e4_order_cancel" -> {

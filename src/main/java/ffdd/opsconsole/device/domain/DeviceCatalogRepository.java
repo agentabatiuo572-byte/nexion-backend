@@ -117,6 +117,8 @@ public interface DeviceCatalogRepository {
 
     void recordOrderRefundReason(String orderNo, String refundReasonCode);
 
+    void recordOrderRefundAmount(String orderNo, BigDecimal refundAmountUsdt);
+
     void recordOrderCloseReason(String orderNo, String closeReasonCode);
 
     void recordOrderHistory(
