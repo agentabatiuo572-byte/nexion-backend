@@ -117,6 +117,11 @@ public class MybatisDepositOpsRepository implements DepositOpsRepository {
     }
 
     @Override
+    public boolean historicalBackfillRunRecorded() {
+        return financeClosureMapper.historicalBackfillRunRecorded();
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public TopupChargebackRecoveryResult recoverChargeback(TopupChargebackRecoveryCommand command) {
         DepositChargebackView lockedChargeback = paymentRecordMapper.findChargebackForUpdate(command.caseNo());

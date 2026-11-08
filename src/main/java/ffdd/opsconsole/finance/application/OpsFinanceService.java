@@ -184,7 +184,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         long historicalBackfillAnomalies = depositOpsRepository.historicalBackfillAnomalyCount();
         response.put("feeBufferComplete", feeEvidenceAnomalies == 0);
         response.put("treasuryReserveComplete", treasuryReserveAnomalies == 0);
-        response.put("historicalBackfillComplete", historicalBackfillAnomalies == 0);
+        response.put("historicalBackfillComplete",
+                depositOpsRepository.historicalBackfillRunRecorded() && historicalBackfillAnomalies == 0);
         response.put("feeEvidenceAnomalyCount", feeEvidenceAnomalies);
         response.put("treasuryReserveAnomalyCount", treasuryReserveAnomalies);
         response.put("historicalBackfillAnomalyCount", historicalBackfillAnomalies);

@@ -62,6 +62,12 @@ public interface D1FinanceClosureMapper extends BaseMapper<D1FinanceClosureEntit
             """)
     long historicalBackfillAnomalyCount();
 
+    @Select("""
+            SELECT EXISTS(SELECT 1 FROM nx_topup_cumulative_backfill_run
+                           WHERE migration_key='20260720_d1_verified_v1')
+            """)
+    boolean historicalBackfillRunRecorded();
+
     @Update("""
             UPDATE nx_user_wallet
                SET usdt_available = #{available}, cumulative_deposit_usdt = #{cumulative},
