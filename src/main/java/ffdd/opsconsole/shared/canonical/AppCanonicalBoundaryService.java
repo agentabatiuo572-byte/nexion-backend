@@ -482,11 +482,11 @@ public class AppCanonicalBoundaryService {
                 .filter(device -> "ACTIVE".equalsIgnoreCase(String.valueOf(device.get("status"))))
                 .map(device -> (BigDecimal) device.get("dailyNex"))
                 .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(6, RoundingMode.HALF_UP);
-        int reservedSlots = sandboxRuntime ? 0 : Math.max(0, mapper.lockReservedDeviceOrderCount(userId, false));
-        int trialSlots = sandboxRuntime ? 0 : mapper.lockReservedTrialSlotCount(userId);
+        int reservedSlots = sandboxRuntime ? 0 : Math.max(0, mapper.reservedDeviceOrderCount(userId));
+        int trialSlots = sandboxRuntime ? 0 : mapper.reservedTrialSlotCount(userId);
         long activeSlots = sandboxRuntime ? devices.stream()
                 .filter(device -> isSlotOccupyingActiveState(String.valueOf(device.get("status")))).count()
-                : Math.max(0, mapper.lockActiveDeviceCount(userId, false));
+                : Math.max(0, mapper.activeDeviceCount(userId));
         return ApiResult.ok(linked(
                 "dailyUsdt", usdt,
                 "dailyNex", nex,
