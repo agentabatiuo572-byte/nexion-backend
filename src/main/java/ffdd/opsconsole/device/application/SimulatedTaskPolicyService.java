@@ -7,6 +7,8 @@ import ffdd.opsconsole.device.dto.TaskSimulationSettings;
 import ffdd.opsconsole.device.mapper.SimulatedTaskPolicyMapper;
 import ffdd.opsconsole.device.mapper.SimulatedTaskPolicyMapper.*;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.capacity.E3CapacityCurve;
+import ffdd.opsconsole.shared.capacity.E3DeviceCapacityPolicy;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
@@ -206,7 +208,10 @@ public class SimulatedTaskPolicyService {
             var types=before.allowedTaskClassesJson()==null ? mapper.typesAt(strings(before.allowedTaskTypeIdsJson()),at)
                     :typesInClasses(strings(before.allowedTaskClassesJson()),at);
             var target=mapper.targetConfig(key);
-            if(target!=null && target.monthlyTargetUsdt()!=null)validatePool(key,types);
+            if(target!=null && target.monthlyTargetUsdt()!=null) {
+                validatePool(key,types);
+                validateTargetReward(key,target.monthlyTargetUsdt(),target.monthlyTargetBandPct(),devices.getObject().e3Config());
+            }
             initializeE3(at);
             mapper.insertProduct(new ProductVersion(key,before.version()+1,at,before.allowedTaskTypeIdsJson(),before.allowedTaskClassesJson(),
                     target==null?null:target.monthlyTargetUsdt(),target==null?null:target.monthlyTargetBandPct()));
@@ -222,21 +227,48 @@ public class SimulatedTaskPolicyService {
         var target=mapper.targetConfig(key);
         if(classes.isEmpty() && (target==null || target.monthlyTargetUsdt()==null))throw new BizException(422,"SIMULATED_TASK_CLASSES_REQUIRED");
         var types=typesInClasses(classes,at);
-        if(target!=null && target.monthlyTargetUsdt()!=null)validatePool(key,types);
-        else if(types.stream().noneMatch(TypeVersion::enabled))throw new BizException(422,"SIMULATED_TASK_TYPE_NOT_AVAILABLE");
+        if(target!=null && target.monthlyTargetUsdt()!=null) {
+            validatePool(key,types);
+            validateTargetReward(key,target.monthlyTargetUsdt(),target.monthlyTargetBandPct(),devices.getObject().e3Config());
+        } else if(types.stream().noneMatch(TypeVersion::enabled))throw new BizException(422,"SIMULATED_TASK_TYPE_NOT_AVAILABLE");
         var ids=types.stream().map(TypeVersion::taskTypeId).toList();
         initializeE3(at);
         mapper.insertProduct(new ProductVersion(key,before==null?1:before.version()+1,at,encode(ids),encode(classes),
                 target==null?null:target.monthlyTargetUsdt(),target==null?null:target.monthlyTargetBandPct()));
         return new ProductView(ids,classes,before==null?1:before.version()+1,at);
     }
-    public void validateTargetProduct(String key,List<String> classes,boolean usePublishedScope) {
+    public void validateTargetProduct(String key,List<String> classes,boolean usePublishedScope,BigDecimal target,BigDecimal bandPct) {
         mapper.lockE3Configuration();
         var at=LocalDateTime.now(clock);
         var before=usePublishedScope?mapper.productAt(key,at):null;
         var types=before==null?typesInClasses(classes,at):before.allowedTaskClassesJson()==null
                 ?mapper.typesAt(strings(before.allowedTaskTypeIdsJson()),at):typesInClasses(strings(before.allowedTaskClassesJson()),at);
         validatePool(key,types);
+        validateTargetReward(key,target,bandPct,devices.getObject().e3Config());
+    }
+    private static void validateTargetReward(String key,BigDecimal target,BigDecimal bandPct,Map<String,String> config) {
+        String participation=E3DeviceCapacityPolicy.classify(key,null);
+        BigDecimal capacity=Boolean.parseBoolean(config.get(participation))
+                ?E3CapacityCurve.maxCapacityPct(config,config):BigDecimal.valueOf(100);
+        if(DeviceMonthlyTargetPacing.rewardBound(target,bandPct,capacity).compareTo(DeviceMonthlyTargetPacing.MAX_REWARD)>0)
+            throw new MonthlyTargetRewardOutOfRangeException(List.of(key));
+    }
+    /** E3 approval checks only target SKUs whose effective capacity curve changes. */
+    public void validateTargetRewards(Map<String,String> before,Map<String,String> candidate) {
+        boolean curveChanged=List.of("stageEarlyEnd","stageMidEnd","capacityBand1DeltaPct",
+                "capacityBand2DeltaPct","capacityBand3DeltaPct","capacityFloorPct").stream()
+                .anyMatch(key->!Objects.equals(before.get(key),candidate.get(key)));
+        BigDecimal maximum=E3CapacityCurve.maxCapacityPct(before,candidate);
+        var affected=new LinkedHashSet<String>();
+        for(var target:mapper.targetProducts()) {
+            String participation=E3DeviceCapacityPolicy.classify(target.productKey(),null);
+            boolean was=Boolean.parseBoolean(before.get(participation)),now=Boolean.parseBoolean(candidate.get(participation));
+            if(!(curveChanged && (was || now) || was!=now))continue;
+            BigDecimal capacity=now?maximum:BigDecimal.valueOf(100);
+            if(DeviceMonthlyTargetPacing.rewardBound(target.monthlyTargetUsdt(),target.monthlyTargetBandPct(),capacity)
+                    .compareTo(DeviceMonthlyTargetPacing.MAX_REWARD)>0)affected.add(target.productKey());
+        }
+        if(!affected.isEmpty())throw new MonthlyTargetRewardOutOfRangeException(List.copyOf(affected));
     }
     private static boolean ineligible(TypeVersion t) {
         return t.enabled() && !DeviceMonthlyTargetPacing.eligible(t.asset(),t.baseReward(),t.durationSeconds());

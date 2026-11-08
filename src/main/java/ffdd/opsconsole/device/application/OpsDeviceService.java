@@ -419,7 +419,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         var classes=simulationPolicies.writeClasses(writeRequest.allowedTaskClasses(),writeRequest.allowedTaskTypeIds(),List.of(),List.of());
         if((!classes.isEmpty() || writeRequest.monthlyTargetUsdt()!=null) && !A2ReplayContext.isReplaying())return ApiResult.fail(409,"A2_CONFIRMATION_REQUIRED");
-        if(writeRequest.monthlyTargetUsdt()!=null)simulationPolicies.validateTargetProduct(skuId,classes,false);
+        if(writeRequest.monthlyTargetUsdt()!=null)simulationPolicies.validateTargetProduct(skuId,classes,false,writeRequest.monthlyTargetUsdt(),writeRequest.monthlyTargetBandPct());
         LocalDateTime changedAt = LocalDateTime.now(clock);
         DeviceSkuView created = catalogRepository.createSku(skuId, writeRequest, changedAt);
         simulationPolicies.saveProduct(skuId,classes,"on".equals(created.status()),changedAt);
@@ -518,7 +518,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
         }
         if(effectiveWriteRequest.monthlyTargetUsdt()!=null)
-            simulationPolicies.validateTargetProduct(normalized,classes,!scopeChanged && !newlyListed);
+            simulationPolicies.validateTargetProduct(normalized,classes,!scopeChanged && !newlyListed,effectiveWriteRequest.monthlyTargetUsdt(),effectiveWriteRequest.monthlyTargetBandPct());
         LocalDateTime changedAt = LocalDateTime.now(clock);
         DeviceSkuView updated = catalogRepository.updateSku(
                         normalized, effectiveWriteRequest, expectedRevision, changedAt)
@@ -618,7 +618,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
         }
         if("on".equals(status) && before.monthlyTargetUsdt()!=null)
-            simulationPolicies.validateTargetProduct(normalized,before.allowedTaskClasses(),false);
+            simulationPolicies.validateTargetProduct(normalized,before.allowedTaskClasses(),false,before.monthlyTargetUsdt(),before.monthlyTargetBandPct());
         DeviceSkuView updated = catalogRepository.updateSkuStatus(
                 normalized, status, expectedRevision, LocalDateTime.now(clock)).orElse(null);
         if (updated == null) {
@@ -2991,6 +2991,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                         OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
             }
+            simulationPolicies.validateTargetRewards(before,candidate);
             deviceRepository.upsertE3Config(key, value.value(), value.valueType(), trustedOperator);
             simulationPolicies.recordE3(LocalDateTime.now(clock));
             Map<String, String> oldValues = new LinkedHashMap<>();
@@ -3049,6 +3050,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                     OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
         }
+        simulationPolicies.validateTargetRewards(before,candidate);
         String actor = operator(operator);
         changed.forEach((key, value) -> deviceRepository.upsertE3Config(key, value.value(), value.valueType(), actor));
         simulationPolicies.recordE3(LocalDateTime.now(clock));
@@ -5868,7 +5870,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 before==null?List.of():before.allowedTaskClasses(),before==null?List.of():before.allowedTaskTypeIds());
         if(after.monthlyTargetUsdt()!=null)simulationPolicies.validateTargetProduct(skuId,classes,
                 before!=null && new java.util.HashSet<>(classes).equals(new java.util.HashSet<>(before.allowedTaskClasses()))
-                && !( !"on".equals(before.status()) && "on".equals(after.status())));
+                && !( !"on".equals(before.status()) && "on".equals(after.status())),after.monthlyTargetUsdt(),after.monthlyTargetBandPct());
         return new SkuProposalReview(skuId,before,after,classes);
     }
 
