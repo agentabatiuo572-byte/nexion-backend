@@ -175,12 +175,11 @@ JOIN (SELECT 'L1' code,'KPI 看板' name,'/analytics/kpi' path,1 sort UNION ALL
       SELECT 'L6','用户行为热力图','/analytics/behavior-heatmap',6) v
 ON 1=1
 ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_path), sort_order=VALUES(sort_order), status=1, is_deleted=0;
--- M 域 (5)
+-- M 域 (4): M2 was retired by 20261028_support_ticket_rbac_retirement.sql.
 INSERT INTO nx_admin_menu (menu_code, menu_name, menu_name_zh, parent_id, route_path, sort_order, status, is_deleted)
 SELECT v.code, v.name, v.name, p.id, v.path, v.sort, 1, 0
 FROM nx_admin_menu p JOIN (SELECT 'M' d) x ON p.menu_code='M'
 JOIN (SELECT 'M1' code,'客服总览' name,'/service/overview' path,1 sort UNION ALL
-      SELECT 'M2','工单台','/service/tickets',2 UNION ALL
       SELECT 'M3','即时会话台','/service/sessions',3 UNION ALL
       SELECT 'M4','知识库与 SLA','/service/kb-sla',4 UNION ALL
       SELECT 'M5','话术与模板配置','/service/scripts',5) v
@@ -261,7 +260,7 @@ DELETE rm FROM nx_admin_role_menu rm
 JOIN nx_admin_role r ON r.id=rm.role_id AND r.role_code='SUPPORT';
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m
-WHERE r.role_code='SUPPORT' AND m.menu_code IN ('M','M1','M2','M3','M4','M5','D','D4');
+WHERE r.role_code='SUPPORT' AND m.menu_code IN ('M','M1','M3','M4','M5','D','D4');
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('M','M5') WHERE r.role_code='CONTENT';
 -- B: 非客服业务角色态势概览。

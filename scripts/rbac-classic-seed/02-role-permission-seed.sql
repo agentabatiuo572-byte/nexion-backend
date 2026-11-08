@@ -460,11 +460,11 @@ WHERE r.role_code='FINANCE'
   AND p.permission_code IN ('bi_l3_read','bi_l3_write','bi_l5_read')
   AND p.status=1 AND p.is_deleted=0;
 
--- 增长：经营、漏斗、运营聚合、行为热力只读与团队树发起；不授予财务明细或监管高敏权限。
+-- 增长：经营、漏斗、运营聚合、行为热力及其聚合导出；不授予财务明细或监管高敏权限。
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
 WHERE r.role_code='GROWTH'
-  AND p.permission_code IN ('bi_l1_read','bi_l1_write','bi_l2_read','bi_l2_write','bi_l4_read','bi_l4_write','bi_l5_read','bi_l6_read')
+  AND p.permission_code IN ('bi_l1_read','bi_l1_write','bi_l2_read','bi_l2_write','bi_l4_read','bi_l4_write','bi_l5_read','bi_l6_read','bi_l6_export')
   AND p.status=1 AND p.is_deleted=0;
 
 -- 风控：只读查看 L4/L6 运营与行为事实及财务/监管报表，并执行敏感任务放行/监管生成；不发起 L4 或财务明细导出。
@@ -474,11 +474,11 @@ WHERE r.role_code='RISK'
   AND p.permission_code IN ('bi_l3_read','bi_l4_read','bi_l5_read','bi_l5_task_approve','bi_l5_regulatory_generate','bi_l6_read')
   AND p.status=1 AND p.is_deleted=0;
 
--- 只读审计：查看聚合与热力，按独立授权读取合规导出。
+-- 只读审计：查看聚合与热力并保留 L6 专项聚合导出，合规导出仍按独立授权。
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
 WHERE r.role_code='AUDITOR'
-  AND p.permission_code IN ('bi_l1_read','bi_l2_read','bi_l3_read','bi_l4_read','bi_l5_read','bi_l6_read')
+  AND p.permission_code IN ('bi_l1_read','bi_l2_read','bi_l3_read','bi_l4_read','bi_l5_read','bi_l6_read','bi_l6_export')
   AND p.status=1 AND p.is_deleted=0;
 -- M 域(service_)：风控保持既有集合；CONTENT only receives the exact M5 read/write pair.
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
