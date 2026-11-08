@@ -29,6 +29,7 @@ import ffdd.opsconsole.finance.dto.WithdrawalReviewRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalBatchReviewRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalConfirmationRequest;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper;
+import ffdd.opsconsole.finance.mapper.D1BankOrderMapper;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WithdrawalRiskFacts;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
@@ -117,6 +118,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private final TreasuryCoverageFacade coverageFacade;
     private final WithdrawalOrderRepository withdrawalRepository;
     private final DepositOpsRepository depositOpsRepository;
+    private final D1BankOrderMapper bankOrders;
     private final RiskOpsRepository riskOpsRepository;
     private final AuditLogService auditLogService;
     private final AdminIdempotencyService idempotencyService;
@@ -187,6 +189,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         response.put("feeEvidenceAnomalyCount", feeEvidenceAnomalies);
         response.put("treasuryReserveAnomalyCount", treasuryReserveAnomalies);
         response.put("historicalBackfillAnomalyCount", historicalBackfillAnomalies);
+        response.put("bankManualReviewCount", bankOrders.countOrders(
+                null, null, "MANUAL_REVIEW", null, LocalDateTime.now(clock)));
         response.put("bins", bins);
         response.put("binLockedCount", lockedBins);
         response.put("chargebacks", chargebacks());
@@ -2328,9 +2332,12 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         // The PC view model renames this to maxBalanceRatio after validation.
         response.put("balanceMaxRatio", owned.get("balanceMaxRatio"));
         response.put("networkConfirmFeeUsd", d5NetworkFees(owned));
-        response.put("networkEnabled", currentD5NetworkEnabledValues());
-        var networkStatuses=networkPolicy.statuses();
-        response.put("effectiveNetworks",networkStatuses.stream().filter(row->Boolean.TRUE.equals(row.get("enabled"))).map(row->row.get("network")).toList());
+        var configuredNetworks = currentD5NetworkEnabledValues();
+        response.put("networkEnabled", configuredNetworks);
+        var networkStatuses=networkPolicy.operatorStatuses(configuredNetworks);
+        boolean reliable = networkStatuses.stream().noneMatch(row -> "UNKNOWN".equals(row.get("state")));
+        response.put("networkStatusReliable", reliable);
+        response.put("effectiveNetworks", reliable ? networkStatuses.stream().filter(row->Boolean.TRUE.equals(row.get("enabled"))).map(row->row.get("network")).toList() : null);
         response.put("networkStatus",networkStatuses);
         response.put("nexFeeOffsetRate", owned.get("nexFeeOffsetRate"));
         response.put("smallAmountThresholdUsd", owned.get("smallAmountThresholdUsd"));

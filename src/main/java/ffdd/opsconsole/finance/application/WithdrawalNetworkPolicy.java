@@ -2,6 +2,8 @@ package ffdd.opsconsole.finance.application;
 
 import ffdd.opsconsole.finance.cregis.*;
 import ffdd.opsconsole.finance.mapper.CregisDepositMapper;
+import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper;
+import ffdd.opsconsole.emergency.domain.KillSwitchState;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.util.*;
@@ -15,14 +17,23 @@ public class WithdrawalNetworkPolicy {
     private final CregisProperties cregis;
     private final CregisPayoutControl payouts;
     private final CregisDepositMapper db;
+    private final AppWithdrawalMapper withdrawals;
 
     public List<Map<String,Object>> statuses() {
         var rows=new ArrayList<Map<String,Object>>();
+        String gateValue = Optional.ofNullable(withdrawals.emergencyValue("killswitch.withdraw"))
+                .or(() -> Optional.ofNullable(withdrawals.emergencyValue("emergency.killswitch.withdraw")))
+                .map(value -> value.trim().toLowerCase(Locale.ROOT)).orElse(null);
+        boolean gateKnown = gateValue != null && Set.of("enabled", "enable", "on", "true", "1",
+                "disabled", "disable", "off", "false", "0").contains(gateValue);
+        boolean gateEnabled = gateKnown && KillSwitchState.parse(gateValue);
         for(String network:List.of("TRC20","BEP20","ERC20")) {
             String value=config.activeValue("withdrawal."+network.toLowerCase(Locale.ROOT)+".enabled").orElse("").trim().toLowerCase(Locale.ROOT);
             if(!Set.of("true","false","1","0","on","off").contains(value))throw new BizException(503,"D5_NETWORK_CONFIG_UNAVAILABLE");
             boolean configured=Set.of("true","1","on").contains(value);
             String reason=!configured?"NETWORK_SWITCH_OFF"
+                    :!gateKnown?"WITHDRAWAL_KILL_SWITCH_UNAVAILABLE"
+                    :!gateEnabled?"WITHDRAWAL_KILL_SWITCH_DISABLED"
                     :cregis.getMode()==CregisProperties.Mode.DISABLED?"NOT_CONFIGURED"
                     :null;
             if(reason==null && cregis.getMode()==CregisProperties.Mode.PROVIDER)
@@ -31,6 +42,34 @@ public class WithdrawalNetworkPolicy {
             row.put("enabled",reason==null);row.put("disabledReason",reason);rows.add(row);
         }
         return rows;
+    }
+    /** Operator projection preserves uncertainty instead of labelling a failed capability read as disabled. */
+    public List<Map<String,Object>> operatorStatuses(Map<String,Boolean> configuredNetworks) {
+        List<Map<String,Object>> facts;
+        try {
+            facts = statuses();
+        } catch (RuntimeException unavailable) {
+            facts = new ArrayList<>();
+            for (String network : List.of("TRC20", "BEP20", "ERC20")) {
+                var row = new LinkedHashMap<String,Object>();
+                row.put("network", "USDT-" + network);
+                row.put("configured", configuredNetworks.get(network.toLowerCase(Locale.ROOT)));
+                row.put("enabled", null);
+                row.put("disabledReason", "NETWORK_STATUS_UNAVAILABLE");
+                facts.add(row);
+            }
+        }
+        var result = new ArrayList<Map<String,Object>>();
+        for (var fact : facts) {
+            var row = new LinkedHashMap<>(fact);
+            String reason = (String) row.get("disabledReason");
+            boolean unknown = reason != null && Set.of("PROVIDER_CAPABILITY_UNAVAILABLE",
+                    "CHAIN_PROOF_UNAVAILABLE", "NETWORK_STATUS_UNAVAILABLE", "WITHDRAWAL_KILL_SWITCH_UNAVAILABLE").contains(reason);
+            if (unknown) row.put("enabled", null);
+            row.put("state", unknown ? "UNKNOWN" : Boolean.TRUE.equals(row.get("enabled")) ? "AVAILABLE" : "UNAVAILABLE");
+            result.add(row);
+        }
+        return result;
     }
     public List<String> enabledNetworks() {
         return statuses().stream().filter(row->Boolean.TRUE.equals(row.get("enabled"))).map(row->(String)row.get("network")).toList();
