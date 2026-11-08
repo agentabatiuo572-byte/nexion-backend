@@ -363,6 +363,10 @@ public class AppUserSecurityService {
             throw new BizException(422, "ACCOUNT_DELETION_REASON_INVALID");
         }
         verifyCurrentPassword(userId, request.currentPassword(), "ACCOUNT_DELETION_REQUEST");
+        Map<String, Object> retained = securityMapper.accountDeletionRequestForUpdate(userId, idempotencyKey.trim());
+        if (retained != null) {
+            return immutableMap(retained);
+        }
         Map<String, Object> existing = securityMapper.latestAccountDeletionRequest(userId);
         if (existing != null && Set.of("REQUESTED", "IN_REVIEW", "BLOCKED", "COMPLETED").contains(
                 String.valueOf(existing.get("status")))) {
