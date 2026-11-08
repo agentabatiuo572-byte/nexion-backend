@@ -9,7 +9,7 @@ public final class MonthlyTargetPoolException extends BizException {
         super(422,"MONTHLY_TARGET_POOL_INELIGIBLE"); affectedSkuIds=List.copyOf(ids);
     }
     public List<String> affectedSkuIds() { return affectedSkuIds; }
-    public java.util.Map<String,Object> errorData() { return java.util.Map.of("code",getMessage(),"affectedSkuIds",affectedSkuIds); }
+    public java.util.Map<String,Object> errorData() { return java.util.Map.of("code",getMessage(),"affectedSkuIds",affectedSkuIds,"maxDurationSeconds",DeviceMonthlyTargetPacing.D_CAP,"requiredAsset","USDT","positiveBaseReward",true); }
     /** An A2 result wrapper is an API boundary: keep its structured rejection when converting back to an exception. */
     public static MonthlyTargetPoolException fromResult(ffdd.opsconsole.shared.api.ApiResult<?> result) {
         if(!(result.getData() instanceof java.util.Map<?,?> data) || !(data.get("affectedSkuIds") instanceof List<?> ids)

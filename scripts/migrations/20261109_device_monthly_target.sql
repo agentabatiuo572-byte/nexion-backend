@@ -48,15 +48,19 @@ SET @dmt_ddl = IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_sc
 PREPARE dmt_stmt FROM @dmt_ddl;
 EXECUTE dmt_stmt;
 DEALLOCATE PREPARE dmt_stmt;
-SET @dmt_ddl = IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE()
-  AND table_name='nx_commerce_sandbox_catalog' AND column_name='monthly_target_usdt'),
-  'SELECT 1','ALTER TABLE nx_commerce_sandbox_catalog ADD COLUMN monthly_target_usdt DECIMAL(12,2) NULL');
+SET @dmt_ddl = IF(EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=DATABASE()
+  AND table_name='nx_commerce_sandbox_catalog'),
+  IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE()
+    AND table_name='nx_commerce_sandbox_catalog' AND column_name='monthly_target_usdt'),
+    'SELECT 1','ALTER TABLE nx_commerce_sandbox_catalog ADD COLUMN monthly_target_usdt DECIMAL(12,2) NULL'), 'SELECT 1');
 PREPARE dmt_stmt FROM @dmt_ddl;
 EXECUTE dmt_stmt;
 DEALLOCATE PREPARE dmt_stmt;
-SET @dmt_ddl = IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE()
-  AND table_name='nx_commerce_sandbox_catalog' AND column_name='monthly_target_band_pct'),
-  'SELECT 1','ALTER TABLE nx_commerce_sandbox_catalog ADD COLUMN monthly_target_band_pct DECIMAL(4,1) NULL');
+SET @dmt_ddl = IF(EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=DATABASE()
+  AND table_name='nx_commerce_sandbox_catalog'),
+  IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE()
+    AND table_name='nx_commerce_sandbox_catalog' AND column_name='monthly_target_band_pct'),
+    'SELECT 1','ALTER TABLE nx_commerce_sandbox_catalog ADD COLUMN monthly_target_band_pct DECIMAL(4,1) NULL'), 'SELECT 1');
 PREPARE dmt_stmt FROM @dmt_ddl;
 EXECUTE dmt_stmt;
 DEALLOCATE PREPARE dmt_stmt;

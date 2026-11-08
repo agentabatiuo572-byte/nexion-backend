@@ -15,7 +15,8 @@ import java.util.List;
 public final class DeviceMonthlyTargetPacing {
     public static final String ALGORITHM = "DMT-V3-SHA256-1";
     public static final int SCALE = 24;
-    public static final int D_CAP = 3600;
+    public static final int CONTRIBUTION_SCALE = 12;
+    public static final int D_CAP = 7200;
     public static final BigDecimal QUANTUM = new BigDecimal("0.000001");
     private static final BigDecimal LOW = new BigDecimal("0.7"), HIGH = new BigDecimal("1.3");
     private static final BigDecimal ONE = BigDecimal.ONE, ZERO = BigDecimal.ZERO;
@@ -142,10 +143,10 @@ public final class DeviceMonthlyTargetPacing {
         BigDecimal g = ONE.add(inner.multiply(schedule.u())).setScale(SCALE, RoundingMode.HALF_UP);
         BigDecimal weighted = schedule.weightedSeconds(start, due);
         BigDecimal common = divide(q.multiply(weighted), duration);
-        BigDecimal p = common.multiply(g).setScale(SCALE, RoundingMode.HALF_UP);
-        BigDecimal lo = common.multiply(ONE.subtract(inner)).setScale(SCALE, RoundingMode.HALF_UP);
-        BigDecimal hi = common.multiply(ONE.add(inner)).setScale(SCALE, RoundingMode.HALF_UP);
-        BigDecimal c = q.signum() == 0 ? ONE : ONE.add(divide(before.p().subtract(before.allocated()).multiply(BigDecimal.valueOf(30)), q.multiply(g)))
+        BigDecimal p = common.multiply(g).setScale(CONTRIBUTION_SCALE, RoundingMode.HALF_UP);
+        BigDecimal lo = common.multiply(ONE.subtract(inner)).setScale(CONTRIBUTION_SCALE, RoundingMode.HALF_UP);
+        BigDecimal hi = common.multiply(ONE.add(inner)).setScale(CONTRIBUTION_SCALE, RoundingMode.HALF_UP);
+        BigDecimal c = q.signum() == 0 ? ONE : ONE.add(divide(before.p().subtract(before.allocated()).multiply(BigDecimal.valueOf(30)), q.multiply(g).setScale(SCALE, RoundingMode.HALF_UP)))
                 .max(new BigDecimal("0.5")).min(new BigDecimal("1.5"));
         BigDecimal nominal = divide(baseReward.multiply(p), BigDecimal.valueOf(durationSeconds).multiply(poolRate));
         BigDecimal reward = q.signum()==0 ? ZERO.setScale(6) : clamp(nominal.multiply(c), before.lo().add(lo).subtract(before.allocated()), before.hi().add(hi).subtract(before.allocated()));
@@ -155,12 +156,41 @@ public final class DeviceMonthlyTargetPacing {
     /** Shared financial verification of step 4, using only immutable task inputs. */
     public static BigDecimal recompute(Snapshot s) {
         if (!ALGORITHM.equals(s.algorithm())) throw new IllegalArgumentException("MONTHLY_TARGET_ALGORITHM_INVALID");
-        BigDecimal c = s.q().signum() == 0 ? ONE : ONE.add(divide(s.beforeP().subtract(s.beforeA()).multiply(BigDecimal.valueOf(30)), s.q().multiply(s.g())))
+        BigDecimal c = s.q().signum() == 0 ? ONE : ONE.add(divide(s.beforeP().subtract(s.beforeA()).multiply(BigDecimal.valueOf(30)), s.q().multiply(s.g()).setScale(SCALE, RoundingMode.HALF_UP)))
                 .max(new BigDecimal("0.5")).min(new BigDecimal("1.5"));
         if (c.compareTo(s.correction()) != 0) throw new IllegalArgumentException("MONTHLY_TARGET_CORRECTION_INVALID");
         if(s.q().signum()==0)return ZERO.setScale(6);
         BigDecimal nominal = divide(s.baseReward().multiply(s.p()), BigDecimal.valueOf(s.durationSeconds()).multiply(s.poolRate()));
         return clamp(nominal.multiply(c), s.beforeLo().add(s.lo()).subtract(s.beforeA()), s.beforeHi().add(s.hi()).subtract(s.beforeA()));
+    }
+    /** Compact V3 inputs. Contributions are rounded before allocation; reward lives only on the task. */
+    public record Evidence(BigDecimal p, BigDecimal lo, BigDecimal hi, BigDecimal deltaP,
+            BigDecimal deltaLo, BigDecimal deltaHi, BigDecimal poolRate, BigDecimal center, int cycleSeconds) { }
+    public static String compact(Snapshot s) {
+        var values = List.of(s.p(), s.lo(), s.hi(), s.beforeP().subtract(s.beforeA()),
+                s.beforeLo().subtract(s.beforeA()), s.beforeHi().subtract(s.beforeA()),
+                s.poolRate(), s.q().multiply(s.g()).setScale(SCALE, RoundingMode.HALF_UP));
+        var out = new StringBuilder("1");
+        for (int i = 0; i < values.size(); i++)
+            out.append('|').append(values.get(i).setScale(i < 6 ? CONTRIBUTION_SCALE : SCALE,
+                    RoundingMode.UNNECESSARY).unscaledValue().toString(36));
+        return out.append('|').append(Long.toString(Duration.between(s.cycleStart(),s.cycleEnd()).getSeconds(),36)).toString();
+    }
+    /** JSON string payload revision 1; base36 signed fixed-point integers avoid JSON DOUBLE loss. */
+    public static Evidence evidence(String value) {
+        var parts = value.split("\\|", -1);
+        if (parts.length != 10 || !"1".equals(parts[0])) throw new IllegalArgumentException("MONTHLY_TARGET_SNAPSHOT_INVALID");
+        var numbers = new BigDecimal[8];
+        for (int i = 0; i < numbers.length; i++)
+            numbers[i] = new BigDecimal(new java.math.BigInteger(parts[i + 1], 36), i < 6 ? CONTRIBUTION_SCALE : SCALE);
+        return new Evidence(numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], numbers[5], numbers[6], numbers[7], Integer.parseInt(parts[9],36));
+    }
+    public static BigDecimal recompute(Evidence s, BigDecimal baseReward, int durationSeconds) {
+        if (s.center().signum() == 0) return ZERO.setScale(6);
+        var correction = ONE.add(divide(s.deltaP().multiply(BigDecimal.valueOf(30)), s.center()))
+                .max(new BigDecimal("0.5")).min(new BigDecimal("1.5"));
+        var nominal = divide(baseReward.multiply(s.p()), BigDecimal.valueOf(durationSeconds).multiply(s.poolRate()));
+        return clamp(nominal.multiply(correction), s.deltaLo().add(s.lo()), s.deltaHi().add(s.hi()));
     }
     private static BigDecimal clamp(BigDecimal nominal, BigDecimal low, BigDecimal high) {
         BigDecimal ceil = low.max(ZERO).setScale(6, RoundingMode.CEILING), floor = high.setScale(6, RoundingMode.FLOOR).max(ZERO);

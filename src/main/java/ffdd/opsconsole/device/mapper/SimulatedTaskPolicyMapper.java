@@ -7,6 +7,20 @@ import org.apache.ibatis.annotations.*;
 
 @Mapper
 public interface SimulatedTaskPolicyMapper {
+    @Select("SELECT epoch FROM nx_sim_policy_epoch WHERE id=1")
+    @Options(useCache=false, flushCache=Options.FlushCachePolicy.TRUE)
+    long epoch();
+    @Select("SELECT (SELECT COUNT(*) FROM nx_sim_task_type_version)+(SELECT COUNT(*) FROM nx_sim_product_task_policy_version)+(SELECT COUNT(*) FROM nx_sim_e3_version)")
+    long historySize();
+    @Select("SELECT COALESCE((SELECT SUM(OCTET_LENGTH(name)+OCTET_LENGTH(task_type_id)+OCTET_LENGTH(task_class)+128) FROM nx_sim_task_type_version),0)+COALESCE((SELECT SUM(OCTET_LENGTH(product_key)+OCTET_LENGTH(allowed_task_type_ids)+COALESCE(OCTET_LENGTH(allowed_task_classes),0)+128) FROM nx_sim_product_task_policy_version),0)+COALESCE((SELECT SUM(OCTET_LENGTH(config_json)+64) FROM nx_sim_e3_version),0)")
+    long historyPayloadBytes();
+    @Select("SELECT "+TYPE_COLUMNS+" FROM nx_sim_task_type_version ORDER BY task_type_id,effective_at,version LIMIT 20001")
+    List<TypeVersion> typeHistory();
+    @Select("SELECT "+PRODUCT_COLUMNS+" FROM nx_sim_product_task_policy_version ORDER BY product_key,effective_at,version LIMIT 20001")
+    List<ProductVersion> productHistory();
+    @Select("SELECT version,effective_at effectiveAt,config_json configJson FROM nx_sim_e3_version ORDER BY effective_at,version LIMIT 20001")
+    List<E3Version> e3History();
+
     String TYPE_COLUMNS="task_type_id taskTypeId,version,effective_at effectiveAt,name,task_class taskClass,"
             +"duration_seconds durationSeconds,base_reward baseReward,CASE asset WHEN 'NEX' THEN 'UVT' ELSE asset END asset,enabled";
     String PRODUCT_COLUMNS="product_key productKey,version,effective_at effectiveAt,allowed_task_type_ids allowedTaskTypeIdsJson,"
