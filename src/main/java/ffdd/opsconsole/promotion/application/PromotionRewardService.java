@@ -219,6 +219,19 @@ public class PromotionRewardService {
                   AND t.status IN ('CLAIMED','RUNNING','PAUSED') AND t.completed_at IS NULL AND t.proof_consumed_at IS NULL
                   AND NOT EXISTS(SELECT 1 FROM nx_compute_retired_task a WHERE a.task_id=t.id)
                 """,deviceId,userId);
+            // D2 withdraws only the current RUNNING quote; C and completed earnings remain intact.
+            db.list("SELECT id FROM nx_user_wallet WHERE user_id=? AND is_deleted=0 FOR UPDATE",userId);
+            db.write("""
+                UPDATE nx_sim_device_target_cycle c JOIN nx_simulated_task t
+                  ON c.user_device_id=t.user_device_id AND c.cycle_start=t.target_cycle_start
+                SET c.p=c.p-CAST(JSON_UNQUOTE(JSON_EXTRACT(t.target_snapshot_json,'$.p')) AS DECIMAL(50,24)),
+                    c.lo=c.lo-CAST(JSON_UNQUOTE(JSON_EXTRACT(t.target_snapshot_json,'$.lo')) AS DECIMAL(50,24)),
+                    c.hi=c.hi-CAST(JSON_UNQUOTE(JSON_EXTRACT(t.target_snapshot_json,'$.hi')) AS DECIMAL(50,24)),
+                    c.allocated_usdt=c.allocated_usdt-t.reward_amount
+                WHERE t.user_device_id=? AND t.user_id=? AND t.status='RUNNING' AND t.target_snapshot_json IS NOT NULL
+                  AND c.user_id=t.user_id AND c.instance_no=t.instance_no
+                  AND NOT EXISTS(SELECT 1 FROM nx_compute_retired_task a WHERE a.user_id=t.user_id AND a.task_no=t.task_no COLLATE utf8mb4_0900_ai_ci)
+                """,deviceId,userId);
             db.write("""
                 UPDATE nx_simulated_task t SET status='CANCELLED',cancel_reason='PROMOTION_REFUND'
                 WHERE t.user_device_id=? AND t.user_id=? AND t.status='RUNNING'

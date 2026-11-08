@@ -65,6 +65,7 @@ public class SupportDeviceReadService implements SupportDeviceReadFacade {
                     || snapshot.deviceId()!=((Number)task.get("deviceId")).longValue())
                 throw new IllegalStateException("SIMULATED_TASK_FUND_SOURCE_MISSING");
             var enriched=new java.util.LinkedHashMap<>(task);
+            // TaskRow.evidenceProjection explicitly preserves the V2 key set and null shape.
             enriched.put("executionMode","SIMULATED");enriched.put("simulation",snapshot);return (Map<String,Object>)enriched;
         }).toList();
     }

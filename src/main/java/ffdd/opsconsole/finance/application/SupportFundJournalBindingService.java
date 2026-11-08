@@ -143,6 +143,7 @@ public class SupportFundJournalBindingService implements SupportFundJournalFacad
             if (!preceding.equals(current.tuple())) throw failure("FUND_JOURNAL_TAIL_MISMATCH");
         }
         legs.sort(java.util.Comparator.comparing(Leg::incarnation).thenComparingLong(Leg::revision));
+        // Hash the versioned source as supplied. V1/V2 projections retain their original keys/nulls; V3 includes its frozen quote.
         ObjectNode digest = json.valueToTree(receipt);
         digest.set("customerIds", json.valueToTree(token.scope));
         digest.set("legs", json.valueToTree(legs));

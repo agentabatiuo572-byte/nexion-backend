@@ -104,7 +104,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
              AS publishBlockReason,
             p.created_at AS createdAt,
             p.updated_at AS updatedAt,
-            s.spec_document_title AS specDocumentTitle,s.spec_document_url AS specDocumentUrl,p.compute_points AS computePoints
+            s.spec_document_title AS specDocumentTitle,s.spec_document_url AS specDocumentUrl,p.compute_points AS computePoints,
+            p.monthly_target_usdt AS monthlyTargetUsdt,p.monthly_target_band_pct AS monthlyTargetBandPct
             """;
 
     String TASK_COLUMNS = """
@@ -239,10 +240,12 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               phone_daily_earn DECIMAL(18,6) DEFAULT NULL,
               phone_daily_earn_nex DECIMAL(18,6) DEFAULT NULL,
               price DECIMAL(18,4) NOT NULL DEFAULT 0,
-              daily_earn DECIMAL(18,4) NOT NULL DEFAULT 0,
+              daily_earn DECIMAL(18,6) NOT NULL DEFAULT 0,
+              monthly_target_usdt DECIMAL(12,2) DEFAULT NULL,
+              monthly_target_band_pct DECIMAL(4,1) DEFAULT NULL,
               daily_earn_nex DECIMAL(18,4) NOT NULL DEFAULT 0,
-              share_yield_min DECIMAL(9,4) DEFAULT NULL,
-              share_yield_max DECIMAL(9,4) DEFAULT NULL,
+              share_yield_min DECIMAL(24,4) DEFAULT NULL,
+              share_yield_max DECIMAL(24,4) DEFAULT NULL,
               base_rate VARCHAR(128) DEFAULT NULL,
               sold BIGINT DEFAULT NULL,
               stock_text VARCHAR(32) NOT NULL DEFAULT '0',
@@ -1030,14 +1033,14 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
 
     @Insert("""
             INSERT INTO nx_product (
-              product_no,name,product_type,tier,status,price_usdt,compute_points,hashrate,estimated_daily_usdt,daily_nex,stock,inventory_mode,trial_eligible,
+              product_no,name,product_type,tier,status,price_usdt,compute_points,hashrate,estimated_daily_usdt,daily_nex,monthly_target_usdt,monthly_target_band_pct,stock,inventory_mode,trial_eligible,
               badge,tagline,store_status,store_visible,sort_order,generation,gpu_model,vram_total_gb,
               share_yield_min,share_yield_max,superseded_by_product_no,unlock_phase,sold_count,rating_value,review_count,
               created_at,updated_at,is_deleted
             ) VALUES (
               #{sku.skuId},#{sku.name},CASE WHEN #{sku.tier}='Share' THEN 'SHARE' ELSE 'DEVICE' END,#{sku.tier},
               CASE WHEN #{sku.status}='on' THEN 'ON_SALE' WHEN #{sku.status}='pending' THEN 'PENDING' ELSE 'OFF_SALE' END,
-              #{sku.price},COALESCE(#{sku.computePoints},ROUND(#{sku.price}*10)),#{sku.canonicalHashrate},#{sku.dailyEarn},#{sku.dailyEarnNex},#{sku.canonicalStock},#{sku.inventoryMode},#{sku.trialEligible},
+              #{sku.price},COALESCE(#{sku.computePoints},ROUND(#{sku.price}*10)),#{sku.canonicalHashrate},#{sku.dailyEarn},#{sku.dailyEarnNex},#{sku.monthlyTargetUsdt},#{sku.monthlyTargetBandPct},#{sku.canonicalStock},#{sku.inventoryMode},#{sku.trialEligible},
               #{sku.badge},#{sku.tagline},#{sku.status},CASE WHEN #{sku.status}='on' THEN 1 ELSE 0 END,0,
               COALESCE(#{sku.generation},1),#{sku.gpu},#{sku.canonicalVramGb},#{sku.shareYieldMin},#{sku.shareYieldMax},
               #{sku.supersededBy},CAST(#{sku.unlockPhaseId} AS CHAR),0,COALESCE(#{sku.rating},0),COALESCE(#{sku.reviews},0),
@@ -1049,7 +1052,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
     @Insert("""
             INSERT INTO nx_admin_device_sku (
               sku_id,name,tier,tagline,badge,gpu,vram,hash_rate,power_text,datacenter,uptime,warranty,phone_daily_earn,phone_daily_earn_nex,price,
-              daily_earn,daily_earn_nex,share_yield_min,share_yield_max,base_rate,sold,stock_text,
+              daily_earn,daily_earn_nex,share_yield_min,share_yield_max,monthly_target_usdt,monthly_target_band_pct,base_rate,sold,stock_text,
               rating,reviews,ai_image_gen_per_min,ai_llm_tokens_per_sec,ai_video_min_per_hour,
               ai_fine_tune_mins,ai_unlocks,spec_document_title,spec_document_url,features_json,generation,lifecycle,superseded_by,
               tradein_discount,unlock_phase,unlock_phase_id,purchase_gate_json,image_asset_id,image_object_key,image_preview_url,tag,status,
@@ -1057,7 +1060,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             ) VALUES (
               #{sku.skuId},#{sku.name},#{sku.tier},#{sku.tagline},#{sku.badge},#{sku.gpu},#{sku.vram},#{sku.hashRate},
               #{sku.power},#{sku.datacenter},#{sku.uptime},#{sku.warranty},#{sku.phoneDailyEarn},#{sku.phoneDailyEarnNex},#{sku.price},#{sku.dailyEarn},#{sku.dailyEarnNex},#{sku.shareYieldMin},
-              #{sku.shareYieldMax},#{sku.baseRate},0,#{sku.stock},#{sku.rating},#{sku.reviews},
+              #{sku.shareYieldMax},#{sku.monthlyTargetUsdt},#{sku.monthlyTargetBandPct},#{sku.baseRate},0,#{sku.stock},#{sku.rating},#{sku.reviews},
               #{sku.aiImageGenPerMin},#{sku.aiLlmTokensPerSec},#{sku.aiVideoMinPerHour},#{sku.aiFineTuneMins},
               #{sku.aiUnlocks},#{sku.specDocumentTitle},#{sku.specDocumentUrl},#{sku.featuresJson},#{sku.generation},#{sku.lifecycle},#{sku.supersededBy},
               #{sku.tradeinDiscount},'',#{sku.unlockPhaseId},#{sku.purchaseGateJson},#{sku.imageAssetId},#{sku.imageObjectKey},
@@ -1067,7 +1070,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               name=VALUES(name),tier=VALUES(tier),tagline=VALUES(tagline),badge=VALUES(badge),gpu=VALUES(gpu),vram=VALUES(vram),
               hash_rate=VALUES(hash_rate),power_text=VALUES(power_text),datacenter=VALUES(datacenter),uptime=VALUES(uptime),warranty=VALUES(warranty),phone_daily_earn=VALUES(phone_daily_earn),phone_daily_earn_nex=VALUES(phone_daily_earn_nex),price=VALUES(price),
               daily_earn=VALUES(daily_earn),daily_earn_nex=VALUES(daily_earn_nex),share_yield_min=VALUES(share_yield_min),
-              share_yield_max=VALUES(share_yield_max),base_rate=VALUES(base_rate),stock_text=VALUES(stock_text),
+              share_yield_max=VALUES(share_yield_max),monthly_target_usdt=VALUES(monthly_target_usdt),monthly_target_band_pct=VALUES(monthly_target_band_pct),base_rate=VALUES(base_rate),stock_text=VALUES(stock_text),
               rating=VALUES(rating),reviews=VALUES(reviews),ai_image_gen_per_min=VALUES(ai_image_gen_per_min),
               ai_llm_tokens_per_sec=VALUES(ai_llm_tokens_per_sec),ai_video_min_per_hour=VALUES(ai_video_min_per_hour),
               ai_fine_tune_mins=VALUES(ai_fine_tune_mins),ai_unlocks=VALUES(ai_unlocks),spec_document_title=VALUES(spec_document_title),spec_document_url=VALUES(spec_document_url),features_json=VALUES(features_json),
@@ -1085,6 +1088,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                SET name=#{sku.name},tier=#{sku.tier},
                    status=CASE WHEN #{sku.status}='on' THEN 'ON_SALE' WHEN #{sku.status}='pending' THEN 'PENDING' ELSE 'OFF_SALE' END,
                    price_usdt=#{sku.price},compute_points=COALESCE(#{sku.computePoints},compute_points),hashrate=#{sku.canonicalHashrate},estimated_daily_usdt=#{sku.dailyEarn},daily_nex=#{sku.dailyEarnNex},
+                   monthly_target_usdt=#{sku.monthlyTargetUsdt},monthly_target_band_pct=#{sku.monthlyTargetBandPct},
                    stock=#{sku.canonicalStock},inventory_mode=#{sku.inventoryMode},trial_eligible=#{sku.trialEligible},badge=#{sku.badge},tagline=#{sku.tagline},store_status=#{sku.status},
                    store_visible=CASE WHEN #{sku.status}='on' THEN 1 ELSE 0 END,generation=COALESCE(#{sku.generation},1),
                    gpu_model=#{sku.gpu},vram_total_gb=#{sku.canonicalVramGb},share_yield_min=#{sku.shareYieldMin},
@@ -1937,7 +1941,59 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             Boolean publishBlocked,
             String publishBlockReason,
             LocalDateTime createdAt,
+            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct) {
+    public SkuRow(
+            String skuId,
+            String name,
+            String tier,
+            String tagline,
+            String badge,
+            String gpu,
+            String vram,
+            String hashRate,
+            String power,
+            String datacenter,
+            String uptime,
+            String warranty,
+            BigDecimal phoneDailyEarn,
+            BigDecimal phoneDailyEarnNex,
+            BigDecimal price,
+            BigDecimal dailyEarn,
+            BigDecimal dailyEarnNex,
+            BigDecimal shareYieldMin,
+            BigDecimal shareYieldMax,
+            String baseRate,
+            Long sold,
+            String stock,
+            String productType,
+            String inventoryMode,
+            Boolean trialEligible,
+            BigDecimal rating,
+            Long reviews,
+            Long aiImageGenPerMin,
+            Long aiLlmTokensPerSec,
+            Long aiVideoMinPerHour,
+            Long aiFineTuneMins,
+            String aiUnlocks,
+            String featuresJson,
+            Integer generation,
+            String lifecycle,
+            String supersededBy,
+            BigDecimal tradeinDiscount,
+            String unlockPhase,
+            String purchaseGateJson,
+            String imageAssetId,
+            String imageObjectKey,
+            String imagePreviewUrl,
+            String tag,
+            String status,
+            Boolean publishBlocked,
+            String publishBlockReason,
+            LocalDateTime createdAt,
             LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints) {
+        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,productType,inventoryMode,trialEligible,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,featuresJson,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhase,purchaseGateJson,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,publishBlocked,publishBlockReason,createdAt,updatedAt,specDocumentTitle,specDocumentUrl,computePoints,null,null);
+    }
+
     /** Callers that do not set computePoints leave it unset. */
     public SkuRow(String skuId, String name, String tier, String tagline, String badge, String gpu, String vram, String hashRate, String power, String datacenter, String uptime, String warranty, BigDecimal phoneDailyEarn, BigDecimal phoneDailyEarnNex, BigDecimal price, BigDecimal dailyEarn, BigDecimal dailyEarnNex, BigDecimal shareYieldMin, BigDecimal shareYieldMax, String baseRate, Long sold, String stock, String productType, String inventoryMode, Boolean trialEligible, BigDecimal rating, Long reviews, Long aiImageGenPerMin, Long aiLlmTokensPerSec, Long aiVideoMinPerHour, Long aiFineTuneMins, String aiUnlocks, String featuresJson, Integer generation, String lifecycle, String supersededBy, BigDecimal tradeinDiscount, String unlockPhase, String purchaseGateJson, String imageAssetId, String imageObjectKey, String imagePreviewUrl, String tag, String status, Boolean publishBlocked, String publishBlockReason, LocalDateTime createdAt, LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl) {
         this(skuId, name, tier, tagline, badge, gpu, vram, hashRate, power, datacenter, uptime, warranty, phoneDailyEarn, phoneDailyEarnNex, price, dailyEarn, dailyEarnNex, shareYieldMin, shareYieldMax, baseRate, sold, stock, productType, inventoryMode, trialEligible, rating, reviews, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, featuresJson, generation, lifecycle, supersededBy, tradeinDiscount, unlockPhase, purchaseGateJson, imageAssetId, imageObjectKey, imagePreviewUrl, tag, status, publishBlocked, publishBlockReason, createdAt, updatedAt, specDocumentTitle, specDocumentUrl, null);
@@ -2046,7 +2102,59 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             String inventoryMode,
             Boolean trialEligible,
             LocalDateTime createdAt,
+            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct) {
+    public SkuWrite(
+            String skuId,
+            String name,
+            String tier,
+            String tagline,
+            String badge,
+            String gpu,
+            String vram,
+            String hashRate,
+            String power,
+            String datacenter,
+            String uptime,
+            String warranty,
+            BigDecimal phoneDailyEarn,
+            BigDecimal phoneDailyEarnNex,
+            BigDecimal price,
+            BigDecimal dailyEarn,
+            BigDecimal dailyEarnNex,
+            BigDecimal shareYieldMin,
+            BigDecimal shareYieldMax,
+            String baseRate,
+            Long sold,
+            String stock,
+            BigDecimal rating,
+            Long reviews,
+            Long aiImageGenPerMin,
+            Long aiLlmTokensPerSec,
+            Long aiVideoMinPerHour,
+            Long aiFineTuneMins,
+            String aiUnlocks,
+            String featuresJson,
+            Integer generation,
+            String lifecycle,
+            String supersededBy,
+            BigDecimal tradeinDiscount,
+            Long unlockPhaseId,
+            String purchaseGateJson,
+            String imageAssetId,
+            String imageObjectKey,
+            String imagePreviewUrl,
+            String tag,
+            String status,
+            BigDecimal canonicalHashrate,
+            Integer canonicalVramGb,
+            Integer canonicalStock,
+            String inventoryMode,
+            Boolean trialEligible,
+            LocalDateTime createdAt,
             LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints) {
+        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,featuresJson,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhaseId,purchaseGateJson,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,canonicalHashrate,canonicalVramGb,canonicalStock,inventoryMode,trialEligible,createdAt,updatedAt,specDocumentTitle,specDocumentUrl,computePoints,null,null);
+    }
+
     /** Callers that do not set computePoints leave it unset. */
     public SkuWrite(String skuId, String name, String tier, String tagline, String badge, String gpu, String vram, String hashRate, String power, String datacenter, String uptime, String warranty, BigDecimal phoneDailyEarn, BigDecimal phoneDailyEarnNex, BigDecimal price, BigDecimal dailyEarn, BigDecimal dailyEarnNex, BigDecimal shareYieldMin, BigDecimal shareYieldMax, String baseRate, Long sold, String stock, BigDecimal rating, Long reviews, Long aiImageGenPerMin, Long aiLlmTokensPerSec, Long aiVideoMinPerHour, Long aiFineTuneMins, String aiUnlocks, String featuresJson, Integer generation, String lifecycle, String supersededBy, BigDecimal tradeinDiscount, Long unlockPhaseId, String purchaseGateJson, String imageAssetId, String imageObjectKey, String imagePreviewUrl, String tag, String status, BigDecimal canonicalHashrate, Integer canonicalVramGb, Integer canonicalStock, String inventoryMode, Boolean trialEligible, LocalDateTime createdAt, LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl) {
         this(skuId, name, tier, tagline, badge, gpu, vram, hashRate, power, datacenter, uptime, warranty, phoneDailyEarn, phoneDailyEarnNex, price, dailyEarn, dailyEarnNex, shareYieldMin, shareYieldMax, baseRate, sold, stock, rating, reviews, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, featuresJson, generation, lifecycle, supersededBy, tradeinDiscount, unlockPhaseId, purchaseGateJson, imageAssetId, imageObjectKey, imagePreviewUrl, tag, status, canonicalHashrate, canonicalVramGb, canonicalStock, inventoryMode, trialEligible, createdAt, updatedAt, specDocumentTitle, specDocumentUrl, null);

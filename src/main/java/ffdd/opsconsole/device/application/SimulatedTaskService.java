@@ -8,7 +8,6 @@ import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import ffdd.opsconsole.shared.exception.BizException;
 import jakarta.annotation.PreDestroy;
 import java.math.BigDecimal;
-import java.security.SecureRandom;
 import java.time.*;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
@@ -43,7 +42,7 @@ public class SimulatedTaskService implements SchedulingConfigurer {
     private final TransactionTemplate transaction;
     private final Environment environment;
     private final Clock clock;
-    private final SecureRandom random=new SecureRandom();
+    private final DeviceMonthlyTargetService monthlyTargets;
     private final AtomicLong initialCursor=new AtomicLong();
     private final ExecutorService settlementWorkers;
     private volatile boolean stopping;
@@ -51,7 +50,8 @@ public class SimulatedTaskService implements SchedulingConfigurer {
 
     public SimulatedTaskService(SimulatedTaskMapper mapper,AppTaskAssignmentMapper assignments,
             SimulatedTaskPolicyService policies,SimulatedTaskSettlementService settlement,SimulatedTaskLifecycleService lifecycle,
-            PlatformTransactionManager transactions,Environment environment,Clock clock) {
+            PlatformTransactionManager transactions,Environment environment,Clock clock,DeviceMonthlyTargetService monthlyTargets) {
+        this.monthlyTargets=monthlyTargets;
         this.mapper=mapper;this.assignments=assignments;this.policies=policies;this.settlement=settlement;this.lifecycle=lifecycle;
         this.transaction=new TransactionTemplate(transactions);this.environment=environment;this.clock=clock;
         AtomicInteger workerNumber = new AtomicInteger();
@@ -309,19 +309,26 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                         return save(runtime,runtime.finishAfterAt(),null,null,"STOPPED","AFTER_CURRENT");
                     pool=policy.taskTypes().stream().filter(SimulatedTaskPolicyService.TaskTypeSnapshot::enabled).toList();
                 }
-                var type=pool.get(random.nextInt(pool.size()));
+                pool=pool.stream().sorted(Comparator.comparing(SimulatedTaskPolicyService.TaskTypeSnapshot::taskTypeId)).toList();
+                var type=pool.get(DeviceMonthlyTargetPacing.select(device.deviceId(),runtime.generation(),runtime.nextStartAt(),pool.size()));
                 var projection=E3DeviceCapacityPolicy.project(device.productCode(),device.deviceType(),device.purchasedAt(),device.activatedAt(),
                         runtime.nextStartAt(),policy.e3Config());
                 BigDecimal reward=E3DeviceCapacityPolicy.applyCapacity(type.baseReward(),projection);
                 var wallets=mapper.wallets(device.userId());
                 if(wallets.size()!=1)throw error(409,"SIMULATED_WALLET_UNAVAILABLE");
+                DeviceMonthlyTargetService.Quote target=null;
+                if(policy.monthlyTargetUsdt()!=null) {
+                    if(phone(device))throw error(422,"MONTHLY_TARGET_DEVICE_INELIGIBLE");
+                    target=monthlyTargets.reserve(device,policy,runtime.nextStartAt(),type,pool);
+                    reward=target.reward();
+                }
                 var wallet=wallets.get(0);String suffix=UUID.randomUUID().toString().replace("-","").toUpperCase(Locale.ROOT);
                 BigDecimal daily=assignments.lockPaidCloudShareDailyNex(device.userId(),device.deviceId());
                 var task=new TaskRow("SIM-"+suffix,"CTR-"+suffix,device.userId(),device.deviceId(),device.instanceNo(),runtime.generation(),
                         device.productId(),device.productCode(),device.productTier(),device.deviceName(),device.deviceType(),device.gpuModel(),device.vramTotalGb(),
                         type.taskTypeId(),type.typeVersion(),policy.version(),policy.e3Version(),type.name(),type.taskClass(),type.durationSeconds(),"NEX".equals(type.asset())?"UVT":type.asset(),
-                        type.baseReward(),reward,projection.capacityPct().movePointLeft(2),daily==null?BigDecimal.ZERO:daily,
-                        wallet.walletId(),wallet.incarnation(),runtime.nextStartAt(),runtime.nextStartAt().plusSeconds(type.durationSeconds()),"RUNNING",null,null,null);
+                        type.baseReward(),reward,(target==null?projection.capacityPct():target.capacityPct()).movePointLeft(2),daily==null?BigDecimal.ZERO:daily,
+                        wallet.walletId(),wallet.incarnation(),runtime.nextStartAt(),runtime.nextStartAt().plusSeconds(type.durationSeconds()),"RUNNING",null,null,null,target==null?null:target.cycleStart(),target==null?null:target.snapshotJson());
                 if(mapper.insertTask(task)!=1)throw error(409,"SIMULATED_TASK_CREATION_CONFLICT");
                 runtime=save(runtime,runtime.nextStartAt(),task.taskNo(),earlier(task.dueAt(),cutoff),"RUNNING",null);
             }
@@ -340,7 +347,9 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                 continue;
             }
             if(cutoff!=null && !cutoff.isAfter(observed)) {
+                mapper.wallets(task.userId());
                 if(mapper.cancelTask(task.taskNo(),stopReason)!=1)throw error(409,"SIMULATED_TASK_CANCELLATION_CONFLICT");
+                monthlyTargets.cancel(task);
                 return save(runtime,cutoff,null,null,"PHONE_VALIDITY_EXPIRED".equals(stopReason)?"EXPIRED":"STOPPED",stopReason);
             }
             return save(runtime,runtime.nextStartAt(),task.taskNo(),earlier(task.dueAt(),cutoff),"RUNNING",null);

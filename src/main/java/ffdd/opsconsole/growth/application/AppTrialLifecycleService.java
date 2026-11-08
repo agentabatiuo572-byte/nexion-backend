@@ -188,7 +188,8 @@ public class AppTrialLifecycleService {
         //   实际 $1.00/天相差约 38.5 倍,于是同一屏出现「3 天预计抵扣金 $116」和
         //   「S1 上限 $1.00/d」。现在直接读 nx_product 的 estimated_daily_usdt / daily_nex,
         //   配置值只在商品未配收益时兜底(并在快照里标明来源)。
-        BigDecimal productDailyUsdt = positiveOrNull(product.estimatedDailyUsdt());
+        BigDecimal productDailyUsdt = product.monthlyTargetUsdt()!=null
+                ? ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.daily(product.monthlyTargetUsdt()) : positiveOrNull(product.estimatedDailyUsdt());
         BigDecimal productDailyNex = positiveOrNull(product.dailyNex());
         BigDecimal dailyUsdt = productDailyUsdt != null ? productDailyUsdt
                 : decimal(policy, "shadowDailyUSD", "0");
@@ -691,8 +692,10 @@ public class AppTrialLifecycleService {
             result.put("config", safePolicy(policy, configuredProductCode,
                     catalogProduct == null ? null : catalogProduct.name(),
                     catalogProduct == null ? null : catalogProduct.priceUsdt(),
-                    catalogProduct == null ? null : catalogProduct.estimatedDailyUsdt(),
-                    catalogProduct == null ? null : catalogProduct.dailyNex()));
+                    catalogProduct == null ? null : catalogProduct.monthlyTargetUsdt()!=null
+                            ? ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.daily(catalogProduct.monthlyTargetUsdt()) : catalogProduct.estimatedDailyUsdt(),
+                    catalogProduct == null ? null : catalogProduct.dailyNex(),
+                    catalogProduct!=null && catalogProduct.monthlyTargetUsdt()!=null));
             return result;
         }
         String effectiveState = effectiveState(row, now);
@@ -757,8 +760,10 @@ public class AppTrialLifecycleService {
         Map<String, Object> config = safePolicy(policy, configuredProductCode,
                 frozenProduct ? row.deviceName() : catalogProduct == null ? null : catalogProduct.name(),
                 frozenProduct ? row.priceUsdt() : catalogProduct == null ? null : catalogProduct.priceUsdt(),
-                frozenProduct ? row.dailyUsdt() : catalogProduct == null ? null : catalogProduct.estimatedDailyUsdt(),
-                frozenProduct ? row.dailyNex() : catalogProduct == null ? null : catalogProduct.dailyNex());
+                frozenProduct ? row.dailyUsdt() : catalogProduct == null ? null : catalogProduct.monthlyTargetUsdt()!=null
+                        ? ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.daily(catalogProduct.monthlyTargetUsdt()) : catalogProduct.estimatedDailyUsdt(),
+                frozenProduct ? row.dailyNex() : catalogProduct == null ? null : catalogProduct.dailyNex(),
+                frozenProduct || catalogProduct!=null && catalogProduct.monthlyTargetUsdt()!=null);
         if (frozenProduct) {
             config.put("trialDays", Integer.toString(Math.max(1, row.durationDays() == null ? 1 : row.durationDays())));
             config.put("graceDays", Integer.toString(row.graceDaysSnapshot()));
@@ -825,7 +830,7 @@ public class AppTrialLifecycleService {
 
     private Map<String, Object> safePolicy(
             Map<String, String> policy, String productCode, String productName, BigDecimal productPrice,
-            BigDecimal productDailyUsdt, BigDecimal productDailyNex) {
+            BigDecimal productDailyUsdt, BigDecimal productDailyNex, boolean frozenOrTargetUsdt) {
         Map<String, Object> result = new LinkedHashMap<>();
         Map<String, String> defaults = linkedString(
                 "trialDays", "3", "graceDays", "7", "extensionDays", "3",
@@ -869,7 +874,7 @@ public class AppTrialLifecycleService {
         //   而 S1 商品卡写的是 $1.00/天(3 天 ≈ $3)。同一次试用、两个页面、两个数,且按构造必然
         //   对不上。claim 时的结算早已改读商品值(AppTrialLifecycleService:137-142),这里把**展示
         //   侧**也对齐到同一权威来源,商品没配收益时才回落到 policy。
-        if (productDailyUsdt != null && productDailyUsdt.signum() > 0) {
+        if (productDailyUsdt != null && (frozenOrTargetUsdt || productDailyUsdt.signum() > 0)) {
             result.put("shadowDailyUSD", productDailyUsdt.stripTrailingZeros().toPlainString());
         }
         if (productDailyNex != null && productDailyNex.signum() > 0) {
