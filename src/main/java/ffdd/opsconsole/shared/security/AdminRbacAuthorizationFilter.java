@@ -282,6 +282,11 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
     // POST exact so the conversations/** write gate cannot turn an M3 observer into a writer.
     private RequiredAuthority requiredAuthority(String path, String method) {
         boolean read = HttpMethod.GET.matches(method) || HttpMethod.HEAD.matches(method);
+        if (read && path.equals("/api/admin/overview/business-summary")) {
+            // B36 filters every card by its own exact grant; growth's exception is sales totals only.
+            return RequiredAuthority.exact("finance_d1_read", "finance_d2_read", "device_e4_read", "bi_l3_read",
+                    "user_c1_read", "bi_l1_read", "overview_b0_sales_read");
+        }
         if (read && pathMatcher.match("/api/admin/finance/cregis/commands/*", path)) {
             // Each owned receipt keeps its original writer's grants; policy/challenge also check D1 read in the controller.
             return RequiredAuthority.exact("finance_d1_channel_manage");
