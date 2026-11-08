@@ -25,10 +25,10 @@ public interface BusinessSummaryMapper extends BaseMapper<Object> {
             """)
     List<Metric> rolledUp(@Param("from") LocalDate from, @Param("to") LocalDate to);
 
-    @Select("SELECT statistics_start AS statisticsStart,as_of AS asOf,calendar_signature AS calendarSignature FROM nx_business_summary_state WHERE id=1")
+    @Select("SELECT statistics_start AS statisticsStart,as_of AS asOf,COALESCE(calendar_signature,'') AS calendarSignature FROM nx_business_summary_state WHERE id=1")
     State state();
 
-    @Select("SELECT statistics_start AS statisticsStart,as_of AS asOf,calendar_signature AS calendarSignature FROM nx_business_summary_state WHERE id=1 FOR UPDATE")
+    @Select("SELECT statistics_start AS statisticsStart,as_of AS asOf,COALESCE(calendar_signature,'') AS calendarSignature FROM nx_business_summary_state WHERE id=1 FOR UPDATE")
     State lockState();
 
     // A changed source can invalidate an old payment/registration day and the user's lifetime-first day.
