@@ -108,8 +108,8 @@ public class MybatisWithdrawalOrderRepository implements WithdrawalOrderReposito
     }
 
     @Override
-    public List<String> findExpiredLifecycleNos(LocalDateTime now) {
-        return mapper.findExpiredLifecycleNos(now);
+    public List<String> findExpiredLifecycleNos(LocalDateTime now, boolean complianceEnabled, int cooldownDays) {
+        return mapper.findExpiredLifecycleNos(now, complianceEnabled, cooldownDays);
     }
 
     @Override

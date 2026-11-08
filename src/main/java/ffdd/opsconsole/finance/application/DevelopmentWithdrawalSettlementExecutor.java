@@ -24,13 +24,13 @@ public class DevelopmentWithdrawalSettlementExecutor {
 
     private final WithdrawalPayoutMapper mapper;
     private final WithdrawalPayoutFinalizer finalizer;
+    private final WithdrawalPayoutDispatchGuard dispatchGuard;
 
     @Scheduled(fixedDelayString = "${nexion.finance.development-withdrawal-simulator-poll-ms:5000}")
     public void process() {
         LocalDateTime now = LocalDateTime.now();
         for (var candidate : mapper.claimableDevelopment(now, 50)) {
-            if (mapper.claim(candidate.withdrawalNo(), now, now.plusMinutes(2)) != 1) continue;
-            WithdrawalPayoutMapper.PayoutRow claimed = mapper.payout(candidate.withdrawalNo());
+            WithdrawalPayoutMapper.PayoutRow claimed = dispatchGuard.claimDevelopment(candidate, now);
             if (claimed == null) continue;
             long providerCid = deterministicCid(claimed.withdrawalNo());
             if (finalizer.submitted(claimed, providerCid, SOURCE)) {
