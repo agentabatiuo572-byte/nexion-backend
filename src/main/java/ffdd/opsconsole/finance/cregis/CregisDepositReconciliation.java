@@ -71,7 +71,7 @@ public class CregisDepositReconciliation {
             db.createReconcileRun(network,runId, config.getProjectId(), start, end);
             if(bootstrap) {
                 if(db.hasNetworkActivity(network,config.getProjectId()) || payouts.recoveryReason()!=null
-                        || db.unresolvedExposure(config.getProjectId()).signum()!=0
+                        || db.unresolvedExposure(config.getProjectId(),false).signum()!=0
                         || router.provider().projectCoins().stream().noneMatch(coin->coin.addressEnabled()
                             && network.chainId().equals(coin.chainId()) && network.tokenMatches(coin.tokenId())))
                     throw new IllegalStateException("CREGIS_TRC20_BOOTSTRAP_NOT_EMPTY_OR_READY");
@@ -96,7 +96,7 @@ public class CregisDepositReconciliation {
             TransactionTemplate tx = new TransactionTemplate(txManager);
             tx.executeWithoutResult(ignored -> {
                 if(bootstrap && (db.lockProvisionGate()==null || db.hasNetworkActivity(network,config.getProjectId())
-                        || payouts.recoveryReason()!=null || db.unresolvedExposure(config.getProjectId()).signum()!=0))
+                        || payouts.recoveryReason()!=null || db.unresolvedExposure(config.getProjectId(),false).signum()!=0))
                     throw new IllegalStateException("CREGIS_TRC20_BOOTSTRAP_NOT_EMPTY_OR_READY");
                 Long locked = db.lockReconcileWatermark(network);
                 if (locked == null || !locked.equals(prior))

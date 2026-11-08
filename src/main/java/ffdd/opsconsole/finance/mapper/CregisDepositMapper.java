@@ -331,9 +331,15 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
                    FROM delivery_exposure)
               + COALESCE((SELECT SUM(w.amount) FROM nx_withdrawal_order w
                            WHERE w.asset='USDT' AND w.is_deleted=0
-                             AND w.status NOT IN ('CONFIRMED','FAILED','REFUNDED','CANCELLED','REJECTED')),0)
+                             AND w.status NOT IN ('CONFIRMED','FAILED','REFUNDED','CANCELLED','REJECTED')
+                             AND (#{includeInternalWithdrawalReservations}
+                               OR w.status NOT IN ('REVIEW_PENDING','REVIEW_PASSED','EXTENDED_HOLD','FROZEN')
+                               OR w.d5_payout_source IS NOT NULL OR w.d5_provider_cid IS NOT NULL
+                               OR w.d5_provider_idempotency_key IS NOT NULL OR w.chain_broadcast_attempts<>0
+                               OR w.chain_submitted_at IS NOT NULL OR w.chain_tx_hash IS NOT NULL)),0)
             """)
-    BigDecimal unresolvedExposure(@Param("projectId") long projectId);
+    BigDecimal unresolvedExposure(@Param("projectId") long projectId,
+            @Param("includeInternalWithdrawalReservations") boolean includeInternalWithdrawalReservations);
     @Update("""
             UPDATE nx_cregis_provision_gate
                SET assign_enabled=0,credit_enabled=0,payout_enabled=0,
@@ -1099,6 +1105,8 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             """)
     int checkSwitchCase(@Param("id") long id, @Param("projectId") long projectId,
                         @Param("checkerId") long checkerId, @Param("status") String status);
+    /** General risk accounting keeps every reservation; only empty-pool bootstrap omits unsent internal holds. */
+    default BigDecimal unresolvedExposure(long projectId) { return unresolvedExposure(projectId,true); }
     default Map<String,Object> poolPolicy() { return poolPolicy(CregisNetwork.BEP20); }
     default int setPoolRefillActive(boolean active) { return setPoolRefillActive(CregisNetwork.BEP20 ,active); }
     default int pausePoolSubmission(String code,int seconds) { return pausePoolSubmission(CregisNetwork.BEP20 ,code,seconds); }
