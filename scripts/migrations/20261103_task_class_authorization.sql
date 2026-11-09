@@ -17,10 +17,18 @@ CREATE TEMPORARY TABLE scope_sources (
   kind CHAR(1), product_key VARCHAR(64), version BIGINT, ids JSON NOT NULL,
   PRIMARY KEY(kind,product_key)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-INSERT INTO scope_sources
-SELECT 'P',p.product_key,p.version,p.allowed_task_type_ids FROM nx_sim_product_task_policy_version p
-WHERE p.allowed_task_classes IS NULL AND NOT EXISTS
-  (SELECT 1 FROM nx_sim_product_task_policy_version n WHERE n.product_key=p.product_key AND n.version>p.version);
+-- A task-pool publication is already in the new format. Never republish it as an empty legacy scope
+-- on a later startup (which would also discard its target). The column is absent on the first upgrade.
+SET @class_pool_filter = IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE()
+  AND table_name='nx_sim_product_task_policy_version' AND column_name='allowed_pool_codes'),
+  ' AND p.allowed_pool_codes IS NULL','');
+SET @class_sources = CONCAT('INSERT INTO scope_sources
+SELECT ''P'',p.product_key,p.version,p.allowed_task_type_ids FROM nx_sim_product_task_policy_version p
+WHERE p.allowed_task_classes IS NULL',@class_pool_filter,' AND NOT EXISTS
+  (SELECT 1 FROM nx_sim_product_task_policy_version n WHERE n.product_key=p.product_key AND n.version>p.version)');
+PREPARE class_stmt FROM @class_sources;
+EXECUTE class_stmt;
+DEALLOCATE PREPARE class_stmt;
 INSERT INTO scope_sources
 SELECT 'D',sku_id,0,allowed_task_type_ids_json FROM nx_admin_device_sku
 WHERE is_deleted=0 AND allowed_task_classes_json IS NULL AND allowed_task_type_ids_json IS NOT NULL;

@@ -452,6 +452,7 @@ public class OpsAuditCenterService {
                 if((skuStatus || phonePolicy || isSkuReviewCommand(command)) && request.targets()!=null && !request.targets().isEmpty())
                     return fail(OpsErrorCode.VALIDATION_FAILED,"E1_POLICY_TARGET_INVALID");
                 if(skuStatus) {
+                    devices.skuStatusReview(command.params());
                     Object id=command.params().get("skuId");
                     target=new AuditLockTarget("E","device_sku",devices.hardwarePolicyTarget(id instanceof String key?key:null));
                     ticket.setObjectText(target.id());
@@ -460,8 +461,8 @@ public class OpsAuditCenterService {
                     var review = devices.skuProposalReview(command);
                     target=new AuditLockTarget("E","device_sku",review.skuId());
                     com.fasterxml.jackson.databind.node.ObjectNode after = objectMapper.valueToTree(review.after());
-                    after.remove(List.of("reason", "operator", "imagePreviewUrl","allowedTaskTypeIds"));
-                    after.set("allowedTaskClasses",objectMapper.valueToTree(review.classes()));
+                    after.remove(List.of("reason", "operator", "imagePreviewUrl"));
+                    after.set("allowedPoolCodes",objectMapper.valueToTree(review.classes()));
                     after.put("skuId", review.skuId());
                     com.fasterxml.jackson.databind.node.ObjectNode before = objectMapper.createObjectNode();
                     if (review.before() != null) {

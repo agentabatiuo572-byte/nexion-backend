@@ -682,7 +682,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 row.updatedAt(),
                 row.productType(),
                 row.inventoryMode(),
-                Boolean.TRUE.equals(row.trialEligible()), row.specDocumentTitle(), row.specDocumentUrl(), row.computePoints(),null,null,0,null,
+                Boolean.TRUE.equals(row.trialEligible()), row.specDocumentTitle(), row.specDocumentUrl(), row.computePoints(),null,0,null,
                 row.monthlyTargetUsdt(),row.monthlyTargetBandPct(),
                 row.monthlyTargetUsdt()==null?null:ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.daily(row.monthlyTargetUsdt()),
                 row.monthlyTargetUsdt()==null||!"Share".equals(row.tier())?null:row.shareYieldMin(),

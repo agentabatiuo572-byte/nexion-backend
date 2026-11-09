@@ -19,24 +19,26 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.beans.factory.ObjectProvider;
 
-/** Published configuration history; reads never publish or repair a missing past version. */
+/** Immutable published authorization. Mutable pool labels never participate in runtime resolution. */
 @Service
 @RequiredArgsConstructor
 public class SimulatedTaskPolicyService {
-    public static final List<String> TASK_CLASSES=List.of("IG","VG","LL","FT","EM","SP");
+    public static final List<String> TASK_CLASSES=List.of("EM","SP","IG","LL","FT","VG");
     private final SimulatedTaskPolicyMapper mapper;
     private final ObjectProvider<DeviceOpsRepository> devices;
     private final ObjectMapper json;
     private final Clock clock;
     private final SimulatedTaskPolicyHistory historyLoader;
-    private final java.util.concurrent.atomic.AtomicReference<SimulatedTaskPolicyHistory.History> history = new java.util.concurrent.atomic.AtomicReference<>();
+    private final SimulatedTaskWakeService wakes;
+    private final java.util.concurrent.atomic.AtomicReference<SimulatedTaskPolicyHistory.History> history=new java.util.concurrent.atomic.AtomicReference<>();
     public record TaskTypeSnapshot(String taskTypeId,long typeVersion,String name,String taskClass,
-            int durationSeconds,BigDecimal baseReward,String asset,boolean enabled) { }
+            int durationSeconds,BigDecimal baseReward,String asset,boolean enabled,String poolCode) { }
     public record PolicyVersion(String productKey,long version,LocalDateTime effectiveAt,
-            List<TaskTypeSnapshot> taskTypes,long e3Version,Map<String,String> e3Config, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct) { }
+            List<TaskTypeSnapshot> taskTypes,long e3Version,Map<String,String> e3Config,
+            BigDecimal monthlyTargetUsdt,BigDecimal monthlyTargetBandPct,List<String> allowedPoolCodes) { }
     public record TypeView(int durationMinutes,BigDecimal baseReward,String asset,boolean enabled,
             long version,LocalDateTime effectiveAt) { }
-    public record ProductView(List<String> allowedTaskTypeIds,List<String> allowedTaskClasses,long productTaskPolicyVersion,
+    public record ProductView(List<String> allowedPoolCodes,long productTaskPolicyVersion,
             LocalDateTime productTaskPolicyEffectiveAt) { }
 
     @Transactional(readOnly=true)
@@ -45,269 +47,232 @@ public class SimulatedTaskPolicyService {
         return snapshot==null?policyAtDatabase(productKey,at):policyAt(snapshot,productKey,at);
     }
     private SimulatedTaskPolicyHistory.History historyAtCallerEpoch() {
-        long epoch=mapper.epoch(); // Plain PK read in the caller's RR snapshot; no hot-path lock.
+        long epoch=mapper.epoch();
         var snapshot=history.get();
         if(snapshot==null || epoch>snapshot.epoch()) {
             var loaded=historyLoader.load();
             snapshot=history.accumulateAndGet(loaded,(old,next)->old==null||next.epoch()>old.epoch()?next:old);
         }
-        // An older RR view, or a publication not yet committed, must resolve against its own DB view.
+        // Older RR views and a caller's uncommitted publication resolve in their own DB view.
         return snapshot.epoch()==epoch && snapshot.cacheable()?snapshot:null;
     }
-    private PolicyVersion policyAt(SimulatedTaskPolicyHistory.History history,String key,LocalDateTime at) {
+    private boolean authorizes(ProductVersion p,TypeVersion t,List<String> scope) {
+        if(p.allowedPoolCodesJson()!=null) {
+            // A DEVICE weight can never become a per-task price, even for a malformed published policy.
+            if(t.poolCode()!=null && !"PHONE".equals(t.poolCode()) && p.monthlyTargetUsdt()==null)return false;
+            return t.poolCode()!=null && scope.contains(t.poolCode());
+        }
+        if(t.poolCode()!=null && !"PHONE".equals(t.poolCode()))return false;
+        return p.allowedTaskClassesJson()!=null?scope.contains(t.taskClass())
+                :scope.contains(t.taskTypeId());
+    }
+    private List<String> scope(ProductVersion p) {
+        return strings(p.allowedPoolCodesJson()!=null?p.allowedPoolCodesJson():p.allowedTaskClassesJson()!=null?p.allowedTaskClassesJson():p.allowedTaskTypeIdsJson());
+    }
+    private PolicyVersion policyAt(SimulatedTaskPolicyHistory.History h,String key,LocalDateTime at) {
         ProductVersion product=null;
-        for(var p:history.products()) if(p.productKey().equals(key)&&!p.effectiveAt().isAfter(at)) product=p;
+        for(var p:h.products())if(p.productKey().equals(key)&&!p.effectiveAt().isAfter(at))product=p;
         if(product==null)throw new BizException(422,"SIMULATED_PRODUCT_POLICY_HISTORY_MISSING");
         E3Version e3=null;
-        for(var e:history.e3()) if(!e.effectiveAt().isAfter(at)) e3=e;
+        for(var e:h.e3())if(!e.effectiveAt().isAfter(at))e3=e;
         if(e3==null)throw new BizException(422,"SIMULATED_E3_POLICY_HISTORY_MISSING");
         var current=new LinkedHashMap<String,TypeVersion>();
-        for(var type:history.types()) if(!type.effectiveAt().isAfter(at)) current.put(type.taskTypeId(),type);
-        boolean byClass=product.allowedTaskClassesJson()!=null;
-        var scope=strings(byClass?product.allowedTaskClassesJson():product.allowedTaskTypeIdsJson());
-        var versions=current.values().stream().filter(t->scope.contains(byClass?t.taskClass():t.taskTypeId())).toList();
-        if(!byClass&&versions.size()!=scope.size())throw new BizException(422,"SIMULATED_TASK_TYPE_HISTORY_MISSING");
-        var effective=product.effectiveAt().isAfter(e3.effectiveAt())?product.effectiveAt():e3.effectiveAt();
+        for(var t:h.types())if(!t.effectiveAt().isAfter(at))current.put(t.taskTypeId(),t);
+        var versions=new ArrayList<TypeVersion>();
+        var scope=scope(product);
+        for(var t:current.values())if(authorizes(product,t,scope))versions.add(t);
+        return resolve(product,e3,versions);
+    }
+    private PolicyVersion resolve(ProductVersion p,E3Version e,List<TypeVersion> versions) {
+        var effective=p.effectiveAt().isAfter(e.effectiveAt())?p.effectiveAt():e.effectiveAt();
         var types=new ArrayList<TaskTypeSnapshot>();
         for(var t:versions) {
             if(t.effectiveAt().isAfter(effective))effective=t.effectiveAt();
-            types.add(new TaskTypeSnapshot(t.taskTypeId(),t.version(),t.name(),t.taskClass(),t.durationSeconds(),t.baseReward(),t.asset(),t.enabled()));
+            types.add(new TaskTypeSnapshot(t.taskTypeId(),t.version(),t.name(),t.taskClass(),t.durationSeconds(),t.baseReward(),t.asset(),t.enabled(),t.poolCode()));
         }
-        return new PolicyVersion(key,product.version(),effective,List.copyOf(types),e3.version(),
-                Map.copyOf(decode(e3.configJson(),new TypeReference<Map<String,String>>(){})),product.monthlyTargetUsdt(),product.monthlyTargetBandPct());
+        return new PolicyVersion(p.productKey(),p.version(),effective,List.copyOf(types),e.version(),
+                Map.copyOf(decode(e.configJson(),new TypeReference<Map<String,String>>(){})),p.monthlyTargetUsdt(),p.monthlyTargetBandPct(),strings(p.allowedPoolCodesJson()));
     }
-    PolicyVersion policyAtDatabase(String productKey,LocalDateTime at) {
-        var product=mapper.productAt(productKey,at);
-        if(product==null)throw new BizException(422,"SIMULATED_PRODUCT_POLICY_HISTORY_MISSING");
-        var e3=mapper.e3At(at);
-        if(e3==null)throw new BizException(422,"SIMULATED_E3_POLICY_HISTORY_MISSING");
-        var types=new ArrayList<TaskTypeSnapshot>();
-        LocalDateTime effectiveAt=product.effectiveAt().isAfter(e3.effectiveAt())?product.effectiveAt():e3.effectiveAt();
-        List<TypeVersion> versions;
-        if(product.allowedTaskClassesJson()!=null) {
-            versions=typesInClasses(strings(product.allowedTaskClassesJson()),at);
+    private List<TypeVersion> versionsAt(ProductVersion p,LocalDateTime at) {
+        List<TypeVersion> types;
+        if(p.allowedPoolCodesJson()!=null)types=typesInPools(strings(p.allowedPoolCodesJson()),at);
+        else if(p.allowedTaskClassesJson()!=null) {
+            var classes=strings(p.allowedTaskClassesJson());
+            types=classes.isEmpty()?List.of():mapper.typesInClassesAt(classes,at);
         } else {
-            // ID-based history remains authoritative before the class policy's effective time.
-            var ids=strings(product.allowedTaskTypeIdsJson());
-            versions=ids.isEmpty()?List.of():mapper.typesAt(ids,at);
-            if(versions.size()!=ids.size())throw new BizException(422,"SIMULATED_TASK_TYPE_HISTORY_MISSING");
+            var ids=strings(p.allowedTaskTypeIdsJson());
+            types=ids.isEmpty()?List.of():mapper.typesAt(ids,at);
         }
-        for(var type:versions) {
-            if(type.effectiveAt().isAfter(effectiveAt))effectiveAt=type.effectiveAt();
-            types.add(new TaskTypeSnapshot(type.taskTypeId(),type.version(),type.name(),type.taskClass(),type.durationSeconds(),
-                    type.baseReward(),type.asset(),type.enabled()));
-        }
-        return new PolicyVersion(productKey,product.version(),effectiveAt,List.copyOf(types),e3.version(),
-                Map.copyOf(decode(e3.configJson(),new TypeReference<Map<String,String>>(){})),product.monthlyTargetUsdt(),product.monthlyTargetBandPct());
+        var scope=scope(p);
+        return types.stream().filter(t->authorizes(p,t,scope)).toList();
     }
-
+    PolicyVersion policyAtDatabase(String key,LocalDateTime at) {
+        var p=mapper.productAt(key,at);
+        if(p==null)throw new BizException(422,"SIMULATED_PRODUCT_POLICY_HISTORY_MISSING");
+        var e=mapper.e3At(at);
+        if(e==null)throw new BizException(422,"SIMULATED_E3_POLICY_HISTORY_MISSING");
+        return resolve(p,e,versionsAt(p,at));
+    }
     @Transactional(readOnly=true)
-    public PolicyVersion nextPolicyAfter(String productKey,LocalDateTime after,LocalDateTime notAfter) {
-        var snapshot=historyAtCallerEpoch();
-        if(snapshot==null)return nextPolicyAfterDatabase(productKey,after,notAfter);
-        ProductVersion product=null; LocalDateTime next=null;
-        for(var p:snapshot.products()) if(p.productKey().equals(productKey)) {
-            if(!p.effectiveAt().isAfter(after))product=p;
-            else if(!p.effectiveAt().isAfter(notAfter)&&(next==null||p.effectiveAt().isBefore(next)))next=p.effectiveAt();
+    public PolicyVersion nextPolicyAfter(String key,LocalDateTime after,LocalDateTime notAfter) {
+        var h=historyAtCallerEpoch();
+        if(h==null)return nextPolicyAfterDatabase(key,after,notAfter);
+        ProductVersion p=null; LocalDateTime next=null;
+        for(var v:h.products())if(v.productKey().equals(key)) {
+            if(!v.effectiveAt().isAfter(after))p=v;
+            else if(!v.effectiveAt().isAfter(notAfter)&&(next==null||v.effectiveAt().isBefore(next)))next=v.effectiveAt();
         }
-        for(var e:snapshot.e3()) if(e.effectiveAt().isAfter(after)&&!e.effectiveAt().isAfter(notAfter)
+        for(var e:h.e3())if(e.effectiveAt().isAfter(after)&&!e.effectiveAt().isAfter(notAfter)
                 &&(next==null||e.effectiveAt().isBefore(next)))next=e.effectiveAt();
-        if(product!=null) {
-            boolean byClass=product.allowedTaskClassesJson()!=null;
-            var scope=strings(byClass?product.allowedTaskClassesJson():product.allowedTaskTypeIdsJson());
-            for(var t:snapshot.types()) if(scope.contains(byClass?t.taskClass():t.taskTypeId())&&t.effectiveAt().isAfter(after)
-                    &&!t.effectiveAt().isAfter(notAfter)&&(next==null||t.effectiveAt().isBefore(next)))next=t.effectiveAt();
+        if(p!=null) {
+            var scope=scope(p);
+            for(var t:h.types())if(authorizes(p,t,scope)&&t.effectiveAt().isAfter(after)&&!t.effectiveAt().isAfter(notAfter)
+                    &&(next==null||t.effectiveAt().isBefore(next)))next=t.effectiveAt();
         }
-        return next==null?null:policyAt(snapshot,productKey,next);
+        return next==null?null:policyAt(h,key,next);
     }
-    PolicyVersion nextPolicyAfterDatabase(String productKey,LocalDateTime after,LocalDateTime notAfter) {
-        var product=mapper.productAt(productKey,after);
-        LocalDateTime next=mapper.nextProduct(productKey,after,notAfter);
-        var e3=mapper.nextE3(after,notAfter);
+    PolicyVersion nextPolicyAfterDatabase(String key,LocalDateTime after,LocalDateTime notAfter) {
+        var p=mapper.productAt(key,after);
+        LocalDateTime next=mapper.nextProduct(key,after,notAfter),e3=mapper.nextE3(after,notAfter);
         if(e3!=null&&(next==null||e3.isBefore(next)))next=e3;
-        if(product!=null) {
-            boolean byClass=product.allowedTaskClassesJson()!=null;
-            var scope=strings(byClass?product.allowedTaskClassesJson():product.allowedTaskTypeIdsJson());
+        if(p!=null) {
+            List<String> scope=strings(p.allowedPoolCodesJson()!=null?p.allowedPoolCodesJson():p.allowedTaskClassesJson()!=null?p.allowedTaskClassesJson():p.allowedTaskTypeIdsJson());
             if(!scope.isEmpty()) {
-                var type=byClass?mapper.nextTypeInClasses(scope,after,notAfter):mapper.nextType(scope,after,notAfter);
-                if(type!=null&&(next==null||type.isBefore(next)))next=type;
+                var t=p.allowedPoolCodesJson()!=null?mapper.nextTypeInPools(scope,after,notAfter)
+                        :p.allowedTaskClassesJson()!=null?mapper.nextTypeInClasses(scope,after,notAfter):mapper.nextType(scope,after,notAfter);
+                if(t!=null&&(next==null||t.isBefore(next)))next=t;
             }
         }
-        return next==null?null:policyAtDatabase(productKey,next);
+        return next==null?null:policyAtDatabase(key,next);
     }
 
-    public TypeView typeView(String taskId) {
-        var t=mapper.typeAt(taskId,LocalDateTime.now(clock));
-        return t==null?null:toView(t);
+    /** One logical now, one caller epoch query, and one read-only snapshot for every catalog SKU. */
+    @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+    public Map<String,List<Integer>> taskLevels(List<String> keys) {
+        var at=LocalDateTime.now(clock);var h=historyAtCallerEpoch();
+        var rows=h!=null?h.products():keys.isEmpty()?List.<ProductVersion>of():mapper.productsAt(keys,at);
+        var requested=new HashSet<>(keys);var latest=new HashMap<String,ProductVersion>();
+        for(var p:rows)if(requested.contains(p.productKey())&&!p.effectiveAt().isAfter(at))latest.put(p.productKey(),p);
+        var result=new LinkedHashMap<String,List<Integer>>();
+        for(var key:keys) {
+            var p=latest.get(key);var pools=p==null?List.<String>of():strings(p.allowedPoolCodesJson());
+            result.put(key,java.util.stream.IntStream.rangeClosed(1,4).filter(level->pools.contains("L"+level)).boxed().toList());
+        }
+        return result;
     }
+
+    public TypeView typeView(String id) { var t=mapper.typeAt(id,LocalDateTime.now(clock));return t==null?null:toView(t); }
     public Map<String,TypeView> typeViews(List<String> ids) {
-        var views=new HashMap<String,TypeView>();
-        if(!ids.isEmpty())for(var type:mapper.typesAt(ids,LocalDateTime.now(clock)))views.put(type.taskTypeId(),toView(type));
-        return views;
+        var result=new HashMap<String,TypeView>();
+        if(!ids.isEmpty())for(var t:mapper.typesAt(ids,LocalDateTime.now(clock)))result.put(t.taskTypeId(),toView(t));
+        return result;
     }
-    private TypeView toView(TypeVersion t) {
-        return new TypeView(t.durationSeconds()/60,t.baseReward(),t.asset(),t.enabled(),t.version(),t.effectiveAt());
-    }
+    private TypeView toView(TypeVersion t) {return new TypeView(t.durationSeconds()/60,t.baseReward(),t.asset(),t.enabled(),t.version(),t.effectiveAt());}
     public List<TaskTypeSnapshot> currentTypes() {
-        return mapper.currentTypes().stream().map(t->new TaskTypeSnapshot(t.taskTypeId(),t.version(),t.name(),t.taskClass(),
-                t.durationSeconds(),t.baseReward(),t.asset(),t.enabled())).toList();
+        return typesInPools(List.of("PHONE"),LocalDateTime.now(clock)).stream().map(t->new TaskTypeSnapshot(t.taskTypeId(),t.version(),t.name(),t.taskClass(),t.durationSeconds(),t.baseReward(),t.asset(),t.enabled(),t.poolCode())).toList();
     }
     public ProductView productView(String key) {
+        var p=mapper.productAt(key,LocalDateTime.now(clock));
+        String pools="phone".equals(key)?null:mapper.draftPools(key);
+        if(pools==null&&p!=null)pools=p.allowedPoolCodesJson();
+        return new ProductView(strings(pools),p==null?0:p.version(),p==null?null:p.effectiveAt());
+    }
+    public List<String> writePools(String key,List<String> proposed,List<String> previous) {
+        var pools=proposed==null?previous:proposed;
+        if("phone".equals(key)) {
+            if(proposed==null)throw new BizException(422,"TASK_POOL_FORMAT_RETIRED");
+            if(!pools.equals(List.of("PHONE")))throw new BizException(422,"SKU_POOL_KIND_INVALID");
+        } else if(pools.stream().anyMatch(code->code==null||!List.of("L1","L2","L3","L4").contains(code)))
+            throw new BizException(422,"SKU_POOL_KIND_INVALID");
+        return pools.stream().distinct().sorted().toList();
+    }
+    public void validateProductScope(String key,List<String> pools,boolean usePublishedScope,BigDecimal target,BigDecimal band,boolean publishing,boolean clearing) {
+        mapper.lockE3Configuration();
         var at=LocalDateTime.now(clock);
-        var version=mapper.productAt(key,at);
-        String classesJson="phone".equals(key)?null:mapper.draftClasses(key);
-        if(classesJson==null && version!=null)classesJson=version.allowedTaskClassesJson();
-        var classes=classesJson==null?List.<String>of():strings(classesJson);
-        List<String> ids;
-        if(classesJson!=null) {
-            ids=typesInClasses(classes,at).stream().map(TypeVersion::taskTypeId).toList();
-        } else {
-            String old="phone".equals(key)?null:mapper.draftTypes(key);
-            if(old==null && version!=null)old=version.allowedTaskTypeIdsJson();
-            ids=old==null?List.of():strings(old);
+        writePools(key,pools,List.of());
+        var published=usePublishedScope?mapper.productAt(key,at):null;
+        var effective=published==null?pools:strings(published.allowedPoolCodesJson());
+        if(target==null && (!pools.isEmpty() || !effective.isEmpty()) && !"phone".equals(key))
+            throw new BizException(422,clearing?"MONTHLY_TARGET_CLEAR_FORBIDDEN_WITH_POOLS":"SKU_POOL_TARGET_REQUIRED");
+        if(publishing && pools.isEmpty())throw new BizException(422,"SKU_POOL_REQUIRED");
+        if(target!=null) {
+            validatePool(key,typesInPools(effective,at));
+            validateTargetReward(key,target,band,devices.getObject().e3Config());
         }
-        return new ProductView(ids,classes,version==null?0:version.version(),version==null?null:version.effectiveAt());
     }
     public void validateType(TaskSimulationSettings s) {
-        if(s==null||s.durationMinutes()==null||s.durationMinutes()<1||s.durationMinutes()>1440)
-            throw new BizException(422,"SIMULATED_DURATION_MINUTES_INVALID");
-        if(s.baseReward()==null||s.baseReward().signum()<0||s.baseReward().compareTo(new BigDecimal("999999999999.999999"))>0
-                || s.baseReward().stripTrailingZeros().scale()>6)throw new BizException(422,"SIMULATED_FIXED_REWARD_INVALID");
+        if(s==null||s.durationMinutes()==null||s.durationMinutes()<1||s.durationMinutes()>1440)throw new BizException(422,"SIMULATED_DURATION_MINUTES_INVALID");
+        if(s.baseReward()==null||s.baseReward().signum()<0||s.baseReward().compareTo(DeviceMonthlyTargetPacing.MAX_REWARD)>0
+                ||s.baseReward().stripTrailingZeros().scale()>6)throw new BizException(422,"SIMULATED_FIXED_REWARD_INVALID");
         if(!Set.of("USDT","UVT").contains(s.asset()==null?"":s.asset()))throw new BizException(422,"SIMULATED_ASSET_INVALID");
         if(s.enabled()==null||s.expectedVersion()==null||s.expectedVersion()<0)throw new BizException(422,"SIMULATED_POLICY_VERSION_REQUIRED");
     }
-    public void publishType(String id,String name,String taskClass,TaskSimulationSettings settings,LocalDateTime at) {
+    public void requirePhoneType(String id) {
+        var t=mapper.typeAt(id,LocalDateTime.now(clock));
+        if(t==null||!"PHONE".equals(t.poolCode()))throw new BizException(422,"TASK_POOL_KIND_FORBIDDEN");
+    }
+    public void publishType(String id,String name,String taskClass,TaskSimulationSettings s,LocalDateTime at) {
         mapper.lockE3Configuration();
         var before=mapper.lockType(id);
-        if(settings.expectedVersion()!=(before==null?0:before.version()))throw new BizException(409,"SIMULATED_TASK_POLICY_VERSION_CONFLICT");
-        validateTargetPools(id, taskClass, settings, at);
+        if(before!=null&&!"PHONE".equals(before.poolCode()))throw new BizException(422,"TASK_POOL_KIND_FORBIDDEN");
+        if(s.expectedVersion()!=(before==null?0:before.version()))throw new BizException(409,"SIMULATED_TASK_POLICY_VERSION_CONFLICT");
         initializeE3(at);
-        mapper.insertType(new TypeVersion(id,before==null?1:before.version()+1,at,name,taskClass,
-                settings.durationMinutes()*60,settings.baseReward().setScale(6,RoundingMode.UNNECESSARY),settings.asset(),settings.enabled()));
+        mapper.insertType(new TypeVersion(id,before==null?1:before.version()+1,at,name,taskClass,s.durationMinutes()*60,s.baseReward().setScale(6,RoundingMode.UNNECESSARY),s.asset(),s.enabled(),"PHONE"));
+        wakes.afterCommitProducts(List.of("phone"));
     }
-    public List<String> writeClasses(List<String> classes,List<String> legacyIds,List<String> previousClasses,List<String> previousIds) {
-        if(classes!=null) {
-            if(classes.stream().anyMatch(c->c==null||!TASK_CLASSES.contains(c)))throw new BizException(422,"SIMULATED_TASK_CLASS_INVALID");
-            return TASK_CLASSES.stream().filter(classes::contains).toList();
-        }
-        // An older E1 client may resubmit an unchanged product. It cannot grant a whole class by sending individual IDs.
-        if(legacyIds!=null && !new HashSet<>(legacyIds).equals(new HashSet<>(previousIds)))
-            throw new BizException(409,"SIMULATED_TASK_CLASSES_REQUIRED");
-        return previousClasses;
-    }
-    private List<TypeVersion> typesInClasses(List<String> classes,LocalDateTime at) {
-        return classes.isEmpty()?List.of():mapper.typesInClassesAt(classes,at);
-    }
-    public void saveProduct(String key,List<String> classes,boolean publishing,LocalDateTime at) {
-        saveProduct(key,classes,publishing,at,true);
-    }
-    public void saveProduct(String key,List<String> classes,boolean publishing,LocalDateTime at,boolean approvedScopeChange) {
+    public void saveProduct(String key,List<String> pools,boolean publishing,LocalDateTime at) {saveProduct(key,pools,publishing,at,true);}
+    public void saveProduct(String key,List<String> pools,boolean publishing,LocalDateTime at,boolean approvedScopeChange) {
         mapper.lockE3Configuration();
         var before=mapper.lockProduct(key);
-        if(publishing && !approvedScopeChange && before!=null) {
-            var types=before.allowedTaskClassesJson()==null ? mapper.typesAt(strings(before.allowedTaskTypeIdsJson()),at)
-                    :typesInClasses(strings(before.allowedTaskClassesJson()),at);
-            var target=mapper.targetConfig(key);
-            if(target!=null && target.monthlyTargetUsdt()!=null) {
-                validatePool(key,types);
-                validateTargetReward(key,target.monthlyTargetUsdt(),target.monthlyTargetBandPct(),devices.getObject().e3Config());
-            }
-            initializeE3(at);
-            mapper.insertProduct(new ProductVersion(key,before.version()+1,at,before.allowedTaskTypeIdsJson(),before.allowedTaskClassesJson(),
-                    target==null?null:target.monthlyTargetUsdt(),target==null?null:target.monthlyTargetBandPct()));
-        } else if(publishing)publishProduct(key,classes,null,at);
-        var ids=typesInClasses(classes,at).stream().map(TypeVersion::taskTypeId).toList();
-        mapper.updateDraft(key,encode(ids),encode(classes));
+        var target=mapper.targetConfig(key);
+        var effective=publishing&&!approvedScopeChange&&before!=null?strings(before.allowedPoolCodesJson()):pools;
+        validateProductScope(key,effective,false,target==null?null:target.monthlyTargetUsdt(),target==null?null:target.monthlyTargetBandPct(),false,false);
+        if(publishing)appendProduct(key,effective,before,at,target);
+        mapper.updateDraft(key,encode(pools));
     }
-    public boolean hasPublishedProduct(String key) { return mapper.productAt(key,LocalDateTime.now(clock))!=null; }
-    public ProductView publishProduct(String key,List<String> classes,Long expectedVersion,LocalDateTime at) {
-        mapper.lockE3Configuration();
-        var before=mapper.lockProduct(key);
+    public boolean hasPublishedProduct(String key) {return mapper.productAt(key,LocalDateTime.now(clock))!=null;}
+    public ProductView publishProduct(String key,List<String> pools,Long expectedVersion,LocalDateTime at) {
+        mapper.lockE3Configuration();var before=mapper.lockProduct(key);
         if(expectedVersion!=null&&expectedVersion!=(before==null?0:before.version()))throw new BizException(409,"SIMULATED_PRODUCT_POLICY_VERSION_CONFLICT");
         var target=mapper.targetConfig(key);
-        if(classes.isEmpty() && (target==null || target.monthlyTargetUsdt()==null))throw new BizException(422,"SIMULATED_TASK_CLASSES_REQUIRED");
-        var types=typesInClasses(classes,at);
-        if(target!=null && target.monthlyTargetUsdt()!=null) {
-            validatePool(key,types);
-            validateTargetReward(key,target.monthlyTargetUsdt(),target.monthlyTargetBandPct(),devices.getObject().e3Config());
-        } else if(types.stream().noneMatch(TypeVersion::enabled))throw new BizException(422,"SIMULATED_TASK_TYPE_NOT_AVAILABLE");
-        var ids=types.stream().map(TypeVersion::taskTypeId).toList();
+        validateProductScope(key,pools,false,target==null?null:target.monthlyTargetUsdt(),target==null?null:target.monthlyTargetBandPct(),true,false);
+        appendProduct(key,pools,before,at,target);
+        return new ProductView(pools,before==null?1:before.version()+1,at);
+    }
+    private void appendProduct(String key,List<String> pools,ProductVersion before,LocalDateTime at,TargetConfig target) {
         initializeE3(at);
-        mapper.insertProduct(new ProductVersion(key,before==null?1:before.version()+1,at,encode(ids),encode(classes),
-                target==null?null:target.monthlyTargetUsdt(),target==null?null:target.monthlyTargetBandPct()));
-        return new ProductView(ids,classes,before==null?1:before.version()+1,at);
+        mapper.insertProduct(new ProductVersion(key,before==null?1:before.version()+1,at,"[]",null,encode(pools),target==null?null:target.monthlyTargetUsdt(),target==null?null:target.monthlyTargetBandPct()));
+        wakes.afterCommitProducts(List.of(key));
     }
-    public void validateTargetProduct(String key,List<String> classes,boolean usePublishedScope,BigDecimal target,BigDecimal bandPct) {
-        mapper.lockE3Configuration();
-        var at=LocalDateTime.now(clock);
-        var before=usePublishedScope?mapper.productAt(key,at):null;
-        var types=before==null?typesInClasses(classes,at):before.allowedTaskClassesJson()==null
-                ?mapper.typesAt(strings(before.allowedTaskTypeIdsJson()),at):typesInClasses(strings(before.allowedTaskClassesJson()),at);
-        validatePool(key,types);
-        validateTargetReward(key,target,bandPct,devices.getObject().e3Config());
-    }
-    private static void validateTargetReward(String key,BigDecimal target,BigDecimal bandPct,Map<String,String> config) {
+    private List<TypeVersion> typesInPools(List<String> pools,LocalDateTime at) {return pools.isEmpty()?List.of():mapper.typesInPoolsAt(pools,at);}
+    private static void validateTargetReward(String key,BigDecimal target,BigDecimal band,Map<String,String> config) {
         String participation=E3DeviceCapacityPolicy.classify(key,null);
-        BigDecimal capacity=Boolean.parseBoolean(config.get(participation))
-                ?E3CapacityCurve.maxCapacityPct(config,config):BigDecimal.valueOf(100);
-        if(DeviceMonthlyTargetPacing.rewardBound(target,bandPct,capacity).compareTo(DeviceMonthlyTargetPacing.MAX_REWARD)>0)
-            throw new MonthlyTargetRewardOutOfRangeException(List.of(key));
+        BigDecimal capacity=Boolean.parseBoolean(config.get(participation))?E3CapacityCurve.maxCapacityPct(config,config):BigDecimal.valueOf(100);
+        if(DeviceMonthlyTargetPacing.rewardBound(target,band,capacity).compareTo(DeviceMonthlyTargetPacing.MAX_REWARD)>0)throw new MonthlyTargetRewardOutOfRangeException(List.of(key));
     }
-    /** E3 approval checks only target SKUs whose effective capacity curve changes. */
     public void validateTargetRewards(Map<String,String> before,Map<String,String> candidate) {
-        boolean curveChanged=List.of("stageEarlyEnd","stageMidEnd","capacityBand1DeltaPct",
-                "capacityBand2DeltaPct","capacityBand3DeltaPct","capacityFloorPct").stream()
-                .anyMatch(key->!Objects.equals(before.get(key),candidate.get(key)));
-        BigDecimal maximum=E3CapacityCurve.maxCapacityPct(before,candidate);
-        var affected=new LinkedHashSet<String>();
-        for(var target:mapper.targetProducts()) {
-            String participation=E3DeviceCapacityPolicy.classify(target.productKey(),null);
+        boolean curveChanged=List.of("stageEarlyEnd","stageMidEnd","capacityBand1DeltaPct","capacityBand2DeltaPct","capacityBand3DeltaPct","capacityFloorPct").stream().anyMatch(k->!Objects.equals(before.get(k),candidate.get(k)));
+        BigDecimal maximum=E3CapacityCurve.maxCapacityPct(before,candidate);var affected=new LinkedHashSet<String>();
+        for(var t:mapper.targetProducts()) {
+            String participation=E3DeviceCapacityPolicy.classify(t.productKey(),null);
             boolean was=Boolean.parseBoolean(before.get(participation)),now=Boolean.parseBoolean(candidate.get(participation));
-            if(!(curveChanged && (was || now) || was!=now))continue;
-            BigDecimal capacity=now?maximum:BigDecimal.valueOf(100);
-            if(DeviceMonthlyTargetPacing.rewardBound(target.monthlyTargetUsdt(),target.monthlyTargetBandPct(),capacity)
-                    .compareTo(DeviceMonthlyTargetPacing.MAX_REWARD)>0)affected.add(target.productKey());
+            if(!(curveChanged&&(was||now)||was!=now))continue;
+            if(DeviceMonthlyTargetPacing.rewardBound(t.monthlyTargetUsdt(),t.monthlyTargetBandPct(),now?maximum:BigDecimal.valueOf(100)).compareTo(DeviceMonthlyTargetPacing.MAX_REWARD)>0)affected.add(t.productKey());
         }
         if(!affected.isEmpty())throw new MonthlyTargetRewardOutOfRangeException(List.copyOf(affected));
     }
-    private static boolean ineligible(TypeVersion t) {
-        return t.enabled() && !DeviceMonthlyTargetPacing.eligible(t.asset(),t.baseReward(),t.durationSeconds());
-    }
+    public void validateDeviceBatch(List<TypeVersion> finalPool) {validatePool("DEVICE",finalPool);}
     private static void validatePool(String key,List<TypeVersion> types) {
-        if(types.stream().anyMatch(SimulatedTaskPolicyService::ineligible))throw new MonthlyTargetPoolException(List.of(key));
+        if(types.stream().anyMatch(t->t.enabled()&&!DeviceMonthlyTargetPacing.eligible(t.asset(),t.baseReward(),t.durationSeconds())))throw new MonthlyTargetPoolException(List.of(key));
     }
-    /** E2 writes and A2 replay share the configuration lock with every target/scope publication. */
-    public void validateTargetPools(String changedId,String taskClass,TaskSimulationSettings settings,LocalDateTime at) {
-        mapper.lockE3Configuration();
-        var affected=new ArrayList<String>();
-        var replacement=new TypeVersion(changedId,0,at,"",taskClass,settings.durationMinutes()*60,settings.baseReward(),settings.asset(),settings.enabled());
-        for(var target:mapper.targetProducts()) {
-            String key=target.productKey(); var published=mapper.productAt(key,at);
-            String classesJson=published==null?mapper.draftClasses(key):published.allowedTaskClassesJson();
-            List<String> classes=classesJson==null?null:strings(classesJson);
-            var ids=classes==null?strings(published==null?mapper.draftTypes(key):published.allowedTaskTypeIdsJson()):List.<String>of();
-            var pool=new ArrayList<>(classes==null?(ids.isEmpty()?List.<TypeVersion>of():mapper.typesAt(ids,at)):typesInClasses(classes,at));
-            pool.removeIf(t->t.taskTypeId().equals(changedId));
-            if(classes==null?ids.contains(changedId):classes.contains(taskClass))pool.add(replacement);
-            if(pool.stream().anyMatch(SimulatedTaskPolicyService::ineligible))affected.add(key);
-        }
-        if(!affected.isEmpty())throw new MonthlyTargetPoolException(affected);
-    }
-    private List<String> strings(String value) { if(value==null)return List.of(); return decode(value,new TypeReference<List<String>>(){}); }
-    public void lockE3Configuration() { mapper.lockE3Configuration(); }
-    public void recordE3(LocalDateTime at) {
-        var previous=mapper.lockE3Version();
-        if(previous!=null)mapper.insertE3(new E3Version(previous.version()+1,at,encode(devices.getObject().e3Config())));
-    }
-    private void initializeE3(LocalDateTime at) {
-        if(mapper.lockE3Version()==null)mapper.insertE3(new E3Version(1,at,encode(devices.getObject().e3Config())));
-    }
+    List<String> strings(String value) {return value==null?List.of():decode(value,new TypeReference<List<String>>(){});}
+    public void lockE3Configuration() {mapper.lockE3Configuration();}
+    public void recordE3(LocalDateTime at) {var p=mapper.lockE3Version();if(p!=null)mapper.insertE3(new E3Version(p.version()+1,at,encode(devices.getObject().e3Config())));}
+    private void initializeE3(LocalDateTime at) {if(mapper.lockE3Version()==null)mapper.insertE3(new E3Version(1,at,encode(devices.getObject().e3Config())));}
     private String encode(Object value) {
-        try {return json.writeValueAsString(value);}
-        catch(com.fasterxml.jackson.core.JsonProcessingException failure){throw new IllegalStateException("SIMULATED_POLICY_JSON_INVALID",failure);}
+        try{return json.writeValueAsString(value);}catch(com.fasterxml.jackson.core.JsonProcessingException e){throw new IllegalStateException("SIMULATED_POLICY_JSON_INVALID",e);}
     }
     private <T>T decode(String value,TypeReference<T> type) {
-        try {return json.readValue(value,type);}
-        catch(com.fasterxml.jackson.core.JsonProcessingException failure){throw new IllegalStateException("SIMULATED_POLICY_HISTORY_INVALID",failure);}
+        try{return json.readValue(value,type);}catch(com.fasterxml.jackson.core.JsonProcessingException e){throw new IllegalStateException("SIMULATED_POLICY_HISTORY_INVALID",e);}
     }
 }
