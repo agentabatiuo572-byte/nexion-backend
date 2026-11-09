@@ -79,6 +79,23 @@ public final class TronDepositProof {
         return new BigInteger(results.get(0).asText(),16);
     }
 
+    public PreparationBalance preparationBalance(String address) {
+        String source=NETWORK.normalizeAddress(address);
+        Head at=allocationHead();
+        String parameter="0".repeat(24)+TronAddress.toHex(source).substring(2);
+        BigInteger tokens=constant("balanceOf(address)",parameter,true).min(constant("balanceOf(address)",parameter,false));
+        long available=Long.MAX_VALUE;
+        for(String prefix:List.of("walletsolidity/","wallet/")) {
+            JsonNode account=call(prefix+"getaccount",Map.of("address",source,"visible",true));
+            if(!NETWORK.addressEquals(source,account.path("address").asText()))throw invalid();
+            JsonNode balance=account.get("balance");
+            if(balance!=null && (!balance.isIntegralNumber() || !balance.canConvertToLong() || balance.longValue()<0))throw invalid();
+            available=Math.min(available,balance==null?0:balance.longValue());
+        }
+        if(!at.hash().equals(blockHash(at.number())))throw invalid();
+        return new PreparationBalance(new BigDecimal(tokens,6).toPlainString(),BigDecimal.valueOf(available,6).toPlainString(),at.number(),at.hash());
+    }
+
     public TransferProof verifyExact(String txid,int index,String address,BigDecimal amount,Long expectedBlock) {
         String id=NETWORK.normalizeTxid(txid), recipient=NETWORK.normalizeAddress(address);
         if(index<0 || amount==null || amount.signum()<=0 || amount.stripTrailingZeros().scale()>6)throw invalid();

@@ -54,7 +54,6 @@ public class CregisExceptionOwnershipService {
         Map<String,Object> row="EVENT".equals(ref.type())?db.event(config.getProjectId(),ref.id()):db.observation(config.getProjectId(),ref.id());
         if(row==null) throw fail("CREGIS_EXCEPTION_SOURCE_MISSING");
         CregisNetwork network=row.get("chainId")==null?CregisNetwork.BEP20:CregisNetwork.fromChainId(String.valueOf(row.get("chainId")));
-        if(network==CregisNetwork.ERC20)throw fail("CREGIS_EXCEPTION_NETWORK_UNSUPPORTED");
         String state=String.valueOf(row.get("status"));
         if("EVENT".equals(ref.type()) && !java.util.Set.of("DUST_HOLD","REVIEW_HOLD").contains(state)
                 || "OBSERVATION".equals(ref.type()) && !"UNATTRIBUTED_HOLD".equals(state)) throw fail("CREGIS_EXCEPTION_SOURCE_CHANGED");
@@ -177,12 +176,16 @@ public class CregisExceptionOwnershipService {
     }
     private void requireReceipt(Map<String,Object> row) {
         String message=(String)row.get("message"),signer=(String)row.get("signer");
-        CregisNetwork network=message!=null && java.util.Arrays.asList(message.split("\n",-1)).contains("Chain: 195 / TRC20")?CregisNetwork.TRC20:CregisNetwork.BEP20;
+        if(message==null)throw fail("CREGIS_EXCEPTION_OWNERSHIP_RECEIPT_MISMATCH");
+        var lines=java.util.Arrays.asList(message.split("\n",-1));
+        var networks=java.util.Arrays.stream(CregisNetwork.values()).filter(n->lines.contains(n==CregisNetwork.BEP20
+                ?"Chain: 2510 / BSC 56":"Chain: "+n.chainId()+" / "+n.network())).toList();
+        if(networks.size()!=1 || !lines.contains("Token: "+networks.get(0).tokenId()))throw fail("CREGIS_EXCEPTION_OWNERSHIP_RECEIPT_MISMATCH");
+        CregisNetwork network=networks.get(0);
         if(!network.validAddress(signer) || message==null
                 || !network.addressEquals(recoverSigner(message,(String)row.get("consumed_signature"),network),signer)
                 || row.get("consumed_at")==null || expiry(row.get("consumed_at")).isAfter(expiry(row.get("expires_at"))))
             throw fail("CREGIS_EXCEPTION_OWNERSHIP_RECEIPT_MISMATCH");
-        var lines=java.util.Arrays.asList(message.split("\n",-1));
         if(!lines.contains("Issuer: "+deployment()) || !lines.contains("Action: "+row.get("action"))
                 || !lines.contains("Project: "+row.get("project_id")) || !lines.contains("Nonce: "+row.get("challenge_id"))
                 || !lines.contains("Evidence: "+row.get("evidence_hash")) || !lines.contains("Transfer sender: "+signer)

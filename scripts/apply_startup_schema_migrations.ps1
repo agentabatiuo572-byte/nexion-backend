@@ -396,6 +396,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261031_z_cregis_erc20_network.sql")
   (Join-Path $root "scripts\migrations\20261107_cregis_network_switches.sql")
   (Join-Path $root "scripts\migrations\20261108_cregis_trc20_network.sql")
+  (Join-Path $root "scripts\migrations\20261022_05_cregis_auto_forward.sql")
+  (Join-Path $root "scripts\migrations\20261109_cregis_multinetwork_auto_forward.sql")
   (Join-Path $root "scripts\migrations\20261031_test_cloud_request_journal.sql")
   (Join-Path $root "scripts\migrations\20261107_test_cloud_request_id_forward.sql")
   # The unresolved-request index depends on the journal table above.
