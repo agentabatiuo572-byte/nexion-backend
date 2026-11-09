@@ -389,6 +389,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         // Sales is maintained exclusively by the order state machine. A new
         // SKU always starts at zero; tolerate the legacy E1 round-trip field
         // but never let it create a hand-entered sales history.
+        if (request != null) requireStoreSkuModel(normalizeSkuId(request.skuId(),request.name()), "Share".equals(normalizeExact(request.tier())) ? "SHARE" : "DEVICE");
         DeviceSkuUpsertRequest incomingRequest=request;
         request = monthlyTargetRequest(request, request==null?null:catalogRepository.findSku(normalizeId(request.skuId())).orElse(null), true);
         ApiResult<DeviceSkuView> guard = requireSkuCommand(idempotencyKey, request);
@@ -606,6 +607,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (before.updatedAt() == null || !before.updatedAt().equals(expectedRevision)) {
             return ApiResult.fail(409, "SKU_VERSION_CONFLICT");
         }
+        if ("on".equals(status) && !"on".equals(before.status())) requireStoreSkuModel(normalized,before.productType());
         simulationPolicies.validateProductScope(normalized,before.allowedPoolCodes(),false,before.monthlyTargetUsdt(),before.monthlyTargetBandPct(),"on".equals(status),false);
         validateHosting(before.datacenter(),"on".equals(status));
         if (status.equals(before.status())) {
@@ -3456,18 +3458,25 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if(publishing && !StringUtils.hasText(label))throw new BizException(422,"SKU_DATACENTER_REQUIRED");
     }
 
+    private static void requireStoreSkuModel(String key, String productType) {
+        if (!MonthlyTargetProjection.supportsDevice(key,productType)) throw new BizException(422,"SKU_MODEL_UNRECOGNIZED");
+    }
+
     private static boolean sameAmount(BigDecimal a,BigDecimal b) { return a==null?b==null:b!=null && a.compareTo(b)==0; }
     private DeviceSkuUpsertRequest monthlyTargetRequest(DeviceSkuUpsertRequest request,DeviceSkuView before,boolean approval) {
         if(request==null)return null;
         String key=before==null?normalizeSkuId(request.skuId(),request.name()):before.skuId();
-        MonthlyTargetProjection.validate(key,request.tier(),request.monthlyTargetUsdt(),request.monthlyTargetBandPct(),request.clearMonthlyTarget());
+        // Existing product_type is retained by catalog updates; new products derive it from tier.
+        String productType=before==null ? ("Share".equals(normalizeExact(request.tier())) ? "SHARE" : "DEVICE") : before.productType();
+        boolean listing="on".equals(normalizeSkuStatus(request.status())) && (before==null || !"on".equals(before.status()));
+        if (listing) requireStoreSkuModel(key,productType);
+        MonthlyTargetProjection.validate(key,productType,request.monthlyTargetUsdt(),request.monthlyTargetBandPct(),request.clearMonthlyTarget());
         boolean clear=Boolean.TRUE.equals(request.clearMonthlyTarget());
         BigDecimal target=clear?null:request.monthlyTargetUsdt()!=null?request.monthlyTargetUsdt():before==null?null:before.monthlyTargetUsdt();
         BigDecimal band=clear?null:request.monthlyTargetBandPct()!=null?request.monthlyTargetBandPct():before==null?null:before.monthlyTargetBandPct();
         if((target==null)!=(band==null))throw new BizException(422,"MONTHLY_TARGET_PAIR_REQUIRED");
         var pools=simulationPolicies.writePools(key,request.allowedPoolCodes(),before==null?List.of():before.allowedPoolCodes());
         boolean scopeChanged=before==null || !new java.util.HashSet<>(pools).equals(new java.util.HashSet<>(before.allowedPoolCodes()));
-        boolean listing="on".equals(request.status()) && (before==null || !"on".equals(before.status()));
         simulationPolicies.validateProductScope(key,pools,!scopeChanged && !listing,target,band,"on".equals(request.status()),clear);
         validateHosting(request.datacenter(),"on".equals(request.status()));
         if(clear && ("Share".equals(request.tier())
@@ -5663,6 +5672,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (!Objects.equals(before.updatedAt(), revision.value()))
                 throw new BizException(409, "SKU_VERSION_CONFLICT");
         }
+        if (create) requireStoreSkuModel(skuId,"Share".equals(normalizeExact(input.tier())) ? "SHARE" : "DEVICE");
         input=monthlyTargetRequest(input,before,false);
         String inventoryError = skuInventoryError(input);
         if (inventoryError != null) throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), inventoryError);
@@ -5681,7 +5691,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     public void skuStatusReview(Map<String,Object> params) {
         poolCodesParam(params); // refuse retired class/ID scope params
         var before=catalogRepository.findSku(hardwarePolicyTarget(str(params,"skuId"))).orElseThrow(()->new BizException(404,"SKU_NOT_FOUND"));
-        boolean listing="on".equals(str(params,"status"));
+        boolean listing="on".equals(normalizeSkuStatus(str(params,"status")));
+        if (listing && !"on".equals(before.status())) requireStoreSkuModel(before.skuId(),before.productType());
         validateHosting(before.datacenter(),listing);
         simulationPolicies.validateProductScope(before.skuId(),before.allowedPoolCodes(),false,before.monthlyTargetUsdt(),before.monthlyTargetBandPct(),listing,false);
     }
