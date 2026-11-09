@@ -383,6 +383,9 @@ public class AuditReplayBusinessPermissionGuard {
             }
         }
         String operation = command.op().trim().toLowerCase(Locale.ROOT);
+        if ("E".equalsIgnoreCase(command.domain()) && operation.startsWith("e5_datacenter_")) {
+            return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), OpsErrorCode.RETIRED_FEATURE.name());
+        }
         if (ffdd.opsconsole.device.application.LegacyUnknownZeroCreditCases.OP.equals(operation)) {
             try {
                 if (!"E".equals(command.domain())) return ApiResult.fail(422,"LEGACY_UNKNOWN_COMMAND_INVALID");
@@ -486,6 +489,11 @@ public class AuditReplayBusinessPermissionGuard {
      */
     ApiResult<AuditReplayCommand> bindProposalCommand(AuditOperationProposalRequest request) {
         AuditReplayCommand command = request.command();
+        if ((request.target() != null && "device_datacenter".equals(request.target().type()))
+                || (request.targets() != null && request.targets().stream()
+                    .anyMatch(target -> target != null && "device_datacenter".equals(target.type())))) {
+            return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), OpsErrorCode.RETIRED_FEATURE.name());
+        }
         if (A4RegistryApproval.isOperation(command)) {
             return ApiResult.ok(a4RegistryApproval.prepare(request));
         }
