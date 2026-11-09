@@ -261,10 +261,12 @@ public final class BscDepositProof {
     }
 
     /** Read-only preparation facts. A positive BNB balance is not a gas estimate or a send permit. */
-    public record PreparationBalance(String usdt, String bnb, long blockNumber, String blockHash) { }
+    public record PreparationBalance(String usdt, String bnb, long blockNumber, String blockHash) {
+        public String nativeBalance() { return bnb; }
+    }
 
     public PreparationBalance preparationBalance(CregisNetwork network,String address) {
-        if(network==CregisNetwork.TRC20)throw new IllegalStateException("CREGIS_PREPARATION_NETWORK_UNSUPPORTED");
+        if(network==CregisNetwork.TRC20)return tron.preparationBalance(address);
         if (address == null || !address.matches("(?i)0x[0-9a-f]{40}")) throw invalid();
         Head at = head(network);
         String tag = hex(at.number());
