@@ -61,7 +61,7 @@ public interface SimulatedTaskMapper {
     record DeviceRow(long deviceId,long userId,Long productId,String productCode,String productTier,String instanceNo,
             String deviceName,String deviceType,String gpuModel,Integer vramTotalGb,LocalDateTime purchasedAt,
             LocalDateTime activatedAt,LocalDateTime deactivatedAt,boolean pendingDeactivate,String status,
-            boolean dispatchPaused,String pausedReason,LocalDateTime updatedAt,LocalDateTime runtimeUpdatedAt,LocalDateTime dcUpdatedAt) { }
+            String pausedReason,LocalDateTime updatedAt,LocalDateTime runtimeUpdatedAt) { }
     record RuntimeRow(long deviceId,long userId,String instanceNo,String productCode,boolean phone,long generation,
             LocalDateTime intervalStartedAt,LocalDateTime phoneValidUntil,LocalDateTime stopAt,boolean stopAfterCurrent,
             LocalDateTime finishAfterAt,LocalDateTime nextStartAt,String currentTaskNo,LocalDateTime nextActionAt,String state,String lastError) { }
@@ -73,11 +73,11 @@ public interface SimulatedTaskMapper {
             SELECT d.id deviceId,d.user_id userId,d.product_id productId,d.product_code productCode,d.product_tier productTier,
               d.instance_no instanceNo,d.name deviceName,d.device_type deviceType,d.gpu_model gpuModel,d.vram_total_gb vramTotalGb,
               d.purchased_at purchasedAt,d.activated_at activatedAt,d.deactivated_at deactivatedAt,
-              d.pending_deactivate pendingDeactivate,d.status,COALESCE(dc.dispatch_paused,0) dispatchPaused,r.paused_reason pausedReason,
-              d.updated_at updatedAt,r.updated_at runtimeUpdatedAt,dc.updated_at dcUpdatedAt
+              d.pending_deactivate pendingDeactivate,d.status,r.paused_reason pausedReason,
+              d.updated_at updatedAt,r.updated_at runtimeUpdatedAt
             FROM nx_user_device d
             LEFT JOIN nx_user_device_runtime r ON r.user_device_id=d.id AND r.is_deleted=0
-            LEFT JOIN nx_compute_dc_ops_state dc ON dc.dc_location=d.dc_location AND dc.is_deleted=0
+
             WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.is_deleted=0
               AND d.source_environment='PRODUCTION' AND d.run_id=''
             """;
@@ -107,10 +107,10 @@ public interface SimulatedTaskMapper {
 
     @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND sandbox=0 AND is_deleted=0 FOR UPDATE")
     Long lockUser(@Param("userId")long userId);
-    // Device and runtime changes remain exclusive. Settlement only reads the shared datacenter state.
-    @Select(DEVICE+" AND UPPER(d.ownership_status)='OWNED' FOR UPDATE OF d,r FOR SHARE OF dc")
+    // Device and runtime changes remain exclusive.
+    @Select(DEVICE+" AND UPPER(d.ownership_status)='OWNED' FOR UPDATE OF d,r")
     DeviceRow lockDevice(@Param("userId")long userId,@Param("deviceId")long deviceId);
-    @Select(DEVICE+" AND (d.ownership_status='OWNED' OR "+REFUNDED_DEVICE+") FOR UPDATE OF d,r FOR SHARE OF dc")
+    @Select(DEVICE+" AND (d.ownership_status='OWNED' OR "+REFUNDED_DEVICE+") FOR UPDATE OF d,r")
     DeviceRow lockSettlementDevice(@Param("userId")long userId,@Param("deviceId")long deviceId);
     @Select("SELECT EXISTS(SELECT 1 FROM nx_user_device d WHERE d.id=#{deviceId} AND d.user_id=#{userId}"
             +" AND d.is_deleted=0 AND d.source_environment='PRODUCTION' AND d.run_id='' AND "+REFUNDED_DEVICE+")")

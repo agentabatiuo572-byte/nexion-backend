@@ -44,3 +44,6 @@ migrations/20261101_compute_v2_settlement.sql
 # Reassert target DDL after fresh database prerequisites (idempotent, no seed changes).
 migrations/20261109_device_monthly_target.sql
 migrations/20261109_sim_policy_epoch.sql
+
+# Reassert registry retirement after fresh prerequisites; the marker prevents repeat unwinding.
+migrations/20261109_datacenter_retirement.sql

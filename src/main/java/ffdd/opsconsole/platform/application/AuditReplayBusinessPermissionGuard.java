@@ -1986,10 +1986,7 @@ public class AuditReplayBusinessPermissionGuard {
                 case "e5_device_force_activate" -> "device_e5_device_force_activate";
                 case "e5_device_unbind" -> "device_e5_device_unbind";
                 case "e5_device_activate", "e5_device_deactivate",
-                        "e5_device_batch_pause", "e5_device_batch_resume",
-                        "e5_datacenter_create", "e5_datacenter_update",
-                        "e5_datacenter_delete", "e5_datacenter_resume" -> "device_e5_write";
-                case "e5_datacenter_pause" -> "device_e5_datacenter_pause";
+                        "e5_device_batch_pause", "e5_device_batch_resume" -> "device_e5_write";
                 case "e6_compute_config" -> e6ComputeAuthority(command.params());
                 case "e6_compute_config_batch", "e6_phone_calibration" -> "device_e6_write";
                 default -> null;

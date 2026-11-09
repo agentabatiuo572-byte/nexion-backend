@@ -61,7 +61,7 @@ public class AppHomeOverviewService {
             "ffdd/opsconsole/device/mapper/AppTaskAssignmentMapper.class");
     private static final String LEGACY_UNSCOPED_RUN_ID = "LEGACY_UNSCOPED";
     private static final String PRODUCTION_SOURCE =
-            "server:nx_compute_receipt,nx_compute_task,nx_user_device,nx_compute_datacenter,nx_product,nx_growth_promo_banner";
+            "server:nx_compute_receipt,nx_compute_task,nx_user_device.dc_location,nx_product,nx_growth_promo_banner";
     private static final String SANDBOX_SOURCE =
             "server:sandbox-run-projection:nx_config_item,nx_admin_device_task,nx_product";
     private static final List<String> DEVICE_UPGRADE_LADDER = List.of(
