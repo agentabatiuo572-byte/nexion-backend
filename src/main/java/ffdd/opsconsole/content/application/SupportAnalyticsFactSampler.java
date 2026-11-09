@@ -10,6 +10,8 @@ import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.context.event.ContextClosedEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.*;
@@ -32,6 +34,11 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
     private final SupportAnalyticsCacheCodec codec=new SupportAnalyticsCacheCodec();
     private final AtomicReference<Decoded> decoded=new AtomicReference<>();
     private final java.util.concurrent.atomic.AtomicBoolean started=new java.util.concurrent.atomic.AtomicBoolean();
+    private volatile boolean closing;
+    private static final class SamplingStopped extends RuntimeException { }
+
+    @EventListener(ContextClosedEvent.class)
+    public void contextClosed() { closing=true; }
     private record Decoded(String json,SupportAnalyticsFactSnapshot snapshot) { }
     public SupportAnalyticsFactSampler(SupportAnalyticsFactMapper mapper,FinanceSupportPaymentFactsFacade payments,
             SupportFundsReadFacade funds,ProductionSupportPathGuard guard,PlatformTransactionManager transactions,
@@ -70,6 +77,7 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
                 ? reason : failure.getClass().getSimpleName();
     }
     void refresh() {
+        if(closing)return;
         String token=store.tryLock();if(token==null)return;
         long startedAt=System.nanoTime();
         try(var lease=heartbeats==null?SupportBackgroundLeaseHeartbeat.foreground(()->store.renew(token)):heartbeats.start(()->store.renew(token))) {
@@ -78,7 +86,12 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
                 var ids=List.copyOf(mapper.productionCustomers());
                 var payment=ids.isEmpty()?new SupportPaymentFacts.Snapshot(List.of(),List.of(),List.of(),"Asia/Shanghai",asOf):payments.readHistory(ids);
                 lease.renew();
-                var contributions=funds.readNetContributions(ids,lease::renew);
+                var contributions=funds.readNetContributions(ids,()->{
+                    // The read-only generation has not been published. Keep the previous complete
+                    // generation and stop at the reader's existing wallet-history batch checkpoints.
+                    if(closing)throw new SamplingStopped();
+                    lease.renew();
+                });
                 var raw=new SupportAnalyticsFactSnapshot(asOf,ids,payment,contributions,mapper.attributions(),mapper.attributionProofs());
                 return compiler.getObject().compileForCache(raw);
             });
@@ -88,6 +101,8 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
             store.renew(token);
             boolean published=store.publish(token,json);
             LOG.info("Support analytics minute generation published={} subjects={} durationMs={} asOf={}",published,next.subjects().size(),(System.nanoTime()-startedAt)/1_000_000,next.asOf());
+        } catch(SamplingStopped stopped) {
+            // The read transaction rolled back and the lease heartbeat closed; there is no partial generation.
         } finally {store.release(token);}
     }
     public SupportAnalyticsFactSnapshot current() {

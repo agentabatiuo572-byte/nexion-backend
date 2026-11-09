@@ -19,6 +19,8 @@ import javax.crypto.spec.SecretKeySpec;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.env.Environment;
+import org.springframework.context.event.ContextClosedEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,6 +37,10 @@ public class DeveloperWebhookDeliveryService {
     private final Clock clock;
     private final Environment environment;
     private final WebhookSecretCodec secrets;
+    private volatile boolean closing;
+
+    @EventListener(ContextClosedEvent.class)
+    public void contextClosed() { closing = true; }
 
     /** Publishes one durable delivery per active matching endpoint; the unique key makes retries safe. */
     @Transactional
@@ -57,6 +63,7 @@ public class DeveloperWebhookDeliveryService {
     public void scheduledDelivery() { deliverDue(50); }
 
     public void deliverDue(int limit) {
+        if (closing) return;
         LocalDateTime now = now();
         long leaseSeconds = Math.max(1L, environment.getProperty(
                 "nexion.developer.webhooks.delivery-lease-seconds", Long.class, 120L));
@@ -76,6 +83,12 @@ public class DeveloperWebhookDeliveryService {
             return;
         }
         for (var delivery : due) {
+            if (closing) {
+                // No send was attempted. Undo this batch's claim without spending an attempt or
+                // changing the original due time; restart can take it immediately, without lease recovery.
+                deliveries.releaseUnattempted(delivery.id(), delivery.attemptCount() + 1, delivery.status());
+                continue;
+            }
             try {
                 // Each delivery is deliberately isolated from the batch. A mapper/transport failure for one
                 // endpoint must not roll back or prevent the remaining claimed deliveries from being finalized.
