@@ -14,7 +14,9 @@ public class ComputeV2Configuration {
     @Bean(name="computeV2TaskScheduler")
     ThreadPoolTaskScheduler computeV2TaskScheduler() {
         var scheduler = new ThreadPoolTaskScheduler(); scheduler.setPoolSize(2);
-        scheduler.setThreadNamePrefix("compute-v2-"); scheduler.setWaitForTasksToCompleteOnShutdown(true);
+        scheduler.setThreadNamePrefix("compute-v2-");
+        // Drain active work in Spring's early lifecycle stop, before Redis/SQL and the message log stop.
+        scheduler.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
         scheduler.setAwaitTerminationSeconds(30); return scheduler;
     }
     @Bean ComputeV2RedisStore computeV2RedisStore(StringRedisTemplate redis,ObjectMapper json,ComputeV2Properties config) {

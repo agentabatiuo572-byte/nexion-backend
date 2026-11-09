@@ -10,7 +10,8 @@ public class SupportAnalyticsFactSchedulerConfiguration {
     ThreadPoolTaskScheduler supportAnalyticsFactTaskScheduler() {
         var scheduler=new ThreadPoolTaskScheduler();scheduler.setPoolSize(1);
         scheduler.setThreadNamePrefix("support-analytics-facts-");
-        scheduler.setWaitForTasksToCompleteOnShutdown(true);scheduler.setAwaitTerminationSeconds(10);
+        // Early lifecycle stop drains the current sample before Redis/SQL; future cron runs are discarded.
+        scheduler.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);scheduler.setAwaitTerminationSeconds(10);
         return scheduler;
     }
 }
