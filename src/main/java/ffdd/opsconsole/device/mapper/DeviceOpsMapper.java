@@ -47,7 +47,29 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                    AND current_sim.status = 'RUNNING'
             """;
     String SIM_JOINS = SIM_RUNTIME_JOIN + SIM_TASK_JOIN;
-    String SIM_STATE = " " + """
+    // Same three blocking conditions as SimulatedTaskService.hasLegacyPending.
+    // All branches are correlated to the current device/owner; no history-wide aggregation.
+    String LEGACY_PENDING = """
+            (EXISTS (SELECT 1 FROM nx_compute_task legacy
+               WHERE legacy.user_id=d.user_id AND legacy.user_device_id=d.id
+                 AND legacy.source_environment='PRODUCTION' AND legacy.is_deleted=0
+                 AND legacy.status IN ('CLAIMED','RUNNING','PAUSED')
+                 AND legacy.task_no NOT LIKE 'CV2-%' AND legacy.task_no NOT LIKE 'SIM-%')
+             OR EXISTS (SELECT 1 FROM nx_test_cloud_request r
+               WHERE r.owner_id=d.user_id AND r.device_id=d.id AND r.state IN ('PROCESSING','UNKNOWN')
+                 AND NOT EXISTS (
+            """ + LegacyZeroCreditResolutionSql.RESOLVED_REQUEST + """
+                 ))
+             OR EXISTS (SELECT 1 FROM nx_compute_v2_event e
+               WHERE e.user_id=d.user_id AND e.user_device_id=d.id AND e.kind IN ('ISSUED','STARTED','VERIFIED')
+                 AND NOT EXISTS (SELECT 1 FROM nx_compute_v2_event x
+                   WHERE x.task_no=e.task_no AND x.generation=e.generation AND x.kind='EXITED')
+                 AND (EXISTS (SELECT 1 FROM nx_compute_v2_event s
+                   WHERE s.task_no=e.task_no AND s.generation=e.generation AND s.kind='STARTED')
+                   OR NOT EXISTS (SELECT 1 FROM nx_compute_v2_event f
+                     WHERE f.task_no=e.task_no AND f.generation=e.generation AND f.kind='FAILED'))))
+            """;
+    String SIM_STATE_PREFIX = " " + """
             CASE
               WHEN d.status = 'UNBOUND' OR d.ownership_status = 'UNBOUND' THEN 'UNBOUND'
               WHEN d.pending_deactivate = 1 THEN 'CLOSING'
@@ -56,14 +78,24 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
               WHEN NULLIF(TRIM(r.paused_reason),'') IS NOT NULL OR d.status = 'SUSPENDED' THEN 'PAUSED'
               WHEN sim.state = 'ERROR' THEN 'ERROR'
               WHEN sim.state IN ('STOPPED','EXPIRED') AND (d.activated_at > sim.interval_started_at
-                   OR (sim.state = 'STOPPED' AND sim.last_error = 'DEVICE_PAUSED')) THEN 'WAITING_CONFIG'
+                   OR (sim.state = 'STOPPED' AND sim.last_error = 'DEVICE_PAUSED')) THEN 'WAITING_INIT'
               WHEN sim.state IN ('STOPPED','EXPIRED') THEN 'STOPPED'
               WHEN sim.stop_after_current = 1 OR sim.state = 'CLOSING' THEN 'CLOSING'
-              WHEN sim.user_device_id IS NULL OR sim.state = 'WAITING_CONFIG' THEN 'WAITING_CONFIG'
+            """;
+    String SIM_STATE_SUFFIX = """
+              WHEN sim.state = 'WAITING_CONFIG' THEN 'WAITING_CONFIG'
               ELSE 'RUNNING'
             END
             """;
-    String VISIBLE_SIM_STATE = " CASE WHEN #{simEnabled} = 0 THEN 'SIM_OFF' ELSE " + SIM_STATE + " END ";
+    // The page projection resolves missing-runtime diagnostics in one batch after pagination.
+    String SIM_STATE = SIM_STATE_PREFIX + " WHEN sim.user_device_id IS NULL THEN 'WAITING_INIT' " + SIM_STATE_SUFFIX;
+    // State filters resolve missing-runtime diagnostics before pagination.
+    String RESOLVED_SIM_STATE = SIM_STATE_PREFIX
+            + " WHEN sim.user_device_id IS NULL AND " + LEGACY_PENDING + " THEN 'LEGACY_PENDING' "
+            + " WHEN sim.user_device_id IS NULL THEN 'WAITING_INIT' " + SIM_STATE_SUFFIX;
+    String VISIBLE_SIM_STATE = " CASE WHEN #{simEnabled} = 0 THEN 'SIM_OFF' ELSE " + RESOLVED_SIM_STATE + " END ";
+    // Both missing-runtime states share the waiting tile, so fleet counts need no legacy-history probes.
+    String OVERVIEW_SIM_STATE = " CASE WHEN #{simEnabled} = 0 THEN 'SIM_OFF' ELSE " + SIM_STATE + " END ";
     String DEVICE_FILTERS = """
              <if test='simState != null'>AND """ + VISIBLE_SIM_STATE + """
                 = #{simState}</if>
@@ -182,11 +214,22 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             """)
     BigDecimal completedWithdrawalTotal();
 
-    @Select("SELECT " + VISIBLE_SIM_STATE + " AS simState, COUNT(*) AS deviceCount "
+    @Select("SELECT " + OVERVIEW_SIM_STATE + " AS simState, COUNT(*) AS deviceCount "
             + RUNTIME_FROM + " WHERE " + STORE_SCOPE + " GROUP BY simState")
     List<SimStateCount> storeStateCounts(@Param("simEnabled") boolean simEnabled);
 
     record SimStateCount(String simState, long deviceCount) { }
+
+    @Select("""
+            <script>
+            SELECT d.id FROM nx_user_device d
+            """ + SIM_RUNTIME_JOIN + """
+             WHERE sim.user_device_id IS NULL AND d.id IN
+               <foreach collection='deviceIds' item='id' open='(' separator=',' close=')'>#{id}</foreach>
+               AND """ + LEGACY_PENDING + """
+            </script>
+            """)
+    java.util.Set<Long> legacyPendingDeviceIds(@Param("deviceIds") List<Long> deviceIds);
 
     @Select("""
             SELECT event_type AS eventType, aggregate_type AS aggregateType,
@@ -314,6 +357,13 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     int deactivateE5Device(@Param("deviceId") Long deviceId, @Param("unbind") int unbind,
                            @Param("now") LocalDateTime now);
 
+    String USER_PAUSE_CANDIDATE = " " + """
+            d.status IN ('ONLINE','BUSY','RUNNING','OFFLINE','ACTIVE')
+            AND (r.id IS NULL OR r.is_deleted = 1 OR r.paused_reason IS NULL
+                 OR (#{simEnabled} = 1 AND UPPER(d.device_type) IN ('MOBILE','PHONE')
+                     AND r.paused_reason IN ('PHONE_LOW_BATTERY','PHONE_OFFLINE')))
+            """;
+
     @Select("""
             SELECT d.id
               FROM nx_user_device d
@@ -321,9 +371,8 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                 ON r.user_device_id = d.id
              WHERE d.user_id = #{userId} AND d.is_deleted = 0
                AND (
-                    (#{pause} = 1
-                     AND d.status IN ('ONLINE','BUSY','RUNNING','OFFLINE','ACTIVE')
-                     AND (r.id IS NULL OR r.is_deleted = 1 OR r.paused_reason IS NULL))
+                    (#{pause} = 1 AND """ + USER_PAUSE_CANDIDATE + """
+                    )
                     OR
                     (#{pause} = 0
                      AND r.id IS NOT NULL AND r.is_deleted = 0 AND r.paused_reason IS NOT NULL)
@@ -333,7 +382,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
              FOR UPDATE
             """)
     List<Long> lockE5BatchCandidateIds(@Param("userId") Long userId, @Param("pause") int pause,
-                                       @Param("limit") int limit);
+                                       @Param("limit") int limit, @Param("simEnabled") boolean simEnabled);
 
     @Insert("""
             INSERT INTO nx_user_device_runtime(user_device_id, online_status, region, paused_reason, heartbeat_at)
@@ -341,12 +390,11 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
               FROM nx_user_device d
               LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id
              WHERE d.user_id = #{userId} AND d.is_deleted = 0
-               AND d.status IN ('ONLINE','BUSY','RUNNING','OFFLINE','ACTIVE')
-               AND (r.id IS NULL OR r.is_deleted = 1 OR r.paused_reason IS NULL)
+               AND """ + USER_PAUSE_CANDIDATE + """
             ON DUPLICATE KEY UPDATE is_deleted = 0, paused_reason = VALUES(paused_reason), updated_at = NOW()
             """)
     int pauseDevicesByUser(@Param("userId") Long userId, @Param("reason") String reason,
-                           @Param("now") LocalDateTime now);
+                           @Param("now") LocalDateTime now, @Param("simEnabled") boolean simEnabled);
 
     // Persist the pause cutoff before a quick resume can hide it from a sleeping SIM slot.
     // Resume only wakes that slot; its recorded cutoff and phone validity remain unchanged.
