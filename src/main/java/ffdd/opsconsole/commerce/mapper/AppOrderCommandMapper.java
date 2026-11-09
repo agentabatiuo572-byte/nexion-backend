@@ -509,7 +509,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                    GREATEST(COALESCE(p.vram_total_gb,0),0),
                    CASE WHEN UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') THEN 0
                          ELSE CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) END,
-                   COALESCE(NULLIF(s.datacenter,''),'UVEL DC'),
+                   s.datacenter,
                    CASE WHEN o.quantity > 0 THEN o.amount_usdt/o.quantity ELSE p.price_usdt END,
                    'OWNED','ORDER','PRODUCTION','','ACTIVE',GREATEST(COALESCE(p.hashrate,0),0),
                    GREATEST(COALESCE(p.estimated_daily_usdt,0),0),GREATEST(COALESCE(p.daily_nex,0),0),
@@ -542,7 +542,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                    GREATEST(COALESCE(p.vram_total_gb,0),0),
                    CASE WHEN UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') THEN 0
                          ELSE CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) END,
-                   COALESCE(NULLIF(s.datacenter,''),'UVEL DC'),
+                   s.datacenter,
                    CASE WHEN oi.quantity > 0 THEN oi.line_amount_usdt/oi.quantity ELSE p.price_usdt END,
                    'OWNED','ORDER','PRODUCTION','','ACTIVE',GREATEST(COALESCE(p.hashrate,0),0),
                    GREATEST(COALESCE(p.estimated_daily_usdt,0),0),GREATEST(COALESCE(p.daily_nex,0),0),
