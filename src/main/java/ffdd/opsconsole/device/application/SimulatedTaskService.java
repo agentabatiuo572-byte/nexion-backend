@@ -267,7 +267,7 @@ public class SimulatedTaskService implements SchedulingConfigurer {
         if(device.deactivatedAt()!=null && mapper.refundedOrderDevice(device.userId(),device.deviceId()))stopReason="ORDER_REFUND";
         if(!active(device) && device.deactivatedAt()==null) {
             LocalDateTime pausedAt=observed;
-            if(device.dispatchPaused())pausedAt=earlier(pausedAt,device.dcUpdatedAt());
+
             if(device.pausedReason()!=null && !device.pausedReason().isBlank()
                     && !(phone(device) && Set.of("PHONE_OFFLINE","PHONE_LOW_BATTERY").contains(device.pausedReason())))
                 pausedAt=earlier(pausedAt,device.runtimeUpdatedAt());
@@ -412,7 +412,7 @@ public class SimulatedTaskService implements SchedulingConfigurer {
     private boolean active(DeviceRow d) {
         boolean phonePause=phone(d) && Set.of("PHONE_OFFLINE","PHONE_LOW_BATTERY").contains(Objects.toString(d.pausedReason(),""));
         return d.activatedAt()!=null && d.deactivatedAt()==null && Set.of("ACTIVE","ONLINE","BUSY","RUNNING").contains(d.status().toUpperCase(Locale.ROOT))
-                && !d.dispatchPaused() && (d.pausedReason()==null || d.pausedReason().isBlank() || phonePause);
+                && (d.pausedReason()==null || d.pausedReason().isBlank() || phonePause);
     }
     private static boolean phone(DeviceRow d){return Set.of("PHONE","MOBILE").contains(d.deviceType().toUpperCase(Locale.ROOT));}
     private void requireIdentity(DeviceRow d,RuntimeRow r) {

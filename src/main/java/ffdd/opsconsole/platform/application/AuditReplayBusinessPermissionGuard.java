@@ -383,6 +383,9 @@ public class AuditReplayBusinessPermissionGuard {
             }
         }
         String operation = command.op().trim().toLowerCase(Locale.ROOT);
+        if ("E".equalsIgnoreCase(command.domain()) && operation.startsWith("e5_datacenter_")) {
+            return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), OpsErrorCode.RETIRED_FEATURE.name());
+        }
         if (ffdd.opsconsole.device.application.LegacyUnknownZeroCreditCases.OP.equals(operation)) {
             try {
                 if (!"E".equals(command.domain())) return ApiResult.fail(422,"LEGACY_UNKNOWN_COMMAND_INVALID");
@@ -486,6 +489,11 @@ public class AuditReplayBusinessPermissionGuard {
      */
     ApiResult<AuditReplayCommand> bindProposalCommand(AuditOperationProposalRequest request) {
         AuditReplayCommand command = request.command();
+        if ((request.target() != null && "device_datacenter".equals(request.target().type()))
+                || (request.targets() != null && request.targets().stream()
+                    .anyMatch(target -> target != null && "device_datacenter".equals(target.type())))) {
+            return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), OpsErrorCode.RETIRED_FEATURE.name());
+        }
         if (A4RegistryApproval.isOperation(command)) {
             return ApiResult.ok(a4RegistryApproval.prepare(request));
         }
@@ -1986,10 +1994,7 @@ public class AuditReplayBusinessPermissionGuard {
                 case "e5_device_force_activate" -> "device_e5_device_force_activate";
                 case "e5_device_unbind" -> "device_e5_device_unbind";
                 case "e5_device_activate", "e5_device_deactivate",
-                        "e5_device_batch_pause", "e5_device_batch_resume",
-                        "e5_datacenter_create", "e5_datacenter_update",
-                        "e5_datacenter_delete", "e5_datacenter_resume" -> "device_e5_write";
-                case "e5_datacenter_pause" -> "device_e5_datacenter_pause";
+                        "e5_device_batch_pause", "e5_device_batch_resume" -> "device_e5_write";
                 case "e6_compute_config" -> e6ComputeAuthority(command.params());
                 case "e6_compute_config_batch", "e6_phone_calibration" -> "device_e6_write";
                 default -> null;

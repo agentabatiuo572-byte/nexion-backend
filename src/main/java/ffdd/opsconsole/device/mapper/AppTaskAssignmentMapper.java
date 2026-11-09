@@ -131,14 +131,12 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    d.product_tier AS productTier, d.name, d.status,
                    d.product_code AS productCode, d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,
                    d.vram_total_gb AS vramTotalGb, d.dc_location AS dcLocation,
-                   r.online_status AS onlineStatus, r.paused_reason AS pausedReason,
-                   COALESCE(dc.dispatch_paused, 0) AS dispatchPaused
+                   r.online_status AS onlineStatus, r.paused_reason AS pausedReason
               FROM nx_user_device d
               JOIN nx_user u ON u.id = d.user_id AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
               LEFT JOIN nx_user_device_runtime r
                 ON r.user_device_id = d.id AND r.is_deleted = 0
-              LEFT JOIN nx_compute_dc_ops_state dc
-                ON dc.dc_location = d.dc_location AND dc.is_deleted = 0
+
              WHERE d.id = #{deviceId} AND d.user_id = #{userId}
                AND d.is_deleted = 0 AND d.source_environment='PRODUCTION' AND d.run_id=''
                AND UPPER(d.ownership_status) = 'OWNED'
@@ -154,14 +152,12 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    d.product_tier AS productTier, d.name, d.status,
                    d.product_code AS productCode, d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,
                    d.vram_total_gb AS vramTotalGb, d.dc_location AS dcLocation,
-                   r.online_status AS onlineStatus, r.paused_reason AS pausedReason,
-                   COALESCE(dc.dispatch_paused, 0) AS dispatchPaused
+                   r.online_status AS onlineStatus, r.paused_reason AS pausedReason
               FROM nx_user_device d
               JOIN nx_user u ON u.id = d.user_id AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
               LEFT JOIN nx_user_device_runtime r
                 ON r.user_device_id = d.id AND r.is_deleted = 0
-              LEFT JOIN nx_compute_dc_ops_state dc
-                ON dc.dc_location = d.dc_location AND dc.is_deleted = 0
+
              WHERE d.user_id = #{userId} AND d.is_deleted = 0
                AND d.source_environment='PRODUCTION' AND d.run_id=''
                AND UPPER(d.ownership_status) = 'OWNED'
@@ -179,8 +175,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                 AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
               LEFT JOIN nx_user_device_runtime r
                 ON r.user_device_id = d.id AND r.is_deleted = 0
-              LEFT JOIN nx_compute_dc_ops_state dc
-                ON dc.dc_location = d.dc_location AND dc.is_deleted = 0
+
              WHERE d.is_deleted = 0
                AND d.source_environment = 'PRODUCTION' AND COALESCE(d.run_id, '') = ''
                AND UPPER(d.ownership_status) = 'OWNED'
@@ -188,7 +183,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                AND d.pending_deactivate = 0
                AND UPPER(d.status) IN ('ACTIVE','ONLINE')
                AND d.vram_total_gb IS NOT NULL AND d.vram_total_gb >= 0
-               AND COALESCE(dc.dispatch_paused, 0) = 0
+
                AND COALESCE(TRIM(r.paused_reason), '') = ''
                AND (r.online_status IS NULL OR UPPER(r.online_status) = 'ONLINE')
                AND (UPPER(d.device_type) NOT IN ('MOBILE','PHONE')
@@ -234,7 +229,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    d.product_tier AS productTier, d.name, d.status,
                    d.product_code AS productCode, d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,
                    d.vram_total_gb AS vramTotalGb, d.dc_location AS dcLocation,
-                   NULL AS onlineStatus, NULL AS pausedReason, 0 AS dispatchPaused
+                   NULL AS onlineStatus, NULL AS pausedReason
               FROM nx_user_device d
               JOIN nx_user u ON u.id=d.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=1
              WHERE d.user_id=#{userId} AND d.source_environment='SANDBOX' AND d.run_id=#{runId}
@@ -248,15 +243,13 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    d.product_tier AS productTier, d.name, d.status,
                    d.product_code AS productCode, d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,
                    d.vram_total_gb AS vramTotalGb, d.dc_location AS dcLocation,
-                   r.online_status AS onlineStatus, r.paused_reason AS pausedReason,
-                   COALESCE(dc.dispatch_paused, 0) AS dispatchPaused
+                   r.online_status AS onlineStatus, r.paused_reason AS pausedReason
               FROM nx_user_device d
               JOIN nx_user u ON u.id = d.user_id
                             AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 1
               LEFT JOIN nx_user_device_runtime r
                 ON r.user_device_id = d.id AND r.is_deleted = 0
-              LEFT JOIN nx_compute_dc_ops_state dc
-                ON dc.dc_location = d.dc_location AND dc.is_deleted = 0
+
              WHERE d.user_id = #{userId} AND d.is_deleted = 0
                AND d.source_environment = 'PRODUCTION' AND COALESCE(d.run_id, '') = ''
                AND UPPER(d.ownership_status) = 'OWNED'
@@ -1207,7 +1200,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     record DeviceRow(Long id, String instanceNo, String deviceType, String productTier, String name,
                      String status, String productCode, LocalDateTime purchasedAt,
                      LocalDateTime activatedAt, Integer vramTotalGb, String dcLocation,
-                     String onlineStatus, String pausedReason, Boolean dispatchPaused) {}
+                     String onlineStatus, String pausedReason) {}
     record AssignmentCandidate(Long userId, Long deviceId) {}
     record TaskConfigRow(String taskId, String name, String taskClass, String modelName,
                          BigDecimal minReward, BigDecimal maxReward, Integer minVram,

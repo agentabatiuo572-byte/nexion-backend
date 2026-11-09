@@ -2916,37 +2916,6 @@ CREATE TABLE IF NOT EXISTS nx_user_device_runtime (
   KEY idx_device_runtime_heartbeat (heartbeat_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE IF NOT EXISTS nx_compute_datacenter (
-  id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  dc_location VARCHAR(128) NOT NULL,
-  region_label VARCHAR(128) NOT NULL,
-  location VARCHAR(128) NOT NULL DEFAULT '',
-  display_name VARCHAR(128) NOT NULL DEFAULT '',
-  status VARCHAR(24) NOT NULL DEFAULT 'active',
-  sort_order INT NOT NULL DEFAULT 100,
-  updated_by VARCHAR(96) NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  is_deleted TINYINT NOT NULL DEFAULT 0,
-  UNIQUE KEY uk_compute_datacenter_location (dc_location),
-  KEY idx_compute_datacenter_status_sort (is_deleted, status, sort_order)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS nx_compute_dc_ops_state (
-  id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  dc_location VARCHAR(128) NOT NULL,
-  dispatch_paused TINYINT NOT NULL DEFAULT 0,
-  paused_reason VARCHAR(160) NULL,
-  paused_at DATETIME NULL,
-  resumed_at DATETIME NULL,
-  updated_by VARCHAR(96) NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  is_deleted TINYINT NOT NULL DEFAULT 0,
-  UNIQUE KEY uk_compute_dc_ops_state_dc (dc_location),
-  KEY idx_compute_dc_ops_paused (dispatch_paused, updated_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
 CREATE TABLE IF NOT EXISTS nx_device_lifecycle_rule (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   scope_type VARCHAR(32) NOT NULL,
@@ -3295,26 +3264,6 @@ CREATE TABLE IF NOT EXISTS nx_team_ambassador_application (
   KEY idx_ambassador_user (user_id, status),
   KEY idx_ambassador_user_scope (user_id, source_environment, run_id, status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- Canonical E5 metadata for phone/onboarding devices. The App reads these
--- database fields through /api/app/home/overview; it never embeds display data.
-INSERT INTO nx_compute_datacenter(
-  dc_location, region_label, location, display_name, status, sort_order, updated_by, is_deleted
-) VALUES(
-  'User device', 'Global Mobile Compute', 'Global', 'UVEL Mobile Network',
-  'active', 10, 'system:home-grid-metadata', 0
-)
-ON DUPLICATE KEY UPDATE
-  updated_at = IF(is_deleted = 0 AND (
-    region_label IS NULL OR TRIM(region_label)='' OR
-    location IS NULL OR TRIM(location)='' OR
-    display_name IS NULL OR TRIM(display_name)='' OR
-    status IS NULL OR TRIM(status)=''
-  ), NOW(), updated_at),
-  region_label = IF(is_deleted = 0 AND (region_label IS NULL OR TRIM(region_label)=''), VALUES(region_label), region_label),
-  location = IF(is_deleted = 0 AND (location IS NULL OR TRIM(location)=''), VALUES(location), location),
-  display_name = IF(is_deleted = 0 AND (display_name IS NULL OR TRIM(display_name)=''), VALUES(display_name), display_name),
-  status = IF(is_deleted = 0 AND (status IS NULL OR TRIM(status)=''), VALUES(status), status);
 
 CREATE TABLE IF NOT EXISTS nx_admin_device_sku (
   monthly_target_usdt DECIMAL(12,2) NULL,
@@ -4340,15 +4289,6 @@ CREATE TABLE IF NOT EXISTS nx_user_payout_address_sandbox_otp (
   CONSTRAINT chk_user_payout_address_sandbox_otp_no CHECK (challenge_no LIKE 'PAYOUT-%'),
   CONSTRAINT chk_user_payout_address_sandbox_otp_source CHECK (source='mock' AND source_environment='SANDBOX')
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_datacenter' AND COLUMN_NAME = 'location') = 0,
-  'ALTER TABLE nx_compute_datacenter ADD COLUMN location VARCHAR(128) NOT NULL DEFAULT '''' AFTER region_label', 'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_datacenter' AND COLUMN_NAME = 'display_name') = 0,
-  'ALTER TABLE nx_compute_datacenter ADD COLUMN display_name VARCHAR(128) NOT NULL DEFAULT '''' AFTER location', 'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-UPDATE nx_compute_datacenter SET location=region_label WHERE location='' OR location IS NULL;
-UPDATE nx_compute_datacenter SET display_name=region_label WHERE display_name='' OR display_name IS NULL;
 
 CREATE TABLE IF NOT EXISTS nx_risk_decision (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
