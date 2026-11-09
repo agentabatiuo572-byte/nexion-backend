@@ -305,8 +305,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     public ApiResult<PageResult<StoreDeviceView>> devices(DeviceOpsQueryRequest request) {
         var page = deviceRepository.pageDevices(request, false);
+        Set<Long> legacyPending = simulatedTasksEnabled
+                ? deviceRepository.legacyPendingDeviceIds(page.getRecords().stream()
+                    .filter(device -> "WAITING_INIT".equals(device.simState())).map(DeviceOpsView::id).toList())
+                : Set.of();
         var records = monthlyTargetReads.enrich(page.getRecords()).stream()
-                .map(device -> StoreDeviceView.from(device, simulatedTasksEnabled)).toList();
+                .map(device -> StoreDeviceView.from(device, simulatedTasksEnabled, legacyPending.contains(device.id()))).toList();
         return ApiResult.ok(new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(), records));
     }
 
