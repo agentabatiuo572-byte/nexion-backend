@@ -61,11 +61,15 @@ public interface BusinessSummaryMapper extends BaseMapper<Object> {
             + "<foreach collection='dates' item='date' open='(' separator=',' close=')'>#{date}</foreach></script>")
     int deleteDates(@Param("dates") List<LocalDate> dates);
 
-    @Insert("<script>INSERT INTO nx_business_summary_daily(biz_date,metric,value) WITH " + BusinessSummarySql.CTES
-            + " SELECT " + BusinessSummarySql.DATE + " AS date,metric,SUM(value) FROM facts WHERE occurred_at &lt; #{asOf} AND "
+    @Select("<script>WITH " + BusinessSummarySql.CTES
+            + " SELECT " + BusinessSummarySql.DATE + " AS date,metric,SUM(value) AS value FROM facts WHERE occurred_at &lt; #{asOf} AND "
             + BusinessSummarySql.DATE + " IN <foreach collection='dates' item='date' open='(' separator=',' close=')'>#{date}</foreach>"
             + " GROUP BY date,metric</script>")
-    int rebuildDates(@Param("dates") List<LocalDate> dates, @Param("asOf") LocalDateTime asOf);
+    List<DailyMetric> readDates(@Param("dates") List<LocalDate> dates, @Param("asOf") LocalDateTime asOf);
+
+    @Insert("<script>INSERT INTO nx_business_summary_daily(biz_date,metric,value) VALUES "
+            + "<foreach collection='rows' item='row' separator=','>(#{row.date},#{row.metric},#{row.value})</foreach></script>")
+    int insertDates(@Param("rows") List<DailyMetric> rows);
 
     @Update("""
             UPDATE nx_business_summary_state SET statistics_start=#{start},as_of=#{asOf},calendar_signature=#{signature} WHERE id=1
@@ -116,6 +120,7 @@ public interface BusinessSummaryMapper extends BaseMapper<Object> {
     List<Trend> registrations(@Param("from") LocalDateTime from, @Param("to") LocalDateTime to);
 
     record Metric(String metric, BigDecimal value) {}
+    record DailyMetric(LocalDate date, String metric, BigDecimal value) {}
     record State(LocalDate statisticsStart, LocalDateTime asOf, String calendarSignature) {}
     record Stock(long count, BigDecimal value) {}
     record Devices(long online, long abnormal) {}
