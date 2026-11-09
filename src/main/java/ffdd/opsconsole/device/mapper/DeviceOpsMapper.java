@@ -31,18 +31,98 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     String E5_RUNTIME_UNKNOWN = " UPPER(TRIM(COALESCE(r.online_status, ''))) NOT IN ('ONLINE','OFFLINE','ERROR','ABNORMAL','LOST')";
     String E5_RUNTIME_ABNORMAL = " (" + E5_RUNTIME_OFFLINE
             + " OR UPPER(TRIM(COALESCE(r.online_status, ''))) IN ('ERROR','ABNORMAL','LOST'))";
-    // Match the PC state precedence. Pending, inventory and unbound rows have their own tabs;
-    // UNKNOWN contains all remaining rows with non-active lifecycle facts or unavailable runtime telemetry.
-    String E5_VISIBLE_UNKNOWN = " " + """
-            d.pending_deactivate = 0
-            AND UPPER(COALESCE(d.status, '')) NOT IN
-                ('RECYCLED','DEACTIVATED','RETIRED','UNBOUND','INVENTORY','PENDING','PENDING_ACTIVATION','INACTIVE')
-            AND (
-                UPPER(COALESCE(d.status, '')) NOT IN ('ONLINE','BUSY','RUNNING','ACTIVE','OFFLINE')
-                OR d.activated_at IS NULL
-                OR d.deactivated_at IS NOT NULL
-                OR """ + E5_RUNTIME_UNKNOWN + """
-            )
+    String PHONE_IDENTITY = " (UPPER(d.device_type) IN ('MOBILE','PHONE')"
+            + " OR LOWER(COALESCE(d.product_code,'')) IN ('phone','mobile')"
+            + " OR UPPER(COALESCE(d.product_tier,'')) IN ('PHONE','MOBILE')) ";
+    String E5_SCOPE = " d.is_deleted = 0 AND d.source_environment = 'PRODUCTION' AND d.run_id = '' AND u.sandbox = 0 ";
+    String STORE_SCOPE = E5_SCOPE + " AND d.source_channel IN ('ORDER','TRADE_IN','TRIAL','PROMOTION_GIFT') AND NOT " + PHONE_IDENTITY;
+    String SIM_RUNTIME_JOIN = """
+              LEFT JOIN nx_simulated_device_runtime sim ON sim.user_device_id = d.id
+                   AND sim.user_id = d.user_id AND BINARY sim.instance_no = BINARY d.instance_no
+            """;
+    String SIM_TASK_JOIN = """
+              LEFT JOIN nx_simulated_task current_sim ON current_sim.task_no = sim.current_task_no
+                   AND current_sim.user_device_id = d.id AND current_sim.user_id = d.user_id
+                   AND current_sim.generation = sim.generation AND BINARY current_sim.instance_no = BINARY d.instance_no
+                   AND current_sim.status = 'RUNNING'
+            """;
+    String SIM_JOINS = SIM_RUNTIME_JOIN + SIM_TASK_JOIN;
+    // Same three blocking conditions as SimulatedTaskService.hasLegacyPending.
+    // All branches are correlated to the current device/owner; no history-wide aggregation.
+    String LEGACY_PENDING = """
+            (EXISTS (SELECT 1 FROM nx_compute_task legacy
+               WHERE legacy.user_id=d.user_id AND legacy.user_device_id=d.id
+                 AND legacy.source_environment='PRODUCTION' AND legacy.is_deleted=0
+                 AND legacy.status IN ('CLAIMED','RUNNING','PAUSED')
+                 AND legacy.task_no NOT LIKE 'CV2-%' AND legacy.task_no NOT LIKE 'SIM-%')
+             OR EXISTS (SELECT 1 FROM nx_test_cloud_request r
+               WHERE r.owner_id=d.user_id AND r.device_id=d.id AND r.state IN ('PROCESSING','UNKNOWN')
+                 AND NOT EXISTS (
+            """ + LegacyZeroCreditResolutionSql.RESOLVED_REQUEST + """
+                 ))
+             OR EXISTS (SELECT 1 FROM nx_compute_v2_event e
+               WHERE e.user_id=d.user_id AND e.user_device_id=d.id AND e.kind IN ('ISSUED','STARTED','VERIFIED')
+                 AND NOT EXISTS (SELECT 1 FROM nx_compute_v2_event x
+                   WHERE x.task_no=e.task_no AND x.generation=e.generation AND x.kind='EXITED')
+                 AND (EXISTS (SELECT 1 FROM nx_compute_v2_event s
+                   WHERE s.task_no=e.task_no AND s.generation=e.generation AND s.kind='STARTED')
+                   OR NOT EXISTS (SELECT 1 FROM nx_compute_v2_event f
+                     WHERE f.task_no=e.task_no AND f.generation=e.generation AND f.kind='FAILED'))))
+            """;
+    String SIM_STATE_PREFIX = " " + """
+            CASE
+              WHEN d.status = 'UNBOUND' OR d.ownership_status = 'UNBOUND' THEN 'UNBOUND'
+              WHEN d.pending_deactivate = 1 THEN 'CLOSING'
+              WHEN d.deactivated_at IS NOT NULL OR d.status IN ('DEACTIVATED','RECYCLED','RETIRED') THEN 'STOPPED'
+              WHEN d.activated_at IS NULL THEN 'WAITING_ACTIVATION'
+              WHEN NULLIF(TRIM(r.paused_reason),'') IS NOT NULL OR d.status = 'SUSPENDED' THEN 'PAUSED'
+              WHEN sim.state = 'ERROR' THEN 'ERROR'
+              WHEN sim.state IN ('STOPPED','EXPIRED') AND (d.activated_at > sim.interval_started_at
+                   OR (sim.state = 'STOPPED' AND sim.last_error = 'DEVICE_PAUSED')) THEN 'WAITING_INIT'
+              WHEN sim.state IN ('STOPPED','EXPIRED') THEN 'STOPPED'
+              WHEN sim.stop_after_current = 1 OR sim.state = 'CLOSING' THEN 'CLOSING'
+            """;
+    String SIM_STATE_SUFFIX = """
+              WHEN sim.state = 'WAITING_CONFIG' THEN 'WAITING_CONFIG'
+              ELSE 'RUNNING'
+            END
+            """;
+    // The page projection resolves missing-runtime diagnostics in one batch after pagination.
+    String SIM_STATE = SIM_STATE_PREFIX + " WHEN sim.user_device_id IS NULL THEN 'WAITING_INIT' " + SIM_STATE_SUFFIX;
+    // State filters resolve missing-runtime diagnostics before pagination.
+    String RESOLVED_SIM_STATE = SIM_STATE_PREFIX
+            + " WHEN sim.user_device_id IS NULL AND " + LEGACY_PENDING + " THEN 'LEGACY_PENDING' "
+            + " WHEN sim.user_device_id IS NULL THEN 'WAITING_INIT' " + SIM_STATE_SUFFIX;
+    String VISIBLE_SIM_STATE = " CASE WHEN #{simEnabled} = 0 THEN 'SIM_OFF' ELSE " + RESOLVED_SIM_STATE + " END ";
+    // Both missing-runtime states share the waiting tile, so fleet counts need no legacy-history probes.
+    String OVERVIEW_SIM_STATE = " CASE WHEN #{simEnabled} = 0 THEN 'SIM_OFF' ELSE " + SIM_STATE + " END ";
+    String DEVICE_FILTERS = """
+             <if test='simState != null'>AND """ + VISIBLE_SIM_STATE + """
+                = #{simState}</if>
+             <if test='source != null'>AND d.source_channel = #{source}</if>
+             <if test='productCode != null'>AND d.product_code = #{productCode}</if>
+             <if test='keyword != null'>
+               AND (d.instance_no LIKE CONCAT('%', #{keyword}, '%')
+                    OR d.name LIKE CONCAT('%', #{keyword}, '%')
+                    OR d.product_code LIKE CONCAT('%', #{keyword}, '%')
+                    OR d.source_order_no LIKE CONCAT('%', #{keyword}, '%')
+                    OR CONCAT('U', LPAD(d.user_id, GREATEST(8, LENGTH(CAST(d.user_id AS CHAR))), '0')) LIKE CONCAT('%', #{keyword}, '%')
+                    OR u.nickname LIKE CONCAT('%', #{keyword}, '%'))
+             </if>
+            """;
+    String RUNTIME_FROM = """
+              FROM nx_user_device d
+              LEFT JOIN nx_user u ON u.id = d.user_id
+              LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
+            """ + SIM_RUNTIME_JOIN;
+    String LIST_FROM = RUNTIME_FROM + SIM_TASK_JOIN;
+    String LIST_SCOPE = """
+             <choose>
+               <when test='phones'>""" + E5_SCOPE + " AND " + PHONE_IDENTITY + """
+               </when>
+               <otherwise>""" + STORE_SCOPE + """
+               </otherwise>
+             </choose>
             """;
 
     String DEVICE_COLUMNS = """
@@ -100,7 +180,13 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
               )
             END AS userDeviceSlotNo,
             CASE WHEN r.heartbeat_at IS NOT NULL AND NOT r.heartbeat_at > NOW(6)
-                 THEN TIMESTAMPDIFF(MICROSECOND, r.heartbeat_at, NOW(6)) * 0.000001 ELSE NULL END AS heartbeatAgeSeconds
+                 THEN TIMESTAMPDIFF(MICROSECOND, r.heartbeat_at, NOW(6)) * 0.000001 ELSE NULL END AS heartbeatAgeSeconds,
+            d.source_channel AS sourceChannel,
+            """ + SIM_STATE + """
+            AS simState, sim.last_error AS simLastError, sim.next_action_at AS simNextActionAt,
+            current_sim.task_no AS simTaskNo, current_sim.task_name AS simTaskName,
+            current_sim.task_class AS simTaskClass, current_sim.started_at AS simTaskStartedAt,
+            current_sim.due_at AS simTaskDueAt
             """;
 
     @Select("SELECT COUNT(*) FROM nx_user_device WHERE is_deleted = 0")
@@ -128,58 +214,22 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             """)
     BigDecimal completedWithdrawalTotal();
 
-    @Select("""
-            SELECT COUNT(*)
-              FROM nx_user_device d
-              LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
-             WHERE d.is_deleted = 0
-               AND """ + E5_ACTIVATED_OWNED + """
-               AND """ + E5_RUNTIME_OFFLINE)
-    long countOfflineDevices();
+    @Select("SELECT " + OVERVIEW_SIM_STATE + " AS simState, COUNT(*) AS deviceCount "
+            + RUNTIME_FROM + " WHERE " + STORE_SCOPE + " GROUP BY simState")
+    List<SimStateCount> storeStateCounts(@Param("simEnabled") boolean simEnabled);
+
+    record SimStateCount(String simState, long deviceCount) { }
 
     @Select("""
-            SELECT COUNT(*) FROM nx_user_device
-             WHERE is_deleted = 0
-               AND (status IN ('RECYCLED','DEACTIVATED','INACTIVE','RETIRED') OR deactivated_at IS NOT NULL)
+            <script>
+            SELECT d.id FROM nx_user_device d
+            """ + SIM_RUNTIME_JOIN + """
+             WHERE sim.user_device_id IS NULL AND d.id IN
+               <foreach collection='deviceIds' item='id' open='(' separator=',' close=')'>#{id}</foreach>
+               AND """ + LEGACY_PENDING + """
+            </script>
             """)
-    long countRecycledDevices();
-
-    @Select("SELECT COUNT(*) FROM nx_user_device WHERE is_deleted = 0 AND pending_deactivate = 1")
-    long countPendingRecycleDevices();
-
-    @Select("""
-            SELECT COUNT(*)
-              FROM nx_user_device d
-              LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
-             WHERE d.is_deleted = 0
-               AND """ + E5_ACTIVATED_OWNED + """
-               AND """ + E5_RUNTIME_ABNORMAL + """
-            """)
-    long countAbnormalDevices();
-
-    @Select("""
-            SELECT
-              SUM(CASE WHEN r.heartbeat_at IS NULL OR r.heartbeat_at < DATE_SUB(NOW(), INTERVAL 1 HOUR) THEN 1 ELSE 0 END) AS heartbeatLost1h,
-              SUM(CASE WHEN """ + E5_RUNTIME_ABNORMAL + """
-                         AND (r.heartbeat_at IS NULL OR r.heartbeat_at < DATE_SUB(NOW(), INTERVAL 1 HOUR)) THEN 1 ELSE 0 END) AS persistentOffline1h,
-              SUM(CASE WHEN NULLIF(TRIM(r.active_task_no),'') IS NOT NULL THEN 1 ELSE 0 END) AS activeTasks,
-              AVG(r.gpu_usage) AS avgGpuUsagePct,
-              AVG(r.gpu_power_w) AS avgGpuPowerW,
-              MAX(r.updated_at) AS latestRuntimeAt
-              FROM nx_user_device d
-              LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
-             WHERE d.is_deleted = 0
-               AND """ + E5_ACTIVATED_OWNED)
-    FleetObservabilityMetrics e5FleetObservabilityMetrics();
-
-    @Select("""
-            SELECT COUNT(*)
-              FROM nx_event_outbox
-             WHERE is_deleted = 0
-               AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-               AND event_type IN ('admin.device_activated','admin.device_resumed')
-            """)
-    long countE5ReconnectEvents24h();
+    java.util.Set<Long> legacyPendingDeviceIds(@Param("deviceIds") List<Long> deviceIds);
 
     @Select("""
             SELECT event_type AS eventType, aggregate_type AS aggregateType,
@@ -187,129 +237,27 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
               FROM nx_event_outbox
              WHERE is_deleted = 0
                AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-               AND aggregate_type IN ('E5_DEVICE','E5_DEVICE_BATCH','E5_DATACENTER')
+               AND aggregate_type IN ('E5_DEVICE','E5_DEVICE_BATCH')
              ORDER BY created_at DESC, id DESC
              LIMIT 50
             """)
     List<E5ActivityRow> e5Activity24h();
 
-    @Select("""
-            <script>
-            SELECT COUNT(*)
-              FROM nx_user_device d
-              LEFT JOIN nx_user u ON u.id = d.user_id AND u.is_deleted = 0
-              LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
-             WHERE d.is_deleted = 0
-             <if test='status != null and status != ""'>
-               <choose>
-                 <when test='status == "ACTIVE"'>AND """ + E5_ACTIVATED_OWNED + """
-                 AND """ + E5_RUNTIME_ONLINE + """
-                 </when>
-                 <when test='status == "ONLINE"'>AND """ + E5_ACTIVATED_OWNED + """
-                 AND """ + E5_RUNTIME_ONLINE + """
-                 </when>
-                 <when test='status == "BUSY"'>AND """ + E5_ACTIVATED_OWNED + """
-                 AND d.status = 'BUSY' AND """ + E5_RUNTIME_ONLINE + """
-                 </when>
-                 <when test='status == "OFFLINE"'>AND """ + E5_ACTIVATED_OWNED + """
-                 AND """ + E5_RUNTIME_OFFLINE + """
-                 </when>
-                 <when test='status == "UNKNOWN"'>AND """ + E5_VISIBLE_UNKNOWN + """
-                 </when>
-                 <when test='status == "UNBOUND"'>AND d.pending_deactivate = 0
-                 AND d.status IN ('UNBOUND','DEACTIVATED','RECYCLED','RETIRED')</when>
-                 <when test='status == "INVENTORY"'>AND d.pending_deactivate = 0
-                 AND d.status IN ('INVENTORY','INACTIVE','PENDING','PENDING_ACTIVATION')</when>
-                 <when test='status == "ABNORMAL"'>AND """ + E5_ACTIVATED_OWNED + """
-                 AND UPPER(TRIM(COALESCE(r.online_status, ''))) IN ('ERROR','ABNORMAL','LOST')""" + """
-                 </when>
-                 <when test='status == "PENDING-DEACTIVATE"'>AND d.pending_deactivate = 1</when>
-                 <otherwise>AND d.status = #{status}</otherwise>
-               </choose>
-             </if>
-             <if test='dcLocation != null and dcLocation != ""'>AND COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED') = #{dcLocation}</if>
-             <if test='userId != null'>AND d.user_id = #{userId}</if>
-             <if test='kind != null and kind != ""'>AND (UPPER(d.device_type) = #{kind} OR UPPER(d.product_tier) = #{kind})</if>
-             <if test='heartbeat == "fresh"'>AND """ + E5_HEARTBEAT_FRESH + """
-             </if>
-             <if test='heartbeat == "stale"'>AND """ + E5_HEARTBEAT_STALE + """
-             </if>
-             <if test='heartbeat == "missing"'>AND r.heartbeat_at IS NULL</if>
-             <if test='keyword != null and keyword != ""'>
-               AND (d.instance_no LIKE CONCAT('%', #{keyword}, '%')
-                    OR d.name LIKE CONCAT('%', #{keyword}, '%')
-                    OR d.product_code LIKE CONCAT('%', #{keyword}, '%')
-                    OR d.source_order_no LIKE CONCAT('%', #{keyword}, '%')
-                    OR CONCAT('U', LPAD(d.user_id, GREATEST(8, LENGTH(CAST(d.user_id AS CHAR))), '0')) LIKE CONCAT('%', #{keyword}, '%')
-                    OR u.nickname LIKE CONCAT('%', #{keyword}, '%'))
-             </if>
-            </script>
-            """)
-    long countDevices(@Param("status") String status, @Param("dcLocation") String dcLocation,
-                      @Param("keyword") String keyword, @Param("userId") Long userId,
-                      @Param("kind") String kind, @Param("heartbeat") String heartbeat);
+    @Select("<script>SELECT COUNT(*) " + RUNTIME_FROM + " WHERE " + LIST_SCOPE + DEVICE_FILTERS + "</script>")
+    long countDevices(@Param("phones") boolean phones, @Param("simEnabled") boolean simEnabled,
+                      @Param("simState") String simState, @Param("source") String source,
+                      @Param("productCode") String productCode, @Param("keyword") String keyword);
 
-    @Select("""
-            <script>
-            SELECT
-            """ + DEVICE_COLUMNS + """
-              FROM nx_user_device d
-              LEFT JOIN nx_user u ON u.id = d.user_id AND u.is_deleted = 0
-              LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
+    @Select("<script>SELECT " + DEVICE_COLUMNS + LIST_FROM + """
               LEFT JOIN nx_admin_device_sku sku ON sku.sku_id = d.product_code AND sku.is_deleted = 0
-             WHERE d.is_deleted = 0
-             <if test='status != null and status != ""'>
-               <choose>
-                 <when test='status == "ACTIVE"'>AND """ + E5_ACTIVATED_OWNED + """
-                 AND """ + E5_RUNTIME_ONLINE + """
-                 </when>
-                 <when test='status == "ONLINE"'>AND """ + E5_ACTIVATED_OWNED + """
-                 AND """ + E5_RUNTIME_ONLINE + """
-                 </when>
-                 <when test='status == "BUSY"'>AND """ + E5_ACTIVATED_OWNED + """
-                 AND d.status = 'BUSY' AND """ + E5_RUNTIME_ONLINE + """
-                 </when>
-                 <when test='status == "OFFLINE"'>AND """ + E5_ACTIVATED_OWNED + """
-                 AND """ + E5_RUNTIME_OFFLINE + """
-                 </when>
-                 <when test='status == "UNKNOWN"'>AND """ + E5_VISIBLE_UNKNOWN + """
-                 </when>
-                 <when test='status == "UNBOUND"'>AND d.pending_deactivate = 0
-                 AND d.status IN ('UNBOUND','DEACTIVATED','RECYCLED','RETIRED')</when>
-                 <when test='status == "INVENTORY"'>AND d.pending_deactivate = 0
-                 AND d.status IN ('INVENTORY','INACTIVE','PENDING','PENDING_ACTIVATION')</when>
-                 <when test='status == "ABNORMAL"'>AND """ + E5_ACTIVATED_OWNED + """
-                 AND UPPER(TRIM(COALESCE(r.online_status, ''))) IN ('ERROR','ABNORMAL','LOST')""" + """
-                 </when>
-                 <when test='status == "PENDING-DEACTIVATE"'>AND d.pending_deactivate = 1</when>
-                 <otherwise>AND d.status = #{status}</otherwise>
-               </choose>
-             </if>
-             <if test='dcLocation != null and dcLocation != ""'>AND COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED') = #{dcLocation}</if>
-             <if test='userId != null'>AND d.user_id = #{userId}</if>
-             <if test='kind != null and kind != ""'>AND (UPPER(d.device_type) = #{kind} OR UPPER(d.product_tier) = #{kind})</if>
-             <if test='heartbeat == "fresh"'>AND """ + E5_HEARTBEAT_FRESH + """
-             </if>
-             <if test='heartbeat == "stale"'>AND """ + E5_HEARTBEAT_STALE + """
-             </if>
-             <if test='heartbeat == "missing"'>AND r.heartbeat_at IS NULL</if>
-             <if test='keyword != null and keyword != ""'>
-               AND (d.instance_no LIKE CONCAT('%', #{keyword}, '%')
-                    OR d.name LIKE CONCAT('%', #{keyword}, '%')
-                    OR d.product_code LIKE CONCAT('%', #{keyword}, '%')
-                    OR d.source_order_no LIKE CONCAT('%', #{keyword}, '%')
-                    OR CONCAT('U', LPAD(d.user_id, GREATEST(8, LENGTH(CAST(d.user_id AS CHAR))), '0')) LIKE CONCAT('%', #{keyword}, '%')
-                    OR u.nickname LIKE CONCAT('%', #{keyword}, '%'))
-             </if>
-             ORDER BY COALESCE(d.last_seen_at, d.updated_at, d.created_at) DESC,d.id DESC
-             LIMIT #{limit} OFFSET #{offset}
+             WHERE """ + LIST_SCOPE + DEVICE_FILTERS + """
+             ORDER BY d.id DESC LIMIT #{limit} OFFSET #{offset}
             </script>
             """)
-    List<DeviceOpsView> pageDevices(@Param("status") String status, @Param("dcLocation") String dcLocation,
-                                    @Param("keyword") String keyword, @Param("userId") Long userId,
-                                    @Param("kind") String kind, @Param("heartbeat") String heartbeat,
-                                    @Param("limit") long limit,
-                                    @Param("offset") long offset);
+    List<DeviceOpsView> pageDevices(@Param("phones") boolean phones, @Param("simEnabled") boolean simEnabled,
+                                    @Param("simState") String simState, @Param("source") String source,
+                                    @Param("productCode") String productCode, @Param("keyword") String keyword,
+                                    @Param("limit") long limit, @Param("offset") long offset);
 
     @Select("""
             SELECT
@@ -318,12 +266,16 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
               LEFT JOIN nx_user u ON u.id = d.user_id AND u.is_deleted = 0
               LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
               LEFT JOIN nx_admin_device_sku sku ON sku.sku_id = d.product_code AND sku.is_deleted = 0
+            """ + SIM_JOINS + """
              WHERE d.is_deleted = 0
                AND d.user_id = #{userId}
              ORDER BY COALESCE(d.last_seen_at, d.activated_at, d.updated_at, d.created_at) DESC
-             LIMIT #{limit}
+             LIMIT #{limit} OFFSET #{offset}
             """)
-    List<DeviceOpsView> listUserDevices(@Param("userId") Long userId, @Param("limit") long limit);
+    List<DeviceOpsView> listUserDevices(@Param("userId") Long userId, @Param("limit") long limit, @Param("offset") long offset);
+
+    @Select("SELECT COUNT(*) FROM nx_user_device WHERE user_id=#{userId} AND is_deleted=0")
+    long countUserDevices(@Param("userId") Long userId);
 
     @Select("""
             SELECT
@@ -332,6 +284,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
               LEFT JOIN nx_user u ON u.id = d.user_id AND u.is_deleted = 0
               LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
               LEFT JOIN nx_admin_device_sku sku ON sku.sku_id = d.product_code AND sku.is_deleted = 0
+            """ + SIM_JOINS + """
              WHERE d.is_deleted = 0 AND d.id = #{deviceId}
              LIMIT 1
             """)
@@ -355,14 +308,16 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     Boolean lockUserSandboxForE5Activation(@Param("userId") Long userId);
 
     @Update("""
-            UPDATE nx_user_device
-               SET status = 'OFFLINE', activated_at = COALESCE(activated_at, #{now}),
+            UPDATE nx_user_device d
+               SET status = CASE WHEN #{simEnabled} AND NOT """ + PHONE_IDENTITY + """
+                   THEN 'ACTIVE' ELSE 'OFFLINE' END,
+                   activated_at = COALESCE(activated_at, #{now}),
                    deactivated_at = NULL, pending_deactivate = 0, ownership_status = 'OWNED',
                    last_seen_at = #{now}, updated_at = NOW()
              WHERE id = #{deviceId} AND is_deleted = 0
                AND status IN ('INVENTORY','DEACTIVATED','RECYCLED','INACTIVE','RETIRED','UNBOUND')
             """)
-    int activateE5Device(@Param("deviceId") Long deviceId, @Param("now") LocalDateTime now);
+    int activateE5Device(@Param("deviceId") Long deviceId, @Param("now") LocalDateTime now, @Param("simEnabled") boolean simEnabled);
 
     @Update("""
             UPDATE nx_user_device
@@ -402,6 +357,13 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     int deactivateE5Device(@Param("deviceId") Long deviceId, @Param("unbind") int unbind,
                            @Param("now") LocalDateTime now);
 
+    String USER_PAUSE_CANDIDATE = " " + """
+            d.status IN ('ONLINE','BUSY','RUNNING','OFFLINE','ACTIVE')
+            AND (r.id IS NULL OR r.is_deleted = 1 OR r.paused_reason IS NULL
+                 OR (#{simEnabled} = 1 AND UPPER(d.device_type) IN ('MOBILE','PHONE')
+                     AND r.paused_reason IN ('PHONE_LOW_BATTERY','PHONE_OFFLINE')))
+            """;
+
     @Select("""
             SELECT d.id
               FROM nx_user_device d
@@ -409,9 +371,8 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                 ON r.user_device_id = d.id
              WHERE d.user_id = #{userId} AND d.is_deleted = 0
                AND (
-                    (#{pause} = 1
-                     AND d.status IN ('ONLINE','BUSY','RUNNING','OFFLINE','ACTIVE')
-                     AND (r.id IS NULL OR r.is_deleted = 1 OR r.paused_reason IS NULL))
+                    (#{pause} = 1 AND """ + USER_PAUSE_CANDIDATE + """
+                    )
                     OR
                     (#{pause} = 0
                      AND r.id IS NOT NULL AND r.is_deleted = 0 AND r.paused_reason IS NOT NULL)
@@ -421,7 +382,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
              FOR UPDATE
             """)
     List<Long> lockE5BatchCandidateIds(@Param("userId") Long userId, @Param("pause") int pause,
-                                       @Param("limit") int limit);
+                                       @Param("limit") int limit, @Param("simEnabled") boolean simEnabled);
 
     @Insert("""
             INSERT INTO nx_user_device_runtime(user_device_id, online_status, region, paused_reason, heartbeat_at)
@@ -429,12 +390,27 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
               FROM nx_user_device d
               LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id
              WHERE d.user_id = #{userId} AND d.is_deleted = 0
-               AND d.status IN ('ONLINE','BUSY','RUNNING','OFFLINE','ACTIVE')
-               AND (r.id IS NULL OR r.is_deleted = 1 OR r.paused_reason IS NULL)
+               AND """ + USER_PAUSE_CANDIDATE + """
             ON DUPLICATE KEY UPDATE is_deleted = 0, paused_reason = VALUES(paused_reason), updated_at = NOW()
             """)
     int pauseDevicesByUser(@Param("userId") Long userId, @Param("reason") String reason,
-                           @Param("now") LocalDateTime now);
+                           @Param("now") LocalDateTime now, @Param("simEnabled") boolean simEnabled);
+
+    // Persist the pause cutoff before a quick resume can hide it from a sleeping SIM slot.
+    // Resume only wakes that slot; its recorded cutoff and phone validity remain unchanged.
+    @Update("""
+            <script>
+            UPDATE nx_simulated_device_runtime
+               SET stop_at = CASE WHEN #{pause} AND (stop_at IS NULL OR stop_at &gt; #{now})
+                                  THEN #{now} ELSE stop_at END,
+                   last_error = CASE WHEN #{pause} THEN 'DEVICE_PAUSED' ELSE last_error END,
+                   next_action_at = #{now}
+             WHERE user_id = #{userId} AND user_device_id IN
+               <foreach collection='deviceIds' item='id' open='(' separator=',' close=')'>#{id}</foreach>
+            </script>
+            """)
+    int syncSimulatedPause(@Param("userId") Long userId, @Param("deviceIds") List<Long> deviceIds,
+                           @Param("pause") boolean pause, @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_user_device_runtime r
@@ -727,280 +703,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                        @Param("valueType") String valueType, @Param("operator") String operator,
                        @Param("sortOrder") int sortOrder);
 
-    @Select("""
-            SELECT dc.dc_location AS dcLocation,
-                   dc.region_label AS regionLabel,
-                   dc.location,
-                   dc.display_name AS displayName,
-                   dc.status,
-                   dc.sort_order AS sortOrder,
-                   COALESCE(m.totalDevices, 0) AS totalDevices,
-                   COALESCE(m.onlineDevices, 0) AS onlineDevices,
-                   COALESCE(m.pendingRecycleDevices, 0) AS pendingRecycleDevices,
-                   COALESCE(m.abnormalDevices, 0) AS abnormalDevices,
-                   COALESCE(m.avgGpuUsage, 0) AS avgGpuUsage,
-                   COALESCE(m.avgGpuTempC, 0) AS avgGpuTempC,
-                   COALESCE(m.avgGpuPowerW, 0) AS avgGpuPowerW,
-                   COALESCE(s.dispatch_paused, 0) AS dispatchPaused,
-                   s.paused_reason AS pausedReason,
-                   s.paused_at AS pausedAt,
-                   s.resumed_at AS resumedAt,
-                   dc.created_at AS createdAt,
-                   dc.updated_at AS updatedAt
-              FROM nx_compute_datacenter dc
-              LEFT JOIN (
-                    SELECT COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED') AS dcLocation,
-                           COUNT(*) AS totalDevices,
-                           SUM(CASE WHEN """ + E5_ACTIVATED_OWNED + """
-                                               AND """ + E5_RUNTIME_ONLINE + """
-                                               THEN 1 ELSE 0 END) AS onlineDevices,
-                           SUM(CASE WHEN d.pending_deactivate = 1 THEN 1 ELSE 0 END) AS pendingRecycleDevices,
-                           SUM(CASE WHEN """ + E5_ACTIVATED_OWNED + """
-                                               AND """ + E5_RUNTIME_ABNORMAL + """
-                                    THEN 1 ELSE 0 END) AS abnormalDevices,
-                           COALESCE(AVG(r.gpu_usage), 0) AS avgGpuUsage,
-                           COALESCE(AVG(r.gpu_temp_c), 0) AS avgGpuTempC,
-                           COALESCE(AVG(r.gpu_power_w), 0) AS avgGpuPowerW
-                      FROM nx_user_device d
-                      LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
-                     WHERE d.is_deleted = 0
-                     GROUP BY COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED')
-              ) m ON m.dcLocation = dc.dc_location
-              LEFT JOIN nx_compute_dc_ops_state s ON s.dc_location = dc.dc_location AND s.is_deleted = 0
-             WHERE dc.is_deleted = 0
-             ORDER BY dc.sort_order ASC, dc.dc_location ASC
-            """)
-    List<DatacenterSummaryRow> datacenterSummaries();
-
-    @Select("""
-            SELECT dc.dc_location AS dcLocation,
-                   dc.region_label AS regionLabel,
-                   dc.location,
-                   dc.display_name AS displayName,
-                   dc.status,
-                   dc.sort_order AS sortOrder,
-                   COALESCE(m.totalDevices, 0) AS totalDevices,
-                   COALESCE(m.onlineDevices, 0) AS onlineDevices,
-                   COALESCE(m.pendingRecycleDevices, 0) AS pendingRecycleDevices,
-                   COALESCE(m.abnormalDevices, 0) AS abnormalDevices,
-                   COALESCE(m.avgGpuUsage, 0) AS avgGpuUsage,
-                   COALESCE(m.avgGpuTempC, 0) AS avgGpuTempC,
-                   COALESCE(m.avgGpuPowerW, 0) AS avgGpuPowerW,
-                   COALESCE(s.dispatch_paused, 0) AS dispatchPaused,
-                   s.paused_reason AS pausedReason,
-                   s.paused_at AS pausedAt,
-                   s.resumed_at AS resumedAt,
-                   dc.created_at AS createdAt,
-                   dc.updated_at AS updatedAt
-              FROM nx_compute_datacenter dc
-              LEFT JOIN (
-                    SELECT COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED') AS dcLocation,
-                           COUNT(*) AS totalDevices,
-                           SUM(CASE WHEN """ + E5_ACTIVATED_OWNED + """
-                                               AND """ + E5_RUNTIME_ONLINE + """
-                                               THEN 1 ELSE 0 END) AS onlineDevices,
-                           SUM(CASE WHEN d.pending_deactivate = 1 THEN 1 ELSE 0 END) AS pendingRecycleDevices,
-                           SUM(CASE WHEN """ + E5_ACTIVATED_OWNED + """
-                                               AND """ + E5_RUNTIME_ABNORMAL + """
-                                    THEN 1 ELSE 0 END) AS abnormalDevices,
-                           COALESCE(AVG(r.gpu_usage), 0) AS avgGpuUsage,
-                           COALESCE(AVG(r.gpu_temp_c), 0) AS avgGpuTempC,
-                           COALESCE(AVG(r.gpu_power_w), 0) AS avgGpuPowerW
-                      FROM nx_user_device d
-                      LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
-                     WHERE d.is_deleted = 0
-                     GROUP BY COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED')
-              ) m ON m.dcLocation = dc.dc_location
-              LEFT JOIN nx_compute_dc_ops_state s ON s.dc_location = dc.dc_location AND s.is_deleted = 0
-             WHERE dc.is_deleted = 0
-               AND dc.dc_location = #{dcLocation}
-            """)
-    DatacenterSummaryRow findDatacenter(@Param("dcLocation") String dcLocation);
-
-    @Insert("""
-            INSERT INTO nx_compute_datacenter(dc_location, region_label, location, display_name, status, sort_order, updated_by, is_deleted)
-            VALUES(#{dcLocation}, #{regionLabel}, #{location}, #{displayName}, #{status}, #{sortOrder}, #{operator}, 0)
-            ON DUPLICATE KEY UPDATE
-                   region_label = VALUES(region_label),
-                   location = VALUES(location),
-                   display_name = VALUES(display_name),
-                   status = VALUES(status),
-                   sort_order = VALUES(sort_order),
-                   updated_by = VALUES(updated_by),
-                   is_deleted = 0,
-                   updated_at = NOW()
-            """)
-    int insertDatacenter(@Param("dcLocation") String dcLocation,
-                         @Param("regionLabel") String regionLabel,
-                         @Param("location") String location,
-                         @Param("displayName") String displayName,
-                         @Param("status") String status,
-                         @Param("sortOrder") int sortOrder,
-                         @Param("operator") String operator);
-
-    @Update("""
-            UPDATE nx_compute_datacenter
-               SET region_label = #{regionLabel},
-                   location = #{location},
-                   display_name = #{displayName},
-                   status = #{status},
-                   sort_order = #{sortOrder},
-                   updated_by = #{operator},
-                   updated_at = NOW()
-             WHERE dc_location = #{dcLocation}
-               AND is_deleted = 0
-            """)
-    int updateDatacenter(@Param("dcLocation") String dcLocation,
-                         @Param("regionLabel") String regionLabel,
-                         @Param("location") String location,
-                         @Param("displayName") String displayName,
-                         @Param("status") String status,
-                         @Param("sortOrder") int sortOrder,
-                         @Param("operator") String operator);
-
-    @Update("""
-            UPDATE nx_compute_datacenter
-               SET dc_location = #{newDcLocation}, region_label = #{regionLabel},
-                   location = #{location}, display_name = #{displayName}, status = #{status},
-                   sort_order = #{sortOrder}, updated_by = #{operator}, updated_at = NOW()
-             WHERE dc_location = #{oldDcLocation} AND is_deleted = 0
-            """)
-    int renameDatacenter(@Param("oldDcLocation") String oldDcLocation,
-                         @Param("newDcLocation") String newDcLocation,
-                         @Param("regionLabel") String regionLabel,
-                         @Param("location") String location,
-                         @Param("displayName") String displayName,
-                         @Param("status") String status,
-                         @Param("sortOrder") int sortOrder,
-                         @Param("operator") String operator);
-
-    @Update("UPDATE nx_compute_dc_ops_state SET dc_location=#{newDcLocation},updated_at=NOW() WHERE dc_location=#{oldDcLocation} AND is_deleted=0")
-    int renameDatacenterState(@Param("oldDcLocation") String oldDcLocation,
-                              @Param("newDcLocation") String newDcLocation);
-
-    @Update("UPDATE nx_user_device SET dc_location=#{newDcLocation},updated_at=NOW() WHERE dc_location=#{oldDcLocation} AND is_deleted=0")
-    int renameDatacenterDevices(@Param("oldDcLocation") String oldDcLocation,
-                                @Param("newDcLocation") String newDcLocation);
-
-    @Update("""
-            UPDATE nx_compute_datacenter
-               SET is_deleted = 1,
-                   updated_by = #{operator},
-                   updated_at = #{now}
-             WHERE dc_location = #{dcLocation}
-               AND is_deleted = 0
-            """)
-    int softDeleteDatacenter(@Param("dcLocation") String dcLocation,
-                             @Param("operator") String operator,
-                             @Param("now") LocalDateTime now);
-
-    @Select("""
-            SELECT COUNT(*)
-              FROM nx_user_device
-             WHERE dc_location = #{dcLocation}
-               AND is_deleted = 0
-            """)
-    long countDevicesByDatacenter(@Param("dcLocation") String dcLocation);
-
-    @Select("""
-            SELECT COUNT(*)
-              FROM nx_admin_device_sku
-             WHERE datacenter = #{dcLocation}
-               AND is_deleted = 0
-            """)
-    long countSkusByDatacenter(@Param("dcLocation") String dcLocation);
-
-    @Select("""
-            SELECT COUNT(DISTINCT o.id)
-              FROM nx_order o
-              JOIN nx_user_device d
-                ON d.source_order_no = o.order_no
-               AND d.is_deleted = 0
-               AND d.dc_location = #{dcLocation}
-             WHERE o.is_deleted = 0
-               AND UPPER(COALESCE(o.order_status,'')) NOT IN
-                   ('COMPLETED','CANCELLED','CANCELED','REFUNDED','CHARGEBACK','DISPUTED','PAYMENT_FAILED','FAILED','EXPIRED','PROVISIONING_FAILED')
-               AND UPPER(COALESCE(o.activation_status,'')) NOT IN ('ACTIVATED','PROVISIONING_FAILED')
-            """)
-    long countPendingOrdersByDatacenter(@Param("dcLocation") String dcLocation);
-
-    @Update("""
-            UPDATE nx_user_device
-               SET dc_location = NULL,
-                   updated_at = NOW()
-             WHERE dc_location = #{dcLocation}
-            """)
-    int detachDevicesFromDatacenter(@Param("dcLocation") String dcLocation);
-
-    @Update("""
-            UPDATE nx_compute_dc_ops_state
-               SET is_deleted = 1,
-                   updated_by = #{operator},
-                   updated_at = #{now}
-             WHERE dc_location = #{dcLocation}
-               AND is_deleted = 0
-            """)
-    int softDeleteDatacenterOpsState(@Param("dcLocation") String dcLocation,
-                                 @Param("operator") String operator,
-                                 @Param("now") LocalDateTime now);
-
-    @Update("""
-            UPDATE nx_compute_dc_ops_state
-               SET dispatch_paused = #{paused},
-                   paused_reason = #{reason},
-                   paused_at = CASE WHEN #{paused} = 1 THEN #{now} ELSE paused_at END,
-                   resumed_at = CASE WHEN #{paused} = 0 THEN #{now} ELSE resumed_at END,
-                   updated_by = #{operator},
-                   updated_at = NOW()
-             WHERE dc_location = #{dcLocation} AND is_deleted = 0
-            """)
-    int updateDatacenterState(@Param("dcLocation") String dcLocation, @Param("paused") int paused,
-                              @Param("reason") String reason, @Param("operator") String operator,
-                              @Param("now") LocalDateTime now);
-
-    @Insert("""
-            INSERT INTO nx_compute_dc_ops_state(
-                dc_location, dispatch_paused, paused_reason, paused_at, resumed_at, updated_by, is_deleted
-            ) VALUES(
-                #{dcLocation}, #{paused}, #{reason}, #{pausedAt}, #{resumedAt}, #{operator}, 0
-            )
-            """)
-    int insertDatacenterState(@Param("dcLocation") String dcLocation, @Param("paused") int paused,
-                              @Param("reason") String reason, @Param("pausedAt") LocalDateTime pausedAt,
-                              @Param("resumedAt") LocalDateTime resumedAt, @Param("operator") String operator);
-
-    @Insert("""
-            INSERT INTO nx_user_device_runtime(user_device_id, online_status, region, paused_reason, heartbeat_at)
-            SELECT d.id, 'UNKNOWN', COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED'), #{reason}, COALESCE(d.last_seen_at, #{now})
-              FROM nx_user_device d
-             WHERE d.is_deleted = 0
-               AND COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED') = #{dcLocation}
-            ON DUPLICATE KEY UPDATE paused_reason = VALUES(paused_reason), updated_at = NOW()
-            """)
-    int pauseRuntimeByDatacenter(@Param("dcLocation") String dcLocation, @Param("reason") String reason,
-                                 @Param("now") LocalDateTime now);
-
-    @Update("""
-            UPDATE nx_user_device_runtime r
-              JOIN nx_user_device d ON d.id = r.user_device_id
-               SET r.paused_reason = NULL,
-                   r.updated_at = NOW()
-             WHERE d.is_deleted = 0
-               AND r.is_deleted = 0
-               AND COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED') = #{dcLocation}
-            """)
-    int resumeRuntimeByDatacenter(@Param("dcLocation") String dcLocation);
-
     record E3ConfigRow(String configKey, String configValue) {
-    }
-
-    record FleetObservabilityMetrics(
-            Long heartbeatLost1h,
-            Long persistentOffline1h,
-            Long activeTasks,
-            BigDecimal avgGpuUsagePct,
-            BigDecimal avgGpuPowerW,
-            LocalDateTime latestRuntimeAt) {
     }
 
     record E5ActivityRow(
@@ -1011,28 +714,6 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     }
 
     record LifecycleRuleRow(Integer startMonth, Integer endMonth, BigDecimal monthlyDecayRate, BigDecimal floorEfficiency) {
-    }
-
-    record DatacenterSummaryRow(
-            String dcLocation,
-            String regionLabel,
-            String location,
-            String displayName,
-            String status,
-            Integer sortOrder,
-            Long totalDevices,
-            Long onlineDevices,
-            Long pendingRecycleDevices,
-            Long abnormalDevices,
-            BigDecimal avgGpuUsage,
-            BigDecimal avgGpuTempC,
-            BigDecimal avgGpuPowerW,
-            Integer dispatchPaused,
-            String pausedReason,
-            LocalDateTime pausedAt,
-            LocalDateTime resumedAt,
-            LocalDateTime createdAt,
-            LocalDateTime updatedAt) {
     }
 
     record TradeinOverviewMetrics(BigDecimal averageAgeMonths, Long cliffDeviceCount) {

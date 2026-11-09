@@ -50,7 +50,9 @@ public interface CregisGateway {
     default PayoutSubmission createAutoForwardPayout(PayoutRequest request) {
         throw new CregisGatewayException(CregisGatewayException.Kind.CONFIGURATION,"CREGIS_AUTO_FORWARD_DISABLED");
     }
-    record CollectionRequest(String fromAddress,String toAddress,BigDecimal amount) { }
+    record CollectionRequest(String fromAddress,String toAddress,BigDecimal amount,CregisNetwork network) {
+        public CollectionRequest(String fromAddress,String toAddress,BigDecimal amount) { this(fromAddress,toAddress,amount,CregisNetwork.BEP20); }
+    }
     record CollectionOrder(long cid,int status,String txid) { }
 
     default boolean hasExternalFundSideEffects() {

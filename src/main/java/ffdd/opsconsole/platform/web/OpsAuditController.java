@@ -376,13 +376,13 @@ public class OpsAuditController {
     }
 
     @PostMapping("/operations/{operationId}/approve")
-    @PreAuthorize("hasAuthority('platform_a2_operation_approve')"
-            + " && @a2AccessPolicy.canAccessOperation(#operationId)")
+    @PreAuthorize("isAuthenticated()")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> approveOperation(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String operationId,
-            @RequestBody(required = false) AuditOperationDecisionRequest request) {
-        return auditCenterService.approve(idempotencyKey, operationId, authenticated(request));
+            @RequestBody(required = false) AuditOperationDecisionRequest request,
+            jakarta.servlet.http.HttpServletRequest httpRequest) {
+        return decisionResponse(auditCenterService.approve(idempotencyKey, operationId, authenticated(request)), httpRequest);
     }
 
     @PostMapping("/operations")
@@ -408,13 +408,31 @@ public class OpsAuditController {
     }
 
     @PostMapping("/operations/{operationId}/reject")
-    @PreAuthorize("hasAuthority('platform_a2_operation_approve')"
-            + " && @a2AccessPolicy.canAccessOperation(#operationId)")
+    @PreAuthorize("isAuthenticated()")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> rejectOperation(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String operationId,
-            @RequestBody(required = false) AuditOperationDecisionRequest request) {
-        return auditCenterService.reject(idempotencyKey, operationId, authenticated(request));
+            @RequestBody(required = false) AuditOperationDecisionRequest request,
+            jakarta.servlet.http.HttpServletRequest httpRequest) {
+        return decisionResponse(auditCenterService.reject(idempotencyKey, operationId, authenticated(request)), httpRequest);
+    }
+
+    private ApiResult<AuditCenterOverview.AuditOperationTicket> decisionResponse(
+            ApiResult<AuditCenterOverview.AuditOperationTicket> result, jakarta.servlet.http.HttpServletRequest request) {
+        if (result.getCode() == 403 && "FORBIDDEN".equals(result.getMessage())) {
+            // Preserve HTTP denial auditing after moving only these routes to the shared A2 qualification.
+            var authentication = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+            try {
+                auditLogService.record(AuditLogWriteRequest.builder().action("A1_ACCESS_DENIED")
+                        .resourceType("ADMIN_PERMISSION").resourceId(request.getRequestURI())
+                        .actorType("ADMIN").actorUsername(authentication == null ? null : authentication.getName())
+                        .method(request.getMethod()).path(request.getRequestURI()).result("DENIED").riskLevel("MEDIUM")
+                        .detail(Map.of("method", request.getMethod(), "path", request.getRequestURI(), "reason", "FORBIDDEN")).build());
+            } catch (RuntimeException auditFailure) {
+                // As with the existing access-denied handler, an audit failure must not replace the denial.
+            }
+        }
+        return result;
     }
 
     @PostMapping("/operations/{operationId}/withdraw")

@@ -44,6 +44,7 @@ public class AppProductCatalogService {
     private final StorefrontProductReleasePolicy productReleasePolicy;
     private final ObjectStorageService storageService;
     private final StorefrontSkuImageService skuImageService;
+    private final ffdd.opsconsole.device.application.SimulatedTaskPolicyService taskPolicies;
 
     public ApiResult<Map<String, Object>> catalog() {
         return catalog(null);
@@ -71,10 +72,13 @@ public class AppProductCatalogService {
                 releaseCandidates.put(target.productNo(), target.unlockPhase());
             }
             Map<String, StorefrontProductReleasePolicy.Decision> releases = productReleasePolicy.evaluateBatch(releaseCandidates);
+            var taskLevels=taskPolicies.taskLevels(targets.stream().map(AppTradeinMapper.CatalogTargetProduct::productNo).toList());
             List<Map<String, Object>> products = new ArrayList<>();
             LocalDateTime revision = null;
             for (AppTradeinMapper.CatalogTargetProduct target : targets) {
-                products.add(product(target, releases.get(target.productNo())));
+                var item=product(target, releases.get(target.productNo()));
+                item.put("taskLevels",taskLevels.get(target.productNo()));
+                products.add(item);
                 if (target.updatedAt() != null && (revision == null || target.updatedAt().isAfter(revision))) {
                     revision = target.updatedAt();
                 }
@@ -142,7 +146,10 @@ public class AppProductCatalogService {
             commerceAcceptanceSandboxMapper.pruneCatalog(runId);
             List<CommerceAcceptanceSandboxMapper.SandboxCatalogProduct> targets = commerceAcceptanceSandboxMapper.listSandboxCatalog(runId);
             if (targets == null) return ApiResult.fail(500, "COMMERCE_SANDBOX_CATALOG_INVALID");
-            List<Map<String, Object>> products = targets.stream().map(this::sandboxProduct).toList();
+            var taskLevels=taskPolicies.taskLevels(targets.stream().map(CommerceAcceptanceSandboxMapper.SandboxCatalogProduct::productNo).toList());
+            List<Map<String, Object>> products = targets.stream().map(target->{
+                var item=sandboxProduct(target);item.put("taskLevels",taskLevels.get(target.productNo()));return item;
+            }).toList();
             LocalDateTime revision = targets.stream().map(CommerceAcceptanceSandboxMapper.SandboxCatalogProduct::updatedAt)
                     .filter(java.util.Objects::nonNull).max(LocalDateTime::compareTo).orElse(null);
             return ApiResult.ok(Map.of("source", "mock", "catalogSource", "nx_commerce_sandbox_catalog",

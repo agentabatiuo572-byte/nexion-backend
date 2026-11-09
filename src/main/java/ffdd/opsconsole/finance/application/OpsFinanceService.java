@@ -1292,6 +1292,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (channel == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TOPUP_CHANNEL_NOT_FOUND");
         }
+        if ("fee".equals(field) && "vietqr".equals(channel.code())) {
+            return ApiResult.fail(410, "BANK_TOPUP_FEE_RETIRED");
+        }
         if ("card".equals(channel.code())) {
             return ApiResult.fail(410, "CARD_TOPUP_CHANNEL_RETIRED");
         }
@@ -2783,6 +2786,29 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     @Override
     public String domain() {
         return "D";
+    }
+
+    @Override
+    public ApiResult<Void> validateReplayPermission(AuditReplayCommand cmd) {
+        String action = switch (cmd.op()) {
+            case "d2_withdraw_approve" -> "APPROVE";
+            case "d2_withdraw_unfreeze" -> "UNFREEZE";
+            default -> null;
+        };
+        if (action == null) return ApiResult.ok();
+
+        boolean strongReview = false;
+        if ("APPROVE".equals(action)) {
+            Map<String, Object> p = cmd.params() == null ? Map.of() : cmd.params();
+            var order = withdrawalRepository.findByWithdrawalNo(
+                    String.valueOf(p.get("withdrawalNo"))).orElse(null);
+            BigDecimal threshold = order == null
+                    ? null : D2WithdrawalReviewThreshold.read(configFacade);
+            strongReview = order != null && threshold != null
+                    && D2WithdrawalReviewThreshold.applies(threshold, order.amount());
+        }
+        return isD2RoleAllowed(action, strongReview)
+                ? ApiResult.ok() : ApiResult.fail(403, "WITHDRAWAL_ROLE_NOT_ALLOWED");
     }
 
     @Override

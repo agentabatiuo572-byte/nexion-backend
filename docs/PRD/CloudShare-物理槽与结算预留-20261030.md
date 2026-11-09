@@ -16,6 +16,8 @@
 
 ## 接口合同
 
+App/Lite `POST /api/device/{id}/deactivate` 及 `deactivate-after-task` 返回 `status=DEACTIVATED` 时始终带布尔字段 `alreadyDeactivated`：本次完成停用为 false，设备原已停用为 true。保留原有 deviceId、instanceNo、rowVersion 及该分支已有的 pendingDeactivate/alreadyPending 字段。仍有运行中任务时沿用 `PENDING_DEACTIVATE` 响应形状，待任务完成再停用。
+
 `GET /api/devices/earnings` 保留现有 `slotCap`，新增同层字段：
 
 | 字段 | 类型 | 含义 |
