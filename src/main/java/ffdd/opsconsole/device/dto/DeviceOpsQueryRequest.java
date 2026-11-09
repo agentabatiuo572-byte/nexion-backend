@@ -1,12 +1,5 @@
 package ffdd.opsconsole.device.dto;
 
 public record DeviceOpsQueryRequest(
-        String status,
-        String dcLocation,
-        String keyword,
-        Long pageNum,
-        Long pageSize,
-        Long userId,
-        String kind,
-        String heartbeat) {
+        String keyword, String simState, String source, String productCode, Long pageNum, Long pageSize) {
 }

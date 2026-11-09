@@ -45,6 +45,25 @@ public class CregisProperties {
     public boolean payoutNetworkEnabled(CregisNetwork network) { return switch(network) { case BEP20 -> true; case ERC20 -> erc20PayoutEnabled; case TRC20 -> trc20PayoutEnabled; }; }
     /** Separate operator approval for the automatic collection/forward transport. Never enabled by a migration. */
     private boolean autoForwardEnabled;
+    private boolean erc20AutoForwardEnabled;
+    private boolean trc20AutoForwardEnabled;
+    private String erc20PlatformAddress = "";
+    private String erc20CounterpartyAddress = "";
+    private String trc20PlatformAddress = "";
+    private String trc20CounterpartyAddress = "";
+    public boolean autoForwardNetworkEnabled(CregisNetwork network) {
+        return autoForwardEnabled && switch(network) { case BEP20 -> true; case ERC20 -> erc20AutoForwardEnabled; case TRC20 -> trc20AutoForwardEnabled; };
+    }
+    public String autoForwardPlatform(CregisNetwork network) {
+        return switch(network) { case BEP20 -> CregisFundsPreparationService.PLATFORM; case ERC20 -> erc20PlatformAddress; case TRC20 -> trc20PlatformAddress; };
+    }
+    public String autoForwardCounterparty(CregisNetwork network) {
+        return switch(network) { case BEP20 -> CregisFundsPreparationService.COUNTERPARTY; case ERC20 -> erc20CounterpartyAddress; case TRC20 -> trc20CounterpartyAddress; };
+    }
+    public boolean autoForwardAddressesConfigured(CregisNetwork network) {
+        return network.validAddress(autoForwardPlatform(network)) && network.validAddress(autoForwardCounterparty(network))
+                && !network.addressEquals(autoForwardPlatform(network), autoForwardCounterparty(network));
+    }
     /** Exact Cregis callback egress IPs; empty rejects callbacks until verified with vendor. */
     private String callbackSourceIps = "";
     /** Read-only BSC JSON-RPC endpoint; no keys or transaction methods are used. */

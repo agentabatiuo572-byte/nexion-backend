@@ -798,22 +798,15 @@ public class OpsBiService implements AuditReplayable {
         String requiredCode = "APPROVE".equals(normalizedAction)
                 ? "bi_l5_task_approve"
                 : reportAccessPermission(report);
-        if (!permissionCache.getPermissionCodes(adminId).contains(requiredCode)) {
-            return ApiResult.fail(403, "PERMISSION_DENIED");
-        }
+        var permission = reportActionPermission(adminId, requiredCode);
+        if (permission.getCode() != 0) return ApiResult.fail(permission.getCode(), permission.getMessage());
         String nextStatus = nextStatus(report, normalizedAction);
         if (nextStatus == null) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
         if ("APPROVE".equals(normalizedAction)) {
-            Long makerId = auditLogService.findBiReportMakers(List.of(report.reportId())).get(report.reportId());
-            ApprovalEligibility eligibility = ApprovalEligibility.forActor(makerId, adminId);
-            if (eligibility == ApprovalEligibility.MAKER_UNVERIFIED) {
-                return ApiResult.fail(409, "BI_TASK_MAKER_UNVERIFIED");
-            }
-            if (eligibility == ApprovalEligibility.SELF) {
-                return ApiResult.fail(403, "BI_TASK_SELF_APPROVAL_FORBIDDEN");
-            }
+            var identity = reportApprovalIdentity(report.reportId(), adminId);
+            if (identity.getCode() != 0) return ApiResult.fail(identity.getCode(), identity.getMessage());
         }
         if (!reportRepository.updateActionIfStatus(
                 report.reportId(), normalizedAction, normalizeText(report.status()), nextStatus, request.reason().trim())) {
@@ -2235,6 +2228,31 @@ public class OpsBiService implements AuditReplayable {
     @Override
     public String domain() {
         return "L";
+    }
+
+    private ApiResult<Void> reportActionPermission(Long adminId, String requiredCode) {
+        if (adminId == null) return ApiResult.fail(401, "ADMIN_AUTH_REQUIRED");
+        return permissionCache.getPermissionCodes(adminId).contains(requiredCode)
+                ? ApiResult.ok() : ApiResult.fail(403, "PERMISSION_DENIED");
+    }
+
+    private ApiResult<Void> reportApprovalIdentity(String reportId, Long adminId) {
+        Long makerId = auditLogService.findBiReportMakers(List.of(reportId)).get(reportId);
+        ApprovalEligibility eligibility = ApprovalEligibility.forActor(makerId, adminId);
+        if (eligibility == ApprovalEligibility.MAKER_UNVERIFIED) return ApiResult.fail(409, "BI_TASK_MAKER_UNVERIFIED");
+        return eligibility == ApprovalEligibility.SELF ? ApiResult.fail(403, "BI_TASK_SELF_APPROVAL_FORBIDDEN") : ApiResult.ok();
+    }
+
+    @Override
+    public ApiResult<Void> validateReplayPermission(AuditReplayCommand cmd) {
+        if (!"l5_task_approve".equals(cmd.op())) return ApiResult.ok();
+        String reportId = str(cmd.params() == null ? Map.of() : cmd.params(), "reportId");
+        if (!StringUtils.hasText(reportId)) return ApiResult.fail(422, "REPORT_ID_REQUIRED");
+        BiReportView report = reportRepository.findReport(reportId.trim()).orElse(null);
+        if (report == null) return ApiResult.fail(404, "BI_REPORT_NOT_FOUND");
+        Long actor = parseAdminIdFromContext();
+        var permission = reportActionPermission(actor, "bi_l5_task_approve");
+        return permission.getCode() != 0 ? permission : reportApprovalIdentity(report.reportId(), actor);
     }
 
     @Override

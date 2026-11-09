@@ -11,7 +11,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.*;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DuplicateKeyException;
@@ -38,102 +37,110 @@ public class CregisAutoForwardService {
     private final ObjectMapper json;
     private final CregisSigner signer;
     private final PlatformTransactionManager transactions;
-    private final AtomicLong cursor=new AtomicLong();
+    private final Map<CregisNetwork,Long> cursors=new EnumMap<>(CregisNetwork.class);
 
-    public Map<String,Object> status() {
-        admins.require(false);fixedAddresses();
-        var result=new LinkedHashMap<>(required(db.policy(project())));
+    public Map<String,Object> status(CregisNetwork network) {
+        admins.require(false);
+        var result=new LinkedHashMap<>(required(db.policy(project(),network)));
         for(String field:List.of("startEventId","makerId","pendingCollection","pendingPayment","reason","proposedAt"))result.putIfAbsent(field,null);
-        result.put("runtimeApproved",config.isAutoForwardEnabled());
+        result.put("network",network.network());result.put("gasSymbol",network.gasSymbol());
+        result.put("configured",addressesConfigured(network));
+        result.put("runtimeApproved",config.autoForwardNetworkEnabled(network));
         result.put("collectionEnabled",on(result.get("collectionEnabled")));
         result.put("paymentEnabled",on(result.get("paymentEnabled")));
-        result.put("executionEnabled",config.isAutoForwardEnabled()&&(on(result.get("collectionEnabled"))||on(result.get("paymentEnabled")))) ;
+        result.put("executionEnabled",allowed(result,true,network)||allowed(result,false,network));
         result.put("amountPolicy","GROSS_COLLECTION_NET_PAYMENT_PLATFORM_GAS");
-        result.put("platformAddress",CregisFundsPreparationService.PLATFORM);
-        result.put("counterpartyAddress",CregisFundsPreparationService.COUNTERPARTY);
+        result.put("platformAddress",addressesConfigured(network)?network.normalizeAddress(config.autoForwardPlatform(network)):null);
+        result.put("counterpartyAddress",addressesConfigured(network)?network.normalizeAddress(config.autoForwardCounterparty(network)):null);
         result.put("projectId",Long.toString(project()));
         return result;
     }
-    public Map<String,Object> tasks(long before,int limit) {
+    public Map<String,Object> tasks(CregisNetwork network,long before,int limit) {
         admins.require(false);if(before<0||limit<1||limit>50)throw invalid();
-        var rows=db.page(project(),before,limit+1);boolean more=rows.size()>limit;
+        var rows=db.page(project(),network,before,limit+1);boolean more=rows.size()>limit;
         var records=rows.subList(0,Math.min(limit,rows.size()));
         var result=new LinkedHashMap<String,Object>();result.put("records",records);result.put("hasMore",more);
         result.put("nextBeforeId",more?text(records.get(records.size()-1),"id"):null);return result;
     }
-    public Map<String,Object> policy(String key,String action,long version,Boolean collect,Boolean pay,String reason) {
+    public Map<String,Object> policy(CregisNetwork network,String key,String action,long version,Boolean collect,Boolean pay,String reason) {
         long actor=writer();reason(reason);
         if(version<0||!Set.of("PROPOSE","APPROVE","CANCEL","PAUSE").contains(Objects.toString(action,"")))throw invalid();
-        var request=new TreeMap<String,Object>();request.put("action",action);request.put("version",version);
+        var request=new TreeMap<String,Object>();if(network!=CregisNetwork.BEP20)request.put("network",network.network());request.put("action",action);request.put("version",version);
         request.put("collect",collect);request.put("pay",pay);request.put("reason",reason.trim());
         return command(actor,key,request,()->tx(()->{
-            gate();var p=required(db.lockPolicy(project()));
+            gate();var p=required(db.lockPolicy(project(),network));
             if(!"PAUSE".equals(action)&&number(p,"version")!=version)throw conflict();
             int changed;
             switch(action) {
-                case "PAUSE" -> changed=db.pause(project(),reason.trim());
+                case "PAUSE" -> changed=db.pause(project(),network,reason.trim());
                 case "PROPOSE" -> {
                     if(collect==null||pay==null||p.get("makerId")!=null)throw invalid();
-                    if(collect||pay)activationReady();
-                    changed=db.propose(project(),version,collect?1:0,pay?1:0,actor,reason.trim());
+                    if(collect||pay)activationReady(network);
+                    changed=db.propose(project(),network,version,collect?1:0,pay?1:0,actor,reason.trim());
                 }
                 case "APPROVE" -> {
                     long maker=number(p,"makerId");if(maker<=0||maker==actor)throw new BizException(409,"CREGIS_AUTO_DIFFERENT_CHECKER_REQUIRED");
                     admins.requireActive(maker);
                     requireCurrentPermissions(maker);
-                    if(on(p.get("pendingCollection"))||on(p.get("pendingPayment")))activationReady();
-                    changed=db.apply(project(),version,on(p.get("pendingCollection"))?1:0,on(p.get("pendingPayment"))?1:0,reason.trim());
+                    if(on(p.get("pendingCollection"))||on(p.get("pendingPayment")))activationReady(network);
+                    changed=db.apply(project(),network,version,on(p.get("pendingCollection"))?1:0,on(p.get("pendingPayment"))?1:0,reason.trim());
                 }
-                default -> {if(p.get("makerId")==null)throw conflict();changed=db.cancel(project(),version);}
+                default -> {if(p.get("makerId")==null)throw conflict();changed=db.cancel(project(),network,version);}
             }
             if(changed!=1)throw conflict();record("POLICY_"+action,Long.toString(project()),actor,request);
-            return status();
+            return status(network);
         }));
     }
 
     @Scheduled(fixedDelayString="${nexion.finance.cregis.auto-forward-poll-ms:60000}")
     public synchronized void tick() {
         if(config.getMode()!=CregisProperties.Mode.PROVIDER)return;
-        var p=required(db.policy(project()));
-        if(config.isAutoForwardEnabled()&&on(p.get("collectionEnabled"))&&p.get("startEventId")!=null&&payout.enabled()) {
-            for(long event:db.candidates(project(),number(p,"startEventId"))) {
-                try {tx(()->{gate();var current=required(db.lockPolicy(project()));
-                    if(!allowed(current,true)||number(current,"startEventId")>=event)return null;
-                    fixedAddresses();var e=event(event);money(e);
-                    db.enqueue(project(),e,CregisFundsPreparationService.PLATFORM,CregisFundsPreparationService.COUNTERPARTY,"CA-P-"+project()+"-"+event);
-                    record("ENQUEUED",Long.toString(event),0,Map.of("eventId",event));return null;
+        for(var network:CregisNetwork.values()) tick(network);
+    }
+    private void tick(CregisNetwork network) {
+        var p=required(db.policy(project(),network));
+        if(config.autoForwardNetworkEnabled(network)&&on(p.get("collectionEnabled"))&&p.get("startEventId")!=null&&payout.enabled(network)) {
+            for(long event:db.candidates(project(),network,number(p,"startEventId"))) {
+                try {tx(()->{gate();var current=required(db.lockPolicy(project(),network));
+                    if(!allowed(current,true,network)||number(current,"startEventId")>=event)return null;
+                    fixedAddresses(network);var e=event(event,network);money(e);
+                    db.enqueue(project(),e,network.normalizeAddress(config.autoForwardPlatform(network)),network.normalizeAddress(config.autoForwardCounterparty(network)),
+                        "CA-P-"+(network==CregisNetwork.BEP20?"":network.network()+"-")+project()+"-"+event);
+                    record("ENQUEUED",Long.toString(event),0,Map.of("eventId",event,"network",network.network()));return null;
                 });}catch(DuplicateKeyException concurrent){/* Event and active-source unique constraints arbitrate concurrent schedulers. */}
                 catch(RuntimeException blocked){/* No task or send is permitted when evidence/risk is unavailable. */}
             }
         }
-        var rows=db.work(project(),cursor.get());if(rows.isEmpty()&&cursor.get()!=0){cursor.set(0);rows=db.work(project(),0);}
-        for(var row:rows){long id=number(row,"id");cursor.set(id);
-            try {process(row);}catch(RuntimeException unavailable){error(id,"CREGIS_AUTO_READ_OR_RISK_UNAVAILABLE");}
+        long cursor=cursors.getOrDefault(network,0L);
+        var rows=db.work(project(),network,cursor);if(rows.isEmpty()&&cursor!=0){cursors.put(network,0L);rows=db.work(project(),network,0);}
+        for(var row:rows){long id=number(row,"id");cursors.put(network,id);
+            try {process(row);}catch(RuntimeException unavailable){error(id,network,"CREGIS_AUTO_READ_OR_RISK_UNAVAILABLE");}
         }
     }
     private void process(Map<String,Object> row) {
+        var network=network(row);
         String state=text(row,"state");boolean collect=state.startsWith("COLLECTION")||state.equals("WAIT_COLLECTION");
         if(state.endsWith("SUBMITTING")) {
             Object raw=row.get("intentAt");LocalDateTime at=raw instanceof LocalDateTime t?t:raw instanceof java.sql.Timestamp t?t.toLocalDateTime():null;
-            if(at!=null&&at.isBefore(LocalDateTime.now().minusMinutes(2)))tx(()->{gate();db.lockPolicy(project());var current=locked(number(row,"id"));
+            if(at!=null&&at.isBefore(LocalDateTime.now().minusMinutes(2)))tx(()->{gate();db.lockPolicy(project(),network);var current=locked(number(row,"id"),network);
                 if(text(current,"state").equals(state)&&number(current,"version")==number(row,"version"))save(current,collect?"COLLECTION_UNKNOWN":"PAYMENT_UNKNOWN","CREGIS_AUTO_SUBMISSION_UNKNOWN");return null;});
             return;
         }
         if(state.equals("WAIT_COLLECTION")||state.equals("WAIT_PAYMENT")) {
-            var p=required(db.policy(project()));if(!allowed(p,collect))return;
-            fixedAddresses();snapshot(row);verifyDeposit(row);
+            var p=required(db.policy(project(),network));if(!allowed(p,collect,network))return;
+            fixedAddresses(network);snapshot(row);verifyDeposit(row);
             if(!collect)proveCollection(row);
             String source=collect?text(row,"sourceAddress"):text(row,"platformAddress");BigDecimal amount=decimal(row,collect?"grossAmount":"netAmount");
-            if(collect&&!router.provider().addressBelongs(CregisConstants.BSC_CHAIN_ID,source))throw invalid();
-            var balance=chain.preparationBalance(source);
-            if(new BigDecimal(balance.usdt()).compareTo(amount)<0) {error(number(row,"id"),"CREGIS_AUTO_USDT_INSUFFICIENT");return;}
-            if(new BigDecimal(balance.bnb()).signum()<=0){error(number(row,"id"),"CREGIS_AUTO_BNB_REQUIRED");return;}
+            if(collect&&!router.provider().addressBelongs(network.chainId(),source))throw invalid();
+            var balance=chain.preparationBalance(network,source);
+            if(new BigDecimal(balance.usdt()).compareTo(amount)<0) {error(number(row,"id"),network,"CREGIS_AUTO_USDT_INSUFFICIENT");return;}
+            if(new BigDecimal(balance.nativeBalance()).signum()<=0){error(number(row,"id"),network,"CREGIS_AUTO_"+network.gasSymbol()+"_REQUIRED");return;}
             Map<String,Object> intent=tx(()->{
-                gate();var currentPolicy=required(db.lockPolicy(project()));var current=locked(number(row,"id"));
-                if(!allowed(currentPolicy,collect)||!text(current,"state").equals(state)||number(current,"version")!=number(row,"version"))return null;
-                snapshot(current);event(number(current,"eventId"));fixedAddresses();
+                gate();var currentPolicy=required(db.lockPolicy(project(),network));var current=locked(number(row,"id"),network);
+                if(!allowed(currentPolicy,collect,network)||!text(current,"state").equals(state)||number(current,"version")!=number(row,"version"))return null;
+                snapshot(current);event(number(current,"eventId"),network);fixedAddresses(network);
                 current.put(collect?"collectionFloor":"paymentFloor",balance.blockNumber());current.put("intentAt",LocalDateTime.now());
-                save(current,collect?"COLLECTION_SUBMITTING":"PAYMENT_SUBMITTING",null);return locked(number(row,"id"));
+                save(current,collect?"COLLECTION_SUBMITTING":"PAYMENT_SUBMITTING",null);return locked(number(row,"id"),network);
             });
             if(intent!=null)dispatch(intent,collect);
             return;
@@ -142,20 +149,21 @@ public class CregisAutoForwardService {
     }
     /** The committed intent survives process death. Only this invocation may submit it once. */
     private void dispatch(Map<String,Object> intent,boolean collect) {
+        var network=network(intent);
         tx(()->{
-            gate();var p=required(db.lockPolicy(project()));var current=locked(number(intent,"id"));
+            gate();var p=required(db.lockPolicy(project(),network));var current=locked(number(intent,"id"),network);
             if(number(current,"version")!=number(intent,"version")||!text(current,"state").endsWith("SUBMITTING"))return null;
-            if(!allowed(p,collect)){current.put("intentAt",null);save(current,collect?"WAIT_COLLECTION":"WAIT_PAYMENT","CREGIS_AUTO_PAUSED");return null;}
-            snapshot(current);event(number(current,"eventId"));fixedAddresses();
+            if(!allowed(p,collect,network)){current.put("intentAt",null);save(current,collect?"WAIT_COLLECTION":"WAIT_PAYMENT","CREGIS_AUTO_PAUSED");return null;}
+            snapshot(current);event(number(current,"eventId"),network);fixedAddresses(network);
             // The project gate serializes switch changes and outgoing requests. Recheck fresh chain evidence after acquiring it.
             try {
                 verifyDeposit(current);if(!collect)proveCollection(current);
                 String source=collect?text(current,"sourceAddress"):text(current,"platformAddress");
-                if(collect&&!router.provider().addressBelongs(CregisConstants.BSC_CHAIN_ID,source))throw invalid();
-                var balance=chain.preparationBalance(source);
+                if(collect&&!router.provider().addressBelongs(network.chainId(),source))throw invalid();
+                var balance=chain.preparationBalance(network,source);
                 if(balance.blockNumber()<number(current,collect?"collectionFloor":"paymentFloor")
                         ||new BigDecimal(balance.usdt()).compareTo(decimal(current,collect?"grossAmount":"netAmount"))<0
-                        ||new BigDecimal(balance.bnb()).signum()<=0)throw invalid();
+                        ||new BigDecimal(balance.nativeBalance()).signum()<=0)throw invalid();
             }catch(RuntimeException preSendBlocked){
                 current.put("intentAt",null);save(current,collect?"WAIT_COLLECTION":"WAIT_PAYMENT","CREGIS_AUTO_READ_OR_RISK_UNAVAILABLE");return null;
             }
@@ -163,7 +171,7 @@ public class CregisAutoForwardService {
                 long cid;
                 if(collect)cid=router.provider().createCollection(collection(current));
                 else {
-                    var submitted=router.provider().createAutoForwardPayout(new CregisGateway.PayoutRequest(CregisConstants.USDT_BEP20_CURRENCY,
+                    var submitted=router.provider().createAutoForwardPayout(new CregisGateway.PayoutRequest(network.currency(),
                         text(current,"counterpartyAddress"),decimal(current,"netAmount"),text(current,"paymentKey"),router.payoutCallbackUrl(),"UVEL automatic net forward"));
                     if(submitted==null||!text(current,"paymentKey").equals(submitted.thirdPartyId()))throw new IllegalStateException("CREGIS_AUTO_IDENTITY_CONFLICT");
                     cid=submitted.cid();
@@ -179,34 +187,37 @@ public class CregisAutoForwardService {
         });
     }
     private void observe(Map<String,Object> candidate,boolean collect,long cid) {
+        var network=network(candidate);
         snapshot(candidate);String next=null,txid=null;
         if(collect) {
             var order=router.provider().queryCollection(cid,collection(candidate)).orElse(null);if(order==null)return;
             txid=order.txid();
-            if(order.status()==1){verifyDeposit(candidate);prove(txid,text(candidate,"sourceAddress"),text(candidate,"platformAddress"),decimal(candidate,"grossAmount"),number(candidate,"collectionFloor"));next="WAIT_PAYMENT";}
+            if(order.status()==1){verifyDeposit(candidate);prove(network,txid,text(candidate,"sourceAddress"),text(candidate,"platformAddress"),decimal(candidate,"grossAmount"),number(candidate,"collectionFloor"));next="WAIT_PAYMENT";}
             else if(order.status()==2)next="COLLECTION_UNKNOWN";
         }else{
             var order=router.provider().queryPayout(query(candidate,cid));txid=order.txid();
-            if(order.status()==CregisGateway.PayoutStatus.SUCCEEDED){verifyDeposit(candidate);proveCollection(candidate);prove(txid,text(candidate,"platformAddress"),text(candidate,"counterpartyAddress"),decimal(candidate,"netAmount"),number(candidate,"paymentFloor"));next="COMPLETED";}
+            if(order.status()==CregisGateway.PayoutStatus.SUCCEEDED){verifyDeposit(candidate);proveCollection(candidate);prove(network,txid,text(candidate,"platformAddress"),text(candidate,"counterpartyAddress"),decimal(candidate,"netAmount"),number(candidate,"paymentFloor"));next="COMPLETED";}
             else if(Set.of(2,3,4,7).contains(order.status().providerCode()))next=txid==null&&order.status().providerCode()!=7?"PAYMENT_FAILED":"PAYMENT_UNKNOWN";
         }
         String observedNext=next,observedTxid=txid;
-        tx(()->{gate();db.lockPolicy(project());var row=locked(number(candidate,"id"));
+        tx(()->{gate();db.lockPolicy(project(),network);var row=locked(number(candidate,"id"),network);
             if(number(row,"version")!=number(candidate,"version")||number(row,collect?"collectionCid":"paymentCid")!=cid)return null;
             if(observedNext!=null) {
-                if(observedNext.equals("WAIT_PAYMENT")||observedNext.equals("COMPLETED"))event(number(row,"eventId"));
+                if(observedNext.equals("WAIT_PAYMENT")||observedNext.equals("COMPLETED"))event(number(row,"eventId"),network);
                 if(observedNext.equals(row.get("state"))&&Objects.equals(observedTxid,row.get(collect?"collectionTxid":"paymentTxid")))return null;
                 row.put(collect?"collectionTxid":"paymentTxid",observedTxid);
                 save(row,observedNext,observedNext.endsWith("FAILED")?"CREGIS_AUTO_PROVIDER_FAILED":observedNext.endsWith("UNKNOWN")?"CREGIS_AUTO_TRANSACTION_UNCERTAIN":null);
             }return null;
         });
     }
-    public Map<String,Object> recover(String key,long id,long version,String stage,String cidText,boolean retry,String reason) {
+    public Map<String,Object> recover(CregisNetwork network,String key,long id,long version,String stage,String cidText,boolean retry,String reason) {
         long actor=writer();reason(reason);if(id<=0||version<0||!Set.of("COLLECTION","PAYMENT").contains(Objects.toString(stage,"")))throw invalid();
         long cid=0;if(!retry){try{if(cidText==null||!cidText.matches("[1-9][0-9]{0,18}"))throw invalid();cid=Long.parseLong(cidText);}catch(NumberFormatException bad){throw invalid();}}
-        long originalCid=cid;var request=Map.<String,Object>of("id",id,"version",version,"stage",stage,"cid",cid,"retry",retry,"reason",reason.trim());
+        long originalCid=cid;var request=network==CregisNetwork.BEP20
+                ?Map.<String,Object>of("id",id,"version",version,"stage",stage,"cid",cid,"retry",retry,"reason",reason.trim())
+                :Map.<String,Object>of("network",network.network(),"id",id,"version",version,"stage",stage,"cid",cid,"retry",retry,"reason",reason.trim());
         return command(actor,key,request,()->tx(()->{
-            gate();db.lockPolicy(project());var row=locked(id);if(number(row,"version")!=version)throw conflict();snapshot(row);
+            gate();db.lockPolicy(project(),network);var row=locked(id,network);if(number(row,"version")!=version)throw conflict();snapshot(row);
             String state=text(row,"state"),cidField=stage.equals("COLLECTION")?"collectionCid":"paymentCid";
             if(retry){
                 if(!state.equals(stage+"_FAILED")||number(row,cidField)!=0||!"CREGIS_AUTO_CREATE_REJECTED".equals(row.get("lastError")))throw conflict();
@@ -218,54 +229,64 @@ public class CregisAutoForwardService {
                 else router.provider().queryPayout(query(row,originalCid));
                 row.put(cidField,originalCid);save(row,stage+"_PENDING",null);
             }
-            record(retry?"RETRY_REQUESTED":"ORIGINAL_CID_BOUND",Long.toString(id),actor,request);return locked(id);
+            record(retry?"RETRY_REQUESTED":"ORIGINAL_CID_BOUND",Long.toString(id),actor,request);return locked(id,network);
         }));
     }
     /** An authenticated callback is only a query hint, never a success or a send authorization. */
     public boolean callback(Map<String,Object> body,String peer) {
         if(config.getMode()!=CregisProperties.Mode.PROVIDER||!config.allowsCallbackSourceIp(peer)||body==null)return false;
         var row=db.byKey(project(),Objects.toString(body.get("third_party_id"),""));if(row==null||row.get("intentAt")==null)return false;
+        var network=network(row);
         Object raw=body.get("cid");if(!(raw instanceof Integer||raw instanceof Long)||((Number)raw).longValue()<=0)return false;
         long cid=((Number)raw).longValue();long expected=number(row,"paymentCid");
         var verified=new CregisCallbackVerifier(signer,project(),config.getApiKey(),Clock.systemUTC(),Duration.ofMinutes(5))
-            .verifyPayout(body,new CregisCallbackVerifier.ExpectedPayout(expected>0?expected:cid,text(row,"paymentKey"),text(row,"counterpartyAddress"),decimal(row,"netAmount")));
+            .verifyPayout(body,new CregisCallbackVerifier.ExpectedPayout(expected>0?expected:cid,text(row,"paymentKey"),text(row,"counterpartyAddress"),decimal(row,"netAmount"),network));
         if(!verified.valid())return false;
-        return tx(()->{gate();db.lockPolicy(project());var current=locked(number(row,"id"));
+        return tx(()->{gate();db.lockPolicy(project(),network);var current=locked(number(row,"id"),network);
             if(!Set.of("PAYMENT_SUBMITTING","PAYMENT_PENDING","PAYMENT_UNKNOWN","PAYMENT_FAILED","COMPLETED").contains(text(current,"state")))return false;
             if(number(current,"paymentCid")>0)return number(current,"paymentCid")==cid;
             current.put("paymentCid",cid);save(current,"PAYMENT_PENDING","CREGIS_AUTO_CALLBACK_QUERY_REQUIRED");return true;
         });
     }
     private void verifyDeposit(Map<String,Object> row) {
-        Map<String,Object> e=tx(()->event(number(row,"eventId")));money(e);
-        if(!text(row,"sourceAddress").equalsIgnoreCase(text(e,"address"))||decimal(row,"grossAmount").compareTo(decimal(e,"grossAmount"))!=0
+        var network=network(row);Map<String,Object> e=tx(()->event(number(row,"eventId"),network));money(e);
+        if(!network.addressEquals(text(row,"sourceAddress"),text(e,"address"))||decimal(row,"grossAmount").compareTo(decimal(e,"grossAmount"))!=0
                 ||decimal(row,"netAmount").compareTo(decimal(e,"netAmount"))!=0||decimal(row,"feeAmount").compareTo(decimal(e,"feeAmount"))!=0)throw invalid();
-        var proof=chain.verifyExact(text(e,"txid"),Math.toIntExact(number(e,"logIndex")),text(e,"address"),decimal(e,"grossAmount"),number(e,"blockNumber"));
+        var proof=chain.verifyExact(network,text(e,"txid"),Math.toIntExact(number(e,"logIndex")),text(e,"address"),decimal(e,"grossAmount"),number(e,"blockNumber"));
         if(proof==null)throw invalid();
     }
-    private void proveCollection(Map<String,Object> row){prove(text(row,"collectionTxid"),text(row,"sourceAddress"),text(row,"platformAddress"),decimal(row,"grossAmount"),number(row,"collectionFloor"));}
-    private void prove(String txid,String from,String to,BigDecimal amount,long floor) {
+    private void proveCollection(Map<String,Object> row){prove(network(row),text(row,"collectionTxid"),text(row,"sourceAddress"),text(row,"platformAddress"),decimal(row,"grossAmount"),number(row,"collectionFloor"));}
+    private void prove(CregisNetwork network,String txid,String from,String to,BigDecimal amount,long floor) {
         if(floor<=0||txid.isBlank())throw invalid();
-        var proof=chain.verifyPayout(txid,to,amount).orElseThrow(CregisAutoForwardService::invalid);
-        if(proof.confirmations()<payout.requiredConfirmations()||proof.blockNumber()<floor||!from.equalsIgnoreCase(proof.fromAddress()))throw invalid();
+        var proof=chain.verifyPayout(network,txid,to,amount).orElseThrow(CregisAutoForwardService::invalid);
+        if(proof.confirmations()<payout.requiredConfirmations()||proof.blockNumber()<floor||!network.addressEquals(from,proof.fromAddress()))throw invalid();
     }
-    private Map<String,Object> event(long id){var e=required(db.lockEvent(project(),id));if(!"CREDITED".equals(e.get("status")))throw invalid();return e;}
-    private void fixedAddresses(){var a=required(addresses.config(project()));if(!CregisFundsPreparationService.PLATFORM.equals(a.get("platformAddress"))
-            ||!CregisFundsPreparationService.COUNTERPARTY.equals(a.get("counterpartyAddress"))||!"BSC".equals(a.get("network"))||!"USDT".equals(a.get("asset")))throw invalid();}
-    private void snapshot(Map<String,Object> row){if(!CregisFundsPreparationService.PLATFORM.equals(row.get("platformAddress"))||!CregisFundsPreparationService.COUNTERPARTY.equals(row.get("counterpartyAddress")))throw invalid();money(row);}
+    private Map<String,Object> event(long id,CregisNetwork network){var e=required(db.lockEvent(project(),network,id));if(!"CREDITED".equals(e.get("status")))throw invalid();return e;}
+    private boolean addressesConfigured(CregisNetwork network) {
+        if(!config.autoForwardAddressesConfigured(network))return false;
+        if(network!=CregisNetwork.BEP20)return true;
+        var a=addresses.config(project());return a!=null&&CregisFundsPreparationService.PLATFORM.equals(a.get("platformAddress"))
+            &&CregisFundsPreparationService.COUNTERPARTY.equals(a.get("counterpartyAddress"))&&"BSC".equals(a.get("network"))&&"USDT".equals(a.get("asset"));
+    }
+    private void fixedAddresses(CregisNetwork network){if(!addressesConfigured(network))throw invalid();}
+    private void snapshot(Map<String,Object> row){var network=network(row);fixedAddresses(network);
+        if(!network.addressEquals(config.autoForwardPlatform(network),text(row,"platformAddress"))
+                ||!network.addressEquals(config.autoForwardCounterparty(network),text(row,"counterpartyAddress")))throw invalid();money(row);}
     private void money(Map<String,Object> row){for(String field:List.of("grossAmount","netAmount"))if(CregisAmount.normalizePositive(decimal(row,field))==null)throw invalid();
         if(decimal(row,"feeAmount").signum()<0||decimal(row,"grossAmount").compareTo(decimal(row,"netAmount").add(decimal(row,"feeAmount")))!=0)throw invalid();}
-    private boolean allowed(Map<String,Object> policy,boolean collect){return config.isAutoForwardEnabled()&&on(policy.get(collect?"collectionEnabled":"paymentEnabled"))&&payout.enabled();}
-    private void activationReady(){fixedAddresses();if(!config.isAutoForwardEnabled()||config.getMode()!=CregisProperties.Mode.PROVIDER||!payout.enabled())throw new BizException(409,"CREGIS_AUTO_ACTIVATION_NOT_APPROVED");}
+    private boolean allowed(Map<String,Object> policy,boolean collect,CregisNetwork network){return config.autoForwardNetworkEnabled(network)
+        &&addressesConfigured(network)&&on(policy.get(collect?"collectionEnabled":"paymentEnabled"))&&payout.enabled(network);}
+    private void activationReady(CregisNetwork network){fixedAddresses(network);if(!config.autoForwardNetworkEnabled(network)||config.getMode()!=CregisProperties.Mode.PROVIDER||!payout.enabled(network))throw new BizException(409,"CREGIS_AUTO_ACTIVATION_NOT_APPROVED");}
     private void gate(){if(deposits.lockProvisionGate()==null)throw invalid();}
-    private Map<String,Object> locked(long id){return required(db.lock(project(),id));}
+    private Map<String,Object> locked(long id,CregisNetwork network){return required(db.lock(project(),network,id));}
     private void save(Map<String,Object> row,String state,String error){if(db.save(project(),row,state,error)!=1)throw conflict();
         if(state.endsWith("UNKNOWN"))db.holdUnknown(project(),number(row,"id"),Objects.toString(error,"CREGIS_AUTO_SUBMISSION_UNKNOWN"));
         if(state.equals("WAIT_PAYMENT")||state.equals("COMPLETED")||state.equals("PAYMENT_FAILED")&&number(row,"paymentCid")>0&&row.get("paymentTxid")==null)db.resolveUnknown(project(),number(row,"id"));
         record(state,text(row,"id"),0,Map.of("eventId",text(row,"eventId"),"error",Objects.toString(error,"")));}
-    private void error(long id,String error){tx(()->{gate();db.lockPolicy(project());var row=locked(id);if(!error.equals(row.get("lastError")))save(row,text(row,"state"),error);return null;});}
-    private CregisGateway.CollectionRequest collection(Map<String,Object> row){return new CregisGateway.CollectionRequest(text(row,"sourceAddress"),text(row,"platformAddress"),decimal(row,"grossAmount"));}
-    private CregisGateway.PayoutQuery query(Map<String,Object> row,long cid){return new CregisGateway.PayoutQuery(cid,text(row,"paymentKey"),text(row,"counterpartyAddress"),decimal(row,"netAmount"));}
+    private void error(long id,CregisNetwork network,String error){tx(()->{gate();db.lockPolicy(project(),network);var row=locked(id,network);if(!error.equals(row.get("lastError")))save(row,text(row,"state"),error);return null;});}
+    private CregisGateway.CollectionRequest collection(Map<String,Object> row){return new CregisGateway.CollectionRequest(text(row,"sourceAddress"),text(row,"platformAddress"),decimal(row,"grossAmount"),network(row));}
+    private CregisGateway.PayoutQuery query(Map<String,Object> row,long cid){return new CregisGateway.PayoutQuery(cid,text(row,"paymentKey"),text(row,"counterpartyAddress"),decimal(row,"netAmount"),network(row).currency());}
+    private CregisNetwork network(Map<String,Object> row){return CregisNetwork.fromChainId(text(row,"chainId"));}
     private long writer(){long actor=admins.require(true);if(SecurityContextHolder.getContext().getAuthentication().getAuthorities().stream().noneMatch(a->"finance_d2_withdrawal_approve".equals(a.getAuthority())))throw new BizException(403,"ADMIN_FINANCE_AUTH_REQUIRED");requireCurrentPermissions(actor);return actor;}
     private void requireCurrentPermissions(long actor){if(!permissions.getPermissionCodes(actor).containsAll(Set.of("finance_d1_read","finance_d1_channel_manage","finance_d2_withdrawal_approve")))throw new BizException(403,"ADMIN_FINANCE_AUTH_REQUIRED");}
     private <T>T tx(Supplier<T> action){return new TransactionTemplate(transactions).execute(s->action.get());}

@@ -376,6 +376,15 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
     }
 
     @Override
+    public Optional<Map<String, Object>> playbookForDecision(String code) {
+        return mapper.playbooks().stream()
+                .filter(row -> String.valueOf(row.get("code")).equalsIgnoreCase(code))
+                .findFirst()
+                .map(row -> withSequence(row, mapper.playbookSteps().stream()
+                        .filter(step -> String.valueOf(step.get("code")).equalsIgnoreCase(code)).toList()));
+    }
+
+    @Override
     public void lockPlaybook(String code) {
         ensureTables();
         mapper.lockPlaybook(code);

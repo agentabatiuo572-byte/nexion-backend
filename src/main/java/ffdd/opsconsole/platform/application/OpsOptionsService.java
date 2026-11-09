@@ -53,7 +53,6 @@ public class OpsOptionsService {
             case "exchange-param", "exchange-params" -> ApiResult.ok(options("单用户日额度", "userDailyCap", "平台日额度", "platformDailyCap", "兑换手续费率", "fee", "最低手续费", "feeMin", "超额度处置策略", "queueMode"));
             case "exchange-gate", "exchange-gates" -> ApiResult.ok(options("单用户超限", "user", "平台超限", "platform", "地域封锁", "geo"));
             case "device-status" -> ApiResult.ok(options("空闲", "OFFLINE", "运行中", "ACTIVE", "暂停", "SUSPENDED", "回收站", "RECYCLED"));
-            case "datacenters", "datacenter" -> ApiResult.ok(datacenterOptions());
             case "sku-tier", "sku-tiers" -> ApiResult.ok(options("Entry", "Entry", "Pro", "Pro", "Flagship", "Flagship", "Share", "Share"));
             case "sku-generation", "sku-generations" -> ApiResult.ok(options("Gen 1", "1", "Gen 2", "2", "Gen 3", "3"));
             case "sku-lifecycle", "sku-lifecycles" -> ApiResult.ok(options("active(在产)", "active", "legacy(停代)", "legacy"));
@@ -129,9 +128,6 @@ public class OpsOptionsService {
                 .toList();
     }
 
-    private List<AdminOption> datacenterOptions() {
-        return queryDistinctOptions(optionsMapper::datacenters);
-    }
 
     private List<AdminOption> supportSlaOptions() {
         try {

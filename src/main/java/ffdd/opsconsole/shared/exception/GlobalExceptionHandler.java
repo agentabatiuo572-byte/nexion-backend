@@ -49,6 +49,12 @@ public class GlobalExceptionHandler {
         return ApiResult.fail(ex.getCode(),ex.getMessage(),ex.errorData());
     }
 
+    @ExceptionHandler(ffdd.opsconsole.device.application.TaskPoolException.class)
+    public ApiResult<Map<String,Object>> handleTaskPool(ffdd.opsconsole.device.application.TaskPoolException ex,HttpServletResponse response) {
+        response.setStatus(ex.getCode());
+        return ApiResult.fail(ex.getCode(),ex.getMessage(),ex.errorData());
+    }
+
     @ExceptionHandler(BizException.class)
     public ApiResult<Void> handleBiz(BizException ex, HttpServletResponse response) {
         response.setStatus(normalizeHttpStatus(ex.getCode()));
@@ -94,7 +100,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ApiResult<Void> handleUnreadableMessage(HttpMessageNotReadableException ex, HttpServletResponse response) {
-        if(ex.getMostSpecificCause() instanceof BizException biz && "MONTHLY_TARGET_DEVICE_INELIGIBLE".equals(biz.getMessage())) {
+        if(ex.getMostSpecificCause() instanceof BizException biz && java.util.Set.of("MONTHLY_TARGET_DEVICE_INELIGIBLE","TASK_POOL_FORMAT_RETIRED").contains(biz.getMessage())) {
             response.setStatus(biz.getCode());
             return ApiResult.fail(biz.getCode(),biz.getMessage());
         }

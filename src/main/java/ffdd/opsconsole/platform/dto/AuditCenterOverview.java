@@ -52,13 +52,26 @@ public record AuditCenterOverview(
             boolean retiredOperation,
             Map<String,Object> ambassadorMaterialProposal,
             BigDecimal originalAmountUsdt,
-            BigDecimal refundAmountUsdt) {
+            BigDecimal refundAmountUsdt,
+            boolean canApprove,
+            boolean canReject,
+            Integer approveDeniedCode,
+            String approveDeniedMessage,
+            Integer rejectDeniedCode,
+            String rejectDeniedMessage) {
         public AuditOperationTicket withViewerMetadata(boolean ownedByViewer, String code, FundEffect effect,
-                                                       String orderNo, boolean retired) {
+                                                       String orderNo, boolean retired,
+                                                       ffdd.opsconsole.shared.api.ApiResult<Void> approve,
+                                                       ffdd.opsconsole.shared.api.ApiResult<Void> reject) {
             return new AuditOperationTicket(id, action, obj, beforeValue, afterValue, operator, operatorRole,
                     type, amplifies, sos, ts, ownedByViewer, roleGate, reason, status, phoneCalibrationProposal,
                     coverageCheckOnApproval, code, effect, orderNo, retired, ambassadorMaterialProposal,
-                    originalAmountUsdt, refundAmountUsdt);
+                    originalAmountUsdt, refundAmountUsdt,
+                    approve.getCode() == 0, reject.getCode() == 0,
+                    approve.getCode() == 0 ? null : approve.getCode(),
+                    approve.getCode() == 0 ? null : approve.getMessage(),
+                    reject.getCode() == 0 ? null : reject.getCode(),
+                    reject.getCode() == 0 ? null : reject.getMessage());
         }
     }
 

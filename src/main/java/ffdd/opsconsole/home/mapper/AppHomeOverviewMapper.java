@@ -247,12 +247,12 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
             JOIN nx_user owner ON owner.id = slot.user_id AND owner.sandbox = #{sandbox}
                  AND owner.status = 'ACTIVE' AND owner.is_deleted = 0
             LEFT JOIN nx_user_device_runtime runtime ON runtime.user_device_id = device.id AND runtime.is_deleted = 0
-            LEFT JOIN nx_compute_dc_ops_state dc ON dc.dc_location = device.dc_location AND dc.is_deleted = 0
+
             WHERE job.status = 'RUNNING' AND slot.state IN ('RUNNING','CLOSING')
               AND job.started_at <= #{observed} AND job.due_at > #{observed}
               AND device.activated_at IS NOT NULL AND UPPER(device.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
               AND (device.deactivated_at IS NULL OR device.deactivated_at > #{observed})
-              AND COALESCE(dc.dispatch_paused, 0) = 0
+
               AND (COALESCE(TRIM(runtime.paused_reason), '') = ''
                    OR (slot.phone = 1 AND runtime.paused_reason IN ('PHONE_OFFLINE','PHONE_LOW_BATTERY')))
               AND (slot.stop_at IS NULL OR slot.stop_at > #{observed})
@@ -261,22 +261,13 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
     long activeRuleSlots(@Param("sourceEnvironment") String sourceEnvironment, @Param("sandbox") boolean sandbox,
                          @Param("observed") LocalDateTime observed);
 
-    // The virtual column preserves COALESCE(completed_at, updated_at, created_at).
-    // Equality-bound prefix fields keep MySQL's dependent lookup in index order.
+    // Hosting names and cities use the label copied onto the device at fulfilment.
     @Select("""
-            SELECT ANY_VALUE(CONCAT('client_', LEFT(SHA2(CONCAT(
-                         COALESCE(d.device_type,''), '|', COALESCE(d.dc_location,''), '|',
-                         COALESCE(d.gpu_model,''), '|', COALESCE(
-                           CASE WHEN current_client.task_no LIKE 'CTA-%'
-                                     AND current_client.source_environment = 'PRODUCTION'
-                                     AND BINARY current_client.client_name = BINARY 'NexGrid App'
-                                THEN 'UVEL App' ELSE current_client.client_name END, '')), 256), 16))) AS id,
-                   ANY_VALUE(COALESCE(CASE WHEN current_client.task_no LIKE 'CTA-%'
-                                      AND current_client.source_environment = 'PRODUCTION'
-                                      AND BINARY current_client.client_name = BINARY 'NexGrid App'
-                                 THEN 'UVEL App' ELSE current_client.client_name END, dc.display_name)) AS name,
+            SELECT CONCAT('client_', LEFT(SHA2(CONCAT(COALESCE(d.device_type,''), '|',
+                         COALESCE(d.dc_location,''), '|', COALESCE(d.gpu_model,'')), 256), 16)) AS id,
+                   NULLIF(d.dc_location, '') AS name,
                    d.gpu_model AS model,
-                   COALESCE(dc.location, NULLIF(d.dc_location, '')) AS city,
+                   NULLIF(d.dc_location, '') AS city,
                    COUNT(*) AS gpus
               FROM nx_user_device d
               JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
@@ -284,16 +275,6 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
                             AND u.sandbox = #{sandbox}
                             AND u.status = 'ACTIVE'
                             AND u.is_deleted = 0
-              LEFT JOIN nx_compute_datacenter dc
-                ON dc.dc_location = d.dc_location AND dc.is_deleted = 0
-              LEFT JOIN nx_visible_compute_task current_client ON current_client.id = (
-                SELECT t.id
-                  FROM nx_visible_compute_task t
-                 WHERE t.user_device_id = d.id AND t.is_deleted = 0
-                   AND NULLIF(TRIM(t.client_name), '') IS NOT NULL
-                 ORDER BY t.user_device_id, t.is_deleted, t.client_observed_at DESC, t.id DESC
-                 LIMIT 1
-              )
              WHERE d.is_deleted = 0
                AND UPPER(d.ownership_status) = 'OWNED'
                AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
@@ -306,12 +287,7 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
                AND (UPPER(d.device_type) NOT IN ('MOBILE','PHONE')
                     OR (r.heartbeat_at >= DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 120 SECOND)
                         AND r.battery_level >= 20 AND r.network_reachable = 1))
-             GROUP BY d.device_type, d.dc_location, d.gpu_model,
-                      CASE WHEN current_client.task_no LIKE 'CTA-%'
-                                AND current_client.source_environment = 'PRODUCTION'
-                                AND BINARY current_client.client_name = BINARY 'NexGrid App'
-                           THEN 'UVEL App' ELSE current_client.client_name END,
-                      dc.display_name, dc.location
+             GROUP BY d.device_type, d.dc_location, d.gpu_model
              ORDER BY COUNT(*) DESC, id ASC
              LIMIT 20
             """)
