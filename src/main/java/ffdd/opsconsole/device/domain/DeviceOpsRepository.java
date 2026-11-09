@@ -6,6 +6,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 public interface DeviceOpsRepository {
     Map<String, Object> overviewCounters();
@@ -16,6 +17,8 @@ public interface DeviceOpsRepository {
     }
 
     PageResult<DeviceOpsView> pageDevices(DeviceOpsQueryRequest request, boolean phones);
+
+    Set<Long> legacyPendingDeviceIds(List<Long> deviceIds);
 
     PageResult<DeviceOpsView> pageUserDevices(Long userId, long page, long size);
 

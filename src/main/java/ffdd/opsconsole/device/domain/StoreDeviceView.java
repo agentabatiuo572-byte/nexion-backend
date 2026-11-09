@@ -16,14 +16,15 @@ public record StoreDeviceView(
     public record CurrentTask(String taskNo, String name, String taskClass,
                               LocalDateTime startedAt, LocalDateTime dueAt) { }
 
-    public static StoreDeviceView from(DeviceOpsView d, boolean simEnabled) {
+    public static StoreDeviceView from(DeviceOpsView d, boolean simEnabled, boolean legacyPending) {
         var task = d.simTaskNo() == null ? null : new CurrentTask(d.simTaskNo(), d.simTaskName(),
                 d.simTaskClass(), d.simTaskStartedAt(), d.simTaskDueAt());
         return new StoreDeviceView(d.id(), d.userId(), d.userNo(), d.nickname(), d.instanceNo(), d.name(),
                 d.productTier(), d.productCode(), d.status(), d.dcLocation(), d.dcLocation(), d.sourceChannel(),
                 d.hashrate(), d.dailyUsdt(), d.dailyNex(), d.purchasedAt(), d.activatedAt(), d.deactivatedAt(),
                 d.baseRate(), d.currentEfficiency(), d.pendingDeactivate(), d.pausedReason(),
-                d.activeDevicesForUser(), d.userDeviceSlotNo(), 6, simEnabled ? d.simState() : "SIM_OFF",
-                d.simLastError(), d.simNextActionAt(), task, d.monthlyTarget());
+                d.activeDevicesForUser(), d.userDeviceSlotNo(), 6,
+                simEnabled ? legacyPending ? "LEGACY_PENDING" : d.simState() : "SIM_OFF",
+                legacyPending ? "SIMULATED_LEGACY_NOT_DRAINED" : d.simLastError(), d.simNextActionAt(), task, d.monthlyTarget());
     }
 }

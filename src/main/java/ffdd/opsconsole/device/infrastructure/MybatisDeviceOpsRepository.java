@@ -86,7 +86,7 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
             total += row.deviceCount();
             switch (row.simState()) {
                 case "RUNNING" -> running += row.deviceCount();
-                case "WAITING_ACTIVATION" -> waiting += row.deviceCount();
+                case "WAITING_ACTIVATION", "WAITING_INIT", "LEGACY_PENDING" -> waiting += row.deviceCount();
                 case "STOPPED" -> stopped += row.deviceCount();
             }
         }
@@ -109,7 +109,7 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
     @Override
     public PageResult<DeviceOpsView> pageDevices(DeviceOpsQueryRequest request, boolean phones) {
         String state = normalizeUpper(request.simState());
-        if (state != null && !Set.of("WAITING_ACTIVATION", "RUNNING", "WAITING_CONFIG", "PAUSED", "CLOSING",
+        if (state != null && !Set.of("WAITING_ACTIVATION", "WAITING_INIT", "LEGACY_PENDING", "RUNNING", "WAITING_CONFIG", "PAUSED", "CLOSING",
                 "STOPPED", "UNBOUND", "ERROR", "SIM_OFF").contains(state))
             throw new BizException(422, "E5_SIM_STATE_INVALID");
         String source = normalizeUpper(request.source());
@@ -128,6 +128,11 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
         long total = mapper.countDevices(phones, simEnabled, state, source, productCode, keyword);
         var records = mapper.pageDevices(phones, simEnabled, state, source, productCode, keyword, pageSize, offset);
         return new PageResult<>(total, pageNum, pageSize, records);
+    }
+
+    @Override
+    public Set<Long> legacyPendingDeviceIds(List<Long> deviceIds) {
+        return deviceIds.isEmpty() ? Set.of() : mapper.legacyPendingDeviceIds(deviceIds);
     }
 
     @Override
@@ -206,12 +211,12 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
 
     @Override
     public List<Long> lockE5BatchCandidateIds(Long userId, boolean pause, int limit) {
-        return mapper.lockE5BatchCandidateIds(userId, pause ? 1 : 0, limit);
+        return mapper.lockE5BatchCandidateIds(userId, pause ? 1 : 0, limit, simEnabled);
     }
 
     @Override
     public int pauseDevicesByUser(Long userId, String reason, LocalDateTime now) {
-        return mapper.pauseDevicesByUser(userId, reason, now);
+        return mapper.pauseDevicesByUser(userId, reason, now, simEnabled);
     }
 
     @Override
