@@ -1,6 +1,6 @@
 -- Rerunnable local replacement for the immutable task-class cutover.
 -- TEST has already applied the old file; pool-format publications must stay untouched.
--- Old versions retain their exact IDs. Only new policy versions grant classes.
+-- Convert only lossless whole-class scopes; leave other IDs/drafts for the pool cutover.
 SET @class_ddl = IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE()
   AND table_name='nx_sim_product_task_policy_version' AND column_name='allowed_task_classes'),
   'SELECT 1','ALTER TABLE nx_sim_product_task_policy_version ADD COLUMN allowed_task_classes JSON NULL');
@@ -26,7 +26,7 @@ SET @class_pool_filter = IF(EXISTS(SELECT 1 FROM information_schema.columns WHER
   ' AND p.allowed_pool_codes IS NULL','');
 SET @class_sources = CONCAT('INSERT INTO scope_sources
 SELECT ''P'',p.product_key,p.version,p.allowed_task_type_ids FROM nx_sim_product_task_policy_version p
-WHERE p.allowed_task_classes IS NULL',@class_pool_filter,' AND NOT EXISTS
+WHERE p.allowed_task_classes IS NULL AND p.effective_at<@class_cut',@class_pool_filter,' AND NOT EXISTS
   (SELECT 1 FROM nx_sim_product_task_policy_version n WHERE n.product_key=p.product_key AND n.version>p.version)');
 PREPARE class_stmt FROM @class_sources;
 EXECUTE class_stmt;
@@ -45,18 +45,14 @@ SELECT s.kind,s.product_key,c.task_class,COUNT(*) AS total,
   SUM(JSON_CONTAINS(s.ids,JSON_QUOTE(c.task_type_id))) AS selected_count
 FROM scope_sources s CROSS JOIN scope_catalog c GROUP BY s.kind,s.product_key,c.task_class;
 
--- A partial class or missing ID cannot be converted without granting new rights.
-CREATE TEMPORARY TABLE scope_check (valid TINYINT NOT NULL,
-  CONSTRAINT chk_task_class_cutover_requires_whole_known_classes CHECK(valid=1));
-INSERT INTO scope_check SELECT 0 FROM nx_admin_device_sku WHERE is_deleted=0 AND sku_id='phone' LIMIT 1;
-INSERT INTO scope_check SELECT 0 FROM nx_product WHERE is_deleted=0 AND product_no='phone' LIMIT 1;
-INSERT INTO scope_check SELECT 0 FROM scope_counts
- WHERE selected_count>0 AND (selected_count<>total OR task_class NOT IN ('EM','SP','IG','LL','FT','VG')) LIMIT 1;
-INSERT INTO scope_check SELECT 0 FROM scope_sources s LEFT JOIN
-  (SELECT kind,product_key,SUM(selected_count) AS matched FROM scope_counts GROUP BY kind,product_key) m
-  ON m.kind=s.kind AND m.product_key=s.product_key WHERE JSON_LENGTH(s.ids)<>COALESCE(m.matched,0) LIMIT 1;
-INSERT INTO scope_check SELECT 0 FROM scope_sources s JOIN nx_sim_product_task_policy_version p
-  ON s.kind='P' AND s.product_key=p.product_key AND s.version=p.version WHERE p.effective_at>=@class_cut LIMIT 1;
+-- Catalog growth (including disabled tasks) can leave a legal exact-ID scope partial.
+-- Skip it rather than aborting the batch or granting the rest of its class.
+DELETE s FROM scope_sources s LEFT JOIN (
+  SELECT kind,product_key,SUM(selected_count) AS matched,
+    SUM(selected_count>0 AND (selected_count<>total OR task_class NOT IN ('EM','SP','IG','LL','FT','VG'))) AS partial_classes
+  FROM scope_counts GROUP BY kind,product_key
+) m ON m.kind=s.kind AND m.product_key=s.product_key
+WHERE JSON_LENGTH(s.ids)<>COALESCE(m.matched,0) OR COALESCE(m.partial_classes,0)>0;
 CREATE TEMPORARY TABLE scope_classes AS
 SELECT kind,product_key,JSON_ARRAYAGG(task_class) AS classes FROM scope_counts WHERE selected_count=total
 GROUP BY kind,product_key;
@@ -83,4 +79,4 @@ UPDATE nx_product p JOIN (SELECT DISTINCT product_key FROM scope_sources) s
   ON p.product_no COLLATE utf8mb4_unicode_ci=s.product_key
 SET p.updated_at=GREATEST(@class_cut,p.updated_at + INTERVAL 1 SECOND) WHERE p.is_deleted=0;
 COMMIT;
-DROP TEMPORARY TABLE scope_classes,scope_check,scope_counts,scope_catalog,scope_sources;
+DROP TEMPORARY TABLE scope_classes,scope_counts,scope_catalog,scope_sources;
