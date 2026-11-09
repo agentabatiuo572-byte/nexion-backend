@@ -1,5 +1,5 @@
 -- RBAC-05: align only the four confirmed built-in-role replay differences.
--- RISK wallet-PIN mutation defaults remain undecided and are not changed here.
+-- Wallet-PIN grants are applied by the following dedicated, approved migration.
 SET NAMES utf8mb4;
 START TRANSACTION;
 
