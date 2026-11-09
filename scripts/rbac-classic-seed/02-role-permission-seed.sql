@@ -103,11 +103,19 @@ WHERE r.role_code='RISK'
   AND (p.permission_code NOT LIKE 'user_c3_%' OR p.permission_code='user_c3_read')
   AND p.permission_code NOT IN (
       'user_c5_phone_replacement_exception_grant', 'user_c5_phone_replacement_exception_revoke', 'user_c1_export',
+      'user_c5_payment_password_policy_write', 'user_c5_payment_password_release',
       'user_c1hub_2fa_reset', 'user_c1hub_account_freeze', 'user_c1hub_account_unfreeze',
       'user_c1hub_compensation_grant', 'user_c1hub_device_recycle', 'user_c1hub_device_replace',
       'user_c1hub_earning_grant', 'user_c1hub_earning_reverse', 'user_c1hub_password_force_change',
       'user_c1hub_password_reset', 'user_c1hub_session_revoke_all', 'user_c1hub_session_revoke_one'
   )
+  AND p.status=1 AND p.is_deleted=0;
+
+-- 2026-11-09 confirmed: RISK and super-admin roles may change wallet-PIN policy and release its lock.
+INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
+SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
+WHERE r.role_code IN ('RISK','SUPER','SUPERADMIN','SUPER_ADMIN') AND r.status=1 AND r.is_deleted=0
+  AND p.permission_code IN ('user_c5_payment_password_policy_write','user_c5_payment_password_release')
   AND p.status=1 AND p.is_deleted=0;
 
 -- C3 exact matrix: view is cross-functional; execution and reversal follow the amount boundary.
