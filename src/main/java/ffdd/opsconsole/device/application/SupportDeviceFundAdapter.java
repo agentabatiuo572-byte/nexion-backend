@@ -43,7 +43,9 @@ public class SupportDeviceFundAdapter {
                 .map(ffdd.opsconsole.device.mapper.SimulatedTaskMapper.TaskRow.class::cast)
                 .filter(t->"UVT".equals(t.asset())).map(ffdd.opsconsole.device.mapper.SimulatedTaskMapper.TaskRow::rewardAmount).orElse(BigDecimal.ZERO);
         String daily="CLOUD_SHARE_DAILY:"+receipt.get("deviceId")+":"+time(receipt.get("completedAt")).atZone(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE).withZoneSameInstant(java.time.ZoneOffset.UTC).toLocalDate();if(nex.subtract(baseNex).signum()>0)ledgerNos.add(daily);
-        String schema=simulation.isPresent()?"SUPPORT_DEVICE_EARNING_V2":"SUPPORT_DEVICE_EARNING_V1";
+        String schema=simulation.isEmpty()?"SUPPORT_DEVICE_EARNING_V1":
+                ((ffdd.opsconsole.device.mapper.SimulatedTaskMapper.TaskRow)simulation.get()).targetSnapshotJson()==null
+                        ?"SUPPORT_DEVICE_EARNING_V2":"SUPPORT_DEVICE_EARNING_V3";
         var source=new LinkedHashMap<String,Object>();source.put("schemaVersion",schema);source.put("receipt",receipt);source.put("tasks",actual.tasks().stream().filter(t->Objects.equals(taskNo,t.get("taskNo"))).toList());source.put("ledgers",actual.ledgers().stream().filter(l->ledgerNos.contains(l.get("bizNo"))).toList());source.put("earningEvents",earnings);
         var proof=new LinkedHashMap<String,Object>();proof.put("schemaVersion",schema);proof.put("walletStages",snapshots);proof.put("eventIds",events.stream().map(Event::id).toList());
         var bound=fund.bind(token.binding,new SupportFundJournalFacade.ReceiptInput(key(receiptNo),"SUPPORT_DEVICE_EARNING","CREDIT","nx_compute_receipt",receiptNo,"PRODUCTION",encode(events),encode(source),encode(proof)));if(bound==null||!key(receiptNo).equals(bound.operationKey())||bound.journalLegs()!=snapshots.size()-1)throw new IllegalStateException("Device bound receipt mismatch");

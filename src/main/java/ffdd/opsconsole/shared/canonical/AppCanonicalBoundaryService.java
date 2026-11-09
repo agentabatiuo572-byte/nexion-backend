@@ -565,9 +565,11 @@ public class AppCanonicalBoundaryService {
         } catch (IllegalArgumentException invalid) {
             throw new BizException(409, invalid.getMessage());
         }
-        // Share's E1 annual range is a reference, not an USD/day estimate.
-        BigDecimal dailyUsdt = "SHARE".equalsIgnoreCase(device.deviceType())
+        // Untargeted Share keeps its annual-reference branch; targeted Share uses the same T/30 projection.
+        BigDecimal dailyUsdt = device.monthlyTargetUsdt()==null && "SHARE".equalsIgnoreCase(device.deviceType())
                 ? BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP)
+                : device.monthlyTargetUsdt()!=null ? device.monthlyTargetUsdt().multiply(capacity.capacityPct().movePointLeft(2))
+                    .divide(BigDecimal.valueOf(30),6,RoundingMode.HALF_UP)
                 : E3DeviceCapacityPolicy.applyCapacity(zero(device.dailyUsdt()), capacity);
         BigDecimal dailyNex = E3DeviceCapacityPolicy.applyCapacity(zero(device.dailyNex()), capacity);
         boolean calibratedPhone = "MOBILE".equalsIgnoreCase(device.deviceType())
@@ -592,6 +594,7 @@ public class AppCanonicalBoundaryService {
                 "activatedAt", epochMillis(device.activatedAt()), "deactivatedAt", epochMillis(device.deactivatedAt()),
                 "purchasedAt", epochMillis(device.purchasedAt()),
                 "dailyUsdt", dailyUsdt, "dailyNex", dailyNex,
+                "monthlyTargetActive", device.monthlyTargetUsdt()!=null,
                 "capabilityTops", capabilityTops, "capabilityTier", capabilityTier,
                 "gpuModel", device.gpuModel(), "vramTotalGb", device.vramTotalGb(),
                 "basePowerW", device.basePowerW(), "location", device.location(),

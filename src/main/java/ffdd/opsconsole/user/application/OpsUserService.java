@@ -268,6 +268,8 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                     24,
                     "次数 5-20，时长 12-48 小时"));
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private ffdd.opsconsole.device.application.DeviceMonthlyTargetReadService monthlyTargetReads;
     private final UserOpsRepository userRepository;
     private final ffdd.opsconsole.user.mapper.UserAccountActionMapper accountActionMapper;
     private final TreasuryCoverageFacade coverageFacade;
@@ -895,6 +897,13 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         List<UserReadonlyDeviceView> devices = "DEVICES".equals(normalizedPage)
                 ? userRepository.readonlyDevices(userId, 20)
                 : List.of();
+        if(!devices.isEmpty()) {
+            var current=monthlyTargetReads.projections(devices.stream().map(UserReadonlyDeviceView::id).toList());
+            devices=devices.stream().map(d->{
+                var p=current.get(d.id());
+                return p==null || p.target()==null ? d : new UserReadonlyDeviceView(d.instanceNo(),d.name(),d.deviceType(),d.generation(),d.status(),d.hashrate(),p.daily(),d.dailyNex(),d.lastSeenAt(),d.id());
+            }).toList();
+        }
         Map<String, Object> screen = buildImpersonationScreen(
                 normalizedPage, account, accountList, activeSessions, devices);
         Map<String, Object> response = new LinkedHashMap<>();

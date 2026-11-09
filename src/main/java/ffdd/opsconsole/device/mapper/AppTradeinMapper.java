@@ -235,10 +235,9 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                   WHERE t.user_id=d.user_id AND t.user_device_id=d.id AND t.is_deleted=0
                     AND UPPER(t.status) IN ('CLAIMED','RUNNING')
                )
-             ORDER BY COALESCE(d.daily_usdt,0), d.id
-             LIMIT 1
+             ORDER BY d.id
             """)
-    SourceDevice findCapacityReplacementSource(@Param("userId") Long userId);
+    List<SourceDevice> findCapacityReplacementSources(@Param("userId") Long userId);
 
     @Select("""
             SELECT d.id, d.user_id AS userId, d.instance_no AS instanceNo,
@@ -267,10 +266,9 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                   WHERE t.user_id=d.user_id AND t.user_device_id=d.id AND t.is_deleted=0
                     AND UPPER(t.status) IN ('CLAIMED','RUNNING')
                )
-             ORDER BY COALESCE(d.daily_usdt,0), d.id
-             LIMIT 1 FOR UPDATE
+             ORDER BY d.id FOR UPDATE
             """)
-    SourceDevice lockCapacityReplacementSource(@Param("userId") Long userId);
+    List<SourceDevice> lockCapacityReplacementSources(@Param("userId") Long userId);
 
     /**
      * The App may publish only products that this mapper's quote/submit lookups
@@ -291,7 +289,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                    s.image_asset_id AS imageAssetId,s.image_object_key AS imageObjectKey,
                    p.inventory_mode AS inventoryMode,
                    s.spec_document_title AS specDocumentTitle,s.spec_document_url AS specDocumentUrl,
-                   p.compute_points AS computePoints
+                   p.compute_points AS computePoints,p.monthly_target_usdt AS monthlyTargetUsdt,p.monthly_target_band_pct AS monthlyTargetBandPct
               FROM nx_product p
               LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
              WHERE p.is_deleted=0 AND p.store_visible=1
@@ -640,7 +638,20 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                                 BigDecimal aiLlmTokensPerSec, BigDecimal aiVideoMinPerHour,
                                 BigDecimal aiFineTuneMins, String aiUnlocks, String purchaseGateJson,
                                 String imageAssetId, String imageObjectKey,
+                                String inventoryMode, String specDocumentTitle, String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct) {
+    public CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
+                                String deviceType, Integer generation, String gpuModel, Integer vramTotalGb,
+                                BigDecimal hashrate, BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline,
+                                String badge, Integer sold, String unlockPhase, java.time.LocalDateTime updatedAt,
+                                String power, String datacenter, String uptime, String warranty, BigDecimal phoneDailyEarn,
+                                BigDecimal phoneDailyEarnNex, String featuresJson, BigDecimal aiImageGenPerMin,
+                                BigDecimal aiLlmTokensPerSec, BigDecimal aiVideoMinPerHour,
+                                BigDecimal aiFineTuneMins, String aiUnlocks, String purchaseGateJson,
+                                String imageAssetId, String imageObjectKey,
                                 String inventoryMode, String specDocumentTitle, String specDocumentUrl, Long computePoints) {
+        this(productNo,name,tier,priceUsdt,stock,deviceType,generation,gpuModel,vramTotalGb,hashrate,dailyUsdt,dailyNex,tagline,badge,sold,unlockPhase,updatedAt,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,featuresJson,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,purchaseGateJson,imageAssetId,imageObjectKey,inventoryMode,specDocumentTitle,specDocumentUrl,computePoints,null,null);
+    }
+
         /** Existing callers without compute points keep the line hidden. */
         public CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
                                 String deviceType, Integer generation, String gpuModel, Integer vramTotalGb,

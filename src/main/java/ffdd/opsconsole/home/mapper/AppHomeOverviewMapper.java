@@ -142,7 +142,7 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
                    d.product_code AS productCode,
                    d.product_tier AS productTier,
                    d.device_type AS deviceType,
-                   d.daily_usdt AS dailyUsdt
+                   d.daily_usdt AS dailyUsdt,d.id
               FROM nx_user_device d
               JOIN nx_user u ON u.id = d.user_id
                             AND u.id = #{userId}
@@ -156,12 +156,9 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
                AND d.activated_at IS NOT NULL
                AND d.deactivated_at IS NULL
                AND d.pending_deactivate = 0
-               AND d.daily_usdt IS NOT NULL
-               AND d.daily_usdt > 0
-             ORDER BY d.daily_usdt DESC, d.id ASC
-             LIMIT 1
+             ORDER BY d.id ASC
             """)
-    OwnedDeviceRow highestActiveDevice(@Param("userId") Long userId,
+    List<OwnedDeviceRow> activeDeviceCandidates(@Param("userId") Long userId,
                                        @Param("sandbox") boolean sandbox);
 
     @Select("""
@@ -419,7 +416,11 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
     }
     record PaidSummary(BigDecimal amountUsdt, Long orderCount) { }
     record OwnedDeviceRow(String name, String productCode, String productTier,
-                          String deviceType, BigDecimal dailyUsdt) { }
+                          String deviceType, BigDecimal dailyUsdt,Long id) {
+        public OwnedDeviceRow(String name,String productCode,String productTier,String deviceType,BigDecimal dailyUsdt) {
+            this(name,productCode,productTier,deviceType,dailyUsdt,null);
+        }
+    }
     record OnGridSummary(Long activeJobs, BigDecimal perSecUsdt) { }
     record OnGridClientRow(String id, String name, String model, String city, Long gpus) { }
     record EarningsLedgerRow(String id, String client, String model, BigDecimal rewardUsdt,

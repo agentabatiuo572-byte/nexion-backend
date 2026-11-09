@@ -24,6 +24,7 @@ public class SimulatedTaskSettlementService {
     private final SimulatedTaskSettlementMapper mapper;
     private final AppTaskAssignmentMapper assignments;
     private final SupportDeviceFundAdapter funds;
+    private final DeviceMonthlyTargetService monthlyTargets;
     private final EventOutboxService outbox;
     private final AuditLogService audit;
 
@@ -56,6 +57,7 @@ public class SimulatedTaskSettlementService {
             if(daily.signum()>0)mapper.ledger(task.userId(),dailyKey,"UVT",daily,balance,postedAt);
             mapper.earning(task,"EARN-NEX-"+task.receiptNo(),"UVT",nex,postedAt);
         }
+        monthlyTargets.credit(task,usdt);
         funds.recorded(before,task.receiptNo());
         var attribution=assignments.userEventAttribution(task.userId());
         if(attribution==null)throw new BizException(409,"TASK_ASSIGNMENT_EVENT_ATTRIBUTION_UNAVAILABLE");

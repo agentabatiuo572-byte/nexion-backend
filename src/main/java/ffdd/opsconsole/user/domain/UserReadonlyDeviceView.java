@@ -13,5 +13,9 @@ public record UserReadonlyDeviceView(
         BigDecimal hashrate,
         BigDecimal dailyUsdt,
         BigDecimal dailyNex,
-        LocalDateTime lastSeenAt) {
+        LocalDateTime lastSeenAt, @com.fasterxml.jackson.annotation.JsonIgnore Long id) {
+    public UserReadonlyDeviceView(String instanceNo,String name,String deviceType,Integer generation,String status,
+            BigDecimal hashrate,BigDecimal dailyUsdt,BigDecimal dailyNex,LocalDateTime lastSeenAt) {
+        this(instanceNo,name,deviceType,generation,status,hashrate,dailyUsdt,dailyNex,lastSeenAt,null);
+    }
 }
