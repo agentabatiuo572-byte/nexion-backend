@@ -127,6 +127,14 @@ public interface SimulatedTaskMapper {
     List<RuntimeRow> runtimesByUser(@Param("userId")long userId);
     @Select(TASK+" WHERE task_no=#{taskNo} FOR UPDATE")
     TaskRow lockTask(@Param("taskNo")String taskNo);
+    @Select(TASK+"""
+             t WHERE t.user_device_id=#{deviceId} AND t.user_id=#{userId} AND t.status='RUNNING'
+               AND t.target_snapshot_json IS NOT NULL
+               AND NOT EXISTS(SELECT 1 FROM nx_compute_retired_task a
+                 WHERE a.user_id=t.user_id AND a.task_no=t.task_no COLLATE utf8mb4_0900_ai_ci)
+             ORDER BY t.task_no FOR UPDATE
+            """)
+    List<TaskRow> lockRunningMonthlyTargetTasks(@Param("userId")long userId,@Param("deviceId")long deviceId);
     @Select("SELECT EXISTS(SELECT 1 FROM nx_simulated_task WHERE user_id=#{userId} AND user_device_id=#{deviceId} AND generation=#{generation})")
     boolean hasGenerationTasks(@Param("userId")long userId,@Param("deviceId")long deviceId,@Param("generation")long generation);
     @Select(TASK+" WHERE task_no=#{taskNo}")

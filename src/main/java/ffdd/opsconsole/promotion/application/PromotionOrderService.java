@@ -1,5 +1,7 @@
 package ffdd.opsconsole.promotion.application;
 
+import ffdd.opsconsole.device.application.DeviceMonthlyTargetService;
+import ffdd.opsconsole.device.mapper.SimulatedTaskMapper;
 import ffdd.opsconsole.promotion.domain.PromotionRules;
 import ffdd.opsconsole.promotion.mapper.PromotionMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -22,6 +24,8 @@ import static ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView.verified
 @RequiredArgsConstructor
 public class PromotionOrderService {
     private final PromotionMapper db;
+    private final DeviceMonthlyTargetService monthlyTargets;
+    private final SimulatedTaskMapper simulatedTasks;
     private final PromotionQuoteService quotes;
     private final PromotionEvaluationService evaluator;
     private final PromotionPolicyResolver policies;
@@ -418,7 +422,7 @@ public class PromotionOrderService {
                     id("PA"),reward.get("obligation_id"),refundNo,json(values("basisType","WHOLE_ORDER_REFUND","refundNo",refundNo,"ledgerBizNo",refundLedgerBizNo))));
                 changed(db.write("UPDATE nx_promotion_budget SET committed=committed-?,revision=revision+1 WHERE activity_id=? AND asset=? AND product_no=? AND committed>=?",r.get("amount"),r.get("activity_id"),r.get("asset"),r.get("product_no"),r.get("amount")));returnStock(r);
             }else if("ISSUED".equals(status)||("MANUAL_REVIEW".equals(status)&&PromotionRewardService.partialCorrection(db,reward.get("obligation_id"))!=null)){
-                if("DEVICE".equals(r.get("asset")))PromotionRewardService.revokeRefundGifts(db,reward);
+                if("DEVICE".equals(r.get("asset")))PromotionRewardService.revokeRefundGifts(db,simulatedTasks,monthlyTargets,reward);
                 changed(db.write("UPDATE nx_promotion_reward SET status='REVERSAL_PENDING',revision=revision+1,updated_at=NOW(6) WHERE obligation_id=? AND status=?",reward.get("obligation_id"),status));
             }
             else if(Set.of("PROCESSING","OUTCOME_UNKNOWN").contains(status))changed(db.write("UPDATE nx_promotion_reward SET status='MANUAL_REVIEW',retry_reason='REFUND_REQUIRES_ISSUANCE_RECONCILIATION',revision=revision+1,updated_at=NOW(6) WHERE obligation_id=?",reward.get("obligation_id")));

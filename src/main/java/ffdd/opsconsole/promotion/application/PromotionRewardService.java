@@ -1,6 +1,8 @@
 package ffdd.opsconsole.promotion.application;
 
 import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
+import ffdd.opsconsole.device.application.DeviceMonthlyTargetService;
+import ffdd.opsconsole.device.mapper.SimulatedTaskMapper;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.promotion.mapper.PromotionMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -24,6 +26,8 @@ import ffdd.opsconsole.common.domain.LegacyUvtProof;
 public class PromotionRewardService {
     private final PromotionMapper db;
     private final PromotionOrderService orders;
+    private final DeviceMonthlyTargetService monthlyTargets;
+    private final SimulatedTaskMapper simulatedTasks;
     private final EarningsReleaseService earnings;
     private final TreasuryLedgerPostingFacade ledger;
     private final AuditLogService audit;
@@ -202,7 +206,8 @@ public class PromotionRewardService {
             """,obligationId);
     }
     // The executed refund locks the same participant rows as compute settlement before revoking the gift.
-    static int revokeRefundGifts(PromotionMapper db,Map<String,Object> reward){
+    static int revokeRefundGifts(PromotionMapper db,SimulatedTaskMapper simulatedTasks,
+            DeviceMonthlyTargetService monthlyTargets,Map<String,Object> reward){
         List<Map<String,Object>> devices=db.list("""
             SELECT d.id,d.ownership_status FROM nx_promotion_device_receipt r JOIN nx_user_device d
               ON d.id=r.device_id AND d.instance_no=r.instance_no
@@ -220,18 +225,9 @@ public class PromotionRewardService {
                   AND NOT EXISTS(SELECT 1 FROM nx_compute_retired_task a WHERE a.task_id=t.id)
                 """,deviceId,userId);
             // D2 withdraws only the current RUNNING quote; C and completed earnings remain intact.
+            var targetTasks=simulatedTasks.lockRunningMonthlyTargetTasks(number(userId),number(deviceId));
             db.list("SELECT id FROM nx_user_wallet WHERE user_id=? AND is_deleted=0 FOR UPDATE",userId);
-            db.write("""
-                UPDATE nx_sim_device_target_cycle c JOIN nx_simulated_task t
-                  ON c.user_device_id=t.user_device_id AND c.cycle_start=t.target_cycle_start
-                SET c.p=c.p-CAST(JSON_UNQUOTE(JSON_EXTRACT(t.target_snapshot_json,'$.p')) AS DECIMAL(50,24)),
-                    c.lo=c.lo-CAST(JSON_UNQUOTE(JSON_EXTRACT(t.target_snapshot_json,'$.lo')) AS DECIMAL(50,24)),
-                    c.hi=c.hi-CAST(JSON_UNQUOTE(JSON_EXTRACT(t.target_snapshot_json,'$.hi')) AS DECIMAL(50,24)),
-                    c.allocated_usdt=c.allocated_usdt-t.reward_amount
-                WHERE t.user_device_id=? AND t.user_id=? AND t.status='RUNNING' AND t.target_snapshot_json IS NOT NULL
-                  AND c.user_id=t.user_id AND c.instance_no=t.instance_no
-                  AND NOT EXISTS(SELECT 1 FROM nx_compute_retired_task a WHERE a.user_id=t.user_id AND a.task_no=t.task_no COLLATE utf8mb4_0900_ai_ci)
-                """,deviceId,userId);
+            for(var task:targetTasks)monthlyTargets.cancel(task);
             db.write("""
                 UPDATE nx_simulated_task t SET status='CANCELLED',cancel_reason='PROMOTION_REFUND'
                 WHERE t.user_device_id=? AND t.user_id=? AND t.status='RUNNING'
@@ -270,7 +266,7 @@ public class PromotionRewardService {
         Map<String,Object> platformLoss=new LinkedHashMap<>();
         if(correction!=null)evidence.put("priorCorrectionId",correction.get("reversal_id"));
         if("DEVICE".equals(asset)&&wholeRefund){
-            recovered=BigDecimal.valueOf(revokeRefundGifts(db,row)).subtract(corrected).max(priorRecovered);
+            recovered=BigDecimal.valueOf(revokeRefundGifts(db,simulatedTasks,monthlyTargets,row)).subtract(corrected).max(priorRecovered);
             Map<String,BigDecimal> posted=new LinkedHashMap<>();
             for(var earned:db.list("""
                 SELECT e.asset,e.amount FROM nx_earning_event e
