@@ -3515,32 +3515,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_TIER_INVALID");
         }
         validateHosting(request.datacenter(),"on".equals(request.status()));
-        ProductInventoryMode inventoryMode = inventoryMode(request.inventoryMode());
-        if (inventoryMode == null) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_INVENTORY_MODE_INVALID");
-        }
-        if (inventoryMode == ProductInventoryMode.UNLIMITED && !"Share".equals(tier)) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_UNLIMITED_INVENTORY_NOT_ALLOWED");
-        }
-        long stockValue = 0;
-        if (inventoryMode == ProductInventoryMode.FINITE) {
-            if (!StringUtils.hasText(request.stock())) {
-                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_STOCK_INVALID");
-            }
-            String stock = request.stock().trim();
-            if (!stock.matches("^[0-9]+$") || stock.length() > 10) {
-                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_STOCK_INVALID");
-            }
-            try {
-                stockValue = Long.parseLong(stock);
-                if (stockValue > Integer.MAX_VALUE) {
-                    return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_STOCK_INVALID");
-                }
-            } catch (NumberFormatException ex) {
-                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_STOCK_INVALID");
-            }
-        } else if (StringUtils.hasText(request.stock())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_UNLIMITED_STOCK_MUST_BE_EMPTY");
+        String inventoryError = skuInventoryError(request);
+        if (inventoryError != null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), inventoryError);
         }
         ApiResult<DeviceSkuView> gateValidation = validatePurchaseGate(request.purchaseGate());
         if (gateValidation != null) return gateValidation;
@@ -3560,6 +3537,36 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ApiResult<DeviceSkuView> mediaGuard = requireSkuMediaFields(request);
         if (mediaGuard != null) {
             return mediaGuard;
+        }
+        return null;
+    }
+
+    private String skuInventoryError(DeviceSkuUpsertRequest request) {
+        ProductInventoryMode inventoryMode = inventoryMode(request.inventoryMode());
+        if (inventoryMode == null) {
+            return "SKU_INVENTORY_MODE_INVALID";
+        }
+        if (inventoryMode == ProductInventoryMode.UNLIMITED && !"Share".equals(normalizeExact(request.tier()))) {
+            return "SKU_UNLIMITED_INVENTORY_NOT_ALLOWED";
+        }
+        if (inventoryMode == ProductInventoryMode.FINITE) {
+            if (!StringUtils.hasText(request.stock())) {
+                return "SKU_STOCK_INVALID";
+            }
+            String stock = request.stock().trim();
+            if (!stock.matches("^[0-9]+$") || stock.length() > 10) {
+                return "SKU_STOCK_INVALID";
+            }
+            try {
+                long stockValue = Long.parseLong(stock);
+                if (stockValue > Integer.MAX_VALUE) {
+                    return "SKU_STOCK_INVALID";
+                }
+            } catch (NumberFormatException ex) {
+                return "SKU_STOCK_INVALID";
+            }
+        } else if (StringUtils.hasText(request.stock())) {
+            return "SKU_UNLIMITED_STOCK_MUST_BE_EMPTY";
         }
         return null;
     }
@@ -5615,6 +5622,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 throw new BizException(409, "SKU_VERSION_CONFLICT");
         }
         input=monthlyTargetRequest(input,before,false);
+        String inventoryError = skuInventoryError(input);
+        if (inventoryError != null) throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), inventoryError);
         DeviceSkuUpsertRequest after = normalizeSkuPhaseRequest(input,
                 before == null || before.sold() == null ? 0L : before.sold());
         if (after.trialEligible() == null)
