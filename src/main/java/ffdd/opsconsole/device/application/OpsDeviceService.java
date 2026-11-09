@@ -1433,8 +1433,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 ApiResult<DeviceTaskView> pricingGuard = guardTaskLifecycle(catalog, before, trusted, catalogTime, null);
                 if (pricingGuard != null) return pricingGuard;
             }
-            boolean beforeEnabled = "active".equals(before.status()) && !"已 kill".equals(before.killInit());
-            boolean nextEnabled = "active".equals(trusted.status()) && !"已 kill".equals(trusted.killInit());
+            boolean beforeEnabled = before.simulation().enabled();
+            boolean nextEnabled = "active".equals(trusted.status()) && trusted.simulation().enabled();
             if ((e2TaskPricingAmplifiesFinancialOutflow(
                     before.minReward(), before.maxReward(), parseVram(before.minVram()), beforeEnabled,
                     trusted.minReward(), trusted.maxReward(), parseVram(trusted.minVram()), nextEnabled)
@@ -1555,8 +1555,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.fail(409,"A2_CONFIRMATION_REQUIRED");
         if(!Objects.equals(reviewedVersion,before.simulation()==null?null:before.simulation().version()))
             return ApiResult.fail(409,"SIMULATED_TASK_POLICY_VERSION_CONFLICT");
-        boolean beforeEnabled = "active".equals(before.status()) && !"已 kill".equals(before.killInit());
-        boolean nextEnabled = "active".equals(status) && !"已 kill".equals(before.killInit());
+        // PHONE status belongs to the immutable SIM policy; the legacy kill flag may reflect a disabled creation.
+        boolean beforeEnabled = before.simulation().enabled();
+        boolean nextEnabled = "active".equals(status);
         if (e2TaskPricingAmplifiesFinancialOutflow(
                 before.minReward(), before.maxReward(), parseVram(before.minVram()), beforeEnabled,
                 before.minReward(), before.maxReward(), parseVram(before.minVram()), nextEnabled)
@@ -5649,7 +5650,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if(statusOnly) {
             String status=normalizeTaskStatus(str(params,"status"));
             if(status==null)throw new BizException(422,"TASK_STATUS_INVALID");
-            boolean enabled="active".equals(status) && !"已 kill".equals(old.killInit());
+            boolean enabled="active".equals(status);
             return new RuleTaskReview(old.taskId(),old.name(),before,ruleDescription(old.name(),old.taskClass(),enabled,current.durationMinutes(),current.baseReward(),current.asset()),current.version());
         }
         var raw=buildTaskUpsertRequest(params,"规则任务审批","A2");
