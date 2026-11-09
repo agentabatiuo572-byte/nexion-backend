@@ -336,6 +336,8 @@ public class EventOutboxService {
      * back to PENDING when a binding appears, so they must stay dispatchable).
      */
     static final Set<String> RECORD_ONLY_EVENT_TYPES = Set.of(
+            "E2_TASK_POOL_RANDOM_ADDED",
+            "E2_TASK_POOL_STATUS_CHANGED",
             "account.app_session_replaced",
             "phone.replacement_succeeded",
             "phone.replacement_rejected",
@@ -389,9 +391,6 @@ public class EventOutboxService {
             "admin.conversation_category_toggled",
             "admin.conversation_script_published",
             "admin.conversation_template_published",
-            "admin.datacenter_created",
-            "admin.datacenter_deleted",
-            "admin.datacenter_updated",
             "admin.device_deactivated",
             "admin.device_deactivation_requested",
             "admin.emergency_playbook_edited",

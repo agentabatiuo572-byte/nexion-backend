@@ -2916,37 +2916,6 @@ CREATE TABLE IF NOT EXISTS nx_user_device_runtime (
   KEY idx_device_runtime_heartbeat (heartbeat_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE IF NOT EXISTS nx_compute_datacenter (
-  id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  dc_location VARCHAR(128) NOT NULL,
-  region_label VARCHAR(128) NOT NULL,
-  location VARCHAR(128) NOT NULL DEFAULT '',
-  display_name VARCHAR(128) NOT NULL DEFAULT '',
-  status VARCHAR(24) NOT NULL DEFAULT 'active',
-  sort_order INT NOT NULL DEFAULT 100,
-  updated_by VARCHAR(96) NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  is_deleted TINYINT NOT NULL DEFAULT 0,
-  UNIQUE KEY uk_compute_datacenter_location (dc_location),
-  KEY idx_compute_datacenter_status_sort (is_deleted, status, sort_order)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS nx_compute_dc_ops_state (
-  id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  dc_location VARCHAR(128) NOT NULL,
-  dispatch_paused TINYINT NOT NULL DEFAULT 0,
-  paused_reason VARCHAR(160) NULL,
-  paused_at DATETIME NULL,
-  resumed_at DATETIME NULL,
-  updated_by VARCHAR(96) NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  is_deleted TINYINT NOT NULL DEFAULT 0,
-  UNIQUE KEY uk_compute_dc_ops_state_dc (dc_location),
-  KEY idx_compute_dc_ops_paused (dispatch_paused, updated_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
 CREATE TABLE IF NOT EXISTS nx_device_lifecycle_rule (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   scope_type VARCHAR(32) NOT NULL,
@@ -3295,26 +3264,6 @@ CREATE TABLE IF NOT EXISTS nx_team_ambassador_application (
   KEY idx_ambassador_user (user_id, status),
   KEY idx_ambassador_user_scope (user_id, source_environment, run_id, status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- Canonical E5 metadata for phone/onboarding devices. The App reads these
--- database fields through /api/app/home/overview; it never embeds display data.
-INSERT INTO nx_compute_datacenter(
-  dc_location, region_label, location, display_name, status, sort_order, updated_by, is_deleted
-) VALUES(
-  'User device', 'Global Mobile Compute', 'Global', 'UVEL Mobile Network',
-  'active', 10, 'system:home-grid-metadata', 0
-)
-ON DUPLICATE KEY UPDATE
-  updated_at = IF(is_deleted = 0 AND (
-    region_label IS NULL OR TRIM(region_label)='' OR
-    location IS NULL OR TRIM(location)='' OR
-    display_name IS NULL OR TRIM(display_name)='' OR
-    status IS NULL OR TRIM(status)=''
-  ), NOW(), updated_at),
-  region_label = IF(is_deleted = 0 AND (region_label IS NULL OR TRIM(region_label)=''), VALUES(region_label), region_label),
-  location = IF(is_deleted = 0 AND (location IS NULL OR TRIM(location)=''), VALUES(location), location),
-  display_name = IF(is_deleted = 0 AND (display_name IS NULL OR TRIM(display_name)=''), VALUES(display_name), display_name),
-  status = IF(is_deleted = 0 AND (status IS NULL OR TRIM(status)=''), VALUES(status), status);
 
 CREATE TABLE IF NOT EXISTS nx_admin_device_sku (
   monthly_target_usdt DECIMAL(12,2) NULL,
@@ -4340,15 +4289,6 @@ CREATE TABLE IF NOT EXISTS nx_user_payout_address_sandbox_otp (
   CONSTRAINT chk_user_payout_address_sandbox_otp_no CHECK (challenge_no LIKE 'PAYOUT-%'),
   CONSTRAINT chk_user_payout_address_sandbox_otp_source CHECK (source='mock' AND source_environment='SANDBOX')
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_datacenter' AND COLUMN_NAME = 'location') = 0,
-  'ALTER TABLE nx_compute_datacenter ADD COLUMN location VARCHAR(128) NOT NULL DEFAULT '''' AFTER region_label', 'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_datacenter' AND COLUMN_NAME = 'display_name') = 0,
-  'ALTER TABLE nx_compute_datacenter ADD COLUMN display_name VARCHAR(128) NOT NULL DEFAULT '''' AFTER location', 'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-UPDATE nx_compute_datacenter SET location=region_label WHERE location='' OR location IS NULL;
-UPDATE nx_compute_datacenter SET display_name=region_label WHERE display_name='' OR display_name IS NULL;
 
 CREATE TABLE IF NOT EXISTS nx_risk_decision (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -7699,3 +7639,111 @@ BEGIN
   UPDATE nx_sim_policy_epoch SET epoch=epoch+1 WHERE id=1;
 END$$
 DELIMITER ;
+
+-- Task pool schema and one-time cutover (same migration as startup/fresh post).
+-- PLAN-v3.1: stop application, migrate once, then start new code.
+-- Versions remain append-only; pool labels never touch epoch or wallet triggers.
+CREATE TABLE IF NOT EXISTS nx_sim_task_pool (
+  code VARCHAR(32) NOT NULL PRIMARY KEY,
+  kind VARCHAR(8) NOT NULL,
+  level INT NULL,
+  name VARCHAR(128) NOT NULL,
+  sort_order INT NOT NULL,
+  CHECK(kind IN ('DEVICE','PHONE')),
+  UNIQUE KEY uk_sim_pool_level(level)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE TABLE IF NOT EXISTS nx_sim_task_pool_cutover (
+  id TINYINT NOT NULL PRIMARY KEY,
+  effective_at DATETIME(6) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+SET @pool_ddl = IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE()
+  AND table_name='nx_sim_task_type_version' AND column_name='pool_code'), 'SELECT 1',
+  'ALTER TABLE nx_sim_task_type_version ADD COLUMN pool_code VARCHAR(32) NULL');
+PREPARE pool_stmt FROM @pool_ddl;
+EXECUTE pool_stmt;
+DEALLOCATE PREPARE pool_stmt;
+SET @pool_ddl = IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE()
+  AND table_name='nx_sim_product_task_policy_version' AND column_name='allowed_pool_codes'), 'SELECT 1',
+  'ALTER TABLE nx_sim_product_task_policy_version ADD COLUMN allowed_pool_codes JSON NULL');
+PREPARE pool_stmt FROM @pool_ddl;
+EXECUTE pool_stmt;
+DEALLOCATE PREPARE pool_stmt;
+SET @pool_ddl = IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE()
+  AND table_name='nx_admin_device_sku' AND column_name='allowed_pool_codes_json'), 'SELECT 1',
+  'ALTER TABLE nx_admin_device_sku ADD COLUMN allowed_pool_codes_json JSON NULL');
+PREPARE pool_stmt FROM @pool_ddl;
+EXECUTE pool_stmt;
+DEALLOCATE PREPARE pool_stmt;
+SET @pool_ddl = IF(EXISTS(SELECT 1 FROM information_schema.statistics WHERE table_schema=DATABASE()
+  AND table_name='nx_simulated_device_runtime' AND index_name='idx_sim_runtime_product_state'), 'SELECT 1',
+  'ALTER TABLE nx_simulated_device_runtime ADD KEY idx_sim_runtime_product_state(product_code,state)');
+PREPARE pool_stmt FROM @pool_ddl;
+EXECUTE pool_stmt;
+DEALLOCATE PREPARE pool_stmt;
+
+DROP PROCEDURE IF EXISTS cutover_sim_task_pools;
+DELIMITER $$
+CREATE PROCEDURE cutover_sim_task_pools()
+BEGIN
+  DECLARE cutover_at DATETIME(6);
+  IF NOT EXISTS(SELECT 1 FROM nx_sim_task_pool_cutover WHERE id=1) THEN
+    SET cutover_at=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00');
+    START TRANSACTION;
+    INSERT INTO nx_sim_task_pool_cutover VALUES(1,cutover_at);
+    INSERT INTO nx_sim_task_pool(code,kind,level,name,sort_order) VALUES
+      ('L1','DEVICE',1,'初级',10),('L2','DEVICE',2,'中级',20),
+      ('L3','DEVICE',3,'高级',30),('L4','DEVICE',4,'旗舰',40),('PHONE','PHONE',NULL,'手机任务池',0);
+
+    -- Resolve the phone's published concrete candidates BEFORE appending any version.
+    CREATE TEMPORARY TABLE sim_pool_phone_candidates AS
+    SELECT t.* FROM (
+      SELECT v.*, ROW_NUMBER() OVER(PARTITION BY task_type_id ORDER BY effective_at DESC,version DESC) rn
+      FROM nx_sim_task_type_version v WHERE effective_at<=cutover_at
+    ) t JOIN (
+      SELECT * FROM nx_sim_product_task_policy_version WHERE product_key='phone' AND effective_at<=cutover_at
+      ORDER BY effective_at DESC,version DESC LIMIT 1
+    ) p ON IF(p.allowed_task_classes IS NULL,
+      JSON_CONTAINS(p.allowed_task_type_ids,JSON_QUOTE(t.task_type_id)),
+      JSON_CONTAINS(p.allowed_task_classes,JSON_QUOTE(t.task_class)))
+    WHERE t.rn=1;
+    INSERT INTO nx_sim_task_type_version(task_type_id,version,effective_at,name,task_class,duration_seconds,base_reward,asset,enabled,pool_code)
+      SELECT t.task_type_id,(SELECT MAX(v.version)+1 FROM nx_sim_task_type_version v WHERE v.task_type_id=t.task_type_id),
+        cutover_at,t.name,t.task_class,t.duration_seconds,t.base_reward,t.asset,t.enabled,'PHONE'
+      FROM sim_pool_phone_candidates t ORDER BY t.task_type_id;
+    DROP TEMPORARY TABLE sim_pool_phone_candidates;
+
+    -- All published non-phone keys, including delisted/deleted keys, retain their published T/b.
+    CREATE TEMPORARY TABLE sim_pool_published AS
+      SELECT p.*, (SELECT MAX(n.version) FROM nx_sim_product_task_policy_version n WHERE n.product_key=p.product_key) max_version
+      FROM (SELECT v.*,ROW_NUMBER() OVER(PARTITION BY product_key ORDER BY effective_at DESC,version DESC) rn
+        FROM nx_sim_product_task_policy_version v WHERE effective_at<=cutover_at) p WHERE p.rn=1;
+    INSERT INTO nx_sim_product_task_policy_version(product_key,version,effective_at,allowed_task_type_ids,allowed_task_classes,
+      allowed_pool_codes,monthly_target_usdt,monthly_target_band_pct)
+      SELECT product_key,max_version+1,cutover_at,JSON_ARRAY(),NULL,
+        IF(product_key='phone',JSON_ARRAY('PHONE'),JSON_ARRAY()),monthly_target_usdt,monthly_target_band_pct
+      FROM sim_pool_published ORDER BY product_key;
+    IF NOT EXISTS(SELECT 1 FROM sim_pool_published WHERE product_key='phone') THEN
+      INSERT INTO nx_sim_product_task_policy_version(product_key,version,effective_at,allowed_task_type_ids,allowed_pool_codes)
+        VALUES('phone',1,cutover_at,JSON_ARRAY(),JSON_ARRAY('PHONE'));
+    END IF;
+    DROP TEMPORARY TABLE sim_pool_published;
+    -- Drafts get no published history. The old columns are no longer writable by the application.
+    UPDATE nx_admin_device_sku SET allowed_task_type_ids_json=NULL,allowed_task_classes_json=NULL,allowed_pool_codes_json=JSON_ARRAY();
+
+    -- Only old task/scope tickets; datacenter retirement is owned by the separate migration.
+    CREATE TEMPORARY TABLE sim_pool_old_tickets AS
+      SELECT operation_id FROM nx_audit_operation_ticket WHERE status='pending' AND is_deleted=0
+        AND JSON_VALID(command_json)
+        AND JSON_UNQUOTE(JSON_EXTRACT(command_json,'$.domain'))='E'
+        AND JSON_UNQUOTE(JSON_EXTRACT(command_json,'$.op')) IN
+          ('e1_sku_create','e1_sku_update','e1_sku_status','e1_phone_task_policy','e2_task_create','e2_task_update','e2_task_status');
+    UPDATE nx_audit_operation_ticket t JOIN sim_pool_old_tickets o ON o.operation_id=t.operation_id
+      SET t.status='rejected',t.decision_reason='TASK_POOL_FORMAT_RETIRED',t.decided_at=cutover_at;
+    DELETE l FROM nx_audit_object_lock l JOIN sim_pool_old_tickets o ON o.operation_id=l.ticket_id;
+    DROP TEMPORARY TABLE sim_pool_old_tickets;
+    COMMIT;
+  END IF;
+END$$
+DELIMITER ;
+CALL cutover_sim_task_pools();
+DROP PROCEDURE cutover_sim_task_pools;

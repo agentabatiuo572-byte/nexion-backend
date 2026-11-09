@@ -8,12 +8,14 @@ import java.util.Set;
 /** Current catalog projections; purchase and trial snapshots are never refreshed from these values. */
 public final class MonthlyTargetProjection {
     private MonthlyTargetProjection() { }
-    public static void validate(String key, String type, BigDecimal target, BigDecimal band, Boolean clear) {
-        if (target == null && band == null && clear == null) return;
+    public static boolean supportsDevice(String key, String type) {
         String classification = E3DeviceCapacityPolicy.classify(key, type);
-        if (classification == null || !Set.of("capacityApplyToCloudShare","capacityApplyToS1","capacityApplyToPro",
-                "capacityApplyToProV2","capacityApplyToRackP1","capacityApplyToRackP2").contains(classification))
-            throw new BizException(422,"MONTHLY_TARGET_DEVICE_INELIGIBLE");
+        return classification != null && Set.of("capacityApplyToCloudShare","capacityApplyToS1","capacityApplyToPro",
+                "capacityApplyToProV2","capacityApplyToRackP1","capacityApplyToRackP2").contains(classification);
+    }
+    public static void validate(String key, String type, BigDecimal target, BigDecimal band, Boolean clear, boolean checkEligibility) {
+        if (target == null && band == null && clear == null) return;
+        if (checkEligibility && !supportsDevice(key, type)) throw new BizException(422,"MONTHLY_TARGET_DEVICE_INELIGIBLE");
         if (Boolean.TRUE.equals(clear) && (target != null || band != null)) throw new BizException(422,"MONTHLY_TARGET_CLEAR_CONFLICT");
         if (target != null && (target.compareTo(BigDecimal.ONE) < 0 || target.compareTo(new BigDecimal("1000000")) > 0 || target.stripTrailingZeros().scale() > 2))
             throw new BizException(422,"MONTHLY_TARGET_USDT_INVALID");
