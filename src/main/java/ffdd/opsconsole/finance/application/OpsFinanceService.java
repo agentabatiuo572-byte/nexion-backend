@@ -1292,6 +1292,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (channel == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TOPUP_CHANNEL_NOT_FOUND");
         }
+        if ("fee".equals(field) && "vietqr".equals(channel.code())) {
+            return ApiResult.fail(410, "BANK_TOPUP_FEE_RETIRED");
+        }
         if ("card".equals(channel.code())) {
             return ApiResult.fail(410, "CARD_TOPUP_CHANNEL_RETIRED");
         }
