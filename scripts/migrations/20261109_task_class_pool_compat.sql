@@ -62,9 +62,20 @@ SELECT kind,product_key,JSON_ARRAYAGG(task_class) AS classes FROM scope_counts W
 GROUP BY kind,product_key;
 
 START TRANSACTION;
-INSERT INTO nx_sim_product_task_policy_version(product_key,version,effective_at,allowed_task_type_ids,allowed_task_classes)
-SELECT s.product_key,s.version+1,@class_cut,s.ids,COALESCE(c.classes,JSON_ARRAY())
-FROM scope_sources s LEFT JOIN scope_classes c ON c.kind=s.kind AND c.product_key=s.product_key WHERE s.kind='P';
+-- TEST already has target columns; a fresh local chain can reach this step before their DDL.
+-- Preserve the source economics when converting an ID policy to classes.
+SET @class_target_columns = IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE()
+  AND table_name='nx_sim_product_task_policy_version' AND column_name='monthly_target_usdt'),
+  ',monthly_target_usdt,monthly_target_band_pct','');
+SET @class_publish = CONCAT('INSERT INTO nx_sim_product_task_policy_version
+(product_key,version,effective_at,allowed_task_type_ids,allowed_task_classes',@class_target_columns,')
+SELECT s.product_key,s.version+1,@class_cut,s.ids,COALESCE(c.classes,JSON_ARRAY())',
+  IF(@class_target_columns='', '', ',p.monthly_target_usdt,p.monthly_target_band_pct'),'
+FROM scope_sources s JOIN nx_sim_product_task_policy_version p ON p.product_key=s.product_key AND p.version=s.version
+LEFT JOIN scope_classes c ON c.kind=s.kind AND c.product_key=s.product_key WHERE s.kind=''P''');
+PREPARE class_stmt FROM @class_publish;
+EXECUTE class_stmt;
+DEALLOCATE PREPARE class_stmt;
 UPDATE nx_admin_device_sku d JOIN scope_sources s ON s.kind='D' AND d.sku_id COLLATE utf8mb4_unicode_ci=s.product_key
 LEFT JOIN scope_classes c ON c.kind=s.kind AND c.product_key=s.product_key
 SET d.allowed_task_classes_json=COALESCE(c.classes,JSON_ARRAY());
