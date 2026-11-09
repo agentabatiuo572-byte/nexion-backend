@@ -952,7 +952,7 @@ public class AppTaskAssignmentService {
         if (device.vramTotalGb() == null || device.vramTotalGb() < 0) {
             throw new BizException(409, "TASK_ASSIGNMENT_VRAM_UNAVAILABLE");
         }
-        if (Boolean.TRUE.equals(device.dispatchPaused())) throw new BizException(409, "TASK_ASSIGNMENT_DC_PAUSED");
+
         if (StringUtils.hasText(device.pausedReason())
                 && !(phone(device) && Set.of("PHONE_LOW_BATTERY", "PHONE_OFFLINE").contains(device.pausedReason()))) {
             throw new BizException(409, "TASK_ASSIGNMENT_DEVICE_PAUSED");

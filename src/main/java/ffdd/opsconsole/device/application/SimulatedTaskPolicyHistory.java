@@ -10,6 +10,7 @@ import org.springframework.transaction.annotation.*;
 /** One committed, consistent-read history. Never publish a caller's uncommitted configuration. */
 @Service
 @RequiredArgsConstructor
+@lombok.extern.slf4j.Slf4j
 public class SimulatedTaskPolicyHistory {
     public static final int MAX_VERSIONS = 20000;
     public static final long MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
@@ -22,7 +23,10 @@ public class SimulatedTaskPolicyHistory {
     public History load() {
         long epoch=mapper.epoch();
         // Bound retained and transient history. Oversized histories use the original indexed SQL resolver.
-        if(mapper.historySize()>MAX_VERSIONS || mapper.historyPayloadBytes()>MAX_PAYLOAD_BYTES) return new History(epoch,List.of(),List.of(),List.of(),false);
+        if(mapper.historySize()>MAX_VERSIONS || mapper.historyPayloadBytes()>MAX_PAYLOAD_BYTES) {
+            log.warn("SIM policy history guard exceeded epoch={}; resolving through SQL",epoch);
+            return new History(epoch,List.of(),List.of(),List.of(),false);
+        }
         return new History(epoch,mapper.typeHistory(),mapper.productHistory(),mapper.e3History(),true);
     }
 }

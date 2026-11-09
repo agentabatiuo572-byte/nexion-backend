@@ -565,7 +565,7 @@ public class TestComputeV2Service {
         Integer pending=admission.pendingDeactivate(deviceId,userId);
         if((!completing && (pending==null || pending!=0)) || device.activatedAt()==null
                 || !Set.of("ACTIVE","ONLINE","BUSY","RUNNING").contains(device.status().toUpperCase(Locale.ROOT))
-                || Boolean.TRUE.equals(device.dispatchPaused()) || device.pausedReason()!=null&&!device.pausedReason().isBlank())
+                || device.pausedReason()!=null&&!device.pausedReason().isBlank())
             throw error(409,"COMPUTE_V2_DEVICE_NOT_ACTIVE");
         if(admission.unresolvedLegacy(userId,deviceId)!=0) throw error(409,"COMPUTE_V2_V1_NOT_DRAINED");
         long ownedEnrolled=assignments.ownedDevices(userId).stream().filter(row->enrolled.contains(row.id()) && row.activatedAt()!=null

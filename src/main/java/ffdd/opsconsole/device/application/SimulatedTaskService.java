@@ -267,7 +267,7 @@ public class SimulatedTaskService implements SchedulingConfigurer {
         if(device.deactivatedAt()!=null && mapper.refundedOrderDevice(device.userId(),device.deviceId()))stopReason="ORDER_REFUND";
         if(!active(device) && device.deactivatedAt()==null) {
             LocalDateTime pausedAt=observed;
-            if(device.dispatchPaused())pausedAt=earlier(pausedAt,device.dcUpdatedAt());
+
             if(device.pausedReason()!=null && !device.pausedReason().isBlank()
                     && !(phone(device) && Set.of("PHONE_OFFLINE","PHONE_LOW_BATTERY").contains(device.pausedReason())))
                 pausedAt=earlier(pausedAt,device.runtimeUpdatedAt());
@@ -289,7 +289,8 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                 if(cutoff!=null && !runtime.nextStartAt().isBefore(cutoff))
                     return save(runtime,runtime.nextStartAt(),null,null,"PHONE_VALIDITY_EXPIRED".equals(stopReason)?"EXPIRED":"STOPPED",stopReason);
                 var policy=policies.policyAt(runtime.productCode(),runtime.nextStartAt());
-                var pool=policy.taskTypes().stream().filter(SimulatedTaskPolicyService.TaskTypeSnapshot::enabled).toList();
+                var pool=policy==null?List.<SimulatedTaskPolicyService.TaskTypeSnapshot>of()
+                        :policy.taskTypes().stream().filter(SimulatedTaskPolicyService.TaskTypeSnapshot::enabled).toList();
                 int policySteps=0;
                 while(pool.isEmpty()) {
                     if(policySteps++>=CATCH_UP_LIMIT)
@@ -301,7 +302,12 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                             return save(runtime,runtime.finishAfterAt(),null,null,"STOPPED","AFTER_CURRENT");
                         if(cutoff!=null && !cutoff.isAfter(observed))
                             return save(runtime,cutoff,null,null,"PHONE_VALIDITY_EXPIRED".equals(stopReason)?"EXPIRED":"STOPPED",stopReason);
-                        return save(runtime,runtime.nextStartAt(),null,observed.plusSeconds(30),"WAITING_CONFIG",null);
+                        var future=policies.nextPolicyAfter(runtime.productCode(),runtime.nextStartAt(),observed.plusMinutes(30));
+                        var next=earlier(observed.plusMinutes(30),future==null?null:future.effectiveAt());
+                        next=earlier(earlier(next,cutoff),runtime.finishAfterAt());
+                        if(runtime.stopAt()!=null || runtime.stopAfterCurrent())
+                            return save(runtime,runtime.nextStartAt(),null,earlier(next,observed.plusSeconds(30)),"CLOSING",runtime.lastError());
+                        return save(runtime,runtime.nextStartAt(),null,next,"WAITING_CONFIG",null);
                     }
                     runtime=save(runtime,policy.effectiveAt(),null,policy.effectiveAt(),"RUNNING",null);
                     if(cutoff!=null && !runtime.nextStartAt().isBefore(cutoff))
@@ -309,9 +315,25 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                     if(runtime.stopAfterCurrent() && !runtime.nextStartAt().isBefore(runtime.finishAfterAt()))
                         return save(runtime,runtime.finishAfterAt(),null,null,"STOPPED","AFTER_CURRENT");
                     pool=policy.taskTypes().stream().filter(SimulatedTaskPolicyService.TaskTypeSnapshot::enabled).toList();
+                    if(!pool.isEmpty() && !runtime.phone() && policy.allowedPoolCodes().stream().anyMatch(p->!"PHONE".equals(p))) {
+                        // Logical empty -> DEVICE runnable, including catch-up without a persisted WAITING_CONFIG.
+                        // Persist the shifted cursor before waiting; a retry at that cursor never offsets again.
+                        var start=policy.effectiveAt().plusSeconds(wakeOffset(device.deviceId(),policy.effectiveAt()));
+                        runtime=save(runtime,start,null,earlier(earlier(start,cutoff),runtime.finishAfterAt()),"RUNNING",null);
+                        pool=List.of();
+                        break;
+                    }
                 }
+                if(pool.isEmpty()) {
+                    if(runtime.nextStartAt().isAfter(observed))return runtime;
+                    continue; // re-read policy and all lifecycle bounds at the actual offset start
+                }
+                if(runtime.nextStartAt().isAfter(observed))
+                    return save(runtime,runtime.nextStartAt(),null,earlier(earlier(runtime.nextStartAt(),cutoff),runtime.finishAfterAt()),"RUNNING",null);
                 pool=pool.stream().sorted(Comparator.comparing(SimulatedTaskPolicyService.TaskTypeSnapshot::taskTypeId)).toList();
                 var type=pool.get(DeviceMonthlyTargetPacing.select(device.deviceId(),runtime.generation(),runtime.nextStartAt(),pool.size()));
+                if(type.poolCode()!=null && !"PHONE".equals(type.poolCode()) && (runtime.phone() || policy.monthlyTargetUsdt()==null))
+                    throw error(422,"SKU_POOL_TARGET_REQUIRED");
                 var projection=E3DeviceCapacityPolicy.project(device.productCode(),device.deviceType(),device.purchasedAt(),device.activatedAt(),
                         runtime.nextStartAt(),policy.e3Config());
                 BigDecimal reward=E3DeviceCapacityPolicy.applyCapacity(type.baseReward(),projection);
@@ -361,6 +383,15 @@ public class SimulatedTaskService implements SchedulingConfigurer {
         return runtime;
     }
 
+    /** UTF-8, business-zone ISO local timestamp with exactly six fractional digits. */
+    private static int wakeOffset(long device,LocalDateTime effectiveAt) {
+        String input="SIM-WAKE-1|"+device+"|"+effectiveAt.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS"));
+        try {
+            byte[] hash=java.security.MessageDigest.getInstance("SHA-256").digest(input.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return new java.math.BigInteger(1,hash).mod(java.math.BigInteger.valueOf(300)).intValue();
+        } catch(java.security.NoSuchAlgorithmException e) {throw new IllegalStateException(e);}
+    }
+
     private RuntimeRow save(RuntimeRow r,LocalDateTime nextStart,String task,LocalDateTime nextAction,String state,String error) {
         if(error==null && r.stopAt()!=null && "DEVICE_PAUSED".equals(r.lastError()))error="DEVICE_PAUSED";
         var updated=new RuntimeRow(r.deviceId(),r.userId(),r.instanceNo(),r.productCode(),r.phone(),r.generation(),r.intervalStartedAt(),
@@ -382,7 +413,7 @@ public class SimulatedTaskService implements SchedulingConfigurer {
     private boolean active(DeviceRow d) {
         boolean phonePause=phone(d) && Set.of("PHONE_OFFLINE","PHONE_LOW_BATTERY").contains(Objects.toString(d.pausedReason(),""));
         return d.activatedAt()!=null && d.deactivatedAt()==null && Set.of("ACTIVE","ONLINE","BUSY","RUNNING").contains(d.status().toUpperCase(Locale.ROOT))
-                && !d.dispatchPaused() && (d.pausedReason()==null || d.pausedReason().isBlank() || phonePause);
+                && (d.pausedReason()==null || d.pausedReason().isBlank() || phonePause);
     }
     private static boolean phone(DeviceRow d){return Set.of("PHONE","MOBILE").contains(d.deviceType().toUpperCase(Locale.ROOT));}
     private void requireIdentity(DeviceRow d,RuntimeRow r) {

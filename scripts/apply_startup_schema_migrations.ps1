@@ -99,7 +99,6 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260902_legal_terms_formal_publish.sql"),
   (Join-Path $root "scripts\migrations\20260817_h7_voucher_cadence.sql"),
   (Join-Path $root "scripts\migrations\20260817_genesis_holder_policy.sql"),
-  (Join-Path $root "scripts\migrations\20260820_home_grid_datacenter_metadata.sql"),
   (Join-Path $root "scripts\migrations\20260820_e2_task_price_history.sql"),
   (Join-Path $root "scripts\migrations\20260820_i4_homepage_trust_content.sql"),
   (Join-Path $root "scripts\migrations\20260821_h2_trial_card_offer.sql"),
@@ -289,8 +288,6 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260926_phone_task_pause_timing.sql")
   # The H3 quest claim outbox must accept its instance fields before wallet settlement.
   (Join-Path $root "scripts\migrations\20260927_h3_quest_claim_event_schema.sql")
-  # Home's canonical E5 display row still carries the retired network brand.
-  (Join-Path $root "scripts\migrations\20260928_home_mobile_network_brand.sql")
   (Join-Path $root "scripts\migrations\20260928_phone_calibration_policy.sql")
   (Join-Path $root "scripts\migrations\20261101_direct_referral_bootstrap_compat.sql"),
   (Join-Path $root "scripts\migrations\20261006_seven_layer_direct_split.sql")
@@ -420,9 +417,11 @@ $migrations = @(
   (Join-Path $root "scripts\seed_e2_task_pricing.sql")
   (Join-Path $root "scripts\migrations\20261103_retired_compute_read_views.sql")
   (Join-Path $root "scripts\migrations\20261103_retired_device_referral_read_view.sql")
-  (Join-Path $root "scripts\migrations\20261103_task_class_authorization.sql")
+  # Replay the pool-aware forward replacement; keep the historical cutover immutable.
+  (Join-Path $root "scripts\migrations\20261109_task_class_pool_compat.sql")
   (Join-Path $root "scripts\migrations\20261109_device_monthly_target.sql")
   (Join-Path $root "scripts\migrations\20261109_sim_policy_epoch.sql")
+  (Join-Path $root "scripts\migrations\20261109_task_pools.sql")
   (Join-Path $root "scripts\migrations\20261103_h9_globe_distribution.sql")
   (Join-Path $root "scripts\migrations\20261103_handoff_checkin_boost.sql")
   (Join-Path $root "scripts\migrations\20261103_handoff_commerce_trial.sql")
@@ -472,6 +471,9 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261109_i5_read_token_time_precision.sql")
   (Join-Path $root "scripts\migrations\20261109_rbac_replay_scope.sql")
   (Join-Path $root "scripts\migrations\20261109_rbac_wallet_pin_grants.sql")
+  (Join-Path $root "scripts\migrations\20261109_phone_menu_visibility.sql")
+  # App must be stopped before retiring the registry; the migration records a one-time marker.
+  (Join-Path $root "scripts\migrations\20261109_datacenter_retirement.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
