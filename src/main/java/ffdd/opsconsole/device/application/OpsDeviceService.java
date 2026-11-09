@@ -3470,10 +3470,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         String productType=before==null ? ("Share".equals(normalizeExact(request.tier())) ? "SHARE" : "DEVICE") : before.productType();
         boolean listing="on".equals(normalizeSkuStatus(request.status())) && (before==null || !"on".equals(before.status()));
         if (listing) requireStoreSkuModel(key,productType);
-        MonthlyTargetProjection.validate(key,productType,request.monthlyTargetUsdt(),request.monthlyTargetBandPct(),request.clearMonthlyTarget());
         boolean clear=Boolean.TRUE.equals(request.clearMonthlyTarget());
         BigDecimal target=clear?null:request.monthlyTargetUsdt()!=null?request.monthlyTargetUsdt():before==null?null:before.monthlyTargetUsdt();
         BigDecimal band=clear?null:request.monthlyTargetBandPct()!=null?request.monthlyTargetBandPct():before==null?null:before.monthlyTargetBandPct();
+        // Legacy models can round-trip their stored target during ordinary maintenance.
+        boolean targetChanged=before==null || !sameAmount(before.monthlyTargetUsdt(),target)
+                || !sameAmount(before.monthlyTargetBandPct(),band);
+        MonthlyTargetProjection.validate(key,productType,request.monthlyTargetUsdt(),request.monthlyTargetBandPct(),request.clearMonthlyTarget(),listing || targetChanged);
         if((target==null)!=(band==null))throw new BizException(422,"MONTHLY_TARGET_PAIR_REQUIRED");
         var pools=simulationPolicies.writePools(key,request.allowedPoolCodes(),before==null?List.of():before.allowedPoolCodes());
         boolean scopeChanged=before==null || !new java.util.HashSet<>(pools).equals(new java.util.HashSet<>(before.allowedPoolCodes()));
