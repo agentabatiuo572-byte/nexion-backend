@@ -41,6 +41,8 @@ public class SimulatedTaskPolicyService {
     public record ProductView(List<String> allowedPoolCodes,long productTaskPolicyVersion,
             LocalDateTime productTaskPolicyEffectiveAt) { }
 
+    /** A store product before its first publication has no runnable policy; PHONE still requires history. */
+    @org.springframework.lang.Nullable
     @Transactional(readOnly=true)
     public PolicyVersion policyAt(String productKey,LocalDateTime at) {
         var snapshot=historyAtCallerEpoch();
@@ -72,7 +74,10 @@ public class SimulatedTaskPolicyService {
     private PolicyVersion policyAt(SimulatedTaskPolicyHistory.History h,String key,LocalDateTime at) {
         ProductVersion product=null;
         for(var p:h.products())if(p.productKey().equals(key)&&!p.effectiveAt().isAfter(at))product=p;
-        if(product==null)throw new BizException(422,"SIMULATED_PRODUCT_POLICY_HISTORY_MISSING");
+        if(product==null) {
+            if("phone".equals(key))throw new BizException(422,"SIMULATED_PRODUCT_POLICY_HISTORY_MISSING");
+            return null;
+        }
         E3Version e3=null;
         for(var e:h.e3())if(!e.effectiveAt().isAfter(at))e3=e;
         if(e3==null)throw new BizException(422,"SIMULATED_E3_POLICY_HISTORY_MISSING");
@@ -108,7 +113,10 @@ public class SimulatedTaskPolicyService {
     }
     PolicyVersion policyAtDatabase(String key,LocalDateTime at) {
         var p=mapper.productAt(key,at);
-        if(p==null)throw new BizException(422,"SIMULATED_PRODUCT_POLICY_HISTORY_MISSING");
+        if(p==null) {
+            if("phone".equals(key))throw new BizException(422,"SIMULATED_PRODUCT_POLICY_HISTORY_MISSING");
+            return null;
+        }
         var e=mapper.e3At(at);
         if(e==null)throw new BizException(422,"SIMULATED_E3_POLICY_HISTORY_MISSING");
         return resolve(p,e,versionsAt(p,at));
@@ -122,7 +130,8 @@ public class SimulatedTaskPolicyService {
             if(!v.effectiveAt().isAfter(after))p=v;
             else if(!v.effectiveAt().isAfter(notAfter)&&(next==null||v.effectiveAt().isBefore(next)))next=v.effectiveAt();
         }
-        for(var e:h.e3())if(e.effectiveAt().isAfter(after)&&!e.effectiveAt().isAfter(notAfter)
+        // Before a store product's first policy, E3 events cannot make it runnable or hide its first publication.
+        if(p!=null || "phone".equals(key))for(var e:h.e3())if(e.effectiveAt().isAfter(after)&&!e.effectiveAt().isAfter(notAfter)
                 &&(next==null||e.effectiveAt().isBefore(next)))next=e.effectiveAt();
         if(p!=null) {
             var scope=scope(p);
@@ -133,8 +142,11 @@ public class SimulatedTaskPolicyService {
     }
     PolicyVersion nextPolicyAfterDatabase(String key,LocalDateTime after,LocalDateTime notAfter) {
         var p=mapper.productAt(key,after);
-        LocalDateTime next=mapper.nextProduct(key,after,notAfter),e3=mapper.nextE3(after,notAfter);
-        if(e3!=null&&(next==null||e3.isBefore(next)))next=e3;
+        LocalDateTime next=mapper.nextProduct(key,after,notAfter);
+        if(p!=null || "phone".equals(key)) {
+            var e3=mapper.nextE3(after,notAfter);
+            if(e3!=null&&(next==null||e3.isBefore(next)))next=e3;
+        }
         if(p!=null) {
             List<String> scope=strings(p.allowedPoolCodesJson()!=null?p.allowedPoolCodesJson():p.allowedTaskClassesJson()!=null?p.allowedTaskClassesJson():p.allowedTaskTypeIdsJson());
             if(!scope.isEmpty()) {

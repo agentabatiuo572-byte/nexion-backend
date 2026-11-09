@@ -289,7 +289,8 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                 if(cutoff!=null && !runtime.nextStartAt().isBefore(cutoff))
                     return save(runtime,runtime.nextStartAt(),null,null,"PHONE_VALIDITY_EXPIRED".equals(stopReason)?"EXPIRED":"STOPPED",stopReason);
                 var policy=policies.policyAt(runtime.productCode(),runtime.nextStartAt());
-                var pool=policy.taskTypes().stream().filter(SimulatedTaskPolicyService.TaskTypeSnapshot::enabled).toList();
+                var pool=policy==null?List.<SimulatedTaskPolicyService.TaskTypeSnapshot>of()
+                        :policy.taskTypes().stream().filter(SimulatedTaskPolicyService.TaskTypeSnapshot::enabled).toList();
                 int policySteps=0;
                 while(pool.isEmpty()) {
                     if(policySteps++>=CATCH_UP_LIMIT)
