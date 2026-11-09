@@ -74,7 +74,8 @@ class HomeSharedSnapshotCache {
         }
     }
 
-    @Scheduled(fixedDelay = 4_000)
+    // Refresh on a start-to-start cadence while retaining the original five-second sampling budget.
+    @Scheduled(fixedRate = 2_000)
     public void refresh() {
         if (key == null) return;
         // Start the freshness budget before either SQL statement, including their pool wait time.
