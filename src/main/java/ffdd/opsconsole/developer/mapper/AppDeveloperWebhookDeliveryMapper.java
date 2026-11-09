@@ -22,6 +22,9 @@ public interface AppDeveloperWebhookDeliveryMapper extends BaseMapper<Object> {
     @Update("UPDATE nx_developer_webhook_delivery SET status='DELIVERING',attempt_count=attempt_count+1,updated_at=NOW() WHERE id=#{id} AND status IN ('PENDING','RETRYING')")
     int claim(@Param("id") Long id);
 
+    @Update("UPDATE nx_developer_webhook_delivery SET status=#{status},attempt_count=attempt_count-1,updated_at=NOW() WHERE id=#{id} AND status='DELIVERING' AND attempt_count=#{attempts}")
+    int releaseUnattempted(@Param("id") Long id, @Param("attempts") int attempts, @Param("status") String status);
+
     /** Returns rows stranded by a crashed worker to the durable retry queue after their lease expires. */
     @Update("UPDATE nx_developer_webhook_delivery SET status='RETRYING',last_error='DELIVERY_LEASE_EXPIRED',next_retry_at=#{now},updated_at=#{now} WHERE status='DELIVERING' AND updated_at<=#{cutoff}")
     int reclaimStaleDelivering(@Param("cutoff") LocalDateTime cutoff, @Param("now") LocalDateTime now);

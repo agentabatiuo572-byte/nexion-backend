@@ -13,6 +13,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.context.event.ContextClosedEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -32,6 +34,11 @@ public class SupportLeaderboardSamplingService {
     private final ProductionSupportPathGuard production;
     private final TransactionTemplate reads;
     private final AtomicReference<String> afterKey=new AtomicReference<>("");
+    private volatile boolean closing;
+    private static final class SamplingStopped extends RuntimeException { }
+
+    @EventListener(ContextClosedEvent.class)
+    public void contextClosed() { closing=true; }
 
     public SupportLeaderboardSamplingService(SupportLeaderboardSamplingMapper catalogue,SupportLeaderboardMapper clock,
         SupportLeaderboardSourceService source,SupportLeaderboardPublicationService publications,
@@ -58,6 +65,7 @@ public class SupportLeaderboardSamplingService {
 
     /** A bounded cursor advances on failures too, so one bad stream cannot starve the rest. */
     public synchronized Result sample() {
+        if(closing)return empty("IDLE");
         if(!production.productionSupportAutomationAllowed())return empty("PROFILE_BLOCKED");
         String token;
         try {token=cache.tryLock();}catch(RuntimeException failure){warn("CACHE_FAILED",null,failure);return empty("CACHE_FAILED");}
@@ -96,11 +104,15 @@ public class SupportLeaderboardSamplingService {
         final Prepared prepared;
         try {
             prepared=reads.execute(status->{
-                var captured=source.captureForSampling(batchRead);
+                var captured=source.captureForSampling(()->{
+                    if(closing)throw new SamplingStopped();
+                    batchRead.run();
+                });
                 Instant cutoff=captured.cutoff().toInstant(ZoneOffset.UTC);
                 NavigableMap<String,Context> current=contexts(cutoff);
                 List<Snapshot> snapshots=new ArrayList<>();int retired=0;
                 for(Context hint:due) {
+                    if(closing)break;
                     batchRead.run();
                     Context context=current.get(SupportLeaderboardPublicationService.streamKey(hint));
                     if(context==null){retired++;continue;}
@@ -109,12 +121,16 @@ public class SupportLeaderboardSamplingService {
                 }
                 return new Prepared(List.copyOf(snapshots),retired);
             });
-        }catch(RuntimeException failure){warn("SOURCE_BATCH_FAILED",null,failure);
+        }catch(SamplingStopped stopped){return empty("IDLE");}
+        catch(RuntimeException failure){warn("SOURCE_BATCH_FAILED",null,failure);
             for(Context context:due)markFailed(entries,SupportLeaderboardPublicationService.streamKey(context));
             return new Result("SOURCE_FAILED",plan.contexts().size(),window.size(),due.size(),0,0,failed+due.size(),deferred,0);}
         Objects.requireNonNull(prepared);
         int committed=0,superseded=0;
         for(Snapshot snapshot:prepared.snapshots()) {
+            // Each publication commits independently. Publish the completed cache entries and
+            // release the sample lease normally; the next process recomputes the remaining streams.
+            if(closing)break;
             batchRead.run();
             String key=SupportLeaderboardPublicationService.streamKey(snapshot.context());
             try {
