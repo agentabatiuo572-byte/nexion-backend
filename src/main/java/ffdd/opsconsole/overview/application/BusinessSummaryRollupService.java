@@ -8,6 +8,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import lombok.RequiredArgsConstructor;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 @ApplicationService
@@ -16,7 +17,7 @@ public class BusinessSummaryRollupService {
     private final BusinessSummaryMapper mapper;
     private final Clock clock;
 
-    @Transactional
+    @Transactional(isolation=Isolation.REPEATABLE_READ)
     public void refresh() {
         var state=mapper.lockState();
         LocalDateTime asOf=LocalDateTime.ofInstant(clock.instant(),BusinessCalendar.STORAGE_ZONE);
@@ -30,8 +31,10 @@ public class BusinessSummaryRollupService {
             for(LocalDate date=state.statisticsStart();!date.isAfter(today);date=date.plusDays(1))
                 if(!dates.contains(date))dates.add(date);
         }
+        // A plain SELECT shares dirtyDates' snapshot without INSERT...SELECT's source next-key locks.
+        var rows=mapper.readDates(dates,asOf);
         mapper.deleteDates(dates);
-        mapper.rebuildDates(dates,asOf);
+        if(!rows.isEmpty())mapper.insertDates(rows);
         LocalDate first=dates.stream().min(LocalDate::compareTo).orElse(today);
         LocalDate start=state.statisticsStart()==null || first.isBefore(state.statisticsStart())?first:state.statisticsStart();
         mapper.saveState(start,asOf,signature);
