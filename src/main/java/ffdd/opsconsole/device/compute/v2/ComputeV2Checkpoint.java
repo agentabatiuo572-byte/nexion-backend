@@ -12,8 +12,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.common.message.MessageQueue;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.context.event.ContextClosedEvent;
-import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
 /** One bounded poller, minute freezer and durable SQL checkpoint. Redis application never commits MQ offsets. */
@@ -26,10 +24,6 @@ public class ComputeV2Checkpoint {
     private final ComputeV2Persistence persistence;
     private final ComputeV2Properties config;
     private final Clock clock;
-    private volatile boolean closing;
-
-    @EventListener(ContextClosedEvent.class)
-    public void contextClosed() { closing = true; }
     private final Map<MessageQueue,NavigableMap<Long,Pending>> queues = new HashMap<>();
     private final Map<MessageQueue,Long> nextOffsets = new HashMap<>();
     private final Map<MessageQueue,Long> recoveryEnds = new HashMap<>();
@@ -53,10 +47,7 @@ public class ComputeV2Checkpoint {
     }
     private void recover() throws Exception {
         bootstrapped.set(false); store.ready(false); queues.clear(); nextOffsets.clear(); recoveryEnds.clear(); retryAfter.clear();
-        for (var event : persistence.recover(config.getDeploymentScope())) {
-            if (closing) return;
-            store.restorePersisted(event);
-        }
+        for (var event : persistence.recover(config.getDeploymentScope())) store.restorePersisted(event);
         var consumer = messageLog.consumer();
         for (var queue : consumer.fetchMessageQueues(config.getTopic()))
             recoveryEnds.put(queue,messageLog.producer().maxOffset(queue));
@@ -69,10 +60,8 @@ public class ComputeV2Checkpoint {
     }
     @Scheduled(fixedDelay = 100,initialDelay = 100,scheduler="computeV2TaskScheduler")
     public synchronized void tick() {
-        if (closing) return;
         try {
             if (!bootstrapped.get() || !store.initialized()) recover();
-            if (closing) return;
             if (clock.millis()-lastDurabilityCheck.get() >= 30000) {
                 messageLog.verifyDurability(); lastDurabilityCheck.set(clock.millis());
             }
@@ -81,7 +70,6 @@ public class ComputeV2Checkpoint {
             int buffered = queues.values().stream().mapToInt(Map::size).sum();
             for (var offsets : queues.values()) {
                 for (var entry : offsets.entrySet()) {
-                    if (closing) return;
                     var pending = entry.getValue();
                     if (!pending.applied()) {
                         apply(pending.event());
@@ -99,7 +87,6 @@ public class ComputeV2Checkpoint {
             consumer.pause(paused); consumer.resume(resumed);
             if (canPoll) {
                 for (var message : consumer.poll(50)) {
-                    if (closing) return;
                     MessageQueue queue = new MessageQueue(message.getTopic(),message.getBrokerName(),message.getQueueId());
                     if (!consumer.assignment().contains(queue)) continue;
                     var offsets = queues.computeIfAbsent(queue,q -> new TreeMap<>());
@@ -130,7 +117,6 @@ public class ComputeV2Checkpoint {
             if (!store.ready() && !assigned.isEmpty() && recoveryEnds.isEmpty()) store.ready(true);
             store.execute("freeze",Long.toString(clock.instant().getEpochSecond()));
             persistFrozen();
-            if (closing) return;
             commitContiguous();
             var retry = store.sorted("outgoing-age").stream().findFirst();
             if (retry.isPresent()) {
@@ -158,7 +144,6 @@ public class ComputeV2Checkpoint {
     }
     private void persistFrozen() {
         for (String window : store.sorted("frozen-index")) {
-            if (closing) return;
             if (retryAfter.getOrDefault(window,0L)>System.nanoTime()) continue;
             try {
             Instant windowEnd = Instant.ofEpochSecond(store.score("frozen-index",window).longValue());
@@ -176,9 +161,6 @@ public class ComputeV2Checkpoint {
                 var events = entry.getValue();
                 events.sort(Comparator.comparing(ComputeV2Event::occurredAt).thenComparing(ComputeV2Event::eventId));
                 for (int start = 0; start < events.size(); start += 200) {
-                    // SQL commit, Redis acknowledgement and local offset bookkeeping form one item.
-                    // Leave the frozen window and MQ offsets recoverable until that item is complete.
-                    if (closing) return;
                     var batch = List.copyOf(events.subList(start,Math.min(start+200,events.size())));
                     attempted = batch;
                     String batchId = batchId(config.getDeploymentScope()+":"+windowEnd.getEpochSecond(),batch);
