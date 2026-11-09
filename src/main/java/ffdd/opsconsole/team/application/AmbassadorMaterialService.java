@@ -205,6 +205,19 @@ public class AmbassadorMaterialService {
         }
     }
 
+    /** The current material verifier must be distinct from the final executor; no material/execution preflight. */
+    public ApiResult<Void> validateApprovalActor(AuditReplayCommand command) {
+        if (!isProposal(command) || !Set.of("approved", "通过", "已批").contains(
+                Objects.toString(command.params().get("value"), "").trim().toLowerCase(Locale.ROOT))) return ApiResult.ok();
+        long admin = requireAdmin("network_f4_ambassador_approve");
+        String key = String.valueOf(command.params().get("key"));
+        long id = Long.parseLong(key.substring("F.ambassador.".length(), key.length() - ".status".length()));
+        required(id, false);
+        var current = mapper.current(id);
+        return current != null && reviewedRevision(current, mapper.reviews(id), admin)
+                ? ApiResult.fail(409, "SELF_REVIEW_APPROVAL_FORBIDDEN") : ApiResult.ok();
+    }
+
     public Map<String,Object> proposal(long id,Long expectedRevision) {
         long admin=requireAdmin("network_f4_read");
         var app=required(id,false); var result=packet(app,admin);
@@ -302,8 +315,12 @@ public class AmbassadorMaterialService {
         if(app.budget()==null || app.budget().signum()<=0 || finance==null || finance.recognizedBudgetUsdt()==null || finance.recognizedBudgetUsdt().compareTo(app.budget())<0) result.add("RECOGNIZED_AMOUNT_INSUFFICIENT");
         if(app.eventDate()==null || app.eventDate().isAfter(BusinessCalendar.legacy().dateAt(Instant.now()))) result.add("EVENT_NOT_COMPLETED");
         // Any verifier of this revision is distinct from the actual final executor, even after a revised conclusion.
-        if(admin!=null && reviews.stream().anyMatch(r->r.revision()==current.revision() && r.reviewerId()==admin)) result.add("SELF_REVIEW_APPROVAL_FORBIDDEN");
+        if(admin!=null && reviewedRevision(current,reviews,admin)) result.add("SELF_REVIEW_APPROVAL_FORBIDDEN");
         return result;
+    }
+
+    private boolean reviewedRevision(Revision current,List<Review> reviews,long admin) {
+        return reviews.stream().anyMatch(r->r.revision()==current.revision() && r.reviewerId()==admin);
     }
 
     private Application owned(long user,long id,boolean lock) {

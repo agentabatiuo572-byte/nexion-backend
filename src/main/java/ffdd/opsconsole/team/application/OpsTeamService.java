@@ -4357,6 +4357,11 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     @Override
+    public ApiResult<Void> validateReplayPermission(AuditReplayCommand command) {
+        return ambassadorMaterials.validateApprovalActor(command);
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<?> replay(AuditReplayCommand cmd, AuditReplayContext ctx) {
         Map<String, Object> p = cmd.params() == null ? Map.of() : cmd.params();

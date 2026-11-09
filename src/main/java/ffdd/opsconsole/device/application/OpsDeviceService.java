@@ -4167,12 +4167,14 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (forceUnlock && !isE1PhaseReached(phaseId)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_FORCE_UNLOCK_PHASE_NOT_REACHED");
         }
-        if (!beforeForceUnlock && forceUnlock && !hasAuthority("device_e1_generation_gate_force_unlock")) {
+        return requireE1ForceUnlockPermission(beforeForceUnlock, forceUnlock);
+    }
+
+    private ApiResult<Map<String, Object>> requireE1ForceUnlockPermission(boolean beforeForceUnlock, boolean forceUnlock) {
+        if (!beforeForceUnlock && forceUnlock && !hasAuthority("device_e1_generation_gate_force_unlock"))
             return ApiResult.fail(403, "E1_FORCE_UNLOCK_FORBIDDEN");
-        }
-        if (beforeForceUnlock && !forceUnlock && !hasAuthority("device_e1_generation_gate_force_lock")) {
+        if (beforeForceUnlock && !forceUnlock && !hasAuthority("device_e1_generation_gate_force_lock"))
             return ApiResult.fail(403, "E1_FORCE_LOCK_FORBIDDEN");
-        }
         return null;
     }
 
@@ -5361,6 +5363,46 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     @Override
     public String domain() {
         return "E";
+    }
+
+    @Override
+    public ApiResult<Void> validateReplayPermission(AuditReplayCommand cmd) {
+        Map<String, Object> params = cmd.params() == null ? Map.of() : cmd.params();
+        if ("e6_compute_config".equals(cmd.op())) {
+            String key = str(params, "paramKey");
+            if (!key.startsWith(PhoneReplacementPolicyPublicationService.PREFIX) && !ComputeConfigRegistry.isComputeParamKey(key))
+                return ApiResult.fail(422, "COMPUTE_PARAM_KEY_INVALID");
+        }
+        if ("e6_compute_config_batch".equals(cmd.op()) && params.get("values") instanceof Map<?, ?> values
+                && values.keySet().stream().anyMatch(key -> key instanceof String name && ComputeConfigRegistry.isCoefficientParamKey(name)))
+            return ApiResult.fail(422, "COMPUTE_PARAM_KEY_INVALID");
+        boolean beforeForceUnlock;
+        boolean forceUnlock;
+        if ("e1_gate_create".equals(cmd.op())) {
+            beforeForceUnlock = false;
+            forceUnlock = Boolean.TRUE.equals(boolVal(params, "forceUnlock"));
+        } else if ("e1_gate_patch".equals(cmd.op())) {
+            var gate = catalogRepository.findGenerationGate(normalizeId(str(params, "skuId"))).orElse(null);
+            if (gate == null) return ApiResult.fail(404, "E1_GATE_NOT_FOUND");
+            beforeForceUnlock = Boolean.TRUE.equals(gate.forceUnlock());
+            Boolean requested = boolVal(params, "forceUnlock");
+            forceUnlock = requested == null ? beforeForceUnlock : requested;
+        } else if ("e1_gate_field".equals(cmd.op())) {
+            String[] key;
+            String value;
+            try {
+                key = normalizeE1GateKey(str(params, "key"));
+                value = normalizeE1GateValue(key[1], str(params, "value"));
+            } catch (IllegalArgumentException invalid) {
+                return ApiResult.fail(422, invalid.getMessage());
+            }
+            var gate = catalogRepository.findGenerationGate(key[0]).orElse(null);
+            if (gate == null) return ApiResult.fail(404, "E1_GATE_NOT_FOUND");
+            beforeForceUnlock = Boolean.TRUE.equals(gate.forceUnlock());
+            forceUnlock = "forceUnlock".equals(key[1]) ? Boolean.parseBoolean(value) : beforeForceUnlock;
+        } else return ApiResult.ok();
+        var permission = requireE1ForceUnlockPermission(beforeForceUnlock, forceUnlock);
+        return permission == null ? ApiResult.ok() : ApiResult.fail(permission.getCode(), permission.getMessage());
     }
 
     @Override
