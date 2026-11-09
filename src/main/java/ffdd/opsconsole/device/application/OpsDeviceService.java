@@ -1400,7 +1400,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (guard != null) {
             return guard;
         }
-        DeviceTaskUpsertRequest trusted = trustedTaskRequest(request);
+        DeviceTaskUpsertRequest input = trustedTaskRequest(request);
         Supplier<ApiResult<DeviceTaskView>> action = () -> {
             if (!A2ReplayContext.isReplaying()
                     && lockMapper.countActiveByTarget("E", "device_task", taskId) > 0) {
@@ -1413,6 +1413,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return reviewedRevision == null ? ApiResult.fail(404, "TASK_NOT_FOUND")
                         : ApiResult.fail(409, "E2_TASK_PRICING_STALE");
             }
+            DeviceTaskUpsertRequest trusted = !StringUtils.hasText(request.status())
+                    ? trustedTaskRequest(request, before.status()) : input;
             LocalDateTime now = LocalDateTime.now(clock);
             LocalDateTime catalogTime = now.truncatedTo(ChronoUnit.SECONDS);
             if (reviewedRevision != null) {
@@ -1483,7 +1485,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 "operationId", A2ReplayContext.operationId()));
             return ApiResult.ok(updated);
         };
-        return reviewedRevision == null ? deviceIdempotent("E2_TASK_UPDATE", idempotencyKey, taskId, trusted, action)
+        return reviewedRevision == null ? deviceIdempotent("E2_TASK_UPDATE", idempotencyKey, taskId, input, action)
                 : action.get();
     }
 
@@ -4123,10 +4125,14 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     private DeviceTaskUpsertRequest trustedTaskRequest(DeviceTaskUpsertRequest request) {
+        return trustedTaskRequest(request, "active");
+    }
+
+    private DeviceTaskUpsertRequest trustedTaskRequest(DeviceTaskUpsertRequest request, String defaultStatus) {
         if(request.simulation()!=null) {
             var simulation=request.simulation();int seconds=simulation.durationMinutes()*60;
             return new DeviceTaskUpsertRequest(request.name().trim(),simulation.baseReward(),"/job","手机+",BigDecimal.ZERO,
-                    StringUtils.hasText(request.status())?normalizeTaskStatus(request.status()):"active",
+                    StringUtils.hasText(request.status())?normalizeTaskStatus(request.status()):defaultStatus,
                     StringUtils.hasText(request.taskClass())?normalizeUpper(request.taskClass()):"EM","",
                     simulation.baseReward(),simulation.baseReward(),"0GB",simulation.enabled()?"派发中":"已 kill",
                     request.reason().trim(),operator(request.operator()),1,seconds,seconds,Math.max(300,seconds),"","","{}",simulation,request.poolCode());
@@ -5659,7 +5665,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if(!StringUtils.hasText(raw.name()))throw new BizException(422,"TASK_NAME_REQUIRED");
         if(StringUtils.hasText(raw.status()) && normalizeTaskStatus(raw.status())==null)throw new BizException(422,"TASK_STATUS_INVALID");
         if(settings.expectedVersion()!=(current==null?0:current.version()))throw new BizException(409,"SIMULATED_TASK_POLICY_VERSION_CONFLICT");
-        var next=trustedTaskRequest(raw);
+        var next=trustedTaskRequest(raw,create?"active":old.status());
+        if(!create && !old.status().equals(next.status()))
+            throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),"TASK_STATUS_REQUIRES_LIFECYCLE_ACTION");
         if(!TASK_CLASSES.contains(next.taskClass()))throw new BizException(422,"TASK_CLASS_INVALID");
         String lock=create?"new-"+java.util.UUID.nameUUIDFromBytes(next.name().getBytes(java.nio.charset.StandardCharsets.UTF_8)):old.taskId();
         return new RuleTaskReview(lock,next.name(),before,ruleDescription(next.name(),next.taskClass(),

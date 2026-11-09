@@ -48,3 +48,6 @@ migrations/20261109_task_pools.sql
 
 # Reassert registry retirement after fresh prerequisites; the marker prevents repeat unwinding.
 migrations/20261109_datacenter_retirement.sql
+
+# PHONE features moved to E6; reassert menu-only reachability after fresh seeds.
+migrations/20261109_phone_menu_visibility.sql

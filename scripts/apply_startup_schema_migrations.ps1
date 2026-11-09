@@ -468,6 +468,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261109_i5_read_token_time_precision.sql")
   (Join-Path $root "scripts\migrations\20261109_rbac_replay_scope.sql")
   (Join-Path $root "scripts\migrations\20261109_rbac_wallet_pin_grants.sql")
+  (Join-Path $root "scripts\migrations\20261109_phone_menu_visibility.sql")
   # App must be stopped before retiring the registry; the migration records a one-time marker.
   (Join-Path $root "scripts\migrations\20261109_datacenter_retirement.sql")
 )
