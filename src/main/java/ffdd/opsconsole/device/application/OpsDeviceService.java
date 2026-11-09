@@ -19,10 +19,8 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.device.domain.ComputeConfigRegistry;
 import ffdd.opsconsole.device.domain.ComputeConfigView;
-import ffdd.opsconsole.device.domain.DatacenterReferenceCount;
 import ffdd.opsconsole.device.domain.PlatformComputeConfigView;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
-import ffdd.opsconsole.device.domain.DeviceDatacenterView;
 import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
 import ffdd.opsconsole.device.domain.DeviceOrderDetailView;
 import ffdd.opsconsole.device.domain.DeviceOrderFacts;
@@ -32,6 +30,7 @@ import ffdd.opsconsole.device.domain.OrderCloseReason;
 import ffdd.opsconsole.device.domain.OrderRefundReason;
 import ffdd.opsconsole.device.domain.DeviceOpsRepository;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
+import ffdd.opsconsole.device.domain.StoreDeviceView;
 import ffdd.opsconsole.device.domain.DevicePhaseView;
 import ffdd.opsconsole.device.domain.DevicePhoneTierRewardView;
 import ffdd.opsconsole.device.domain.OnboardingYieldComparisonView;
@@ -47,9 +46,7 @@ import ffdd.opsconsole.device.dto.ComputeConfigParamResponse;
 import ffdd.opsconsole.device.dto.ComputeConfigParamUpdateRequest;
 import ffdd.opsconsole.device.dto.ComputeConfigBatchResponse;
 import ffdd.opsconsole.device.dto.ComputeConfigBatchUpdateRequest;
-import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
 import ffdd.opsconsole.device.dto.DeviceBundleDiscountUpdateRequest;
-import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceE5ActionRequest;
 import ffdd.opsconsole.device.dto.DeviceE5BatchRequest;
 import ffdd.opsconsole.device.dto.DeviceEarlyAccessUpdateRequest;
@@ -151,7 +148,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private static final String E2_QUEUE_SATURATION_KEY = "E.task.queueSaturation";
     private static final String E2_PRICING_LOCK_TYPE = "e2_task_pricing";
     private static final AuditLockTarget E2_QUEUE_PRICING_TARGET = new AuditLockTarget("E", E2_PRICING_LOCK_TYPE, "queue_saturation");
-    private static final Set<String> DATACENTER_STATUSES = Set.of("active", "maintenance", "disabled");
     private static final Set<String> ORDER_TERMINAL_STATES = Set.of(
             "payment_failed", "expired", "provisioning_failed", "chargeback");
     private static final Set<String> ORDER_STOCK_RELEASE_STATES = Set.of("payment_failed", "expired", "cancelled");
@@ -300,32 +296,35 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     @org.springframework.beans.factory.annotation.Autowired
     private DeviceMonthlyTargetReadService monthlyTargetReads;
 
+    @org.springframework.beans.factory.annotation.Value("${nexion.simulated-tasks.enabled:false}")
+    private boolean simulatedTasksEnabled;
+
     public ApiResult<Map<String, Object>> overview() {
-        Map<String, Object> response = new LinkedHashMap<>(deviceRepository.overviewCounters());
-        response.put("domain", "E");
-        response.put("service", "nexion-backend");
-        response.put("generatedAt", LocalDateTime.now(clock));
-        response.put("maxDevicesPerUser", e5MaxDevicesPerUser());
-        response.put("sources", List.of(
-                "nx_user_device",
-                "nx_user_device_runtime",
-                "nx_compute_datacenter",
-                "nx_compute_dc_ops_state",
-                "product-policy:MAX_DEVICES=6"));
-        return ApiResult.ok(response);
+        return ApiResult.ok(deviceRepository.overviewCounters());
     }
 
-    public ApiResult<PageResult<DeviceOpsView>> devices(DeviceOpsQueryRequest request) {
-        var page=deviceRepository.pageDevices(request);
-        return ApiResult.ok(new PageResult<>(page.getTotal(),page.getPageNum(),page.getPageSize(),monthlyTargetReads.enrich(page.getRecords())));
+    public ApiResult<PageResult<StoreDeviceView>> devices(DeviceOpsQueryRequest request) {
+        var page = deviceRepository.pageDevices(request, false);
+        var records = monthlyTargetReads.enrich(page.getRecords()).stream()
+                .map(device -> StoreDeviceView.from(device, simulatedTasksEnabled)).toList();
+        return ApiResult.ok(new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(), records));
+    }
+
+    public ApiResult<PageResult<DeviceOpsView>> phones(DeviceOpsQueryRequest request) {
+        var page = deviceRepository.pageDevices(request, true);
+        return ApiResult.ok(new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(),
+                monthlyTargetReads.enrich(page.getRecords())));
     }
 
     private int e5MaxDevicesPerUser() {
         return 6;
     }
 
-    public ApiResult<List<DeviceDatacenterView>> datacenters() {
-        return ApiResult.ok(deviceRepository.datacenterSummaries());
+
+    public ApiResult<PageResult<DeviceOpsView>> userDevicePage(Long userId, long pageNum, long pageSize) {
+        var page = deviceRepository.pageUserDevices(userId, pageNum, pageSize);
+        return ApiResult.ok(new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(),
+                monthlyTargetReads.enrich(page.getRecords())));
     }
 
     public ApiResult<List<DeviceOpsView>> userDevices(Long userId, int limit) {
@@ -3204,179 +3203,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return ApiResult.ok(restored);
     }
 
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<DeviceDatacenterView> createDatacenter(String idempotencyKey, DeviceDatacenterUpsertRequest request) {
-        ApiResult<DeviceDatacenterView> guard = requireDatacenterCommand(idempotencyKey, request, true);
-        if (guard != null) {
-            return guard;
-        }
-        if (!A2ReplayContext.isReplaying()) {
-            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
-        }
-        String dc = normalizeDc(request.dcLocation());
-        String trustedOperator = operator(request.operator());
-        DeviceDatacenterUpsertRequest source = normalizeDatacenterRequest(dc, request);
-        DeviceDatacenterUpsertRequest trusted = new DeviceDatacenterUpsertRequest(
-                source.dcLocation(), source.regionLabel(), source.status(), source.sortOrder(),
-                request.reason().trim(), trustedOperator, source.location(), source.displayName());
-        return deviceIdempotent("E5_DATACENTER_CREATE", idempotencyKey, dc, trusted, () -> {
-            if (!A2ReplayContext.isReplaying()
-                    && lockMapper.countActiveByTarget("E", "device_datacenter", dc) > 0) {
-                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-            }
-            if (deviceRepository.findDatacenter(dc).isPresent()) {
-                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DATACENTER_ALREADY_EXISTS");
-            }
-            DeviceDatacenterView created = deviceRepository.createDatacenter(
-                    trusted, trustedOperator, LocalDateTime.now(clock));
-            recordE5DatacenterEvent("admin.datacenter_created", created, trustedOperator,
-                    trusted.reason(), idempotencyKey, detail("operation", "create"));
-            return ApiResult.ok(created);
-        });
-    }
 
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<DeviceDatacenterView> updateDatacenter(String dcLocation, String idempotencyKey, DeviceDatacenterUpsertRequest request) {
-        ApiResult<DeviceDatacenterView> guard = requireDatacenterCommand(idempotencyKey, request, false);
-        if (guard != null) {
-            return guard;
-        }
-        if (!A2ReplayContext.isReplaying()) {
-            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
-        }
-        String dc = normalizeDc(dcLocation);
-        String nextDc = StringUtils.hasText(request.dcLocation()) ? normalizeDc(request.dcLocation()) : dc;
-        String trustedOperator = operator(request.operator());
-        DeviceDatacenterUpsertRequest source = normalizeDatacenterRequest(nextDc, request);
-        DeviceDatacenterUpsertRequest trusted = new DeviceDatacenterUpsertRequest(
-                source.dcLocation(), source.regionLabel(), source.status(), source.sortOrder(),
-                request.reason().trim(), trustedOperator, source.location(), source.displayName());
-        return deviceIdempotent("E5_DATACENTER_UPDATE", idempotencyKey, dc, trusted, () -> {
-            if (!A2ReplayContext.isReplaying()
-                    && lockMapper.countActiveByTarget("E", "device_datacenter", dc) > 0) {
-                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-            }
-            DeviceDatacenterView before = deviceRepository.findDatacenter(dc).orElse(null);
-            if (before == null) {
-                return ApiResult.fail(404, "DATACENTER_NOT_FOUND");
-            }
-            if (!dc.equals(nextDc) && deviceRepository.findDatacenter(nextDc).isPresent()) {
-                return ApiResult.fail(409, "DATACENTER_ID_ALREADY_EXISTS");
-            }
-            DeviceDatacenterView updated = deviceRepository
-                    .updateDatacenter(dc, trusted, trustedOperator, LocalDateTime.now(clock)).orElse(before);
-            recordE5DatacenterEvent("admin.datacenter_updated", updated, trustedOperator,
-                    trusted.reason(), idempotencyKey, detail(
-                            "beforeDcLocation", dc,
-                            "beforeDisplayName", before.displayName(),
-                            "beforeLocation", before.location(),
-                            "beforeStatus", before.status(),
-                            "afterStatus", updated.status(),
-                            "operation", "update"));
-            return ApiResult.ok(updated);
-        });
-    }
 
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<Map<String, Object>> deleteDatacenter(String dcLocation, String idempotencyKey, DatacenterOpsRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        ApiResult<Map<String, Object>> reasonGuard = requireE5Command(idempotencyKey, request.reason());
-        if (reasonGuard != null) {
-            return reasonGuard;
-        }
-        if (!A2ReplayContext.isReplaying()) {
-            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
-        }
-        String dc = normalizeDc(dcLocation);
-        String trustedOperator = operator(request.operator());
-        DatacenterOpsRequest trusted = new DatacenterOpsRequest(request.reason().trim(), trustedOperator);
-        return deviceIdempotent("E5_DATACENTER_DELETE", idempotencyKey, dc, trusted, () -> {
-            if (!A2ReplayContext.isReplaying()
-                    && lockMapper.countActiveByTarget("E", "device_datacenter", dc) > 0) {
-                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-            }
-            DeviceDatacenterView before = deviceRepository.findDatacenter(dc).orElse(null);
-            if (before == null) {
-                return ApiResult.fail(404, "DATACENTER_NOT_FOUND");
-            }
-            // 跨域硬保护:仍有设备/待履约订单/SKU 引用时拒绝删除,并回具体计数。
-            DatacenterReferenceCount refs = deviceRepository.countDatacenterReferences(dc);
-            if (refs.hasAny()) {
-                return ApiResult.fail(409, "DATACENTER_HAS_REFERENCES", detail(
-                        "dcLocation", dc,
-                        "deviceCount", refs.devices(),
-                        "pendingOrderCount", refs.pendingOrders(),
-                        "skuCount", refs.skus()));
-            }
-            if (!deviceRepository.softDeleteDatacenter(dc, trustedOperator, LocalDateTime.now(clock))) {
-                return ApiResult.fail(409, "DATACENTER_DELETE_CONFLICT");
-            }
-            // 同步设备表 dc_location(置空防悬挂/笛儿)与运营状态行(软删)。
-            deviceRepository.syncDatacenterReferencesOnDelete(dc, trustedOperator, LocalDateTime.now(clock));
-            recordE5DatacenterEvent("admin.datacenter_deleted", before, trustedOperator,
-                    trusted.reason(), idempotencyKey, detail("operation", "delete"));
-            return ApiResult.ok(detail("dcLocation", dc, "deleted", true));
-        });
-    }
 
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<Map<String, Object>> pauseDatacenter(String dcLocation, String idempotencyKey, DatacenterOpsRequest request) {
-        ApiResult<Map<String, Object>> guard = requireE5Command(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        if (!A2ReplayContext.isReplaying()) {
-            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
-        }
-        String dc = normalizeDc(dcLocation);
-        String trustedOperator = operator(request.operator());
-        DatacenterOpsRequest trusted = new DatacenterOpsRequest(request.reason().trim(), trustedOperator);
-        return deviceIdempotent("E5_DATACENTER_PAUSE", idempotencyKey, dc, trusted, () -> {
-            if (!A2ReplayContext.isReplaying()
-                    && lockMapper.countActiveByTarget("E", "device_datacenter", dc) > 0) {
-                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-            }
-            DeviceDatacenterView before = deviceRepository.findDatacenter(dc).orElse(null);
-            if (before == null) {
-                return ApiResult.fail(404, "DATACENTER_NOT_FOUND");
-            }
-            deviceRepository.pauseDatacenter(dc, trusted.reason(), trustedOperator, LocalDateTime.now(clock));
-            recordE5DatacenterEvent("admin.datacenter_updated", before, trustedOperator,
-                    trusted.reason(), idempotencyKey, detail("operation", "pause"));
-            return overview();
-        });
-    }
 
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<Map<String, Object>> resumeDatacenter(String dcLocation, String idempotencyKey, DatacenterOpsRequest request) {
-        ApiResult<Map<String, Object>> guard = requireE5Command(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        if (!A2ReplayContext.isReplaying()) {
-            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
-        }
-        String dc = normalizeDc(dcLocation);
-        String trustedOperator = operator(request.operator());
-        DatacenterOpsRequest trusted = new DatacenterOpsRequest(request.reason().trim(), trustedOperator);
-        return deviceIdempotent("E5_DATACENTER_RESUME", idempotencyKey, dc, trusted, () -> {
-            if (!A2ReplayContext.isReplaying()
-                    && lockMapper.countActiveByTarget("E", "device_datacenter", dc) > 0) {
-                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-            }
-            DeviceDatacenterView before = deviceRepository.findDatacenter(dc).orElse(null);
-            if (before == null) {
-                return ApiResult.fail(404, "DATACENTER_NOT_FOUND");
-            }
-            deviceRepository.resumeDatacenter(dc, trustedOperator, LocalDateTime.now(clock));
-            recordE5DatacenterEvent("admin.datacenter_updated", before, trustedOperator,
-                    trusted.reason(), idempotencyKey, detail("operation", "resume"));
-            return overview();
-        });
-    }
 
     private boolean canRestore(DeviceOpsView device) {
         String status = device.status() == null ? "" : device.status().trim().toUpperCase(Locale.ROOT);
@@ -3511,6 +3341,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (affectedRows <= 0) {
                 throw new BizException(409, "E5_BATCH_STATE_CHANGED");
             }
+            deviceRepository.syncSimulatedPause(trusted.userId(), deviceIds, pause, LocalDateTime.now(clock));
             int changed = deviceIds.size();
             String eventType = pause ? "admin.device_paused" : "admin.device_resumed";
             Map<String, Object> payload = detail(
@@ -3540,22 +3371,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                         "reason", reason, "idempotencyKey", idempotencyKey.trim()));
     }
 
-    private void recordE5DatacenterEvent(
-            String eventType, DeviceDatacenterView datacenter, String trustedOperator,
-            String reason, String idempotencyKey, Map<String, Object> extraDetail) {
-        Map<String, Object> payload = detail(
-                "id", datacenter.dcLocation(), "display_name", datacenter.displayName(),
-                "operator", trustedOperator, "reason", reason, "ts", clock.millis());
-        outboxService.publish("E5_DATACENTER", datacenter.dcLocation(), eventType, payload);
-        Map<String, Object> auditDetail = detail(
-                "dcLocation", datacenter.dcLocation(), "location", datacenter.location(),
-                "displayName", datacenter.displayName(), "reason", reason,
-                "idempotencyKey", idempotencyKey.trim());
-        if (extraDetail != null) {
-            auditDetail.putAll(extraDetail);
-        }
-        auditRequired(eventType, "DEVICE_DATACENTER", datacenter.dcLocation(), trustedOperator, auditDetail);
-    }
 
     private ApiResult<DeviceOpsView> requireE5DeviceCommand(
             Long deviceId, String idempotencyKey, DeviceE5ActionRequest request) {
@@ -3608,31 +3423,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return null;
     }
 
-    private ApiResult<DeviceDatacenterView> requireDatacenterCommand(String idempotencyKey, DeviceDatacenterUpsertRequest request, boolean create) {
-        ApiResult<Map<String, Object>> command = requireE5Command(idempotencyKey, request == null ? null : request.reason());
-        if (command != null) {
-            return ApiResult.fail(command.getCode(), command.getMessage());
-        }
-        if (request == null) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DATACENTER_REQUEST_REQUIRED");
-        }
-        if (create && !StringUtils.hasText(request.dcLocation())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DATACENTER_LOCATION_REQUIRED");
-        }
-        if (!StringUtils.hasText(request.regionLabel())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DATACENTER_REGION_LABEL_REQUIRED");
-        }
-        if (!StringUtils.hasText(request.location())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DATACENTER_LOCATION_NAME_REQUIRED");
-        }
-        if (!StringUtils.hasText(request.displayName())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DATACENTER_DISPLAY_NAME_REQUIRED");
-        }
-        if (normalizeDatacenterStatus(request.status()) == null) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DATACENTER_STATUS_INVALID");
-        }
-        return null;
-    }
 
     private SkuRevision parseSkuRevision(String raw) {
         if (!StringUtils.hasText(raw)) {
@@ -4991,36 +4781,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
     }
 
-    private String normalizeDc(String dcLocation) {
-        if (!StringUtils.hasText(dcLocation)) {
-            throw new IllegalArgumentException("dcLocation is required");
-        }
-        return dcLocation.trim();
-    }
 
-    private DeviceDatacenterUpsertRequest normalizeDatacenterRequest(String dcLocation, DeviceDatacenterUpsertRequest request) {
-        return new DeviceDatacenterUpsertRequest(
-                dcLocation,
-                request.regionLabel().trim(),
-                normalizeDatacenterStatus(request.status()),
-                normalizeDatacenterSortOrder(request.sortOrder()),
-                request.reason(),
-                request.operator(),
-                request.location().trim(),
-                request.displayName().trim());
-    }
 
-    private String normalizeDatacenterStatus(String status) {
-        String normalized = StringUtils.hasText(status) ? status.trim().toLowerCase(Locale.ROOT) : "active";
-        return DATACENTER_STATUSES.contains(normalized) ? normalized : null;
-    }
 
-    private int normalizeDatacenterSortOrder(Integer sortOrder) {
-        if (sortOrder == null) {
-            return 100;
-        }
-        return Math.max(0, Math.min(9999, sortOrder));
-    }
 
     private String normalizeSkuId(String skuId, String name) {
         String candidate = StringUtils.hasText(skuId) ? skuId : name;
@@ -5810,28 +5573,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 DeviceOrderStateRequest req = new DeviceOrderStateRequest(str(p, "state"), reason, operator);
                 return updateOrderState(str(p, "orderNo"), idem, req);
             }
-            case "e5_datacenter_create" -> {
-                DeviceDatacenterUpsertRequest req = buildDatacenterUpsertRequest(p, reason, operator);
-                return createDatacenter(idem, req);
-            }
-            case "e5_datacenter_update" -> {
-                DeviceDatacenterUpsertRequest req = buildDatacenterUpsertRequest(p, reason, operator);
-                String oldDcLocation = StringUtils.hasText(str(p, "oldDcLocation"))
-                        ? str(p, "oldDcLocation") : str(p, "dcLocation");
-                return updateDatacenter(oldDcLocation, idem, req);
-            }
-            case "e5_datacenter_delete" -> {
-                DatacenterOpsRequest req = new DatacenterOpsRequest(reason, operator);
-                return deleteDatacenter(str(p, "dcLocation"), idem, req);
-            }
-            case "e5_datacenter_pause" -> {
-                DatacenterOpsRequest req = new DatacenterOpsRequest(reason, operator);
-                return pauseDatacenter(str(p, "dcLocation"), idem, req);
-            }
-            case "e5_datacenter_resume" -> {
-                DatacenterOpsRequest req = new DatacenterOpsRequest(reason, operator);
-                return resumeDatacenter(str(p, "dcLocation"), idem, req);
-            }
             case "e6_compute_config" -> {
                 ComputeConfigParamUpdateRequest req = new ComputeConfigParamUpdateRequest(str(p, "value"), reason, operator, phonePolicyVersion(p));
                 return updateComputeConfigParam(str(p, "paramKey"), idem, req);
@@ -6016,13 +5757,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
     }
 
-    /** 从 replay params 重建 DeviceDatacenterUpsertRequest(e5_datacenter_create/update 复用)。 */
-    private static DeviceDatacenterUpsertRequest buildDatacenterUpsertRequest(Map<String, Object> p, String reason, String operator) {
-        return new DeviceDatacenterUpsertRequest(
-                str(p, "dcLocation"), str(p, "regionLabel"), str(p, "status"),
-                intVal(p, "sortOrder"), reason, operator,
-                str(p, "location"), str(p, "displayName"));
-    }
 
     /** 从 replay params 取字符串,null 安全。 */
     private static String str(Map<String, Object> params, String key) {

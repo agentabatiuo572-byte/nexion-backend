@@ -36,7 +36,6 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('device_e5_write',                         'E5 设备运维 - 常规写',             'API', '/devices/ops',            'WRITE', 0, 1, 0),
   ('device_e5_device_force_activate',         '强制激活设备',                     'API', '/devices/ops',            'HIGH',  1, 1, 0),
   ('device_e5_device_unbind',                 '解绑设备',                         'API', '/devices/ops',            'HIGH',  1, 1, 0),
-  ('device_e5_datacenter_pause',              '数据中心批量暂停',                 'API', '/devices/ops',            'HIGH',  1, 1, 0),
   -- E6 算力与设备配置 /devices/compute-config（全常规，无高敏）
   ('device_e6_read',                          'E6 算力与设备配置 - 读',           'API', '/devices/compute-config', 'READ',  0, 1, 0),
   ('device_e6_write',                         'E6 算力与设备配置 - 常规写',       'API', '/devices/compute-config', 'WRITE', 0, 1, 0),

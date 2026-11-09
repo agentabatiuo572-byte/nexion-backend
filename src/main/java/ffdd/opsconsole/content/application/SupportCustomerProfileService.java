@@ -6,7 +6,6 @@ import ffdd.opsconsole.content.domain.CustomerProfileRepository;
 import ffdd.opsconsole.content.mapper.SupportCustomerProfileMapper;
 import ffdd.opsconsole.content.mapper.SupportBindingMapper;
 import ffdd.opsconsole.device.application.OpsDeviceService;
-import ffdd.opsconsole.device.dto.DeviceOpsQueryRequest;
 import ffdd.opsconsole.device.facade.SupportDeviceReadFacade;
 import ffdd.opsconsole.finance.application.FinanceSupportReadService;
 import ffdd.opsconsole.finance.facade.SupportFundsReadFacade;
@@ -166,7 +165,7 @@ public class SupportCustomerProfileService {
     public Map<String,Object> devices(Long customer,long page,int size) {
         SupportWorkbenchService.requireSafeId(customer);SupportWorkbenchService.validatePage(page,size);ownership.requireRead(customer);
         return group(()-> {
-            var response=devices.devices(new DeviceOpsQueryRequest(null,null,null,page,(long)size,customer,null,null));
+            var response=devices.userDevicePage(customer,page,size);
             if(response.getCode()!=0)throw new BizException(response.getCode(),"SUPPORT_DEVICES_UNAVAILABLE");
             var rows=response.getData();if(rows==null)return null;
             var data=new LinkedHashMap<String,Object>();data.put("records",rows.getRecords().stream().map(row->{
