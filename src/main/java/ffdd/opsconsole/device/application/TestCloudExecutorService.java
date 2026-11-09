@@ -210,7 +210,6 @@ public class TestCloudExecutorService {
         if(active.size()>1) throw error(409,"TEST_CLOUD_ACTIVE_TASK_CONFLICT");
         boolean eligible=device.activatedAt()!=null
                 && Set.of("ACTIVE","ONLINE","BUSY","RUNNING").contains(Objects.toString(device.status(),"").toUpperCase(Locale.ROOT))
-                && !Boolean.TRUE.equals(device.dispatchPaused())
                 && (device.pausedReason()==null || device.pausedReason().isBlank());
         if(fleet(i)) {
             var admission=!legacyEnabled()?null:mapper.legacyAdmission(i.ownerId(),i.deviceId(),i.instanceNo(),null,i.taskConfigId());
@@ -743,7 +742,7 @@ public class TestCloudExecutorService {
             return;
         }
         if(device.activatedAt()==null || !Set.of("ACTIVE","ONLINE","BUSY","RUNNING").contains(Objects.toString(device.status(),"").toUpperCase(Locale.ROOT))
-                || Boolean.TRUE.equals(device.dispatchPaused()) || (device.pausedReason()!=null && !device.pausedReason().isBlank())
+                || (device.pausedReason()!=null && !device.pausedReason().isBlank())
                 || (!completingExistingTask && mapper.eligibleBinding(i.ownerId(),i.deviceId(),i.instanceNo())!=1)
                 || (lock ? assignments.lockPaidCloudShareDailyNex(i.ownerId(),i.deviceId())
                          : assignments.paidCloudShareDailyNex(i.ownerId(),i.deviceId()))==null) throw error(403,"TEST_CLOUD_BINDING_INVALID");

@@ -111,8 +111,7 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
            AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
            AND (SELECT COUNT(*) FROM nx_compute_task active WHERE active.user_device_id=d.id AND active.user_id=d.user_id
                   AND active.is_deleted=0 AND active.source_environment='PRODUCTION' AND active.status IN ('CLAIMED','RUNNING'))<=1
-           AND NOT EXISTS(SELECT 1 FROM nx_compute_dc_ops_state dc WHERE dc.dc_location=d.dc_location
-                    AND dc.is_deleted=0 AND dc.dispatch_paused=1)
+
            AND NOT EXISTS(SELECT 1 FROM nx_user_device_runtime r WHERE r.user_device_id=d.id AND r.is_deleted=0
                     AND (COALESCE(r.paused_reason,'')<>'' OR (COALESCE(r.agent_version,'')<>''
                           AND r.agent_version<>CONCAT('test-cloud:fleet-',d.id))))

@@ -8,10 +8,10 @@ import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.device.application.OpsDeviceService;
 import ffdd.opsconsole.device.domain.ComputeConfigView;
-import ffdd.opsconsole.device.domain.DeviceDatacenterView;
 import ffdd.opsconsole.device.domain.DeviceOrderDetailView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
+import ffdd.opsconsole.device.domain.StoreDeviceView;
 import ffdd.opsconsole.device.domain.DevicePhoneTierRewardView;
 import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
@@ -21,9 +21,7 @@ import ffdd.opsconsole.device.dto.ComputeConfigParamResponse;
 import ffdd.opsconsole.device.dto.ComputeConfigParamUpdateRequest;
 import ffdd.opsconsole.device.dto.ComputeConfigBatchResponse;
 import ffdd.opsconsole.device.dto.ComputeConfigBatchUpdateRequest;
-import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
 import ffdd.opsconsole.device.dto.DeviceBundleDiscountUpdateRequest;
-import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceE5ActionRequest;
 import ffdd.opsconsole.device.dto.DeviceE5BatchRequest;
 import ffdd.opsconsole.device.dto.DeviceEarlyAccessUpdateRequest;
@@ -77,15 +75,21 @@ public class OpsDeviceController {
     private PendingApprovalProjection pendingApprovals;
 
     @GetMapping("/overview")
-    @PreAuthorize("hasAnyAuthority('device_e1_read','device_e2_read','device_e3_read','device_e4_read','device_e5_read','device_e6_read')")
+    @PreAuthorize("hasAuthority('device_e5_read')")
     public ApiResult<Map<String, Object>> overview() {
         return deviceService.overview();
     }
 
     @GetMapping
-    @PreAuthorize("hasAnyAuthority('device_e1_read','device_e2_read','device_e3_read','device_e4_read','device_e5_read','device_e6_read')")
-    public ApiResult<PageResult<DeviceOpsView>> devices(DeviceOpsQueryRequest request) {
+    @PreAuthorize("hasAuthority('device_e5_read')")
+    public ApiResult<PageResult<StoreDeviceView>> devices(DeviceOpsQueryRequest request) {
         return deviceService.devices(request);
+    }
+
+    @GetMapping("/phones")
+    @PreAuthorize("hasAuthority('device_e5_read')")
+    public ApiResult<PageResult<DeviceOpsView>> phones(DeviceOpsQueryRequest request) {
+        return deviceService.phones(request);
     }
 
     @GetMapping("/skus")
@@ -552,11 +556,6 @@ public class OpsDeviceController {
         return deviceService.batchE5Devices(false, idempotencyKey, request);
     }
 
-    @GetMapping("/datacenters")
-    @PreAuthorize("hasAuthority('device_e5_read')")
-    public ApiResult<List<DeviceDatacenterView>> datacenters() {
-        return deviceService.datacenters();
-    }
 
     @GetMapping("/observability")
     @PreAuthorize("hasAuthority('device_e5_read')")
@@ -564,47 +563,9 @@ public class OpsDeviceController {
         return deviceService.e5Observability();
     }
 
-    @PostMapping("/datacenters")
-    @PreAuthorize("hasAuthority('device_e5_write')")
-    public ApiResult<DeviceDatacenterView> createDatacenter(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody DeviceDatacenterUpsertRequest request) {
-        return deviceService.createDatacenter(idempotencyKey, request);
-    }
 
-    @PatchMapping("/datacenters/{dcLocation}")
-    @PreAuthorize("hasAuthority('device_e5_write')")
-    public ApiResult<DeviceDatacenterView> updateDatacenter(
-            @PathVariable String dcLocation,
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody DeviceDatacenterUpsertRequest request) {
-        return deviceService.updateDatacenter(dcLocation, idempotencyKey, request);
-    }
 
-    @DeleteMapping("/datacenters/{dcLocation}")
-    @PreAuthorize("hasAuthority('device_e5_write')")
-    public ApiResult<Map<String, Object>> deleteDatacenter(
-            @PathVariable String dcLocation,
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody DatacenterOpsRequest request) {
-        return deviceService.deleteDatacenter(dcLocation, idempotencyKey, request);
-    }
 
-    @PostMapping("/datacenters/{dcLocation}/pause")
-    @PreAuthorize("hasAuthority('device_e5_datacenter_pause')")
-    public ApiResult<Map<String, Object>> pauseDatacenter(
-            @PathVariable String dcLocation,
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody DatacenterOpsRequest request) {
-        return deviceService.pauseDatacenter(dcLocation, idempotencyKey, request);
-    }
 
-    @PostMapping("/datacenters/{dcLocation}/resume")
-    @PreAuthorize("hasAuthority('device_e5_write')")
-    public ApiResult<Map<String, Object>> resumeDatacenter(
-            @PathVariable String dcLocation,
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody DatacenterOpsRequest request) {
-        return deviceService.resumeDatacenter(dcLocation, idempotencyKey, request);
-    }
+
 }
