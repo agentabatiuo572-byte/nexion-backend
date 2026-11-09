@@ -62,21 +62,22 @@ BEGIN
      WHERE l.target_type='device_datacenter' OR x.operation_id IS NOT NULL;
     DROP TEMPORARY TABLE dc_retired_tickets;
 
-    DELETE rp FROM nx_admin_role_permission rp JOIN nx_admin_permission p ON p.id=rp.permission_id
-     WHERE p.permission_code='device_e5_datacenter_pause';
-    DELETE FROM nx_admin_permission WHERE permission_code='device_e5_datacenter_pause';
-    DELETE p FROM nx_event_schema_property p JOIN nx_event_schema_registry s ON s.id=p.schema_id
-     WHERE s.event_name IN ('admin.datacenter_created','admin.datacenter_updated','admin.datacenter_deleted');
-    DELETE FROM nx_event_domain_extension
-     WHERE event_name IN ('admin.datacenter_created','admin.datacenter_updated','admin.datacenter_deleted');
-    DELETE FROM nx_event_schema_registry
-     WHERE event_name IN ('admin.datacenter_created','admin.datacenter_updated','admin.datacenter_deleted');
-
     INSERT INTO nx_schema_migration_state (migration_key,phase)
     VALUES ('20261109_datacenter_retirement','UNWOUND')
     ON DUPLICATE KEY UPDATE phase='UNWOUND';
     COMMIT;
   END IF;
+  -- Historical/fresh seeds can restore registry rows and grants on every local start.
+  -- Reassert their retirement even when ticket unwinding has already completed.
+  DELETE rp FROM nx_admin_role_permission rp JOIN nx_admin_permission p ON p.id=rp.permission_id
+   WHERE p.permission_code='device_e5_datacenter_pause';
+  DELETE FROM nx_admin_permission WHERE permission_code='device_e5_datacenter_pause';
+  DELETE p FROM nx_event_schema_property p JOIN nx_event_schema_registry s ON s.id=p.schema_id
+   WHERE s.event_name IN ('admin.datacenter_created','admin.datacenter_updated','admin.datacenter_deleted');
+  DELETE FROM nx_event_domain_extension
+   WHERE event_name IN ('admin.datacenter_created','admin.datacenter_updated','admin.datacenter_deleted');
+  DELETE FROM nx_event_schema_registry
+   WHERE event_name IN ('admin.datacenter_created','admin.datacenter_updated','admin.datacenter_deleted');
   -- DDL commits independently. UNWOUND prevents a restart from repeating data handling.
   DROP TABLE IF EXISTS nx_compute_dc_ops_state;
   DROP TABLE IF EXISTS nx_compute_datacenter;
