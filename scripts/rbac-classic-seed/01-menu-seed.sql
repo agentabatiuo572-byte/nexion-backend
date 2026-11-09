@@ -46,6 +46,10 @@ JOIN (SELECT 'B1' code,'双账本总览' name,'/overview/dual-ledger' path,1 sor
       SELECT 'B4','节奏状态','/overview/rhythm',4 UNION ALL
       SELECT 'B5','风险雷达','/overview/risk-radar',5) v
 ON 1=1
+-- B31 is activated manually after SPM-01; normal startup preserves its B2 tombstone.
+LEFT JOIN nx_admin_menu retired ON retired.menu_code=v.code AND v.code='B2'
+  AND retired.status=0 AND retired.is_deleted=1
+WHERE retired.id IS NULL
 ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_path), sort_order=VALUES(sort_order), status=1, is_deleted=0;
 -- C 域 (6)
 INSERT INTO nx_admin_menu (menu_code, menu_name, menu_name_zh, parent_id, route_path, sort_order, status, is_deleted)
@@ -197,7 +201,9 @@ WHERE p.permission_code IN ('content_i7_read','content_i7_write','content_i7_cou
 -- 规则（高保真域 roles + 业务）：superadmin/审计 全可见；各域主操作角色见该域；B/L 全角色；
 -- A 默认仅 superadmin(+审计)，RISK 仅补 A 父级和 A2 只读跟踪入口，不开放其他 A 域页面。
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
-SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m WHERE r.role_code IN ('SUPER_ADMIN','AUDITOR');
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m
+WHERE r.role_code IN ('SUPER_ADMIN','AUDITOR')
+  AND (m.menu_code <> 'B2' OR m.status=1 OR m.is_deleted=0);
 -- C: risk
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'C%' WHERE r.role_code='RISK';
@@ -265,7 +271,9 @@ INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('M','M5') WHERE r.role_code='CONTENT';
 -- B: 非客服业务角色态势概览。
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
-SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'B%' WHERE r.role_code IN ('FINANCE','RISK','CONTENT','GROWTH','CONFIG_ADMIN');
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'B%'
+WHERE r.role_code IN ('FINANCE','RISK','CONTENT','GROWTH','CONFIG_ADMIN')
+  AND (m.menu_code <> 'B2' OR m.status=1 OR m.is_deleted=0);
 
 -- L: 按职能最小可见；清理旧版全角色可见的宽授权。
 DELETE rm FROM nx_admin_role_menu rm
