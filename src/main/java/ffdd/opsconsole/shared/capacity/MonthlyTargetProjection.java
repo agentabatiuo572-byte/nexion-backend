@@ -13,9 +13,9 @@ public final class MonthlyTargetProjection {
         return classification != null && Set.of("capacityApplyToCloudShare","capacityApplyToS1","capacityApplyToPro",
                 "capacityApplyToProV2","capacityApplyToRackP1","capacityApplyToRackP2").contains(classification);
     }
-    public static void validate(String key, String type, BigDecimal target, BigDecimal band, Boolean clear) {
+    public static void validate(String key, String type, BigDecimal target, BigDecimal band, Boolean clear, boolean checkEligibility) {
         if (target == null && band == null && clear == null) return;
-        if (!supportsDevice(key, type)) throw new BizException(422,"MONTHLY_TARGET_DEVICE_INELIGIBLE");
+        if (checkEligibility && !supportsDevice(key, type)) throw new BizException(422,"MONTHLY_TARGET_DEVICE_INELIGIBLE");
         if (Boolean.TRUE.equals(clear) && (target != null || band != null)) throw new BizException(422,"MONTHLY_TARGET_CLEAR_CONFLICT");
         if (target != null && (target.compareTo(BigDecimal.ONE) < 0 || target.compareTo(new BigDecimal("1000000")) > 0 || target.stripTrailingZeros().scale() > 2))
             throw new BizException(422,"MONTHLY_TARGET_USDT_INVALID");
