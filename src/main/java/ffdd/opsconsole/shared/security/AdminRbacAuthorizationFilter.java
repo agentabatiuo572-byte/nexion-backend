@@ -305,6 +305,13 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             return RequiredAuthority.exact("user_c5_phone_replacement_exception_grant");
         }
         // The controller binds business grants to their exact A2 commands.
+        if (HttpMethod.POST.matches(method)
+                && (pathMatcher.match("/api/admin/platform/audit/operations/*/approve", path)
+                    || pathMatcher.match("/api/admin/platform/audit/operations/*/reject", path))) {
+            // The A2 service shares actor/global/scope rejection codes with the current ticket read model.
+            // It also checks retained successful receipts before entering the mutation supplier.
+            return RequiredAuthority.authenticated();
+        }
         if (HttpMethod.POST.matches(method) && path.equals("/api/admin/platform/audit/operations")) {
             return RequiredAuthority.exactOrAll(LearningCourseActivationApproval.MAKER_AUTHORITIES,
                     AuditReplayBusinessPermissionGuard.F5_ACTION_AUTHORITIES,

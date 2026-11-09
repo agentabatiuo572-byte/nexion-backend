@@ -2786,6 +2786,29 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     }
 
     @Override
+    public ApiResult<Void> validateReplayPermission(AuditReplayCommand cmd) {
+        String action = switch (cmd.op()) {
+            case "d2_withdraw_approve" -> "APPROVE";
+            case "d2_withdraw_unfreeze" -> "UNFREEZE";
+            default -> null;
+        };
+        if (action == null) return ApiResult.ok();
+
+        boolean strongReview = false;
+        if ("APPROVE".equals(action)) {
+            Map<String, Object> p = cmd.params() == null ? Map.of() : cmd.params();
+            var order = withdrawalRepository.findByWithdrawalNo(
+                    String.valueOf(p.get("withdrawalNo"))).orElse(null);
+            BigDecimal threshold = order == null
+                    ? null : D2WithdrawalReviewThreshold.read(configFacade);
+            strongReview = order != null && threshold != null
+                    && D2WithdrawalReviewThreshold.applies(threshold, order.amount());
+        }
+        return isD2RoleAllowed(action, strongReview)
+                ? ApiResult.ok() : ApiResult.fail(403, "WITHDRAWAL_ROLE_NOT_ALLOWED");
+    }
+
+    @Override
     public ApiResult<?> replay(AuditReplayCommand cmd, AuditReplayContext ctx) {
         Map<String, Object> p = cmd.params() == null ? Map.of() : cmd.params();
         if ("d_cregis_deposit_policy".equals(cmd.op())) return ApiResult.ok(depositPolicies.publish(p,ctx.operator()));

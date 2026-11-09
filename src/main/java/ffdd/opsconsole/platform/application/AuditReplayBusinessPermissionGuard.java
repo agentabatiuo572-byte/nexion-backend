@@ -392,7 +392,6 @@ public class AuditReplayBusinessPermissionGuard {
                 var typed=ffdd.opsconsole.device.application.LegacyUnknownZeroCreditService.command(command.params());
             } catch (RuntimeException invalid) { return ApiResult.fail(422,"LEGACY_UNKNOWN_COMMAND_INVALID"); }
         }
-        String requiredAuthority = requiredAuthority(command, operation);
         if ("h8_referral_settlement_user".equals(operation)
                 && (!"H".equalsIgnoreCase(command.domain())
                     || delegatedHDescriptor(operation, command.params() == null ? Map.of() : command.params()) == null)) {
@@ -401,16 +400,8 @@ public class AuditReplayBusinessPermissionGuard {
         if("promotion_reward_correction".equals(operation)
                 &&(!"H".equals(command.domain())||!promotionCorrectionValid(command.params())))
             return ApiResult.fail(422,"PROMOTION_CORRECTION_FIELDS_INVALID");
-        if (delegatedProposal() && requiredAuthority == null) {
-            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_PERMISSION_UNMAPPED");
-        }
-        if (requiredAuthority != null
-                && !hasAuthority(requiredAuthority)
-                && !(isUserSessionRevocation(command)
-                    && hasAuthority("user_c5_session_revoke_all"))
-                && !scopedMakerMayPropose(command, operation)) {
-            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_PERMISSION_DENIED:" + requiredAuthority);
-        }
+        ApiResult<Void> ordinaryPermission = validateOrdinaryProposalPermission(command, operation);
+        if (ordinaryPermission.getCode() != 0) return ordinaryPermission;
         if ("H".equalsIgnoreCase(command.domain()) && "h2_trial_charge".equals(operation)) {
             return ApiResult.fail(410, "TRIAL_EXPLICIT_PURCHASE_REQUIRED");
         }
@@ -579,156 +570,98 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     ApiResult<Void> validateRejection(AuditReplayCommand command) {
-        if (isE4Refund(command)) return validateRefundChecker();
-        if (A4RegistryApproval.isOperation(command)) {
-            return a4RegistryApproval.validateChecker();
-        }
-        if (H7VoucherDisposition.isOperation(command)) {
-            return validateApproval(command);
-        }
-        if (OpsKillSwitchService.isRestoreCommand(command)) return validateJ1RestoreChecker();
-        if (OpsI18nLearningService.isCourseRewardAdjustment(command)) {
-            return validateCourseRewardChecker();
-        }
-        if (G4CatalogApproval.supports(command)) {
-            return g4CatalogApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId(), false);
-        }
-        if (LearningCourseActivationApproval.supports(command)) {
-            return learningCourseActivationApproval.validateDecision(command, A2ReplayContext.authenticatedAdminId(), false);
-        }
-        if (H4GrowthApproval.supports(command)) {
-            return h4GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
-        }
-        if (G4DividendApproval.supports(command)) {
-            return g4DividendApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
-        }
-        if (H3GrowthApproval.supports(command)) {
-            return h3GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
-        }
-        if (K2OtpInitialApproval.supports(command)) {
-            return k2OtpInitialApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
-        }
-        if (G3MarketApproval.supports(command)) {
-            return g3MarketApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
-        }
-        if (H5GrowthApproval.supports(command)) {
-            return h5GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
-        }
-        if (H8RewardParamApproval.supports(command)) {
-            return h8RewardParamApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
-        }
-        if (TeamFundApproval.supports(command)) {
-            return teamFundApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
-        }
-        if (E2TaskPricingApproval.supports(command)) {
-            return e2TaskPricingApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
-        }
-        if (TreasuryThresholdApproval.supports(command)) {
-            return treasuryThresholdApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
-        }
-        return WithdrawalConfigApproval.supports(command)
-                ? withdrawalConfigApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId(), false)
-                : ApiResult.ok();
+        return validateDecisionPermission(command, false);
     }
 
-    /**
-     * Approval is intentionally not a second direct-write permission check.
-     * A2 already requires {@code platform_a2_operation_approve}; for the two
-     * device configuration commands an E-domain checker only needs read scope
-     * for the exact bounded surface.  Requiring the proposer write grant here
-     * would make the checker a direct writer and collapse maker/checker.
-     * Other commands retain their existing replay-time business guard.
-     */
-    public ApiResult<Void> validateApproval(AuditReplayCommand command) {
+    /** Actor, original command and authorization binding only; safe for the A2 read model. */
+    ApiResult<Void> validateDecisionPermission(AuditReplayCommand command, boolean approving) {
         if (isE4Refund(command)) return validateRefundChecker();
-        if (isF5StatusUiAlias(command)) {
-            return ApiResult.fail(422, "F5_COMMISSION_STATUS_COMMAND_REQUIRED");
-        }
-        if (A4RegistryApproval.isOperation(command)) {
-            return a4RegistryApproval.validateChecker();
-        }
+        if (approving && isF5StatusUiAlias(command)) return ApiResult.fail(422, "F5_COMMISSION_STATUS_COMMAND_REQUIRED");
+        if (A4RegistryApproval.isOperation(command)) return a4RegistryApproval.validateChecker();
         if (OpsKillSwitchService.isRestoreCommand(command)) return validateJ1RestoreChecker();
-        if (OpsI18nLearningService.isCourseRewardAdjustment(command)) {
-            return validateCourseRewardChecker();
-        }
-        if (G4CatalogApproval.supports(command)) {
-            return g4CatalogApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId(), true);
-        }
-        if (LearningCourseActivationApproval.supports(command)) {
-            return learningCourseActivationApproval.validateDecision(command, A2ReplayContext.authenticatedAdminId(), true);
-        }
-        if (H4GrowthApproval.supports(command)) {
-            return h4GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
-        }
-        if (G4DividendApproval.supports(command)) {
-            return g4DividendApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
-        }
-        if (H3GrowthApproval.supports(command)) {
-            return h3GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
-        }
-        if (K2OtpInitialApproval.supports(command)) {
-            return k2OtpInitialApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
-        }
-        if (G3MarketApproval.supports(command)) {
-            return g3MarketApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
-        }
-        if (H5GrowthApproval.supports(command)) {
-            return h5GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
-        }
-        if (H8RewardParamApproval.supports(command)) {
-            return h8RewardParamApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
-        }
-        if (TeamFundApproval.supports(command)) {
-            return teamFundApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
-        }
-        if (E2TaskPricingApproval.supports(command)) {
-            return e2TaskPricingApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
-        }
-        if (TreasuryThresholdApproval.supports(command)) {
-            return treasuryThresholdApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
-        }
-        if (WithdrawalConfigApproval.supports(command)) {
-            return withdrawalConfigApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId(), true);
-        }
-        if (command == null || command.op() == null) {
-            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_COMMAND_REQUIRED");
-        }
+        if (OpsI18nLearningService.isCourseRewardAdjustment(command)) return validateCourseRewardChecker();
+        if (G4CatalogApproval.supports(command))
+            return g4CatalogApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId(), approving);
+        if (LearningCourseActivationApproval.supports(command))
+            return learningCourseActivationApproval.validateDecision(command, A2ReplayContext.authenticatedAdminId(), approving);
+        if (H4GrowthApproval.supports(command)) return h4GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        if (G4DividendApproval.supports(command)) return g4DividendApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        if (H3GrowthApproval.supports(command)) return h3GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        if (K2OtpInitialApproval.supports(command)) return k2OtpInitialApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        if (G3MarketApproval.supports(command)) return g3MarketApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        if (H5GrowthApproval.supports(command)) return h5GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        if (H8RewardParamApproval.supports(command)) return h8RewardParamApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        if (TeamFundApproval.supports(command)) return teamFundApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        if (E2TaskPricingApproval.supports(command)) return e2TaskPricingApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        if (TreasuryThresholdApproval.supports(command)) return treasuryThresholdApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        if (WithdrawalConfigApproval.supports(command))
+            return withdrawalConfigApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId(), approving);
+        if (!approving && !H7VoucherDisposition.isOperation(command)) return ApiResult.ok();
+        if (command == null || command.op() == null)
+            return ApiResult.fail(403, "A2_BUSINESS_COMMAND_REQUIRED");
         String operation = command.op().trim().toLowerCase(Locale.ROOT);
-        if (ffdd.opsconsole.device.application.LegacyUnknownZeroCreditCases.OP.equals(operation)) {
-            if (!"E".equals(command.domain()) || !hasAuthority("device_e5_write") || !hasAuthority("platform_a2_operation_approve"))
-                return ApiResult.fail(403,"A2_BUSINESS_PERMISSION_DENIED:device_e5_write");
+        if (ffdd.opsconsole.device.application.LegacyUnknownZeroCreditCases.OP.equals(operation))
+            return "E".equals(command.domain()) && hasAuthority("device_e5_write") && hasAuthority("platform_a2_operation_approve")
+                    ? ApiResult.ok() : ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:device_e5_write");
+        if (isJ4Execution(command, operation)) {
+            if (!hasAuthority("platform_a2_operation_approve") || !hasAuthority("emergency_j4_playbook_execute"))
+                return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:emergency_j4_playbook_execute");
+            return validateJ4SnapshotCurrent(command, false);
+        }
+        boolean genesisParamApproval = "G".equalsIgnoreCase(text(command.domain())) && "g4_genesis_param".equals(operation);
+        String authority = genesisParamApproval ? GenesisParamPermissions.forKey(value(command.params(), "paramKey"))
+                : approvalAuthority(command, operation);
+        if (authority != null) return hasAuthority("platform_a2_operation_approve") && hasAuthority(authority)
+                ? ApiResult.ok() : ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:" + authority);
+        if (genesisParamApproval) return ApiResult.fail(422, "G4_GENESIS_PARAM_KEY_INVALID");
+        if (ffdd.opsconsole.market.application.OpsNexMarketService.isRetiredStakingReplay(command.domain(), command.op()))
+            return ApiResult.fail(422, "RETIRED_FEATURE");
+        if ("J".equalsIgnoreCase(command.domain()) && operation.startsWith("j1_"))
+            return ApiResult.fail(409, "J1_DIRECT_EXECUTION_REQUIRED");
+        var permission = validateOrdinaryProposalPermission(command, operation);
+        if (permission.getCode() != 0) return permission;
+        return "H".equalsIgnoreCase(command.domain()) && "h2_trial_charge".equals(operation)
+                ? ApiResult.fail(410, "TRIAL_EXPLICIT_PURCHASE_REQUIRED") : ApiResult.ok();
+    }
+
+    public ApiResult<Void> validateApproval(AuditReplayCommand command) {
+        var permission = validateDecisionPermission(command, true);
+        return permission.getCode() != 0 ? permission : validateApprovalPreconditions(command);
+    }
+
+    /** Execution preconditions stay on the actual approval path, after its shared qualification. */
+    ApiResult<Void> validateApprovalPreconditions(AuditReplayCommand command) {
+        if (command != null && ffdd.opsconsole.device.application.LegacyUnknownZeroCreditCases.OP.equals(command.op())) {
+            if (legacyUnknownZeroCredit == null) return ApiResult.fail(503, "LEGACY_UNKNOWN_RESOLUTION_UNAVAILABLE");
             try {
-                if (legacyUnknownZeroCredit==null) return ApiResult.fail(503,"LEGACY_UNKNOWN_RESOLUTION_UNAVAILABLE");
                 legacyUnknownZeroCredit.validateApproval(ffdd.opsconsole.device.application.LegacyUnknownZeroCreditService.command(command.params()));
                 return ApiResult.ok();
-            } catch (ffdd.opsconsole.shared.exception.BizException invalid) { return ApiResult.fail(invalid.getCode(),invalid.getMessage()); }
-        }
-        if (isJ4Execution(command, operation)) {
-            if (!hasAuthority("platform_a2_operation_approve")
-                    || !hasAuthority("emergency_j4_playbook_execute")) {
-                return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(),
-                        "A2_BUSINESS_PERMISSION_DENIED:emergency_j4_playbook_execute");
+            } catch (ffdd.opsconsole.shared.exception.BizException invalid) {
+                return ApiResult.fail(invalid.getCode(), invalid.getMessage());
             }
-            return validateJ4SnapshotCurrent(command);
         }
-        boolean genesisParamApproval = "G".equalsIgnoreCase(text(command.domain()))
-                && "g4_genesis_param".equals(operation);
-        String approvalAuthority = genesisParamApproval
-                ? GenesisParamPermissions.forKey(value(command.params(), "paramKey"))
-                : approvalAuthority(command, operation);
-        if (approvalAuthority == null) {
-            return genesisParamApproval
-                    ? ApiResult.fail(422, "G4_GENESIS_PARAM_KEY_INVALID")
-                    : validateProposal(command);
-        }
-        if (!hasAuthority("platform_a2_operation_approve") || !hasAuthority(approvalAuthority)) {
-            return ApiResult.fail(
-                    OpsErrorCode.FORBIDDEN.httpStatus(),
-                    "A2_BUSINESS_PERMISSION_DENIED:" + approvalAuthority);
-        }
-        if ("F".equalsIgnoreCase(command.domain()) && "f_ui_config".equals(operation)) {
-            OpsTeamService.validateBinaryUiConfig(value(command.params(), "key"), value(command.params(), "value"));
-        }
+        if (command != null && isJ4Execution(command, text(command.op()).toLowerCase(Locale.ROOT)))
+            return validateJ4SnapshotCurrent(command, true);
+        if (isE4Refund(command) || A4RegistryApproval.isOperation(command) || OpsKillSwitchService.isRestoreCommand(command)
+                || OpsI18nLearningService.isCourseRewardAdjustment(command) || G4CatalogApproval.supports(command)
+                || LearningCourseActivationApproval.supports(command) || H4GrowthApproval.supports(command)
+                || G4DividendApproval.supports(command) || H3GrowthApproval.supports(command) || K2OtpInitialApproval.supports(command)
+                || G3MarketApproval.supports(command) || H5GrowthApproval.supports(command) || H8RewardParamApproval.supports(command)
+                || TeamFundApproval.supports(command) || E2TaskPricingApproval.supports(command)
+                || TreasuryThresholdApproval.supports(command) || WithdrawalConfigApproval.supports(command)) return ApiResult.ok();
+        String operation = text(command.op()).toLowerCase(Locale.ROOT);
+        if (approvalAuthority(command, operation) != null
+                || "G".equalsIgnoreCase(text(command.domain())) && "g4_genesis_param".equals(operation)) return ApiResult.ok();
+        return validateProposal(command);
+    }
+
+    private ApiResult<Void> validateOrdinaryProposalPermission(AuditReplayCommand command, String operation) {
+        String authority = requiredAuthority(command, operation);
+        if (delegatedProposal() && authority == null) return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_UNMAPPED");
+        if (authority != null && !hasAuthority(authority)
+                && !(isUserSessionRevocation(command) && hasAuthority("user_c5_session_revoke_all"))
+                && !scopedMakerMayPropose(command, operation))
+            return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:" + authority);
         return ApiResult.ok();
     }
 
@@ -784,12 +717,16 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     private ApiResult<Void> validateJ4SnapshotCurrent(AuditReplayCommand command) {
+        return validateJ4SnapshotCurrent(command, true);
+    }
+
+    private ApiResult<Void> validateJ4SnapshotCurrent(AuditReplayCommand command, boolean lock) {
         J4AuthorizationSnapshot supplied = snapshotFrom(command);
         if (supplied == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(),
                     "J4_TARGET_AUTHORIZATION_SNAPSHOT_REQUIRED");
         }
-        J4AuthorizationSnapshot current = currentJ4AuthorizationSnapshot(command);
+        J4AuthorizationSnapshot current = currentJ4AuthorizationSnapshot(command, lock);
         if (current == null) {
             return ApiResult.fail(404, "J4_PLAYBOOK_NOT_FOUND");
         }
@@ -800,11 +737,16 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     private J4AuthorizationSnapshot currentJ4AuthorizationSnapshot(AuditReplayCommand command) {
+        return currentJ4AuthorizationSnapshot(command, true);
+    }
+
+    private J4AuthorizationSnapshot currentJ4AuthorizationSnapshot(AuditReplayCommand command, boolean lock) {
         String code = value(command == null ? null : command.params(), "code").toUpperCase(Locale.ROOT);
         if (!code.matches("^SOP-[A-Z0-9-]{1,64}$")) {
             return null;
         }
-        Map<String, Object> playbook = emergencyControlRepository.playbookForUpdate(code).orElse(null);
+        Map<String, Object> playbook = (lock ? emergencyControlRepository.playbookForUpdate(code)
+                : emergencyControlRepository.playbookForDecision(code)).orElse(null);
         if (playbook == null) {
             return null;
         }

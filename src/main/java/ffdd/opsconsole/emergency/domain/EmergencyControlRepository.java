@@ -180,6 +180,11 @@ public interface EmergencyControlRepository {
 
     Optional<Map<String, Object>> playbook(String code);
 
+    /** Decision metadata reads must not initialize tables or acquire the execution locks. */
+    default Optional<Map<String, Object>> playbookForDecision(String code) {
+        return playbook(code);
+    }
+
     /** Locks and returns one complete current playbook definition, including its ordered steps. */
     default Optional<Map<String, Object>> playbookForUpdate(String code) {
         lockPlaybook(code);
