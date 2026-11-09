@@ -417,7 +417,8 @@ $migrations = @(
   (Join-Path $root "scripts\seed_e2_task_pricing.sql")
   (Join-Path $root "scripts\migrations\20261103_retired_compute_read_views.sql")
   (Join-Path $root "scripts\migrations\20261103_retired_device_referral_read_view.sql")
-  (Join-Path $root "scripts\migrations\20261103_task_class_authorization.sql")
+  # Replay the pool-aware forward replacement; keep the historical cutover immutable.
+  (Join-Path $root "scripts\migrations\20261109_task_class_pool_compat.sql")
   (Join-Path $root "scripts\migrations\20261109_device_monthly_target.sql")
   (Join-Path $root "scripts\migrations\20261109_sim_policy_epoch.sql")
   (Join-Path $root "scripts\migrations\20261109_task_pools.sql")

@@ -1,5 +1,20 @@
 SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_datacenter' AND COLUMN_NAME = 'location') = 0,
+  'ALTER TABLE nx_compute_datacenter ADD COLUMN location VARCHAR(128) NOT NULL DEFAULT '''' AFTER region_label', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_datacenter' AND COLUMN_NAME = 'display_name') = 0,
+  'ALTER TABLE nx_compute_datacenter ADD COLUMN display_name VARCHAR(128) NOT NULL DEFAULT '''' AFTER location', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+UPDATE nx_compute_datacenter SET location=region_label WHERE location='' OR location IS NULL;
+UPDATE nx_compute_datacenter SET display_name=region_label WHERE display_name='' OR display_name IS NULL;
+
+UPDATE nx_event_schema_property p
+JOIN nx_event_schema_registry s ON s.id=p.schema_id
+SET p.is_deleted=1, p.updated_at=NOW()
+WHERE s.event_name IN ('admin.datacenter_created','admin.datacenter_updated','admin.datacenter_deleted')
+  AND p.property_name='displayName';
+
 -- E5 canonical operator events. Device activation is a trusted OpsDeviceService
 -- state transition consumed by H3; the remaining manual operator events stay
 -- non-authoritative and cannot complete canonical user quests.
@@ -16,7 +31,13 @@ VALUES
   ('admin.device_resumed','admin','device-ops','server','E5/A2/A4/L3',0,'100%',53,
    'ACTIVE','migration:e5-device-operations',NULL,'E5 user scoped device resume event',0),
   ('admin.device_deactivated','admin','device-ops','server','E5/A2/A4/L3',0,'100%',54,
-   'ACTIVE','migration:e5-device-operations',NULL,'E5 manual device deactivation event',0)
+   'ACTIVE','migration:e5-device-operations',NULL,'E5 manual device deactivation event',0),
+  ('admin.datacenter_created','admin','device-datacenter','server','E5/A2/A4',0,'100%',55,
+   'ACTIVE','migration:e5-device-operations',NULL,'E5 datacenter creation event',0),
+  ('admin.datacenter_updated','admin','device-datacenter','server','E5/A2/A4',0,'100%',56,
+   'ACTIVE','migration:e5-device-operations',NULL,'E5 datacenter update event',0),
+  ('admin.datacenter_deleted','admin','device-datacenter','server','E5/A2/A4',0,'100%',57,
+   'ACTIVE','migration:e5-device-operations',NULL,'E5 datacenter deletion event',0)
 ON DUPLICATE KEY UPDATE owner_domain=VALUES(owner_domain),family_key=VALUES(family_key),
   producer=VALUES(producer),consumers=VALUES(consumers),
   is_server_authoritative=VALUES(is_server_authoritative),
@@ -59,7 +80,22 @@ SELECT s.id,p.property_name,p.property_type,0,1,s.current_revision,0
     SELECT 'admin.device_deactivated','mode','enum' UNION ALL
     SELECT 'admin.device_deactivated','operator','id' UNION ALL
     SELECT 'admin.device_deactivated','reason','string' UNION ALL
-    SELECT 'admin.device_deactivated','ts','timestamp'
+    SELECT 'admin.device_deactivated','ts','timestamp' UNION ALL
+    SELECT 'admin.datacenter_created','id','id' UNION ALL
+    SELECT 'admin.datacenter_created','display_name','string' UNION ALL
+    SELECT 'admin.datacenter_created','operator','id' UNION ALL
+    SELECT 'admin.datacenter_created','reason','string' UNION ALL
+    SELECT 'admin.datacenter_created','ts','timestamp' UNION ALL
+    SELECT 'admin.datacenter_updated','id','id' UNION ALL
+    SELECT 'admin.datacenter_updated','display_name','string' UNION ALL
+    SELECT 'admin.datacenter_updated','operator','id' UNION ALL
+    SELECT 'admin.datacenter_updated','reason','string' UNION ALL
+    SELECT 'admin.datacenter_updated','ts','timestamp' UNION ALL
+    SELECT 'admin.datacenter_deleted','id','id' UNION ALL
+    SELECT 'admin.datacenter_deleted','display_name','string' UNION ALL
+    SELECT 'admin.datacenter_deleted','operator','id' UNION ALL
+    SELECT 'admin.datacenter_deleted','reason','string' UNION ALL
+    SELECT 'admin.datacenter_deleted','ts','timestamp'
   ) p ON p.event_name=s.event_name
 ON DUPLICATE KEY UPDATE property_type=VALUES(property_type),pii=0,required_field=1,
   registry_revision=VALUES(registry_revision),is_deleted=0;
@@ -74,7 +110,13 @@ VALUES
   ('admin','admin.device_resumed','OpsDeviceService','E5/A2/A4/L3','REGISTERED',
    'migration:e5-device-operations','E5 user scoped resume contract',0),
   ('admin','admin.device_deactivated','OpsDeviceService','E5/A2/A4/L3','REGISTERED',
-   'migration:e5-device-operations','E5 manual deactivation contract',0)
+   'migration:e5-device-operations','E5 manual deactivation contract',0),
+  ('admin','admin.datacenter_created','OpsDeviceService','E5/A2/A4','REGISTERED',
+   'migration:e5-device-operations','E5 datacenter creation contract',0),
+  ('admin','admin.datacenter_updated','OpsDeviceService','E5/A2/A4','REGISTERED',
+   'migration:e5-device-operations','E5 datacenter update contract',0),
+  ('admin','admin.datacenter_deleted','OpsDeviceService','E5/A2/A4','REGISTERED',
+   'migration:e5-device-operations','E5 datacenter deletion contract',0)
 ON DUPLICATE KEY UPDATE producer=VALUES(producer),consumer=VALUES(consumer),status='REGISTERED',
   reason=VALUES(reason),is_deleted=0;
 
@@ -123,5 +165,6 @@ JOIN nx_admin_permission permission_row ON permission_row.id = role_permission.p
    AND permission_row.permission_code IN (
        'device_e5_write',
        'device_e5_device_force_activate',
-       'device_e5_device_unbind'
+       'device_e5_device_unbind',
+       'device_e5_datacenter_pause'
    );
