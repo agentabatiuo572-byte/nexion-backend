@@ -503,7 +503,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                    hashrate,
                    daily_usdt AS dailyUsdt,
                    daily_nex AS dailyNex,
-                   last_seen_at AS lastSeenAt
+                   last_seen_at AS lastSeenAt,id
               FROM nx_user_device
              WHERE user_id = #{userId}
                AND is_deleted = 0

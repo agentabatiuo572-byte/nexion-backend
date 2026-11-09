@@ -37,6 +37,18 @@ public class GlobalExceptionHandler {
         return ApiResult.fail(ex.getCode(),ex.getMessage(),ex.details());
     }
 
+    @ExceptionHandler(ffdd.opsconsole.device.application.MonthlyTargetPoolException.class)
+    public ApiResult<Map<String,Object>> handleMonthlyTargetPool(ffdd.opsconsole.device.application.MonthlyTargetPoolException ex, HttpServletResponse response) {
+        response.setStatus(ex.getCode());
+        return ApiResult.fail(ex.getCode(),ex.getMessage(),ex.errorData());
+    }
+
+    @ExceptionHandler(ffdd.opsconsole.device.application.MonthlyTargetRewardOutOfRangeException.class)
+    public ApiResult<Map<String,Object>> handleMonthlyTargetReward(ffdd.opsconsole.device.application.MonthlyTargetRewardOutOfRangeException ex, HttpServletResponse response) {
+        response.setStatus(ex.getCode());
+        return ApiResult.fail(ex.getCode(),ex.getMessage(),ex.errorData());
+    }
+
     @ExceptionHandler(BizException.class)
     public ApiResult<Void> handleBiz(BizException ex, HttpServletResponse response) {
         response.setStatus(normalizeHttpStatus(ex.getCode()));
@@ -81,7 +93,11 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
-    public ApiResult<Void> handleUnreadableMessage(HttpMessageNotReadableException ex) {
+    public ApiResult<Void> handleUnreadableMessage(HttpMessageNotReadableException ex, HttpServletResponse response) {
+        if(ex.getMostSpecificCause() instanceof BizException biz && "MONTHLY_TARGET_DEVICE_INELIGIBLE".equals(biz.getMessage())) {
+            response.setStatus(biz.getCode());
+            return ApiResult.fail(biz.getCode(),biz.getMessage());
+        }
         return ApiResult.fail(400, "REQUEST_BODY_INVALID");
     }
 

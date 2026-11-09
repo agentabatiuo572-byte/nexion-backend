@@ -74,6 +74,8 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
     private final String phone;
     @SuppressWarnings("ArchitectureConfigField")
     private final boolean enabled;
+    @SuppressWarnings("ArchitectureConfigField")
+    private final boolean simulatedTasksEnabled;
 
     @Autowired
     public DevelopmentHomeSettlementBootstrap(
@@ -84,7 +86,9 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
             @Value("${nexion.home.development-settlement.enabled:false}") boolean enabled,
             EventOutboxService outboxService,
             AuditLogService auditLogService,
-            PlatformTransactionManager transactionManager) {
+            PlatformTransactionManager transactionManager,
+            @Value("${nexion.simulated-tasks.enabled:false}") boolean simulatedTasksEnabled) {
+        this.simulatedTasksEnabled = simulatedTasksEnabled;
         this.mapper = mapper;
         this.clock = clock;
         this.countryCode = countryCode == null ? "" : countryCode.trim();
@@ -125,6 +129,7 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
         this.outboxService = outboxService;
         this.auditLogService = auditLogService;
         this.deviceTransaction = IntSupplier::getAsInt;
+        this.simulatedTasksEnabled = false;
     }
 
     @Override
@@ -177,6 +182,8 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
             progressed++;
             settledExistingTask = true;
         }
+        // An existing SIM runtime owns its lifecycle, including deferred deactivation.
+        if (device.simulatedRuntimePresent()) return progressed;
         if (device.pendingDeactivate() == null) {
             log.warn("event=DEVELOPMENT_TASK_DEVICE_SKIPPED deviceId={} reason=PENDING_DEACTIVATE_UNAVAILABLE",
                     device.userDeviceId());
@@ -187,6 +194,7 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
             return progressed + finalizePendingDevice(device, now,
                     settledExistingTask ? "TASK_SETTLEMENT_COMPLETED" : "PENDING_WITHOUT_ACTIVE_TASK");
         }
+        if (simulatedTasksEnabled || !device.developmentDispatchAllowed()) return progressed;
         Map<String, String> capacityConfig = developmentCapacityConfig();
         if (!E3DeviceCapacityPolicy.validConfig(capacityConfig)) {
             log.warn("event=DEVELOPMENT_TASK_DEVICE_SKIPPED deviceId={} reason=E3_CAPACITY_CONFIG_INVALID",

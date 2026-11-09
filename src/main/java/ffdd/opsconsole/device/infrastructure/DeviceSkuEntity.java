@@ -26,6 +26,8 @@ public class DeviceSkuEntity extends BaseEntity {
     private BigDecimal phoneDailyEarnNex;
     private BigDecimal price;
     private BigDecimal dailyEarn;
+    private BigDecimal monthlyTargetUsdt;
+    private BigDecimal monthlyTargetBandPct;
     private BigDecimal dailyEarnNex;
     private BigDecimal shareYieldMin;
     private BigDecimal shareYieldMax;

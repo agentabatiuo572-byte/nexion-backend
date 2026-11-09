@@ -32,6 +32,9 @@ public interface CommerceSandboxTrialMapper extends BaseMapper<Object> {
             """)
     TrialClaim lock(@Param("runId") String runId, @Param("userId") Long userId);
 
+    @Select("SELECT monthly_target_usdt FROM nx_commerce_sandbox_catalog WHERE run_id=#{runId} AND product_no=#{productNo} AND is_deleted=0 LIMIT 1")
+    BigDecimal monthlyTarget(@Param("runId")String runId,@Param("productNo")String productNo);
+
     @Insert("""
             INSERT IGNORE INTO nx_commerce_sandbox_trial_claim
               (run_id,user_id,claim_no,product_no,device_name,status,claimed_at,expires_at,finished_at,version,

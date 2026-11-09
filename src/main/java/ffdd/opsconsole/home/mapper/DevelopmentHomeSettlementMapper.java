@@ -134,7 +134,11 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                     COALESCE(d.vram_total_gb, 0) AS vramTotalGb,
                     d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,
                     GREATEST(COALESCE(d.daily_usdt, 0), 0) AS dailyUsdt,
-                    d.pending_deactivate AS pendingDeactivate
+                    d.pending_deactivate AS pendingDeactivate,
+                    (NOT EXISTS (SELECT 1 FROM nx_simulated_device_runtime sim WHERE sim.user_device_id=d.id)
+                     AND NOT EXISTS (SELECT 1 FROM nx_product p WHERE p.product_no=d.product_code
+                                      AND p.monthly_target_usdt IS NOT NULL)) AS developmentDispatchAllowed,
+                    EXISTS (SELECT 1 FROM nx_simulated_device_runtime sim WHERE sim.user_device_id=d.id) AS simulatedRuntimePresent
               FROM nx_user_device d
               JOIN nx_user u ON u.id=d.user_id AND u.sandbox=0
                             AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
@@ -152,6 +156,13 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                                        AND UPPER(COALESCE(o.activation_status, ''))='ACTIVATED'
                                        AND o.is_deleted=0))
                )
+               AND ((NOT EXISTS (SELECT 1 FROM nx_simulated_device_runtime sim WHERE sim.user_device_id=d.id)
+                     AND NOT EXISTS (SELECT 1 FROM nx_product p WHERE p.product_no=d.product_code AND p.monthly_target_usdt IS NOT NULL))
+                    OR (d.pending_deactivate=1 AND NOT EXISTS
+                        (SELECT 1 FROM nx_simulated_device_runtime sim WHERE sim.user_device_id=d.id))
+                    OR EXISTS (SELECT 1 FROM nx_compute_task t WHERE t.user_device_id=d.id AND t.user_id=d.user_id
+                               AND t.task_no LIKE 'DEV-TASK-%' AND t.status IN ('CLAIMED','RUNNING')
+                               AND t.source_environment='PRODUCTION' AND t.is_deleted=0))
              ORDER BY d.user_id, d.id
             """)
     List<DevelopmentTaskDevice> developmentTaskDevices();
@@ -177,7 +188,11 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                     COALESCE(d.vram_total_gb, 0) AS vramTotalGb,
                     d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,
                     GREATEST(COALESCE(d.daily_usdt, 0), 0) AS dailyUsdt,
-                    d.pending_deactivate AS pendingDeactivate
+                    d.pending_deactivate AS pendingDeactivate,
+                    (NOT EXISTS (SELECT 1 FROM nx_simulated_device_runtime sim WHERE sim.user_device_id=d.id)
+                     AND NOT EXISTS (SELECT 1 FROM nx_product p WHERE p.product_no=d.product_code
+                                      AND p.monthly_target_usdt IS NOT NULL)) AS developmentDispatchAllowed,
+                    EXISTS (SELECT 1 FROM nx_simulated_device_runtime sim WHERE sim.user_device_id=d.id) AS simulatedRuntimePresent
               FROM nx_user_device d
               JOIN nx_user u ON u.id=d.user_id AND u.sandbox=0
                             AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
@@ -553,7 +568,14 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
             LocalDateTime purchasedAt,
             LocalDateTime activatedAt,
             BigDecimal dailyUsdt,
-            Boolean pendingDeactivate) {
+            Boolean pendingDeactivate, boolean developmentDispatchAllowed, boolean simulatedRuntimePresent) {
+        public DevelopmentTaskDevice(Long userId, Long userDeviceId, String instanceNo, String deviceName,
+                String modelName, String productCode, String deviceType, String status, Long rowVersion,
+                Integer vramTotalGb, LocalDateTime purchasedAt, LocalDateTime activatedAt, BigDecimal dailyUsdt,
+                Boolean pendingDeactivate) {
+            this(userId,userDeviceId,instanceNo,deviceName,modelName,productCode,deviceType,status,rowVersion,
+                    vramTotalGb,purchasedAt,activatedAt,dailyUsdt,pendingDeactivate,true,false);
+        }
     }
 
     record DevelopmentTaskConfig(

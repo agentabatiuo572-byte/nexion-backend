@@ -78,12 +78,14 @@ public class CommerceSandboxTrialService {
         if (existing != null) return ApiResult.ok(project(userId, existing, LocalDateTime.now(clock)));
         LocalDateTime now = LocalDateTime.now(clock);
         String claimNo = "TRIAL-SBX-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
+        BigDecimal monthlyTarget=trialMapper.monthlyTarget(runId,TRIAL_PRODUCT);
+        BigDecimal daily=monthlyTarget==null?DAILY_USDT:ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.daily(monthlyTarget);
         TrialClaimWrite write = new TrialClaimWrite(runId, userId, claimNo, TRIAL_PRODUCT, TRIAL_DEVICE,
-                now, now.plusDays(TRIAL_DAYS), DAILY_USDT, DAILY_NEX, OFFSET_CAP, TRIAL_PRICE);
+                now, now.plusDays(TRIAL_DAYS), daily, DAILY_NEX, OFFSET_CAP, TRIAL_PRICE);
         int inserted = trialMapper.insertTrialClaim(write);
         TrialClaim created = inserted == 1
                 ? new TrialClaim(claimNo, userId, TRIAL_PRODUCT, TRIAL_DEVICE, "ACTIVE", now,
-                now.plusDays(TRIAL_DAYS), null, 0L, DAILY_USDT, DAILY_NEX, OFFSET_CAP, TRIAL_PRICE,
+                now.plusDays(TRIAL_DAYS), null, 0L, daily, DAILY_NEX, OFFSET_CAP, TRIAL_PRICE,
                 null, null, null, null)
                 : trialMapper.lock(runId, userId);
         if (created == null) throw new BizException(409, "TRIAL_SANDBOX_START_CONFLICT");

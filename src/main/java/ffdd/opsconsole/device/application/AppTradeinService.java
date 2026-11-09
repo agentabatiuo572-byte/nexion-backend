@@ -51,6 +51,8 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor(onConstructor_ = @org.springframework.beans.factory.annotation.Autowired)
 public class AppTradeinService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private DeviceMonthlyTargetReadService monthlyTargetReads;
     private final ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade paymentAuthorization;
 
     // Compatibility constructor for existing isolated domain tests; runtime uses the full constructor.
@@ -462,7 +464,7 @@ public class AppTradeinService {
         if (attribution == null || attribution.accountAgeMonths() == null || !StringUtils.hasText(attribution.cohort())) {
             throw new BizException(409, "TRADEIN_EVENT_ATTRIBUTION_UNAVAILABLE");
         }
-        AppTradeinMapper.SourceDevice source = mapper.lockCapacityReplacementSource(userId);
+        AppTradeinMapper.SourceDevice source = currentReplacementSource(mapper.lockCapacityReplacementSources(userId));
         if (source == null || !source.id().equals(request.sourceDeviceId())) {
             throw new BizException(409, "CAPACITY_REPLACEMENT_SOURCE_CHANGED");
         }
@@ -664,7 +666,7 @@ public class AppTradeinService {
         int trial = locked ? mapper.lockReservedTrialSlotCount(userId) : mapper.reservedTrialSlotCount(userId);
         int reserved = Math.max(0, locked ? mapper.lockReservedDeviceOrderCount(userId) : mapper.reservedDeviceOrderCount(userId));
         if ((long) activeDevices + reserved + trial >= slotCap) {
-            source = locked ? mapper.lockCapacityReplacementSource(userId) : mapper.findCapacityReplacementSource(userId);
+            source = locked ? currentReplacementSource(mapper.lockCapacityReplacementSources(userId)) : currentReplacementSource(mapper.findCapacityReplacementSources(userId));
             decision = source == null ? "NO_ACTIVE_DEVICE" : "REPLACE_REQUIRED";
         }
         return new AppCapacityReplaceQuoteResponse(
@@ -1051,5 +1053,11 @@ public class AppTradeinService {
             AppTradeinMapper.SourceDevice source,
             AppTradeinMapper.TargetProduct target,
             AppTradeinQuoteResponse response) {
+    }
+    private AppTradeinMapper.SourceDevice currentReplacementSource(List<AppTradeinMapper.SourceDevice> candidates) {
+        var current=monthlyTargetReads.projections(candidates.stream().map(AppTradeinMapper.SourceDevice::id).toList());
+        return candidates.stream().min(java.util.Comparator
+            .comparing((AppTradeinMapper.SourceDevice d)->current.get(d.id()).daily()==null?BigDecimal.ZERO:current.get(d.id()).daily())
+            .thenComparing(AppTradeinMapper.SourceDevice::id)).orElse(null);
     }
 }

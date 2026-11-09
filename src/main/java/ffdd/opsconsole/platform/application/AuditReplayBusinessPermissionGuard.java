@@ -935,6 +935,9 @@ public class AuditReplayBusinessPermissionGuard {
             AuditOperationProposalRequest request) {
         boolean delegated = delegatedProposal();
         AuditReplayCommand command = request == null ? null : request.command();
+        if(command!=null && "E".equals(command.domain()) && Set.of("e1_sku_create","e1_sku_update").contains(command.op()))
+            return ApiResult.ok(delegatedDescriptor(command)); // E1 derives its lock target from the typed SKU, including generated create ids.
+
         if (H7VoucherDisposition.isOperation(command)) {
             var disposition = H7VoucherDisposition.parse(command);
             var target = disposition.target();
@@ -1510,6 +1513,11 @@ public class AuditReplayBusinessPermissionGuard {
     private DelegatedProposalDescriptor delegatedEDescriptor(String operation, Map<String, Object> params) {
         String deviceId = positiveIdentifier(params.get("deviceId"));
         return switch (operation) {
+            case "e1_sku_create", "e1_sku_update" -> {
+                var review=devices.skuProposalReview(new AuditReplayCommand("E",operation,params));
+                yield new DelegatedProposalDescriptor("调整设备型号",review.skuId(),"以服务器型号快照为准","批准后新任务生效","E1",
+                        review.amplifies()?"fund":"param",review.amplifies(),new AuditLockTarget("E","device_sku",review.skuId()));
+            }
             case "e1_legacy_unknown_zero_credit_cancel" -> legacyUnknownDescriptor(params);
             case "e3_config" -> e3ConfigDescriptor(params);
             case "e5_device_force_activate" -> deviceDescriptor(
