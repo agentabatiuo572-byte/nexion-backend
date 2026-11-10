@@ -33,6 +33,13 @@ public class AdminIdempotencyExpiryTransitionExecutor {
         return recordMapper.selectCurrent(scope, idempotencyKey);
     }
 
+    /** A duplicate claim must see the committed winner without waiting for its business transaction. */
+    @Transactional(propagation = Propagation.REQUIRES_NEW,
+            isolation = Isolation.READ_COMMITTED, readOnly = true)
+    public AdminIdempotencyRecordEntity loadActiveCommitted(String scope, String idempotencyKey) {
+        return recordMapper.selectActive(scope, idempotencyKey);
+    }
+
     @Transactional(propagation = Propagation.REQUIRES_NEW,
             isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public int markExpiredProcessingUnknownBatch(int limit) {
