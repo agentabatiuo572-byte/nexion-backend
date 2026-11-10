@@ -43,16 +43,14 @@ public class CregisProperties {
     private boolean erc20PayoutEnabled;
     private boolean trc20PayoutEnabled;
     public boolean payoutNetworkEnabled(CregisNetwork network) { return switch(network) { case BEP20 -> true; case ERC20 -> erc20PayoutEnabled; case TRC20 -> trc20PayoutEnabled; }; }
-    /** Separate operator approval for the automatic collection/forward transport. Never enabled by a migration. */
+    /** Single operator approval for the automatic collection/forward transport across all networks. Never enabled by a migration. */
     private boolean autoForwardEnabled;
-    private boolean erc20AutoForwardEnabled;
-    private boolean trc20AutoForwardEnabled;
     private String erc20PlatformAddress = "";
     private String erc20CounterpartyAddress = "";
     private String trc20PlatformAddress = "";
     private String trc20CounterpartyAddress = "";
     public boolean autoForwardNetworkEnabled(CregisNetwork network) {
-        return autoForwardEnabled && switch(network) { case BEP20 -> true; case ERC20 -> erc20AutoForwardEnabled; case TRC20 -> trc20AutoForwardEnabled; };
+        return autoForwardEnabled;
     }
     public String autoForwardPlatform(CregisNetwork network) {
         return switch(network) { case BEP20 -> CregisFundsPreparationService.PLATFORM; case ERC20 -> erc20PlatformAddress; case TRC20 -> trc20PlatformAddress; };
