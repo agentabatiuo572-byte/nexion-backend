@@ -180,9 +180,11 @@ public class AdminIdempotencyTransactionExecutor {
             try {
                 recordMapper.insert(record);
             } catch (DuplicateKeyException ex) {
-                // A locking current read sees the concurrent winner even under MySQL REPEATABLE READ.
+                // Leave the claim's REPEATABLE_READ snapshot without locking the winner.
+                // Its business transaction may be waiting for a nested claim to commit;
+                // waiting here can hold gap locks that block that nested INSERT.
                 AdminIdempotencyRecordEntity duplicate =
-                        recordMapper.selectActiveForUpdate(scope, idempotencyKey);
+                        expiryTransitionExecutor.loadActiveCommitted(scope, idempotencyKey);
                 if (duplicate != null) {
                     return Claim.replayed(replay(duplicate, requestHash, responseType));
                 }
