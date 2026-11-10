@@ -13,6 +13,8 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.context.event.ContextClosedEvent;
+import org.springframework.context.event.EventListener;
 
 /** Rebuilds legacy K4 score projections before the application reports startup complete. */
 @Component
@@ -25,6 +27,10 @@ public class K4ScoreBackfillInitializer implements ApplicationRunner {
     private final K4RiskScorer scorer;
     private final EventOutboxService eventOutboxService;
     private final K4ScoreBackfillTransactionExecutor transactionExecutor;
+    private volatile boolean closing;
+
+    @EventListener(ContextClosedEvent.class)
+    public void contextClosed() { closing = true; }
 
     @Override
     public void run(ApplicationArguments args) {
@@ -32,6 +38,7 @@ public class K4ScoreBackfillInitializer implements ApplicationRunner {
     }
 
     public synchronized void backfillCanonicalScores() {
+        if (closing) return;
         transactionExecutor.execute(() -> {
             riskRepository.synchronizeScoringUsers();
             return null;
@@ -47,6 +54,7 @@ public class K4ScoreBackfillInitializer implements ApplicationRunner {
                     riskRepository.scoreUserNosNeedingProjection(model.version(), CHUNK_SIZE));
         });
         for (String userNo : batch.userNos()) {
+            if (closing) break;
             executeProjectionWithBoundedRetry(batch.model(), userNo);
         }
     }

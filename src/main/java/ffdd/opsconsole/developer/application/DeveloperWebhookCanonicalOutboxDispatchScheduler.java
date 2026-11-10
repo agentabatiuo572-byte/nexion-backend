@@ -13,6 +13,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.context.event.ContextClosedEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
 /**
@@ -27,6 +29,10 @@ public class DeveloperWebhookCanonicalOutboxDispatchScheduler {
     private static final int BATCH_SIZE = 100;
     private final EventOutboxService outboxService;
     private final EventOutboxDispatcher dispatcher;
+    private volatile boolean closing;
+
+    @EventListener(ContextClosedEvent.class)
+    public void contextClosed() { closing = true; }
     private final Map<String, Long> cursors = new ConcurrentHashMap<>();
     private final AtomicLong lastHeartbeatNanos = new AtomicLong();
 
@@ -34,8 +40,10 @@ public class DeveloperWebhookCanonicalOutboxDispatchScheduler {
             initialDelayString = "${nexion.developer.webhooks.canonical-dispatch-initial-delay-ms:1000}",
             scheduler = "developerWebhookTaskScheduler")
     public void dispatchPending() {
+        if (closing) return;
         logHeartbeat();
         for (String eventType : DeveloperWebhookCanonicalEventBridge.supportedCanonicalEventTypes()) {
+            if (closing) break;
             if (ComputeOutboxDispatchScheduler.EVENT_TYPES.contains(eventType)) continue;
             List<EventOutboxMessage> pending;
             try {
@@ -47,6 +55,7 @@ public class DeveloperWebhookCanonicalOutboxDispatchScheduler {
             }
             if (pending == null || pending.isEmpty()) continue;
             for (EventOutboxMessage message : pending) {
+                if (closing) break;
                 dispatcher.dispatch(message, null);
             }
         }

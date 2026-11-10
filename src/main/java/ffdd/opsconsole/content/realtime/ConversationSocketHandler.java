@@ -14,6 +14,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.SmartLifecycle;
+import org.springframework.context.event.ContextClosedEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.security.core.Authentication;
@@ -26,7 +28,7 @@ import org.springframework.web.socket.handler.*;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class ConversationSocketHandler extends TextWebSocketHandler {
+public class ConversationSocketHandler extends TextWebSocketHandler implements SmartLifecycle {
     @org.springframework.transaction.event.TransactionalEventListener(phase=org.springframework.transaction.event.TransactionPhase.AFTER_COMMIT)
     public void userViewCleared(ffdd.opsconsole.content.application.AppConversationManagementService.UserViewCleared event) {
         publish(Map.of("kind", "CLEARED", "customerId", event.userId(), "conversationNos", event.conversationNos()));
@@ -60,8 +62,11 @@ public class ConversationSocketHandler extends TextWebSocketHandler {
     private int maxConnections;
     private final AtomicBoolean presencePending=new AtomicBoolean();
     private final AtomicBoolean overloadPending = new AtomicBoolean();
+    private final CompletableFuture<Void> outboundTerminated = new CompletableFuture<>();
     private final ThreadPoolExecutor outbound=new ThreadPoolExecutor(1,1,0,TimeUnit.SECONDS,new ArrayBlockingQueue<>(2048),
-            r->{Thread t=new Thread(r,"conversation-events");t.setDaemon(true);return t;});
+            r->{Thread t=new Thread(r,"conversation-events");t.setDaemon(true);return t;}) {
+        @Override protected void terminated() { outboundTerminated.complete(null); }
+    };
 
     private record Identity(ConversationSocketTickets.Grant grant, Authentication auth) {}
     private static final class Client {
@@ -210,7 +215,7 @@ public class ConversationSocketHandler extends TextWebSocketHandler {
     }
 
     private void publish(Map<String,?> notice) {
-        if (!enqueue(() -> socketRedis.publish(notice))) socketRedis.markGap();
+        if (!enqueue(() -> socketRedis.publish(notice)) && !outbound.isShutdown()) socketRedis.markGap();
     }
 
     @EventListener void received(ConversationSocketRedis.Delivery delivery) {
@@ -507,11 +512,26 @@ public class ConversationSocketHandler extends TextWebSocketHandler {
         if (client != null) detach(client, false);
     }
     @Override public void handleTransportError(WebSocketSession session,Throwable error){Client c=clients.get(session.getId());if(c!=null)close(c,1013);}
-    @PreDestroy public void stop() {
+    @Override public void start() { }
+    @Override public boolean isRunning() { return !outbound.isTerminated(); }
+
+    @EventListener(ContextClosedEvent.class)
+    public void contextClosed() { stop(); }
+
+    @Override public void stop(Runnable callback) {
+        stop();
+        // The highest lifecycle phase waits for the active task before phase-0 Redis and SQL destruction.
+        outboundTerminated.thenRun(callback);
+    }
+
+    @PreDestroy @Override public void stop() {
         synchronized (admissionLock) {
             authTimeouts.shutdownNow();
+            // Notifications resynchronise and presence leases expire. Discard the backlog, but
+            // never interrupt the one task that may still be using Redis/SQL.
+            outbound.shutdown();
+            outbound.getQueue().clear();
         }
         clients.values().forEach(c -> close(c, 1001));
-        outbound.shutdownNow();
     }
 }
