@@ -19,6 +19,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.event.ContextClosedEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.core.env.Environment;
 import org.springframework.scheduling.annotation.SchedulingConfigurer;
 import org.springframework.scheduling.config.ScheduledTaskRegistrar;
@@ -58,6 +60,10 @@ public class SimulatedTaskService implements SchedulingConfigurer {
         settlementWorkers = Executors.newFixedThreadPool(SETTLEMENT_THREADS,
                 job -> new Thread(job, "settlement-due-" + workerNumber.incrementAndGet()));
     }
+
+    /** Stop claiming new slots when shutdown begins; in-flight slot transactions still finish. */
+    @EventListener(ContextClosedEvent.class)
+    public void contextClosed() { stopping = true; }
 
     @PreDestroy
     void stopSettlementWorkers() {

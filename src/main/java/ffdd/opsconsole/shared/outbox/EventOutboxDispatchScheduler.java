@@ -6,6 +6,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.context.event.ContextClosedEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
 /** Delivers durable outbox messages into the modular-monolith event bus. */
@@ -103,6 +105,10 @@ public class EventOutboxDispatchScheduler {
 
     private final EventOutboxService outboxService;
     private final EventOutboxDispatcher dispatcher;
+    private volatile boolean closing;
+
+    @EventListener(ContextClosedEvent.class)
+    public void contextClosed() { closing = true; }
     private final AtomicLong lastHeartbeatNanos = new AtomicLong();
     private long nextRecordOnlySweepNanos = System.nanoTime();
 
@@ -110,6 +116,7 @@ public class EventOutboxDispatchScheduler {
             fixedDelayString = "${nexion.outbox.dispatch-delay-ms:1000}",
             initialDelayString = "${nexion.outbox.dispatch-initial-delay-ms:1000}")
     public void dispatchPending() {
+        if (closing) return;
         logHeartbeat();
         // Facts with no bus consumer can never be delivered by any dispatcher.
         // Retire them explicitly; otherwise they stay PENDING forever and both
@@ -169,6 +176,7 @@ public class EventOutboxDispatchScheduler {
         int published = 0;
         int failed = 0;
         for (String eventType : supportedEventTypes.stream().distinct().toList()) {
+            if (closing) break;
             if (ComputeOutboxDispatchScheduler.EVENT_TYPES.contains(eventType)) continue;
             List<EventOutboxMessage> pending = outboxService.listPendingByEventType(eventType, BATCH_SIZE);
             if (pending == null || pending.isEmpty()) {
@@ -179,6 +187,7 @@ public class EventOutboxDispatchScheduler {
             // MySQL collations can match aliases that the exact C1 consumer ignores.
             String exactEventType = C1_AUDIT_EVENT_TYPES.contains(eventType) ? eventType : null;
             for (EventOutboxMessage message : pending) {
+                if (closing) break;
                 switch (dispatcher.dispatch(message, exactEventType)) {
                     case PUBLISHED -> published++;
                     case FAILED -> failed++;

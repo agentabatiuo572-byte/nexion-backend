@@ -9,6 +9,8 @@ import java.sql.SQLException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.event.ContextClosedEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
 /** Coordinates both schedulers across JVMs while preserving each listener's transaction boundary. */
@@ -28,8 +30,13 @@ public class EventOutboxDispatcher {
     private final EventOutboxService outboxService;
     private final EventConsumerDeliveryProperties deliveryProperties;
     private final ApplicationEventPublisher eventPublisher;
+    private volatile boolean closing;
+
+    @EventListener(ContextClosedEvent.class)
+    public void contextClosed() { closing = true; }
 
     public Result dispatch(EventOutboxMessage message, String exactEventType) {
+        if (closing) return Result.SKIPPED;
         // Keep the advisory lock on a dedicated session, without an open transaction.
         try (Connection connection = dataSource.getConnection()) {
             try {
@@ -47,12 +54,14 @@ public class EventOutboxDispatcher {
     }
 
     void dispatchComputeLane(String eventType, int laneCount, int lane) {
+        if (closing) return;
         String laneKey = eventType + ":" + lane;
         try (Connection connection = dataSource.getConnection()) {
             try {
                 if (executeLockCommand(connection, ACQUIRE_LOCK, LANE_LOCK, laneKey) == 0) return;
                 try {
                     for (EventOutboxMessage message : mapper.listPendingByCanonicalLane(eventType, laneCount, lane, false, 40)) {
+                        if (closing) break;
                         dispatch(connection, message, null);
                     }
                 } finally {

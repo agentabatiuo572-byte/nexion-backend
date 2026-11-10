@@ -3,15 +3,14 @@ package ffdd.opsconsole.content.realtime;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.annotation.PreDestroy;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.event.EventListener;
@@ -21,6 +20,7 @@ import org.springframework.data.redis.connection.Limit;
 import org.springframework.data.redis.core.StreamOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.scheduling.TaskScheduler;
 import org.springframework.stereotype.Component;
 
 @Slf4j
@@ -53,21 +53,18 @@ class ConversationSocketRedis {
     private final String streamKey;
     private final String instance = UUID.randomUUID().toString();
     private final AtomicBoolean publishFailed = new AtomicBoolean();
-    private final ScheduledExecutorService reader = Executors.newSingleThreadScheduledExecutor(task -> {
-        Thread thread = new Thread(task, "conversation-redis-reader");
-        thread.setDaemon(true);
-        return thread;
-    });
+    private final TaskScheduler reader;
     private volatile long lastRead;
     private boolean interrupted;
     private String cursor;
 
     ConversationSocketRedis(StringRedisTemplate redis, ObjectMapper json, ApplicationEventPublisher events,
-            Environment environment) {
+            Environment environment, @Qualifier("conversationRedisTaskScheduler") TaskScheduler reader) {
         this.redis = redis;
         this.stream = redis.opsForStream();
         this.json = json;
         this.events = events;
+        this.reader = reader;
         String profiles = String.join(",", environment.getActiveProfiles());
         String deployment = environment.getProperty("nexion.deployment.public-test", "false");
         this.prefix = "support:ws:v1:" + profiles + ":" + deployment + ":";
@@ -77,9 +74,7 @@ class ConversationSocketRedis {
     String instance() { return instance; }
 
     @EventListener(ApplicationReadyEvent.class)
-    void start() { reader.scheduleWithFixedDelay(this::poll, 0, 250, TimeUnit.MILLISECONDS); }
-
-    @PreDestroy void stop() { reader.shutdownNow(); }
+    void start() { reader.scheduleWithFixedDelay(this::poll, Duration.ofMillis(250)); }
 
     boolean isAvailable() {
         long observed = lastRead;

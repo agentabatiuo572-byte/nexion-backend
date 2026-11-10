@@ -12,7 +12,8 @@ public class K4ScoreSchedulerConfiguration {
         ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
         scheduler.setPoolSize(1);
         scheduler.setThreadNamePrefix("k4-score-");
-        scheduler.setWaitForTasksToCompleteOnShutdown(true);
+        // Drain active work in Spring's early lifecycle stop, before shared infrastructure stops.
+        scheduler.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
         scheduler.setAwaitTerminationSeconds(10);
         return scheduler;
     }
