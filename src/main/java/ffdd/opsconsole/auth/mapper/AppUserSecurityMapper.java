@@ -161,11 +161,11 @@ public interface AppUserSecurityMapper extends BaseMapper<AppUserSecurityEntity>
             ) OR EXISTS(
                 SELECT 1 FROM nx_withdrawal_order w
                  WHERE w.user_id=#{userId} AND w.is_deleted=0
-                   AND w.status NOT IN ('COMPLETED','SUCCESS','FAILED','REJECTED','CANCELLED')
+                   AND w.status NOT IN ('COMPLETED','SUCCESS','CONFIRMED','FAILED','REJECTED','REVIEW_REJECTED','ADDRESS_INVALID','TX_FAILED','REFUNDED','CANCELLED')
             ) OR EXISTS(
                 SELECT 1 FROM nx_deposit_order d
                  WHERE d.user_id=#{userId} AND d.is_deleted=0
-                   AND d.status NOT IN ('COMPLETED','SUCCESS','FAILED','REJECTED','CANCELLED')
+                   AND d.status NOT IN ('COMPLETED','SUCCESS','CREDITED','FAILED','REJECTED','CANCELLED')
             ) OR EXISTS(
                 SELECT 1 FROM nx_exchange_order e
                  WHERE e.user_id=#{userId} AND e.is_deleted=0
@@ -173,11 +173,11 @@ public interface AppUserSecurityMapper extends BaseMapper<AppUserSecurityEntity>
             ) OR EXISTS(
                 SELECT 1 FROM nx_staking_position s
                  WHERE s.user_id=#{userId} AND s.is_deleted=0
-                   AND s.status NOT IN ('COMPLETED','CLOSED','CANCELLED','WITHDRAWN')
+                   AND s.status NOT IN ('COMPLETED','CLOSED','CLAIMED','EARLY_WITHDRAWN','CANCELLED','WITHDRAWN')
             ) OR EXISTS(
                 SELECT 1 FROM nx_order o
                  WHERE o.user_id=#{userId} AND o.is_deleted=0
-                   AND (o.order_status NOT IN ('COMPLETED','CANCELLED','CLOSED','FAILED','REFUNDED')
+                   AND (o.order_status NOT IN ('COMPLETED','CANCELLED','CLOSED','FAILED','REFUNDED','EXPIRED')
                         OR o.payment_status NOT IN ('PAID','FAILED','CANCELLED','REFUNDED','EXPIRED'))
             ) THEN 1 ELSE 0 END
             """)
