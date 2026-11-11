@@ -522,7 +522,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return listingGuard;
             }
         }
-        simulationPolicies.validateProductScope(normalized,classes,!scopeChanged && !newlyListed,effectiveWriteRequest.monthlyTargetUsdt(),effectiveWriteRequest.monthlyTargetBandPct(),"on".equals(nextStatus),Boolean.TRUE.equals(effectiveWriteRequest.clearMonthlyTarget()));
+        boolean legacyOnSaleMaintenance="on".equals(before.status()) && !newlyListed && !targetChanged && !scopeChanged
+                && !MonthlyTargetProjection.supportsDevice(normalized,before.productType());
+        simulationPolicies.validateProductScope(normalized,classes,!scopeChanged && !newlyListed,
+                effectiveWriteRequest.monthlyTargetUsdt(),effectiveWriteRequest.monthlyTargetBandPct(),
+                "on".equals(nextStatus) && !legacyOnSaleMaintenance,
+                Boolean.TRUE.equals(effectiveWriteRequest.clearMonthlyTarget()));
         LocalDateTime changedAt = LocalDateTime.now(clock);
         DeviceSkuView updated = catalogRepository.updateSku(
                         normalized, effectiveWriteRequest, expectedRevision, changedAt)
@@ -3480,8 +3485,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if((target==null)!=(band==null))throw new BizException(422,"MONTHLY_TARGET_PAIR_REQUIRED");
         var pools=simulationPolicies.writePools(key,request.allowedPoolCodes(),before==null?List.of():before.allowedPoolCodes());
         boolean scopeChanged=before==null || !new java.util.HashSet<>(pools).equals(new java.util.HashSet<>(before.allowedPoolCodes()));
-        simulationPolicies.validateProductScope(key,pools,!scopeChanged && !listing,target,band,"on".equals(request.status()),clear);
-        validateHosting(request.datacenter(),"on".equals(request.status()));
+        boolean legacyOnSaleMaintenance=before!=null && "on".equals(before.status())
+                && !listing && !targetChanged && !scopeChanged
+                && !MonthlyTargetProjection.supportsDevice(key,productType);
+        boolean publishing="on".equals(request.status()) && !legacyOnSaleMaintenance;
+        simulationPolicies.validateProductScope(key,pools,!scopeChanged && !listing,target,band,publishing,clear);
+        validateHosting(request.datacenter(),publishing);
         if(clear && ("Share".equals(request.tier())
                 ?request.shareYieldMin()==null || request.shareYieldMax()==null || request.shareYieldMin().signum()<0 || request.shareYieldMax().compareTo(request.shareYieldMin())<0
                 :request.dailyEarn()==null || request.dailyEarn().signum()<0 || request.dailyEarn().stripTrailingZeros().scale()>6))
@@ -5712,7 +5721,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     public record PhoneClassReview(String before,String after) { }
-    public record RuleTaskReview(String target,String name,String before,String after,Long statusVersion) { }
+    public record RuleTaskReview(String target,String name,String before,String after,Long statusVersion, boolean amplifies) { }
     public RuleTaskReview ruleTaskReview(AuditReplayCommand command) {
         boolean create="e2_task_create".equals(command.op()),statusOnly="e2_task_status".equals(command.op());
         var params=command.params();
@@ -5728,7 +5737,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             String status=normalizeTaskStatus(str(params,"status"));
             if(status==null)throw new BizException(422,"TASK_STATUS_INVALID");
             boolean enabled="active".equals(status);
-            return new RuleTaskReview(old.taskId(),old.name(),before,ruleDescription(old.name(),old.taskClass(),enabled,current.durationMinutes(),current.baseReward(),current.asset()),current.version());
+            return new RuleTaskReview(old.taskId(),old.name(),before,ruleDescription(old.name(),old.taskClass(),enabled,current.durationMinutes(),current.baseReward(),current.asset()),current.version(), enabled && !current.enabled());
         }
         var raw=buildTaskUpsertRequest(params,"规则任务审批","A2");
         var settings=raw.simulation();
@@ -5741,12 +5750,16 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),"TASK_STATUS_REQUIRES_LIFECYCLE_ACTION");
         if(!TASK_CLASSES.contains(next.taskClass()))throw new BizException(422,"TASK_CLASS_INVALID");
         String lock=create?"new-"+java.util.UUID.nameUUIDFromBytes(next.name().getBytes(java.nio.charset.StandardCharsets.UTF_8)):old.taskId();
+        boolean nextEnabled=settings.enabled() && "active".equals(next.status());
+        boolean amplifies=create?nextEnabled && settings.baseReward().signum()>0
+                :settings.baseReward().compareTo(current.baseReward())>0 || nextEnabled && (!current.enabled() || settings.durationMinutes()<current.durationMinutes());
         return new RuleTaskReview(lock,next.name(),before,ruleDescription(next.name(),next.taskClass(),
-                settings.enabled() && "active".equals(next.status()),settings.durationMinutes(),settings.baseReward(),settings.asset()),null);
+                nextEnabled,settings.durationMinutes(),settings.baseReward(),settings.asset()),null, amplifies);
     }
     private String ruleDescription(String name,String taskClass,boolean enabled,int minutes,BigDecimal reward,String asset) {
         return name+" · "+classSummary(List.of(taskClass))+" · "+(enabled?"启用":"停用")+" · "+minutes+" 分钟 · "+reward.stripTrailingZeros().toPlainString()+" "+asset;
     }
+
     public PhoneClassReview phoneClassReview(AuditReplayCommand command) {
         var policy=simulationPolicies.productView("phone");
         var params=command.params();
