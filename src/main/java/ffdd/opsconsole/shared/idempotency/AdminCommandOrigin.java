@@ -59,6 +59,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (scope.startsWith("D2")) return "finance_d2_read";
         if (scope.startsWith("E2_POOL_")) return "device_e2_read";
         if (scope.startsWith("E5_DEVICE_")) return "device_e5_read";
+        if (scope.startsWith("E6_PHONE_")) return "device_e6_read";
         if (scope.startsWith("D3")) return "finance_d3_read";
         if ("D5_WITHDRAWAL_LIMITS".equals(scope)) return "finance_d5_read";
         if ("D6_FX_QUOTE".equals(scope)) return "finance_d6_read";
@@ -75,7 +76,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
 
     public static boolean supported(String scope) {
         return scope != null && (scope.matches("(?:D2|D3|E4|H2|K1|J1|I5|C[1-6])(?:[_:].*)?")
-                || scope.startsWith("E2_POOL_") || scope.startsWith("E5_DEVICE_")
+                || scope.startsWith("E2_POOL_") || scope.startsWith("E5_DEVICE_") || scope.startsWith("E6_PHONE_")
                 || scope.startsWith("GROWTH:H2:")
                 || "A2_COMMAND".equals(scope) || "L_BI_REPORT_CREATE".equals(scope) || scope.startsWith("L_BI_REPORT_ACTION"));
     }
@@ -85,6 +86,6 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         return java.util.Set.of("I5_JURISDICTION_CREATE", "I5_JURISDICTION_UPDATE", "I5_DISCLOSURE_DRAFT_SAVE",
                 "I5_DISCLOSURE_DRAFT_DELETE", "I5_DISCLOSURE_MATRIX_CONFIGURE", "I5_DISCLOSURE_MATRIX_ARCHIVE",
                 "I5_DISCLOSURE_GATE_UPDATE").contains(scope)
-                || scope != null && (scope.startsWith("E2_POOL_") || scope.startsWith("E5_DEVICE_"));
+                || scope != null && (scope.startsWith("E2_POOL_") || scope.startsWith("E5_DEVICE_") || scope.startsWith("E6_PHONE_"));
     }
 }

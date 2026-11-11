@@ -7,6 +7,7 @@ import ffdd.opsconsole.onboarding.application.PhoneCalibrationPolicy;
 import ffdd.opsconsole.onboarding.application.PhoneModelRisk;
 import ffdd.opsconsole.onboarding.application.PhoneModelRiskAdminService;
 import ffdd.opsconsole.onboarding.application.PhoneModelRiskConfig;
+import ffdd.opsconsole.onboarding.application.PhoneModelRiskReceiptService;
 import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -22,6 +23,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -32,6 +34,7 @@ public class PhoneCalibrationAdminController {
     private final OnboardingCalibrationMapper mapper;
     private final Clock clock;
     private final PhoneModelRiskAdminService risk;
+    private final PhoneModelRiskReceiptService riskReceipts;
     /** {@code facts} optionally adds an iPhone's OS version and screen to show which model checks would fire. */
     public record Preview(PhoneCalibrationConfigService.Proposal proposal, PhoneCalibrationPolicy.Hardware hardware,
                           PhoneModelRisk.Facts facts) {
@@ -76,6 +79,13 @@ public class PhoneCalibrationAdminController {
     public ApiResult<Map<String,Object>> updateRisk(@RequestHeader(value = "Idempotency-Key", required = false) String key,
                                                    @RequestBody PhoneModelRiskAdminService.Update request) {
         return risk.update(request, key);
+    }
+
+    /** Durable original save result by command key: read-only, never re-runs the writer or reads live settings. */
+    @GetMapping("/risk/receipts/by-key")
+    @PreAuthorize("hasAuthority('device_e6_read')")
+    public ApiResult<PhoneModelRiskReceiptService.Receipt> riskReceipt(@RequestParam String commandKey) {
+        return ApiResult.ok(riskReceipts.read(commandKey));
     }
 
     @PostMapping("/preview")

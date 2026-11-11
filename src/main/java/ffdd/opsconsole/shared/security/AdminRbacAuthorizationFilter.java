@@ -366,6 +366,10 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         if (HttpMethod.GET.matches(method) && path.equals("/api/admin/config/phone-calibration/risk")) {
             return RequiredAuthority.exact("device_e6_read");
         }
+        if (HttpMethod.GET.matches(method)
+                && path.equals("/api/admin/config/phone-calibration/risk/receipts/by-key")) {
+            return RequiredAuthority.exact("device_e6_read");
+        }
         if (HttpMethod.PUT.matches(method) && path.equals("/api/admin/config/phone-calibration/risk")) {
             return RequiredAuthority.exact("device_e6_write");
         }
