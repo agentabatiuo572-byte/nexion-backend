@@ -43,7 +43,7 @@ import org.springframework.util.StringUtils;
 public class AppGrowthWheelService {
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final BigDecimal ONE_HUNDRED = new BigDecimal("100.0000");
-    private static final Set<String> REWARD_KINDS = Set.of("uvt", "points", "usdt", "coupon");
+    private static final Set<String> REWARD_KINDS = Set.of("uvt", "usdt", "coupon");
 
     private final AppGrowthWheelMapper mapper;
     private final VoucherGrantFacade voucherGrantFacade;
@@ -316,14 +316,6 @@ public class AppGrowthWheelService {
         switch (tier.rewardKind()) {
             case "uvt" -> creditWallet(userId, spinNo, "UVT", amount);
             case "usdt" -> creditWallet(userId, spinNo, "USDT", amount);
-            case "points" -> {
-                int points = wholeNumber(amount);
-                Integer before = mapper.currentPointsBalance(userId);
-                int balance = before == null ? 0 : before;
-                if (mapper.insertPointsLedger(userId, spinNo, points, Math.addExact(balance, points)) != 1) {
-                    throw new BizException(409, "WHEEL_REWARD_LEDGER_CONFLICT");
-                }
-            }
             case "coupon" -> voucherGrantFacade.grant(new VoucherGrantCommand(
                     userId, tier.voucherId(), "wheel:" + spinNo,
                     "WHEEL_SPIN", spinNo, "system:H4", "H4 Lucky Spin voucher award"));
@@ -348,17 +340,7 @@ public class AppGrowthWheelService {
         }
     }
 
-    private int wholeNumber(BigDecimal amount) {
-        try {
-            BigDecimal normalized = amount.stripTrailingZeros();
-            if (normalized.scale() > 0) throw new ArithmeticException();
-            return normalized.intValueExact();
-        } catch (ArithmeticException ex) {
-            throw new BizException(409, "WHEEL_POINTS_REWARD_INVALID");
-        }
-    }
-
-    @SuppressWarnings({"rawtypes", "unchecked"})
+    @SuppressWarnings({"rawtypes","unchecked"})
     private ApiResult<Map<String, Object>> executeOnce(
             Long userId, String idempotencyKey, Object request,
             Supplier<ApiResult<Map<String, Object>>> action) {
