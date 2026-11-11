@@ -18,6 +18,7 @@ import ffdd.opsconsole.growth.dto.GrowthMonthlyMissionRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionEditRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionPresentationRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionStatusRequest;
+import ffdd.opsconsole.growth.dto.GrowthWheelTierRetireRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelTierRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelGuardRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelProbabilityBatchRequest;
@@ -319,6 +320,16 @@ public class OpsGrowthController {
             @RequestBody GrowthWheelProbabilityBatchRequest request) {
         return commandBoundary.execute("H4", "WHEEL_PROBABILITIES_UPDATE", "ACTIVE_POOL", idempotencyKey, request,
                 () -> growthService.updateWheelProbabilities(idempotencyKey, request));
+    }
+
+    @PostMapping("/quest-events/wheel-tiers/{tierName}/retire")
+    @PreAuthorize("hasAuthority('growth_h4_wheel_pool_write')")
+    public ApiResult<Map<String, Object>> retireWheelTier(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String tierName,
+            @RequestBody GrowthWheelTierRetireRequest request) {
+        return commandBoundary.execute("H4", "WHEEL_TIER_RETIRE", tierName, idempotencyKey, request,
+                () -> growthService.retireWheelTier(idempotencyKey, tierName, request));
     }
 
     @PatchMapping("/quest-events/wheel-tiers/{tierName}")
