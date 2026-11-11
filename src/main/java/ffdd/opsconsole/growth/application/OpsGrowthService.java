@@ -26,6 +26,7 @@ import ffdd.opsconsole.growth.dto.GrowthMissionPresentationRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionStatusRequest;
 import ffdd.opsconsole.growth.dto.GrowthMonthlyMissionRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelTierRequest;
+import ffdd.opsconsole.growth.dto.GrowthWheelTierRetireRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelGuardRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelProbabilityBatchRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
@@ -2018,6 +2019,52 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         Map<String, Object> response = questTasks().getData();
         response.put("updated", Map.of("key", normalizedKey, "configKey", storageKey, "value", value));
         return ApiResult.ok(response);
+    }
+
+    /**
+     * T04 controlled retirement: a historical points tier can be deactivated so operations can complete the
+     * active pool with current UVT/USDT/coupon tiers. It never restores points payout and keeps the row readable.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> retireWheelTier(
+            String idempotencyKey, String tierName, GrowthWheelTierRetireRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(
+                idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) return guard;
+        if (request == null || !Boolean.TRUE.equals(request.confirmed())) {
+            return validation("WHEEL_TIER_RETIRE_CONFIRMATION_REQUIRED");
+        }
+        if (questEventMapper.isEmpty()) return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
+        try {
+            if (!"H4_WHEEL".equals(questEventMapper.get().lockWheelMutation())) {
+                return validation("H4_WHEEL_MUTEX_UNAVAILABLE");
+            }
+            String name = normalizePlainText(tierName, 128);
+            List<Map<String, Object>> currentPool = questEventMapper.get().wheelTiers();
+            if (!wheelSignatureMatches(request.expectedSignature(), currentPool, false)) {
+                return validation("WHEEL_CONFIG_STALE");
+            }
+            Map<String, Object> before = currentPool.stream()
+                    .filter(row -> name.equals(String.valueOf(row.get("tier"))))
+                    .findFirst()
+                    .orElse(null);
+            if (before == null) return validation("WHEEL_TIER_NOT_FOUND");
+            if (!"points".equalsIgnoreCase(String.valueOf(before.get("kind")))) {
+                return validation("WHEEL_TIER_RETIRE_ONLY_POINTS");
+            }
+            if (questEventMapper.get().retirePointsWheelTier(name) != 1) {
+                return validation("WHEEL_TIER_NOT_FOUND");
+            }
+            audit("H4_WHEEL_TIER_RETIRED", "WHEEL_CONFIG", name, request.operator(), row(
+                    "before", before,
+                    "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim()));
+            Map<String, Object> response = questEventOverview().getData();
+            response.put("updated", Map.of("tierName", name, "action", "retired"));
+            return ApiResult.ok(response);
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
     }
 
     @Transactional(rollbackFor = Exception.class)

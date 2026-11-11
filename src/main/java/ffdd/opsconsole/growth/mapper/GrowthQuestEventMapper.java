@@ -1331,6 +1331,14 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             """)
     int softDeleteWheelTier(@Param("tierName") String tierName);
 
+    /** Controlled retirement keeps the historical row readable but removes it from the active pool. */
+    @org.apache.ibatis.annotations.Update("""
+            UPDATE nx_growth_wheel_tier
+               SET status = 0, updated_at = NOW()
+             WHERE tier_name = #{tierName} AND is_deleted = 0 AND status = 1 AND LOWER(reward_kind) = 'points'
+            """)
+    int retirePointsWheelTier(@Param("tierName") String tierName);
+
     @Insert("""
             INSERT INTO nx_growth_wheel_guard (
                 guard_key, guard_label, guard_value, note, sort_order, status, created_at, updated_at, is_deleted
