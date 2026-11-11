@@ -251,7 +251,7 @@ class AppTrialLifecycleServiceTest {
                 3, new BigDecimal("40"), new BigDecimal("5"), new BigDecimal("50"), new BigDecimal("1299"),
                 "productCode=stellarbox-s1", LocalDateTime.of(2026, 10, 7, 8, 0), LocalDateTime.of(2026, 10, 10, 8, 0),
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
-                null, 8L, cause, closedAt);
+                null, 8L, cause, closedAt, 7, 3);
     }
 
     private long epochMillis(LocalDateTime value) {
@@ -265,7 +265,7 @@ class AppTrialLifecycleServiceTest {
         when(canonicalStateMapper.lockActiveDeviceCount(7L, false)).thenReturn(active);
         when(canonicalStateMapper.lockReservedDeviceOrderCount(7L, false)).thenReturn(reserved);
         when(mapper.insertTrial(any(), anyString(), anyString(), any(), anyString(),
-                anyInt(), any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
+                anyInt(), anyInt(), anyInt(), any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
 
         var eligibility = service.state(7L).getData();
         assertThat(eligibility).containsEntry("canStart", allowed);
@@ -276,7 +276,7 @@ class AppTrialLifecycleServiceTest {
             assertThat(result.getMessage()).isEqualTo("TRIAL_CAPACITY_FULL");
             verify(mapper, never()).consumeTrialQuota(any(LocalDate.class));
             verify(mapper, never()).insertTrial(any(), anyString(), anyString(), any(), anyString(),
-                    anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+                    anyInt(), anyInt(), anyInt(), any(), any(), any(), any(), any(), any(), anyString());
         }
     }
 
@@ -330,7 +330,7 @@ class AppTrialLifecycleServiceTest {
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("TRIAL_CYCLE_RISK_BLOCKED");
         verify(mapper, never()).insertTrial(any(), anyString(), anyString(), any(), anyString(),
-                anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+                anyInt(), anyInt(), anyInt(), any(), any(), any(), any(), any(), any(), anyString());
     }
 
     @Test
@@ -344,7 +344,7 @@ class AppTrialLifecycleServiceTest {
         verify(mapper, never()).trialCycleSignalCount(anyLong());
         verify(mapper, never()).lockTrial(anyLong());
         verify(mapper, never()).insertTrial(any(), anyString(), anyString(), any(), anyString(),
-                anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+                anyInt(), anyInt(), anyInt(), any(), any(), any(), any(), any(), any(), anyString());
     }
 
     @Test
@@ -524,7 +524,7 @@ class AppTrialLifecycleServiceTest {
         assertThat(start.getCode()).isEqualTo(409);
         assertThat(start.getMessage()).isEqualTo("TRIAL_QUOTA_EXHAUSTED");
         verify(mapper, never()).insertTrial(any(), anyString(), anyString(), any(), anyString(),
-                anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+                anyInt(), anyInt(), anyInt(), any(), any(), any(), any(), any(), any(), anyString());
     }
 
     @Test
@@ -537,7 +537,7 @@ class AppTrialLifecycleServiceTest {
         assertThat(result.getMessage()).isEqualTo("TRIAL_QUOTA_EXHAUSTED");
         verify(mapper).consumeTrialQuota(any(LocalDate.class));
         verify(mapper, never()).insertTrial(any(), anyString(), anyString(), any(), anyString(),
-                anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+                anyInt(), anyInt(), anyInt(), any(), any(), any(), any(), any(), any(), anyString());
     }
 
     @Test
@@ -545,7 +545,7 @@ class AppTrialLifecycleServiceTest {
     void successfulClaimProjectsTheDatabaseRemainingQuotaAfterAtomicConsumption() {
         when(mapper.trialQuotaRemaining(any(LocalDate.class))).thenReturn(2, 0);
         when(mapper.insertTrial(anyLong(), anyString(), anyString(), isNull(), anyString(),
-                anyInt(), any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
+                anyInt(), anyInt(), anyInt(), any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
 
         ApiResult<Map<String, Object>> result = service.start(7L, null, "Trial", "h2-quota-exact");
 
@@ -634,7 +634,7 @@ class AppTrialLifecycleServiceTest {
         Clock crossing = mock(Clock.class);
         when(crossing.instant()).thenReturn(Instant.parse("2026-08-20T15:59:59Z"), Instant.parse("2026-08-20T16:00:01Z"));
         when(mapper.insertTrial(anyLong(), anyString(), anyString(), isNull(), anyString(), anyInt(),
-                any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
+                anyInt(), anyInt(), any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
         var crossingService = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(paymentAttribution(), mapper, earningsRelease, idempotency, coverage,
                 audit, outbox, productReleasePolicy, canonicalStateMapper, environment, crossing, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
         assertThat(crossingService.start(7L, null, "ignored", "midnight-start").getCode()).isZero();
@@ -673,13 +673,13 @@ class AppTrialLifecycleServiceTest {
                 new PolicyRow("trialPriceUSD", "1299"),
                 new PolicyRow("seatsLeftToday", "47")));
         when(mapper.insertTrial(anyLong(), anyString(), anyString(), isNull(), anyString(),
-                anyInt(), any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
+                anyInt(), anyInt(), anyInt(), any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
 
         ApiResult<Map<String, Object>> result = service.start(7L, null, "untrusted-client-name", "h2-product-map");
 
         assertThat(result.getCode()).isZero();
         verify(mapper).insertTrial(eq(7L), anyString(), eq("h2-product-map"), isNull(),
-                eq("NexGridBox S1"), anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+                eq("NexGridBox S1"), anyInt(), anyInt(), anyInt(), any(), any(), any(), any(), any(), any(), anyString());
     }
 
     @Test
@@ -701,7 +701,7 @@ class AppTrialLifecycleServiceTest {
         assertThat(result.getMessage()).isEqualTo("TRIAL_PRODUCT_NOT_AVAILABLE");
         verify(mapper, never()).consumeTrialQuota(any(LocalDate.class));
         verify(mapper, never()).insertTrial(any(), anyString(), anyString(), any(), anyString(),
-                anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+                anyInt(), anyInt(), anyInt(), any(), any(), any(), any(), any(), any(), anyString());
     }
 
     @Test
@@ -719,7 +719,7 @@ class AppTrialLifecycleServiceTest {
         assertThat(start.getCode()).isEqualTo(409);
         assertThat(start.getMessage()).isEqualTo("TRIAL_PRODUCT_NOT_AVAILABLE");
         verify(mapper, never()).insertTrial(any(), anyString(), anyString(), any(), anyString(),
-                anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+                anyInt(), anyInt(), anyInt(), any(), any(), any(), any(), any(), any(), anyString());
     }
 
     @Test
@@ -792,7 +792,7 @@ class AppTrialLifecycleServiceTest {
                 .containsEntry("eligibilityReason", "unknown")
                 .containsEntry("version", 4L);
         verify(mapper, never()).restartTrial(any(), anyLong(), anyString(), anyString(), any(), anyString(),
-                anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+                anyInt(), anyInt(), anyInt(), any(), any(), any(), any(), any(), any(), anyString());
     }
 
     @Test
@@ -805,9 +805,9 @@ class AppTrialLifecycleServiceTest {
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("TRIAL_STATE_UNKNOWN");
         verify(mapper, never()).restartTrial(any(), anyLong(), anyString(), anyString(), any(), anyString(),
-                anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+                anyInt(), anyInt(), anyInt(), any(), any(), any(), any(), any(), any(), anyString());
         verify(mapper, never()).insertTrial(any(), anyString(), anyString(), any(), anyString(),
-                anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+                anyInt(), anyInt(), anyInt(), any(), any(), any(), any(), any(), any(), anyString());
     }
 
     @Test
@@ -816,7 +816,7 @@ class AppTrialLifecycleServiceTest {
         TrialRow restarted = trialWithStatus("ACTIVE", null, 5L);
         when(mapper.lockTrial(7L)).thenReturn(cancelled);
         when(mapper.restartTrial(eq(1L), eq(4L), anyString(), eq("h2-legacy-cancelled"),
-                any(), anyString(), anyInt(), any(), any(), any(), any(), any(), any(), anyString()))
+                any(), anyString(), anyInt(), anyInt(), anyInt(), any(), any(), any(), any(), any(), any(), anyString()))
                 .thenReturn(1);
         when(mapper.trial(7L)).thenReturn(restarted);
 
@@ -829,7 +829,7 @@ class AppTrialLifecycleServiceTest {
                 .containsEntry("canStart", false)
                 .containsEntry("eligibilityReason", "in-progress");
         verify(mapper).restartTrial(eq(1L), eq(4L), anyString(), eq("h2-legacy-cancelled"),
-                any(), anyString(), anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+                any(), anyString(), anyInt(), anyInt(), anyInt(), any(), any(), any(), any(), any(), any(), anyString());
     }
 
     @Test
@@ -846,7 +846,7 @@ class AppTrialLifecycleServiceTest {
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("TRIAL_ALREADY_REDEEMED");
         verify(mapper, never()).restartTrial(any(), anyLong(), anyString(), anyString(), any(), anyString(),
-                anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+                anyInt(), anyInt(), anyInt(), any(), any(), any(), any(), any(), any(), anyString());
     }
 
     @Test

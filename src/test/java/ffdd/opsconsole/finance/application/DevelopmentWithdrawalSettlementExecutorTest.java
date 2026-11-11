@@ -41,8 +41,10 @@ class DevelopmentWithdrawalSettlementExecutorTest {
         when(mapper.claim(eq(row.withdrawalNo()), any(), any())).thenReturn(1);
         when(mapper.payout(row.withdrawalNo())).thenReturn(row);
         when(finalizer.submitted(eq(row), anyLong(), eq("dev-simulator"))).thenReturn(true);
+        WithdrawalPayoutDispatchGuard guard = mock(WithdrawalPayoutDispatchGuard.class);
+        when(guard.claimDevelopment(eq(row), any(LocalDateTime.class))).thenReturn(row);
 
-        new DevelopmentWithdrawalSettlementExecutor(mapper, finalizer).process();
+        new DevelopmentWithdrawalSettlementExecutor(mapper, finalizer, guard).process();
 
         verify(finalizer).submitted(eq(row), anyLong(), eq("dev-simulator"));
         verify(finalizer).completeDevelopmentSimulation(eq(row), anyLong());
@@ -56,7 +58,7 @@ class DevelopmentWithdrawalSettlementExecutorTest {
         when(mapper.claimableDevelopment(any(LocalDateTime.class), anyInt())).thenReturn(List.of(row));
         when(mapper.claim(eq(row.withdrawalNo()), any(), any())).thenReturn(0);
 
-        new DevelopmentWithdrawalSettlementExecutor(mapper, finalizer).process();
+        new DevelopmentWithdrawalSettlementExecutor(mapper, finalizer, mock(WithdrawalPayoutDispatchGuard.class)).process();
 
         verify(mapper, never()).payout(any());
         verify(finalizer, never()).submitted(any(), anyLong(), any());

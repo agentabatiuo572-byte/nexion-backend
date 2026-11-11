@@ -72,7 +72,7 @@ public final class PromotionRuntimeHarness {
         var repository=new MybatisPlatformConfigRepository(session.getMapper(PlatformConfigItemMapper.class));config=new PlatformConfigFacadeAdapter(repository);a2=new A2RuntimePolicy(repository);
         audit=new AuditLogService(session.getMapper(AuditLogMapper.class),new AuditLogSanitizer(json),new ApplicationNameProperties(),new AuditProperties(),session.getMapper(AdminMapper.class),a2);
         var idemMapper=session.getMapper(AdminIdempotencyRecordMapper.class);var expiry=proxy(new AdminIdempotencyExpiryTransitionExecutor(idemMapper));
-        idempotency=new AdminIdempotencyService(proxy(new AdminIdempotencyTransactionExecutor(idemMapper,json,expiry)),Clock.systemUTC());
+        idempotency=new AdminIdempotencyService(proxy(new AdminIdempotencyTransactionExecutor(idemMapper,json,expiry,new ffdd.opsconsole.shared.idempotency.AdminIdempotencyRollbackEvidence(idemMapper))),Clock.systemUTC());
         earningsPolicy=new RiskReleaseParamsService(config,idempotency,audit,null);
         natives=new PromotionNativeContractResolver(db,config,earningsPolicy,a2,new MockEnvironment().withProperty("spring.profiles.active","test"),30);
         validator=new PromotionContractValidator(json);resolver=new PromotionPolicyResolver(db,validator,natives);policies=new PromotionPolicyService(db,validator,resolver,natives);

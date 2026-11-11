@@ -35,7 +35,8 @@ class AppHomeOverviewServiceTest {
     private final Clock clock = Clock.fixed(Instant.parse("2026-08-15T00:00:00Z"), ZoneOffset.UTC);
     private final MockEnvironment environment = new MockEnvironment();
     private final AppHomeOverviewService service =
-            new AppHomeOverviewService(mapper, verifier, publicStats, purchaseEligibility, clock, environment);
+            new AppHomeOverviewService(mapper, verifier, publicStats, purchaseEligibility, org.mockito.Mockito.mock(HomeSharedSnapshotCache.class), clock,
+                    org.mockito.Mockito.mock(ffdd.opsconsole.device.application.DeviceMonthlyTargetReadService.class), environment);
 
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"5,1,0,6", "4,1,1,6", "6,1,1,8"})
@@ -252,7 +253,8 @@ class AppHomeOverviewServiceTest {
         Clock midnightClock = Clock.fixed(
                 Instant.parse("2026-08-14T16:00:01Z"), ZoneOffset.UTC);
         AppHomeOverviewService midnightService = new AppHomeOverviewService(
-                mapper, verifier, publicStats, purchaseEligibility, midnightClock, environment);
+                mapper, verifier, publicStats, purchaseEligibility, org.mockito.Mockito.mock(HomeSharedSnapshotCache.class), midnightClock,
+                org.mockito.Mockito.mock(ffdd.opsconsole.device.application.DeviceMonthlyTargetReadService.class), environment);
         when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
         when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
 
@@ -322,9 +324,9 @@ class AppHomeOverviewServiceTest {
     void productionHomeBuildsDoTheMathFromOwnedDeviceAndNextPurchasableCatalogProduct() {
         when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
         when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
-        when(mapper.highestActiveDevice(42L, false)).thenReturn(
+        when(mapper.activeDeviceCandidates(42L, false)).thenReturn(List.of(
                 new AppHomeOverviewMapper.OwnedDeviceRow(
-                        "Your phone", "phone", "TIER-3", "MOBILE", new BigDecimal("0.060000")));
+                        "Your phone", "phone", "TIER-3", "MOBILE", new BigDecimal("0.060000"))));
         when(mapper.marketProducts()).thenReturn(List.of(
                 new AppHomeOverviewMapper.MarketProductRow("stellarbox-s1", "NexionBox S1", "SERVER", "Entry",
                         new BigDecimal("1299.00"), new BigDecimal("1.000000"), 0),
@@ -358,9 +360,9 @@ class AppHomeOverviewServiceTest {
     void shareAnnualRangeIsNotComparedAsDailyUsdInHomeRecommendations() {
         when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
         when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
-        when(mapper.highestActiveDevice(42L, false)).thenReturn(
+        when(mapper.activeDeviceCandidates(42L, false)).thenReturn(List.of(
                 new AppHomeOverviewMapper.OwnedDeviceRow(
-                        "Your phone", "phone", "TIER-3", "MOBILE", new BigDecimal("0.060000")));
+                        "Your phone", "phone", "TIER-3", "MOBILE", new BigDecimal("0.060000"))));
         when(mapper.marketProducts()).thenReturn(List.of(
                 new AppHomeOverviewMapper.MarketProductRow("cloud-share", "Cloud Share", "SHARE", "Share",
                         new BigDecimal("19.90"), new BigDecimal("0.190000"), 0, "UNLIMITED"),
@@ -412,9 +414,9 @@ class AppHomeOverviewServiceTest {
     void productionHomeSkipsUnreleasedUpgradeAndUsesNextImmediatelyPurchasableProduct() {
         when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
         when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
-        when(mapper.highestActiveDevice(42L, false)).thenReturn(
+        when(mapper.activeDeviceCandidates(42L, false)).thenReturn(List.of(
                 new AppHomeOverviewMapper.OwnedDeviceRow(
-                        "Your phone", "phone", "TIER-3", "MOBILE", new BigDecimal("0.060000")));
+                        "Your phone", "phone", "TIER-3", "MOBILE", new BigDecimal("0.060000"))));
         when(mapper.marketProducts()).thenReturn(List.of(
                 new AppHomeOverviewMapper.MarketProductRow("stellarbox-pro", "StellarBox Pro", "SERVER", "Pro",
                         new BigDecimal("1199.00"), new BigDecimal("13.000000"), 3),
@@ -437,9 +439,9 @@ class AppHomeOverviewServiceTest {
     void productionHomeHidesDoTheMathWhenNoHigherProductIsImmediatelyPurchasable() {
         when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
         when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
-        when(mapper.highestActiveDevice(42L, false)).thenReturn(
+        when(mapper.activeDeviceCandidates(42L, false)).thenReturn(List.of(
                 new AppHomeOverviewMapper.OwnedDeviceRow(
-                        "StellarBox Pro", "stellarbox-pro", "Pro", "DEVICE", new BigDecimal("13.000000")));
+                        "StellarBox Pro", "stellarbox-pro", "Pro", "DEVICE", new BigDecimal("13.000000"))));
         when(mapper.marketProducts()).thenReturn(List.of(
                 new AppHomeOverviewMapper.MarketProductRow("stellarrack-p1", "StellarRack P1", "DEVICE", "Flagship",
                         new BigDecimal("4499.00"), new BigDecimal("45.000000"), 2)));
@@ -456,9 +458,9 @@ class AppHomeOverviewServiceTest {
     void productionHomeFailsClosedWhenEligibilityCannotBeVerified() {
         when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
         when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
-        when(mapper.highestActiveDevice(42L, false)).thenReturn(
+        when(mapper.activeDeviceCandidates(42L, false)).thenReturn(List.of(
                 new AppHomeOverviewMapper.OwnedDeviceRow(
-                        "StellarBox Pro", "stellarbox-pro", "Pro", "DEVICE", new BigDecimal("13.000000")));
+                        "StellarBox Pro", "stellarbox-pro", "Pro", "DEVICE", new BigDecimal("13.000000"))));
         when(mapper.marketProducts()).thenReturn(List.of(
                 new AppHomeOverviewMapper.MarketProductRow("stellarrack-p1", "StellarRack P1", "DEVICE", "Flagship",
                         new BigDecimal("4499.00"), new BigDecimal("45.000000"), 2)));
@@ -475,9 +477,9 @@ class AppHomeOverviewServiceTest {
     void productionHomeFailsClosedWhenEligibilityCheckThrows() {
         when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
         when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
-        when(mapper.highestActiveDevice(42L, false)).thenReturn(
+        when(mapper.activeDeviceCandidates(42L, false)).thenReturn(List.of(
                 new AppHomeOverviewMapper.OwnedDeviceRow(
-                        "StellarBox Pro", "stellarbox-pro", "Pro", "DEVICE", new BigDecimal("13.000000")));
+                        "StellarBox Pro", "stellarbox-pro", "Pro", "DEVICE", new BigDecimal("13.000000"))));
         when(mapper.marketProducts()).thenReturn(List.of(
                 new AppHomeOverviewMapper.MarketProductRow("stellarrack-p1", "StellarRack P1", "DEVICE", "Flagship",
                         new BigDecimal("4499.00"), new BigDecimal("45.000000"), 2)));
@@ -494,9 +496,9 @@ class AppHomeOverviewServiceTest {
     void productionHomeRejectsEligibilityResponseForAnotherProduct() {
         when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
         when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
-        when(mapper.highestActiveDevice(42L, false)).thenReturn(
+        when(mapper.activeDeviceCandidates(42L, false)).thenReturn(List.of(
                 new AppHomeOverviewMapper.OwnedDeviceRow(
-                        "StellarBox Pro", "stellarbox-pro", "Pro", "DEVICE", new BigDecimal("13.000000")));
+                        "StellarBox Pro", "stellarbox-pro", "Pro", "DEVICE", new BigDecimal("13.000000"))));
         when(mapper.marketProducts()).thenReturn(List.of(
                 new AppHomeOverviewMapper.MarketProductRow("stellarrack-p1", "StellarRack P1", "DEVICE", "Flagship",
                         new BigDecimal("4499.00"), new BigDecimal("45.000000"), 2)));

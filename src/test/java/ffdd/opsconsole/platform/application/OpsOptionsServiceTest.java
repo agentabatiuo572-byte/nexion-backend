@@ -97,32 +97,6 @@ class OpsOptionsServiceTest {
     }
 
     @Test
-    void datacentersPreferDatabaseValues() {
-        OpsOptionsMapper mapper = mock(OpsOptionsMapper.class);
-        OpsOptionsService databaseBackedService = new OpsOptionsService(mapper, mock(AdminRolePermissionMapper.class));
-        when(mapper.datacenters()).thenReturn(List.of("HK-1", "SG-1", "US-1"));
-
-        List<AdminOption> options = databaseBackedService.options("devices", "datacenters").getData();
-
-        assertThat(options)
-                .extracting(AdminOption::value)
-                .containsExactly("HK-1", "SG-1", "US-1");
-    }
-
-    @Test
-    void datacentersReturnEmptyWhenDatabaseReturnsNoRows() {
-        OpsOptionsMapper mapper = mock(OpsOptionsMapper.class);
-        OpsOptionsService fallbackService = new OpsOptionsService(mapper, mock(AdminRolePermissionMapper.class));
-        when(mapper.datacenters()).thenReturn(List.of());
-
-        List<AdminOption> options = fallbackService.options("devices", "datacenters").getData();
-
-        assertThat(options)
-                .extracting(AdminOption::value)
-                .isEmpty();
-    }
-
-    @Test
     void supportBusinessOptionsComeFromDatabaseRows() {
         OpsOptionsMapper mapper = mock(OpsOptionsMapper.class);
         OpsOptionsService databaseBackedService = new OpsOptionsService(mapper, mock(AdminRolePermissionMapper.class));

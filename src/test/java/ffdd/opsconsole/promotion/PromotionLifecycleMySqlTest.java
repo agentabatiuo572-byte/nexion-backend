@@ -589,8 +589,8 @@ class PromotionLifecycleMySqlTest {
                     tx.executeWithoutResult(s->assertNull(tradein.lockSourceDevice(buyer,device)));
                 }
                 assertTrue(tradein.listTradeinSourceCandidates(buyer).isEmpty());
-                assertNull(tradein.findCapacityReplacementSource(buyer));
-                tx.executeWithoutResult(s->assertNull(tradein.lockCapacityReplacementSource(buyer)));
+                assertTrue(tradein.findCapacityReplacementSources(buyer).isEmpty());
+                tx.executeWithoutResult(s->assertTrue(tradein.lockCapacityReplacementSources(buyer).isEmpty()));
             }else{
                 assertEquals(2,h.db.count("SELECT COUNT(*) FROM nx_earnings_release_entry WHERE user_id=? AND source_type='PROMOTION_REWARD' AND asset=?",buyer,asset));
                 assertEquals(2,h.db.count("SELECT COUNT(*) FROM nx_wallet_ledger WHERE user_id=? AND biz_type='PROMOTION_REWARD' AND asset=? AND direction='IN'",buyer,asset));
@@ -650,8 +650,8 @@ class PromotionLifecycleMySqlTest {
             org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
         var beans=new org.springframework.beans.factory.support.StaticListableBeanFactory();beans.addBean("purchaseEligibility",eligibility);
         quotes=h.proxy(new PromotionQuoteService(h.db,h.validator,h.resolver,evaluator,h.config,vouchers,beans.getBeanProvider(ffdd.opsconsole.shared.canonical.AppCanonicalBoundaryService.class)));
-        orders=h.proxy(new PromotionOrderService(h.db,quotes,evaluator,h.resolver,h.audit,outbox));
-        rewards=h.proxy(new PromotionRewardService(h.db,orders,earnings,ledger,h.audit,outbox, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
+        orders=h.proxy(new PromotionOrderService(h.db,org.mockito.Mockito.mock(ffdd.opsconsole.device.application.DeviceMonthlyTargetService.class),org.mockito.Mockito.mock(ffdd.opsconsole.device.mapper.SimulatedTaskMapper.class),quotes,evaluator,h.resolver,h.audit,outbox));
+        rewards=h.proxy(new PromotionRewardService(h.db,orders,org.mockito.Mockito.mock(ffdd.opsconsole.device.application.DeviceMonthlyTargetService.class),org.mockito.Mockito.mock(ffdd.opsconsole.device.mapper.SimulatedTaskMapper.class),earnings,ledger,h.audit,outbox,org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
         var product=h.db.requiredRow("""
             SELECT p.product_no FROM nx_product p JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
             WHERE p.is_deleted=0 AND p.status='ACTIVE' AND p.store_visible=1 AND p.price_usdt>0 AND p.stock>=20

@@ -144,7 +144,7 @@ class CregisExceptionRefundServiceTest {
     @Test void lateEvidenceCancelsOnlyUnsentReplacementAndRestoresOriginalSourceForQuery(){
         var old=row("REPROPOSED");var replacement=row("APPROVED");replacement.put("id",2L);replacement.put("caseNo","CR-RF-replacement");replacement.put("businessKey","CR-RF-replacement");replacement.put("providerCid",null);
         when(db.byKey(42,"CR-RF-fixture")).thenReturn(old);when(db.byKey(42,"CR-RF-replacement")).thenReturn(replacement);
-        when(db.guard(42,tx,3)).thenReturn(CregisExceptionRefundService.map("state","RESERVED","kind","REFUND","ownerCase","CR-RF-replacement"));
+        when(db.guard(anyString(),eq(42L),eq(tx),eq(3))).thenReturn(CregisExceptionRefundService.map("state","RESERVED","kind","REFUND","ownerCase","CR-RF-replacement"));
         when(db.lateEvidence("CR-RF-fixture")).thenReturn(1);
         service.lateCallback("CR-RF-fixture");
         verify(db).state(2,0,"APPROVED","CANCELLED_LATE_EVIDENCE",null,"CREGIS_LATE_PROVIDER_EVIDENCE");
@@ -154,7 +154,7 @@ class CregisExceptionRefundServiceTest {
     @Test void lateEvidenceAfterReplacementIntentKeepsBothCasesInInvestigationWithoutReleasing(){
         var old=row("REPROPOSED");var replacement=row("SUBMITTING");replacement.put("caseNo","CR-RF-replacement");replacement.put("dispatchIntentAt",java.time.LocalDateTime.now());
         when(db.byKey(42,"CR-RF-fixture")).thenReturn(old);when(db.byKey(42,"CR-RF-replacement")).thenReturn(replacement);
-        when(db.guard(42,tx,3)).thenReturn(CregisExceptionRefundService.map("state","RESERVED","kind","REFUND","ownerCase","CR-RF-replacement"));
+        when(db.guard(anyString(),eq(42L),eq(tx),eq(3))).thenReturn(CregisExceptionRefundService.map("state","RESERVED","kind","REFUND","ownerCase","CR-RF-replacement"));
         when(db.lateEvidence("CR-RF-fixture")).thenReturn(1);service.lateCallback("CR-RF-fixture");
         verify(deposits).blockProvisionGateAny();verify(deposits).insertRiskAlert(eq(42L),any(),eq("P0"),eq("REFUND_LATE_EVIDENCE"),any());
         verify(sources,never()).release(any(),any(),any());verify(sources,never()).reserve(any(),any(),any());

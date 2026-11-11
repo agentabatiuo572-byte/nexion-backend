@@ -57,7 +57,7 @@ class SupportCustomerProfileNetTest {
     @Test void productionProfileReadsCachedNetWithoutReplayingFundHistory() throws Exception {
         var analytics=mock(SupportAnalyticsService.class);var service=service(analytics);
         when(deviceService.devices(any())).thenReturn(ffdd.opsconsole.shared.api.ApiResult.ok(
-            new ffdd.opsconsole.shared.api.PageResult<ffdd.opsconsole.device.domain.DeviceOpsView>(0,1,20,List.of())));
+            new ffdd.opsconsole.shared.api.PageResult<ffdd.opsconsole.device.domain.StoreDeviceView>(0,1,20,List.of())));
         when(analytics.cachedNetForCustomer(1L)).thenReturn(new NetSnapshot(List.of(new NetCustomer(1L,
             EvidenceState.READY,List.of(),new BigDecimal("-12.000001"),BigDecimal.ZERO)),List.of(),List.of()));
         when(analytics.cachedDevicesForCustomer(1L)).thenReturn(new ffdd.opsconsole.device.facade.SupportDeviceReadFacade.Snapshot(
@@ -77,7 +77,7 @@ class SupportCustomerProfileNetTest {
     @Test void unavailableCachedDeviceCountsKeepHistoryWithoutInventingAZeroHolding() throws Exception {
         var analytics=mock(SupportAnalyticsService.class);var service=service(analytics);
         when(deviceService.devices(any())).thenReturn(ffdd.opsconsole.shared.api.ApiResult.ok(
-            new ffdd.opsconsole.shared.api.PageResult<ffdd.opsconsole.device.domain.DeviceOpsView>(0,1,20,List.of())));
+            new ffdd.opsconsole.shared.api.PageResult<ffdd.opsconsole.device.domain.StoreDeviceView>(0,1,20,List.of())));
         when(analytics.cachedDevicesForCustomer(1L)).thenThrow(new BizException(503,"SUPPORT_ANALYTICS_CACHE_NOT_READY"));
         var section=(Map<?,?>)service.profile(1L).get("devices");assertThat(section.get("status")).isEqualTo("READY");
         var data=(Map<?,?>)section.get("data");assertThat(data.get("records")).isEqualTo(List.of());

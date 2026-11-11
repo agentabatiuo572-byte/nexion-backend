@@ -69,8 +69,8 @@ class HomePurchaseEligibilityProbeTransactionTest {
         HomePurchaseEligibilityProbe probe = proxiedProbe(failingCanonical(jdbc.transactions), jdbc.transactions);
         AppHomeOverviewMapper mapper = mock(AppHomeOverviewMapper.class);
         when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
-        when(mapper.highestActiveDevice(42L, false)).thenReturn(new AppHomeOverviewMapper.OwnedDeviceRow(
-                "Your phone", "phone", "TIER-3", "MOBILE", new BigDecimal("0.060000")));
+        when(mapper.activeDeviceCandidates(42L, false)).thenReturn(List.of(new AppHomeOverviewMapper.OwnedDeviceRow(
+                "Your phone", "phone", "TIER-3", "MOBILE", new BigDecimal("0.060000"))));
         when(mapper.marketProducts()).thenReturn(List.of(new AppHomeOverviewMapper.MarketProductRow(
                 "stellarbox-pro", "StellarBox Pro", "DEVICE", "Pro",
                 new BigDecimal("1199.00"), new BigDecimal("13.000000"), 1)));
@@ -78,7 +78,8 @@ class HomePurchaseEligibilityProbeTransactionTest {
         environment.setActiveProfiles("dev");
         AppHomeOverviewService target = new AppHomeOverviewService(mapper,
                 mock(ComputeTaskProofVerifier.class), mock(GrowthPublicStatsService.class), probe,
-                Clock.fixed(Instant.parse("2026-08-15T00:00:00Z"), ZoneOffset.UTC), environment);
+                mock(HomeSharedSnapshotCache.class), Clock.fixed(Instant.parse("2026-08-15T00:00:00Z"), ZoneOffset.UTC),
+                mock(ffdd.opsconsole.device.application.DeviceMonthlyTargetReadService.class), environment);
         AppHomeOverviewService home = proxiedHome(target, jdbc.transactions);
 
         var result = home.overview(42L);

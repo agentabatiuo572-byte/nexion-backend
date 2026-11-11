@@ -62,7 +62,7 @@ class TestComputeV2ServiceTest {
         when(cloud.computeV2Identity(caller,11)).thenReturn(device);
         when(transactions.db(any())).thenAnswer(call->((java.util.function.Supplier<?>)call.getArgument(0)).get());
         var owned=new AppTaskAssignmentMapper.DeviceRow(11L,"DEV-11","CLOUD_SHARE","SHARE","Cloud","ACTIVE","cloud-share",
-                LocalDateTime.ofInstant(NOW.minusSeconds(86400),ZoneOffset.UTC),LocalDateTime.ofInstant(NOW.minusSeconds(3600),ZoneOffset.UTC),24,"DC","ONLINE",null,false);
+                LocalDateTime.ofInstant(NOW.minusSeconds(86400),ZoneOffset.UTC),LocalDateTime.ofInstant(NOW.minusSeconds(3600),ZoneOffset.UTC),24,"DC","ONLINE",null);
         when(assignments.lockOwnedDevice(7L,11L)).thenReturn(owned);when(assignments.ownedDevices(7L)).thenReturn(List.of(owned));
         when(assignments.lockPaidCloudShareDailyNex(7L,11L)).thenReturn(new BigDecimal("3.000001"));
         when(assignments.lockDailyCloudShareNex(anyLong(),anyString())).thenReturn(null);

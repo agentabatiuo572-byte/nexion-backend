@@ -19,7 +19,7 @@ class A2ProposalRecoveryTest {
     final AuditOperationTicketMapper tickets = mock(AuditOperationTicketMapper.class);
     final AdminOperatorRoleResolver roles = mock(AdminOperatorRoleResolver.class);
     final ffdd.opsconsole.shared.security.AdminPermissionCache permissions = mock(ffdd.opsconsole.shared.security.AdminPermissionCache.class);
-    final A2AccessPolicy access = new A2AccessPolicy(roles, tickets, permissions);
+    final A2AccessPolicy access = new A2AccessPolicy(roles, tickets, permissions, new com.fasterxml.jackson.databind.ObjectMapper());
     final OpsAuditCenterService service = new OpsAuditCenterService(null, audit, null, tickets,
             null, null, null, null, null, access, new com.fasterxml.jackson.databind.ObjectMapper(), null);
 

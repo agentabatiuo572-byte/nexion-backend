@@ -84,8 +84,8 @@ class AppTradeinServiceTest {
         when(mapper.lockActiveDeviceCount(7L)).thenReturn(6);
         when(mapper.deviceSlotCap()).thenReturn(6);
         when(mapper.lockDeviceSlotCap()).thenReturn(6);
-        when(mapper.findCapacityReplacementSource(7L)).thenReturn(source());
-        when(mapper.lockCapacityReplacementSource(7L)).thenReturn(source());
+        when(mapper.findCapacityReplacementSources(7L)).thenReturn(List.of(source()));
+        when(mapper.lockCapacityReplacementSources(7L)).thenReturn(List.of(source()));
         when(releasePolicy.evaluateTradein(anyString(), nullable(String.class), anyBoolean(), anyInt()))
                 .thenReturn(StorefrontProductReleasePolicy.Decision.open(null));
         when(releasePolicy.evaluate(anyString(), nullable(String.class)))
@@ -602,7 +602,7 @@ class AppTradeinServiceTest {
         assertThat(result.getData().decision()).isEqualTo("CAPACITY_AVAILABLE");
         assertThat(result.getData().activeDevices()).isEqualTo(4);
         assertThat(result.getData().sourceDeviceId()).isNull();
-        verify(mapper, never()).findCapacityReplacementSource(any());
+        verify(mapper, never()).findCapacityReplacementSources(any());
     }
 
     @Test
@@ -623,7 +623,7 @@ class AppTradeinServiceTest {
     @Test
     void capacityQuoteReportsNoActiveDeviceWithoutInventingALocalReplacement() {
         when(mapper.countActiveDevices(7L)).thenReturn(6);
-        when(mapper.findCapacityReplacementSource(7L)).thenReturn(null);
+        when(mapper.findCapacityReplacementSources(7L)).thenReturn(List.of());
 
         var result = service.capacityQuote(7L, new AppCapacityReplaceQuoteRequest("stellarbox-pro-v2"));
 
@@ -687,7 +687,7 @@ class AppTradeinServiceTest {
         var captureOrder = org.mockito.Mockito.inOrder(capture, mapper);
         captureOrder.verify(capture).prepare(eq(7L), eq(Source.TRADE_IN), org.mockito.ArgumentMatchers.startsWith("CPO-"));
         captureOrder.verify(mapper).lockWalletBalanceUsdt(7L);
-        captureOrder.verify(mapper).lockCapacityReplacementSource(7L);
+        captureOrder.verify(mapper).lockCapacityReplacementSources(7L);
         captureOrder.verify(capture).beforeCash(any(Prepared.class));
         captureOrder.verify(mapper).debitWalletUsdt(eq(7L),any());
         captureOrder.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),any(),any(),anyString());
@@ -854,7 +854,7 @@ class AppTradeinServiceTest {
         when(mapper.lockActiveDeviceCount(7L)).thenReturn(active);
         when(mapper.lockReservedDeviceOrderCount(7L)).thenReturn(orders);
         when(mapper.lockReservedTrialSlotCount(7L)).thenReturn(trials);
-        when(mapper.lockCapacityReplacementSource(7L)).thenReturn(null);
+        when(mapper.lockCapacityReplacementSources(7L)).thenReturn(List.of());
 
         assertThatThrownBy(() -> service.capacityKeep(7L, "keep-full",
                 new AppCapacityKeepSubmitRequest("stellarbox-pro-v2", new BigDecimal("1500.000000"))))

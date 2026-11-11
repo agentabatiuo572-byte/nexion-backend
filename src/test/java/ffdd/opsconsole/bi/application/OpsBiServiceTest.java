@@ -18,6 +18,7 @@ import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.bi.domain.BiReportDownloadFile;
 import ffdd.opsconsole.bi.domain.BiReportRepository;
+import ffdd.opsconsole.bi.domain.BiReportPage;
 import ffdd.opsconsole.bi.domain.BiReportView;
 import ffdd.opsconsole.bi.domain.BiReportCreateCommand;
 import ffdd.opsconsole.bi.dto.BiDashboardValueRequest;
@@ -497,7 +498,7 @@ class OpsBiServiceTest {
 
     @Test
     void reportsUsePageResultAndStatusBuckets() {
-        ApiResult<PageResult<BiReportView>> result = service.reports(new BiReportQueryRequest(
+        ApiResult<BiReportPage> result = service.reports(new BiReportQueryRequest(
                 null,
                 "PENDING_CONFIRM,PENDING_SPLIT_CONFIRM",
                 2,
@@ -505,10 +506,10 @@ class OpsBiServiceTest {
                 null));
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().getPageNum()).isEqualTo(2);
-        assertThat(result.getData().getPageSize()).isEqualTo(5);
-        assertThat(result.getData().getTotal()).isEqualTo(1);
-        assertThat(result.getData().getRecords()).containsExactly(reportRepository.report);
+        assertThat(result.getData().pageNum()).isEqualTo(2L);
+        assertThat(result.getData().pageSize()).isEqualTo(5L);
+        assertThat(result.getData().total()).isEqualTo(1L);
+        assertThat(result.getData().records()).containsExactly(reportRepository.report);
         assertThat(reportRepository.lastStatuses).containsExactly("PENDING_CONFIRM", "PENDING_SPLIT_CONFIRM");
     }
 
@@ -1623,6 +1624,11 @@ class OpsBiServiceTest {
         @Override
         public BigDecimal sumNetUsdtFlowBetween(LocalDateTime startAt, LocalDateTime endAt) {
             return BigDecimal.ZERO;
+        }
+
+        @Override
+        public TreasuryLedgerRepository.CommissionCoverageAmounts commissionCoverageAmounts() {
+            return new TreasuryLedgerRepository.CommissionCoverageAmounts(BigDecimal.ZERO, BigDecimal.ZERO);
         }
 
         @Override

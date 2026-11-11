@@ -38,6 +38,7 @@ class VRankPromotionReplayMySqlIntegrationTest {
     String schema;
     DataSourceTransactionManager transactions;
     AnnotationConfigApplicationContext context;
+    com.zaxxer.hikari.HikariDataSource dispatchPool;
     EventOutboxDispatchScheduler scheduler;
     EventOutboxService outbox;
     EventOutboxMapper outboxMapper;
@@ -114,11 +115,18 @@ class VRankPromotionReplayMySqlIntegrationTest {
         context = new AnnotationConfigApplicationContext();
         context.registerBean(VRankPromotionEventConsumer.class, () -> consumer);
         context.refresh();
-        scheduler = new EventOutboxDispatchScheduler(outbox, context);
+        dispatchPool = new com.zaxxer.hikari.HikariDataSource();
+        dispatchPool.setJdbcUrl(url.replace("/?", "/" + schema + "?"));
+        dispatchPool.setUsername("root");
+        dispatchPool.setPassword("");
+        dispatchPool.setMaximumPoolSize(2);
+        var dispatcher = new EventOutboxDispatcher(dispatchPool, outboxMapper, outbox, new EventConsumerDeliveryProperties(), context);
+        scheduler = new EventOutboxDispatchScheduler(outbox, dispatcher);
         insertEvent(ORIGINAL);
     }
 
     @AfterEach void cleanup() {
+        if (dispatchPool != null) dispatchPool.close();
         if (context != null) context.close();
         if (schema != null && schema.matches("nexion_vrank_replay_it_[a-f0-9]{32}")) {
             admin.execute("DROP DATABASE " + schema);

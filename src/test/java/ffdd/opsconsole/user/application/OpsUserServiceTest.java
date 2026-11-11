@@ -103,6 +103,7 @@ class OpsUserServiceTest {
     private OpsUserService serviceWith(UserOpsRepository repository) {
         return new OpsUserService(
             repository,
+            mock(ffdd.opsconsole.user.mapper.UserAccountActionMapper.class),
             coverageFacade,
             configFacade,
             financeWithdrawalControlFacade,

@@ -22,7 +22,7 @@ import org.junit.jupiter.api.Test;
 
 class OpsRiskControllerTest {
     private final OpsRiskService riskService = mock(OpsRiskService.class);
-    private final OpsRiskController controller = new OpsRiskController(riskService, null);
+    private final OpsRiskController controller = new OpsRiskController(riskService, null, null);
 
     @Test
     void k1ClusterEndpointKeepsItsBusinessActionPermissions() {

@@ -41,7 +41,7 @@ class TestCloudExecutorServiceTest {
                 .forEach((key,value)->env.setProperty(PREFIX+key,value));
         return env;
     }
-    static DeviceRow device() { return new DeviceRow(11L,"NEX-UNIT-CLOUD","SHARE","SHARE","Cloud", "ACTIVE","cloud-share",NOW.minusDays(1),NOW.minusHours(1),24,"unit","ONLINE",null,false); }
+    static DeviceRow device() { return new DeviceRow(11L,"NEX-UNIT-CLOUD","SHARE","SHARE","Cloud", "ACTIVE","cloud-share",NOW.minusDays(1),NOW.minusHours(1),24,"unit","ONLINE",null); }
     static AssignmentRow task(String status) { return new AssignmentRow(TASK,11L,"EM-UNIT","UVEL TEST BGE-M3 inference","EM",KIND,CLIENT,status,new BigDecimal("0.045005"),5,0,NOW.minusSeconds(10),NOW.plusHours(24),null,null,NONCE,NOW.plusHours(24)); }
     static String inputJson() { return "[\"UVEL TEST: Cloud Share inference acceptance.\",\"This text is a TEST workload, not a customer order.\",\"多语言向量嵌入验收：仅用于TEST环境。\"]"; }
     static Execution execution(String hash,String keyHash,String bodyHash) { return new Execution(TASK,"cloud-unit",7,11,"NEX-UNIT-CLOUD","EM-UNIT","c".repeat(64),CLAIM,inputJson(),TestCloudExecutorService.sha256(inputJson()),"bge-m3:567m",DIGEST,NONCE,hash,null,keyHash,bodyHash,NOW); }
@@ -85,7 +85,7 @@ class TestCloudExecutorServiceTest {
         when(mapper.lockActiveTaskNos(7,11)).thenReturn(List.of());
         assertThat(service.eligibility(identity).getData()).containsEntry("eligible",true).containsEntry("activeTaskNo",null);
         when(assignments.lockOwnedDevice(7L,11L)).thenReturn(new DeviceRow(11L,"NEX-UNIT-CLOUD","SHARE","SHARE","Cloud",
-                "DEACTIVATED","cloud-share",NOW.minusDays(1),NOW.minusHours(1),24,"unit","OFFLINE","USER_DEACTIVATED",false));
+                "DEACTIVATED","cloud-share",NOW.minusDays(1),NOW.minusHours(1),24,"unit","OFFLINE","USER_DEACTIVATED"));
         assertThat(service.eligibility(identity).getData()).containsEntry("eligible",false).containsEntry("activeTaskNo",null);
         when(assignments.lockOwnedDevice(7L,11L)).thenReturn(device());
         when(mapper.lockActiveTaskNos(7,11)).thenReturn(List.of(TASK));
@@ -108,7 +108,7 @@ class TestCloudExecutorServiceTest {
         when(mapper.binding("fleet-12")).thenReturn(b);
         when(mapper.lockBinding("fleet-12")).thenReturn(b);
         when(assignments.ownedDevice(7L,12L)).thenReturn(new DeviceRow(12L,"NEX-FLEET-12","DEVICE","S1","S1",
-                "ACTIVE","stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null,false));
+                "ACTIVE","stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null));
         when(assignments.assignment(7L,TASK,"PRODUCTION")).thenReturn(fleetTask(TASK,KIND,CLIENT));
         when(mapper.execution(TASK)).thenReturn(fleetExecution());
         return service.authenticate("Bearer "+TOKEN,"fleet-12");
@@ -116,7 +116,7 @@ class TestCloudExecutorServiceTest {
     @Test void fleetEligibilityUsesCurrentHardwareAuthorityAndRejectsCrossIdentityOrLateRegistrationChanges() {
         Identity target=fleetIdentity();
         when(assignments.lockOwnedDevice(7L,12L)).thenReturn(new DeviceRow(12L,"NEX-FLEET-12","DEVICE","S1","S1",
-                "ACTIVE","stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null,false));
+                "ACTIVE","stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null));
         when(mapper.lockActiveTaskNos(7,12)).thenReturn(List.of(TASK));
         when(mapper.liveFleetBinding(NOW.minusDays(1),null,7,12,"NEX-FLEET-12",false,false)).thenReturn(1);
         assertThat(service.eligibility(target).getData()).containsEntry("eligible",true).containsEntry("activeTaskNo",TASK);
@@ -150,7 +150,7 @@ class TestCloudExecutorServiceTest {
     @Test void paidFleetLifecycleIsCheckedUnderTheExistingDeviceLockBeforeClaim() {
         Identity target=fleetIdentity();
         when(assignments.lockOwnedDevice(7L,12L)).thenReturn(new DeviceRow(12L,"NEX-FLEET-12","DEVICE","S1","S1",
-                "ACTIVE","stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null,false));
+                "ACTIVE","stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null));
         when(mapper.liveFleetBinding(NOW.minusDays(1),null,7,12,"NEX-FLEET-12",false,false)).thenReturn(null);
         assertThatThrownBy(()->service.next(target,"fleet-next-unit")).hasMessage("TEST_CLOUD_BINDING_INVALID");
         verifyNoInteractions(settlement); verify(mapper,never()).register(any(),any());
@@ -174,7 +174,7 @@ class TestCloudExecutorServiceTest {
         var tradeinCutoff=NOW.minusHours(1);
         env.setProperty(PREFIX+"fleet-tradein-started-at",tradeinCutoff.toString());
         when(assignments.lockOwnedDevice(7L,12L)).thenReturn(new DeviceRow(12L,"NEX-FLEET-12","DEVICE","S1","S1",
-                "ACTIVE","stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null,false));
+                "ACTIVE","stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null));
         var original=execution(null,null,null);
         when(mapper.lock(TASK)).thenReturn(new Execution(TASK,"fleet-12",7,12,"NEX-FLEET-12","EM-UNIT",
                 original.nextKeyHash(),CLAIM,original.inputJson(),original.inputHash(),original.modelTag(),original.modelDigest(),
@@ -231,7 +231,7 @@ class TestCloudExecutorServiceTest {
         Identity target=fleetIdentity();
         if(enabled) env.setProperty(PREFIX+"fleet-legacy-enabled","true");
         when(assignments.lockOwnedDevice(7L,12L)).thenReturn(new DeviceRow(12L,"NEX-FLEET-12","DEVICE","S1","S1",
-                "ACTIVE","stellarbox-s1",NOW.minusDays(2),NOW.minusDays(2),96,"unit","ONLINE",null,false));
+                "ACTIVE","stellarbox-s1",NOW.minusDays(2),NOW.minusDays(2),96,"unit","ONLINE",null));
         when(mapper.liveFleetBinding(NOW.minusDays(1),null,7,12,"NEX-FLEET-12",false,enabled)).thenReturn(1);
         return target;
     }
@@ -456,9 +456,9 @@ class TestCloudExecutorServiceTest {
     @Test void finalCurrentReadsRejectDeactivationPauseNonceLeaseAndRuntimeChangesDuringInference() throws Exception {
         Map<String,java.util.function.Consumer<TestCloudExecutorServiceTest>> revocations=new LinkedHashMap<>();
         revocations.put("TEST_CLOUD_BINDING_INVALID",fixture->when(fixture.assignments.lockOwnedDevice(7L,11L)).thenReturn(
-                new DeviceRow(11L,"NEX-UNIT-CLOUD","SHARE","SHARE","Cloud","INACTIVE","cloud-share",NOW.minusDays(1),null,24,"unit","OFFLINE",null,false)));
+                new DeviceRow(11L,"NEX-UNIT-CLOUD","SHARE","SHARE","Cloud","INACTIVE","cloud-share",NOW.minusDays(1),null,24,"unit","OFFLINE",null)));
         revocations.put("TEST_CLOUD_BINDING_INVALID:pause",fixture->when(fixture.assignments.lockOwnedDevice(7L,11L)).thenReturn(
-                new DeviceRow(11L,"NEX-UNIT-CLOUD","SHARE","SHARE","Cloud","ACTIVE","cloud-share",NOW.minusDays(1),NOW.minusHours(1),24,"unit","ONLINE",null,true)));
+                new DeviceRow(11L,"NEX-UNIT-CLOUD","SHARE","SHARE","Cloud","ACTIVE","cloud-share",NOW.minusDays(1),NOW.minusHours(1),24,"unit","ONLINE",null)));
         revocations.put("TEST_CLOUD_TASK_INVALID:nonce",fixture->when(fixture.assignments.lockAssignment(7L,TASK,"PRODUCTION")).thenReturn(
                 new AssignmentRow(TASK,11L,"EM-UNIT",TASK_NAME,"EM",KIND,CLIENT,"RUNNING",BigDecimal.ONE,5,0,
                         NOW.minusSeconds(10),NOW.plusHours(24),null,null,"f".repeat(64),NOW.plusHours(24))));
@@ -487,7 +487,7 @@ class TestCloudExecutorServiceTest {
     private Identity completableFleet() {
         Identity target=fleetIdentity();
         when(assignments.lockOwnedDevice(7L,12L)).thenReturn(new DeviceRow(12L,"NEX-FLEET-12","DEVICE","S1","S1",
-                "ACTIVE","stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null,false));
+                "ACTIVE","stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null));
         when(assignments.lockAssignment(7L,TASK,"PRODUCTION")).thenReturn(fleetTask(TASK,KIND,CLIENT));
         when(mapper.lock(TASK)).thenReturn(fleetExecution());
         when(mapper.countActive(7,12)).thenReturn(1); when(mapper.activeTaskNos(7,12)).thenReturn(List.of(TASK));
@@ -683,14 +683,14 @@ class TestCloudExecutorServiceTest {
         assertThatThrownBy(()->service.manifest(identity,TASK,RESUME_KEY)).hasMessage("TEST_CLOUD_BINDING_INVALID");
         when(assignments.lockPaidCloudShareDailyNex(7L,11L)).thenReturn(new BigDecimal("3"));
         when(assignments.lockOwnedDevice(7L,11L)).thenReturn(new DeviceRow(11L,"NEX-UNIT-CLOUD","SHARE","SHARE","Cloud","INACTIVE",
-                "cloud-share",NOW.minusDays(1),NOW.minusHours(1),24,"unit","OFFLINE",null,false));
+                "cloud-share",NOW.minusDays(1),NOW.minusHours(1),24,"unit","OFFLINE",null));
         assertThatThrownBy(()->service.manifest(identity,TASK,RESUME_KEY)).hasMessage("TEST_CLOUD_BINDING_INVALID");
         verifyNoInteractions(settlement,audit);
     }
     @Test void manifestResumesTheExistingPendingDeactivationTaskButStillRejectsActualRevocation() {
         Identity target=fleetIdentity();
         when(assignments.lockOwnedDevice(7L,12L)).thenReturn(new DeviceRow(12L,"NEX-FLEET-12","DEVICE","S1","S1","ACTIVE",
-                "stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null,false));
+                "stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null));
         var e=resumableExecution(null,null,null);
         when(mapper.lock(TASK)).thenReturn(new Execution(TASK,"fleet-12",7,12,"NEX-FLEET-12","EM-UNIT",e.nextKeyHash(),CLAIM,
                 e.inputJson(),e.inputHash(),e.modelTag(),e.modelDigest(),NONCE,null,null,null,null,NOW));
@@ -734,7 +734,7 @@ class TestCloudExecutorServiceTest {
         env.setProperty(PREFIX+"fleet-enabled","true");env.setProperty(PREFIX+"fleet-started-at","2026-10-01T00:00:00");
         var fleet=new Identity("fleet-12",7,12,"DEV-12","EM-UNIT","bge-m3:567m",DIGEST);
         when(mapper.binding("fleet-12")).thenReturn(new ffdd.opsconsole.device.mapper.TestCloudExecutorMapper.Binding("fleet-12",7,12,"DEV-12","EM-UNIT","bge-m3:567m",DIGEST));
-        when(assignments.lockOwnedDevice(7L,12L)).thenReturn(new DeviceRow(12L,"DEV-12","SHARE","SHARE","Cloud","ACTIVE","cloud-share",NOW.minusDays(1),NOW.minusHours(1),24,"unit","ONLINE",null,false));
+        when(assignments.lockOwnedDevice(7L,12L)).thenReturn(new DeviceRow(12L,"DEV-12","SHARE","SHARE","Cloud","ACTIVE","cloud-share",NOW.minusDays(1),NOW.minusHours(1),24,"unit","ONLINE",null));
         when(mapper.computeV2PaidBinding(any(),nullable(LocalDateTime.class),eq(7L),eq(12L),eq("DEV-12"),eq(false),eq(false))).thenReturn(1);
         service.requireComputeV2Paid(fleet,false);
         when(mapper.computeV2PaidBinding(any(),nullable(LocalDateTime.class),eq(7L),eq(12L),eq("DEV-12"),eq(false),eq(false))).thenReturn(null);

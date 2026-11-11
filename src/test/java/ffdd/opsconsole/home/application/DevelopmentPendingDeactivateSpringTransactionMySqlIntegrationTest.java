@@ -196,7 +196,7 @@ class DevelopmentPendingDeactivateSpringTransactionMySqlIntegrationTest {
     private DevelopmentHomeSettlementBootstrap worker(EventOutboxService outbox, AuditLogService audit) {
         SqlSessionTemplate template = new SqlSessionTemplate(sessionFactory(source));
         return new DevelopmentHomeSettlementBootstrap(template.getMapper(DevelopmentHomeSettlementMapper.class), CLOCK,
-                "+86", "18708173775", true, outbox, audit, new DataSourceTransactionManager(source));
+                "+86", "18708173775", true, outbox, audit, new DataSourceTransactionManager(source), false);
     }
 
     private SqlSessionFactory sessionFactory(DataSource dataSource) {

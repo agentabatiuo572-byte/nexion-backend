@@ -19,6 +19,7 @@ import ffdd.opsconsole.platform.dto.PlatformRoleCreateRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
 import ffdd.opsconsole.platform.infrastructure.AdminRoleEntity;
 import ffdd.opsconsole.platform.mapper.AdminRoleMapper;
+import ffdd.opsconsole.platform.mapper.AuditOperationTicketMapper;
 import ffdd.opsconsole.platform.mapper.AdminRoleMenuMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -53,7 +54,7 @@ class OpsPlatformRoleServiceTest {
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
     private final OpsPlatformRoleService service = new OpsPlatformRoleService(
             roleMapper, roleMenuMapper, rolePermissionMapper, roleRelationMapper,
-            permissionCache, auditLogService, auditCenterService, idempotencyService);
+            permissionCache, auditLogService, auditCenterService, idempotencyService, mock(AuditOperationTicketMapper.class), new com.fasterxml.jackson.databind.ObjectMapper());
 
     @BeforeEach
     void lockQueriesReturnTheSameFixtureAsExistingTests() {

@@ -93,7 +93,7 @@ class NotificationTimeCorrectionMySqlTest {
         audit=spy(new AuditLogService(session.getMapper(AuditLogMapper.class),new AuditLogSanitizer(JSON),new ApplicationNameProperties(),new AuditProperties(),mock(AdminMapper.class),policy));
         realRecords=session.getMapper(AdminIdempotencyRecordMapper.class);records=mock(AdminIdempotencyRecordMapper.class,org.mockito.AdditionalAnswers.delegatesTo(realRecords));
         var expiry=proxy(new AdminIdempotencyExpiryTransitionExecutor(records));
-        var executor=proxy(new AdminIdempotencyTransactionExecutor(records,JSON,expiry));
+        var executor=proxy(new AdminIdempotencyTransactionExecutor(records,JSON,expiry,new ffdd.opsconsole.shared.idempotency.AdminIdempotencyRollbackEvidence(records)));
         idempotency=new AdminIdempotencyService(executor,Clock.system(DateTimeFormatConfig.BUSINESS_ZONE));
         mapper=mock(NotificationTimeCorrectionMapper.class,org.mockito.AdditionalAnswers.delegatesTo(session.getMapper(NotificationTimeCorrectionMapper.class)));
         service=new NotificationTimeCorrectionService(users,roles,evidence,mapper,idempotency,audit);

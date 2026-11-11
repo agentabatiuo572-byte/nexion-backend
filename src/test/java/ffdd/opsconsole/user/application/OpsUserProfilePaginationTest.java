@@ -31,7 +31,7 @@ class OpsUserProfilePaginationTest {
     private final AuditLogService audit = mock(AuditLogService.class);
     private final AdminOperatorRoleResolver roles = mock(AdminOperatorRoleResolver.class);
     private final SupportOwnershipService ownership = mock(SupportOwnershipService.class);
-    private final OpsUserService service = new OpsUserService(repository, null, null, null, null,
+    private final OpsUserService service = new OpsUserService(repository, null, null, null, null, null,
             audit, null, roles, null, null, null, null, null, ownership);
     private final SupportGroupFacts.ReadScope scope = new SupportGroupFacts.ReadScope(
             7L, SupportGroupFacts.ReadMode.ALL, null, null);

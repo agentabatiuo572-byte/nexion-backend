@@ -6,13 +6,14 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.platform.application.OpsDashboardService;
+import ffdd.opsconsole.platform.application.OpsDashboardExportService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class OpsDashboardControllerTest {
     private final OpsDashboardService dashboardService = mock(OpsDashboardService.class);
-    private final OpsDashboardController controller = new OpsDashboardController(dashboardService);
+    private final OpsDashboardController controller = new OpsDashboardController(dashboardService, mock(OpsDashboardExportService.class));
 
     @Test
     void summaryDelegatesToDashboardService() {

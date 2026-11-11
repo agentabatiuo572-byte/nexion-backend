@@ -34,7 +34,7 @@ class AccountDeletionAdminContractTest {
         AccountDeletionAdminService service = mock(AccountDeletionAdminService.class);
         OpsAccountDeletionController controller = new OpsAccountDeletionController(service);
         AccountDeletionAdminView record = new AccountDeletionAdminView("ADR-0123456789abcdef0123456789abcdef", 42L,
-                "REQUESTED", 1L, LocalDateTime.of(2026, 9, 9, 0, 0), null, null, null, null, false, false);
+                "REQUESTED", 1L, LocalDateTime.of(2026, 9, 9, 0, 0), null, null, null, null, null, false, false);
         AccountDeletionAdminPage page = new AccountDeletionAdminPage(List.of(record), 3L, 2, 10);
         when(service.page("REQUESTED", 2, 10)).thenReturn(page);
 

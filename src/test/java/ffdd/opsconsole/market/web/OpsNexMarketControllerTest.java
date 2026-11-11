@@ -10,6 +10,7 @@ import static org.mockito.Mockito.when;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.market.application.G2G3AdminCommandService;
 import ffdd.opsconsole.market.application.G4AdminCommandService;
+import ffdd.opsconsole.market.application.G4DividendApproval;
 import ffdd.opsconsole.market.application.OpsNexMarketService;
 import ffdd.opsconsole.market.application.GenesisCatalogService;
 import ffdd.opsconsole.market.application.OpsRepurchaseAdminService;
@@ -31,8 +32,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 class OpsNexMarketControllerTest {
     private final OpsNexMarketService marketService = mock(OpsNexMarketService.class);
     private final GenesisCatalogService genesisCatalogService = mock(GenesisCatalogService.class);
-    private final OpsNexMarketController controller = new OpsNexMarketController(
-            marketService, null, null, null, genesisCatalogService);
+    private final OpsNexMarketController controller = new OpsNexMarketController(marketService, null, null, null, genesisCatalogService, mock(G4DividendApproval.class));
 
     @Test
     void curveDelegatesToService() {
@@ -203,13 +203,14 @@ class OpsNexMarketControllerTest {
         @Bean G4AdminCommandService g4CommandService() { return mock(G4AdminCommandService.class); }
         @Bean OpsRepurchaseAdminService repurchaseService() { return mock(OpsRepurchaseAdminService.class); }
         @Bean GenesisCatalogService genesisCatalogService() { return mock(GenesisCatalogService.class); }
+        @Bean G4DividendApproval g4DividendApproval() { return mock(G4DividendApproval.class); }
         @Bean OpsNexMarketController controller(OpsNexMarketService marketService,
                                                 G2G3AdminCommandService commandService,
                                                 G4AdminCommandService g4CommandService,
                                                 OpsRepurchaseAdminService repurchaseService,
-                                                GenesisCatalogService genesisCatalogService) {
-            return new OpsNexMarketController(marketService, commandService, g4CommandService,
-                    repurchaseService, genesisCatalogService);
+                                                GenesisCatalogService genesisCatalogService,
+                                                G4DividendApproval g4DividendApproval) {
+            return new OpsNexMarketController(marketService, commandService, g4CommandService, repurchaseService, genesisCatalogService, g4DividendApproval);
         }
     }
 

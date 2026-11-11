@@ -592,7 +592,7 @@ class DirectReferralMySqlRuntimeTest {
         assertThat(groupRow("RECEIPT-MICRO-AFTER").get("policy_version")).isEqualTo(newVersion);
         assertDelta(before,wallet(a),"6.33","422");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_compute_task t JOIN nx_compute_receipt r ON t.task_no=r.task_no AND t.completed_at=r.completed_at WHERE r.receipt_no=?",Long.class,ref("RECEIPT-MICRO-AFTER"))).isEqualTo(1);
-        assertThat(mapper.purchase(ref("MICRO-AFTER")).sourceOccurredAt().getNano()).isEqualTo(400323000);
+        assertThat(mapper.purchase(ref("MICRO-AFTER"), b).sourceOccurredAt().getNano()).isEqualTo(400323000);
         jdbc.update("INSERT INTO nx_binary_paid_order_volume(order_no,owner_user_id,order_user_id,root_member_user_id,leg,amount_usdt,paid_at) SELECT order_no,?,?,?,'A',amount_usdt,paid_at FROM nx_order WHERE order_no=?",a,b,b,ref("MICRO-AFTER"));
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_binary_paid_order_volume v JOIN nx_order o ON v.order_no=o.order_no AND v.paid_at=o.paid_at WHERE v.order_no=?",Long.class,ref("MICRO-AFTER"))).isEqualTo(1);
         record("backend-policy","TC12-same-second-approval-and-source-ordering",Map.of("before",groupRow("MICRO-BEFORE"),"afterPurchase",groupRow("MICRO-AFTER"),"afterEarning",groupRow("RECEIPT-MICRO-AFTER"),"wallet",wallet(a)));
@@ -659,7 +659,7 @@ class DirectReferralMySqlRuntimeTest {
         var self=mock(org.springframework.beans.factory.ObjectProvider.class);when(self.getObject()).thenReturn(service);org.springframework.test.util.ReflectionTestUtils.setField(service,"self",self);
         var idempotencyMapper=session.getMapper(ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper.class);
         var expiry=proxy(new ffdd.opsconsole.shared.idempotency.AdminIdempotencyExpiryTransitionExecutor(idempotencyMapper));
-        var executor=proxy(new ffdd.opsconsole.shared.idempotency.AdminIdempotencyTransactionExecutor(idempotencyMapper,json,expiry));
+        var executor=proxy(new ffdd.opsconsole.shared.idempotency.AdminIdempotencyTransactionExecutor(idempotencyMapper,json,expiry,new ffdd.opsconsole.shared.idempotency.AdminIdempotencyRollbackEvidence(idempotencyMapper)));
         var idempotency=new AdminIdempotencyService(executor,clock);
         var provider=mock(org.springframework.beans.factory.ObjectProvider.class);when(provider.getIfAvailable()).thenReturn(service);
         f5=new F5CommissionService(session.getMapper(F5CommissionMapper.class),platform,coverage,ledger,audit,outbox,idempotency,provider);
@@ -668,7 +668,7 @@ class DirectReferralMySqlRuntimeTest {
         when(commissions.recordCommissionOperation(anyString(),anyString(),anyString(),anyLong(),anyString(),anyString())).thenReturn(true);
         var permissions=mock(ffdd.opsconsole.shared.security.AdminPermissionCache.class);
         when(permissions.getPermissionCodes(anyLong())).thenReturn(Set.of("network_f5_commission_freeze","network_f5_commission_release","network_f5_commission_reverse"));
-        ops=proxy(new OpsTeamService(platform,coverage,ledger,audit,ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),mock(ffdd.opsconsole.team.domain.TeamFulfillmentQueueRepository.class),commissions,permissions,mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class),mock(VRankPromotionEngine.class),mock(VRankRewardDispatcher.class),outbox,mock(LeadershipPoolService.class),f5,idempotency,null,provider,mock(VRankSkuFulfillmentService.class), null, null));
+        ops=proxy(new OpsTeamService(platform,coverage,ledger,audit,ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),mock(ffdd.opsconsole.team.domain.TeamFulfillmentQueueRepository.class),commissions,permissions,mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class),mock(VRankPromotionEngine.class),mock(VRankRewardDispatcher.class),outbox,mock(LeadershipPoolService.class),f5,idempotency,null,provider,mock(VRankSkuFulfillmentService.class), null, null,mock(ffdd.opsconsole.team.application.AmbassadorMaterialService.class)));
         org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(1L,null,List.of()));
         long base=900000000L+System.currentTimeMillis()%100000000;a=base;b=base+1;c=base+2;d=base+3;
         user(a,null);user(b,a);user(c,b);user(d,c);

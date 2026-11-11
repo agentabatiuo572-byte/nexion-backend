@@ -332,7 +332,7 @@ class OpsAdminAccountServiceTest {
                             false,
                             proposal.roleGate(),
                             proposal.reason(),
-                            "pending", null));
+                            "pending", null, false, null, null, null, false, null, null, null, true, true, null, null, null, null));
                 });
         when(adminMapper.insert(any(AdminEntity.class))).thenAnswer(invocation -> {
             AdminEntity entity = invocation.getArgument(0);
@@ -2035,7 +2035,7 @@ class OpsAdminAccountServiceTest {
             audit = new OpsAuditCenterService(repository, auditLogService,
                     OpsReadTimeSeedPolicy.disabledForDirectConstruction(), tickets,
                     mock(AuditOperationHistoryMapper.class), mock(AuditConfirmCategoryMapper.class), lockMapper,
-                    permissions, new AuditReplayDispatcher(List.of(replayTarget.apply(accounts))), new A2AccessPolicy(roleResolver, tickets, mock(AdminPermissionCache.class)),
+                    permissions, new AuditReplayDispatcher(List.of(replayTarget.apply(accounts))), new A2AccessPolicy(roleResolver, tickets, mock(AdminPermissionCache.class), new ObjectMapper()),
                     new ObjectMapper(), idempotency);
             when(tickets.insert(any(AuditOperationTicketEntity.class))).thenAnswer(invocation -> {
                 AuditOperationTicketEntity row = invocation.getArgument(0);

@@ -6,6 +6,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.any;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -239,7 +240,7 @@ class MybatisRiskOpsRepositoryTest {
         var override = new ffdd.opsconsole.risk.domain.RiskScoreOverrideView(
                 "U00000052", 10, 35, "人工判断", "superadmin", "now", true);
         when(mapper.activeScoreOverride("U00000052")).thenReturn(override);
-        when(mapper.updateScoreUserModelIfVersion("U00000052", 7L, 15, "k4-v45")).thenReturn(1);
+        when(mapper.updateScoreUserModelIfVersion(eq("U00000052"), eq(7L), eq(15), eq("k4-v45"), any())).thenReturn(1);
         when(mapper.findScoreUser("U00000052")).thenReturn(
                 new RiskOpsMapper.ScoreUserRecord("U00000052", 15, "k4-v45", 8L, "now", "now"));
         when(mapper.scoreConfigRows()).thenReturn(java.util.List.of());
@@ -255,11 +256,11 @@ class MybatisRiskOpsRepositoryTest {
         verify(mapper).insertScoreHistory(
                 eq("U00000052"), eq(45L), eq(15), eq(35), eq("manually-overridden"),
                 org.mockito.ArgumentMatchers.anyString(), eq("事实源刷新（保留人工覆盖）"), eq("system:k4"));
-        verify(mapper).advanceScoreAsOfToLatestSource("U00000052");
+        verify(mapper).advanceScoreAsOfToLatestSource(eq("U00000052"), any());
         var order = inOrder(mapper);
-        order.verify(mapper).lockScoreUserForUpdate("U00000052");
+        order.verify(mapper).lockScoreUserForUpdate(eq("U00000052"), any());
         order.verify(mapper).activeScoreOverride("U00000052");
-        order.verify(mapper).updateScoreUserModelIfVersion("U00000052", 7L, 15, "k4-v45");
+        order.verify(mapper).updateScoreUserModelIfVersion(eq("U00000052"), eq(7L), eq(15), eq("k4-v45"), any());
     }
 
     @Test
@@ -268,7 +269,7 @@ class MybatisRiskOpsRepositoryTest {
                 mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
         when(mapper.findScoreUser("U00000052")).thenReturn(
                 new RiskOpsMapper.ScoreUserRecord("U00000052", 15, "k4-v45", 8L, "now", "now"));
-        when(mapper.bumpScoreUserVersion("U00000052", 8L)).thenReturn(1);
+        when(mapper.bumpScoreUserVersion(eq("U00000052"), eq(8L), any())).thenReturn(1);
         when(mapper.scoreConfigRows()).thenReturn(java.util.List.of());
         when(mapper.scoreContributions("U00000052")).thenReturn(java.util.List.of());
         when(mapper.activeScoreOverride("U00000052")).thenReturn(
@@ -278,9 +279,9 @@ class MybatisRiskOpsRepositoryTest {
         repository.overrideScore("U00000052", 8L, 35, "manual", "operator");
 
         var order = inOrder(mapper);
-        order.verify(mapper).lockScoreUserForUpdate("U00000052");
+        order.verify(mapper).lockScoreUserForUpdate(eq("U00000052"), any());
         order.verify(mapper).findScoreUser("U00000052");
-        order.verify(mapper).bumpScoreUserVersion("U00000052", 8L);
+        order.verify(mapper).bumpScoreUserVersion(eq("U00000052"), eq(8L), any());
         order.verify(mapper).deactivateScoreOverrides("U00000052");
     }
 

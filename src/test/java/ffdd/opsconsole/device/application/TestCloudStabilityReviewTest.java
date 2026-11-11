@@ -42,7 +42,7 @@ class TestCloudStabilityReviewTest {
         var binding=new Binding(identity.executorId(),7,scope.device(),scope.instance(),"EM-UNIT",identity.model(),identity.modelDigest());
         when(mapper.binding(identity.executorId())).thenReturn(binding); when(mapper.lockBinding(identity.executorId())).thenReturn(binding);
         when(assignments.lockProductionUser(7L)).thenReturn(7L);
-        when(assignments.lockOwnedDevice(7L,scope.device())).thenReturn(new AppTaskAssignmentMapper.DeviceRow(scope.device(),scope.instance(),"DEVICE","S1","S1","ACTIVE","stellarbox-s1",now.minusDays(1),now.minusHours(1),96,"unit","ONLINE",null,false));
+        when(assignments.lockOwnedDevice(7L,scope.device())).thenReturn(new AppTaskAssignmentMapper.DeviceRow(scope.device(),scope.instance(),"DEVICE","S1","S1","ACTIVE","stellarbox-s1",now.minusDays(1),now.minusHours(1),96,"unit","ONLINE",null));
         var original=TestCloudExecutorServiceTest.task("RUNNING");
         var task=new AppTaskAssignmentMapper.AssignmentRow(scope.task(),scope.device(),"EM-UNIT",original.taskName(),"EM",TestCloudExecutorService.KIND,TestCloudExecutorService.CLIENT,"RUNNING",original.rewardUsdt(),5,0,now.minusMinutes(25),now.plusHours(24),null,null,TestCloudExecutorServiceTest.NONCE,now.plusHours(24));
         when(assignments.lockAssignment(7L,scope.task(),"PRODUCTION")).thenReturn(task);

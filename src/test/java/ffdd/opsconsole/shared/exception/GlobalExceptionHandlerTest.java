@@ -173,7 +173,7 @@ class GlobalExceptionHandlerTest {
     @Test
     void malformedRequestBodyReturnsStable400WithoutParserDetails() {
         ApiResult<Void> result = handler.handleUnreadableMessage(
-                new HttpMessageNotReadableException("JSON parse error: Long from string"));
+                new HttpMessageNotReadableException("JSON parse error: Long from string"), new MockHttpServletResponse());
 
         assertThat(result.getCode()).isEqualTo(400);
         assertThat(result.getMessage()).isEqualTo("REQUEST_BODY_INVALID");

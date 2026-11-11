@@ -53,6 +53,7 @@ class OpsVietnamPaymentServiceTest {
     private final VietQrReceiptEvidenceService receiptEvidence = mock(VietQrReceiptEvidenceService.class);
     private final OpsVietnamPaymentService service = new OpsVietnamPaymentService(capture,
             mapper, audit, idempotency, sensitiveDataCipher, appIntentMapper, outbox, receiptEvidence,
+            mock(PayoutVndConfigService.class),
             Clock.fixed(Instant.parse("2026-07-25T00:00:00Z"), ZoneOffset.UTC));
 
     @BeforeEach
@@ -1272,6 +1273,7 @@ class OpsVietnamPaymentServiceTest {
     private OpsVietnamPaymentService serviceAt(String instant) {
         return new OpsVietnamPaymentService(capture,
                 mapper, audit, idempotency, sensitiveDataCipher, appIntentMapper, outbox, receiptEvidence,
+                mock(PayoutVndConfigService.class),
                 Clock.fixed(Instant.parse(instant), ZoneOffset.UTC));
     }
 

@@ -42,7 +42,7 @@ class OpsGrowthCommandBoundaryTest {
     void setUp() {
         idempotency = mock(AdminIdempotencyService.class);
         outbox = mock(EventOutboxService.class);
-        boundary = new OpsGrowthCommandBoundary(idempotency, outbox);
+        boundary = new OpsGrowthCommandBoundary(idempotency, outbox, java.util.Optional.empty());
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any(Supplier.class)))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
     }
@@ -222,3 +222,4 @@ class OpsGrowthCommandBoundaryTest {
         throw new DeadlockLoserDataAccessException("deadlock", null);
     }
 }
+

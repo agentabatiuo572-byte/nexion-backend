@@ -95,7 +95,7 @@ class OpsTeamServiceTest {
             eventOutboxService,
             leadershipPoolService,
             f5CommissionService,
-            idempotencyService, null, null, mock(VRankSkuFulfillmentService.class), null, rankBootstrap);
+            idempotencyService, null, null, mock(VRankSkuFulfillmentService.class), null, rankBootstrap, mock(ffdd.opsconsole.team.application.AmbassadorMaterialService.class));
 
     @Test
     void bootstrapReplayUsesTheConstructorInjectedService() {
@@ -330,7 +330,7 @@ class OpsTeamServiceTest {
                 mock(EventOutboxService.class),
                 mock(LeadershipPoolService.class),
                 mock(F5CommissionService.class),
-                idempotencyService, null, null, mock(VRankSkuFulfillmentService.class), null, mock(VRankBootstrapService.class));
+                idempotencyService, null, null, mock(VRankSkuFulfillmentService.class), null, mock(VRankBootstrapService.class), mock(ffdd.opsconsole.team.application.AmbassadorMaterialService.class));
 
         ApiResult<Map<String, Object>> rates = realOnlyService.rates();
         ApiResult<Map<String, Object>> pool = realOnlyService.leadershipPool();
@@ -2197,6 +2197,12 @@ class OpsTeamServiceTest {
     }
 
     private static final class FakeTeamCommissionRepository implements TeamCommissionRepository {
+
+        @Override public Map<String, Object> commissionEventById(long eventId) { return Map.of(); }
+
+        @Override public List<Map<String, Object>> vRankRewardsForUpdate(String rank) { return List.of(); }
+
+        @Override public Map<String, Object> lockVRankPolicy(String rank) { return Map.of(); }
         private boolean residualPoolUnavailable;
         private final List<Map<String, Object>> binarySettlements = new ArrayList<>();
         private final List<Map<String, Object>> vRankRows = new ArrayList<>();
@@ -2918,7 +2924,7 @@ class OpsTeamServiceTest {
                 eventOutboxService,
                 leadershipPoolService,
                 f5CommissionService,
-                idempotencyService, null, null, mock(VRankSkuFulfillmentService.class), null, mock(VRankBootstrapService.class));
+                idempotencyService, null, null, mock(VRankSkuFulfillmentService.class), null, mock(VRankBootstrapService.class), mock(ffdd.opsconsole.team.application.AmbassadorMaterialService.class));
         commissionRepository.memberVRanks.put(7106L, "V1");
 
         ApiResult<Map<String, Object>> result = lockedService.overrideVRank(7106L, "idem-7106",

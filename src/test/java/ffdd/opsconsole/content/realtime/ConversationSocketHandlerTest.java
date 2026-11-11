@@ -6,6 +6,8 @@ import java.util.*;
 import java.util.concurrent.*;
 import org.junit.jupiter.api.*;
 import org.springframework.security.authentication.*;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.web.socket.*;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -14,8 +16,9 @@ class ConversationSocketHandlerTest {
     ObjectMapper json=new ObjectMapper();
     ConversationSocketAccess access=mock(ConversationSocketAccess.class);
     ConversationSocketCommands commands=mock(ConversationSocketCommands.class);
-    ConversationSocketTickets tickets=new ConversationSocketTickets(access);
-    ConversationSocketHandler handler=new ConversationSocketHandler(json,tickets,access,commands);
+    ConversationSocketRedis socketRedis=mock(ConversationSocketRedis.class);
+    ConversationSocketTickets tickets=new ConversationSocketTickets(access, mock(StringRedisTemplate.class));
+    ConversationSocketHandler handler=new ConversationSocketHandler(json,tickets,access,commands,socketRedis,mock(ApplicationEventPublisher.class));
     UsernamePasswordAuthenticationToken auth=new UsernamePasswordAuthenticationToken("12",null,List.of());
     List<String> frames=new CopyOnWriteArrayList<>(); WebSocketSession socket;
     @BeforeEach void setup()throws Exception{
@@ -71,7 +74,7 @@ class ConversationSocketHandlerTest {
         when(access.canRead(auth,"USER","CV-1")).thenReturn(true);
         var guard=ffdd.opsconsole.content.SupportTestDependencies.ownership();
         when(access.participants("CV-1")).thenReturn(Optional.of(new ConversationSocketAccess.Participants("12","seat", guard)));
-        when(access.presenceKeys(auth,"USER")).thenReturn(Set.of("USER:12"));
+        when(socketRedis.presence(anyString(), anyString(), anyLong())).thenReturn(new ConversationSocketRedis.Presence(true, 0));
         login();frame(Map.of("type","watch","conversationNo","CV-1"));
         awaitPresence();frames.clear();
         var field=ConversationSocketHandler.class.getDeclaredField("outbound");field.setAccessible(true);

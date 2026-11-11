@@ -49,21 +49,21 @@ class OpsD1BankOrderControllerTest {
     @AfterEach void close() { SecurityContextHolder.clearContext(); context.close(); }
 
     @Test void anonymousAndAppUsersCannotReadOrCreditBankOrders() {
-        assertThatThrownBy(() -> controller.list(null, null, null, 1, 20)).isInstanceOf(org.springframework.security.core.AuthenticationException.class);
+        assertThatThrownBy(() -> controller.list(null, null, null, null, 1, 20)).isInstanceOf(org.springframework.security.core.AuthenticationException.class);
         authenticate("ROLE_USER");
         ((TestingAuthenticationToken) SecurityContextHolder.getContext().getAuthentication())
                 .setDetails(Map.of("subjectType", "USER"));
-        assertThatThrownBy(() -> controller.list(null, null, null, 1, 20)).isInstanceOf(AccessDeniedException.class);
+        assertThatThrownBy(() -> controller.list(null, null, null, null, 1, 20)).isInstanceOf(AccessDeniedException.class);
         assertThatThrownBy(() -> controller.manualCredit("VQR-TEST", "key", null)).isInstanceOf(AccessDeniedException.class);
         verifyNoInteractions(service, audit);
     }
 
     @Test void readOnlyFinanceOperatorCannotCreditAndUsesServerPagination() {
         authenticate("finance_d1_read");
-        when(service.list("HDPAY", "UNKNOWN", "VQR-TEST", 2, 3)).thenReturn(ApiResult.ok(Map.of("total", 8L)));
-        assertThat(controller.list("HDPAY", "UNKNOWN", "VQR-TEST", 2, 3).getData()).containsEntry("total", 8L);
+        when(service.list("HDPAY", "UNKNOWN", null, "VQR-TEST", 2, 3)).thenReturn(ApiResult.ok(Map.of("total", 8L)));
+        assertThat(controller.list("HDPAY", "UNKNOWN", null, "VQR-TEST", 2, 3).getData()).containsEntry("total", 8L);
         assertThatThrownBy(() -> controller.manualCredit("VQR-TEST", "key", null)).isInstanceOf(AccessDeniedException.class);
-        verify(service).list("HDPAY", "UNKNOWN", "VQR-TEST", 2, 3);
+        verify(service).list("HDPAY", "UNKNOWN", null, "VQR-TEST", 2, 3);
         verifyNoInteractions(audit);
     }
 

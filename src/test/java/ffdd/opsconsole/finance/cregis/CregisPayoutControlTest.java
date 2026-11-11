@@ -18,7 +18,7 @@ class CregisPayoutControlTest {
         var config = configuredProperties();
         config.setCallbackSourceIps(sources);
         var db = mock(CregisDepositMapper.class);
-        var control = new CregisPayoutControl(config, db, mock(CregisGatewayRouter.class));
+        var control = new CregisPayoutControl(config, db, mock(CregisGatewayRouter.class), mock(BscDepositProof.class));
 
         assertThat(control.configured()).isFalse();
         assertThat(control.capability()).containsEntry("configured", false)
@@ -29,14 +29,14 @@ class CregisPayoutControlTest {
     @Test void configuredCallbackSourceUsesExistingCommaSeparatedMatching() {
         var config = configuredProperties();
         config.setCallbackSourceIps(" , 18.143.53.174, ");
-        assertThat(new CregisPayoutControl(config, mock(CregisDepositMapper.class), mock(CregisGatewayRouter.class)).configured()).isTrue();
+        assertThat(new CregisPayoutControl(config, mock(CregisDepositMapper.class), mock(CregisGatewayRouter.class), mock(BscDepositProof.class)).configured()).isTrue();
         assertThat(config.allowsCallbackSourceIp("18.143.53.174")).isTrue();
     }
 
     @Test void capabilityRequiresTransportIndependentBitAndCompleteReconciliation() {
         var config = new CregisProperties();
         var db = mock(CregisDepositMapper.class);
-        var control = new CregisPayoutControl(config,db,mock(CregisGatewayRouter.class));
+        var control = new CregisPayoutControl(config,db,mock(CregisGatewayRouter.class),mock(BscDepositProof.class));
         assertThat(control.capability()).containsEntry("disabledReason","NOT_CONFIGURED");
         verifyNoInteractions(db);
         config.setMode(CregisProperties.Mode.PROVIDER); config.setPayoutEnabled(true);
@@ -76,7 +76,7 @@ class CregisPayoutControlTest {
         when(router.provider()).thenReturn(gateway);
         when(db.provisionGate()).thenReturn(Map.of("state","IDLE","payoutEnabled",1));
         when(db.unresolvedExposure(88)).thenReturn(BigDecimal.ZERO);when(db.recentCompleteReconcileCount(88)).thenReturn(1);
-        var control=new CregisPayoutControl(config,db,router);
+        var control=new CregisPayoutControl(config,db,router,mock(BscDepositProof.class));
         assertThat(control.configured(CregisNetwork.ERC20)).isFalse();
         config.setEthereumRpcUrl("https://ethereum.invalid");
         assertThat(control.configured(CregisNetwork.ERC20)).isFalse();

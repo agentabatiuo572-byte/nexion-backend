@@ -36,10 +36,10 @@ class MybatisDeviceCatalogRepositoryTest {
         var saved=new java.util.concurrent.atomic.AtomicReference<TaskSchedulingSettings>(new TaskSchedulingSettings(2,5,8,30,"test-bge-m3-v1","test-bge-m3-v1","{}"));
         when(policies.find("EM-1")).thenAnswer(call -> { var s=saved.get(); return new TaskSchedulingPolicyMapper.Policy("EM-1",s.selectionWeight(),s.expectedDurationMinSec(),s.expectedDurationMaxSec(),s.executionTimeoutSec(),s.runtimeKey(),s.validatorKey(),s.workloadConfigJson(),1); });
         when(policies.save(org.mockito.ArgumentMatchers.eq("EM-1"),org.mockito.ArgumentMatchers.any())).thenAnswer(call -> { saved.set(call.getArgument(1)); return 1; });
-        var request=new DeviceTaskUpsertRequest("Embedding",BigDecimal.ONE,"/1k","手机+",BigDecimal.ZERO,"paused","EM","BGE-M3",BigDecimal.ZERO,BigDecimal.ONE,"8GB","派发中","test reason","operator",3,null,null,null,null,null,"{\"texts\":[\"hello\"]}");
+        var request=new DeviceTaskUpsertRequest("Embedding",BigDecimal.ONE,"/1k","手机+",BigDecimal.ZERO,"paused","EM","BGE-M3",BigDecimal.ZERO,BigDecimal.ONE,"8GB","派发中","test reason","operator",3,null,null,null,null,null,"{\"texts\":[\"hello\"]}", null, "DEVICE");
         var updated=repository.updateTask("EM-1",request,now).orElseThrow();
         assertThat(updated.selectionWeight()).isEqualTo(3); assertThat(updated.expectedDurationMaxSec()).isEqualTo(8);
-        assertThat(updated.runtimeKey()).isEqualTo("test-bge-m3-v1"); assertThat(updated.workloadConfigJson()).isEqualTo("{\"texts\":[\"hello\"]}");
+        assertThat(updated.runtimeKey()).isEqualTo("test-bge-m3-v1"); assertThat(updated.workloadConfigJson()).isEqualTo("{\"texts\":[\"hello\"]}", null, "DEVICE");
         assertThat(repository.findTask("EM-1").orElseThrow().scheduling()).isEqualTo(saved.get());
         assertThat(updated.status()).isEqualTo("paused");
     }

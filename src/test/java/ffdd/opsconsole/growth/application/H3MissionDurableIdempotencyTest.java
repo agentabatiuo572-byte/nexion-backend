@@ -36,11 +36,12 @@ class H3MissionDurableIdempotencyTest {
             new AdminIdempotencyTransactionExecutor(
                     recordMapper,
                     new ObjectMapper().findAndRegisterModules(),
-                    mock(AdminIdempotencyExpiryTransitionExecutor.class));
+                    mock(AdminIdempotencyExpiryTransitionExecutor.class),
+                    mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyRollbackEvidence.class));
     private final AdminIdempotencyService idempotency = new AdminIdempotencyService(
             transactionExecutor,
             Clock.fixed(Instant.parse("2026-08-10T00:00:00Z"), ZoneOffset.UTC));
-    private final OpsGrowthCommandBoundary boundary = new OpsGrowthCommandBoundary(idempotency, outbox);
+    private final OpsGrowthCommandBoundary boundary = new OpsGrowthCommandBoundary(idempotency, outbox, java.util.Optional.empty());
 
     @BeforeEach
     void persistIdempotencyRecordsInMemory() {
@@ -108,3 +109,4 @@ class H3MissionDurableIdempotencyTest {
         });
     }
 }
+

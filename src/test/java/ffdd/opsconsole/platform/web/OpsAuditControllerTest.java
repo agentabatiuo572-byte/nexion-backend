@@ -217,29 +217,24 @@ class OpsAuditControllerTest {
         AuditOperationDecisionRequest request = new AuditOperationDecisionRequest("verified", "superadmin");
         AuditCenterOverview.AuditOperationTicket ticket =
                 new AuditCenterOverview.AuditOperationTicket("WO-8852", "提现放行", "usr", "review", "approved",
-                        "superadmin", "super", "fund", true, false, "2m", false, "超管", "verified", "approved", null);
+                        "superadmin", "super", "fund", true, false, "2m", false, "超管", "verified", "approved", null, false, null, null, null, false, null, null, null, true, true, null, null, null, null);
         when(auditCenterService.approve("idem-1", "WO-8852", request)).thenReturn(ApiResult.ok(ticket));
         when(auditCenterService.reject("idem-2", "WO-8851", request)).thenReturn(ApiResult.ok(ticket));
 
-        assertThat(controller.approveOperation("idem-1", "WO-8852", request).getData()).isSameAs(ticket);
-        assertThat(controller.rejectOperation("idem-2", "WO-8851", request).getData()).isSameAs(ticket);
+        assertThat(controller.approveOperation("idem-1", "WO-8852", request, null).getData()).isSameAs(ticket);
+        assertThat(controller.rejectOperation("idem-2", "WO-8851", request, null).getData()).isSameAs(ticket);
     }
 
     @Test
     void operationDecisionEndpointsEnforceTheSameA2RowScopeBeforeApproveRejectOrReplay() throws Exception {
         PreAuthorize approve = OpsAuditController.class
-                .getMethod("approveOperation", String.class, String.class, AuditOperationDecisionRequest.class)
+                .getMethod("approveOperation", String.class, String.class, AuditOperationDecisionRequest.class, jakarta.servlet.http.HttpServletRequest.class)
                 .getAnnotation(PreAuthorize.class);
         PreAuthorize reject = OpsAuditController.class
-                .getMethod("rejectOperation", String.class, String.class, AuditOperationDecisionRequest.class)
+                .getMethod("rejectOperation", String.class, String.class, AuditOperationDecisionRequest.class, jakarta.servlet.http.HttpServletRequest.class)
                 .getAnnotation(PreAuthorize.class);
-
-        assertThat(approve.value())
-                .contains("platform_a2_operation_approve")
-                .contains("@a2AccessPolicy.canAccessOperation(#operationId)");
-        assertThat(reject.value())
-                .contains("platform_a2_operation_approve")
-                .contains("@a2AccessPolicy.canAccessOperation(#operationId)");
+        assertThat(approve.value()).isEqualTo("isAuthenticated()");
+        assertThat(reject.value()).isEqualTo("isAuthenticated()");
     }
 
     @Test
@@ -254,8 +249,12 @@ class OpsAuditControllerTest {
                 "A6 grant", "role:9", "read", "write", "mallory", "ADMIN", "HIGH",
                 true, false, "TWO_PERSON", "grant review", "A", null, null, null);
 
-        controller.approveOperation("idem-approve", "WO-1", spoofedDecision);
-        controller.rejectOperation("idem-reject", "WO-2", spoofedDecision);
+        when(auditCenterService.approve(any(), any(), any()))
+                .thenReturn(ApiResult.ok((AuditCenterOverview.AuditOperationTicket) null));
+        when(auditCenterService.reject(any(), any(), any()))
+                .thenReturn(ApiResult.ok((AuditCenterOverview.AuditOperationTicket) null));
+        controller.approveOperation("idem-approve", "WO-1", spoofedDecision, null);
+        controller.rejectOperation("idem-reject", "WO-2", spoofedDecision, null);
         controller.createOperation("idem-create", spoofedProposal);
 
         verify(auditCenterService).approve("idem-approve", "WO-1",
@@ -328,7 +327,7 @@ class OpsAuditControllerTest {
                 org.mockito.ArgumentMatchers.eq("idem-fixed-scope"), any(),
                 org.mockito.ArgumentMatchers.eq(OpsAuditController.AuditExportResult.class), any());
         OpsAuditController.AuditExportResult expected = new OpsAuditController.AuditExportResult(
-                "job-1", java.time.LocalDateTime.of(2026, 7, 17, 12, 0), new byte[]{1, 2, 3});
+                "job-1", java.time.LocalDateTime.of(2026, 7, 17, 12, 0), new byte[]{1, 2, 3}, false, null);
         byte[] json = objectMapper.writeValueAsBytes(expected);
         assertThat(objectMapper.readValue(json, OpsAuditController.AuditExportResult.class).body())
                 .containsExactly(1, 2, 3);

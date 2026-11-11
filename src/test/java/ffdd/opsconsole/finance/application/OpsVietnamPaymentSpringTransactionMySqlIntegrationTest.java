@@ -84,6 +84,7 @@ class OpsVietnamPaymentSpringTransactionMySqlIntegrationTest {
                     template.getMapper(AppVietQrIntentMapper.class),
                     mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class),
                     mock(VietQrReceiptEvidenceService.class),
+                    mock(PayoutVndConfigService.class),
                     Clock.system(ZoneId.of("Asia/Shanghai")));
             DataSourceTransactionManager transactionManager =
                     new DataSourceTransactionManager(dataSource);

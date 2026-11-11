@@ -239,7 +239,7 @@ class MarketEventSchemaMySqlIntegrationTest {
         }).when(earnings).creditReward(any(), anyString(), anyString(), eq("USDT"), any(), anyString());
         return new G4AdminCommandService(market, fixture.mapper(AppGenesisMapper.class), config, idempotency, outbox,
                 mock(AuditLogService.class), Clock.fixed(Instant.parse("2026-08-31T12:00:00Z"), ZoneOffset.UTC),
-                earnings, environment);
+                earnings, environment, mock(G4DividendPolicy.class));
     }
 
     private G1AdminCommandService g1Publisher(CanonicalEventSchemaMySqlFixture fixture) {

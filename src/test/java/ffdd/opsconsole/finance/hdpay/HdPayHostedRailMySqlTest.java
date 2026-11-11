@@ -410,7 +410,7 @@ class HdPayHostedRailMySqlTest {
             when(idempotency.execute(any(), any(), any(), any(), any()))
                     .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
             var target = new OpsVietnamPaymentService(paymentAttribution(bankMapper), bankMapper, audit, idempotency, cipher,
-                    intents, outbox, receiptEvidence, Clock.systemUTC());
+                    intents, outbox, receiptEvidence, mock(ffdd.opsconsole.finance.application.PayoutVndConfigService.class), Clock.systemUTC());
             ProxyFactory proxy = new ProxyFactory(target);
             proxy.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(dataSource), new AnnotationTransactionAttributeSource()));
             return (OpsVietnamPaymentService) proxy.getProxy();

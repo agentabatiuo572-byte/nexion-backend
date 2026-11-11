@@ -1,17 +1,19 @@
 package ffdd.opsconsole.shared.outbox;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
-import org.springframework.context.ApplicationEventPublisher;
 
 /**
  * A fact whose only delivery path is the outbox table itself was previously
@@ -20,8 +22,8 @@ import org.springframework.context.ApplicationEventPublisher;
  */
 class OutboxRecordOnlyRetirementTest {
     private final EventOutboxService service = mock(EventOutboxService.class);
-    private final ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
-    private final EventOutboxDispatchScheduler scheduler = new EventOutboxDispatchScheduler(service, publisher);
+    private final EventOutboxDispatcher dispatcher = mock(EventOutboxDispatcher.class);
+    private final EventOutboxDispatchScheduler scheduler = new EventOutboxDispatchScheduler(service, dispatcher);
 
     @Test
     void recordOnlyFactsAreRetiredOnEveryDispatchTick() {
@@ -52,13 +54,14 @@ class OutboxRecordOnlyRetirementTest {
                 .when(service).retireUnlinkedC1ProfileEvidence(anyInt());
         EventOutboxMessage message = new EventOutboxMessage();
         message.setEventId("event-still-delivered");
+        message.setEventType(EventOutboxDispatchScheduler.SUPPORTED_EVENT_TYPE);
         when(service.listPendingByEventType(EventOutboxDispatchScheduler.SUPPORTED_EVENT_TYPE, 100))
                 .thenReturn(List.of(message));
+        when(dispatcher.dispatch(message, null)).thenReturn(EventOutboxDispatcher.Result.PUBLISHED);
 
         scheduler.dispatchPending();
 
-        verify(publisher).publishEvent(message);
-        verify(service).markPublished("event-still-delivered");
+        verify(dispatcher).dispatch(message, null);
     }
 
     @Test
@@ -66,13 +69,14 @@ class OutboxRecordOnlyRetirementTest {
         doThrow(new IllegalStateException("retention unavailable")).when(service).retireRecordOnlyPending(anyInt());
         EventOutboxMessage message = new EventOutboxMessage();
         message.setEventId("event-still-delivered");
+        message.setEventType(EventOutboxDispatchScheduler.SUPPORTED_EVENT_TYPE);
         when(service.listPendingByEventType(EventOutboxDispatchScheduler.SUPPORTED_EVENT_TYPE, 100))
                 .thenReturn(List.of(message));
+        when(dispatcher.dispatch(message, null)).thenReturn(EventOutboxDispatcher.Result.PUBLISHED);
 
         scheduler.dispatchPending();
 
-        verify(publisher).publishEvent(message);
-        verify(service).markPublished("event-still-delivered");
+        verify(dispatcher).dispatch(message, null);
     }
 
     /**
@@ -122,9 +126,10 @@ class OutboxRecordOnlyRetirementTest {
 
         // Retirement must be the only status transition requested for these rows:
         // nothing is published and nothing is marked failed on their behalf.
-        verify(service, org.mockito.Mockito.never()).markPublished(anyString());
-        verify(service, org.mockito.Mockito.never()).markFailed(anyString(), anyString());
-        verify(publisher, org.mockito.Mockito.never()).publishEvent(org.mockito.ArgumentMatchers.any());
+        verify(service, never()).markPublished(anyLong(), anyLong());
+        verify(service, never()).markFailed(anyLong(), anyString(), anyLong());
+        verify(dispatcher, never()).dispatch(any(), anyString());
+        verify(dispatcher, never()).dispatch(any(), org.mockito.ArgumentMatchers.isNull());
         assertThat(Set.of("RECORDED")).isNotEmpty();
     }
 }

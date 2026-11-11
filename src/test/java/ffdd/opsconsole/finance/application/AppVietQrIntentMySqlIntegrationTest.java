@@ -129,6 +129,7 @@ class AppVietQrIntentMySqlIntegrationTest {
                         session.getMapper(AppVietQrIntentMapper.class),
                         mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class),
                         mock(VietQrReceiptEvidenceService.class),
+                        mock(PayoutVndConfigService.class),
                         Clock.system(ZoneId.of("Asia/Shanghai")));
                 BigDecimal walletBefore = walletAvailable(connection, userId);
                 BigDecimal cumulativeBefore = walletCumulativeDeposit(connection, userId);

@@ -277,7 +277,7 @@ class PurchasePaymentHttpMySqlTest {
             var repository=new MybatisPlatformConfigRepository(mapper(PlatformConfigItemMapper.class));configs=new PlatformConfigFacadeAdapter(repository);
             audit=new AuditLogService(mapper(AuditLogMapper.class),new AuditLogSanitizer(json),new ApplicationNameProperties(),new AuditProperties(),mapper(AdminMapper.class),new A2RuntimePolicy(repository));
             var expiry=proxy(new AdminIdempotencyExpiryTransitionExecutor(mapper(AdminIdempotencyRecordMapper.class)));
-            commands=new AdminIdempotencyService(proxy(new AdminIdempotencyTransactionExecutor(mapper(AdminIdempotencyRecordMapper.class),json,expiry)),Clock.systemUTC());
+            commands=new AdminIdempotencyService(proxy(new AdminIdempotencyTransactionExecutor(mapper(AdminIdempotencyRecordMapper.class),json,expiry,new AdminIdempotencyRollbackEvidence(mapper(AdminIdempotencyRecordMapper.class)))),Clock.systemUTC());
             pin=spy(new AppPaymentPasswordService(mapper(PaymentPasswordMapper.class),json,Clock.systemUTC(),mock(UserOtpDeliveryService.class),configs,audit,tx,"synthetic-http-pepper-material-32-bytes","v1",5,900,900));
             var env=new MockEnvironment();env.setActiveProfiles("dev");
             var attribution=mock(ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.class,invocation->{throw new AssertionError("External principal reached wallet attribution");});

@@ -12,6 +12,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.bi.mapper.BehaviorAnalyticsMapper;
 import ffdd.opsconsole.bi.mapper.BehaviorAnalyticsSandboxMapper;
 import ffdd.opsconsole.bi.web.BehaviorEventRequest;
+import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -34,7 +35,7 @@ class BehaviorAnalyticsServiceTest {
     private final BehaviorAnalyticsSandboxMapper sandboxMapper = mock(BehaviorAnalyticsSandboxMapper.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final BehaviorAnalyticsService service = new BehaviorAnalyticsService(
-            mapper, sandboxMapper, outbox, mock(AuditLogService.class), productionEnvironment(),
+            mapper, sandboxMapper, outbox, mock(AuditLogService.class), mock(A2RuntimePolicy.class), productionEnvironment(),
             "unit-test-pseudonym-secret", "unit-run");
 
     private static MockEnvironment productionEnvironment() {
@@ -166,7 +167,7 @@ class BehaviorAnalyticsServiceTest {
         MockEnvironment environment = new MockEnvironment();
         environment.setActiveProfiles("test");
         BehaviorAnalyticsService sandboxService = new BehaviorAnalyticsService(mapper, sandboxMapper, outbox,
-                mock(AuditLogService.class), environment, "unit-test-pseudonym-secret", "unit-run");
+                mock(AuditLogService.class), mock(A2RuntimePolicy.class), environment, "unit-test-pseudonym-secret", "unit-run");
         when(mapper.isSandboxUser(9000001L)).thenReturn(true);
         sandboxService.ingestFixture(9000001L, new BehaviorEventRequest(
                 "dddddddddddddddddddddddddddddddd", "app.page_viewed",
@@ -385,7 +386,7 @@ class BehaviorAnalyticsServiceTest {
         MockEnvironment acceptance = new MockEnvironment();
         acceptance.setActiveProfiles("test");
         BehaviorAnalyticsService sandboxService = new BehaviorAnalyticsService(mapper, sandboxMapper, outbox,
-                mock(AuditLogService.class), acceptance, "unit-test-pseudonym-secret", "run-A");
+                mock(AuditLogService.class), mock(A2RuntimePolicy.class), acceptance, "unit-test-pseudonym-secret", "run-A");
         when(mapper.isSandboxUser(42L)).thenReturn(true);
         when(mapper.findTrackedPage("/pages/store/detail")).thenReturn(trackedDetail());
         String sessionId = "0123456789abcdef0123456789abcdef";
@@ -454,7 +455,7 @@ class BehaviorAnalyticsServiceTest {
         MockEnvironment acceptance = new MockEnvironment();
         acceptance.setActiveProfiles("test");
         BehaviorAnalyticsService sandboxService = new BehaviorAnalyticsService(mapper, sandboxMapper, outbox,
-                mock(AuditLogService.class), acceptance, "unit-test-pseudonym-secret", "run-A");
+                mock(AuditLogService.class), mock(A2RuntimePolicy.class), acceptance, "unit-test-pseudonym-secret", "run-A");
         when(mapper.isSandboxUser(42L)).thenReturn(true);
         when(mapper.findTrackedPage("/pages/store/detail")).thenReturn(trackedDetail());
         long clientTs = Instant.now().toEpochMilli();
@@ -484,7 +485,7 @@ class BehaviorAnalyticsServiceTest {
         MockEnvironment acceptance = new MockEnvironment();
         acceptance.setActiveProfiles("test");
         BehaviorAnalyticsService sandboxService = new BehaviorAnalyticsService(mapper, sandboxMapper, outbox,
-                mock(AuditLogService.class), acceptance, "unit-test-pseudonym-secret", "run-A");
+                mock(AuditLogService.class), mock(A2RuntimePolicy.class), acceptance, "unit-test-pseudonym-secret", "run-A");
         when(mapper.isSandboxUser(42L)).thenReturn(true);
         when(mapper.findTrackedPage("/pages/store/detail")).thenReturn(trackedDetail());
         long clientTs = Instant.now().toEpochMilli();

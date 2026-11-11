@@ -29,7 +29,7 @@ class AppProductCatalogServiceTest {
     private final StorefrontSkuImageService skuImageService = mock(StorefrontSkuImageService.class);
     private final AppProductCatalogService service = new AppProductCatalogService(
             mapper, sandboxMapper, sandboxGuard, new CommerceAcceptanceRun("test-run-0001"),
-            new ObjectMapper(), releasePolicy, storageService, skuImageService);
+            new ObjectMapper(), releasePolicy, storageService, skuImageService, mock(ffdd.opsconsole.device.application.SimulatedTaskPolicyService.class));
 
     AppProductCatalogServiceTest() {
         when(releasePolicy.evaluate(any(), any()))

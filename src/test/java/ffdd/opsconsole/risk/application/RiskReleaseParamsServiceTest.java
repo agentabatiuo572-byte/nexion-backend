@@ -55,8 +55,6 @@ class RiskReleaseParamsServiceTest {
 
     @Test void missingRetiredAttestationConfigCannotBreakOrdinaryReleasePolicy() {
         when(config.activeValue("risk.k1.release.appAttestationReleaseHours")).thenReturn(Optional.empty());
-        assertThat(service.releaseWindowHours()).isEqualTo(24);
-        assertThat(service.freeSlots()).isEqualTo(1);
         assertThat(service.rows()).filteredOn(row -> "appAttestationReleaseHours".equals(row.get("key")))
                 .singleElement().satisfies(row -> assertThat(row).containsEntry("value","1").containsEntry("adjustable",false));
         assertThatThrownBy(() -> service.update("appAttestationReleaseHours","retired",

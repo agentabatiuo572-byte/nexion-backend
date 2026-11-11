@@ -123,7 +123,7 @@ class TestCloudExecutorSecurityContractTest {
         when(mapper.binding("fleet-12")).thenReturn(binding); when(mapper.lockBinding("fleet-12")).thenReturn(binding);
         when(assignments.lockProductionUser(7L)).thenReturn(7L);
         when(assignments.lockOwnedDevice(7L,12L)).thenReturn(new AppTaskAssignmentMapper.DeviceRow(12L,"NEX-FLEET-12","DEVICE","S1","S1",
-                "ACTIVE","stellarbox-s1",now.minusDays(1),now.minusHours(1),96,"unit","ONLINE",null,false));
+                "ACTIVE","stellarbox-s1",now.minusDays(1),now.minusHours(1),96,"unit","ONLINE",null));
         when(mapper.lockActiveTaskNos(7,12)).thenReturn(List.of("CTA-FLEET-CURRENT"));
         when(mapper.liveFleetBinding(now.minusDays(1),null,7,12,"NEX-FLEET-12",false,false)).thenReturn(1);
         var path=BASE+"/eligibility";
@@ -139,14 +139,14 @@ class TestCloudExecutorSecurityContractTest {
         data=new ObjectMapper().readTree(response.getContentAsString()).path("data");
         assertThat(data.path("eligible").booleanValue()).isFalse(); assertThat(data.path("activeTaskNo").asText()).isEqualTo("CTA-FLEET-CURRENT");
         when(assignments.lockOwnedDevice(7L,12L)).thenReturn(new AppTaskAssignmentMapper.DeviceRow(12L,"NEX-FLEET-12","DEVICE","S1","S1",
-                "DEACTIVATED","stellarbox-s1",now.minusDays(1),now.minusHours(1),96,"unit","OFFLINE","USER_DEACTIVATED",false));
+                "DEACTIVATED","stellarbox-s1",now.minusDays(1),now.minusHours(1),96,"unit","OFFLINE","USER_DEACTIVATED"));
         when(mapper.lockActiveTaskNos(7,12)).thenReturn(List.of());
         response=mvc.perform(get(path).header("Authorization","Bearer "+TOKEN).header("X-UVEL-Executor-Id","fleet-12")).andReturn().getResponse();
         assertThat(response.getStatus()).isEqualTo(200);
         data=new ObjectMapper().readTree(response.getContentAsString()).path("data");
         assertThat(data.path("eligible").booleanValue()).isFalse(); assertThat(data.path("activeTaskNo").isNull()).isTrue();
         when(assignments.lockOwnedDevice(7L,12L)).thenReturn(new AppTaskAssignmentMapper.DeviceRow(12L,"FOREIGN-INSTANCE","DEVICE","S1","S1",
-                "ACTIVE","stellarbox-s1",now.minusDays(1),now.minusHours(1),96,"unit","ONLINE",null,false));
+                "ACTIVE","stellarbox-s1",now.minusDays(1),now.minusHours(1),96,"unit","ONLINE",null));
         assertThat(mvc.perform(get(path).header("Authorization","Bearer "+TOKEN).header("X-UVEL-Executor-Id","fleet-12"))
                 .andReturn().getResponse().getStatus()).isEqualTo(403);
         when(assignments.lockOwnedDevice(7L,12L)).thenReturn(null);

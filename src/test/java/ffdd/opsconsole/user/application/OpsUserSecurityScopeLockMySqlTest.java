@@ -121,6 +121,7 @@ class OpsUserSecurityScopeLockMySqlTest {
         });
         var ownership=proxy(new SupportOwnershipService(bindings,groups));
         var target=new OpsUserService(repository,
+            mock(ffdd.opsconsole.user.mapper.UserAccountActionMapper.class),
             mock(ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade.class),
             mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class),
             mock(ffdd.opsconsole.finance.facade.FinanceWithdrawalControlFacade.class),

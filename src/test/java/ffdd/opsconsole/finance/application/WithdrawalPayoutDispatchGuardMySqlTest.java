@@ -52,7 +52,7 @@ class WithdrawalPayoutDispatchGuardMySqlTest {
     @Test void committedStopWinsTheGateAndLeavesNoClaimOrIntent()throws Exception {
         var attempted=new CountDownLatch(1);var observed=mock(CregisDepositMapper.class);
         when(observed.lockProvisionGate()).thenAnswer(call->{attempted.countDown();return deposits.lockProvisionGate();});
-        var guard=new WithdrawalPayoutDispatchGuard(mapper,observed,control);var pool=Executors.newSingleThreadExecutor();
+        var guard=new WithdrawalPayoutDispatchGuard(mapper,observed,control,mock(ffdd.opsconsole.growth.facade.GrowthRhythmFacade.class),mock(ffdd.opsconsole.shared.audit.AuditLogService.class));var pool=Executors.newSingleThreadExecutor();
         try(Connection stop=data.getConnection()){
             stop.setAutoCommit(false);stop.createStatement().executeQuery("SELECT id FROM nx_cregis_provision_gate WHERE id=1 FOR UPDATE").close();
             stop.createStatement().executeUpdate("UPDATE nx_cregis_provision_gate SET payout_enabled=0,state='BLOCKED' WHERE id=1");
@@ -66,7 +66,7 @@ class WithdrawalPayoutDispatchGuardMySqlTest {
     @Test void intentWinsTheGateThenLaterStopCannotCreateASecondIntent()throws Exception {
         var admitted=new CountDownLatch(1);var release=new CountDownLatch(1);var stopAttempted=new CountDownLatch(1);
         when(control.enabled()).thenAnswer(call->{admitted.countDown();if(!release.await(5,TimeUnit.SECONDS))throw new IllegalStateException("test barrier timeout");return true;});
-        var guard=new WithdrawalPayoutDispatchGuard(mapper,deposits,control);var pool=Executors.newFixedThreadPool(2);
+        var guard=new WithdrawalPayoutDispatchGuard(mapper,deposits,control,mock(ffdd.opsconsole.growth.facade.GrowthRhythmFacade.class),mock(ffdd.opsconsole.shared.audit.AuditLogService.class));var pool=Executors.newFixedThreadPool(2);
         try{
             var intent=pool.submit(()->tx.execute(ignored->guard.begin(WithdrawalPayoutDispatchGuardTest.row("REVIEW_PASSED",null),now)));
             assertThat(admitted.await(5,TimeUnit.SECONDS)).isTrue();
@@ -84,7 +84,7 @@ class WithdrawalPayoutDispatchGuardMySqlTest {
         when(failing.lockNetworkPayoutEnabled(anyString())).thenReturn("true");
         when(failing.lockCashCustomer(7L)).thenAnswer(call->mapper.lockCashCustomer(7L));
         when(failing.claimNewPayout("WD-guard",now,now.plusMinutes(2))).thenAnswer(call->mapper.claimNewPayout("WD-guard",now,now.plusMinutes(2)));
-        var guard=new WithdrawalPayoutDispatchGuard(failing,deposits,control);
+        var guard=new WithdrawalPayoutDispatchGuard(failing,deposits,control,mock(ffdd.opsconsole.growth.facade.GrowthRhythmFacade.class),mock(ffdd.opsconsole.shared.audit.AuditLogService.class));
         assertThatThrownBy(()->tx.execute(ignored->guard.begin(WithdrawalPayoutDispatchGuardTest.row("REVIEW_PASSED",null),now))).hasMessage("CREGIS_DISPATCH_INTENT_CONFLICT");
         assertThat(jdbc.queryForMap("SELECT status,d5_payout_source,chain_broadcast_attempts FROM nx_withdrawal_order WHERE id=1"))
                 .containsEntry("status","REVIEW_PASSED").containsEntry("d5_payout_source",null).containsEntry("chain_broadcast_attempts",0);

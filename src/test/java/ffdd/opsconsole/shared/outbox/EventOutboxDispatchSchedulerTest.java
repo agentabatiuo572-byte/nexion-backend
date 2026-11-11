@@ -1,6 +1,8 @@
 package ffdd.opsconsole.shared.outbox;
 
-import static org.mockito.Mockito.doThrow;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -8,12 +10,11 @@ import static org.mockito.Mockito.when;
 
 import java.util.List;
 import org.junit.jupiter.api.Test;
-import org.springframework.context.ApplicationEventPublisher;
 
 class EventOutboxDispatchSchedulerTest {
     private final EventOutboxService service = mock(EventOutboxService.class);
-    private final ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
-    private final EventOutboxDispatchScheduler scheduler = new EventOutboxDispatchScheduler(service, publisher);
+    private final EventOutboxDispatcher dispatcher = mock(EventOutboxDispatcher.class);
+    private final EventOutboxDispatchScheduler scheduler = new EventOutboxDispatchScheduler(service, dispatcher);
 
     @Test
     void activeLateBindingRequeuesOnlyKnownH3WaitEventTypesBeforeTheNormalScan() {
@@ -23,9 +24,9 @@ class EventOutboxDispatchSchedulerTest {
             verify(service).requeuePublishedPendingBinding(eventType, "h3-quest-completion");
         }
         verify(service, org.mockito.Mockito.times(EventOutboxDispatchScheduler.H3_BINDING_WAIT_EVENT_TYPES.size()))
-                .requeuePublishedPendingBinding(org.mockito.ArgumentMatchers.anyString(),
-                        org.mockito.ArgumentMatchers.eq("h3-quest-completion"));
+                .requeuePublishedPendingBinding(anyString(), org.mockito.ArgumentMatchers.eq("h3-quest-completion"));
     }
+
     @Test
     void derivedExchangeAndReferralSourceFactsReachTheirVerifyingConsumer() {
         scheduler.dispatchPending();
@@ -33,96 +34,93 @@ class EventOutboxDispatchSchedulerTest {
         verify(service).listPendingByEventType("exchange.swapped", 100);
         verify(service).listPendingByEventType("referral.bound", 100);
     }
+
     @Test
-    void deliveredMessagesAreMarkedPublished() {
+    void deliveredMessagesAreHandedToTheDispatcher() {
         EventOutboxMessage message = message("event-ok");
         when(service.listPendingByEventType(EventOutboxDispatchScheduler.SUPPORTED_EVENT_TYPE, 100))
                 .thenReturn(List.of(message));
+        when(dispatcher.dispatch(message, null)).thenReturn(EventOutboxDispatcher.Result.PUBLISHED);
 
         scheduler.dispatchPending();
 
-        verify(publisher).publishEvent(message);
-        verify(service).markPublished("event-ok");
+        verify(dispatcher).dispatch(message, null);
     }
 
     @Test
-    void failedDeliveryIsRetriedThroughOutboxState() {
+    void failedDeliveryIsReportedByTheDispatcherAndDoesNotStopTheTick() {
         EventOutboxMessage message = message("event-fail");
         when(service.listPendingByEventType(EventOutboxDispatchScheduler.SUPPORTED_EVENT_TYPE, 100))
                 .thenReturn(List.of(message));
-        doThrow(new IllegalStateException("consumer unavailable")).when(publisher).publishEvent(message);
+        when(dispatcher.dispatch(message, null)).thenReturn(EventOutboxDispatcher.Result.FAILED);
 
         scheduler.dispatchPending();
 
-        verify(service).markFailed("event-fail", "consumer unavailable");
+        verify(dispatcher).dispatch(message, null);
     }
 
     @Test
-    void disabledLifecycleCannotReachTheRealConsumer() {
-        EventOutboxMessage message = message("event-disabled");
-        message.setAnalyticsEvent(true);
-        message.setEventName("risk.multi_account_flagged");
+    void skippedDeliveryDoesNotStopTheTick() {
+        EventOutboxMessage message = message("event-skipped");
         when(service.listPendingByEventType(EventOutboxDispatchScheduler.SUPPORTED_EVENT_TYPE, 100))
                 .thenReturn(List.of(message));
-        doThrow(new IllegalStateException("A4_EVENT_LIFECYCLE_BLOCKED_DISABLED"))
-                .when(service).assertDispatchAllowed(message);
+        when(dispatcher.dispatch(message, null)).thenReturn(EventOutboxDispatcher.Result.SKIPPED);
 
         scheduler.dispatchPending();
 
-        verify(publisher, org.mockito.Mockito.never()).publishEvent(message);
-        verify(service).markFailed("event-disabled", "A4_EVENT_LIFECYCLE_BLOCKED_DISABLED");
+        verify(dispatcher).dispatch(message, null);
     }
 
     @Test
-    void tamperMessagesUseTheSameDurableDispatchAndPublicationState() {
+    void tamperMessagesUseTheSameDurableDispatch() {
         EventOutboxMessage message = message("event-tamper");
         message.setEventType(EventOutboxDispatchScheduler.TAMPER_EVENT_TYPE);
         when(service.listPendingByEventType(EventOutboxDispatchScheduler.TAMPER_EVENT_TYPE, 100))
                 .thenReturn(List.of(message));
+        when(dispatcher.dispatch(message, null)).thenReturn(EventOutboxDispatcher.Result.PUBLISHED);
 
         scheduler.dispatchPending();
 
-        verify(publisher).publishEvent(message);
-        verify(service).markPublished("event-tamper");
+        verify(dispatcher).dispatch(message, null);
     }
 
     @Test
-    void c2HighRiskMessagesUseTheDurableDispatchAndPublicationState() {
+    void c2HighRiskMessagesUseTheDurableDispatch() {
         EventOutboxMessage message = message("event-c2");
         String eventType = "admin.user_impersonation_ended";
         message.setEventType(eventType);
         when(service.listPendingByEventType(eventType, 100)).thenReturn(List.of(message));
+        when(dispatcher.dispatch(message, null)).thenReturn(EventOutboxDispatcher.Result.PUBLISHED);
 
         scheduler.dispatchPending();
 
-        verify(publisher).publishEvent(message);
-        verify(service).markPublished("event-c2");
+        verify(dispatcher).dispatch(message, null);
     }
 
     @Test
-    void c5SecurityMessagesUseTheDurableDispatchAndPublicationState() {
+    void c5SecurityMessagesUseTheDurableDispatch() {
         EventOutboxMessage message = message("event-c5");
         String eventType = "auth.refresh_token_reuse_detected";
         message.setEventType(eventType);
         when(service.listPendingByEventType(eventType, 100)).thenReturn(List.of(message));
+        when(dispatcher.dispatch(message, null)).thenReturn(EventOutboxDispatcher.Result.PUBLISHED);
 
         scheduler.dispatchPending();
 
-        verify(publisher).publishEvent(message);
-        verify(service).markPublished("event-c5");
+        verify(dispatcher).dispatch(message, null);
     }
 
     @Test
-    void h3CanonicalQuestFactsUseTheDurableDispatchAndPublicationState() {
+    void h3CanonicalQuestFactsUseTheDurableDispatch() {
         EventOutboxMessage message = message("event-h3");
         String eventType = "H8_REFERRAL_REWARD_SETTLED";
         message.setEventType(eventType);
         when(service.listPendingByEventType(eventType, 100)).thenReturn(List.of(message));
+        when(dispatcher.dispatch(message, null)).thenReturn(EventOutboxDispatcher.Result.PUBLISHED);
 
         scheduler.dispatchPending();
 
-        verify(publisher).publishEvent(message);
-        verify(service).markPublished("event-h3");
+        verify(dispatcher).dispatch(message, null);
     }
 
     @Test
@@ -134,35 +132,35 @@ class EventOutboxDispatchSchedulerTest {
         scheduler.dispatchPending();
 
         verify(service, never()).listPendingByEventType("order.completed", 100);
-        verify(publisher, never()).publishEvent(message);
-        verify(service, never()).markPublished("event-webhook-order");
+        verify(dispatcher, never()).dispatch(any(), anyString());
+        verify(dispatcher, never()).dispatch(any(), org.mockito.ArgumentMatchers.isNull());
     }
 
     @Test
-    void d6QuoteChangesUseTheDurableDispatchAndPublicationState() {
+    void d6QuoteChangesUseTheDurableDispatch() {
         EventOutboxMessage message = message("event-d6");
         message.setEventType(EventOutboxDispatchScheduler.D6_FX_QUOTE_CHANGED_EVENT_TYPE);
         when(service.listPendingByEventType(
                 EventOutboxDispatchScheduler.D6_FX_QUOTE_CHANGED_EVENT_TYPE, 100))
                 .thenReturn(List.of(message));
+        when(dispatcher.dispatch(message, null)).thenReturn(EventOutboxDispatcher.Result.PUBLISHED);
 
         scheduler.dispatchPending();
 
-        verify(publisher).publishEvent(message);
-        verify(service).markPublished("event-d6");
+        verify(dispatcher).dispatch(message, null);
     }
 
     @Test
-    void confirmedWithdrawalUsesTheDurableD2DispatchAndPublicationState() {
+    void confirmedWithdrawalUsesTheDurableD2Dispatch() {
         EventOutboxMessage message = message("event-withdraw-confirmed");
         String eventType = "withdraw.confirmed";
         message.setEventType(eventType);
         when(service.listPendingByEventType(eventType, 100)).thenReturn(List.of(message));
+        when(dispatcher.dispatch(message, null)).thenReturn(EventOutboxDispatcher.Result.PUBLISHED);
 
         scheduler.dispatchPending();
 
-        verify(publisher).publishEvent(message);
-        verify(service).markPublished("event-withdraw-confirmed");
+        verify(dispatcher).dispatch(message, null);
     }
 
     private EventOutboxMessage message(String eventId) {

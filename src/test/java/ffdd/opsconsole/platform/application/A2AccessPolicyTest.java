@@ -23,7 +23,7 @@ class A2AccessPolicyTest {
     private final AdminOperatorRoleResolver roles = mock(AdminOperatorRoleResolver.class);
     private final AuditOperationTicketMapper ticketMapper = mock(AuditOperationTicketMapper.class);
     private final ffdd.opsconsole.shared.security.AdminPermissionCache permissions = mock(ffdd.opsconsole.shared.security.AdminPermissionCache.class);
-    private final A2AccessPolicy policy = new A2AccessPolicy(roles, ticketMapper, permissions);
+    private final A2AccessPolicy policy = new A2AccessPolicy(roles, ticketMapper, permissions, new com.fasterxml.jackson.databind.ObjectMapper());
 
     @AfterEach void clear() { SecurityContextHolder.clearContext(); }
 

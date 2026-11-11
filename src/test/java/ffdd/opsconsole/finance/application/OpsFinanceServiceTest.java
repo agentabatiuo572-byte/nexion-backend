@@ -96,6 +96,7 @@ class OpsFinanceServiceTest {
                     coverageFacade,
                     withdrawalRepository,
                     depositOpsRepository,
+                    mock(ffdd.opsconsole.finance.mapper.D1BankOrderMapper.class),
                     riskOpsRepository,
                     auditLogService,
                     idempotencyService,
@@ -108,7 +109,7 @@ class OpsFinanceServiceTest {
                     operatorRoleResolver,
                     appWithdrawalMapper,
                     withdrawalRiskRuleFacade,
-                    bankWithdrawalMapper, Clock.systemDefaultZone(), riskTimePolicy, mock(ffdd.opsconsole.finance.cregis.CregisDepositPolicyService.class));
+                    bankWithdrawalMapper, Clock.systemDefaultZone(), riskTimePolicy, mock(ffdd.opsconsole.finance.cregis.CregisDepositPolicyService.class), mock(WithdrawalNetworkPolicy.class));
 
     @BeforeEach
     void setUpRiskDefaults() {
@@ -149,6 +150,7 @@ class OpsFinanceServiceTest {
                 coverageFacade,
                 withdrawalRepository,
                 depositOpsRepository,
+                mock(ffdd.opsconsole.finance.mapper.D1BankOrderMapper.class),
                 riskOpsRepository,
                 auditLogService,
                 idempotencyService,
@@ -161,7 +163,7 @@ class OpsFinanceServiceTest {
                 operatorRoleResolver,
                 appWithdrawalMapper,
                 withdrawalRiskRuleFacade,
-                bankWithdrawalMapper, clock, riskTimePolicy, mock(ffdd.opsconsole.finance.cregis.CregisDepositPolicyService.class));
+                bankWithdrawalMapper, clock, riskTimePolicy, mock(ffdd.opsconsole.finance.cregis.CregisDepositPolicyService.class), mock(WithdrawalNetworkPolicy.class));
     }
 
     @Test
@@ -2198,9 +2200,9 @@ class OpsFinanceServiceTest {
             org.mockito.Mockito.doAnswer(i->{receipts.add(i.getArgument(1));return null;}).when(withdrawalFunds).confirmed(any(),anyString(),any());
             var finalizer=new WithdrawalPayoutFinalizer(cashMapper,auditLogService,mock(ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade.class),Clock.systemUTC(),withdrawalFunds, mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class));
             var target=new OpsFinanceService(configFacade,growthRhythmFacade,emergencyRepository,coverageFacade,withdrawalRepository,
-                    depositOpsRepository,riskOpsRepository,auditLogService,idempotencyService,OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                    depositOpsRepository,mock(ffdd.opsconsole.finance.mapper.D1BankOrderMapper.class),riskOpsRepository,auditLogService,idempotencyService,OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
                     lockMapper,disclosureGateFacade,treasuryLedgerRepository,finalizer,withdrawalFunds,eventOutboxService,operatorRoleResolver,
-                    appWithdrawalMapper,withdrawalRiskRuleFacade,bankWithdrawalMapper,Clock.systemUTC(),riskTimePolicy, mock(ffdd.opsconsole.finance.cregis.CregisDepositPolicyService.class));
+                    appWithdrawalMapper,withdrawalRiskRuleFacade,bankWithdrawalMapper,Clock.systemUTC(),riskTimePolicy, mock(ffdd.opsconsole.finance.cregis.CregisDepositPolicyService.class), mock(WithdrawalNetworkPolicy.class));
             transactional=WithdrawalCashClosureTest.transactionProxy(target,new WithdrawalCashClosureTest.MemoryTransactionManager(()->{},()->{
                 pending.set(new BigDecimal("200"));receipts.clear();withdrawalRepository.order=original;withdrawalRepository.lastStatus=null;
             }));
@@ -2658,7 +2660,7 @@ class OpsFinanceServiceTest {
         }
 
         @Override
-        public List<String> findExpiredLifecycleNos(LocalDateTime now) {
+        public List<String> findExpiredLifecycleNos(LocalDateTime now, Boolean complianceEnabled, int cooldownDays) {
             return expiredLifecycleNos;
         }
 

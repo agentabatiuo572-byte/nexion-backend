@@ -43,7 +43,7 @@ public final class ExpiredReceiptFixture {
             row.setResponseJson(null); row.setExpiresAt(call.getArgument(2)); return 1;
         });
         service = new AdminIdempotencyService(new AdminIdempotencyTransactionExecutor(records,
-                new ObjectMapper().findAndRegisterModules(), mock(AdminIdempotencyExpiryTransitionExecutor.class)),
+                new ObjectMapper().findAndRegisterModules(), mock(AdminIdempotencyExpiryTransitionExecutor.class), mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyRollbackEvidence.class)),
                 Clock.fixed(Instant.parse("2026-09-06T00:00:00Z"), ZoneOffset.UTC));
     }
 

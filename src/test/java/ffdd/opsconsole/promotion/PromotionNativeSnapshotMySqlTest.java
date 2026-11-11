@@ -32,7 +32,7 @@ class PromotionNativeSnapshotMySqlTest {
                 }).get(10,TimeUnit.SECONDS);
                 return call.callRealMethod();
             }).when(db).product(f.gift,true);
-            f.orders=h.proxy(new PromotionOrderService(db,f.quotes,new PromotionEvaluationService(h.db),h.resolver,h.audit,null));
+            f.orders=h.proxy(new PromotionOrderService(db,null,null,f.quotes,new PromotionEvaluationService(h.db),h.resolver,h.audit,null));
             try{
                 var error=assertThrows(BizException.class,()->f.create(buyer,quote,1),source);
                 assertTrue(changed.get());assertEquals("PROMOTION_NATIVE_CONTRACT_CHANGED",error.getMessage());

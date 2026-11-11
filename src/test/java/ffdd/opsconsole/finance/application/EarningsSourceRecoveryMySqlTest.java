@@ -321,7 +321,7 @@ class EarningsSourceRecoveryMySqlTest {
         mapper=session.getMapper(EarningsReleaseMapper.class);
         var idemMapper=session.getMapper(AdminIdempotencyRecordMapper.class);
         var expiry=proxy(new AdminIdempotencyExpiryTransitionExecutor(idemMapper));
-        var executor=proxy(new AdminIdempotencyTransactionExecutor(idemMapper,json,expiry));
+        var executor=proxy(new AdminIdempotencyTransactionExecutor(idemMapper,json,expiry,new AdminIdempotencyRollbackEvidence(idemMapper)));
         var idempotency=new AdminIdempotencyService(executor,Clock.systemUTC());
         auditProperties=new AuditProperties();var auditPolicy=mock(A2RuntimePolicy.class);
         when(auditPolicy.retentionMonths()).thenReturn(24);when(auditPolicy.schemaVersion()).thenReturn("1");

@@ -105,7 +105,8 @@ class AppSupportServiceTest {
         when(ledger.selectSupportCommand(any(), any())).thenAnswer(i -> List.of(row.get()));
         var mapper = new ObjectMapper().findAndRegisterModules();
         var executor = new ffdd.opsconsole.shared.idempotency.AdminIdempotencyTransactionExecutor(ledger, mapper,
-                mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyExpiryTransitionExecutor.class));
+                mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyExpiryTransitionExecutor.class),
+                mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyRollbackEvidence.class));
         var retained = new AdminIdempotencyService(executor, clock);
         service = new AppSupportService(conversations, knowledge, retained, audit, eventPublisher, clock,
                 productionPathGuard, ledger, mapper, supportAgents, configFacade,

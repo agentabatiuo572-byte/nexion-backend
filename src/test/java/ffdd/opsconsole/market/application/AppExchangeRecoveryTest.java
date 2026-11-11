@@ -34,7 +34,7 @@ class AppExchangeRecoveryTest {
     private final G2ExchangeFeeAllocationService fees = mock(G2ExchangeFeeAllocationService.class);
     private final ObjectMapper json = new ObjectMapper().findAndRegisterModules();
     private final AdminIdempotencyService idempotency = new AdminIdempotencyService(
-            new AdminIdempotencyTransactionExecutor(receipts, json, expiry), Clock.systemUTC());
+            new AdminIdempotencyTransactionExecutor(receipts, json, expiry, mock(AdminIdempotencyRollbackEvidence.class)), Clock.systemUTC());
 
     private AppExchangeService service(MockEnvironment env, Optional<AppMarketSandboxService> sandbox) {
         return new AppExchangeService(orders, config, idempotency, outbox, audit, fees, json,

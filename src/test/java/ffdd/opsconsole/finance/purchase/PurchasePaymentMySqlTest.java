@@ -157,7 +157,7 @@ class PurchasePaymentMySqlTest {
             var user=jdbc.queryForMap("SELECT * FROM nx_user WHERE id=?"+(lock?" FOR UPDATE":""),id);
             if(lock&&id==3&&"PAY".equals(role.get()))paymentHasThree.countDown();return user;
         }).when(promotionDb).user(anyLong(),anyBoolean());
-        var participants=new ffdd.opsconsole.promotion.application.PromotionOrderService(promotionDb,null,null,null,null,null);
+        var participants=new ffdd.opsconsole.promotion.application.PromotionOrderService(promotionDb,null,null,null,null,null,null,null);
         var orderedCommands=mock(AppOrderCommandService.class,CALLS_REAL_METHODS);
         org.springframework.test.util.ReflectionTestUtils.setField(orderedCommands,"promotions",participants);
         doAnswer(call->jdbc.update("UPDATE nx_order SET payment_status='EXPIRED',order_status='EXPIRED' WHERE order_no='ORDER-1' AND payment_status='PENDING'")==1)

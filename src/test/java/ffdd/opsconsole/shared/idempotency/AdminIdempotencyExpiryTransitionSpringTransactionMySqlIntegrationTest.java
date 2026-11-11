@@ -154,7 +154,7 @@ class AdminIdempotencyExpiryTransitionSpringTransactionMySqlIntegrationTest {
                 AdminIdempotencyExpiryTransitionExecutor.class);
         AdminIdempotencyTransactionExecutor executor = proxied(
                 new AdminIdempotencyTransactionExecutor(
-                        mapper, new ObjectMapper().findAndRegisterModules(), transition),
+                        mapper, new ObjectMapper().findAndRegisterModules(), transition, new ffdd.opsconsole.shared.idempotency.AdminIdempotencyRollbackEvidence(mapper)),
                 interceptor, AdminIdempotencyTransactionExecutor.class);
         return new AdminIdempotencyService(
                 executor, Clock.fixed(java.time.Instant.parse("2026-08-01T00:00:00Z"), ZoneOffset.UTC));

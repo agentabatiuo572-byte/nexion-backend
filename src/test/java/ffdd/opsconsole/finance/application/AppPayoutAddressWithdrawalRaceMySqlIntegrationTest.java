@@ -234,7 +234,7 @@ class AppPayoutAddressWithdrawalRaceMySqlIntegrationTest {
         AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get()).when(idempotency)
                 .execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any());
-        return new AppPayoutAddressService(mapper, mock(ffdd.opsconsole.auth.application.UserOtpDeliveryService.class),
+        return new AppPayoutAddressService(mapper, mock(WithdrawalNetworkPolicy.class), mock(ffdd.opsconsole.auth.application.UserOtpDeliveryService.class),
                 mock(AuditLogService.class), idempotency, otp, null, null);
     }
 
