@@ -1584,8 +1584,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 return validation("WHEEL_CONFIG_NO_CHANGE");
             }
             // Voucher amount is display-only. Comparing currency amounts requires the same asset.
-            boolean increasesAmount = ("uvt".equals(rewardKind) || "usdt".equals(rewardKind))
-                    && sameKind && rewardAmount.compareTo(previousAmount) > 0;
+            // T11-6：改奖型时旧奖型数量视为 0，新奖励数量 > 0 即算放大；券只比数量、不估价。
+            BigDecimal comparablePreviousAmount = sameKind ? previousAmount : BigDecimal.ZERO;
+            boolean increasesAmount = WHEEL_REDEEMABLE_KINDS.contains(rewardKind)
+                    && rewardAmount.compareTo(comparablePreviousAmount) > 0;
             boolean increasesProbability = probability.compareTo(previousProbability) > 0;
             boolean increasesStock = previousStock > 0 && (dailyStock == 0 || dailyStock > previousStock);
             boolean reducesUvtStock = sameKind && "uvt".equals(rewardKind) && dailyStock > 0
@@ -2327,7 +2329,9 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         boolean canPay = !hasRule && ((Number) current.get("status")).intValue() == 1 && legacyEventRewardWindow(id, current);
         BigDecimal oldAmount = legacyEventCashAmount(current);
         boolean comparable = reward != null && (oldAmount.signum() <= 0 || reward.type().equals(legacyEventAsset(current)));
-        boolean amplifies = canPay && comparable && reward.amount().compareTo(oldAmount.max(BigDecimal.ZERO)) > 0;
+        // T11-6：奖励按资产分开看，改币种时旧资产数量视为 0；任一资产数量增加即放大，减少的不能抵。
+        BigDecimal oldSameAssetAmount = comparable ? oldAmount.max(BigDecimal.ZERO) : BigDecimal.ZERO;
+        boolean amplifies = canPay && reward != null && reward.amount().compareTo(oldSameAssetAmount) > 0;
         // Both the previewed and approved values must fit the original columns.
         if ((amplifies || review) && (value.codePointCount(0, value.length()) > 128
                 || reward != null && reward.amount().precision() > 18)) {
@@ -5391,6 +5395,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         };
     }
 
+    /** T11-5：`weekly.champBonus` 只是冠军奖励的展示文字，不按文字里的数字判断放大、也不触发发奖。 */
     private boolean amplifiesQuestValue(String key, String oldValue, String newValue) {
         if (key.equals("dayOne.triReward")) {
             return DayOneTriRewardPolicy.increases(oldValue, newValue);
@@ -5406,7 +5411,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         if (key.equals("wheel.pool")) {
             return !oldValue.equals(newValue);
         }
-        if (key.contains("reward") || key.equals("dayOne.triReward") || key.equals("weekly.champBonus")) {
+        if (key.contains("reward") || key.equals("dayOne.triReward")) {
             return rewardFlow(newValue).compareTo(rewardFlow(oldValue)) > 0;
         }
         return false;

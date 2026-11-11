@@ -29,6 +29,7 @@ import ffdd.opsconsole.market.dto.NexMarketCurveUpdateRequest;
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
 import ffdd.opsconsole.market.dto.G3MarketPolicyChangeRequest;
 import ffdd.opsconsole.market.facade.GenesisParamPermissions;
+import ffdd.opsconsole.market.mapper.AppGenesisMapper;
 import ffdd.opsconsole.market.mapper.ExchangeOrderMapper;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.CatalogState;
@@ -170,6 +171,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
     private final ExchangeOrderMapper exchangeOrderMapper;
     private final SupportExchangeFundAdapter exchangeFunds;
+    private final AppGenesisMapper appGenesisMapper;
     @Value("#{environment.matchesProfiles('dev')}")
     private boolean manualTuningAllowed;
     @Autowired
@@ -983,11 +985,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 oldValue = change.before();
                 newValue = change.after();
             } else {
-                if (genesisParamLoosens(def, oldValue, newValue)) {
-                    ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
-                    if (redline != null) {
-                        return redline;
-                    }
+                // T11-4: 放大方向必须先拿到 A2 审批票；批准时按当时的数据重算应付 Δ。
+                if (genesisParamAmplifies(def, oldValue, newValue)) {
+                    requireGenesisParamApproval(genesisParamLiabilityIncrease(def, newValue));
                 }
                 if (!updateGenesisPolicy(def, newValue)) {
                     return validation("G4_GENESIS_SERIES_NOT_FOUND");
@@ -1037,7 +1037,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (supply <= last.rangeFrom()) {
             throw new BizException(422, "GENESIS_SUPPLY_REQUIRES_TIER_UPDATE");
         }
-        requireGenesisSupplyCoverage(current.totalSupply(), supply);
+        // A01: 提高总量走审批，Δ 为 0，只查当前覆盖率（T11-4）。
+        if (supply > current.totalSupply()) requireGenesisParamApproval(BigDecimal.ZERO);
         long version = state.tiersVersion();
         if (supply != last.rangeTo()) {
             if (genesisCatalogMapper.updateTierTo(last.tierId(), supply) != 1
@@ -2229,6 +2230,23 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return coverageRedlineFailure(coverageFacade.snapshot());
     }
 
+    /** T11：只把这次改动确定算出的新增应付 Δ 加进应付款，再看「储备 ÷（应付 + Δ）」是否破线。 */
+    private ApiResult<Map<String, Object>> coverageRedlineFailure(BigDecimal additionalLiability) {
+        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        if (coverage == null || !coverage.reliable()
+                || coverage.redlinePct() == null || coverage.redlinePct().signum() <= 0
+                || coverage.ratioReserveUsd() == null || coverage.ratioLiabilitiesUsd() == null) {
+            return ApiResult.fail(503, "B1_COVERAGE_UNRELIABLE");
+        }
+        BigDecimal liabilities = coverage.ratioLiabilitiesUsd()
+                .add(additionalLiability == null ? BigDecimal.ZERO : additionalLiability);
+        boolean below = liabilities.signum() <= 0 ? coverage.redlineBreached()
+                : coverage.ratioReserveUsd().multiply(BigDecimal.valueOf(100))
+                        .compareTo(liabilities.multiply(coverage.redlinePct())) < 0;
+        return below ? ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                OpsErrorCode.COVERAGE_BELOW_REDLINE.name()) : null;
+    }
+
     private ApiResult<Map<String, Object>> coverageRedlineFailure(TreasuryCoverageSnapshot coverage) {
         if (coverage == null || !coverage.reliable()
                 || coverage.coverageRatio() == null || coverage.redlinePct() == null
@@ -2964,19 +2982,48 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return value.setScale(6, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
     }
 
-    private boolean genesisParamLoosens(GenesisParamDef def, String oldValue, String newValue) {
-        if ("divBase".equals(def.key()) || "emissionCurve".equals(def.key())) {
-            return !oldValue.trim().equals(newValue.trim());
+    /** T11-4 方向判定：只有把资金流出放大的方向才走审批，收紧方向直接放行。 */
+    private boolean genesisParamAmplifies(GenesisParamDef def, String oldValue, String newValue) {
+        return switch (def.key()) {
+            // A05/A06/A07/A08 是说明性配置：任何改动都走审批，不计应付。
+            case "divBase", "emissionCurve", "airdropPct", "airdropLockDays" ->
+                    !oldValue.trim().equals(newValue.trim());
+            // A02 系列价提高会立刻改写现存持仓的每日分红。
+            case "price" -> parseRepurchaseNumber(newValue, BigDecimal.ZERO)
+                    .compareTo(parseRepurchaseNumber(oldValue, BigDecimal.ZERO)) > 0;
+            // A04 按生效的整数基点比较，降低走审批。
+            case "royalty" -> royaltyBps(newValue).compareTo(royaltyBps(oldValue)) < 0;
+            default -> false;
+        };
+    }
+
+    /** A02 的确定新增应付：现存合格同系列持仓逐笔「新日分红 − 旧日分红」求和；其余参数算不出确定新增，Δ 取 0。 */
+    private BigDecimal genesisParamLiabilityIncrease(GenesisParamDef def, String newValue) {
+        if (!"price".equals(def.key())) {
+            return BigDecimal.ZERO;
         }
-        BigDecimal oldNumber = parseRepurchaseNumber(oldValue, BigDecimal.ZERO);
-        BigDecimal newNumber = parseRepurchaseNumber(newValue, BigDecimal.ZERO);
-        if ("price".equals(def.key()) || "dividend".equals(def.key()) || "airdropPct".equals(def.key())) {
-            return newNumber.compareTo(oldNumber) > 0;
+        AppGenesisMapper.SeriesRow series = appGenesisMapper.activeSeries();
+        if (series == null || !StringUtils.hasText(series.seriesCode())) {
+            return BigDecimal.ZERO;
         }
-        if ("airdropLockDays".equals(def.key())) {
-            return newNumber.compareTo(oldNumber) < 0;
+        return safeBig(appGenesisMapper.genesisPriceLiabilityIncrease(series.seriesCode(),
+                parseRepurchaseNumber(newValue, BigDecimal.ZERO))).max(BigDecimal.ZERO);
+    }
+
+    /** 放大方向没有 A2 审批票一律拒绝；批准回放时按当时数据重算覆盖率。 */
+    private void requireGenesisParamApproval(BigDecimal additionalLiability) {
+        if (!A2ReplayContext.isReplaying()) {
+            throw new BizException(409, "G4_GENESIS_PARAM_APPROVAL_REQUIRED");
         }
-        return false;
+        ApiResult<Map<String, Object>> failure = coverageRedlineFailure(additionalLiability);
+        if (failure != null) {
+            throw new BizException(failure.getCode(), failure.getMessage());
+        }
+    }
+
+    private BigDecimal royaltyBps(String value) {
+        return parseRepurchaseNumber(value, BigDecimal.ZERO)
+                .multiply(BigDecimal.valueOf(100)).setScale(0, RoundingMode.HALF_UP);
     }
 
     private String genesisValue(GenesisParamDef def, GenesisPolicyView policy) {
@@ -3429,13 +3476,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (newSupply > GENESIS_MAX_SUPPLY) throw new BizException(422, "GENESIS_TIER_INVALID");
         if (lockMapper.countActiveByTarget("G", "genesis_param", "supply") > 0) {
             throw new BizException(409, "OBJECT_LOCKED_BY_A2");
-        }
-    }
-
-    private void requireGenesisSupplyCoverage(int currentSupply, int newSupply) {
-        if (newSupply > currentSupply) {
-            ApiResult<Map<String, Object>> coverage = coverageRedlineFailure();
-            if (coverage != null) throw new BizException(coverage.getCode(), coverage.getMessage());
         }
     }
 

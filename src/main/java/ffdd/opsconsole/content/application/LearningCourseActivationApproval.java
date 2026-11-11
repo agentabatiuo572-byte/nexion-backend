@@ -117,7 +117,7 @@ public class LearningCourseActivationApproval {
         return switch (kind(command)) {
             case FIRST_PUBLISH -> "首次发布奖励课程";
             case PUBLISH -> "发布奖励课程版本";
-            case ROLLBACK -> "回滚至较高奖励课程版本";
+            case ROLLBACK -> "回滚至有奖励的课程版本";
         };
     }
 
