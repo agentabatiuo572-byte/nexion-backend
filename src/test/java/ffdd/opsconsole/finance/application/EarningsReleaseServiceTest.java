@@ -68,10 +68,10 @@ class EarningsReleaseServiceTest {
     @BeforeEach
     void defaults() {
         when(sandboxProfile.isStrictProductionRuntime()).thenReturn(true);
-        when(params.releaseWindowHours()).thenReturn(24);
-        when(params.freeSlots()).thenReturn(1);
+        when(params.pendingFrom()).thenReturn(2);
         when(params.freezeFrom()).thenReturn(3);
-        when(params.freeSlotRequiresBinding()).thenReturn(true);
+
+
         when(params.requireCoverageForAmplifyingRelease()).thenReturn(
                 new TreasuryCoverageSnapshot(new BigDecimal("120"), new BigDecimal("105"), true));
     }

@@ -71,7 +71,7 @@ class TestCloudRollbackReviewServiceTest {
         when(mapper.binding(identity.executorId())).thenReturn(new Binding(identity.executorId(),OWNER,device,instance,config,identity.model(),identity.modelDigest()));
         when(assignments.lockProductionUser(OWNER)).thenReturn(OWNER);
         when(assignments.lockOwnedDevice(OWNER,device)).thenReturn(new DeviceRow(device,instance,"SERVER","S1","unit","ACTIVE",
-                "stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null,false));
+                "stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null));
         assignment=new AssignmentRow(task,device,config,TestCloudExecutorService.TASK_NAME,"EM",TestCloudExecutorService.KIND,
                 TestCloudExecutorService.CLIENT,"RUNNING",new BigDecimal("0.045005"),5,0,NOW.minusMinutes(25),NOW.plusHours(24),
                 null,null,NONCE,NOW.plusHours(24));

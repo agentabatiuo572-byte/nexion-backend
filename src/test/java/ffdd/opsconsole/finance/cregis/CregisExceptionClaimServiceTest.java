@@ -43,7 +43,7 @@ class CregisExceptionClaimServiceTest {
         when(ownership.verify("challenge","signature","CLAIM_CREDIT",42L)).thenReturn(new CregisExceptionOwnershipService.VerifiedOwnership("challenge","CLAIM_CREDIT",42L,proof,"f".repeat(64)));
         when(ownership.preflight(proof.ref())).thenReturn(proof);
         when(deposits.lockProvisionGate()).thenReturn(Map.of("state","BLOCKED","switchReason","CREGIS_DEPOSIT_INCIDENT","version",2));
-        when(db.lockObservation(88,101)).thenReturn(Map.of("status","UNATTRIBUTED_HOLD","txid",tx,"logIndex",3,"address",address,"grossAmount","10","blockNumber",20L));
+        when(db.lockObservation(anyString(),eq(88L),eq(101L))).thenReturn(Map.of("status","UNATTRIBUTED_HOLD","txid",tx,"logIndex",3,"address",address,"grossAmount","10","blockNumber",20L));
         row.putAll(Map.of("id",1L,"case_no","CL-original","source_type","OBSERVATION","source_id",101L,"state","MAKER_DONE","version",0L,"maker_id",7L,"target_user_id",42L,"project_id",88L));
         row.put("policy_version",0L);row.put("policy_fee_usdt",BigDecimal.ONE);
         row.putAll(Map.of("cid",77L,"txid",tx,"log_index",3,"address",address,"gross_amount",BigDecimal.TEN,"evidence_hash",proof.evidenceHash(),"challenge_id","challenge"));

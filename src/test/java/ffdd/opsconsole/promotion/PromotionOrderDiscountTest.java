@@ -111,7 +111,7 @@ class PromotionOrderDiscountTest {
         when(db.deviceSlotCap()).thenReturn(10L);
         when(evaluator.evaluateCurrent(eq("A1"),anyMap(),anyMap(),eq(7L),anyList(),any(),isNull()))
             .thenReturn(List.of(new PromotionRules.Award("PRO",text(rule.get("ruleId")),"D1",7L,"BUYER",0,spec("500"))));
-        var orders=new PromotionOrderService(db,quotes,evaluator,resolver,null,null);
+        var orders=new PromotionOrderService(db,null,null,quotes,evaluator,resolver,null,null);
         var selectedItems=List.of(new PromotionOrderService.Selection("PRO",1));
         assertEquals(new BigDecimal("700.000000"),orders.prepareCreate(7L,text(stacked.get("quoteId")),selectedItems,"BF20",new BigDecimal("700")).price("amountUsdt"));
         when(voucherMapper.voucherAllowsPromotionStacking("BF20")).thenReturn(false);

@@ -99,17 +99,6 @@ class OpsGrowthControllerTest {
         verify(growthService).chargeTrialSession("idem-h2-charge", "usr_2231", request);
     }
 
-    @Test
-    void killTrialAutoPushDelegatesWithIdempotencyHeader() {
-        GrowthConfigUpdateRequest request = new GrowthConfigUpdateRequest("autoPushKilled", "true", "incident", "superadmin");
-        when(growthService.killTrialAutoPush("idem-h2-kill", request))
-                .thenReturn(ApiResult.ok(Map.of("ok", true)));
-
-        assertThat(controller.killTrialAutoPush("idem-h2-kill", request).getData())
-                .containsEntry("ok", true);
-
-        verify(growthService).killTrialAutoPush("idem-h2-kill", request);
-    }
 
     @Test
     void questEventsOverviewDelegatesToService() {
@@ -380,20 +369,17 @@ class OpsGrowthControllerTest {
                 1L,
                 true);
         GrowthConfigUpdateRequest status = new GrowthConfigUpdateRequest("status", "paused", "pause", "superadmin", "1");
-        GrowthConfigUpdateRequest delete = new GrowthConfigUpdateRequest("delete", "delete", "delete", "superadmin", "1");
         when(growthService.createVoucher("idem-create", voucher)).thenReturn(ApiResult.ok(Map.of("ok", true)));
         when(growthService.updateVoucher("idem-update", "vc-test", voucher)).thenReturn(ApiResult.ok(Map.of("ok", true)));
         when(growthService.updateVoucherStatus("idem-status", "vc-test", status)).thenReturn(ApiResult.ok(Map.of("ok", true)));
-        when(growthService.deleteVoucher("idem-delete", "vc-test", delete)).thenReturn(ApiResult.ok(Map.of("ok", true)));
 
         assertThat(controller.createVoucher("idem-create", voucher).getCode()).isZero();
         assertThat(controller.updateVoucher("idem-update", "vc-test", voucher).getCode()).isZero();
         assertThat(controller.updateVoucherStatus("idem-status", "vc-test", status).getCode()).isZero();
-        assertThat(controller.deleteVoucher("idem-delete", "vc-test", delete).getCode()).isZero();
+        assertThat(controller.deleteVoucher().getCode()).isEqualTo(409);
 
         verify(growthService).createVoucher("idem-create", voucher);
         verify(growthService).updateVoucher("idem-update", "vc-test", voucher);
         verify(growthService).updateVoucherStatus("idem-status", "vc-test", status);
-        verify(growthService).deleteVoucher("idem-delete", "vc-test", delete);
     }
 }

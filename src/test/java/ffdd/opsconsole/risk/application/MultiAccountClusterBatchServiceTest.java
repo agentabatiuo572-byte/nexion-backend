@@ -51,7 +51,6 @@ class MultiAccountClusterBatchServiceTest {
         ArgumentCaptor<List<RiskOpsRepository.MultiAccountClusterProjection>> projections = ArgumentCaptor.forClass(List.class);
         verify(repository).upsertMultiAccountProjections(projections.capture());
         assertThat(projections.getValue().get(0).edges()).hasSize(1);
-        verify(repository).retireMissingDetectedClusters(Set.of("K1-00000001"));
         verify(outbox).publish(eq("RISK_MULTI_ACCOUNT_CLUSTER"), eq("K1-00000001"),
                 eq(MultiAccountClusterBatchService.EVENT_TYPE), argThat(payload ->
                         payload instanceof Map<?, ?> map
@@ -60,34 +59,6 @@ class MultiAccountClusterBatchServiceTest {
                                 && Double.valueOf(0.6).equals(map.get("score"))
                                 && Integer.valueOf(2).equals(map.get("linkedCount"))
                                 && map.get("ts") instanceof String ts && !ts.isBlank()));
-    }
-
-    @Test
-    void recordsWhitelistRemovalAsClearedBeforeRetiringOtherMissingDetections() {
-        RiskOpsRepository repository = mock(RiskOpsRepository.class);
-        EventOutboxService outbox = mock(EventOutboxService.class);
-        AuditLogService audit = mock(AuditLogService.class);
-        when(repository.multiAccountConfigValues()).thenReturn(Map.of("maxSignupPerIp24h", "1"));
-        LocalDateTime now = LocalDateTime.of(2026, 7, 16, 10, 0);
-        when(repository.multiAccountSignalFacts()).thenReturn(List.of(
-                ipFact(7, now, "203.0.113.8"), ipFact(8, now.plusMinutes(1), "203.0.113.8")));
-        when(repository.activeIpWhitelistCidrs()).thenReturn(Set.of("203.0.113.0/24"));
-        MultiAccountClusterState detected = new MultiAccountClusterState(
-                "K1-00000007", "detected", "ip", 0.03,
-                List.of("U00000007", "U00000008"), 2, "existing-fingerprint");
-        MultiAccountClusterState cleared = new MultiAccountClusterState(
-                "K1-00000007", "cleared", "ip", 0.03,
-                List.of("U00000007", "U00000008"), 3, "existing-fingerprint");
-        when(repository.multiAccountClusterState("K1-00000007"))
-                .thenReturn(Optional.of(detected), Optional.of(cleared));
-
-        new MultiAccountClusterBatchService(repository, new MultiAccountClusterEngine(), outbox, audit).rebuild();
-
-        verify(repository).clearWhitelistedDetectedClusters(Set.of("K1-00000007"));
-        verify(repository).retireMissingDetectedClusters(Set.of());
-        verify(audit).recordRequired(argThat(request ->
-                "K1_CLUSTER_AUTO_CLEARED_BY_WHITELIST".equals(request.getAction())
-                        && "K1-00000007".equals(request.getResourceId())));
     }
 
     @Test

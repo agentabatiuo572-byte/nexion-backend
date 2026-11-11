@@ -85,7 +85,8 @@ class OpsTreasuryServiceTest {
                 new TreasuryDualLedgerProperties(),
                 new ObjectMapper(),
                 seedPolicy,
-                a2RuntimePolicy);
+                a2RuntimePolicy,
+                mock(ffdd.opsconsole.content.application.SupportOwnershipService.class));
         when(a2RuntimePolicy.reasonMinChars()).thenReturn(8);
         doAnswer(invocation -> {
             ffdd.opsconsole.platform.application.A2RuntimePolicy.validateReason(invocation.getArgument(0), 8);
@@ -1566,6 +1567,10 @@ class OpsTreasuryServiceTest {
     }
 
     private static final class FakeTreasuryLedgerRepository implements TreasuryLedgerRepository {
+
+        @Override public TreasuryLedgerRepository.CommissionCoverageAmounts commissionCoverageAmounts() {
+            return new TreasuryLedgerRepository.CommissionCoverageAmounts(BigDecimal.ZERO, BigDecimal.ZERO);
+        }
         private long countValue;
         private long activeQueueCount;
         private BigDecimal usdtAvailable = BigDecimal.ZERO;

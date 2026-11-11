@@ -165,10 +165,10 @@ class CregisDepositSwitchServiceTest {
     @Test
     void omittedPayoutPreservesLockedBitInsteadOfTurningItOff() {
         CregisDepositMapper db = mock(CregisDepositMapper.class);
-        when(db.lockProvisionGate()).thenReturn(Map.of("version",4L,"payoutEnabled",1));
+        when(db.lockProvisionGate()).thenReturn(Map.of("version",4L,"payoutEnabled",1,"assignEnabled",1,"creditEnabled",0));
         when(db.createSwitchCase(88,4,1,0,1,"Change inbound",7)).thenReturn(1);
         when(db.lastInsertId()).thenReturn(9L);
-        service(db).propose(7,4,true,false,"Change inbound");
+        service(db).proposePayout(7,4,true,"Change inbound");
         verify(db).createSwitchCase(88,4,1,0,1,"Change inbound",7);
     }
 
@@ -198,6 +198,6 @@ class CregisDepositSwitchServiceTest {
         config.setProjectId(88);
         config.setDepositEnabled(true);
         config.setDepositCreditEnabled(true);
-        return new CregisDepositSwitchService(config, db, audit, tx, mock(CregisPayoutControl.class), admins);
+        return new CregisDepositSwitchService(config, db, audit, tx, mock(CregisPayoutControl.class), admins, mock(ffdd.opsconsole.shared.security.AdminPermissionCache.class));
     }
 }

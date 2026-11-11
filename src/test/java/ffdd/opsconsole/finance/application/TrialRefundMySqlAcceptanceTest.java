@@ -82,7 +82,8 @@ class TrialRefundMySqlAcceptanceTest {
                 new ApplicationNameProperties(),new AuditProperties(),mapper(AdminMapper.class),policy);
         var expiry=proxy(new AdminIdempotencyExpiryTransitionExecutor(mapper(AdminIdempotencyRecordMapper.class)));
         commands=new AdminIdempotencyService(proxy(new AdminIdempotencyTransactionExecutor(
-                mapper(AdminIdempotencyRecordMapper.class),json,expiry)),Clock.systemUTC());
+                mapper(AdminIdempotencyRecordMapper.class),json,expiry,
+                new AdminIdempotencyRollbackEvidence(mapper(AdminIdempotencyRecordMapper.class)))),Clock.systemUTC());
         var outbox=new EventOutboxService(mapper(EventOutboxMapper.class),json,new OutboxProperties(),new A4RuntimePolicyService(repository));
         // postLedgerEntry does not enter commission capture; all its actual SQL and mutexes remain real.
         var ledgerRepository=proxy(new MybatisTreasuryLedgerRepository(mapper(TreasuryLedgerMapper.class),outbox,null));

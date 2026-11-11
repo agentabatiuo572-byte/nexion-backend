@@ -28,7 +28,7 @@ class AppGenesisRetainedCommandTest {
         var mapper = mock(AppGenesisMapper.class);
         when(mapper.userSandbox(42L)).thenReturn(0);
         Clock clock = Clock.fixed(Instant.parse("2026-09-11T00:00:00Z"), ZoneOffset.UTC);
-        var executor = new AdminIdempotencyTransactionExecutor(records, new ObjectMapper(), mock(AdminIdempotencyExpiryTransitionExecutor.class));
+        var executor = new AdminIdempotencyTransactionExecutor(records, new ObjectMapper(), mock(AdminIdempotencyExpiryTransitionExecutor.class), mock(AdminIdempotencyRollbackEvidence.class));
         var guard = new AdminIdempotencyService(executor, clock);
         var service = new AppGenesisService(mapper, mock(PlatformConfigFacade.class), guard,
                 mock(EventOutboxService.class), mock(AuditLogService.class), clock, mock(GenesisCatalogService.class),

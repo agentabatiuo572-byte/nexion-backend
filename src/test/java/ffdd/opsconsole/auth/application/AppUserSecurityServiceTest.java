@@ -463,18 +463,18 @@ class AppUserSecurityServiceTest {
 
     @Test
     void accountDeletionCreatesOneServerTrackedRequestAfterPasswordVerification() {
-        when(security.insertAccountDeletionRequest(any(), eq(42L), eq("delete-key"))).thenReturn(1);
+        when(security.insertAccountDeletionRequest(any(), eq(42L), eq("delete-key"), any())).thenReturn(1);
         when(security.accountDeletionRequestForUpdate(42L, "delete-key")).thenReturn(Map.of(
                 "requestNo", "ADR-0123456789abcdef0123456789abcdef",
                 "status", "REQUESTED",
                 "requestedAt", LocalDateTime.now()));
 
         Map<String, Object> result = service.requestAccountDeletion(
-                42L, "current", "delete-key", new AppAccountDeletionRequest("OldPassword1", "DELETE"));
+                42L, "current", "delete-key", new AppAccountDeletionRequest("OldPassword1", "DELETE", "reason"));
 
         assertThat(result).containsEntry("status", "REQUESTED");
         verify(security).passwordHashForUpdate(42L);
-        verify(security).insertAccountDeletionRequest(any(), eq(42L), eq("delete-key"));
+        verify(security).insertAccountDeletionRequest(any(), eq(42L), eq("delete-key"), any());
         verify(audit).recordRequired(any());
         verify(sessions, never()).revokeAllUserSessions(any());
     }
@@ -482,10 +482,10 @@ class AppUserSecurityServiceTest {
     @Test
     void accountDeletionRejectsMissingExplicitConfirmationBeforePasswordRead() {
         assertThatThrownBy(() -> service.requestAccountDeletion(
-                42L, "current", "delete-key", new AppAccountDeletionRequest("OldPassword1", "yes")))
+                42L, "current", "delete-key", new AppAccountDeletionRequest("OldPassword1", "yes", null)))
                 .hasMessage("ACCOUNT_DELETION_CONFIRMATION_REQUIRED");
 
-        verify(security, never()).insertAccountDeletionRequest(any(), any(), any());
+        verify(security, never()).insertAccountDeletionRequest(any(), any(), any(), any());
     }
 
     private UserSessionEntity session(String id, String device, String ip, LocalDateTime lastActiveAt) {

@@ -95,7 +95,7 @@ class CregisDepositReconciliationTest {
         when(db.cursor(CregisNetwork.BEP20)).thenReturn(1001L);
         when(chain.head(CregisNetwork.BEP20)).thenReturn(new BscDepositProof.Head(1000, "0x" + "b".repeat(64)));
         when(chain.blockHash(CregisNetwork.BEP20,986)).thenReturn("0x" + "c".repeat(64));
-        return new Fixture(new CregisDepositReconciliation(props, router, chain, db, deposits, tx),
+        return new Fixture(new CregisDepositReconciliation(props, router, chain, db, deposits, tx, mock(CregisPayoutControl.class), mock(ffdd.opsconsole.shared.audit.AuditLogService.class)),
                 db, provider, deposits);
     }
 

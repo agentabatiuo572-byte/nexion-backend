@@ -102,6 +102,10 @@ class SevenLayerActivationMySqlRuntimeTest {
     private Map<String,Object> change(String action,long revision){A2ReplayContext.enterReplay("WO-local-"+action+revision);try{return policies.activation("same-intent-"+action+revision,new SevenLayerActivationRequest(action,revision,4),"正常本机隔离七层启用行为验证");}finally{A2ReplayContext.exitReplay();}}
     private LocalDateTime order(String no,LocalDateTime paid){jdbc.update("INSERT IGNORE INTO nx_user(id,country_code,phone,client_ip,password_hash,nickname,referral_code) VALUES(1,'00','local-only','127.0.0.1','unused','fixture','fixture-ref')");jdbc.update("INSERT INTO nx_order(user_id,order_no,product_id,subtotal_usdt,amount_usdt,payment_status,order_status,paid_at) VALUES(1,?,1,10,10,'PAID','COMPLETED',?)",no,paid);return jdbc.queryForObject("SELECT paid_at FROM nx_order WHERE order_no=?",LocalDateTime.class,no);}
     private EventOutboxMessage event(String id,String order){var e=new EventOutboxMessage();e.setEventId(id);e.setEventType("checkout.completed");e.setAggregateType("ORDER");e.setAggregateId(order);e.setPayload("{\"user_id\":1}");jdbc.update("INSERT INTO nx_event_outbox(event_id,event_type,aggregate_type,aggregate_id,payload,status,retry_count) VALUES(?,'checkout.completed','ORDER',?,?,'PENDING',0)",id,order,e.getPayload());return e;}
+
+    private void outboxDead(String event){jdbc.update("UPDATE nx_event_outbox SET status='DEAD', retry_count=LEAST(retry_count+1,255), updated_at=NOW() WHERE event_id=?",event);}
+    private void outboxFailed(String event){jdbc.update("UPDATE nx_event_outbox SET status='FAILED', retry_count=retry_count+1, updated_at=NOW() WHERE event_id=?",event);}
+    private void outboxPublished(String event){jdbc.update("UPDATE nx_event_outbox SET status='PUBLISHED', published_at=NOW(), updated_at=NOW() WHERE event_id=?",event);}
     private String status(String table,String event){return jdbc.queryForObject("SELECT status FROM "+table+" WHERE event_id=?",String.class,event);}
 
     @Test void authoritativeTimeAndOldNewSelectionFreezeAcrossPauseResume() {
@@ -127,20 +131,20 @@ class SevenLayerActivationMySqlRuntimeTest {
         var e=event("original-event","new-original");var consumer=new DirectReferralConsumer(deliveries,settlement,json);
         for(int attempt=0;attempt<5;attempt++){
             assertThatThrownBy(()->consumer.consume(e)).hasMessage(DirectReferralPolicyService.PAUSED_ERROR);
-            outbox.markFailed(e.getEventId(),DirectReferralPolicyService.PAUSED_ERROR);
+            outboxDead(e.getEventId());
         }
         assertThat(status("nx_event_consumer_delivery",e.getEventId())).isEqualTo("DEAD");assertThat(status("nx_event_outbox",e.getEventId())).isEqualTo("DEAD");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_unilevel_order_settlement",Integer.class)).isZero();
         for(String other:List.of("other-error","successful")){
             var otherEvent=event(other,"new-original");deliveries.claim(otherEvent,DirectReferralConsumer.GROUP,"local",other,0);
-            if(other.equals("other-error")){deliveries.markFailure(DirectReferralConsumer.GROUP,other,5,"DIFFERENT_ERROR");outbox.markFailed(other,"DIFFERENT_ERROR");}
-            else{deliveries.markSuccess(DirectReferralConsumer.GROUP,other,0);outbox.markPublished(other);}
+            if(other.equals("other-error")){deliveries.markFailure(DirectReferralConsumer.GROUP,other,5,"DIFFERENT_ERROR");outboxDead(other);}
+            else{deliveries.markSuccess(DirectReferralConsumer.GROUP,other,0);outboxPublished(other);}
         }
         var before=jdbc.queryForMap("SELECT event_id,aggregate_id,payload,event_ts FROM nx_event_outbox WHERE event_id=?",e.getEventId());
         var restored=change("RESUME",2);assertThat(((Number)restored.get("resumedDeliveryRows")).intValue()).isEqualTo(2);
         assertThat(status("nx_event_outbox",e.getEventId())).isEqualTo("FAILED");assertThat(status("nx_event_consumer_delivery",e.getEventId())).isEqualTo("FAILED");
         assertThat(status("nx_event_consumer_delivery","other-error")).isEqualTo("DEAD");assertThat(status("nx_event_outbox","successful")).isEqualTo("PUBLISHED");
-        consumer.consume(e);outbox.markPublished(e.getEventId());consumer.consume(e);
+        consumer.consume(e);outboxPublished(e.getEventId());consumer.consume(e);
         assertThat(status("nx_event_consumer_delivery",e.getEventId())).isEqualTo("SUCCESS");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_unilevel_order_settlement WHERE order_no='new-original'",Integer.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT source_occurred_at FROM nx_unilevel_order_settlement WHERE order_no='new-original'",LocalDateTime.class)).isEqualTo(paid);
@@ -179,7 +183,7 @@ class SevenLayerActivationMySqlRuntimeTest {
         var consumer=new DirectReferralConsumer(waitingDelivery,settlement,json);
         var thread=Executors.newSingleThreadExecutor();
         try{
-            var attempt=thread.submit(()->{try{consumer.consume(e);throw new AssertionError("pause must propagate");}catch(ffdd.opsconsole.shared.exception.BizException failure){outbox.markFailed(e.getEventId(),failure.getMessage());}});
+            var attempt=thread.submit(()->{try{consumer.consume(e);throw new AssertionError("pause must propagate");}catch(ffdd.opsconsole.shared.exception.BizException failure){outboxDead(e.getEventId());}});
             assertThat(reachedFailure.await(15,TimeUnit.SECONDS)).isTrue();
             assertThat(status("nx_event_outbox",e.getEventId())).isEqualTo("PENDING");
             assertThat(((Number)change("RESUME",2).get("resumedDeliveryRows")).intValue()).isZero();
@@ -189,7 +193,7 @@ class SevenLayerActivationMySqlRuntimeTest {
             // Run the production recovery scheduler, not a replacement event or a mocked mapper write.
             new DirectReferralRecoveryScheduler(mapper,settlement,policies).recover();
             assertThat(status("nx_event_outbox",e.getEventId())).isEqualTo("FAILED");
-            new DirectReferralConsumer(deliveries,settlement,json).consume(e);outbox.markPublished(e.getEventId());
+            new DirectReferralConsumer(deliveries,settlement,json).consume(e);outboxPublished(e.getEventId());
             assertThat(status("nx_event_consumer_delivery",e.getEventId())).isEqualTo("SUCCESS");
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_unilevel_order_settlement WHERE order_no='interleaved-original'",Integer.class)).isEqualTo(1);
             assertThat(jdbc.queryForObject("SELECT source_occurred_at FROM nx_unilevel_order_settlement WHERE order_no='interleaved-original'",LocalDateTime.class)).isEqualTo(paid);

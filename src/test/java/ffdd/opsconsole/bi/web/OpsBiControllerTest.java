@@ -12,6 +12,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.bi.application.OpsBiService;
 import ffdd.opsconsole.bi.domain.BiReportStreamDownload;
+import ffdd.opsconsole.bi.domain.BiReportPage;
 import ffdd.opsconsole.bi.dto.BiReportActionRequest;
 import ffdd.opsconsole.bi.dto.BiReportQueryRequest;
 import java.io.ByteArrayInputStream;
@@ -45,12 +46,12 @@ class OpsBiControllerTest {
 
     @Test
     void reportsReturnPageResult() {
-        when(biService.reports(any(BiReportQueryRequest.class))).thenReturn(ApiResult.ok(new PageResult<>(0, 1, 20, List.of())));
+        when(biService.reports(any(BiReportQueryRequest.class))).thenReturn(ApiResult.ok(new BiReportPage(0, 1, 20, List.of(), Map.of())));
 
         var result = controller.reports(new BiReportQueryRequest(null, "ALL", 1, 20, null));
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().getTotal()).isZero();
+        assertThat(result.getData().total()).isZero();
         verify(biService).reports(any(BiReportQueryRequest.class));
     }
 

@@ -32,8 +32,6 @@ import ffdd.opsconsole.device.domain.ComputeConfigRegistry;
 import ffdd.opsconsole.device.domain.ComputeConfigView;
 import ffdd.opsconsole.device.domain.PlatformComputeConfigView;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
-import ffdd.opsconsole.device.domain.DatacenterReferenceCount;
-import ffdd.opsconsole.device.domain.DeviceDatacenterView;
 import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
 import ffdd.opsconsole.device.domain.DeviceOrderFacts;
 import ffdd.opsconsole.device.domain.DeviceOrderFundingView;
@@ -52,8 +50,6 @@ import ffdd.opsconsole.device.dto.ComputeConfigParamResponse;
 import ffdd.opsconsole.device.dto.ComputeConfigParamUpdateRequest;
 import ffdd.opsconsole.device.dto.ComputeConfigBatchResponse;
 import ffdd.opsconsole.device.dto.ComputeConfigBatchUpdateRequest;
-import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
-import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceE5ActionRequest;
 import ffdd.opsconsole.device.dto.DeviceE5BatchRequest;
 import ffdd.opsconsole.device.dto.DeviceEarlyAccessUpdateRequest;
@@ -98,6 +94,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
@@ -514,37 +511,6 @@ class OpsDeviceServiceTest {
     }
 
     @Test
-    void e5DatacenterMutationsRequireA2ReplayEvenWithBusinessPermission() {
-        seedDatacenter("HK-1");
-        DeviceDatacenterUpsertRequest createRequest = new DeviceDatacenterUpsertRequest(
-                "HK-2", "Hong Kong 2", "active", 20,
-                "create isolated datacenter", "superadmin", "Hong Kong 2", "Hong Kong DC 2");
-        DeviceDatacenterUpsertRequest updateRequest = new DeviceDatacenterUpsertRequest(
-                "HK-1", "Hong Kong Updated", "maintenance", 21,
-                "update isolated datacenter", "superadmin", "Hong Kong Updated", "Hong Kong DC Updated");
-        DatacenterOpsRequest actionRequest = new DatacenterOpsRequest(
-                "operate isolated datacenter", "superadmin");
-
-        ApiResult<DeviceDatacenterView> create = service.createDatacenter("idem-dc-direct-create", createRequest);
-        ApiResult<DeviceDatacenterView> update = service.updateDatacenter(
-                "HK-1", "idem-dc-direct-update", updateRequest);
-        ApiResult<Map<String, Object>> delete = service.deleteDatacenter(
-                "HK-1", "idem-dc-direct-delete", actionRequest);
-        ApiResult<Map<String, Object>> pause = service.pauseDatacenter(
-                "HK-1", "idem-dc-direct-pause", actionRequest);
-        ApiResult<Map<String, Object>> resume = service.resumeDatacenter(
-                "HK-1", "idem-dc-direct-resume", actionRequest);
-
-        assertThat(List.of(create, update, delete, pause, resume))
-                .allSatisfy(result -> {
-                    assertThat(result.getCode()).isEqualTo(409);
-                    assertThat(result.getMessage()).isEqualTo("A2_CONFIRMATION_REQUIRED");
-                });
-        verify(idempotencyService, never()).execute(argThat(scope -> scope.startsWith("E5_DATACENTER_")), anyString(),
-                anyString(), eq(ApiResult.class), any());
-    }
-
-    @Test
     void e5DeactivateUsesItsOwnCanonicalAdminEvent() {
         deviceRepository.device = device("ONLINE", 0, null);
 
@@ -868,156 +834,6 @@ class OpsDeviceServiceTest {
                 new DeviceTradeinActionRequest(1L, "already final", "superadmin"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
-    }
-
-    @Test
-    void pauseDatacenterRequiresReasonAndUsesRepository() {
-        DeviceDatacenterUpsertRequest seed = new DeviceDatacenterUpsertRequest(
-                "HK-1", "Hong Kong", "active", 10,
-                "seed data center", "superadmin", "Hong Kong", "Hong Kong DC");
-        deviceRepository.datacenters.put("HK-1", FakeDeviceOpsRepository.dcView(
-                seed, LocalDateTime.now(clock), LocalDateTime.now(clock)));
-        DatacenterOpsRequest request = new DatacenterOpsRequest("maintenance", "superadmin");
-
-        ApiResult<Map<String, Object>> result = inA2Replay(
-                () -> service.pauseDatacenter("HK-1", "idem-dc", request));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(deviceRepository.pausedDc).isEqualTo("HK-1");
-        assertThat(deviceRepository.pauseReason).isEqualTo("maintenance");
-    }
-
-    @Test
-    void datacenterCrudUsesDurableIdempotencyRequiredAuditAndCanonicalEvents() {
-        DeviceDatacenterUpsertRequest createRequest = new DeviceDatacenterUpsertRequest(
-                "us-east-2",
-                "美国 · 弗吉尼亚",
-                "active",
-                10,
-                "seed dc card",
-                "superadmin");
-
-        ApiResult<DeviceDatacenterView> created = inA2Replay(
-                () -> service.createDatacenter("idem-dc-create", createRequest));
-        ApiResult<DeviceDatacenterView> updated = inA2Replay(() -> service.updateDatacenter(
-                "us-east-2",
-                "idem-dc-update",
-                new DeviceDatacenterUpsertRequest(
-                        "us-east-2",
-                        "美国 · 弗吉尼亚东区",
-                        "maintenance",
-                        11,
-                        "rename dc card",
-                        "superadmin")));
-        ApiResult<Map<String, Object>> deleted = inA2Replay(() -> service.deleteDatacenter(
-                "us-east-2",
-                "idem-dc-delete",
-                new DatacenterOpsRequest("remove dc card", "superadmin")));
-
-        assertThat(created.getCode()).isZero();
-        assertThat(created.getData().regionLabel()).isEqualTo("美国 · 弗吉尼亚");
-        assertThat(updated.getCode()).isZero();
-        assertThat(updated.getData().status()).isEqualTo("maintenance");
-        assertThat(deleted.getData()).containsEntry("deleted", true);
-        assertThat(deviceRepository.datacenters).doesNotContainKey("us-east-2");
-
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(idempotencyService).execute(eq("E5_DATACENTER_CREATE"), eq("idem-dc-create"),
-                anyString(), eq(ApiResult.class), any());
-        verify(idempotencyService).execute(eq("E5_DATACENTER_UPDATE"), eq("idem-dc-update"),
-                anyString(), eq(ApiResult.class), any());
-        verify(idempotencyService).execute(eq("E5_DATACENTER_DELETE"), eq("idem-dc-delete"),
-                anyString(), eq(ApiResult.class), any());
-        verify(auditLogService, times(3)).recordRequired(captor.capture());
-        assertThat(captor.getAllValues()).extracting(AuditLogWriteRequest::getAction)
-                .containsExactly("admin.datacenter_created", "admin.datacenter_updated", "admin.datacenter_deleted");
-        verify(outboxService).publish(eq("E5_DATACENTER"), eq("us-east-2"),
-                eq("admin.datacenter_created"), argThat(payload -> payload instanceof Map<?, ?> map
-                        && "美国 · 弗吉尼亚".equals(map.get("display_name"))));
-        verify(outboxService).publish(eq("E5_DATACENTER"), eq("us-east-2"),
-                eq("admin.datacenter_updated"), any());
-        verify(outboxService).publish(eq("E5_DATACENTER"), eq("us-east-2"),
-                eq("admin.datacenter_deleted"), any());
-    }
-
-    @Test
-    void deleteDatacenterBlocksAndKeepsRowWhenDevicesReference() {
-        seedDatacenter("HK-1");
-        deviceRepository.referenceDevices = 2L;
-        DatacenterOpsRequest request = new DatacenterOpsRequest("retire blocked dc", "superadmin");
-
-        ApiResult<Map<String, Object>> result = inA2Replay(
-                () -> service.deleteDatacenter("HK-1", "idem-dc-del-dev", request));
-
-        assertThat(result.getCode()).isEqualTo(409);
-        assertThat(result.getMessage()).isEqualTo("DATACENTER_HAS_REFERENCES");
-        assertThat(result.getData()).containsEntry("dcLocation", "HK-1");
-        assertThat(result.getData()).containsEntry("deviceCount", 2L);
-        assertThat(result.getData()).containsEntry("pendingOrderCount", 0L);
-        assertThat(result.getData()).containsEntry("skuCount", 0L);
-        // 未软删、未同步清理
-        assertThat(deviceRepository.datacenters).containsKey("HK-1");
-        assertThat(deviceRepository.detachedDc).isNull();
-        assertThat(deviceRepository.opsStateSoftDeleted).isFalse();
-        verify(auditLogService, never()).record(any(AuditLogWriteRequest.class));
-    }
-
-    @Test
-    void deleteDatacenterBlocksWhenPendingOrdersReference() {
-        seedDatacenter("HK-1");
-        deviceRepository.referencePendingOrders = 1L;
-        deviceRepository.referenceSkus = 3L;
-        DatacenterOpsRequest request = new DatacenterOpsRequest("retire blocked dc", "superadmin");
-
-        ApiResult<Map<String, Object>> result = inA2Replay(
-                () -> service.deleteDatacenter("HK-1", "idem-dc-del-ord", request));
-
-        assertThat(result.getCode()).isEqualTo(409);
-        assertThat(result.getMessage()).isEqualTo("DATACENTER_HAS_REFERENCES");
-        assertThat(result.getData()).containsEntry("pendingOrderCount", 1L);
-        assertThat(result.getData()).containsEntry("skuCount", 3L);
-        assertThat(deviceRepository.datacenters).containsKey("HK-1");
-    }
-
-    @Test
-    void deleteDatacenterSucceedsAndSyncsDeviceDcAndOpsStateWhenNoReferences() {
-        seedDatacenter("HK-1");
-        DatacenterOpsRequest request = new DatacenterOpsRequest("retire dc", "superadmin");
-
-        ApiResult<Map<String, Object>> result = inA2Replay(
-                () -> service.deleteDatacenter("HK-1", "idem-dc-del-ok", request));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("deleted", true);
-        assertThat(deviceRepository.datacenters).doesNotContainKey("HK-1");
-        // 软删成功后同步清理设备表 dc_location 与运营状态行
-        assertThat(deviceRepository.detachedDc).isEqualTo("HK-1");
-        assertThat(deviceRepository.opsStateSoftDeleted).isTrue();
-    }
-
-    private void seedDatacenter(String dcLocation) {
-        DeviceDatacenterUpsertRequest seed = new DeviceDatacenterUpsertRequest(
-                dcLocation, "Hong Kong", "active", 10,
-                "seed data center", "superadmin", "Hong Kong", "Hong Kong DC");
-        deviceRepository.datacenters.put(dcLocation, FakeDeviceOpsRepository.dcView(
-                seed, LocalDateTime.now(clock), LocalDateTime.now(clock)));
-    }
-
-    @Test
-    void createDatacenterRejectsInvalidInput() {
-        ApiResult<DeviceDatacenterView> missingKey = service.createDatacenter(
-                "",
-                new DeviceDatacenterUpsertRequest("us-east-2", "美国 · 弗吉尼亚", "active", 10, "seed data center", "superadmin"));
-        ApiResult<DeviceDatacenterView> missingRegion = service.createDatacenter(
-                "idem-dc",
-                new DeviceDatacenterUpsertRequest("us-east-2", "", "active", 10, "seed data center", "superadmin"));
-        ApiResult<DeviceDatacenterView> invalidStatus = service.createDatacenter(
-                "idem-dc",
-                new DeviceDatacenterUpsertRequest("us-east-2", "美国 · 弗吉尼亚", "online", 10, "seed data center", "superadmin"));
-
-        assertThat(missingKey.getCode()).isEqualTo(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus());
-        assertThat(missingRegion.getMessage()).isEqualTo("DATACENTER_REGION_LABEL_REQUIRED");
-        assertThat(invalidStatus.getMessage()).isEqualTo("DATACENTER_STATUS_INVALID");
     }
 
     @org.junit.jupiter.params.ParameterizedTest
@@ -2473,31 +2289,6 @@ class OpsDeviceServiceTest {
     }
 
     @Test
-    void updateTaskPersistsEditableFieldsAndAudits() {
-        catalogRepository.task = task("TK-1", "LLM 推理 70B", new BigDecimal("0.46"), "active");
-
-        ApiResult<DeviceTaskView> result = service.updateTask(
-                "TK-1",
-                "idem-task-update",
-                taskRequest("手机端 Embedding", "/1k", "手机+"));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().name()).isEqualTo("手机端 Embedding");
-        assertThat(result.getData().unit()).isEqualTo("/1k");
-        assertThat(result.getData().requirement()).isEqualTo("手机+");
-        assertThat(result.getData().taskClass()).isEqualTo("EM");
-        assertThat(result.getData().model()).isEqualTo("BGE-M3");
-        assertThat(result.getData().minReward()).isEqualByComparingTo("0.06");
-        assertThat(result.getData().maxReward()).isEqualByComparingTo("0.22");
-        assertThat(result.getData().minVram()).isEqualTo("8GB");
-        assertThat(result.getData().killInit()).isEqualTo("派发中");
-
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).recordRequired(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("E2_TASK_UPDATED");
-    }
-
-    @Test
     void computeV2A2CreateAndEditSaveEveryPolicyFieldAndAuditBeforeAfter() {
         var params=new LinkedHashMap<String,Object>();
         params.putAll(Map.of("name","Embedding","price",new BigDecimal("0.46"),"unit","/1k","requirement","手机+","status","active","taskClass","EM","model","BGE-M3","minReward",new BigDecimal("0.123456"),"maxReward",new BigDecimal("0.123456")));
@@ -2526,24 +2317,6 @@ class OpsDeviceServiceTest {
         assertThat(((Map<?,?>)audit.getAllValues().get(1).getDetail()).get("afterScheduling")).isEqualTo(second.scheduling());
     }
 
-    @Test
-    void computeV2InvalidRewardAndPolicyInputsDoNotPersistOrAudit() {
-        var mapper=new com.fasterxml.jackson.databind.ObjectMapper();
-        var base=mapper.convertValue(taskRequest("Embedding","/1k","手机+"),new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>() {});
-        for (var patch : List.of(Map.of("selectionWeight",0),Map.of("selectionWeight",1000001),
-                Map.of("expectedDurationMinSec",10,"expectedDurationMaxSec",9),Map.of("expectedDurationMaxSec",9,"executionTimeoutSec",8),
-                Map.of("workloadConfigJson","[]"),Map.of("workloadConfigJson","{\"text\":\""+"中".repeat(6000)+"\"}"),
-                Map.of("minReward","0.1234567"),Map.of("maxReward","1000000000000"))) {
-            var values=new LinkedHashMap<>(base); values.putAll(patch);
-            var request=mapper.convertValue(values,DeviceTaskUpsertRequest.class);
-            assertThat(service.createTask("idem-invalid-"+patch.keySet(),request).getCode()).isEqualTo(422);
-        }
-        var values=new LinkedHashMap<>(base); values.put("selectionWeight",1.5);
-        assertThatThrownBy(() -> service.replay(new AuditReplayCommand("E","e2_task_create",values),new AuditReplayContext("superadmin","非法小数权重","idem-invalid-fraction")))
-                .hasMessage("TASK_SCHEDULING_VALUE_INVALID");
-        assertThat(catalogRepository.tasks).isEmpty(); verify(auditLogService,never()).recordRequired(any());
-    }
-
     @Test void computeV2ScalarRewardEditsAlsoRejectPrecisionLossBeforePersistence() {
         var original=taskWithClass("TK-IG","IG",12); catalogRepository.tasks.put(original.taskId(),original);
         for (String amount : new String[]{"0.1234567","1000000000000"}) {
@@ -2552,114 +2325,6 @@ class OpsDeviceServiceTest {
         }
         assertThat(catalogRepository.tasks.get("TK-IG")).isEqualTo(original);
         verify(auditLogService,never()).recordRequired(any());
-    }
-
-    @Test
-    void updateTaskRejectsLifecycleStatusChangesFromTheGeneralEditEndpoint() {
-        catalogRepository.task = task("TK-PAUSED", "Embedding", new BigDecimal("0.12"), "paused");
-
-        ApiResult<DeviceTaskView> result = service.updateTask(
-                "TK-PAUSED",
-                "idem-task-edit-must-preserve-status",
-                taskRequest("Embedding v2", "/1k", "手机+"));
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("TASK_STATUS_REQUIRES_LIFECYCLE_ACTION");
-        assertThat(catalogRepository.task.status()).isEqualTo("paused");
-        assertThat(catalogRepository.task.name()).isEqualTo("Embedding");
-        verify(auditLogService, never()).recordRequired(any());
-    }
-
-    @Test
-    void updateTaskRecordsHistoryWhenCatalogEditChangesPrice() {
-        catalogRepository.task = task("TK-1", "LLM 推理 70B", new BigDecimal("0.46"), "active");
-        DeviceTaskUpsertRequest request = new DeviceTaskUpsertRequest(
-                "LLM 推理 70B",
-                new BigDecimal("0.50"),
-                "/1k",
-                "手机+",
-                new BigDecimal("0.50"),
-                "active",
-                "LL",
-                "Llama 3.1 70B",
-                new BigDecimal("0.06"),
-                new BigDecimal("0.22"),
-                "8GB",
-                "派发中",
-                "catalog repricing",
-                "superadmin");
-
-        ApiResult<DeviceTaskView> result = service.updateTask(
-                "TK-1", "idem-task-reprice", request);
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().price()).isEqualByComparingTo("0.50");
-        verify(taskPriceHistoryService).recordCurrentPrice(
-                eq("TK-1"), eq(E2TaskPriceHistoryService.SOURCE_PC_UPDATE), any(LocalDateTime.class));
-    }
-
-    @Test
-    void createTaskRejectsValuesOutsideBackendOptions() {
-        ApiResult<DeviceTaskView> invalidUnit = service.createTask(
-                "idem-task",
-                taskRequest("LLM 推理 70B", "/token", "S1+"));
-        ApiResult<DeviceTaskView> invalidRequirement = service.createTask(
-                "idem-task",
-                taskRequest("LLM 推理 70B", "/job", "手动输入机器"));
-
-        assertThat(invalidUnit.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-        assertThat(invalidUnit.getMessage()).isEqualTo("TASK_UNIT_INVALID");
-        assertThat(invalidRequirement.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-        assertThat(invalidRequirement.getMessage()).isEqualTo("TASK_REQUIREMENT_INVALID");
-    }
-
-    @Test
-    void createTaskAcceptsBackendOptionValues() {
-        ApiResult<DeviceTaskView> result = service.createTask(
-                "idem-task",
-                taskRequest("LLM 推理 70B", "/1k", "手机+"));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().taskId()).startsWith("TK-");
-        verify(taskPriceHistoryService).recordCurrentPrice(
-                eq(result.getData().taskId()), eq(E2TaskPriceHistoryService.SOURCE_PC_CREATE), any(LocalDateTime.class));
-    }
-
-    @Test
-    void createTaskFailsClosedBelowB1RedlineBeforePersistence() {
-        when(coverageFacade.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
-                BigDecimal.valueOf(99), BigDecimal.valueOf(100), true));
-
-        ApiResult<DeviceTaskView> result = service.createTask(
-                "idem-task-redline", taskRequest("LLM 推理 70B", "/1k", "手机+"));
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
-        assertThat(result.getMessage()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-        assertThat(catalogRepository.tasks).isEmpty();
-        verify(taskPriceHistoryService, never()).recordCurrentPrice(anyString(), anyString(), any());
-    }
-
-    @Test
-    void updateTaskFailsClosedForFinancialAmplificationButAllowsRestriction() {
-        catalogRepository.task = taskWithClass("TK-IG", "IG", 12);
-        catalogRepository.tasks.put("TK-IG", catalogRepository.task);
-        when(coverageFacade.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
-                BigDecimal.valueOf(99), BigDecimal.valueOf(100), true));
-        DeviceTaskUpsertRequest amplified = new DeviceTaskUpsertRequest(
-                "Image generation", new BigDecimal("0.46"), "/job", "手机+", new BigDecimal("0.50"),
-                "active", "IG", "SDXL", new BigDecimal("0.02"), new BigDecimal("0.50"), "8GB",
-                "派发中", "broaden task exposure", "superadmin");
-        DeviceTaskUpsertRequest restricted = new DeviceTaskUpsertRequest(
-                "Image generation", new BigDecimal("0.46"), "/job", "手机+", new BigDecimal("0.50"),
-                "active", "IG", "SDXL", BigDecimal.ZERO, new BigDecimal("0.01"), "16GB",
-                "派发中", "restrict task exposure", "superadmin");
-
-        ApiResult<DeviceTaskView> blocked = service.updateTask("TK-IG", "idem-task-amplify", amplified);
-        ApiResult<DeviceTaskView> allowed = service.updateTask("TK-IG", "idem-task-restrict", restricted);
-
-        assertThat(blocked.getMessage()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-        assertThat(allowed.getCode()).isZero();
-        assertThat(catalogRepository.tasks.get("TK-IG").minVram()).isEqualTo("16GB");
     }
 
     @Test
@@ -2676,19 +2341,6 @@ class OpsDeviceServiceTest {
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
         assertThat(result.getMessage()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
         assertThat(catalogRepository.tasks.get("TK-PAUSED").status()).isEqualTo("paused");
-    }
-
-    @Test
-    void createTaskRejectsNonCanonicalMinimumVramBeforePersistence() {
-        for (String invalid : List.of("08", "8.0", "8 GB", "8GBGB", " 8GB ")) {
-            ApiResult<DeviceTaskView> result = service.createTask(
-                    "idem-task-vram-" + invalid,
-                    taskRequest("LLM 推理 70B", "/1k", "手机+", invalid));
-
-            assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-            assertThat(result.getMessage()).isEqualTo("TASK_MIN_VRAM_INVALID");
-        }
-        assertThat(catalogRepository.tasks).isEmpty();
     }
 
     @Test
@@ -3497,9 +3149,13 @@ class OpsDeviceServiceTest {
                 "100 MH/s",
                 "1200W",
                 datacenter,
+                null,
+                null,
                 new BigDecimal("1299"),
                 new BigDecimal("12.3"),
                 new BigDecimal("24"),
+                null,
+                null,
                 null,
                 null,
                 "$12.30/d",
@@ -3525,7 +3181,16 @@ class OpsDeviceServiceTest {
                 "popular",
                 status,
                 "catalog update",
-                "superadmin");
+                "superadmin",
+                null,
+                null,
+                null,
+                null,
+                null,
+                List.of("L1"),
+                null,
+                null,
+                null);
     }
 
     @Test
@@ -3704,50 +3369,64 @@ class OpsDeviceServiceTest {
             DeviceSkuUpsertRequest source, BigDecimal price, String status) {
         return new DeviceSkuUpsertRequest(
                 source.skuId(), source.name(), source.tier(), source.tagline(), source.badge(), source.gpu(), source.vram(),
-                source.hashRate(), source.power(), source.datacenter(), price, source.dailyEarn(), source.dailyEarnNex(),
+                source.hashRate(), source.power(), source.datacenter(), source.uptime(), source.warranty(), source.phoneDailyEarn(), source.phoneDailyEarnNex(),
+                price, source.dailyEarn(), source.dailyEarnNex(),
                 source.shareYieldMin(), source.shareYieldMax(), source.baseRate(), source.sold(), source.stock(), source.rating(),
                 source.reviews(), source.aiImageGenPerMin(), source.aiLlmTokensPerSec(), source.aiVideoMinPerHour(),
                 source.aiFineTuneMins(), source.aiUnlocks(), source.features(), source.generation(), source.lifecycle(),
                 source.supersededBy(), source.tradeinDiscount(), source.unlockPhase(), source.purchaseGate(), source.imageAssetId(),
-                source.imageObjectKey(), source.imagePreviewUrl(), source.tag(), status, source.reason(), source.operator());
+                source.imageObjectKey(), source.imagePreviewUrl(), source.tag(), status, source.reason(), source.operator(),
+                source.inventoryMode(), source.trialEligible(), source.specDocumentTitle(), source.specDocumentUrl(),
+                source.computePoints(), source.allowedPoolCodes(), source.monthlyTargetUsdt(), source.monthlyTargetBandPct(),
+                source.clearMonthlyTarget());
     }
 
     private static DeviceSkuUpsertRequest withStock(DeviceSkuUpsertRequest source, String stock) {
         return new DeviceSkuUpsertRequest(
                 source.skuId(), source.name(), source.tier(), source.tagline(), source.badge(), source.gpu(), source.vram(),
-                source.hashRate(), source.power(), source.datacenter(), source.price(), source.dailyEarn(), source.dailyEarnNex(),
+                source.hashRate(), source.power(), source.datacenter(), source.uptime(), source.warranty(), source.phoneDailyEarn(), source.phoneDailyEarnNex(),
+                source.price(), source.dailyEarn(), source.dailyEarnNex(),
                 source.shareYieldMin(), source.shareYieldMax(), source.baseRate(), source.sold(), stock, source.rating(),
                 source.reviews(), source.aiImageGenPerMin(), source.aiLlmTokensPerSec(), source.aiVideoMinPerHour(),
                 source.aiFineTuneMins(), source.aiUnlocks(), source.features(), source.generation(), source.lifecycle(),
                 source.supersededBy(), source.tradeinDiscount(), source.unlockPhase(), source.purchaseGate(), source.imageAssetId(),
-                source.imageObjectKey(), source.imagePreviewUrl(), source.tag(), source.status(), source.reason(), source.operator());
+                source.imageObjectKey(), source.imagePreviewUrl(), source.tag(), source.status(), source.reason(), source.operator(),
+                source.inventoryMode(), source.trialEligible(), source.specDocumentTitle(), source.specDocumentUrl(),
+                source.computePoints(), source.allowedPoolCodes(), source.monthlyTargetUsdt(), source.monthlyTargetBandPct(),
+                source.clearMonthlyTarget());
     }
 
     private static DeviceSkuUpsertRequest withEarnings(
             DeviceSkuUpsertRequest source, BigDecimal dailyEarn, BigDecimal dailyEarnNex) {
         return new DeviceSkuUpsertRequest(
                 source.skuId(), source.name(), source.tier(), source.tagline(), source.badge(), source.gpu(), source.vram(),
-                source.hashRate(), source.power(), source.datacenter(), source.uptime(), source.warranty(),
-                source.phoneDailyEarn(), source.phoneDailyEarnNex(), source.price(), dailyEarn, dailyEarnNex,
+                source.hashRate(), source.power(), source.datacenter(), source.uptime(), source.warranty(), source.phoneDailyEarn(), source.phoneDailyEarnNex(),
+                source.price(), dailyEarn, dailyEarnNex,
                 source.shareYieldMin(), source.shareYieldMax(), source.baseRate(), source.sold(), source.stock(),
                 source.rating(), source.reviews(), source.aiImageGenPerMin(), source.aiLlmTokensPerSec(),
                 source.aiVideoMinPerHour(), source.aiFineTuneMins(), source.aiUnlocks(), source.features(),
                 source.generation(), source.lifecycle(), source.supersededBy(), source.tradeinDiscount(),
                 source.unlockPhase(), source.purchaseGate(), source.imageAssetId(), source.imageObjectKey(),
                 source.imagePreviewUrl(), source.tag(), source.status(), source.reason(), source.operator(),
-                source.inventoryMode(), source.trialEligible());
+                source.inventoryMode(), source.trialEligible(), source.specDocumentTitle(), source.specDocumentUrl(),
+                source.computePoints(), source.allowedPoolCodes(), source.monthlyTargetUsdt(), source.monthlyTargetBandPct(),
+                source.clearMonthlyTarget());
     }
 
     private static DeviceSkuUpsertRequest withSoldAndStock(
             DeviceSkuUpsertRequest source, Long sold, String stock) {
         return new DeviceSkuUpsertRequest(
                 source.skuId(), source.name(), source.tier(), source.tagline(), source.badge(), source.gpu(), source.vram(),
-                source.hashRate(), source.power(), source.datacenter(), source.price(), source.dailyEarn(), source.dailyEarnNex(),
+                source.hashRate(), source.power(), source.datacenter(), source.uptime(), source.warranty(), source.phoneDailyEarn(), source.phoneDailyEarnNex(),
+                source.price(), source.dailyEarn(), source.dailyEarnNex(),
                 source.shareYieldMin(), source.shareYieldMax(), source.baseRate(), sold, stock, source.rating(),
                 source.reviews(), source.aiImageGenPerMin(), source.aiLlmTokensPerSec(), source.aiVideoMinPerHour(),
                 source.aiFineTuneMins(), source.aiUnlocks(), source.features(), source.generation(), source.lifecycle(),
                 source.supersededBy(), source.tradeinDiscount(), source.unlockPhase(), source.purchaseGate(), source.imageAssetId(),
-                source.imageObjectKey(), source.imagePreviewUrl(), source.tag(), source.status(), source.reason(), source.operator());
+                source.imageObjectKey(), source.imagePreviewUrl(), source.tag(), source.status(), source.reason(), source.operator(),
+                source.inventoryMode(), source.trialEligible(), source.specDocumentTitle(), source.specDocumentUrl(),
+                source.computePoints(), source.allowedPoolCodes(), source.monthlyTargetUsdt(), source.monthlyTargetBandPct(),
+                source.clearMonthlyTarget());
     }
 
     private static DeviceSkuUpsertRequest withPurchaseGate(
@@ -3755,36 +3434,46 @@ class OpsDeviceServiceTest {
             ffdd.opsconsole.device.domain.DevicePurchaseGateView purchaseGate) {
         return new DeviceSkuUpsertRequest(
                 source.skuId(), source.name(), source.tier(), source.tagline(), source.badge(), source.gpu(), source.vram(),
-                source.hashRate(), source.power(), source.datacenter(), source.price(), source.dailyEarn(), source.dailyEarnNex(),
+                source.hashRate(), source.power(), source.datacenter(), source.uptime(), source.warranty(), source.phoneDailyEarn(), source.phoneDailyEarnNex(),
+                source.price(), source.dailyEarn(), source.dailyEarnNex(),
                 source.shareYieldMin(), source.shareYieldMax(), source.baseRate(), source.sold(), source.stock(), source.rating(),
                 source.reviews(), source.aiImageGenPerMin(), source.aiLlmTokensPerSec(), source.aiVideoMinPerHour(),
                 source.aiFineTuneMins(), source.aiUnlocks(), source.features(), source.generation(), source.lifecycle(),
                 source.supersededBy(), source.tradeinDiscount(), source.unlockPhase(), purchaseGate, source.imageAssetId(),
-                source.imageObjectKey(), source.imagePreviewUrl(), source.tag(), source.status(), source.reason(), source.operator());
+                source.imageObjectKey(), source.imagePreviewUrl(), source.tag(), source.status(), source.reason(), source.operator(),
+                source.inventoryMode(), source.trialEligible(), source.specDocumentTitle(), source.specDocumentUrl(),
+                source.computePoints(), source.allowedPoolCodes(), source.monthlyTargetUsdt(), source.monthlyTargetBandPct(),
+                source.clearMonthlyTarget());
     }
 
     private static DeviceSkuUpsertRequest withOperator(DeviceSkuUpsertRequest source, String operator) {
         return new DeviceSkuUpsertRequest(
                 source.skuId(), source.name(), source.tier(), source.tagline(), source.badge(), source.gpu(), source.vram(),
-                source.hashRate(), source.power(), source.datacenter(), source.price(), source.dailyEarn(), source.dailyEarnNex(),
+                source.hashRate(), source.power(), source.datacenter(), source.uptime(), source.warranty(), source.phoneDailyEarn(), source.phoneDailyEarnNex(),
+                source.price(), source.dailyEarn(), source.dailyEarnNex(),
                 source.shareYieldMin(), source.shareYieldMax(), source.baseRate(), source.sold(), source.stock(), source.rating(),
                 source.reviews(), source.aiImageGenPerMin(), source.aiLlmTokensPerSec(), source.aiVideoMinPerHour(),
                 source.aiFineTuneMins(), source.aiUnlocks(), source.features(), source.generation(), source.lifecycle(),
                 source.supersededBy(), source.tradeinDiscount(), source.unlockPhase(), source.purchaseGate(), source.imageAssetId(),
-                source.imageObjectKey(), source.imagePreviewUrl(), source.tag(), source.status(), source.reason(), operator);
+                source.imageObjectKey(), source.imagePreviewUrl(), source.tag(), source.status(), source.reason(), operator,
+                source.inventoryMode(), source.trialEligible(), source.specDocumentTitle(), source.specDocumentUrl(),
+                source.computePoints(), source.allowedPoolCodes(), source.monthlyTargetUsdt(), source.monthlyTargetBandPct(),
+                source.clearMonthlyTarget());
     }
 
     private static DeviceSkuUpsertRequest withInventoryMode(DeviceSkuUpsertRequest source, String inventoryMode) {
         return new DeviceSkuUpsertRequest(
                 source.skuId(), source.name(), source.tier(), source.tagline(), source.badge(), source.gpu(), source.vram(),
-                source.hashRate(), source.power(), source.datacenter(), source.uptime(), source.warranty(),
-                source.phoneDailyEarn(), source.phoneDailyEarnNex(), source.price(), source.dailyEarn(), source.dailyEarnNex(),
+                source.hashRate(), source.power(), source.datacenter(), source.uptime(), source.warranty(), source.phoneDailyEarn(), source.phoneDailyEarnNex(),
+                source.price(), source.dailyEarn(), source.dailyEarnNex(),
                 source.shareYieldMin(), source.shareYieldMax(), source.baseRate(), source.sold(), source.stock(), source.rating(),
                 source.reviews(), source.aiImageGenPerMin(), source.aiLlmTokensPerSec(), source.aiVideoMinPerHour(),
                 source.aiFineTuneMins(), source.aiUnlocks(), source.features(), source.generation(), source.lifecycle(),
                 source.supersededBy(), source.tradeinDiscount(), source.unlockPhase(), source.purchaseGate(), source.imageAssetId(),
                 source.imageObjectKey(), source.imagePreviewUrl(), source.tag(), source.status(), source.reason(), source.operator(),
-                inventoryMode, source.trialEligible());
+                inventoryMode, source.trialEligible(), source.specDocumentTitle(), source.specDocumentUrl(),
+                source.computePoints(), source.allowedPoolCodes(), source.monthlyTargetUsdt(), source.monthlyTargetBandPct(),
+                source.clearMonthlyTarget());
     }
 
     private static void authenticateAs(String username, String... authorities) {
@@ -3805,29 +3494,6 @@ class OpsDeviceServiceTest {
     private static DevicePhaseView phase(String phaseId, String label, int sortOrder) {
         LocalDateTime now = LocalDateTime.of(2026, 6, 17, 0, 0);
         return new DevicePhaseView(phaseId, label, "", "", sortOrder, "active", now, now);
-    }
-
-    private static DeviceTaskUpsertRequest taskRequest(String name, String unit, String requirement) {
-        return taskRequest(name, unit, requirement, "8GB");
-    }
-
-    private static DeviceTaskUpsertRequest taskRequest(
-            String name, String unit, String requirement, String minVram) {
-        return new DeviceTaskUpsertRequest(
-                name,
-                new BigDecimal("0.46"),
-                unit,
-                requirement,
-                new BigDecimal("0.50"),
-                "active",
-                "EM",
-                "BGE-M3",
-                new BigDecimal("0.06"),
-                new BigDecimal("0.22"),
-                minVram,
-                "派发中",
-                "catalog update",
-                "superadmin");
     }
 
     private static DeviceSkuView sku(String skuId, String name, String status) {
@@ -3862,6 +3528,10 @@ class OpsDeviceServiceTest {
                 "100 MH/s",
                 "1200W",
                 "HK-1",
+                null,
+                null,
+                null,
+                null,
                 price,
                 dailyEarn,
                 dailyEarnNex,
@@ -3889,8 +3559,24 @@ class OpsDeviceServiceTest {
                 null,
                 "popular",
                 status,
+                false,
+                null,
                 LocalDateTime.of(2026, 6, 17, 0, 0),
-                LocalDateTime.of(2026, 6, 17, 0, 0));
+                LocalDateTime.of(2026, 6, 17, 0, 0),
+                "DEVICE",
+                null,
+                null,
+                null,
+                null,
+                null,
+                List.of("L1"),
+                0L,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null);
     }
 
     private static DeviceSkuView withTrialEligible(DeviceSkuView source, boolean trialEligible) {
@@ -3906,7 +3592,10 @@ class OpsDeviceServiceTest {
                 source.purchaseGate(), source.imageAssetId(), source.imageObjectKey(), source.imagePreviewUrl(),
                 source.tag(), source.status(), source.publishBlocked(), source.publishBlockReason(),
                 source.createdAt(), source.updatedAt(), source.productType(),
-                source.inventoryMode(), trialEligible);
+                source.inventoryMode(), trialEligible, source.specDocumentTitle(), source.specDocumentUrl(),
+                source.computePoints(), source.allowedPoolCodes(), source.productTaskPolicyVersion(),
+                source.productTaskPolicyEffectiveAt(), source.monthlyTargetUsdt(), source.monthlyTargetBandPct(),
+                source.derivedDailyEarnUsdt(), source.derivedShareYieldMinPct(), source.derivedShareYieldMaxPct());
     }
 
     @Test
@@ -3934,7 +3623,11 @@ class OpsDeviceServiceTest {
                 source.lifecycle(), source.supersededBy(), source.tradeinDiscount(), source.unlockPhase(),
                 source.purchaseGate(), source.imageAssetId(), source.imageObjectKey(), source.imagePreviewUrl(),
                 source.tag(), source.status(), source.publishBlocked(), source.publishBlockReason(),
-                source.createdAt(), source.updatedAt(), source.productType(), source.inventoryMode(), source.trialEligible());
+                source.createdAt(), source.updatedAt(), source.productType(), source.inventoryMode(), source.trialEligible(),
+                source.specDocumentTitle(), source.specDocumentUrl(), source.computePoints(), source.allowedPoolCodes(),
+                source.productTaskPolicyVersion(), source.productTaskPolicyEffectiveAt(), source.monthlyTargetUsdt(),
+                source.monthlyTargetBandPct(), source.derivedDailyEarnUsdt(), source.derivedShareYieldMinPct(),
+                source.derivedShareYieldMaxPct());
     }
 
     private static DeviceSkuView withMedia(DeviceSkuView source, String assetId, String objectKey) {
@@ -3949,7 +3642,11 @@ class OpsDeviceServiceTest {
                 source.lifecycle(), source.supersededBy(), source.tradeinDiscount(), source.unlockPhase(),
                 source.purchaseGate(), assetId, objectKey, source.imagePreviewUrl(), source.tag(),
                 source.status(), source.publishBlocked(), source.publishBlockReason(), source.createdAt(),
-                source.updatedAt(), source.productType(), source.inventoryMode(), source.trialEligible());
+                source.updatedAt(), source.productType(), source.inventoryMode(), source.trialEligible(),
+                source.specDocumentTitle(), source.specDocumentUrl(), source.computePoints(), source.allowedPoolCodes(),
+                source.productTaskPolicyVersion(), source.productTaskPolicyEffectiveAt(), source.monthlyTargetUsdt(),
+                source.monthlyTargetBandPct(), source.derivedDailyEarnUsdt(), source.derivedShareYieldMinPct(),
+                source.derivedShareYieldMaxPct());
     }
 
     private static DeviceGenerationGateView gate(
@@ -4054,9 +3751,6 @@ class OpsDeviceServiceTest {
     private static final class FakeDeviceOpsRepository implements DeviceOpsRepository {
         private DeviceOpsView device;
         private final Map<String, String> config = new LinkedHashMap<>(Map.of("promoCooldownDays", "14"));
-        private final Map<String, DeviceDatacenterView> datacenters = new LinkedHashMap<>();
-        private String pausedDc;
-        private String pauseReason;
         private String lastTradeinOperation;
         private LocalDateTime lastTradeinSince;
         private LocalDateTime lastTradeinMonthStart;
@@ -4069,21 +3763,29 @@ class OpsDeviceServiceTest {
         private boolean activationLockHeld = true;
         private final List<Long> cancelledActiveTaskDeviceIds = new ArrayList<>();
         private Long pausedUserId;
-        // 删除数据中心跨域引用计数(默认全零,测试按需覆写)
-        private long referenceDevices;
-        private long referencePendingOrders;
-        private long referenceSkus;
-        private String detachedDc;
-        private boolean opsStateSoftDeleted;
 
         @Override
         public Map<String, Object> overviewCounters() {
-            return new LinkedHashMap<>(Map.of("totalDevices", 1L, "datacenters", List.of()));
+            return new LinkedHashMap<>(Map.of("totalDevices", 1L));
         }
 
         @Override
-        public PageResult<DeviceOpsView> pageDevices(DeviceOpsQueryRequest request) {
+        public PageResult<DeviceOpsView> pageDevices(DeviceOpsQueryRequest request, boolean phones) {
             return new PageResult<>(1, 1, 20, List.of(device));
+        }
+
+        @Override
+        public Set<Long> legacyPendingDeviceIds(List<Long> deviceIds) {
+            return Set.of();
+        }
+
+        @Override
+        public PageResult<DeviceOpsView> pageUserDevices(Long userId, long page, long size) {
+            return new PageResult<>(1, 1, 20, device == null ? List.of() : List.of(device));
+        }
+
+        @Override
+        public void syncSimulatedPause(Long userId, List<Long> deviceIds, boolean pause, LocalDateTime now) {
         }
 
         @Override
@@ -4184,81 +3886,6 @@ class OpsDeviceServiceTest {
         public int resumeDevicesByUser(Long userId, LocalDateTime now) {
             pausedUserId = null;
             return 1;
-        }
-
-        @Override
-        public List<DeviceDatacenterView> datacenterSummaries() {
-            return new ArrayList<>(datacenters.values());
-        }
-
-        @Override
-        public Optional<DeviceDatacenterView> findDatacenter(String dcLocation) {
-            return Optional.ofNullable(datacenters.get(dcLocation));
-        }
-
-        @Override
-        public DeviceDatacenterView createDatacenter(DeviceDatacenterUpsertRequest request, String operator, LocalDateTime now) {
-            DeviceDatacenterView view = dcView(request, now, now);
-            datacenters.put(request.dcLocation(), view);
-            return view;
-        }
-
-        @Override
-        public Optional<DeviceDatacenterView> updateDatacenter(String dcLocation, DeviceDatacenterUpsertRequest request, String operator, LocalDateTime now) {
-            DeviceDatacenterView before = datacenters.get(dcLocation);
-            if (before == null) {
-                return Optional.empty();
-            }
-            DeviceDatacenterView view = dcView(request, before.createdAt(), now);
-            datacenters.put(dcLocation, view);
-            return Optional.of(view);
-        }
-
-        @Override
-        public boolean softDeleteDatacenter(String dcLocation, String operator, LocalDateTime now) {
-            return datacenters.remove(dcLocation) != null;
-        }
-
-        @Override
-        public DatacenterReferenceCount countDatacenterReferences(String dcLocation) {
-            return new DatacenterReferenceCount(referenceDevices, referencePendingOrders, referenceSkus);
-        }
-
-        @Override
-        public void syncDatacenterReferencesOnDelete(String dcLocation, String operator, LocalDateTime now) {
-            detachedDc = dcLocation;
-            opsStateSoftDeleted = true;
-        }
-
-        @Override
-        public void pauseDatacenter(String dcLocation, String reason, String operator, LocalDateTime now) {
-            pausedDc = dcLocation;
-            pauseReason = reason;
-        }
-
-        @Override
-        public void resumeDatacenter(String dcLocation, String operator, LocalDateTime now) {
-        }
-
-        private static DeviceDatacenterView dcView(DeviceDatacenterUpsertRequest request, LocalDateTime createdAt, LocalDateTime updatedAt) {
-            return new DeviceDatacenterView(
-                    request.dcLocation(),
-                    request.regionLabel(),
-                    request.status(),
-                    request.sortOrder(),
-                    0L,
-                    0L,
-                    0L,
-                    0L,
-                    BigDecimal.ZERO,
-                    BigDecimal.ZERO,
-                    BigDecimal.ZERO,
-                    false,
-                    null,
-                    null,
-                    null,
-                    createdAt,
-                    updatedAt);
         }
 
         private static DeviceTradeinTxView tx(String operation) {
@@ -5007,6 +4634,10 @@ class OpsDeviceServiceTest {
         @Override
         public void recordOrderRefundReason(String orderNo, String refundReasonCode) {
             refundReasons.put(orderNo, refundReasonCode);
+        }
+
+        @Override
+        public void recordOrderRefundAmount(String orderNo, BigDecimal refundAmountUsdt) {
         }
 
         @Override

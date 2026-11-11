@@ -39,14 +39,14 @@ class CregisAutoForwardMySqlTest {
     }
     @AfterEach void cleanup(){if(owned)new JdbcTemplate(root).execute("DROP DATABASE "+SCHEMA);}
     void seed(long id,String address){jdbc.update("INSERT INTO nx_cregis_deposit_event(id,project_id,user_id,txid,log_index,address,gross_amount,net_amount,fee_amount,block_number,status) VALUES(?,?,7,?,0,?,5,4,1,90,'CREDITED')",id,project,"0x"+"c".repeat(64),address);jdbc.update("INSERT INTO nx_cregis_deposit_address VALUES(?,?,7,'2510','READY')",project,address);}
-    Map<String,Object> event(long id){return db.lockEvent(project,id);}
+    Map<String,Object> event(long id){return db.lockEvent(project, CregisNetwork.BEP20, id);}
     void enqueue(long id){db.enqueue(project,event(id),CregisFundsPreparationService.PLATFORM,CregisFundsPreparationService.COUNTERPARTY,"CA-P-"+project+"-"+id);}
-    Map<String,Object> task(){return db.page(project,0,20).get(0);}
+    Map<String,Object> task(){return db.page(project, CregisNetwork.BEP20, 0, 20).get(0);}
     @Test void defaultsAndFirstActivationWatermarkExcludeHistory(){
-        var p=db.policy(project);assertThat(p.get("collectionEnabled")).isIn(false,0);assertThat(p.get("paymentEnabled")).isIn(false,0);assertThat(p.get("startEventId")).isNull();
-        assertThat(db.apply(project,0,1,1,"offline activation fixture")).isEqualTo(1);assertThat(db.policy(project).get("startEventId")).isEqualTo("2");
-        seed(3,"0x"+"d".repeat(40));assertThat(db.candidates(project,2)).containsExactly(3L);
-        db.pause(project,"fixture pause");db.apply(project,2,1,1,"fixture resume");assertThat(db.policy(project).get("startEventId")).isEqualTo("2");
+        var p=db.policy(project, CregisNetwork.BEP20);assertThat(p.get("collectionEnabled")).isIn(false,0);assertThat(p.get("paymentEnabled")).isIn(false,0);assertThat(p.get("startEventId")).isNull();
+        assertThat(db.apply(project, CregisNetwork.BEP20, 0, 1, 1, "offline activation fixture")).isEqualTo(1);assertThat(db.policy(project, CregisNetwork.BEP20).get("startEventId")).isEqualTo("2");
+        seed(3,"0x"+"d".repeat(40));assertThat(db.candidates(project, CregisNetwork.BEP20, 2)).containsExactly(3L);
+        db.pause(project, CregisNetwork.BEP20, "fixture pause");db.apply(project, CregisNetwork.BEP20, 2, 1, 1, "fixture resume");assertThat(db.policy(project, CregisNetwork.BEP20).get("startEventId")).isEqualTo("2");
     }
     @Test void realConcurrentCasAllowsOnlyOneCommittedIntent()throws Exception{
         enqueue(1);var row=task();row.put("intentAt",LocalDateTime.now());row.put("collectionFloor",100L);

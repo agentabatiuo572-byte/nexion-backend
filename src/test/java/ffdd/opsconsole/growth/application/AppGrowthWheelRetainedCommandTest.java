@@ -51,7 +51,7 @@ class AppGrowthWheelRetainedCommandTest {
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final AdminIdempotencyService idempotency = new AdminIdempotencyService(
             new AdminIdempotencyTransactionExecutor(records, new ObjectMapper(),
-                    mock(AdminIdempotencyExpiryTransitionExecutor.class)), clock);
+                    mock(AdminIdempotencyExpiryTransitionExecutor.class), mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyRollbackEvidence.class)), clock);
     private final AppGrowthWheelService service = new AppGrowthWheelService(mapper,
             mock(VoucherGrantFacade.class), mock(TreasuryCoverageFacade.class), idempotency,
             audit, outbox, earnings, null);

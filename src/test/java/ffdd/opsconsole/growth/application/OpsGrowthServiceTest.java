@@ -783,20 +783,6 @@ class OpsGrowthServiceTest {
                 .containsEntry("blockedBy", "J1_TRIAL_KILL_SWITCH");
     }
 
-    @Test
-    void killAutoPushWritesConfigAndAudit() {
-        ApiResult<Map<String, Object>> result = service.killTrialAutoPush(
-                "idem-h2-kill",
-                new GrowthConfigUpdateRequest("autoPushKilled", "true", "incident", "superadmin"));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("growth.trial.auto_push_killed", "true");
-        assertThat(result.getData()).containsEntry("autoPushKilled", true);
-
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).recordRequired(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("H2_TRIAL_AUTO_PUSH_KILLED");
-    }
 
     @Test
     void trackableCampaignCreationRequiresAPositiveTarget() {
@@ -2541,12 +2527,6 @@ class OpsGrowthServiceTest {
         assertThat(paused.getCode()).isZero();
         assertThat(paused.getData().get("vouchers").toString()).contains("paused");
 
-        ApiResult<Map<String, Object>> deleted = h7Service.deleteVoucher(
-                "idem-h7-delete",
-                "vc-test-25",
-                new GrowthConfigUpdateRequest("delete", "delete", "delete voucher", "superadmin", "1"));
-        assertThat(deleted.getCode()).isZero();
-        assertThat(deleted.getData().get("vouchers")).asList().isEmpty();
     }
 
     @Test

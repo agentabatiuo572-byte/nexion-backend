@@ -12,6 +12,7 @@ import static org.mockito.Mockito.when;
 import ffdd.opsconsole.bi.mapper.BehaviorAnalyticsMapper;
 import ffdd.opsconsole.bi.mapper.BehaviorAnalyticsSandboxMapper;
 import ffdd.opsconsole.bi.web.BehaviorEventRequest;
+import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -33,7 +34,7 @@ class BehaviorAnalyticsAcceptanceEnvironmentTest {
         MockEnvironment environment = new MockEnvironment();
         environment.setActiveProfiles("test");
         BehaviorAnalyticsService service = new BehaviorAnalyticsService(mapper, sandboxMapper, outbox,
-                mock(AuditLogService.class), environment, "unit-test-pseudonym-secret", "unit-run");
+                mock(AuditLogService.class), mock(A2RuntimePolicy.class), environment, "unit-test-pseudonym-secret", "unit-run");
         when(sandboxMapper.tryAcquireSessionLock(any())).thenReturn(1);
 
         var result = service.ingest(42L, new BehaviorEventRequest("a".repeat(32), "app.page_viewed",
@@ -59,7 +60,7 @@ class BehaviorAnalyticsAcceptanceEnvironmentTest {
         MockEnvironment mixed = new MockEnvironment();
         mixed.setActiveProfiles("dev", "prod");
         BehaviorAnalyticsService mixedService = new BehaviorAnalyticsService(mapper, sandboxMapper, outbox,
-                mock(AuditLogService.class), mixed, "unit-test-pseudonym-secret", "unit-run");
+                mock(AuditLogService.class), mock(A2RuntimePolicy.class), mixed, "unit-test-pseudonym-secret", "unit-run");
 
         assertThat(org.assertj.core.api.Assertions.catchThrowable(() -> mixedService.ingest(42L, event())))
                 .isInstanceOf(BizException.class).hasMessageContaining("L6_ANALYTICS_PROFILE_FORBIDDEN");
@@ -70,7 +71,7 @@ class BehaviorAnalyticsAcceptanceEnvironmentTest {
         MockEnvironment acceptance = new MockEnvironment();
         acceptance.setActiveProfiles("test");
         BehaviorAnalyticsService accountMismatch = new BehaviorAnalyticsService(mapper, sandboxMapper, outbox,
-                mock(AuditLogService.class), acceptance, "unit-test-pseudonym-secret", "unit-run");
+                mock(AuditLogService.class), mock(A2RuntimePolicy.class), acceptance, "unit-test-pseudonym-secret", "unit-run");
         when(mapper.isSandboxUser(42L)).thenReturn(false);
         assertThat(org.assertj.core.api.Assertions.catchThrowable(() -> accountMismatch.ingest(42L, event())))
                 .isInstanceOf(BizException.class).hasMessageContaining("L6_ACCOUNT_ENVIRONMENT_MISMATCH");
@@ -78,7 +79,7 @@ class BehaviorAnalyticsAcceptanceEnvironmentTest {
         MockEnvironment production = new MockEnvironment();
         production.setActiveProfiles("prod");
         BehaviorAnalyticsService productionMismatch = new BehaviorAnalyticsService(mapper, sandboxMapper, outbox,
-                mock(AuditLogService.class), production, "unit-test-pseudonym-secret", "unit-run");
+                mock(AuditLogService.class), mock(A2RuntimePolicy.class), production, "unit-test-pseudonym-secret", "unit-run");
         when(mapper.isSandboxUser(42L)).thenReturn(true);
         assertThat(org.assertj.core.api.Assertions.catchThrowable(() -> productionMismatch.ingest(42L, event())))
                 .isInstanceOf(BizException.class).hasMessageContaining("L6_ACCOUNT_ENVIRONMENT_MISMATCH");
@@ -86,7 +87,7 @@ class BehaviorAnalyticsAcceptanceEnvironmentTest {
         MockEnvironment unknown = new MockEnvironment();
         unknown.setActiveProfiles("preview");
         BehaviorAnalyticsService unknownProfile = new BehaviorAnalyticsService(mapper, sandboxMapper, outbox,
-                mock(AuditLogService.class), unknown, "unit-test-pseudonym-secret", "unit-run");
+                mock(AuditLogService.class), mock(A2RuntimePolicy.class), unknown, "unit-test-pseudonym-secret", "unit-run");
         assertThat(org.assertj.core.api.Assertions.catchThrowable(() -> unknownProfile.ingest(42L, event())))
                 .isInstanceOf(BizException.class).hasMessageContaining("L6_ANALYTICS_PROFILE_FORBIDDEN");
     }
@@ -98,7 +99,7 @@ class BehaviorAnalyticsAcceptanceEnvironmentTest {
         MockEnvironment acceptance = new MockEnvironment();
         acceptance.setActiveProfiles("test");
         BehaviorAnalyticsService service = new BehaviorAnalyticsService(mapper, sandboxMapper, mock(EventOutboxService.class),
-                mock(AuditLogService.class), acceptance, "unit-test-pseudonym-secret", "run-l6-1");
+                mock(AuditLogService.class), mock(A2RuntimePolicy.class), acceptance, "unit-test-pseudonym-secret", "run-l6-1");
         String actorHash = "a".repeat(64);
         String sessionHash = "b".repeat(64);
         LocalDateTime from = LocalDateTime.of(2026, 8, 12, 10, 0);
@@ -125,7 +126,7 @@ class BehaviorAnalyticsAcceptanceEnvironmentTest {
     void acceptanceObservationRejectsUnscopedProductionDeltaEvidence() {
         BehaviorAnalyticsService service = new BehaviorAnalyticsService(mock(BehaviorAnalyticsMapper.class),
                 mock(BehaviorAnalyticsSandboxMapper.class), mock(EventOutboxService.class),
-                mock(AuditLogService.class), acceptanceEnvironment(), "unit-test-pseudonym-secret", "run-l6-1");
+                mock(AuditLogService.class), mock(A2RuntimePolicy.class), acceptanceEnvironment(), "unit-test-pseudonym-secret", "run-l6-1");
         LocalDateTime from = LocalDateTime.of(2026, 8, 12, 10, 0);
 
         assertThat(org.assertj.core.api.Assertions.catchThrowable(() ->
@@ -141,7 +142,7 @@ class BehaviorAnalyticsAcceptanceEnvironmentTest {
         BehaviorAnalyticsMapper mapper = mock(BehaviorAnalyticsMapper.class);
         BehaviorAnalyticsSandboxMapper sandboxMapper = mock(BehaviorAnalyticsSandboxMapper.class);
         BehaviorAnalyticsService service = new BehaviorAnalyticsService(mapper, sandboxMapper,
-                mock(EventOutboxService.class), mock(AuditLogService.class), acceptanceEnvironment(),
+                mock(EventOutboxService.class), mock(AuditLogService.class), mock(A2RuntimePolicy.class), acceptanceEnvironment(),
                 "unit-test-pseudonym-secret", "run-l6-1");
         String actorHash = "a".repeat(64);
         String sessionHash = "b".repeat(64);
@@ -159,7 +160,7 @@ class BehaviorAnalyticsAcceptanceEnvironmentTest {
         BehaviorAnalyticsMapper mapper = mock(BehaviorAnalyticsMapper.class);
         BehaviorAnalyticsSandboxMapper sandboxMapper = mock(BehaviorAnalyticsSandboxMapper.class);
         BehaviorAnalyticsService service = new BehaviorAnalyticsService(mapper, sandboxMapper,
-                mock(EventOutboxService.class), mock(AuditLogService.class), acceptanceEnvironment(),
+                mock(EventOutboxService.class), mock(AuditLogService.class), mock(A2RuntimePolicy.class), acceptanceEnvironment(),
                 "unit-test-pseudonym-secret", "run-l6-1");
         String actorHash = "a".repeat(64);
         String sessionHash = "b".repeat(64);
@@ -191,7 +192,7 @@ class BehaviorAnalyticsAcceptanceEnvironmentTest {
             AuditLogService audit = mock(AuditLogService.class);
             MockEnvironment environment = new MockEnvironment();
             environment.setActiveProfiles(profiles);
-            BehaviorAnalyticsService service = new BehaviorAnalyticsService(mapper, sandboxMapper, outbox, audit,
+            BehaviorAnalyticsService service = new BehaviorAnalyticsService(mapper, sandboxMapper, outbox, audit, mock(A2RuntimePolicy.class),
                     environment, "unit-test-pseudonym-secret", "run-l6-1");
 
             assertThat(org.assertj.core.api.Assertions.catchThrowable(() -> service.behavior("7d", "ALL", "ALL", "ALL", "pv")))
@@ -213,7 +214,7 @@ class BehaviorAnalyticsAcceptanceEnvironmentTest {
             MockEnvironment environment = new MockEnvironment();
             environment.setActiveProfiles(profiles);
             BehaviorAnalyticsService service = new BehaviorAnalyticsService(mapper,
-                    mock(BehaviorAnalyticsSandboxMapper.class), mock(EventOutboxService.class), mock(AuditLogService.class),
+                    mock(BehaviorAnalyticsSandboxMapper.class), mock(EventOutboxService.class), mock(AuditLogService.class), mock(A2RuntimePolicy.class),
                     environment, "unit-test-pseudonym-secret", "run-l6-1");
             when(mapper.activity(any(), any(), any(), any(), any())).thenReturn(List.of());
             assertThatCode(() -> service.behavior("7d", "ALL", "ALL", "ALL", "pv")).doesNotThrowAnyException();

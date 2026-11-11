@@ -28,7 +28,7 @@ class UserImpersonationExpirySchedulerTest {
         when(repository.expiredActiveImpersonations(100)).thenReturn(List.of(session));
         when(repository.expireActiveImpersonation("IMP-EXPIRED", "TTL_EXPIRED", "system")).thenReturn(true);
 
-        new UserImpersonationExpiryScheduler(repository, audit, outbox).expireDueSessions();
+        new UserImpersonationExpiryScheduler(repository, audit, outbox, java.time.Clock.systemUTC()).expireDueSessions();
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(audit).recordRequired(captor.capture());

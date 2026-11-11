@@ -340,7 +340,8 @@ class GenesisCatalogServiceTest {
         RecordingTransactionManager transactions = new RecordingTransactionManager();
         AdminIdempotencyTransactionExecutor target = new AdminIdempotencyTransactionExecutor(
                 mock(AdminIdempotencyRecordMapper.class), new ObjectMapper(),
-                mock(AdminIdempotencyExpiryTransitionExecutor.class));
+                mock(AdminIdempotencyExpiryTransitionExecutor.class),
+                mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyRollbackEvidence.class));
         ProxyFactory factory = new ProxyFactory(target);
         factory.addAdvice(new TransactionInterceptor(
                 transactions, new AnnotationTransactionAttributeSource()));
@@ -476,7 +477,8 @@ class GenesisCatalogServiceTest {
         RecordingTransactionManager transactions = new RecordingTransactionManager();
         AdminIdempotencyTransactionExecutor target = new AdminIdempotencyTransactionExecutor(
                 mock(AdminIdempotencyRecordMapper.class), new ObjectMapper(),
-                mock(AdminIdempotencyExpiryTransitionExecutor.class));
+                mock(AdminIdempotencyExpiryTransitionExecutor.class),
+                mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyRollbackEvidence.class));
         ProxyFactory factory = new ProxyFactory(target);
         factory.addAdvice(new TransactionInterceptor(
                 transactions, new AnnotationTransactionAttributeSource()));

@@ -32,9 +32,9 @@ class CregisExceptionOwnershipServiceTest {
         when(admins.require(true)).thenReturn(7L);when(db.activeTarget(42)).thenReturn(true);
         when(db.observation(88,101)).thenReturn(Map.of("id",101L,"txid",TX,"logIndex",3,"address",ADDRESS,
                 "grossAmount","10.000000","blockNumber",20L,"status","UNATTRIBUTED_HOLD"));
-        when(db.eventByLog(anyLong(),anyString(),anyInt())).thenReturn(null);
+        when(db.eventByLog(anyString(),anyLong(),anyString(),anyInt())).thenReturn(null);
         when(db.eventByCid(anyLong(),anyLong())).thenReturn(null);
-        when(db.address(88,ADDRESS)).thenReturn(Map.of("id",1L,"state","FUNDED_HOLD","creationBlock",10L));
+        when(db.address(anyString(),eq(88L),eq(ADDRESS))).thenReturn(Map.of("id",1L,"state","FUNDED_HOLD","creationBlock",10L));
         when(router.provider()).thenReturn(provider);when(provider.addressBelongs("2510",ADDRESS)).thenReturn(true);
         when(provider.depositsByTxid(TX)).thenReturn(List.of(new CregisGateway.DepositTrade(77,"2510",CregisConstants.USDT_BEP20_TOKEN_ID,ADDRESS,BigDecimal.TEN,TX,1)));
         when(chain.verifyExact(TX,3,ADDRESS,new BigDecimal("10.000000"),20L)).thenReturn(new BscDepositProof.TransferProof(3,20,BLOCK,15,KEY_ONE_ADDRESS,ADDRESS,BigDecimal.TEN,true));
@@ -83,12 +83,12 @@ class CregisExceptionOwnershipServiceTest {
         when(chain.verifyExact(anyString(),anyInt(),anyString(),any(),any())).thenReturn(new BscDepositProof.TransferProof(3,20,BLOCK,15,KEY_ONE_ADDRESS,ADDRESS,BigDecimal.TEN,false));
         assertThatThrownBy(()->service.preflight(new CregisExceptionOwnershipService.SourceRef("OBSERVATION",101))).hasMessage("CREGIS_EXCEPTION_EOA_OWNERSHIP_REQUIRED");
         when(chain.verifyExact(anyString(),anyInt(),anyString(),any(),any())).thenReturn(new BscDepositProof.TransferProof(3,20,BLOCK,15,KEY_ONE_ADDRESS,ADDRESS,BigDecimal.TEN,true));
-        when(db.address(88,ADDRESS)).thenReturn(Map.of("id",1L,"state","READY","creationBlock",10L,"userId",42L,"allocationBlock",15L));
+        when(db.address(anyString(),eq(88L),eq(ADDRESS))).thenReturn(Map.of("id",1L,"state","READY","creationBlock",10L,"userId",42L,"allocationBlock",15L));
         assertThatThrownBy(()->service.preflight(new CregisExceptionOwnershipService.SourceRef("OBSERVATION",101))).hasMessage("CREGIS_EXCEPTION_SOURCE_ALREADY_ATTRIBUTED");
-        when(db.address(88,ADDRESS)).thenReturn(Map.of("id",1L,"state","FUNDED_HOLD","creationBlock",10L));
-        when(db.eventByLog(88,TX,3)).thenReturn(Map.of("id",2L,"status","CREDITED","userId",77L));
+        when(db.address(anyString(),eq(88L),eq(ADDRESS))).thenReturn(Map.of("id",1L,"state","FUNDED_HOLD","creationBlock",10L));
+        when(db.eventByLog(anyString(),eq(88L),eq(TX),eq(3))).thenReturn(Map.of("id",2L,"status","CREDITED","userId",77L));
         assertThatThrownBy(()->service.preflight(new CregisExceptionOwnershipService.SourceRef("OBSERVATION",101))).hasMessage("CREGIS_EXCEPTION_SOURCE_ALREADY_ATTRIBUTED");
-        when(db.eventByLog(88,TX,3)).thenReturn(null);
+        when(db.eventByLog(anyString(),eq(88L),eq(TX),eq(3))).thenReturn(null);
         when(db.eventByCid(88,77)).thenReturn(Map.of("id",2L,"status","CREDITED","userId",77L));
         assertThatThrownBy(()->service.preflight(new CregisExceptionOwnershipService.SourceRef("OBSERVATION",101))).hasMessage("CREGIS_EXCEPTION_SOURCE_ALREADY_ATTRIBUTED");
     }
