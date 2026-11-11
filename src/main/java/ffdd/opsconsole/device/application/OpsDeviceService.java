@@ -5290,6 +5290,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     List.of(new ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target(
                             scope, "E4", "device_order", original == null ? resourceId : original.orderNo())), (Supplier) action);
         }
+        if (scope.startsWith("E5_DEVICE_BATCH_")) {
+            return (ApiResult<T>) (ApiResult) idempotencyService.executeBoundTargets(
+                    scope, idempotencyKey.trim(), e1RequestHash(scope, resourceId, request), ApiResult.class, "device_e5_read",
+                    List.of(new ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target(
+                            scope, "E5", "user_device_batch", resourceId)), (Supplier) action);
+        }
         return (ApiResult<T>) (ApiResult) idempotencyService.execute(
                 scope,
                 idempotencyKey.trim(),
