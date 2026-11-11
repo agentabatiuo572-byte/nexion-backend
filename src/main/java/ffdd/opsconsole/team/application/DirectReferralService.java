@@ -23,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor(onConstructor_=@org.springframework.beans.factory.annotation.Autowired)
 public class DirectReferralService {
     public static final Set<String> KINDS=Set.of("direct_purchase","direct_device_earning");
+    private static final int NEW_REJECTED_EARNING=-1;
     private final DirectReferralMapper mapper;
     private final DirectReferralPolicyService policies;
     private final EarningsReleaseService earnings;
@@ -50,6 +51,7 @@ public class DirectReferralService {
     public int settle(String kind,String ref,Long claimedUserId) {
         var target=self==null?this:self.getObject();
         int prepared=target.prepareSettlement(kind,ref,claimedUserId);
+        if(prepared==NEW_REJECTED_EARNING)return 0;
         target.resumeSource(kind,ref);return prepared;
     }
     @Transactional(rollbackFor=Exception.class)
@@ -172,7 +174,7 @@ public class DirectReferralService {
         row.put("amountUsdt",usdt);row.put("amountNex",nex);row.put("status",status);row.put("releaseAt",releaseAt);row.put("reason",reason);
         if(mapper.insertSettlement(row)!=1)throw new BizException(409,"DIRECT_REFERRAL_INSERT_CONFLICT");
         if(!"REJECTED".equals(status))return 1;
-        return 0;
+        return "direct_device_earning".equals(kind)?NEW_REJECTED_EARNING:0;
     }
 
     @SuppressWarnings("unchecked")
