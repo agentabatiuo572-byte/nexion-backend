@@ -11,6 +11,7 @@ import ffdd.opsconsole.market.application.G2G7ParamApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
 import ffdd.opsconsole.market.application.G4CatalogApproval;
 import ffdd.opsconsole.market.application.G4DividendApproval;
+import ffdd.opsconsole.market.application.G4ParamApproval;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayable;
@@ -85,6 +86,8 @@ public class AuditReplayDispatcher {
     @Autowired
     private G4DividendApproval g4DividendApproval;
     @Autowired
+    private G4ParamApproval g4ParamApproval;
+    @Autowired
     private H8RewardParamApproval h8RewardParamApproval;
     @Autowired
     private H5GrowthApproval h5GrowthApproval;
@@ -102,7 +105,7 @@ public class AuditReplayDispatcher {
     private boolean specialized(AuditReplayCommand cmd) {
         return A4RegistryApproval.supports(cmd) || G4CatalogApproval.supports(cmd)
                 || LearningCourseActivationApproval.supports(cmd) || H4GrowthApproval.supports(cmd)
-                || G4DividendApproval.supports(cmd) || H3GrowthApproval.supports(cmd) || K2OtpInitialApproval.supports(cmd)
+                || G4DividendApproval.supports(cmd) || G4ParamApproval.supports(cmd) || H3GrowthApproval.supports(cmd) || K2OtpInitialApproval.supports(cmd)
                 || G2G7ParamApproval.supports(cmd)
                 || G3MarketApproval.supports(cmd) || H5GrowthApproval.supports(cmd) || H8RewardParamApproval.supports(cmd)
                 || TeamFundApproval.supports(cmd) || E2TaskPricingApproval.supports(cmd)
@@ -141,6 +144,10 @@ public class AuditReplayDispatcher {
         }
         if (G4DividendApproval.supports(cmd)) {
             return g4DividendApproval.replay(cmd, ctx,
+                    A2ReplayContext.authenticatedAdminId(), A2ReplayContext.operationId());
+        }
+        if (G4ParamApproval.supports(cmd)) {
+            return g4ParamApproval.replay(cmd, ctx,
                     A2ReplayContext.authenticatedAdminId(), A2ReplayContext.operationId());
         }
         if (H3GrowthApproval.supports(cmd)) {

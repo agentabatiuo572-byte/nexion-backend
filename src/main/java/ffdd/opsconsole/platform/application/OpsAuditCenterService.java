@@ -64,6 +64,7 @@ import ffdd.opsconsole.market.application.G2G7ParamApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
 import ffdd.opsconsole.market.application.G4CatalogApproval;
 import ffdd.opsconsole.market.application.G4DividendApproval;
+import ffdd.opsconsole.market.application.G4ParamApproval;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -945,6 +946,7 @@ public class OpsAuditCenterService {
         if (operationId == null && !mine) return ApiResult.fail(409, "A2_MAKER_ID_UNVERIFIED");
         if ("WITHDRAW".equals(verb) && !mine) return fail(OpsErrorCode.FORBIDDEN, "A2_WITHDRAW_MAKER_ONLY");
         if ("PROPOSE".equals(verb) && (G4CatalogApproval.supports(command) || A4RegistryApproval.supports(command)
+                || G4ParamApproval.supports(command)
                 || H7VoucherDisposition.isOperation(command)
                 || AuditReplayBusinessPermissionGuard.isUserSessionRevocation(command))) {
             if (!canReadOwnProposal(ticket, command, actorId)) return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
@@ -1032,6 +1034,7 @@ public class OpsAuditCenterService {
                     : G2G7ParamApproval.supports(cmd) ? G2G7ParamApproval.target(cmd)
                     : H5GrowthApproval.supports(cmd) ? H5GrowthApproval.target(cmd)
                     : G4DividendApproval.supports(cmd) ? G4DividendApproval.target(cmd)
+                    : G4ParamApproval.supports(cmd) ? G4ParamApproval.target(cmd)
                     : H3GrowthApproval.supports(cmd) ? H3GrowthApproval.target(cmd)
                     : H4GrowthApproval.supports(cmd) ? H4GrowthApproval.target(cmd)
                     : H8RewardParamApproval.supports(cmd) ? H8RewardParamApproval.target(cmd)
@@ -1063,6 +1066,10 @@ public class OpsAuditCenterService {
     private boolean canReadOwnProposal(AuditOperationTicketEntity ticket, AuditReplayCommand command, long actorId) {
         if (A4RegistryApproval.supports(command)) {
             return accessPolicy.canAccessOwnBusinessProposal(command, actorId);
+        }
+        if (G4ParamApproval.supports(command)) {
+            Long maker = ticketMakerId(ticket, command);
+            return maker != null && maker == actorId;
         }
         return (!G4CatalogApproval.supports(command) && accessPolicy.canAccessRecoveredProposal(ticket, command, actorId))
                 || accessPolicy.canAccessOwnBusinessProposal(command, actorId);
@@ -1229,7 +1236,8 @@ public class OpsAuditCenterService {
                 || E2TaskPricingApproval.supports(command) || TeamFundApproval.supports(command)
                 || G3MarketApproval.supports(command) || H8RewardParamApproval.supports(command)
                 || G2G7ParamApproval.supports(command)
-                || G4CatalogApproval.supports(command) || G4DividendApproval.supports(command) || H5GrowthApproval.supports(command)
+                || G4CatalogApproval.supports(command) || G4DividendApproval.supports(command)
+                || G4ParamApproval.supports(command) || H5GrowthApproval.supports(command)
                 || H3GrowthApproval.supports(command)
                 || H4GrowthApproval.supports(command) || K2OtpInitialApproval.supports(command);
     }
@@ -1272,7 +1280,8 @@ public class OpsAuditCenterService {
         detail.put("domain", TreasuryThresholdApproval.supports(command) || E2TaskPricingApproval.supports(command)
                 || LearningCourseActivationApproval.supports(command) || OpsI18nLearningService.isCourseRewardAdjustment(command)
                 || TeamFundApproval.supports(command) || G3MarketApproval.supports(command) || H8RewardParamApproval.supports(command)
-                || G4CatalogApproval.supports(command) || G4DividendApproval.supports(command) || H5GrowthApproval.supports(command)
+                || G4CatalogApproval.supports(command) || G4DividendApproval.supports(command)
+                || G4ParamApproval.supports(command) || H5GrowthApproval.supports(command)
                 || H3GrowthApproval.supports(command)
                 || H4GrowthApproval.supports(command) || K2OtpInitialApproval.supports(command)
                 ? ticket.getSourceDomain() : inferAuditDomain(ticket.getAction(), ticket.getObjectText()));
@@ -1482,6 +1491,8 @@ public class OpsAuditCenterService {
             boundMaker = reward.makerAdminId();
         } else if (G4CatalogApproval.supports(command)) {
             boundMaker = G4CatalogApproval.makerId(command);
+        } else if (G4ParamApproval.supports(command) && command.params().get("makerAdminId") instanceof Number maker) {
+            boundMaker = maker.longValue();
         } else if (LearningCourseActivationApproval.supports(command)) {
             boundMaker = LearningCourseActivationApproval.makerId(command);
         } else if (A2ReplayContext.isAvatarCommand(command)) {
