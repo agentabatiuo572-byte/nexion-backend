@@ -3535,7 +3535,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (!SKU_TIERS.contains(tier)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_TIER_INVALID");
         }
-        validateHosting(request.datacenter(),"on".equals(request.status()));
         String inventoryError = skuInventoryError(request);
         if (inventoryError != null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), inventoryError);
@@ -5699,10 +5698,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (after.trialEligible() == null)
             after = withTrialEligible(after, before != null && Boolean.TRUE.equals(before.trialEligible()));
         var classes=simulationPolicies.writePools(skuId,after.allowedPoolCodes(),before==null?List.of():before.allowedPoolCodes());
-        simulationPolicies.validateProductScope(skuId,classes,
-                before!=null && new java.util.HashSet<>(classes).equals(new java.util.HashSet<>(before.allowedPoolCodes()))
-                && !( !"on".equals(before.status()) && "on".equals(after.status())),after.monthlyTargetUsdt(),after.monthlyTargetBandPct(),"on".equals(after.status()),Boolean.TRUE.equals(after.clearMonthlyTarget()));
-        validateHosting(after.datacenter(),"on".equals(after.status()));
         return new SkuProposalReview(skuId,before,after,classes);
     }
 
@@ -5721,7 +5716,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     public record PhoneClassReview(String before,String after) { }
-    public record RuleTaskReview(String target,String name,String before,String after,Long statusVersion, boolean amplifies) { }
+    /** 规则任务审批单动作:仅由原始回放命令推出(新增/编辑/启用/停用),不按实时库或前后值推断;null 表示非规则任务或旧单无 simulation。 */
+    public record RuleTaskReview(String target,String name,String before,String after,Long statusVersion, boolean amplifies,String action) { }
+
     public RuleTaskReview ruleTaskReview(AuditReplayCommand command) {
         boolean create="e2_task_create".equals(command.op()),statusOnly="e2_task_status".equals(command.op());
         var params=command.params();
@@ -5731,13 +5728,14 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         String id=str(params,"taskId");
         var old=create?null:catalogRepository.findTask(normalizeId(id)).orElseThrow(()->new BizException(404,"TASK_NOT_FOUND"));
         var current=old==null?null:old.simulation();
-        if(statusOnly && current==null)return null;
         String before=current==null?"未配置":ruleDescription(old.name(),old.taskClass(),current.enabled(),current.durationMinutes(),current.baseReward(),current.asset());
         if(statusOnly) {
             String status=normalizeTaskStatus(str(params,"status"));
             if(status==null)throw new BizException(422,"TASK_STATUS_INVALID");
+            // 旧任务未配置模拟设置:沿用 legacy 语义(不产出审批单),不在审批单动作上扩展旧提议行为。
+            if(current==null)return null;
             boolean enabled="active".equals(status);
-            return new RuleTaskReview(old.taskId(),old.name(),before,ruleDescription(old.name(),old.taskClass(),enabled,current.durationMinutes(),current.baseReward(),current.asset()),current.version(), enabled && !current.enabled());
+            return new RuleTaskReview(old.taskId(),old.name(),before,ruleDescription(old.name(),old.taskClass(),enabled,current.durationMinutes(),current.baseReward(),current.asset()),current.version(), enabled && !current.enabled(), enabled?"ENABLE":"DISABLE");
         }
         var raw=buildTaskUpsertRequest(params,"规则任务审批","A2");
         var settings=raw.simulation();
@@ -5753,8 +5751,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         boolean nextEnabled=settings.enabled() && "active".equals(next.status());
         boolean amplifies=create?nextEnabled && settings.baseReward().signum()>0
                 :settings.baseReward().compareTo(current.baseReward())>0 || nextEnabled && (!current.enabled() || settings.durationMinutes()<current.durationMinutes());
+        // 只看原始命令:新增一律 CREATE,编辑一律 UPDATE(即使 enabled=false 或前后值相同),不看实时库状态。
+        String action=create?"CREATE":"UPDATE";
         return new RuleTaskReview(lock,next.name(),before,ruleDescription(next.name(),next.taskClass(),
-                nextEnabled,settings.durationMinutes(),settings.baseReward(),settings.asset()),null, amplifies);
+                nextEnabled,settings.durationMinutes(),settings.baseReward(),settings.asset()),null, amplifies, action);
     }
     private String ruleDescription(String name,String taskClass,boolean enabled,int minutes,BigDecimal reward,String asset) {
         return name+" · "+classSummary(List.of(taskClass))+" · "+(enabled?"启用":"停用")+" · "+minutes+" 分钟 · "+reward.stripTrailingZeros().toPlainString()+" "+asset;

@@ -133,6 +133,9 @@ public class OpsAuditCenterService {
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
     private final AdminIdempotencyService idempotencyService;
     private final PromotionOrderService promotions;
+    private static final java.util.Set<String> RULE_TASK_OPERATIONS =
+            java.util.Set.of("e2_task_create", "e2_task_update", "e2_task_status");
+
     private final ffdd.opsconsole.device.application.OpsDeviceService devices;
     private final OpsI18nLearningService learning;
     @Autowired
@@ -1558,10 +1561,30 @@ public class OpsAuditCenterService {
                         || ffdd.opsconsole.team.application.AmbassadorMaterialService.isProposal(command)
                             && Set.of("approved","通过","已批").contains(Objects.toString(command.params().get("value"),"").trim().toLowerCase(Locale.ROOT)),
                 metadata.operationCode(), metadata.fundEffect(), metadata.refundOrderNo(), retiredOperation(command),
+                ruleTaskAction(command),
                 ambassadorMaterials.queueProposal(command), originalAmount, refundAmount,
                 approve.getCode() == 0, reject.getCode() == 0,
                 approve.getCode() == 0 ? null : approve.getCode(), approve.getCode() == 0 ? null : approve.getMessage(),
                 reject.getCode() == 0 ? null : reject.getCode(), reject.getCode() == 0 ? null : reject.getMessage());
+    }
+
+    /**
+     * 规则任务审批单动作:只由落库的原始回放命令推出(建单/详情共用,读时绝不查实时库)。
+     * e2_task_create→CREATE;e2_task_status active→ENABLE 其余→DISABLE;e2_task_update 一律→UPDATE(含 enabled=false 与前后值相同)。
+     * 非规则任务、非 PHONE、旧单无 simulation(legacy 不产出审批单)→null。
+     */
+    private String ruleTaskAction(AuditReplayCommand command) {
+        if (command == null || !"E".equals(command.domain())
+                || !RULE_TASK_OPERATIONS.contains(command.op()) || command.params() == null) return null;
+        var params = command.params();
+        if (!"PHONE".equals(params.get("poolCode"))) return null;
+        if ("e2_task_create".equals(command.op())) return "CREATE";
+        if ("e2_task_status".equals(command.op())) {
+            String status = params.get("status") instanceof String value ? value.trim().toLowerCase(Locale.ROOT) : null;
+            return "active".equals(status) ? "ENABLE" : "DISABLE";
+        }
+        if (!(params.get("simulation") instanceof Map<?, ?>)) return null;
+        return "UPDATE";
     }
 
     private boolean retiredOperation(AuditReplayCommand command) {
@@ -1623,6 +1646,8 @@ public class OpsAuditCenterService {
         terminal.forEach(ticket -> rowsByOperation.putIfAbsent(ticket.getOperationId(), new AuditOperationHistory(
                         ticket.getOperationId(),
                         ticket.getAction(),
+                        ticketsById.get(ticket.getOperationId()) == null
+                                ? null : ticketsById.get(ticket.getOperationId()).ruleTaskAction(),
                         status(ticket.getStatus()),
                         executionChain(ticket.getOperationId(), ticket.getOperatorName(), ticket.getStatus(), decisionActors),
                         ticket.getDecidedAt() == null ? LocalDateTime.now().format(ISO) : ticket.getDecidedAt().format(ISO),
@@ -1637,6 +1662,8 @@ public class OpsAuditCenterService {
                 .map(row -> new AuditOperationHistory(
                         row.getOperationId(),
                         row.getAction(),
+                        ticketsById.get(row.getOperationId()) == null
+                                ? null : ticketsById.get(row.getOperationId()).ruleTaskAction(),
                         status(row.getStatus()),
                         historicalExecutionChain(row, ticketsById.get(row.getOperationId()), decisionActors),
                         row.getCreatedAt() == null ? row.getTimeLabel() : row.getCreatedAt().format(ISO),

@@ -88,11 +88,12 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             END
             """;
     // The page projection resolves missing-runtime diagnostics in one batch after pagination.
-    String SIM_STATE = SIM_STATE_PREFIX + " WHEN sim.user_device_id IS NULL THEN 'WAITING_INIT' " + SIM_STATE_SUFFIX;
+    String SIM_STATE_NULL_RUNTIME = " WHEN sim.user_device_id IS NULL THEN 'WAITING_INIT' ";
+    String SIM_STATE = SIM_STATE_PREFIX + SIM_STATE_NULL_RUNTIME + SIM_STATE_SUFFIX;
     // State filters resolve missing-runtime diagnostics before pagination.
-    String RESOLVED_SIM_STATE = SIM_STATE_PREFIX
-            + " WHEN sim.user_device_id IS NULL AND " + LEGACY_PENDING + " THEN 'LEGACY_PENDING' "
-            + " WHEN sim.user_device_id IS NULL THEN 'WAITING_INIT' " + SIM_STATE_SUFFIX;
+    String RESOLVED_SIM_STATE_NULL_RUNTIME = " WHEN sim.user_device_id IS NULL AND " + LEGACY_PENDING + " THEN 'LEGACY_PENDING' "
+            + " WHEN sim.user_device_id IS NULL THEN 'WAITING_INIT' ";
+    String RESOLVED_SIM_STATE = SIM_STATE_PREFIX + RESOLVED_SIM_STATE_NULL_RUNTIME + SIM_STATE_SUFFIX;
     String VISIBLE_SIM_STATE = " CASE WHEN #{simEnabled} = 0 THEN 'SIM_OFF' ELSE " + RESOLVED_SIM_STATE + " END ";
     // Both missing-runtime states share the waiting tile, so fleet counts need no legacy-history probes.
     String OVERVIEW_SIM_STATE = " CASE WHEN #{simEnabled} = 0 THEN 'SIM_OFF' ELSE " + SIM_STATE + " END ";
@@ -101,6 +102,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                 = #{simState}</if>
              <if test='source != null'>AND d.source_channel = #{source}</if>
              <if test='productCode != null'>AND d.product_code = #{productCode}</if>
+             <if test='userId != null'>AND d.user_id = #{userId}</if>
              <if test='keyword != null'>
                AND (d.instance_no LIKE CONCAT('%', #{keyword}, '%')
                     OR d.name LIKE CONCAT('%', #{keyword}, '%')
@@ -214,11 +216,19 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             """)
     BigDecimal completedWithdrawalTotal();
 
-    @Select("SELECT " + OVERVIEW_SIM_STATE + " AS simState, COUNT(*) AS deviceCount "
-            + RUNTIME_FROM + " WHERE " + STORE_SCOPE + " GROUP BY simState")
+
+    // 概览一次分组查询同时产出两列:旧口径 OVERVIEW_SIM_STATE 与状态筛选同解析的 VISIBLE_SIM_STATE(有效状态)。
+    // 旧四数只读 legacyState(与改动前完全一致);新增 errorRetry/legacyPending/waitingConfig 读 resolvedState,
+    // 与列表状态筛选同一判据,不新增也不改写状态优先级。simEnabled=false 时两列同为 SIM_OFF。
+    String OVERVIEW_GROUP_BY = " GROUP BY legacyState, resolvedState ";
+    String OVERVIEW_STATE = " CAST(" + OVERVIEW_SIM_STATE + " AS CHAR) AS legacyState, "
+            + " CAST(" + VISIBLE_SIM_STATE + " AS CHAR) AS resolvedState ";
+
+    @Select("SELECT " + OVERVIEW_STATE + ", COUNT(*) AS deviceCount "
+            + RUNTIME_FROM + " WHERE " + STORE_SCOPE + OVERVIEW_GROUP_BY)
     List<SimStateCount> storeStateCounts(@Param("simEnabled") boolean simEnabled);
 
-    record SimStateCount(String simState, long deviceCount) { }
+    record SimStateCount(String legacyState, String resolvedState, long deviceCount) { }
 
     @Select("""
             <script>
@@ -246,7 +256,8 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     @Select("<script>SELECT COUNT(*) " + RUNTIME_FROM + " WHERE " + LIST_SCOPE + DEVICE_FILTERS + "</script>")
     long countDevices(@Param("phones") boolean phones, @Param("simEnabled") boolean simEnabled,
                       @Param("simState") String simState, @Param("source") String source,
-                      @Param("productCode") String productCode, @Param("keyword") String keyword);
+                      @Param("productCode") String productCode, @Param("keyword") String keyword,
+                      @Param("userId") Long userId);
 
     @Select("<script>SELECT " + DEVICE_COLUMNS + LIST_FROM + """
               LEFT JOIN nx_admin_device_sku sku ON sku.sku_id = d.product_code AND sku.is_deleted = 0
@@ -257,6 +268,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     List<DeviceOpsView> pageDevices(@Param("phones") boolean phones, @Param("simEnabled") boolean simEnabled,
                                     @Param("simState") String simState, @Param("source") String source,
                                     @Param("productCode") String productCode, @Param("keyword") String keyword,
+                                    @Param("userId") Long userId,
                                     @Param("limit") long limit, @Param("offset") long offset);
 
     @Select("""

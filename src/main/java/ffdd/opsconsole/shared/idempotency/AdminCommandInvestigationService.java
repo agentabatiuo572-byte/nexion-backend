@@ -225,8 +225,11 @@ public class AdminCommandInvestigationService {
         if (scope.startsWith("L_BI_REPORT_ACTION_")) return "BI_REPORT".equals(fact.getResourceType())
                 && action.equals("L_BI_REPORT_" + scope.substring("L_BI_REPORT_ACTION_".length()));
         if (scope.startsWith("E2_POOL_")) return Set.of("E2_TASK_POOL_RANDOM_ADDED", "E2_TASK_POOL_STATUS_CHANGED").contains(action);
-        if (scope.startsWith("E5_DEVICE_")) return Set.of("admin.device_activated", "admin.device_deactivation_requested",
-                "admin.device_deactivated", "admin.device_paused", "admin.device_resumed").contains(action);
+        // AuditLogService stores action canonically uppercase, so the whitelist must match the
+        // persisted value (e.g. ADMIN.DEVICE_PAUSED) rather than the lowercase writer alias.
+        if (scope.startsWith("E5_DEVICE_")) return (scope.startsWith("E5_DEVICE_BATCH_") ? "USER_DEVICE_BATCH" : "DEVICE").equals(fact.getResourceType())
+                && Set.of("ADMIN.DEVICE_ACTIVATED", "ADMIN.DEVICE_DEACTIVATION_REQUESTED",
+                        "ADMIN.DEVICE_DEACTIVATED", "ADMIN.DEVICE_PAUSED", "ADMIN.DEVICE_RESUMED").contains(action);
         return Set.of("D2_WITHDRAWAL_CHAIN_CONFIRMED", "D2_WITHDRAWAL_REVIEW_APPROVE", "D2_WITHDRAWAL_REVIEW_REJECT",
                 "D2_WITHDRAWAL_REVIEW_REFUND", "D2_WITHDRAWAL_REVIEW_DELAY", "D2_WITHDRAWAL_REVIEW_FREEZE",
                 "D3_FORECAST_CONFIG_CHANGED", "D3_TREASURY_RESERVE_INJECTION", "D3_RECONCILIATION_EXPORTED", "D3_LIABILITIES_EXPORTED", "D3_SENSITIVE_EXPORT_A2_AUDITED",

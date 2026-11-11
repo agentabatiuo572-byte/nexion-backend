@@ -50,6 +50,8 @@ public record AuditCenterOverview(
             FundEffect fundEffect,
             String refundOrderNo,
             boolean retiredOperation,
+            /** 规则任务审批单动作: CREATE/UPDATE/ENABLE/DISABLE;其它审批单为 null。 */
+            String ruleTaskAction,
             Map<String,Object> ambassadorMaterialProposal,
             BigDecimal originalAmountUsdt,
             BigDecimal refundAmountUsdt,
@@ -65,7 +67,7 @@ public record AuditCenterOverview(
                                                        ffdd.opsconsole.shared.api.ApiResult<Void> reject) {
             return new AuditOperationTicket(id, action, obj, beforeValue, afterValue, operator, operatorRole,
                     type, amplifies, sos, ts, ownedByViewer, roleGate, reason, status, phoneCalibrationProposal,
-                    coverageCheckOnApproval, code, effect, orderNo, retired, ambassadorMaterialProposal,
+                    coverageCheckOnApproval, code, effect, orderNo, retired, ruleTaskAction, ambassadorMaterialProposal,
                     originalAmountUsdt, refundAmountUsdt,
                     approve.getCode() == 0, reject.getCode() == 0,
                     approve.getCode() == 0 ? null : approve.getCode(),
@@ -84,6 +86,7 @@ public record AuditCenterOverview(
     public record AuditOperationHistory(
             String id,
             String action,
+            String ruleTaskAction,
             String st,
             String chain,
             String t,

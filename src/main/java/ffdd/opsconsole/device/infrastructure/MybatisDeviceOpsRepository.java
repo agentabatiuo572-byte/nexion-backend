@@ -81,16 +81,36 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
 
     @Override
     public Map<String, Object> overviewCounters() {
-        long total = 0, running = 0, waiting = 0, stopped = 0;
+        // 原四数只读旧口径 legacyState,与改动前完全一致:总数=在售范围全部;运行中=RUNNING;已停用=STOPPED;
+        // 等待启动=WAITING_ACTIVATION/WAITING_INIT/LEGACY_PENDING(显式三态)。stale ERROR 等一律按旧运行态归属。
+        // 新增三数只读 resolvedState(与列表状态筛选同一有效状态解析):出错重试=ERROR、旧任务未结清=LEGACY_PENDING、
+        // 等待配置=WAITING_CONFIG;它们仍计入总数,不重复也不改动原四数。simEnabled=false 时 resolvedState 全为 SIM_OFF,新三数为 0。
+        long total = 0, running = 0, waiting = 0, stopped = 0, errorRetry = 0, legacyPending = 0, waitingConfig = 0;
         for (var row : mapper.storeStateCounts(simEnabled)) {
-            total += row.deviceCount();
-            switch (row.simState()) {
-                case "RUNNING" -> running += row.deviceCount();
-                case "WAITING_ACTIVATION", "WAITING_INIT", "LEGACY_PENDING" -> waiting += row.deviceCount();
-                case "STOPPED" -> stopped += row.deviceCount();
+            long count = row.deviceCount();
+            total += count;
+            switch (row.legacyState()) {
+                case "RUNNING" -> running += count;
+                case "WAITING_ACTIVATION", "WAITING_INIT", "LEGACY_PENDING" -> waiting += count;
+                case "STOPPED" -> stopped += count;
+                default -> { }
+            }
+            switch (row.resolvedState()) {
+                case "ERROR" -> errorRetry += count;
+                case "LEGACY_PENDING" -> legacyPending += count;
+                case "WAITING_CONFIG" -> waitingConfig += count;
+                default -> { }
             }
         }
-        return Map.of("total", total, "running", running, "waitingActivation", waiting, "stopped", stopped);
+        Map<String, Object> counters = new LinkedHashMap<>();
+        counters.put("total", total);
+        counters.put("running", running);
+        counters.put("waitingActivation", waiting);
+        counters.put("stopped", stopped);
+        counters.put("errorRetry", errorRetry);
+        counters.put("legacyPending", legacyPending);
+        counters.put("waitingConfig", waitingConfig);
+        return counters;
     }
 
     @Override
@@ -117,6 +137,9 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
             throw new BizException(422, "E5_SOURCE_INVALID");
         String productCode = normalize(request.productCode());
         String keyword = normalize(request.keyword());
+        Long userId = request.userId();
+        if (userId != null && userId <= 0)
+            throw new BizException(422, "E5_USER_ID_INVALID");
         long pageNum = normalizePage(request.pageNum());
         long pageSize = normalizeSize(request.pageSize());
         long offset;
@@ -125,8 +148,8 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
         } catch (ArithmeticException invalidOffset) {
             throw new BizException(422, "E5_PAGE_NUM_INVALID");
         }
-        long total = mapper.countDevices(phones, simEnabled, state, source, productCode, keyword);
-        var records = mapper.pageDevices(phones, simEnabled, state, source, productCode, keyword, pageSize, offset);
+        long total = mapper.countDevices(phones, simEnabled, state, source, productCode, keyword, userId);
+        var records = mapper.pageDevices(phones, simEnabled, state, source, productCode, keyword, userId, pageSize, offset);
         return new PageResult<>(total, pageNum, pageSize, records);
     }
 

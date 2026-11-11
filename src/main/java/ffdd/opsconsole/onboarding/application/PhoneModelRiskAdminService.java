@@ -28,6 +28,7 @@ import org.springframework.util.StringUtils;
 public class PhoneModelRiskAdminService {
     public static final int STATS_DAYS = 7;
     private static final ObjectMapper JSON = new ObjectMapper();
+    public static final String IDEMPOTENCY_SCOPE = "E6_PHONE_RISK_SETTINGS";
 
     private final PlatformConfigFacade config;
     private final OnboardingCalibrationMapper mapper;
@@ -62,8 +63,10 @@ public class PhoneModelRiskAdminService {
                 .anyMatch(java.util.Objects::isNull)) throw new BizException(422, "PHONE_RISK_SETTINGS_INVALID");
         if (input.reason() == null || input.reason().trim().length() < 8 || input.reason().trim().length() > 200)
             throw new BizException(422, "PHONE_RISK_SETTINGS_REASON_INVALID");
-        return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute(
-                "E6_PHONE_RISK_SETTINGS", key.trim(), requestHash(input), ApiResult.class, () -> {
+        // The server derives actor, route and bound target; a recovery caller never supplies them.
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.executeBound(
+                IDEMPOTENCY_SCOPE, key.trim(), requestHash(input), ApiResult.class, "device_e6_read",
+                PhoneModelRiskConfig.KEY, () -> {
             var store = new PhoneModelRiskConfig(config, clock);
             var before = store.read();
             var after = store.save(new PhoneModelRisk.Settings(0, input.installModelLock(), input.osVersion(), input.screenScale(),
@@ -87,7 +90,7 @@ public class PhoneModelRiskAdminService {
     private String requestHash(Update input) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
-                    .digest(("E6_PHONE_RISK_SETTINGS\n" + PhoneModelRiskConfig.KEY + "\n" + String.valueOf(input))
+                    .digest((IDEMPOTENCY_SCOPE + "\n" + PhoneModelRiskConfig.KEY + "\n" + String.valueOf(input))
                             .getBytes(StandardCharsets.UTF_8)));
         } catch (NoSuchAlgorithmException ex) {
             throw new IllegalStateException("SHA-256 unavailable", ex);
