@@ -8,10 +8,10 @@ import org.apache.ibatis.annotations.*;
 @SuppressWarnings("MybatisPlusBaseMapper") // Session and configuration rows have separate identities and guarded writes.
 public interface SupportReceptionMapper {
     record Hold(Long customerId,Long assignmentId,Long adminId,String name,String role,String conversationNo,
-                LocalDateTime lastSentAt,LocalDateTime autoEndAt,Integer endMinutes,Boolean active) {}
+                LocalDateTime startedAt,LocalDateTime lastSentAt,LocalDateTime autoEndAt,Integer endMinutes,Boolean active) {}
     String HOLD = """
         SELECT h.customer_id customerId,h.assignment_id assignmentId,h.holder_admin_id adminId,h.holder_name name,
-          h.holder_role role,h.conversation_no conversationNo,h.last_sent_at lastSentAt,
+          h.holder_role role,h.conversation_no conversationNo,h.started_at startedAt,h.last_sent_at lastSentAt,
           TIMESTAMPADD(MINUTE,p.session_end_minutes,h.last_sent_at) autoEndAt,p.session_end_minutes endMinutes,
           (h.ended_at IS NULL AND TIMESTAMPADD(MINUTE,p.session_end_minutes,h.last_sent_at)>UTC_TIMESTAMP(6)) active
         FROM nx_support_session_hold h JOIN nx_conversation_timeout_policy p ON p.policy_key='GLOBAL'

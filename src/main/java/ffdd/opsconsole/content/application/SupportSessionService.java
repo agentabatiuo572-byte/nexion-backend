@@ -37,7 +37,9 @@ public class SupportSessionService {
     private final ProductionSupportPathGuard production;
 
     public record Holder(Long adminId,String name,String role) {}
-    public record State(String state,Holder holder,String lastSentAt,String autoEndAt,int endMinutes) {}
+    /** sessionRef identifies one reception instance, not just "this administrator + this customer". */
+    public record State(String state,Holder holder,String sessionRef,String lastSentAt,String autoEndAt,int endMinutes) {}
+    public record End(String sessionRef) {}
     public static class Busy extends BizException {
         private final State state;
         Busy(State state) { super(409,"SUPPORT_SESSION_BUSY"); this.state=state; }
@@ -66,9 +68,12 @@ public class SupportSessionService {
     }
 
     private Holder holder(Hold row) {return new Holder(row.adminId(),row.name(),row.role());}
+    private static String sessionRef(Hold row) {
+        return row==null?null:row.assignmentId()+":"+row.startedAt();
+    }
     private State view(long viewer,Hold row) {
-        if(row==null) return new State("FREE",null,null,null,sessions.endMinutes());
-        return new State(row.adminId()==viewer?"MINE":"OTHER",holder(row),
+        if(row==null) return new State("FREE",null,null,null,null,sessions.endMinutes());
+        return new State(row.adminId()==viewer?"MINE":"OTHER",holder(row),sessionRef(row),
                 row.lastSentAt().toInstant(java.time.ZoneOffset.UTC).toString(),row.autoEndAt().toInstant(java.time.ZoneOffset.UTC).toString(),row.endMinutes());
     }
 
@@ -95,18 +100,33 @@ public class SupportSessionService {
 
     @Transactional
     @SuppressWarnings({"unchecked","rawtypes"})
-    public ApiResult<?> end(long customer,String key) {
+    public ApiResult<?> end(long customer,String key,End body) {
         requireBoundRead(customer);
         long actor=ownership.actorId();
         if(bindings.writerGrant(actor).isEmpty()) throw new BizException(403,"SUPPORT_WRITE_FORBIDDEN");
         SupportAttachmentService.token(key);
-        return commands.executeRetained("M3_SESSION_END:"+actor,key,Long.toString(customer),ApiResult.class,()->{
+        String requestedRef=body==null||body.sessionRef()==null?null:body.sessionRef().trim();
+        Hold current=sessions.hold(customer);
+        if(requestedRef!=null && !requestedRef.isEmpty()) {
+            // A command belongs to one reception instance. A new reception, or an old local command from the
+            // previous one, must not end whichever session happens to be current now.
+            if(current==null || !requestedRef.equals(sessionRef(current)))
+                throw new BizException(409,"SUPPORT_SESSION_CHANGED");
+        }
+        String reference=requestedRef==null||requestedRef.isEmpty()?Long.toString(customer):customer+"|"+requestedRef;
+        return commands.executeRetained("M3_SESSION_END:"+actor,key,reference,ApiResult.class,()->{
             Hold row=active(customer);
             if(row==null || row.adminId()!=actor) throw new BizException(409,"SUPPORT_SESSION_NOT_HOLDER");
+            if(requestedRef!=null && !requestedRef.isEmpty() && !requestedRef.equals(sessionRef(row)))
+                throw new BizException(409,"SUPPORT_SESSION_CHANGED");
             sessions.end(customer,null,"MANUAL");
             ended(row,"MANUAL");
             return ApiResult.ok(Map.of("customerId",customer));
         });
+    }
+
+    public ApiResult<?> end(long customer,String key) {
+        return end(customer,key,null);
     }
 
     public void resolve(long customer) {

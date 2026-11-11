@@ -40,9 +40,10 @@ public class SupportReceptionController {
 
     @PostMapping("/support-workbench/customers/{customer}/session-hold/end")
     @PreAuthorize("hasAuthority('service_m3_write')")
-    public ApiResult<?> end(@PathVariable long customer,@RequestHeader("Idempotency-Key") String key) {
+    public ApiResult<?> end(@PathVariable long customer,@RequestHeader("Idempotency-Key") String key,
+                            @RequestBody(required=false) SupportSessionService.End body) {
         try {
-            return sessions.end(customer,key);
+            return sessions.end(customer,key,body);
         } catch(BizException rejected) {
             sessions.rejected(customer,"M3_SESSION_END",rejected.getMessage());
             throw rejected;
