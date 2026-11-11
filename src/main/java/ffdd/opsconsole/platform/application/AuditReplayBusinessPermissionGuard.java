@@ -656,12 +656,31 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     private ApiResult<Void> validateOrdinaryProposalPermission(AuditReplayCommand command, String operation) {
+        if ("E".equalsIgnoreCase(command.domain()) && "e2_phone_tier".equals(operation)) {
+            return validateE2PhoneTierPermission(command);
+        }
         String authority = requiredAuthority(command, operation);
         if (delegatedProposal() && authority == null) return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_UNMAPPED");
         if (authority != null && !hasAuthority(authority)
                 && !(isUserSessionRevocation(command) && hasAuthority("user_c5_session_revoke_all"))
                 && !scopedMakerMayPropose(command, operation))
             return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:" + authority);
+        return ApiResult.ok();
+    }
+
+    private ApiResult<Void> validateE2PhoneTierPermission(AuditReplayCommand command) {
+        Map<String, Object> params = command.params() == null ? Map.of() : command.params();
+        // configKey 走收益对比来源推导路径(服务端固定 409),逐币种专权只约束档位日收益(dailyUsdt/dailyNex)。
+        boolean tierRoute = value(params, "configKey").isBlank();
+        boolean changesUsdt = tierRoute && !value(params, "dailyUsdt").isBlank();
+        boolean changesNex = tierRoute && !value(params, "dailyNex").isBlank();
+        if (delegatedProposal()) return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_UNMAPPED");
+        if (changesUsdt && !hasAuthority("device_e2_phone_tier_usdt")) {
+            return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:device_e2_phone_tier_usdt");
+        }
+        if (changesNex && !hasAuthority("device_e2_phone_tier_nex")) {
+            return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:device_e2_phone_tier_nex");
+        }
         return ApiResult.ok();
     }
 

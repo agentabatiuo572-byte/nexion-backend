@@ -87,6 +87,31 @@ class AuditReplayBusinessPermissionGuardTest {
     }
 
     @Test
+    void e2PhoneTierProposalRequiresExactCurrencyAuthority() {
+        var changeNex = new AuditReplayCommand("E", "e2_phone_tier",
+                Map.of("tier", 1, "dailyNex", "1.5", "expectedRevision", 1));
+        var changeUsdt = new AuditReplayCommand("E", "e2_phone_tier",
+                Map.of("tier", 1, "dailyUsdt", "0.5", "expectedRevision", 1));
+        var changeBoth = new AuditReplayCommand("E", "e2_phone_tier",
+                Map.of("tier", 1, "dailyUsdt", "0.5", "dailyNex", "1.5", "expectedRevision", 1));
+
+        authenticate("device_e2_phone_tier_usdt");
+        assertThat(guard.validateProposal(changeNex).getCode()).isEqualTo(403);
+        assertThat(guard.validateProposal(changeNex).getMessage()).endsWith("device_e2_phone_tier_nex");
+        assertThat(guard.validateProposal(changeUsdt).getCode()).isZero();
+        assertThat(guard.validateProposal(changeBoth).getCode()).isEqualTo(403);
+
+        authenticate("device_e2_phone_tier_nex");
+        assertThat(guard.validateProposal(changeUsdt).getCode()).isEqualTo(403);
+        assertThat(guard.validateProposal(changeUsdt).getMessage()).endsWith("device_e2_phone_tier_usdt");
+        assertThat(guard.validateProposal(changeNex).getCode()).isZero();
+
+        authenticate("device_e2_phone_tier_usdt", "device_e2_phone_tier_nex");
+        assertThat(guard.validateProposal(changeBoth).getCode()).isZero();
+        assertThat(guard.validateApproval(changeBoth).getCode()).isZero();
+    }
+
+    @Test
     void sensitiveSectionProposalRejectsUserWithOnlyStandardPublishPermission() {
         when(repository.listTrustSections()).thenReturn(List.of(
                 new TrustSectionView("financials", "财务", "指标", "v1", "published", "today", "合规", true)));
