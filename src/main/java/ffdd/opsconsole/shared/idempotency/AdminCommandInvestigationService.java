@@ -224,6 +224,9 @@ public class AdminCommandInvestigationService {
                 && Set.of("L_BI_REPORT_CREATE", "ADMIN.REPORT_EXPORTED").contains(action);
         if (scope.startsWith("L_BI_REPORT_ACTION_")) return "BI_REPORT".equals(fact.getResourceType())
                 && action.equals("L_BI_REPORT_" + scope.substring("L_BI_REPORT_ACTION_".length()));
+        if (scope.startsWith("E2_POOL_")) return Set.of("E2_TASK_POOL_RANDOM_ADDED", "E2_TASK_POOL_STATUS_CHANGED").contains(action);
+        if (scope.startsWith("E5_DEVICE_")) return Set.of("admin.device_activated", "admin.device_deactivation_requested",
+                "admin.device_deactivated", "admin.device_paused", "admin.device_resumed").contains(action);
         return Set.of("D2_WITHDRAWAL_CHAIN_CONFIRMED", "D2_WITHDRAWAL_REVIEW_APPROVE", "D2_WITHDRAWAL_REVIEW_REJECT",
                 "D2_WITHDRAWAL_REVIEW_REFUND", "D2_WITHDRAWAL_REVIEW_DELAY", "D2_WITHDRAWAL_REVIEW_FREEZE",
                 "D3_FORECAST_CONFIG_CHANGED", "D3_TREASURY_RESERVE_INJECTION", "D3_RECONCILIATION_EXPORTED", "D3_LIABILITIES_EXPORTED", "D3_SENSITIVE_EXPORT_A2_AUDITED",
