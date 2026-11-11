@@ -75,7 +75,7 @@ public class PhoneCalibrationAdminController {
     @PreAuthorize("hasAuthority('device_e6_write')")
     public ApiResult<Map<String,Object>> updateRisk(@RequestHeader(value = "Idempotency-Key", required = false) String key,
                                                    @RequestBody PhoneModelRiskAdminService.Update request) {
-        return ApiResult.ok(risk.update(request, key));
+        return risk.update(request, key);
     }
 
     @PostMapping("/preview")
