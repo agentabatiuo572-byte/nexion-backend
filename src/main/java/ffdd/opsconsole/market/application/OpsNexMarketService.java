@@ -148,6 +148,22 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             Map.entry("lottery", "finprod_g7_write"),
             Map.entry("penalty", "finprod_g7_write"),
             Map.entry("presets", "finprod_g7_write"));
+
+    /** G2 keys whose loosening direction amplifies outflow (decision T02/T11): cap↑, fee↓, feeMin↓, REJECT→QUEUE. */
+    static final Set<String> G2_AMPLIFY_KEYS = Set.of(
+            "userDailyCap", "platformDailyCap", "fee", "feeMin", "queueMode");
+    /** G7 keys whose loosening direction amplifies outflow (decision T02/T11): apy↑, nurture↑, penalty↓. */
+    static final Set<String> G7_AMPLIFY_KEYS = Set.of("apy", "nurture", "penalty");
+
+    /** Exact G2 grant for a parameter key; shared by the direct write and the A2 approval path. */
+    public static String exchangeParamAuthority(String paramKey) {
+        return EXCHANGE_PARAM_PERMISSION.get(paramKey == null ? "" : paramKey.trim());
+    }
+
+    /** Exact G7 grant for a parameter key; shared by the direct write and the A2 approval path. */
+    public static String repurchaseParamAuthority(String paramKey) {
+        return REPURCHASE_PARAM_PERMISSION.get(paramKey == null ? "" : paramKey.trim());
+    }
     /** updateOverride overrideKey→精确权限码。对照 OpsNexMarketController updateOverride。 */
     private static final Map<String, String> OVERRIDE_PERMISSION = Map.ofEntries(
             Map.entry("currentPrice", "finprod_g3_override_price_write"),
@@ -180,6 +196,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private G4DividendPolicy dividendPolicy;
     @Autowired
     private ffdd.opsconsole.shared.outbox.EventOutboxService genesisOutbox;
+    @Autowired
+    private ffdd.opsconsole.market.mapper.AppExchangeMapper appExchangeMapper;
     private ApplicationEventPublisher eventPublisher;
 
     @Override
@@ -263,11 +281,17 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (!StringUtils.hasText(newValue)) {
             return validation("VALUE_REQUIRED");
         }
+        // 批准回放时服务端绑定的旧值快照必须仍然成立,否则这次批准作废。
+        ApiResult<Map<String, Object>> stale = requireUnchangedSnapshot(request.expectedValue(), oldValue,
+                "G2_EXCHANGE_PARAM_STALE");
+        if (stale != null) {
+            return stale;
+        }
         if (exchangeParamLoosens(def, oldValue, newValue)) {
-            ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
-            if (redline != null) {
-                return redline;
-            }
+            // T02: 放大资金流出的方向必须由另一位超管批准。先拦非回放直写(纯 409,不读价格/队列),
+            // T11: 批准回放时再按拟改值加确定新增应付 Δ 复核覆盖率。
+            requireParamApproval("G2_EXCHANGE_PARAM_APPROVAL_REQUIRED");
+            requireCoverageRedline(exchangeParamLiabilityIncrease(def.key(), oldValue, newValue));
         }
         configFacade.upsertAdminValue(def.configKey(), newValue, def.valueType(), "wallet", def.remark());
         audit("G2_EXCHANGE_PARAM_CHANGED", "EXCHANGE_PARAM", def.configKey(), request.operator(), map(
@@ -807,11 +831,16 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (!StringUtils.hasText(newValue)) {
             return validation("G7_REPURCHASE_PARAM_VALUE_INVALID");
         }
+        ApiResult<Map<String, Object>> stale = requireUnchangedSnapshot(request.expectedValue(), oldValue,
+                "G7_REPURCHASE_PARAM_STALE");
+        if (stale != null) {
+            return stale;
+        }
         if (repurchaseParamLoosens(def, oldValue, newValue)) {
-            ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
-            if (redline != null) {
-                return redline;
-            }
+            // T02: 放大方向先拦非回放直写;T11: G7 年化、提前解锁扣款只影响新开仓,确定新增应付 Δ 为 0,
+            // 回放时按当前覆盖率复核。
+            requireParamApproval("G7_REPURCHASE_PARAM_APPROVAL_REQUIRED");
+            requireCoverageRedline(BigDecimal.ZERO);
         }
         if (!updateRepurchaseProduct(def, newValue)) {
             return validation("G7_REPURCHASE_PRODUCT_NOT_FOUND");
@@ -2245,6 +2274,131 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                         .compareTo(liabilities.multiply(coverage.redlinePct())) < 0;
         return below ? ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                 OpsErrorCode.COVERAGE_BELOW_REDLINE.name()) : null;
+    }
+
+    // ---- BUG-277: G2/G7 放大方向的双人审批边界 ----------------------------------------------------------
+
+    /**
+     * 放大方向没有 A2 批准票一律拒绝直写。这是纯拦截,不读价格、不扫队列,
+     * 保证非回放请求拿到的是 409(需审批)而不是 503/红线错误。
+     */
+    private void requireParamApproval(String approvalRequiredCode) {
+        if (!A2ReplayContext.isReplaying()) {
+            throw new BizException(409, approvalRequiredCode);
+        }
+    }
+
+    /** 按拟改值加确定新增应付 Δ 复核「储备 ÷（应付 + Δ）」;破线时抛出 B1 红线错误。 */
+    void requireCoverageRedline(BigDecimal additionalLiability) {
+        ApiResult<Map<String, Object>> failure = coverageRedlineFailure(additionalLiability);
+        if (failure != null) {
+            throw new BizException(failure.getCode(), failure.getMessage());
+        }
+    }
+
+    /** 提案时绑定的旧值快照必须仍然等于当前值,否则这张批准票基于过期事实,拒绝执行。 */
+    private ApiResult<Map<String, Object>> requireUnchangedSnapshot(String expectedValue, String currentValue,
+                                                                    String staleCode) {
+        if (!StringUtils.hasText(expectedValue)) {
+            return null;
+        }
+        if (!expectedValue.trim().equals(currentValue == null ? "" : currentValue.trim())) {
+            return ApiResult.fail(409, staleCode);
+        }
+        return null;
+    }
+
+    /**
+     * G2 的确定新增应付 Δ:只算此刻真实排队中的单在新费率下多付的净额,UVT 按当前 B1 价格折 USDT。
+     * 提高每日上限、「拒绝改排队」不产生确定新增应付,Δ 为 0(决策 T11-1)。
+     * 旧费用吃光本金被批次跳过的单,原净额按 0 计,新规则可执行时整笔净额计入新增应付(T11 净额口径)。
+     */
+    BigDecimal exchangeParamLiabilityIncrease(String paramKey, String oldValue, String newValue) {
+        if (!"fee".equals(paramKey) && !"feeMin".equals(paramKey)) {
+            return BigDecimal.ZERO;
+        }
+        // 与 G2ExchangeQueueBatchService 完全同一价格口径(同一 UVT/USDT 序列 + 5 分钟新鲜度窗口),
+        // 避免用过期价格把 Δ 算小、把覆盖率算高。
+        BigDecimal price = appExchangeMapper.currentPrice();
+        if (price == null || price.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BizException(503, "G3_PRICE_UNAVAILABLE");
+        }
+        String feeNow = readText(EXCHANGE_FEE_PCT_KEY, exchangeParamDef("fee").defaultValue());
+        String feeMinNow = readText(EXCHANGE_FEE_MIN_KEY, exchangeParamDef("feeMin").defaultValue());
+        boolean feeChange = "fee".equals(paramKey);
+        BigDecimal oldFeeRate = parseDecimalLoose(feeChange ? oldValue : feeNow, BigDecimal.ZERO);
+        BigDecimal newFeeRate = parseDecimalLoose(feeChange ? newValue : feeNow, BigDecimal.ZERO);
+        BigDecimal oldFeeMin = parseDecimalLoose(feeChange ? feeMinNow : oldValue, BigDecimal.ZERO);
+        BigDecimal newFeeMin = parseDecimalLoose(feeChange ? feeMinNow : newValue, BigDecimal.ZERO);
+        BigDecimal delta = BigDecimal.ZERO;
+        for (ffdd.opsconsole.market.mapper.AppExchangeMapper.QueuedAmountRow row : appExchangeMapper.queuedAmounts()) {
+            BigDecimal fromAmount = row.fromAmount() == null ? BigDecimal.ZERO : row.fromAmount();
+            BigDecimal gross = scale6("USDT".equalsIgnoreCase(row.fromAsset()) ? fromAmount : fromAmount.multiply(price));
+            BigDecimal before = g2QueuedNet(gross, oldFeeRate, oldFeeMin);
+            BigDecimal after = g2QueuedNet(gross, newFeeRate, newFeeMin);
+            if (after == null) {
+                continue; // 新规则下手续费仍吃光本金,批次仍会跳过该单,不构成确定新增应付
+            }
+            // 旧规则跳过该单(before==null)说明原确定应付净额为 0,新规则下整笔净额都是新增应付;
+            // 只计入正差,旧规则能执行的单按净额差计。
+            BigDecimal extra = after.subtract(before == null ? BigDecimal.ZERO : before);
+            if (extra.signum() > 0) {
+                delta = delta.add(extra);
+            }
+        }
+        return delta;
+    }
+
+    /** 与 G2ExchangeQueueBatchService 同一算法:gross → fee(按比例与下限取大) → net;手续费吃光本金时返回 null。 */
+    private BigDecimal g2QueuedNet(BigDecimal gross, BigDecimal feeRatePct, BigDecimal feeMin) {
+        BigDecimal fee = feeRatePct.compareTo(BigDecimal.ZERO) == 0 ? BigDecimal.ZERO
+                : scale6(gross.multiply(feeRatePct).divide(BigDecimal.valueOf(100), 12, RoundingMode.HALF_UP))
+                        .max(scale6(feeMin));
+        if (fee.compareTo(gross) >= 0) {
+            return null;
+        }
+        return scale6(gross.subtract(fee));
+    }
+
+    private BigDecimal scale6(BigDecimal value) {
+        return safeBig(value).setScale(6, RoundingMode.HALF_UP);
+    }
+
+    /** 当前 G2 参数值;参数键无效时返回 null。 */
+    String exchangeParamCurrentValue(String paramKey) {
+        ExchangeParamDef def = exchangeParamDef(paramKey);
+        return def == null ? null : readText(def.configKey(), def.defaultValue());
+    }
+
+    /** 规范化后的候选 G2 值;无效时返回 null。 */
+    String exchangeParamCandidateValue(String paramKey, String rawValue) {
+        ExchangeParamDef def = exchangeParamDef(paramKey);
+        return def == null ? null : normalizeExchangeParamValue(def, rawValue);
+    }
+
+    /** 该改动是否放大资金流出。 */
+    boolean exchangeParamAmplifies(String paramKey, String oldValue, String newValue) {
+        ExchangeParamDef def = exchangeParamDef(paramKey);
+        return def != null && exchangeParamLoosens(def, oldValue, newValue);
+    }
+
+    /** 当前 G7 参数值;参数键无效或产品不存在时返回 null。 */
+    String repurchaseParamCurrentValue(String paramKey) {
+        RepurchaseParamDef def = repurchaseParamDef(paramKey);
+        StakingProductView product = marketRepository.repurchaseProduct().orElse(null);
+        return def == null || product == null ? null : repurchaseValue(def, product);
+    }
+
+    /** 规范化后的候选 G7 值;无效时返回 null。 */
+    String repurchaseParamCandidateValue(String paramKey, String rawValue) {
+        RepurchaseParamDef def = repurchaseParamDef(paramKey);
+        return def == null ? null : normalizeRepurchaseParamValue(def, rawValue);
+    }
+
+    /** 该改动是否放大资金流出。 */
+    boolean repurchaseParamAmplifies(String paramKey, String oldValue, String newValue) {
+        RepurchaseParamDef def = repurchaseParamDef(paramKey);
+        return def != null && repurchaseParamLoosens(def, oldValue, newValue);
     }
 
     private ApiResult<Map<String, Object>> coverageRedlineFailure(TreasuryCoverageSnapshot coverage) {
@@ -3681,7 +3835,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         String idem = ctx.idempotencyKey();
         switch (cmd.op()) {
             case "g2_exchange_param" -> {
-                ExchangeParamUpdateRequest req = new ExchangeParamUpdateRequest(str(p, "value"), reason, operator);
+                ExchangeParamUpdateRequest req = new ExchangeParamUpdateRequest(str(p, "value"), reason, operator,
+                        str(p, "expectedValue"));
                 return updateExchangeParam(idem, str(p, "paramKey"), req);
             }
             case "g2_exchange_swap_status" -> {
@@ -3725,7 +3880,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 return rerunGenesisDividendBatch(idem, str(p, "batchNo"), req);
             }
             case "g7_repurchase_param" -> {
-                NexMarketValueUpdateRequest req = new NexMarketValueUpdateRequest(str(p, "value"), reason, operator);
+                NexMarketValueUpdateRequest req = new NexMarketValueUpdateRequest(str(p, "value"), reason, operator,
+                        str(p, "expectedValue"));
                 return updateRepurchaseParam(idem, str(p, "paramKey"), req);
             }
             default -> {

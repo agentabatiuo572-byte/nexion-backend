@@ -81,8 +81,10 @@ public class OpsRepurchaseAdminService {
         String after = normalizeValue(key, request.value());
         boolean amplifies = amplifies(key, decimal(before), decimal(after));
         TreasuryCoverageSnapshot snapshot = coverage.snapshot();
-        if (amplifies && snapshot.coverageRatio().compareTo(snapshot.redlinePct()) < 0) {
-            throw new BizException(422, "COVERAGE_BELOW_REDLINE");
+        if (amplifies) {
+            // 决策 T02/T11:放大资金流出的方向必须由另一位超管批准后回放,直写一律拒绝。
+            // 收紧方向(降 APY、降 nurture、提提前解锁扣款)保持立即生效。
+            throw new BizException(409, "G7_REPURCHASE_PARAM_APPROVAL_REQUIRED");
         }
         long issued = mapper.issuedTicketsThisMonth();
         long g4Capacity = configLong("G.genesis.lottery.monthlyCapacity", 100_000L);

@@ -7,6 +7,7 @@ import ffdd.opsconsole.growth.application.H3GrowthApproval;
 import ffdd.opsconsole.growth.application.H4GrowthApproval;
 import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
+import ffdd.opsconsole.market.application.G2G7ParamApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
 import ffdd.opsconsole.market.application.G4CatalogApproval;
 import ffdd.opsconsole.market.application.G4DividendApproval;
@@ -78,6 +79,8 @@ public class AuditReplayDispatcher {
     @Autowired
     private G3MarketApproval g3MarketApproval;
     @Autowired
+    private G2G7ParamApproval g2g7ParamApproval;
+    @Autowired
     private G4CatalogApproval g4CatalogApproval;
     @Autowired
     private G4DividendApproval g4DividendApproval;
@@ -100,6 +103,7 @@ public class AuditReplayDispatcher {
         return A4RegistryApproval.supports(cmd) || G4CatalogApproval.supports(cmd)
                 || LearningCourseActivationApproval.supports(cmd) || H4GrowthApproval.supports(cmd)
                 || G4DividendApproval.supports(cmd) || H3GrowthApproval.supports(cmd) || K2OtpInitialApproval.supports(cmd)
+                || G2G7ParamApproval.supports(cmd)
                 || G3MarketApproval.supports(cmd) || H5GrowthApproval.supports(cmd) || H8RewardParamApproval.supports(cmd)
                 || TeamFundApproval.supports(cmd) || E2TaskPricingApproval.supports(cmd)
                 || TreasuryThresholdApproval.supports(cmd) || WithdrawalConfigApproval.supports(cmd);
@@ -145,6 +149,10 @@ public class AuditReplayDispatcher {
         }
         if (K2OtpInitialApproval.supports(cmd)) {
             return k2OtpInitialApproval.replay(cmd, ctx,
+                    A2ReplayContext.authenticatedAdminId(), A2ReplayContext.operationId());
+        }
+        if (G2G7ParamApproval.supports(cmd)) {
+            return g2g7ParamApproval.replay(cmd, ctx,
                     A2ReplayContext.authenticatedAdminId(), A2ReplayContext.operationId());
         }
         if (G3MarketApproval.supports(cmd)) {

@@ -23,6 +23,7 @@ import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import ffdd.opsconsole.team.application.TeamFundApproval;
+import ffdd.opsconsole.market.application.G2G7ParamApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
 import ffdd.opsconsole.market.application.G4CatalogApproval;
 import ffdd.opsconsole.market.application.G4DividendApproval;
@@ -214,6 +215,8 @@ public class A2AccessPolicy {
             authority = G4DividendApproval.makerAuthority(command);
         } else if (G3MarketApproval.supports(command)) {
             authority = G3MarketApproval.makerAuthority(command);
+        } else if (G2G7ParamApproval.supports(command)) {
+            authority = G2G7ParamApproval.makerAuthority(command);
         } else {
             return false;
         }
