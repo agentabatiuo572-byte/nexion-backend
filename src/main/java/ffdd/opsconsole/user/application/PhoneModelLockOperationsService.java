@@ -48,13 +48,16 @@ public class PhoneModelLockOperationsService {
     @Transactional(readOnly = true)
     public Map<String,Object> releaseReceipt(long userId, String installationId, String key) {
         long actor = access.require(PhoneReplacementOperationsService.READ);
+        // Re-apply the current C5 customer data-scope/environment gate before any receipt is disclosed.
+        var account = account(userId);
         String normalizedKey = receiptKey(key);
         AdminIdempotencyRecordEntity record = receipts.selectCurrent(RELEASE_SCOPE, normalizedKey);
         if (record == null || !Integer.valueOf(0).equals(record.getIsDeleted()))
             throw new PhoneReplacementException(404, "PHONE_MODEL_LOCK_RELEASE_NOT_FOUND");
         if (record.getOriginAdminId() == null || record.getOriginAdminId() != actor
                 || !StringUtils.hasText(record.getOriginTarget())
-                || !record.getOriginTarget().equals(releaseTarget(userId, installationId)))
+                || !record.getOriginTarget().equals(releaseTarget(userId, installationId,
+                        account.sourceEnvironment(), account.runId())))
             throw new PhoneReplacementException(403, "PHONE_MODEL_LOCK_RELEASE_RECEIPT_FORBIDDEN");
         if ("PROCESSING".equals(record.getStatus()) && record.getExpiresAt() != null
                 && record.getExpiresAt().isBefore(LocalDateTime.now()))
@@ -81,10 +84,11 @@ public class PhoneModelLockOperationsService {
         String reason = input.reason().trim();
         // The command identity binds actor, user, installation, revision and the exact body. A retry with the
         // same key returns the stored receipt; the same key for a different request is a conflict.
-        String requestHash = releaseHash(userId, installationId, input.expectedRevision(), reason,
+        String requestHash = releaseHash(actor, userId, installationId, input.expectedRevision(), reason,
                 account.sourceEnvironment(), account.runId());
         return idempotency.executeBound(RELEASE_SCOPE, normalizedKey, requestHash, Map.class,
-                PhoneReplacementOperationsService.READ, releaseTarget(userId, installationId),
+                PhoneReplacementOperationsService.READ,
+                releaseTarget(userId, installationId, account.sourceEnvironment(), account.runId()),
                 () -> locks.release(account, installationId, input.expectedRevision(), actor, reason, normalizedKey));
     }
 
@@ -98,8 +102,9 @@ public class PhoneModelLockOperationsService {
         }
     }
 
-    private static String releaseTarget(long userId, String installationId) {
-        return "userId=" + userId + ";installationId=" + (installationId == null ? "" : installationId);
+    private static String releaseTarget(long userId, String installationId, String environment, String runId) {
+        return "userId=" + userId + ";installationId=" + (installationId == null ? "" : installationId)
+                + ";sourceEnvironment=" + environment + ";runId=" + runId;
     }
 
     private static String receiptKey(String key) {
@@ -108,9 +113,9 @@ public class PhoneModelLockOperationsService {
         return key;
     }
 
-    private static String releaseHash(long userId, String installationId, long expectedRevision, String reason,
+    private static String releaseHash(long actor, long userId, String installationId, long expectedRevision, String reason,
                                       String environment, String runId) {
-        String canonical = userId + "|" + installationId + "|" + expectedRevision + "|" + reason
+        String canonical = actor + "|" + userId + "|" + installationId + "|" + expectedRevision + "|" + reason
                 + "|" + environment + "|" + runId;
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
