@@ -993,7 +993,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         String newValue;
         Map<String, Object> tierAudit = Map.of();
         if ("supply".equals(def.key())) {
-            GenesisSupplyChange change = updateGenesisSupply(request.value());
+            GenesisSupplyChange change = updateGenesisSupply(request.value(), request.expectedValue());
             oldValue = Integer.toString(change.oldSupply());
             newValue = Integer.toString(change.newSupply());
             tierAudit = map(
@@ -1007,6 +1007,12 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             newValue = normalizeGenesisParamValue(def, request.value());
             if (!StringUtils.hasText(newValue)) {
                 return validation("G4_GENESIS_PARAM_VALUE_INVALID");
+            }
+            // A2 approval replay carries the old value bound when the proposal was made.
+            ApiResult<Map<String, Object>> stale = requireUnchangedSnapshot(request.expectedValue(), oldValue,
+                    "G4_GENESIS_PARAM_STALE");
+            if (stale != null) {
+                return stale;
             }
             if ("dividend".equals(def.key())) {
                 G4DividendPolicy.requireDecision(request.decisionRef());
@@ -1039,7 +1045,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return ApiResult.ok(response);
     }
 
-    private GenesisSupplyChange updateGenesisSupply(String rawValue) {
+    private GenesisSupplyChange updateGenesisSupply(String rawValue, String expectedValue) {
         BigDecimal value = parseRepurchaseNumber(rawValue, null);
         if (value == null || value.signum() < 0 || value.compareTo(BigDecimal.valueOf(GENESIS_MAX_SUPPLY)) > 0) {
             throw new BizException(422, "G4_GENESIS_PARAM_VALUE_INVALID");
@@ -1054,6 +1060,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (series.isEmpty()) throw new BizException(422, "G4_GENESIS_SERIES_NOT_FOUND");
         if (series.size() != 1) throw new BizException(409, "GENESIS_ACTIVE_SERIES_AMBIGUOUS");
         LockedSeriesRow current = series.get(0);
+        if (StringUtils.hasText(expectedValue)
+                && !expectedValue.trim().equals(String.valueOf(current.totalSupply()))) {
+            throw new BizException(409, "G4_GENESIS_PARAM_STALE");
+        }
         long holdings = genesisCatalogMapper.soldCount();
         if (value.compareTo(BigDecimal.valueOf(Math.max(current.soldSupply(), holdings))) < 0) {
             throw new BizException(422, "G4_GENESIS_PARAM_VALUE_INVALID");
@@ -3173,6 +3183,49 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (failure != null) {
             throw new BizException(failure.getCode(), failure.getMessage());
         }
+    }
+
+    /** G4 approval binding: raw current value of one parameter on the active series. */
+    public String genesisParamCurrentValue(String paramKey) {
+        GenesisParamDef def = genesisParamDef(paramKey);
+        if (def == null) return null;
+        return genesisValue(def, marketRepository.activeGenesisPolicy().orElse(null));
+    }
+
+    /** G4 approval binding: normalized candidate, or null when the input is invalid. */
+    public String genesisParamCandidateValue(String paramKey, String rawValue) {
+        GenesisParamDef def = genesisParamDef(paramKey);
+        if (def == null) return null;
+        if ("supply".equals(def.key())) {
+            BigDecimal value = parseRepurchaseNumber(rawValue, null);
+            if (value == null || value.signum() < 0 || value.compareTo(BigDecimal.valueOf(GENESIS_MAX_SUPPLY)) > 0)
+                return null;
+            return value.setScale(0, RoundingMode.HALF_UP).toPlainString();
+        }
+        return normalizeGenesisParamValue(def, rawValue);
+    }
+
+    /** G4 approval binding: only the direction that can amplify outflow needs another super administrator. */
+    public boolean genesisParamAmplifies(String paramKey, String oldValue, String newValue) {
+        GenesisParamDef def = genesisParamDef(paramKey);
+        if (def == null || oldValue == null || newValue == null) return false;
+        if ("supply".equals(def.key())) {
+            return parseRepurchaseNumber(newValue, BigDecimal.ZERO)
+                    .compareTo(parseRepurchaseNumber(oldValue, BigDecimal.ZERO)) > 0;
+        }
+        return genesisParamAmplifies(def, oldValue, newValue);
+    }
+
+    /** G4 approval binding: A02 price reprice has a measurable daily payable increase; other keys are 0. */
+    public BigDecimal genesisParamLiabilityIncrease(String paramKey, String newValue) {
+        GenesisParamDef def = genesisParamDef(paramKey);
+        return def == null ? BigDecimal.ZERO : genesisParamLiabilityIncrease(def, newValue);
+    }
+
+    /** Identity of the active series at proposal time; approval must not silently retarget another series. */
+    public String genesisParamSeriesKey() {
+        AppGenesisMapper.SeriesRow series = appGenesisMapper.activeSeries();
+        return series == null ? null : series.id() + ":" + series.seriesCode();
     }
 
     private BigDecimal royaltyBps(String value) {
