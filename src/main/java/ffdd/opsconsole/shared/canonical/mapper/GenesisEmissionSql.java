@@ -14,6 +14,9 @@ public final class GenesisEmissionSql {
     private static final String AMOUNT_SUFFIX = " * 0.01, 6))";
     public static final String CURRENT_AMOUNT = AMOUNT_PREFIX + "s.daily_dividend_rate_pct" + AMOUNT_SUFFIX;
     public static final String PROPOSED_AMOUNT = AMOUNT_PREFIX + "#{rate}" + AMOUNT_SUFFIX;
+    /** A02: the same per-holding payable amount repriced by a proposed series unit price. */
+    public static final String PROPOSED_PRICE_AMOUNT =
+            "GREATEST(0, ROUND(#{price} * s.daily_dividend_rate_pct * 0.01, 6))";
     public static final String CURRENT_TOTAL = "SELECT COALESCE(SUM(" + CURRENT_AMOUNT + "),0)" + ELIGIBLE_HOLDINGS;
 
     private GenesisEmissionSql() {}

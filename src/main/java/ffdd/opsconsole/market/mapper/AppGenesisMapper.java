@@ -25,6 +25,12 @@ public interface AppGenesisMapper {
             + GenesisEmissionSql.ELIGIBLE_HOLDINGS + " AND s.series_code=#{seriesCode}")
     BigDecimal genesisLiabilityIncrease(@Param("seriesCode") String seriesCode, @Param("rate") BigDecimal rate);
 
+    /** A02 reprice: the daily dividend delta of every eligible holding of the series, per row then summed. */
+    @Select("SELECT COALESCE(SUM(" + GenesisEmissionSql.PROPOSED_PRICE_AMOUNT + " - "
+            + GenesisEmissionSql.CURRENT_AMOUNT + "),0)"
+            + GenesisEmissionSql.ELIGIBLE_HOLDINGS + " AND s.series_code=#{seriesCode}")
+    BigDecimal genesisPriceLiabilityIncrease(@Param("seriesCode") String seriesCode, @Param("price") BigDecimal price);
+
     @Select("SELECT CONCAT_WS('|',id,batch_no,snapshot_at,daily_rate_pct,holder_count,total_amount_usdt,status,operator,reason,decision_ref) FROM nx_genesis_emission_batch WHERE batch_no=#{batchNo} AND is_deleted=0")
     String emissionBatchSnapshot(@Param("batchNo") String batchNo);
     @Select("""

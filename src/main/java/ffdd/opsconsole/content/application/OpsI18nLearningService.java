@@ -522,8 +522,8 @@ public class OpsI18nLearningService {
         BigDecimal targetReward() { return target == null ? current.rewardNex() : target.payload().rewardNex(); }
 
         boolean amplifies() {
-            return kind == CourseActivationKind.ROLLBACK
-                    ? targetReward().compareTo(current.rewardNex()) > 0 : targetReward().signum() > 0;
+            // T11-7：只要目标历史版本有奖励（> 0），回滚一律走审批，等额、降额也算。
+            return targetReward().signum() > 0;
         }
     }
 

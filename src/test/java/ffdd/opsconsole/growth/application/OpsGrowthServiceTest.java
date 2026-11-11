@@ -36,6 +36,7 @@ import ffdd.opsconsole.growth.dto.GrowthMissionStatusRequest;
 import ffdd.opsconsole.growth.dto.GrowthQuestEventBindingRequest;
 import ffdd.opsconsole.growth.dto.GrowthQuestEventRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
+import ffdd.opsconsole.growth.dto.GrowthWheelTierRequest;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.growth.mapper.GrowthQuestEventMapper;
 import ffdd.opsconsole.growth.mapper.GrowthVoucherMapper;
@@ -922,6 +923,132 @@ class OpsGrowthServiceTest {
                 new GrowthConfigUpdateRequest("reward", "5 UVT", "Check legacy edit", "test-admin", "10 UVT")).getCode()).isZero();
         verify(questEventMapper).updateReward(eq(code), eq("5 UVT"), eq("UVT"), eq(new BigDecimal("5")), any());
         verify(questEventMapper, never()).updateRewardName(anyString(), anyString(), any());
+    }
+
+    // T11-5：weekly.champBonus 只是冠军奖励的展示文字，改动不进入审批也不查覆盖率。
+
+    @Test
+    void weeklyChampionBonusCopyEditsBypassTheApprovalAndCoverageGate() {
+        seedQuestBusinessRows();
+        configFacade.values.put("growth.quest.weekly.champ_bonus", "+500 UVT → P3 1.1×");
+        // 覆盖率已破线:冠军文字不产生资金流出,因此仍必须直写。
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("85"));
+
+        var result = service.updateQuestConfig(
+                "idem-h3-champ-bonus",
+                "weekly.champBonus",
+                new GrowthConfigUpdateRequest("weekly.champBonus", "+900 UVT → P3 1.5×",
+                        "rewrite the champion display copy", "superadmin", "+500 UVT → P3 1.1×"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("growth.quest.weekly.champ_bonus", "+900 UVT → P3 1.5×");
+    }
+
+    @Test
+    void weeklyMultiplierIncreaseStillRequiresH3Approval() {
+        seedQuestBusinessRows();
+        configFacade.values.put("growth.quest.weekly.mult.P3", "1.1×");
+
+        var result = service.updateQuestConfig(
+                "idem-h3-mult-approval",
+                "weekly.mult.P3",
+                new GrowthConfigUpdateRequest("weekly.mult.P3", "1.3x",
+                        "raise the weekly multiplier", "superadmin", "1.1×"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("H3_APPROVAL_REQUIRED");
+        assertThat(configFacade.values).containsEntry("growth.quest.weekly.mult.P3", "1.1×");
+    }
+
+    // T11-6：转盘改奖型时旧奖型数量视为 0;同奖型(含券)只比数量、不估价,减少的不能抵。
+
+    @Test
+    void wheelTierRewardKindChangeRequiresApprovalEvenAtTheSameAmount() {
+        seedWheelTier("uvt-tier", "10 UVT", 100, false, "uvt", "10", "", 0);
+        when(questEventMapper.activeWheelProbabilitySum()).thenReturn(new BigDecimal("100"));
+        String signature = service.wheelPoolSignature(wheelTiers);
+
+        var direct = service.updateWheelTier("idem-h4-wheel-kind", "uvt-tier", new GrowthWheelTierRequest(
+                "uvt-tier", "满减券", new BigDecimal("100"), 0, "coupon", new BigDecimal("10"), "vch-1", 0,
+                "switch the wheel reward asset", "test-admin", signature));
+
+        assertThat(direct.getCode()).isEqualTo(409);
+        assertThat(direct.getMessage()).isEqualTo("H4_APPROVAL_REQUIRED");
+        verify(questEventMapper, never()).updateWheelTier(anyString(), anyString(), any(BigDecimal.class),
+                anyInt(), anyString(), any(BigDecimal.class), any(), anyInt());
+    }
+
+    @Test
+    void wheelTierCouponRewardsAreComparedByCountOnly() {
+        seedWheelTier("coupon-tier", "满减券", 100, false, "coupon", "10", "vch-1", 0);
+        when(questEventMapper.activeWheelProbabilitySum()).thenReturn(new BigDecimal("100"));
+        String signature = service.wheelPoolSignature(wheelTiers);
+
+        var lowered = service.previewH4WheelTierUpdate(new GrowthWheelTierRequest(
+                "coupon-tier", "满减券", new BigDecimal("100"), 0, "coupon", new BigDecimal("5"), "vch-1", 0,
+                "shrink the coupon value", "test-admin", signature));
+        assertThat(lowered.getMessage()).isEqualTo("H4_APPROVAL_NOT_REQUIRED");
+
+        var raised = service.previewH4WheelTierUpdate(new GrowthWheelTierRequest(
+                "coupon-tier", "满减券", new BigDecimal("100"), 0, "coupon", new BigDecimal("20"), "vch-1", 0,
+                "raise the coupon value", "test-admin", signature));
+        assertThat(raised.getCode()).isZero();
+    }
+
+    @Test
+    void wheelTierAssetSwitchIgnoresTheLargerOldAmount() {
+        seedWheelTier("coupon-tier", "满减券", 100, false, "coupon", "100", "vch-1", 0);
+        when(questEventMapper.activeWheelProbabilitySum()).thenReturn(new BigDecimal("100"));
+        String signature = service.wheelPoolSignature(wheelTiers);
+
+        var direct = service.updateWheelTier("idem-h4-wheel-asset", "coupon-tier", new GrowthWheelTierRequest(
+                "coupon-tier", "10 UVT", new BigDecimal("100"), 0, "uvt", new BigDecimal("10"), "", 0,
+                "switch the wheel reward asset", "test-admin", signature));
+
+        assertThat(direct.getCode()).isEqualTo(409);
+        assertThat(direct.getMessage()).isEqualTo("H4_APPROVAL_REQUIRED");
+    }
+
+    // T11-6：旧活动奖励按资产分开看,改币种时旧资产数量视为 0。
+
+    @Test
+    void legacyEventRewardChangedToAnotherAssetRequiresApproval() {
+        String id = "evt-cross-asset";
+        seedLegacyEventForRewardEdit(id, "10 UVT", "UVT", "10", 1);
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("110"), new BigDecimal("85"));
+
+        var preview = service.previewQuestEventChange(id, "reward", new GrowthConfigUpdateRequest(
+                "reward", "10 USDT", "switch the payout asset", "test-admin", "10 UVT"));
+        assertThat(preview.getData()).containsEntry("approvalRequired", true);
+
+        var direct = service.updateQuestEventReward("idem-h4-cross-asset", id, new GrowthConfigUpdateRequest(
+                "reward", "10 USDT", "switch the payout asset", "test-admin", "10 UVT"));
+        assertThat(direct.getCode()).isEqualTo(409);
+        assertThat(direct.getMessage()).isEqualTo("H4_APPROVAL_REQUIRED");
+        verify(questEventMapper, never()).updateReward(anyString(), anyString(), anyString(), any(), any());
+    }
+
+    @Test
+    void legacyEventSameAssetRewardDecreaseDoesNotRequireApproval() {
+        String id = "evt-same-asset";
+        seedLegacyEventForRewardEdit(id, "10 UVT", "UVT", "10", 1);
+
+        var preview = service.previewQuestEventChange(id, "reward", new GrowthConfigUpdateRequest(
+                "reward", "5 UVT", "shrink the payout", "test-admin", "10 UVT"));
+
+        assertThat(preview.getData()).containsEntry("approvalRequired", false);
+    }
+
+    @Test
+    void legacyEventAssetSwitchIgnoresTheLargerOldAmount() {
+        String id = "evt-cross-asset-decrease";
+        seedLegacyEventForRewardEdit(id, "100 UVT", "UVT", "100", 1);
+
+        var preview = service.previewQuestEventChange(id, "reward", new GrowthConfigUpdateRequest(
+                "reward", "10 USDT", "switch the payout asset", "test-admin", "100 UVT"));
+
+        assertThat(preview.getData()).containsEntry("approvalRequired", true);
     }
 
     @Test
@@ -2838,6 +2965,33 @@ class OpsGrowthServiceTest {
                     .ifPresent(event -> event.put("reward", reward));
             return 1;
         }).when(questEventMapper).updateReward(anyString(), anyString(), anyString(), any(), any());
+    }
+
+    private void seedWheelTier(String tier, String reward, int probability, boolean real, String kind,
+            String amount, String voucherId, int dailyStock) {
+        wheelTiers.clear();
+        wheelTiers.add(row(
+                "tier", tier,
+                "reward", reward,
+                "prob", probability,
+                "real", real,
+                "kind", kind,
+                "amount", new BigDecimal(amount),
+                "voucherId", voucherId,
+                "dailyStock", dailyStock));
+    }
+
+    /** 旧活动(无规则)奖励编辑的当前态:放大判定依赖 rewardType/rewardAmount/status/rewardWindow。 */
+    private void seedLegacyEventForRewardEdit(String eventId, String rewardName, String rewardType,
+            String rewardAmount, int status) {
+        when(questEventMapper.lockEventForMutation(eventId)).thenReturn(row(
+                "eventCode", eventId,
+                "status", status,
+                "rewardName", rewardName,
+                "rewardType", rewardType,
+                "rewardAmount", new BigDecimal(rewardAmount),
+                "rewardWindow", true,
+                "deleted", false));
     }
 
     private void seedEarnMilestones() {

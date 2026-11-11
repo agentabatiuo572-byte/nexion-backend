@@ -30,6 +30,7 @@ import ffdd.opsconsole.market.domain.RepurchaseStatsView;
 import ffdd.opsconsole.market.domain.RepurchaseStatusView;
 import ffdd.opsconsole.market.domain.StakingPositionView;
 import ffdd.opsconsole.market.domain.StakingProductView;
+import ffdd.opsconsole.market.mapper.AppGenesisMapper;
 import ffdd.opsconsole.market.mapper.ExchangeOrderMapper;
 import ffdd.opsconsole.market.dto.ExchangeParamUpdateRequest;
 import ffdd.opsconsole.market.dto.ExchangeQueueCancelRequest;
@@ -80,6 +81,7 @@ class OpsNexMarketServiceTest {
     private final AuditObjectLockMapper lockMapper = mock(AuditObjectLockMapper.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-17T00:00:00Z"), ZoneId.of("UTC"));
     private final SupportExchangeFundAdapter exchangeFunds=mock(SupportExchangeFundAdapter.class);
+    private final AppGenesisMapper appGenesisMapper = mock(AppGenesisMapper.class);
     private final OpsNexMarketService service = service();
 
     private OpsNexMarketService service() {
@@ -100,7 +102,7 @@ class OpsNexMarketServiceTest {
                 seedPolicy,
                 permissionCache,
                 lockMapper,
-                exchangeOrderMapper,exchangeFunds);
+                exchangeOrderMapper,exchangeFunds,appGenesisMapper);
         return service;
     }
 
@@ -1049,18 +1051,137 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
-    void updatingGenesisEmissionPolicyPersistsPlatformConfig() {
-        ApiResult<Map<String, Object>> result = service.updateGenesisParam(
+    void updatingGenesisEmissionPolicyRequiresApprovalBeforeWriting() {
+        assertThatThrownBy(() -> service.updateGenesisParam(
                 "idem-g4-emission",
                 "airdropPct",
-                new NexMarketValueUpdateRequest("9", "adjust protocol emission allocation", "superadmin"));
+                new NexMarketValueUpdateRequest("9", "adjust protocol emission allocation", "superadmin")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("G4_GENESIS_PARAM_APPROVAL_REQUIRED")
+                .extracting(error -> ((BizException) error).getCode())
+                .isEqualTo(409);
+
+        assertThat(configFacade.values).doesNotContainKey("G.genesis.airdropPct");
+        verify(auditLogService, never()).recordRequired(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    void replayingApprovedGenesisEmissionPolicyPersistsPlatformConfig() {
+        ApiResult<?> result = replayGenesisParam("airdropPct", "9", "idem-g4-emission-replay");
 
         assertThat(result.getCode()).isZero();
         assertThat(configFacade.values).containsEntry("G.genesis.airdropPct", "9");
-        assertThat((List<?>) result.getData().get("params"))
+        assertThat((List<?>) ((Map<?, ?>) result.getData()).get("params"))
                 .anySatisfy(item -> assertThat((Map<String, Object>) item)
                         .containsEntry("key", "airdropPct")
                         .containsEntry("displayValue", "9%"));
+    }
+
+    @Test
+    void raisingGenesisPriceDirectlyIsBlockedBecauseItRepricesExistingHoldings() {
+        assertThatThrownBy(() -> service.updateGenesisParam(
+                "idem-g4-price-raise",
+                "price",
+                new NexMarketValueUpdateRequest("10999", "raise genesis series price", "superadmin")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("G4_GENESIS_PARAM_APPROVAL_REQUIRED");
+
+        assertThat(marketRepository.activeGenesisPolicy().orElseThrow().priceUsdt()).isEqualByComparingTo("9999");
+    }
+
+    @Test
+    void loweringGenesisPriceIsTighteningAndWritesDirectly() {
+        ApiResult<Map<String, Object>> result = service.updateGenesisParam(
+                "idem-g4-price-lower",
+                "price",
+                new NexMarketValueUpdateRequest("8999", "lower genesis series price", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(marketRepository.activeGenesisPolicy().orElseThrow().priceUsdt()).isEqualByComparingTo("8999");
+    }
+
+    @Test
+    void loweringGenesisRoyaltyIsBlockedBecauseItReducesPlatformProceeds() {
+        assertThatThrownBy(() -> service.updateGenesisParam(
+                "idem-g4-royalty-lower",
+                "royalty",
+                new NexMarketValueUpdateRequest("2.0", "lower genesis resale royalty", "superadmin")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("G4_GENESIS_PARAM_APPROVAL_REQUIRED");
+
+        assertThat(marketRepository.activeGenesisPolicy().orElseThrow().royaltyPct()).isEqualByComparingTo("2.5");
+    }
+
+    @Test
+    void royaltyChangesBelowOneBasisPointAreNotAmplification() {
+        ApiResult<Map<String, Object>> result = service.updateGenesisParam(
+                "idem-g4-royalty-sub-bps",
+                "royalty",
+                new NexMarketValueUpdateRequest("2.4999", "royalty unchanged in whole basis points", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(marketRepository.activeGenesisPolicy().orElseThrow().royaltyPct()).isEqualByComparingTo("2.4999");
+    }
+
+    @Test
+    void replayingApprovedGenesisPriceChecksCoverageAgainstTheHoldingDividendDelta() {
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("110"), new BigDecimal("85"), true,
+                new BigDecimal("11000"), new BigDecimal("10000"), BigDecimal.ONE,
+                new BigDecimal("11000"), new BigDecimal("10000"));
+        when(appGenesisMapper.activeSeries()).thenReturn(new AppGenesisMapper.SeriesRow(
+                1L, "GNS-1", "Genesis", 1000, new BigDecimal("9999"), 250, new BigDecimal("0.1"), "ACTIVE"));
+        when(appGenesisMapper.genesisPriceLiabilityIncrease("GNS-1", new BigDecimal("10999")))
+                .thenReturn(new BigDecimal("5000"));
+
+        ApiResult<?> result = null;
+        try {
+            result = replayGenesisParam("price", "10999", "idem-g4-price-replay");
+        } catch (BizException failure) {
+            assertThat(failure.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+            assertThat(failure.getMessage()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        }
+
+        assertThat(result).isNull();
+        assertThat(marketRepository.activeGenesisPolicy().orElseThrow().priceUsdt()).isEqualByComparingTo("9999");
+        verify(appGenesisMapper).genesisPriceLiabilityIncrease("GNS-1", new BigDecimal("10999"));
+    }
+
+    @Test
+    void replayingApprovedGenesisPriceBelowRedlineWritesTheNewSeriesPrice() {
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("110"), new BigDecimal("85"), true,
+                new BigDecimal("11000"), new BigDecimal("10000"), BigDecimal.ONE,
+                new BigDecimal("11000"), new BigDecimal("10000"));
+        when(appGenesisMapper.activeSeries()).thenReturn(new AppGenesisMapper.SeriesRow(
+                1L, "GNS-1", "Genesis", 1000, new BigDecimal("9999"), 250, new BigDecimal("0.1"), "ACTIVE"));
+        when(appGenesisMapper.genesisPriceLiabilityIncrease("GNS-1", new BigDecimal("10199")))
+                .thenReturn(new BigDecimal("100"));
+
+        ApiResult<?> result = replayGenesisParam("price", "10199", "idem-g4-price-replay-ok");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(marketRepository.activeGenesisPolicy().orElseThrow().priceUsdt()).isEqualByComparingTo("10199");
+    }
+
+    @Test
+    void showcaseToggleStaysADirectWrite() {
+        ApiResult<Map<String, Object>> result = service.updateGenesisParam(
+                "idem-g4-showcase",
+                "showcaseEnabled",
+                new NexMarketValueUpdateRequest("true", "show genesis storefront in app", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("market.genesis.ops.showcase_enabled", "true");
+    }
+
+    private ApiResult<?> replayGenesisParam(String paramKey, String value, String idempotencyKey) {
+        ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay();
+        try {
+            return service.replay(
+                    new AuditReplayCommand("G", "g4_genesis_param", Map.of("paramKey", paramKey, "value", value)),
+                    new AuditReplayContext("superadmin", "g4 genesis parameter replay", idempotencyKey));
+        } finally {
+            ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay();
+        }
     }
 
     @Test

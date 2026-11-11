@@ -370,7 +370,7 @@ class OpsI18nLearningServiceTest {
     }
 
     @Test
-    void rollbackRewardVersionBelowRedlineIsRejectedWithoutActivation() {
+    void rollbackToARewardedVersionReturnsApprovalRequiredBeforeAnyCoverageCheck() {
         I18nLearningRepository versionRepository = mock(I18nLearningRepository.class);
         LearningCourseView live = new LearningCourseView(
                 "course-redline", "当前课程", "Basics", "Article", "Beginner", new BigDecimal("5"),
@@ -379,8 +379,9 @@ class OpsI18nLearningServiceTest {
         LearningCourseVersionView target = new LearningCourseVersionView(
                 "course-redline", "v2", "SUPERSEDED", rollbackPayload, 1L,
                 LocalDateTime.of(2026, 6, 1, 0, 0), LocalDateTime.of(2026, 6, 2, 0, 0));
-        when(versionRepository.findCourse("course-redline")).thenReturn(Optional.of(live));
+        when(versionRepository.findCourseForUpdate("course-redline")).thenReturn(Optional.of(live));
         when(versionRepository.findCourseVersion("course-redline", "v2")).thenReturn(Optional.of(target));
+        when(versionRepository.findCourseVersionForActivation("course-redline", "v2")).thenReturn(Optional.of(target));
         OpsI18nLearningService redlineService = new OpsI18nLearningService(
                 versionRepository,
                 auditLogService,
@@ -392,23 +393,18 @@ class OpsI18nLearningServiceTest {
 
         var result = redlineService.rollbackCourseVersion(
                 "course-redline", "v2", "idem-i7-rollback-redline",
-                new I18nActionRequest("Marina K.", "回滚课程版本并校验资金红线"));
+                new I18nActionRequest("Marina K.", "回滚到有奖励的课程版本需走审批"));
 
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
-        assertThat(result.getMessage()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        // T11-7：目标版本有奖励就先要求 A2 审批,覆盖率在审批回放时才校验。
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("LEARNING_COURSE_ACTIVATION_APPROVAL_REQUIRED");
         verify(versionRepository, never()).activateCourseVersion(
                 anyString(), anyString(), anyString(), anyString(), anyLong(), any(LocalDateTime.class));
-        ArgumentCaptor<AuditLogWriteRequest> auditCaptor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).recordRequired(auditCaptor.capture());
-        assertThat(auditCaptor.getValue().getResult()).isEqualTo("REJECTED");
-        assertThat(((java.util.Map<?, ?>) auditCaptor.getValue().getDetail()).get("coverageRatio"))
-                .isEqualTo(new BigDecimal("88"));
-        assertThat(((java.util.Map<?, ?>) auditCaptor.getValue().getDetail()).get("redlinePct"))
-                .isEqualTo(new BigDecimal("100"));
+        verify(auditLogService, never()).recordRequired(any(AuditLogWriteRequest.class));
     }
 
     @Test
-    void rollbackLowerRewardVersionBelowRedlineIsAllowed() {
+    void rollbackToALowerButRewardedVersionStillRequiresApproval() {
         I18nLearningRepository versionRepository = mock(I18nLearningRepository.class);
         LearningCourseView live = new LearningCourseView(
                 "course-safe-rollback", "当前课程", "Basics", "Article", "Beginner", new BigDecimal("20"),
@@ -417,14 +413,10 @@ class OpsI18nLearningServiceTest {
         LearningCourseVersionView target = new LearningCourseVersionView(
                 "course-safe-rollback", "v2", "SUPERSEDED", rollbackPayload, 1L,
                 LocalDateTime.of(2026, 6, 1, 0, 0), LocalDateTime.of(2026, 6, 2, 0, 0));
-        LearningCourseView rolledBack = new LearningCourseView(
-                "course-safe-rollback", "历史课程", "Basics", "Article", "Beginner", new BigDecimal("5"),
-                false, "5 min", "v2", "published", "历史正文");
-        when(versionRepository.findCourse("course-safe-rollback")).thenReturn(Optional.of(live));
+        when(versionRepository.findCourseForUpdate("course-safe-rollback")).thenReturn(Optional.of(live));
         when(versionRepository.findCourseVersion("course-safe-rollback", "v2")).thenReturn(Optional.of(target));
-        when(versionRepository.activateCourseVersion(
-                eq("course-safe-rollback"), eq("v2"), eq("SUPERSEDED"), eq("v3"), eq(0L), any(LocalDateTime.class)))
-                .thenReturn(rolledBack);
+        when(versionRepository.findCourseVersionForActivation("course-safe-rollback", "v2"))
+                .thenReturn(Optional.of(target));
         OpsI18nLearningService redlineService = new OpsI18nLearningService(
                 versionRepository, auditLogService,
                 () -> new TreasuryCoverageSnapshot(new BigDecimal("88"), new BigDecimal("100")),
@@ -434,11 +426,50 @@ class OpsI18nLearningServiceTest {
 
         var result = redlineService.rollbackCourseVersion(
                 "course-safe-rollback", "v2", "idem-i7-safe-rollback",
-                new I18nActionRequest("Marina K.", "降低课程奖励并安全回滚版本"));
+                new I18nActionRequest("Marina K.", "回滚到奖励更低的版本也要走审批"));
 
+        // T11-7：降额回滚同样会重新发放奖励,所以等额/降额也必须审批。
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("LEARNING_COURSE_ACTIVATION_APPROVAL_REQUIRED");
+        verify(versionRepository, never()).activateCourseVersion(
+                anyString(), anyString(), anyString(), anyString(), anyLong(), any(LocalDateTime.class));
+    }
+
+    @Test
+    void rollbackToAZeroRewardVersionActivatesDirectly() {
+        I18nLearningRepository versionRepository = mock(I18nLearningRepository.class);
+        LearningCourseView live = new LearningCourseView(
+                "course-free-rollback", "当前课程", "Basics", "Article", "Beginner", new BigDecimal("20"),
+                false, "5 min", "v3", "published", "当前正文");
+        LearningCourseUpsertRequest rollbackPayload = completeCourseRequest("draft", BigDecimal.ZERO);
+        LearningCourseVersionView target = new LearningCourseVersionView(
+                "course-free-rollback", "v2", "SUPERSEDED", rollbackPayload, 1L,
+                LocalDateTime.of(2026, 6, 1, 0, 0), LocalDateTime.of(2026, 6, 2, 0, 0));
+        LearningCourseView rolledBack = new LearningCourseView(
+                "course-free-rollback", "历史课程", "Basics", "Article", "Beginner", BigDecimal.ZERO,
+                false, "5 min", "v2", "published", "历史正文");
+        when(versionRepository.findCourseForUpdate("course-free-rollback")).thenReturn(Optional.of(live));
+        when(versionRepository.findCourseVersion("course-free-rollback", "v2")).thenReturn(Optional.of(target));
+        when(versionRepository.findCourseVersionForActivation("course-free-rollback", "v2"))
+                .thenReturn(Optional.of(target));
+        when(versionRepository.activateCourseVersion(
+                eq("course-free-rollback"), eq("v2"), eq("SUPERSEDED"), eq("v3"), eq(0L), any(LocalDateTime.class)))
+                .thenReturn(rolledBack);
+        OpsI18nLearningService redlineService = new OpsI18nLearningService(
+                versionRepository, auditLogService,
+                () -> new TreasuryCoverageSnapshot(new BigDecimal("88"), new BigDecimal("100")),
+                Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneId.of("UTC")),
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(), lockMapper,
+                eventOutboxService);
+
+        var result = redlineService.rollbackCourseVersion(
+                "course-free-rollback", "v2", "idem-i7-free-rollback",
+                new I18nActionRequest("Marina K.", "回滚到无奖励版本不产生资金流出"));
+
+        // T11-7：目标版本没有奖励时不会重新发奖,直写即可。
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().version()).isEqualTo("v2");
-        assertThat(result.getData().rewardNex()).isEqualByComparingTo("5");
+        assertThat(result.getData().rewardNex()).isEqualByComparingTo("0");
     }
 
     @Test
@@ -448,10 +479,12 @@ class OpsI18nLearningServiceTest {
                 "course-concurrent", "当前课程", "Basics", "Article", "Beginner", new BigDecimal("20"),
                 false, "5 min", "v3", "published", "当前正文");
         LearningCourseVersionView target = new LearningCourseVersionView(
-                "course-concurrent", "v2", "SUPERSEDED", completeCourseRequest("draft", new BigDecimal("5")), 1L,
+                "course-concurrent", "v2", "SUPERSEDED", completeCourseRequest("draft", BigDecimal.ZERO), 1L,
                 LocalDateTime.of(2026, 6, 1, 0, 0), LocalDateTime.of(2026, 6, 2, 0, 0));
-        when(versionRepository.findCourse("course-concurrent")).thenReturn(Optional.of(live));
+        when(versionRepository.findCourseForUpdate("course-concurrent")).thenReturn(Optional.of(live));
         when(versionRepository.findCourseVersion("course-concurrent", "v2")).thenReturn(Optional.of(target));
+        when(versionRepository.findCourseVersionForActivation("course-concurrent", "v2"))
+                .thenReturn(Optional.of(target));
         when(versionRepository.activateCourseVersion(
                 eq("course-concurrent"), eq("v2"), eq("SUPERSEDED"), eq("v3"), eq(0L), any(LocalDateTime.class)))
                 .thenThrow(new IllegalStateException("LEARNING_COURSE_CURRENT_VERSION_CONFLICT"));
@@ -461,12 +494,11 @@ class OpsI18nLearningServiceTest {
                 ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(), lockMapper,
                 eventOutboxService);
 
-        var result = concurrentService.rollbackCourseVersion(
-                "course-concurrent", "v2", "idem-i7-concurrent-rollback",
-                new I18nActionRequest("Marina K.", "并发回滚课程版本状态校验"));
-
-        assertThat(result.getCode()).isEqualTo(409);
-        assertThat(result.getMessage()).isEqualTo("LEARNING_COURSE_CURRENT_VERSION_CONFLICT");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> concurrentService.rollbackCourseVersion(
+                        "course-concurrent", "v2", "idem-i7-concurrent-rollback",
+                        new I18nActionRequest("Marina K.", "并发回滚课程版本状态校验")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("LEARNING_COURSE_CURRENT_VERSION_CONFLICT");
         verify(auditLogService, never()).recordRequired(any(AuditLogWriteRequest.class));
     }
 
