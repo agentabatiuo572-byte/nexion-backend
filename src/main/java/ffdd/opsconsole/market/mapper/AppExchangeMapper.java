@@ -365,9 +365,23 @@ public interface AppExchangeMapper {
             """)
     ExchangeRow recoveryOrder(@Param("userId") Long userId, @Param("exchangeNo") String exchangeNo);
 
+    /**
+     * Read-only projection of the orders that are really still queued. Used by the G2 approval path to price the
+     * exact extra payout a fee change creates (decision T11-1: no forecast, only orders already in the queue).
+     * Deliberately non-locking: a proposal must never block the batch executor.
+     */
+    @Select("""
+            SELECT UPPER(o.from_asset) AS fromAsset,o.from_amount AS fromAmount
+              FROM nx_exchange_order o
+              JOIN nx_user u ON u.id=o.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+             WHERE UPPER(o.status)='QUEUED' AND o.is_deleted=0
+            """)
+    List<QueuedAmountRow> queuedAmounts();
+
     record ExchangeRow(String exchangeNo,String fromAsset,String toAsset,BigDecimal fromAmount,
                        BigDecimal toAmount,BigDecimal rate,String status,LocalDateTime createdAt) {}
     record QueuedRow(Long userId,String exchangeNo,String fromAsset,BigDecimal fromAmount) {}
+    record QueuedAmountRow(String fromAsset,BigDecimal fromAmount) {}
     record UserAttribution(String phase,Integer accountAgeMonths,String cohort) {}
     record MarketPoint(BigDecimal priceUsdt,LocalDateTime sampledAt) {}
     record ExternalMarketPoint(String metricCode,String metricLabel,BigDecimal priceUsdt,

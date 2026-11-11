@@ -60,6 +60,7 @@ import ffdd.opsconsole.growth.application.H7VoucherDisposition;
 import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.team.application.BinaryCommissionSettlementService.SettlementResult;
 import ffdd.opsconsole.team.application.TeamFundApproval;
+import ffdd.opsconsole.market.application.G2G7ParamApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
 import ffdd.opsconsole.market.application.G4CatalogApproval;
 import ffdd.opsconsole.market.application.G4DividendApproval;
@@ -1028,6 +1029,7 @@ public class OpsAuditCenterService {
                     : G4CatalogApproval.supports(cmd) ? G4CatalogApproval.TARGET
                     : TeamFundApproval.supports(cmd) ? TeamFundApproval.target(cmd)
                     : G3MarketApproval.supports(cmd) ? G3MarketApproval.target(cmd)
+                    : G2G7ParamApproval.supports(cmd) ? G2G7ParamApproval.target(cmd)
                     : H5GrowthApproval.supports(cmd) ? H5GrowthApproval.target(cmd)
                     : G4DividendApproval.supports(cmd) ? G4DividendApproval.target(cmd)
                     : H3GrowthApproval.supports(cmd) ? H3GrowthApproval.target(cmd)
@@ -1226,6 +1228,7 @@ public class OpsAuditCenterService {
                 || LearningCourseActivationApproval.supports(command)
                 || E2TaskPricingApproval.supports(command) || TeamFundApproval.supports(command)
                 || G3MarketApproval.supports(command) || H8RewardParamApproval.supports(command)
+                || G2G7ParamApproval.supports(command)
                 || G4CatalogApproval.supports(command) || G4DividendApproval.supports(command) || H5GrowthApproval.supports(command)
                 || H3GrowthApproval.supports(command)
                 || H4GrowthApproval.supports(command) || K2OtpInitialApproval.supports(command);

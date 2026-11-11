@@ -12,6 +12,7 @@ import ffdd.opsconsole.device.application.OpsDeviceService;
 import ffdd.opsconsole.growth.application.OpsGrowthService;
 import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
+import ffdd.opsconsole.market.application.G2G7ParamApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
 import ffdd.opsconsole.market.application.G4CatalogApproval;
 import ffdd.opsconsole.market.application.G4DividendApproval;
@@ -144,6 +145,8 @@ public class AuditReplayBusinessPermissionGuard {
     private ffdd.opsconsole.team.application.AmbassadorMaterialService ambassadorMaterials;
     @Autowired
     private G3MarketApproval g3MarketApproval;
+    @Autowired
+    private G2G7ParamApproval g2g7ParamApproval;
     @Autowired
     private G4CatalogApproval g4CatalogApproval;
     @Autowired
@@ -349,6 +352,10 @@ public class AuditReplayBusinessPermissionGuard {
             return g3MarketApproval.canPropose(command)
                     ? ApiResult.ok() : ApiResult.fail(403, "G3_APPROVAL_MAKER_FORBIDDEN");
         }
+        if (G2G7ParamApproval.supports(command)) {
+            return g2g7ParamApproval.canPropose(command)
+                    ? ApiResult.ok() : ApiResult.fail(403, "G2G7_PARAM_MAKER_FORBIDDEN");
+        }
         if (H5GrowthApproval.supports(command)) {
             return h5GrowthApproval.canPropose(command)
                     ? ApiResult.ok() : ApiResult.fail(403, "H5_MAKER_FORBIDDEN");
@@ -535,6 +542,9 @@ public class AuditReplayBusinessPermissionGuard {
         if (G3MarketApproval.supports(command)) {
             return ApiResult.ok(g3MarketApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
         }
+        if (G2G7ParamApproval.supports(command)) {
+            return ApiResult.ok(g2g7ParamApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
+        }
         if (H5GrowthApproval.supports(command)) {
             return ApiResult.ok(h5GrowthApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
         }
@@ -589,6 +599,7 @@ public class AuditReplayBusinessPermissionGuard {
         if (H3GrowthApproval.supports(command)) return h3GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         if (K2OtpInitialApproval.supports(command)) return k2OtpInitialApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         if (G3MarketApproval.supports(command)) return g3MarketApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+        if (G2G7ParamApproval.supports(command)) return g2g7ParamApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         if (H5GrowthApproval.supports(command)) return h5GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         if (H8RewardParamApproval.supports(command)) return h8RewardParamApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         if (TeamFundApproval.supports(command)) return teamFundApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
@@ -646,7 +657,8 @@ public class AuditReplayBusinessPermissionGuard {
                 || OpsI18nLearningService.isCourseRewardAdjustment(command) || G4CatalogApproval.supports(command)
                 || LearningCourseActivationApproval.supports(command) || H4GrowthApproval.supports(command)
                 || G4DividendApproval.supports(command) || H3GrowthApproval.supports(command) || K2OtpInitialApproval.supports(command)
-                || G3MarketApproval.supports(command) || H5GrowthApproval.supports(command) || H8RewardParamApproval.supports(command)
+                || G3MarketApproval.supports(command) || G2G7ParamApproval.supports(command)
+                || H5GrowthApproval.supports(command) || H8RewardParamApproval.supports(command)
                 || TeamFundApproval.supports(command) || E2TaskPricingApproval.supports(command)
                 || TreasuryThresholdApproval.supports(command) || WithdrawalConfigApproval.supports(command)) return ApiResult.ok();
         String operation = text(command.op()).toLowerCase(Locale.ROOT);
@@ -949,6 +961,19 @@ public class AuditReplayBusinessPermissionGuard {
             var review = preview.getData();
             return ApiResult.ok(new DelegatedProposalDescriptor(
                     review.action(), target.id(), review.before(), review.after(), "K2", "fund", true, target));
+        }
+        if (G2G7ParamApproval.supports(command)) {
+            AuditLockTarget target = G2G7ParamApproval.target(command);
+            String domain = G2G7ParamApproval.sourceDomain(command);
+            if (target == null || !domain.equals(text(request.sourceDomain())) || !target.id().equals(text(request.obj()))
+                    || !target.equals(request.target()) || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            var review = g2g7ParamApproval.preview(command, request.reason());
+            return ApiResult.ok(new DelegatedProposalDescriptor(
+                    G2G7ParamApproval.proposalAction(command), target.id(),
+                    String.valueOf(review.get("before")), String.valueOf(review.get("after")),
+                    domain, "fund", true, target));
         }
         if (G3MarketApproval.supports(command)) {
             if (!"G3".equals(text(request.sourceDomain())) || (request.targets() != null && !request.targets().isEmpty())) {
