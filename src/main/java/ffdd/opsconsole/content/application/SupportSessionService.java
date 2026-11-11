@@ -106,15 +106,10 @@ public class SupportSessionService {
         if(bindings.writerGrant(actor).isEmpty()) throw new BizException(403,"SUPPORT_WRITE_FORBIDDEN");
         SupportAttachmentService.token(key);
         String requestedRef=body==null||body.sessionRef()==null?null:body.sessionRef().trim();
-        Hold current=sessions.hold(customer);
-        if(requestedRef!=null && !requestedRef.isEmpty()) {
-            // A command belongs to one reception instance. A new reception, or an old local command from the
-            // previous one, must not end whichever session happens to be current now.
-            if(current==null || !requestedRef.equals(sessionRef(current)))
-                throw new BizException(409,"SUPPORT_SESSION_CHANGED");
-        }
         String reference=requestedRef==null||requestedRef.isEmpty()?Long.toString(customer):customer+"|"+requestedRef;
         return commands.executeRetained("M3_SESSION_END:"+actor,key,reference,ApiResult.class,()->{
+            // Instance validation belongs to the first execution only. A successful retry of the original key/body
+            // must return its durable receipt even if a newer reception R2 is now current; it must not change R2.
             Hold row=active(customer);
             if(row==null || row.adminId()!=actor) throw new BizException(409,"SUPPORT_SESSION_NOT_HOLDER");
             if(requestedRef!=null && !requestedRef.isEmpty() && !requestedRef.equals(sessionRef(row)))
