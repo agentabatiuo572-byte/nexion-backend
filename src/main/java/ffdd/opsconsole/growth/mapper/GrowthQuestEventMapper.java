@@ -1024,6 +1024,16 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             """)
     List<Map<String, Object>> streakMilestones();
 
+    @Select("""
+            SELECT id, milestone_day AS day, reward_type AS rewardType, reward_amount AS amount,
+                   reward_name AS reward, badge_achievement_code AS badgeCode, status, is_deleted AS deleted
+              FROM nx_streak_milestone WHERE id=#{milestoneId} FOR UPDATE
+            """)
+    Map<String, Object> lockStreakMilestone(@Param("milestoneId") int milestoneId);
+
+    @Select("SELECT COUNT(*) FROM nx_achievement WHERE achievement_code=#{badgeCode} AND status=1 AND is_deleted=0")
+    int activeStreakBadge(@Param("badgeCode") String badgeCode);
+
     @Update("""
             UPDATE nx_streak_milestone
                SET reward_name = #{rewardName},
@@ -1043,14 +1053,17 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             UPDATE nx_streak_milestone
                SET reward_name=#{rewardName},reward_type=#{rewardType},
                    reward_amount=#{rewardAmount},updated_at=NOW()
-             WHERE id=#{milestoneId} AND reward_name=#{expectedReward} AND is_deleted=0
+             WHERE id=#{milestoneId} AND BINARY reward_name=BINARY #{before.reward}
+               AND BINARY reward_type=BINARY #{before.rewardType} AND reward_amount=#{before.amount}
+               AND badge_achievement_code <=> #{before.badgeCode}
+               AND milestone_day=#{before.day} AND status=#{before.status} AND is_deleted=#{before.deleted}
             """)
     int updateStreakMilestoneRewardCas(
             @Param("milestoneId") int milestoneId,
             @Param("rewardName") String rewardName,
             @Param("rewardType") String rewardType,
             @Param("rewardAmount") BigDecimal rewardAmount,
-            @Param("expectedReward") String expectedReward);
+            @Param("before") Map<String, Object> before);
 
     @Select("""
             SELECT CONCAT(current_streak, ' 天') AS day,
