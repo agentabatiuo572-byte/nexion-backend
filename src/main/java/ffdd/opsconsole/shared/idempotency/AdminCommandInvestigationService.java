@@ -230,6 +230,9 @@ public class AdminCommandInvestigationService {
         if (scope.startsWith("E5_DEVICE_")) return (scope.startsWith("E5_DEVICE_BATCH_") ? "USER_DEVICE_BATCH" : "DEVICE").equals(fact.getResourceType())
                 && Set.of("ADMIN.DEVICE_ACTIVATED", "ADMIN.DEVICE_DEACTIVATION_REQUESTED",
                         "ADMIN.DEVICE_DEACTIVATED", "ADMIN.DEVICE_PAUSED", "ADMIN.DEVICE_RESUMED").contains(action);
+        if ("E6_PHONE_RISK_SETTINGS".equals(scope)) return "CONFIG".equals(fact.getResourceType())
+                && "ADMIN.PHONE_RISK_SETTINGS_UPDATED".equals(action)
+                && "E.compute.phoneRisk.settings".equals(fact.getResourceId());
         return Set.of("D2_WITHDRAWAL_CHAIN_CONFIRMED", "D2_WITHDRAWAL_REVIEW_APPROVE", "D2_WITHDRAWAL_REVIEW_REJECT",
                 "D2_WITHDRAWAL_REVIEW_REFUND", "D2_WITHDRAWAL_REVIEW_DELAY", "D2_WITHDRAWAL_REVIEW_FREEZE",
                 "D3_FORECAST_CONFIG_CHANGED", "D3_TREASURY_RESERVE_INJECTION", "D3_RECONCILIATION_EXPORTED", "D3_LIABILITIES_EXPORTED", "D3_SENSITIVE_EXPORT_A2_AUDITED",
