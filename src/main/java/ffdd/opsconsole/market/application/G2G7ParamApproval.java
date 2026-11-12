@@ -114,9 +114,15 @@ public class G2G7ParamApproval {
         if (current == null) {
             throw new BizException(422, "G2G7_PARAM_KEY_INVALID");
         }
+        String candidate = candidateValue(command, text(command.params().get("value")));
+        if (candidate == null) {
+            throw new BizException(422, "G2G7_PARAM_VALUE_INVALID");
+        }
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("paramKey", text(command.params().get("paramKey")));
-        params.put("value", text(command.params().get("value")));
+        // Persist the server-normalized candidate (e.g. 13% -> 13) so preview, approval and the
+        // official replay service all read the same value.
+        params.put("value", candidate);
         params.put("expectedValue", current);
         params.put("makerAdminId", makerId);
         return new AuditReplayCommand("G", command.op(), Map.copyOf(params));
@@ -187,6 +193,17 @@ public class G2G7ParamApproval {
         String paramKey = text(params.get("paramKey"));
         String value = text(params.get("value"));
         String expectedValue = text(params.get("expectedValue"));
+        // Approval replay revalidates the exact old value bound at proposal time. G7's official service
+        // does not carry expectedValue, so this check must happen before it; G2 also keeps its own check.
+        String current = currentValue(command);
+        if (current == null || !expectedValue.equals(current)) {
+            return ApiResult.fail(409, staleCode(command));
+        }
+        String candidate = candidateValue(command, value);
+        if (candidate == null) {
+            return ApiResult.fail(422, "G2G7_PARAM_VALUE_INVALID");
+        }
+        value = candidate;
         // 回放走与直写同一正式服务:旧值快照校验、放大方向复核、覆盖率、落库、审计和业务事件都只做一次。
         return G2.equals(command.op())
                 ? exchangeCommands.exchangeParam(context.idempotencyKey(), paramKey,
