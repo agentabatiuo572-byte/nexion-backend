@@ -47,7 +47,7 @@ public interface AdminCommandInvestigationMapper extends BaseMapper<AdminCommand
             SELECT id, action, resource_type AS resourceType, resource_id AS resourceId,
                    actor_id AS actorId, method, path, detail_json AS detailJson, created_at AS createdAt
               FROM nx_audit_log
-             WHERE id=#{auditId} AND is_deleted=0 AND result='SUCCESS' AND actor_type='ADMIN'
+             WHERE id=#{auditId} AND is_deleted=0 AND result IN ('SUCCESS', 'SUCCEEDED') AND actor_type='ADMIN'
                AND actor_id=#{original.originAdminId}
                AND method=#{original.originMethod} AND BINARY path=BINARY #{original.originPath}
                AND created_at >= #{original.createdAt}

@@ -1535,7 +1535,20 @@ public class OpsAuditCenterService {
                     suspended ? FundEffect.REWARD_SUSPENSION : FundEffect.REWARD_RESUMPTION, null);
         }
         String orderNo = "E".equals(domain) ? refundOrderNo(command) : null;
-        return orderNo == null ? TicketMetadata.NONE : new TicketMetadata(E4_ORDER_REFUND, FundEffect.ORDER_REFUND, orderNo);
+        if (orderNo != null) {
+            return new TicketMetadata(E4_ORDER_REFUND, FundEffect.ORDER_REFUND, orderNo);
+        }
+        // Preserve the existing E4 refund contract: a refund command without an order number
+        // stays without an operation code; it must not fall through to a generic code.
+        if ("E".equals(domain) && command != null && E4_ORDER_REFUND.equals(command.op())) {
+            return TicketMetadata.NONE;
+        }
+        // Command tickets use the persisted, parsed command op as the stable operation identifier.
+        // Old tickets without a command keep NONE; never infer from action names or review text.
+        if (command != null && StringUtils.hasText(command.op())) {
+            return new TicketMetadata(command.op(), null, null);
+        }
+        return TicketMetadata.NONE;
     }
 
     private AuditOperationTicket toTicket(AuditOperationTicketEntity row, boolean mine) {
