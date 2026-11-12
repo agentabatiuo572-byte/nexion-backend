@@ -62,7 +62,7 @@ public interface DeviceOpsRepository {
 
     void syncSimulatedPause(Long userId, List<Long> deviceIds, boolean pause, LocalDateTime now);
 
-    DeviceTradeinOverviewView e3TradeinOverview(LocalDateTime since, LocalDateTime monthStart, int cliffMonth);
+    DeviceTradeinOverviewView e3TradeinOverview(LocalDateTime since, LocalDateTime monthStart, int earlyEnd, int midEnd);
 
     Optional<DeviceOpsView> executeTradeinAction(String operation, Long deviceId, String tradeInNo, LocalDateTime now);
 

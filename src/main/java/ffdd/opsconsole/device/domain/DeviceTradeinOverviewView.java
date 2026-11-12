@@ -6,6 +6,8 @@ import java.util.List;
 public record DeviceTradeinOverviewView(
         BigDecimal averageAgeMonths,
         Long cliffDeviceCount,
+        Long earlyDeviceCount,
+        Long midDeviceCount,
         Long tradeinMonthCount,
         BigDecimal tradeinDiscountUsdt,
         Long k2ArbitrageHits,
