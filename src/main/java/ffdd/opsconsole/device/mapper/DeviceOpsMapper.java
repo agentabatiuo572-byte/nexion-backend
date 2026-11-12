@@ -475,14 +475,18 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     int restoreDeviceRuntime(@Param("deviceId") Long deviceId, @Param("restoredAt") LocalDateTime restoredAt);
 
     @Select("""
-            SELECT COALESCE(AVG(TIMESTAMPDIFF(MONTH, COALESCE(d.purchased_at, d.activated_at, d.created_at), NOW())), 0) AS averageAgeMonths,
-                   COALESCE(SUM(CASE WHEN TIMESTAMPDIFF(MONTH, COALESCE(d.purchased_at, d.activated_at, d.created_at), NOW()) >= #{cliffMonth}
-                                     THEN 1 ELSE 0 END), 0) AS cliffDeviceCount
-              FROM nx_user_device d
-             WHERE d.is_deleted = 0
-               AND d.status NOT IN ('RECYCLED','DEACTIVATED','INACTIVE','RETIRED')
+            SELECT AVG(ageMonths) AS averageAgeMonths,
+                   COALESCE(SUM(CASE WHEN ageMonths > #{midEnd} THEN 1 ELSE 0 END), 0) AS cliffDeviceCount,
+                   COALESCE(SUM(CASE WHEN ageMonths <= #{earlyEnd} THEN 1 ELSE 0 END), 0) AS earlyDeviceCount,
+                   COALESCE(SUM(CASE WHEN ageMonths > #{earlyEnd} AND ageMonths <= #{midEnd} THEN 1 ELSE 0 END), 0) AS midDeviceCount
+              FROM (
+                  SELECT TIMESTAMPDIFF(MONTH, COALESCE(d.purchased_at, d.activated_at, d.created_at), NOW()) AS ageMonths
+                    FROM nx_user_device d
+                   WHERE d.is_deleted = 0
+                     AND d.status NOT IN ('RECYCLED','DEACTIVATED','INACTIVE','RETIRED')
+              ) device_age
             """)
-    TradeinOverviewMetrics tradeinOverviewMetrics(@Param("cliffMonth") int cliffMonth);
+    TradeinOverviewMetrics tradeinOverviewMetrics(@Param("earlyEnd") int earlyEnd, @Param("midEnd") int midEnd);
 
     @Select("""
             SELECT COUNT(*)
@@ -748,7 +752,8 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     record LifecycleRuleRow(Integer startMonth, Integer endMonth, BigDecimal monthlyDecayRate, BigDecimal floorEfficiency) {
     }
 
-    record TradeinOverviewMetrics(BigDecimal averageAgeMonths, Long cliffDeviceCount) {
+    record TradeinOverviewMetrics(BigDecimal averageAgeMonths, Long cliffDeviceCount,
+                                  Long earlyDeviceCount, Long midDeviceCount) {
     }
 
     record TradeinTxMetrics(Long successCount, Long failureCount, Long rollbackCount, LocalDateTime latestAt) {

@@ -253,8 +253,8 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
     }
 
     @Override
-    public DeviceTradeinOverviewView e3TradeinOverview(LocalDateTime since, LocalDateTime monthStart, int cliffMonth) {
-        DeviceOpsMapper.TradeinOverviewMetrics metrics = mapper.tradeinOverviewMetrics(cliffMonth);
+    public DeviceTradeinOverviewView e3TradeinOverview(LocalDateTime since, LocalDateTime monthStart, int earlyEnd, int midEnd) {
+        DeviceOpsMapper.TradeinOverviewMetrics metrics = mapper.tradeinOverviewMetrics(earlyEnd, midEnd);
         List<DeviceTradeinTxView> txStats = new ArrayList<>();
         txStats.add(txStat("recycle", "设备回收", "POST /api/admin/devices/e3/tradein/recycle", since));
         txStats.add(txStat("replace", "设备置换", "POST /api/admin/devices/e3/tradein/replace", since));
@@ -262,6 +262,8 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
         return new DeviceTradeinOverviewView(
                 metrics.averageAgeMonths(),
                 metrics.cliffDeviceCount(),
+                metrics.earlyDeviceCount(),
+                metrics.midDeviceCount(),
                 mapper.countTradeinApplicationsSince(monthStart),
                 safe(mapper.sumTradeinDiscountSince(monthStart)),
                 mapper.countK2ArbitrageHits(),

@@ -3083,12 +3083,14 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     public ApiResult<DeviceTradeinOverviewView> e3TradeinOverview() {
         Map<String, String> config = deviceRepository.e3Config();
-        int cliffMonth = parsePositiveInt(config.get("stageMidEnd"), 0) + 1;
+        int earlyEnd = parsePositiveInt(config.get("stageEarlyEnd"), 0);
+        int midEnd = parsePositiveInt(config.get("stageMidEnd"), 0);
         LocalDateTime now = LocalDateTime.now(clock);
         return ApiResult.ok(deviceRepository.e3TradeinOverview(
                 now.minusHours(24),
                 ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(now).withDayOfMonth(1)),
-                cliffMonth));
+                earlyEnd,
+                midEnd));
     }
 
     @Transactional(rollbackFor = Exception.class)
