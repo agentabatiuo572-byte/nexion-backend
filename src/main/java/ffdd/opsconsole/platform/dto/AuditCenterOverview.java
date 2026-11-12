@@ -90,7 +90,8 @@ public record AuditCenterOverview(
             String st,
             String chain,
             String t,
-            String note) {
+            String note,
+            String operationCode) {
     }
 
     public record AuditMechanismParam(

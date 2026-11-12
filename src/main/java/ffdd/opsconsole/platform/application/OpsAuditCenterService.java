@@ -1680,7 +1680,9 @@ public class OpsAuditCenterService {
                         ticket.getDecidedAt() == null ? LocalDateTime.now().format(ISO) : ticket.getDecidedAt().format(ISO),
                         "原因:" + (StringUtils.hasText(ticket.getDecisionReason())
                                 ? ticket.getDecisionReason()
-                                : ticket.getReason()))));
+                                : ticket.getReason()),
+                        ticketsById.get(ticket.getOperationId()) == null
+                                ? null : ticketsById.get(ticket.getOperationId()).operationCode())));
         historyMapper.selectList(new LambdaQueryWrapper<AuditOperationHistoryEntity>()
                         .eq(AuditOperationHistoryEntity::getIsDeleted, 0)
                         .orderByDesc(AuditOperationHistoryEntity::getId))
@@ -1694,7 +1696,9 @@ public class OpsAuditCenterService {
                         status(row.getStatus()),
                         historicalExecutionChain(row, ticketsById.get(row.getOperationId()), decisionActors),
                         row.getCreatedAt() == null ? row.getTimeLabel() : row.getCreatedAt().format(ISO),
-                        row.getNote()))
+                        row.getNote(),
+                        ticketsById.get(row.getOperationId()) == null
+                                ? null : ticketsById.get(row.getOperationId()).operationCode()))
                 .forEach(row -> rowsByOperation.putIfAbsent(row.id(), row));
         return rowsByOperation.values().stream()
                 .sorted(Comparator.comparing(this::historyTime).reversed()
