@@ -56,7 +56,7 @@ public interface DeviceOpsRepository {
         return 0;
     }
 
-    default int resumeDevicesByUser(Long userId, LocalDateTime now) {
+    default int resumeDevicesByUser(Long userId, List<Long> deviceIds, LocalDateTime now) {
         return 0;
     }
 

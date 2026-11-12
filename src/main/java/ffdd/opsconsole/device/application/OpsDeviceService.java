@@ -3354,14 +3354,16 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
             int affectedRows = pause
                     ? deviceRepository.pauseDevicesByUser(trusted.userId(), trusted.reason(), LocalDateTime.now(clock))
-                    : deviceRepository.resumeDevicesByUser(trusted.userId(), LocalDateTime.now(clock));
+                    : deviceRepository.resumeDevicesByUser(trusted.userId(), deviceIds, LocalDateTime.now(clock));
             if(pause)simulationWakes.pause(trusted.userId(),null,LocalDateTime.now(clock));
             else simulationWakes.resume(trusted.userId(),null,LocalDateTime.now(clock));
             if (affectedRows <= 0) {
                 throw new BizException(409, "E5_BATCH_STATE_CHANGED");
             }
             deviceRepository.syncSimulatedPause(trusted.userId(), deviceIds, pause, LocalDateTime.now(clock));
-            int changed = deviceIds.size();
+            // The resume candidate list excludes system pauses, so affected rows are exactly the
+            // operator pauses this command cleared; pause keeps its existing candidate count.
+            int changed = pause ? deviceIds.size() : affectedRows;
             String eventType = pause ? "admin.device_paused" : "admin.device_resumed";
             Map<String, Object> payload = detail(
                     "user_id", trusted.userId(), "device_ids", deviceIds, "scope", "batch",

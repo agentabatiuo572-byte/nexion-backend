@@ -5349,8 +5349,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     private BigDecimal normalizeCheckInValue(String key, String raw) {
         BigDecimal value = parseDecimal(raw);
         return switch (key) {
-            case "baseRewardNex" -> bounded(value, BigDecimal.ZERO, new BigDecimal("100"));
-            case "streakBonusNex" -> bounded(value, BigDecimal.ZERO, new BigDecimal("1000"));
+            case "baseRewardNex" -> positiveWholeReward(value, new BigDecimal("100"));
+            case "streakBonusNex" -> positiveWholeReward(value, new BigDecimal("1000"));
             case "luckyMultiplierMax" -> bounded(value, BigDecimal.ONE, new BigDecimal("10"));
             default -> throw new IllegalArgumentException("Unsupported H5 check-in key");
         };
@@ -5906,6 +5906,15 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         return value.setScale(6, RoundingMode.HALF_UP).stripTrailingZeros();
     }
 
+    /** App check-in payout parses baseline/bonus7 with Integer.parseInt; reject non-positive/fractional values instead of rounding. */
+    private BigDecimal positiveWholeReward(BigDecimal value, BigDecimal max) {
+        BigDecimal normalized = value.stripTrailingZeros();
+        if (normalized.signum() <= 0 || normalized.scale() > 0 || normalized.compareTo(max) > 0) {
+            throw new IllegalArgumentException("CHECKIN_REWARD_POSITIVE_INTEGER_REQUIRED");
+        }
+        return normalized;
+    }
+
     private BigDecimal wholeDays(BigDecimal value, int min, int max) {
         BigDecimal whole = value.setScale(0, RoundingMode.DOWN);
         if (whole.compareTo(BigDecimal.valueOf(min)) < 0
@@ -6093,7 +6102,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     private BigDecimal normalizeCheckInRuleNumber(String key, String raw) {
         BigDecimal value = parseDecimal(raw);
         return switch (key) {
-            case "baseline", "bonus7" -> bounded(value, BigDecimal.ZERO, new BigDecimal("100000"));
+            case "baseline", "bonus7" -> positiveWholeReward(value, new BigDecimal("100000"));
             case "p15", "p2" -> bounded(value, BigDecimal.ZERO, new BigDecimal("100"));
             case "broken" -> wholeDays(value, 1, 720);
             default -> throw new IllegalArgumentException("Unsupported H5 numeric check-in rule");
