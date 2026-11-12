@@ -172,14 +172,15 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
 
     @Select("""
             <script>
-            SELECT DATE_FORMAT(occurred_at,'%x-W%v') bucket,
+            SELECT DATE_FORMAT(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_HEAD + "occurred_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_MID + "occurred_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_TAIL + """
+,'%x-W%v') bucket,
                    SUM(event_name='app.page_viewed') pv,
                    SUM(event_name='app.element_clicked') clicks
               FROM nx_behavior_event_fact
              WHERE source_environment='PRODUCTION' AND occurred_at BETWEEN #{startAt} AND #{endAt}
              <if test="deviceType != null">AND device_type=#{deviceType}</if>
              <if test="locale != null">AND (locale=#{locale} OR (#{locale} IN ('id','ms','fil','ru','kk','uz') AND locale LIKE CONCAT(#{locale}, '-%')))</if>
-             GROUP BY DATE_FORMAT(occurred_at,'%x-W%v') ORDER BY bucket
+             GROUP BY 1 ORDER BY bucket
             </script>
             """)
     List<TrendRow> weeklyTrend(@Param("startAt") LocalDateTime startAt, @Param("endAt") LocalDateTime endAt,

@@ -365,13 +365,32 @@ public class RagNovaAiGateway implements NovaAiGateway {
         return question == null ? "" : question.replaceAll("[\\s?？。！!，,]", "");
     }
 
+    /**
+     * FAQ maintenance stores the supported base languages as regional codes,
+     * while Nova requests the short codes. Compare the equivalent codes at the
+     * lookup boundary without changing either public contract. Additional
+     * language codes and unknown values stay exact, so no language is guessed.
+     */
+    private String canonicalFaqLanguage(String language) {
+        if (language == null || language.isBlank()) return "";
+        String code = language.trim();
+        return switch (code.toLowerCase(Locale.ROOT)) {
+            case "zh", "zh-cn" -> "zh-CN";
+            case "en", "en-us" -> "en-US";
+            case "vi", "vi-vn" -> "vi-VN";
+            default -> code;
+        };
+    }
+
     private String novaQuestion(String question, String language) {
         if (knowledgeRepository == null) return question;
         String normalizedLanguage = language == null ? "" : language.trim();
+        String faqLanguage = canonicalFaqLanguage(normalizedLanguage);
         String context = knowledgeRepository.listFaqs().stream()
                 .filter(faq -> "PUBLISHED".equalsIgnoreCase(faq.status()))
                 .filter(faq -> "Nova".equalsIgnoreCase(faq.surface()))
-                .filter(faq -> normalizedLanguage.isBlank() || normalizedLanguage.equalsIgnoreCase(faq.language()))
+                .filter(faq -> faqLanguage.isBlank()
+                        || faqLanguage.equalsIgnoreCase(canonicalFaqLanguage(faq.language())))
                 .sorted(java.util.Comparator.comparing(SupportFaqView::sortOrder).thenComparing(SupportFaqView::id))
                 .limit(20)
                 .map(faq -> "Q: " + boundedText(faq.question(), 500) + "\nA: " + boundedText(faq.answer(), 2_000))

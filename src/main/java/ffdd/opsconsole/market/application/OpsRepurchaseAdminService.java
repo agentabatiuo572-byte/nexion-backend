@@ -70,16 +70,19 @@ public class OpsRepurchaseAdminService {
         String param = normalizeKey(key);
         validateRequest(request);
         requirePermission(PERMISSIONS.get(param));
-        // A pending A2 ticket owns this parameter. Direct writes, including same-value and tightening ones,
-        // must wait; approval replay is the only path allowed through.
-        if (!A2ReplayContext.isReplaying()
-                && locks.countActiveByTarget("G", "repurchase_param", param) > 0) {
-            throw new BizException(409, "OBJECT_LOCKED_BY_A2");
-        }
         String hash = sha256(param + "|" + request.value().trim() + "|" + request.reason().trim()
                 + "|" + String.valueOf(request.g4Ref()));
-        return once("ADMIN:G7_REPURCHASE_PARAM:" + param, idempotencyKey, hash,
-                () -> updateInternal(param, idempotencyKey, request));
+        return once("ADMIN:G7_REPURCHASE_PARAM:" + param, idempotencyKey, hash, () -> {
+            // A pending A2 ticket owns this parameter. Direct writes, including same-value and
+            // tightening ones, must wait; approval replay is the only path allowed through.
+            // Keep this new-write gate inside the idempotency callback: an already confirmed
+            // success key must return its receipt before a later ticket's lock is considered.
+            if (!A2ReplayContext.isReplaying()
+                    && locks.countActiveByTarget("G", "repurchase_param", param) > 0) {
+                throw new BizException(409, "OBJECT_LOCKED_BY_A2");
+            }
+            return updateInternal(param, idempotencyKey, request);
+        });
     }
 
     @Transactional
