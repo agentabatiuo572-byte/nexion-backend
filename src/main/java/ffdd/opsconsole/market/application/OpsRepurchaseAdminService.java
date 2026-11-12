@@ -88,7 +88,9 @@ public class OpsRepurchaseAdminService {
         if (product == null) throw new BizException(404, "G7_REPURCHASE_PRODUCT_NOT_FOUND");
         String before = before(product, key);
         String after = normalizeValue(key, request.value());
-        boolean amplifies = amplifies(key, decimal(before), decimal(after));
+        // presets is a list of App shortcut amounts, not a numeric payout/direction parameter.
+        // Keep its list normalization/storage path without parsing the whole list as one decimal.
+        boolean amplifies = !"presets".equals(key) && amplifies(key, decimal(before), decimal(after));
         TreasuryCoverageSnapshot snapshot = coverage.snapshot();
         if (amplifies) {
             // 决策 T02/T11:放大资金流出的方向必须由另一位超管批准后回放,直写一律拒绝。
