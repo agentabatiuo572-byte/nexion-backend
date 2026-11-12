@@ -376,6 +376,22 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                      AND r.paused_reason IN ('PHONE_LOW_BATTERY','PHONE_OFFLINE')))
             """;
 
+    // System pauses are written by other flows with these fixed values. An operator pause
+    // stores the E5-A07 reason text instead. User-level resume only clears operator pauses on
+    // an effective owned device, so refund, unbind/deactivate/trade-in, phone and account
+    // pauses remain in force. Keep this list aligned with the write sites:
+    // ORDER_REFUND (DeviceCatalogMapper), USER_DEACTIVATED (AppTaskAssignmentMapper,
+    // CanonicalStateMapper, DevelopmentHomeSettlementMapper), PHONE_REPLACED
+    // (OnboardingCalibrationMapper), PHONE_OFFLINE/PHONE_LOW_BATTERY (phone heartbeat),
+    // unbind/deactivate (deactivateE5Device), replace/recycle/deactivate (trade-in actions).
+    String RESUMABLE_OPERATIONAL_PAUSE = E5_OCCUPIED_SLOT + """
+            AND r.id IS NOT NULL AND r.is_deleted = 0
+            AND NULLIF(TRIM(r.paused_reason), '') IS NOT NULL
+            AND UPPER(TRIM(r.paused_reason)) NOT IN (
+                'ORDER_REFUND','USER_DEACTIVATED','PHONE_REPLACED','PHONE_OFFLINE',
+                'PHONE_LOW_BATTERY','UNBIND','DEACTIVATE','REPLACE','RECYCLE')
+            """;
+
     @Select("""
             SELECT d.id
               FROM nx_user_device d
@@ -386,8 +402,8 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                     (#{pause} = 1 AND """ + USER_PAUSE_CANDIDATE + """
                     )
                     OR
-                    (#{pause} = 0
-                     AND r.id IS NOT NULL AND r.is_deleted = 0 AND r.paused_reason IS NOT NULL)
+                    (#{pause} = 0 AND """ + RESUMABLE_OPERATIONAL_PAUSE + """
+                    )
                )
              ORDER BY d.id ASC
              LIMIT #{limit}
@@ -425,13 +441,17 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                            @Param("pause") boolean pause, @Param("now") LocalDateTime now);
 
     @Update("""
+            <script>
             UPDATE nx_user_device_runtime r
               JOIN nx_user_device d ON d.id = r.user_device_id
                SET r.paused_reason = NULL, r.updated_at = NOW()
-             WHERE d.user_id = #{userId} AND d.is_deleted = 0 AND r.is_deleted = 0
-               AND r.paused_reason IS NOT NULL
+             WHERE d.user_id = #{userId} AND d.is_deleted = 0
+               AND d.id IN
+                 <foreach collection='deviceIds' item='id' open='(' separator=',' close=')'>#{id}</foreach>
+               AND """ + RESUMABLE_OPERATIONAL_PAUSE + """
+            </script>
             """)
-    int resumeDevicesByUser(@Param("userId") Long userId);
+    int resumeDevicesByUser(@Param("userId") Long userId, @Param("deviceIds") List<Long> deviceIds);
 
     @Update("""
             UPDATE nx_user_device

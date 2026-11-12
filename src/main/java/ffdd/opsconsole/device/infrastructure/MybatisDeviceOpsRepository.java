@@ -243,8 +243,8 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
     }
 
     @Override
-    public int resumeDevicesByUser(Long userId, LocalDateTime now) {
-        return mapper.resumeDevicesByUser(userId);
+    public int resumeDevicesByUser(Long userId, List<Long> deviceIds, LocalDateTime now) {
+        return mapper.resumeDevicesByUser(userId, deviceIds);
     }
 
     @Override
