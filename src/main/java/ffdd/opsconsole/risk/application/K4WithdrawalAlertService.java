@@ -24,6 +24,7 @@ public class K4WithdrawalAlertService {
                     item.put("title", "K4 提现风险升级");
                     item.put("hint", row.withdrawalNo() + " · 风险分 " + row.riskScore()
                             + " · " + row.priority());
+                    item.put("userNo", StringUtils.hasText(row.userNo()) ? row.userNo().trim() : null);
                     item.put("withdrawalNo", row.withdrawalNo());
                     item.put("riskScore", row.riskScore());
                     item.put("priority", row.priority());

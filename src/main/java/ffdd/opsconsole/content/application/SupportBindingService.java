@@ -313,7 +313,7 @@ public class SupportBindingService {
             mapper.attemptPool(customer,"WAITING_ROUTE","GROUP_SCOPE_CHANGED");return null;
         }
         if(supervisor!=null)ownership.requireManagingCustomer(customer);
-        List<Candidate> facts=randomCandidates(customer,group.id());
+        List<Candidate> facts=randomCandidates(customer,group.id(),supervisor==null && frozen==null);
         if(frozen!=null) {
             ReadScope scope=managementScope(null,null);
             FrozenCustomer current=freezeRandomScope(frozen.customer(),scope);
@@ -447,14 +447,24 @@ public class SupportBindingService {
 
     /** The exclusion belongs to the original depth-limit decision, not the inviter's later binding. */
     private List<Candidate> randomCandidates(Long customer,Long group) {
+        return randomCandidates(customer,group,false);
+    }
+
+    /**
+     * Supervisor preview/confirm keeps the original candidate set so a frozen ticket is compared with
+     * the same facts. Only the automatic first-inquiry/fallback path applies the profile pause and
+     * capacity filters.
+     */
+    private List<Candidate> randomCandidates(Long customer,Long group,boolean automatic) {
         Map<String,Object> pool=mapper.poolAttempt(customer);
+        List<Candidate> facts=automatic?groups.automaticCandidates(group):groups.candidates(group);
         if(pool!=null && "DEPTH_LIMIT".equals(pool.get("reason"))) {
             Object original=pool.get("excludedAgentAdminId");
             // Legacy rows carry no proven exclusion identity. Keep them pending rather than guess.
             if(!(original instanceof Number id) || id.longValue()<1) return List.of();
-            return groups.candidates(group).stream().filter(candidate->!Objects.equals(candidate.agentId(),id.longValue())).toList();
+            return facts.stream().filter(candidate->!Objects.equals(candidate.agentId(),id.longValue())).toList();
         }
-        return groups.candidates(group);
+        return facts;
     }
 
     private void closeQueueRoute(Long customer) {

@@ -218,6 +218,25 @@ public interface SupportGroupMapper {
         ORDER BY a.id FOR SHARE</script>
         """)
     List<Candidate> candidates(Long group);
+    /** Automatic first-inquiry/fallback only; supervisor preview/confirm keeps {@link #candidates(Long)}. */
+    @Select("""
+        <script>SELECT scope_member.agent_admin_id agentId,a.version accountVersion,p.version profileVersion,
+          scope_member.id memberId,scope_member.version memberVersion,scope_q.id qualificationId,scope_q.version qualificationVersion
+        FROM nx_support_group_member_history scope_member JOIN nx_admin a ON a.id=scope_member.agent_admin_id
+          JOIN nx_support_agent_profile p ON p.admin_id=a.id
+          JOIN nx_support_account_qualification_history scope_q ON scope_q.admin_id=a.id
+        WHERE scope_member.group_id=#{group} AND a.status=1 AND a.is_deleted=0
+          AND p.enabled=1 AND p.is_deleted=0 AND p.busy=0
+          AND (SELECT COUNT(*) FROM nx_support_agent_user_assignment auto_assignment
+               WHERE auto_assignment.agent_admin_id=a.id AND auto_assignment.status='ACTIVE'
+                 AND auto_assignment.is_deleted=0) &lt; p.max_concurrent
+          AND scope_q.qualification_kind='SERVICE' AND scope_q.state='ENABLED' AND
+        """ + UNIQUE_MEMBER + " AND " + UNIQUE_QUALIFICATION + """
+          AND EXISTS(SELECT 1 FROM nx_admin_role_relation rr JOIN nx_admin_role r ON r.id=rr.role_id
+            WHERE rr.admin_id=a.id AND rr.is_deleted=0 AND r.is_deleted=0 AND r.status=1 AND r.role_code IN ('SUPPORT','SUPER_ADMIN') FOR SHARE)
+        ORDER BY a.id FOR SHARE</script>
+        """)
+    List<Candidate> automaticCandidates(Long group);
     @Select("SELECT version FROM nx_support_binding_pool WHERE customer_id=#{id} FOR SHARE") Long routePoolVersion(Long id);
     @Select("SELECT COUNT(*) FROM nx_support_agent_user_assignment WHERE user_id=#{id} AND status='ACTIVE' AND is_deleted=0 FOR SHARE") int currentBindingCount(Long id);
     @Update("UPDATE nx_support_customer_route_history SET ends_at=#{at} WHERE id=#{id} AND version=#{version} AND ends_at IS NULL")
