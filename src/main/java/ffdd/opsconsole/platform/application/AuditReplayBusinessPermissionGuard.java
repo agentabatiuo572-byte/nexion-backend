@@ -6,6 +6,7 @@ import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.growth.application.H5GrowthApproval;
 import ffdd.opsconsole.growth.application.H3GrowthApproval;
+import ffdd.opsconsole.growth.application.H1GrowthApproval;
 import ffdd.opsconsole.growth.application.H4GrowthApproval;
 import ffdd.opsconsole.growth.application.H7VoucherDisposition;
 import ffdd.opsconsole.device.application.OpsDeviceService;
@@ -156,6 +157,8 @@ public class AuditReplayBusinessPermissionGuard {
     private G4ParamApproval g4ParamApproval;
     @Autowired
     private H8RewardParamApproval h8RewardParamApproval;
+    @Autowired
+    private H1GrowthApproval h1GrowthApproval;
     @Autowired
     private H5GrowthApproval h5GrowthApproval;
     @Autowired
@@ -640,6 +643,17 @@ public class AuditReplayBusinessPermissionGuard {
             return ApiResult.fail(422, "RETIRED_FEATURE");
         if ("J".equalsIgnoreCase(command.domain()) && operation.startsWith("j1_"))
             return ApiResult.fail(409, "J1_DIRECT_EXECUTION_REQUIRED");
+        if (H1GrowthApproval.supports(command)) {
+            ApiResult<Void> h1Checker = h1GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
+            if (h1Checker.getCode() != 0) return h1Checker;
+        }
+        if (isUserSessionRevocation(command)) {
+            // C5-BE-03: who may approve "revoke all devices" is a security boundary, not a UI choice.
+            if (!hasAuthority("platform_a2_operation_approve")
+                    || !superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())) {
+                return ApiResult.fail(403, "C5_SESSION_REVOKE_APPROVAL_FORBIDDEN");
+            }
+        }
         var permission = validateOrdinaryProposalPermission(command, operation);
         if (permission.getCode() != 0) return permission;
         return "H".equalsIgnoreCase(command.domain()) && "h2_trial_charge".equals(operation)
