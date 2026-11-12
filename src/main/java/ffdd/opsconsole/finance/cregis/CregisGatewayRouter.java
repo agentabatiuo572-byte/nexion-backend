@@ -9,6 +9,7 @@ import org.springframework.stereotype.Component;
 public final class CregisGatewayRouter {
     private final CregisProperties properties;
     private final ObjectMapper objectMapper;
+    private HttpCregisGateway providerGateway;
 
     public CregisProperties.Mode mode() {
         return properties.getMode();
@@ -19,12 +20,15 @@ public final class CregisGatewayRouter {
                 || properties.getMode() == CregisProperties.Mode.PROVIDER && properties.isPayoutEnabled();
     }
 
-    public CregisGateway provider() {
+    public synchronized CregisGateway provider() {
         if (properties.getMode() != CregisProperties.Mode.PROVIDER) {
             throw new CregisGatewayException(
                     CregisGatewayException.Kind.CONFIGURATION, "CREGIS_PROVIDER_DISABLED");
         }
-        return new HttpCregisGateway(properties, objectMapper);
+        if (providerGateway == null) {
+            providerGateway = new HttpCregisGateway(properties, objectMapper);
+        }
+        return providerGateway;
     }
 
     public CregisGateway isolatedLocalSandbox() {
