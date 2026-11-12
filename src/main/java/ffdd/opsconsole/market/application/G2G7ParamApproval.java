@@ -1,7 +1,6 @@
 package ffdd.opsconsole.market.application;
 
 import ffdd.opsconsole.market.dto.ExchangeParamUpdateRequest;
-import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
@@ -39,6 +38,8 @@ public class G2G7ParamApproval {
     private static final String TARGET_TYPE_G7 = "repurchase_param";
 
     private final OpsNexMarketService market;
+    private final G2G3AdminCommandService exchangeCommands;
+    private final OpsRepurchaseAdminService repurchaseCommands;
     private final SuperAdminAuthorization superAdmins;
     private final AuditObjectLockMapper locks;
 
@@ -186,12 +187,12 @@ public class G2G7ParamApproval {
         String paramKey = text(params.get("paramKey"));
         String value = text(params.get("value"));
         String expectedValue = text(params.get("expectedValue"));
-        // 回放走与直写同一实现:旧值快照校验、放大方向复核 Δ 覆盖率、落库与审计都只做一次。
+        // 回放走与直写同一正式服务:旧值快照校验、放大方向复核、覆盖率、落库、审计和业务事件都只做一次。
         return G2.equals(command.op())
-                ? market.updateExchangeParam(context.idempotencyKey(), paramKey,
+                ? exchangeCommands.exchangeParam(context.idempotencyKey(), paramKey,
                         new ExchangeParamUpdateRequest(value, reason, context.operator(), expectedValue))
-                : market.updateRepurchaseParam(context.idempotencyKey(), paramKey,
-                        new NexMarketValueUpdateRequest(value, reason, context.operator(), expectedValue));
+                : repurchaseCommands.update(paramKey, context.idempotencyKey(),
+                        new OpsRepurchaseAdminService.UpdateRequest(value, reason, context.operator(), null));
     }
 
     private String currentValue(AuditReplayCommand command) {

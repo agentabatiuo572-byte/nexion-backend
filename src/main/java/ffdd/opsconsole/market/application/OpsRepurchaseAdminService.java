@@ -1,6 +1,8 @@
 package ffdd.opsconsole.market.application;
 
 import ffdd.opsconsole.market.mapper.AppRepurchaseMapper;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -46,6 +48,7 @@ public class OpsRepurchaseAdminService {
     private final EventOutboxService outbox;
     private final AuditLogService audit;
     private final OpsNexMarketService marketOverview;
+    private final AuditObjectLockMapper locks;
 
     public ApiResult<Map<String, Object>> orders(String status, Long cursor, Integer requestedLimit) {
         String normalizedStatus = StringUtils.hasText(status) ? status.trim().toUpperCase(Locale.ROOT) : null;
@@ -67,6 +70,12 @@ public class OpsRepurchaseAdminService {
         String param = normalizeKey(key);
         validateRequest(request);
         requirePermission(PERMISSIONS.get(param));
+        // A pending A2 ticket owns this parameter. Direct writes, including same-value and tightening ones,
+        // must wait; approval replay is the only path allowed through.
+        if (!A2ReplayContext.isReplaying()
+                && locks.countActiveByTarget("G", "repurchase_param", param) > 0) {
+            throw new BizException(409, "OBJECT_LOCKED_BY_A2");
+        }
         String hash = sha256(param + "|" + request.value().trim() + "|" + request.reason().trim()
                 + "|" + String.valueOf(request.g4Ref()));
         return once("ADMIN:G7_REPURCHASE_PARAM:" + param, idempotencyKey, hash,
@@ -84,7 +93,10 @@ public class OpsRepurchaseAdminService {
         if (amplifies) {
             // 决策 T02/T11:放大资金流出的方向必须由另一位超管批准后回放,直写一律拒绝。
             // 收紧方向(降 APY、降 nurture、提提前解锁扣款)保持立即生效。
-            throw new BizException(409, "G7_REPURCHASE_PARAM_APPROVAL_REQUIRED");
+            if (!A2ReplayContext.isReplaying()) {
+                throw new BizException(409, "G7_REPURCHASE_PARAM_APPROVAL_REQUIRED");
+            }
+            marketOverview.requireCoverageRedline(BigDecimal.ZERO);
         }
         long issued = mapper.issuedTicketsThisMonth();
         long g4Capacity = configLong("G.genesis.lottery.monthlyCapacity", 100_000L);
