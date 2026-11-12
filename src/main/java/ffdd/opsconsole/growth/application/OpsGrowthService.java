@@ -2709,44 +2709,166 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             String idempotencyKey,
             int milestoneId,
             GrowthConfigUpdateRequest request) {
+        return updateStreakMilestone(idempotencyKey, milestoneId, request, null, false);
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> executeApprovedStreakMilestone(
+            String idempotencyKey, int milestoneId, GrowthConfigUpdateRequest request,
+            Map<?, ?> expectedBefore, AuditLockTarget target) {
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(A2ReplayContext.operationId())
+                || !new AuditLockTarget("H", "h5_streak_milestone", String.valueOf(milestoneId)).equals(target)) {
+            return ApiResult.fail(403, "H5_APPROVAL_FORBIDDEN");
+        }
+        return updateStreakMilestone(idempotencyKey, milestoneId, request, expectedBefore, true);
+    }
+
+    private ApiResult<Map<String, Object>> updateStreakMilestone(
+            String idempotencyKey, int milestoneId, GrowthConfigUpdateRequest request,
+            Map<?, ?> expectedBefore, boolean approved) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        List<Map<String, Object>> rows = streakMilestones();
-        Optional<Map<String, Object>> current = indexedBusinessRow(rows, milestoneId);
-        if (current.isEmpty()) {
-            return validation("STREAK_MILESTONE_ID_INVALID");
-        }
-        String reward = requireText(request.value(), "reward is required");
-        String rewardType;
-        try { rewardType = rewardTypeFromReward(reward); }
-        catch (IllegalArgumentException ex) { return validation(ex.getMessage()); }
-        String persistedReward = String.valueOf(current.get().get("reward"));
-        String expectedReward = StringUtils.hasText(request.expectedValue())
-                ? request.expectedValue().trim()
-                : persistedReward;
-        if (!persistedReward.equals(expectedReward)) {
+        if (guard != null) return guard;
+        Map<String, Object> before = lockStreakMilestoneState(milestoneId);
+        if (approved && !before.equals(expectedBefore)) return ApiResult.fail(409, "H5_CONFIG_STALE");
+        requireActiveStreakMilestone(before);
+        if (StringUtils.hasText(request.expectedValue())
+                && !before.get("reward").equals(approved ? request.expectedValue() : request.expectedValue().trim())) {
             return ApiResult.fail(409, "H5_CONFIG_STALE");
         }
-        BigDecimal oldFlow = rewardFlow(String.valueOf(current.get().get("reward")));
-        BigDecimal newFlow = rewardFlow(reward);
-        if (newFlow.compareTo(oldFlow) > 0 && coverageBelowRedline()) {
-            return coverageRedline();
+        String reward = requireText(request.value(), "reward is required");
+        StreakReward oldReward = currentStreakReward(before);
+        StreakReward newReward = parseStreakReward(reward, before, oldReward);
+        boolean amplifies = streakRewardAmplifies(oldReward, newReward);
+        if (amplifies) {
+            if (!approved) return ApiResult.fail(409, "H5_APPROVAL_REQUIRED");
+            requireH5Coverage();
+        } else if (approved) {
+            return ApiResult.fail(422, "H5_APPROVAL_NOT_REQUIRED");
         }
-        if (questEventMapper.isEmpty()
-                || questEventMapper.get().updateStreakMilestoneRewardCas(
-                        milestoneId, reward, rewardType, newFlow, persistedReward) <= 0) {
+        if (questEventMapper.get().updateStreakMilestoneRewardCas(
+                milestoneId, reward, newReward.type(), newReward.amount(), before) != 1) {
             return ApiResult.fail(409, "H5_CONFIG_STALE");
         }
         audit("H5_STREAK_MILESTONE_CHANGED", "STREAK_MILESTONE", String.valueOf(milestoneId), request.operator(), Map.of(
                 "milestoneId", milestoneId,
+                "before", before,
+                "after", Map.of("reward", reward, "rewardType", newReward.type(), "amount", newReward.amount(),
+                        "badgeCode", before.get("badgeCode") == null ? "" : before.get("badgeCode")),
                 "reward", reward,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         Map<String, Object> response = checkIn().getData();
         response.put("updated", Map.of("milestoneId", milestoneId, "source", "nx_streak_milestone", "reward", reward));
         return ApiResult.ok(response);
+    }
+
+    @Transactional
+    public Map<String, Object> streakMilestoneApprovalBefore(int milestoneId, String expectedReward) {
+        Map<String, Object> before = lockStreakMilestoneState(milestoneId);
+        requireActiveStreakMilestone(before);
+        if (expectedReward == null || !before.get("reward").equals(expectedReward)) {
+            throw new BizException(409, "H5_CONFIG_STALE");
+        }
+        return before;
+    }
+
+    @Transactional
+    public ApiResult<H5ConfigReview> previewStreakMilestoneApproval(int milestoneId, GrowthConfigUpdateRequest request) {
+        var guard = requireCommand("H5_PREVIEW", request == null ? null : request.reason());
+        if (guard != null) return ApiResult.fail(guard.getCode(), guard.getMessage());
+        Map<String, Object> before = streakMilestoneApprovalBefore(milestoneId, request.expectedValue());
+        String reward = requireText(request.value(), "reward is required");
+        StreakReward oldReward = currentStreakReward(before);
+        StreakReward newReward = parseStreakReward(reward, before, oldReward);
+        if (!streakRewardAmplifies(oldReward, newReward)) return ApiResult.fail(422, "H5_APPROVAL_NOT_REQUIRED");
+        requireH5Coverage();
+        return ApiResult.ok(new H5ConfigReview(new AuditLockTarget("H", "h5_streak_milestone", String.valueOf(milestoneId)),
+                "放宽连签里程碑奖励", streakRewardSummary(before, oldReward, String.valueOf(before.get("reward"))),
+                streakRewardSummary(before, newReward, reward) + "；批准后尚未领取者按新配置领取，已领取者不补发"));
+    }
+
+    private Map<String, Object> lockStreakMilestoneState(int milestoneId) {
+        Map<String, Object> row = questEventMapper.map(mapper -> mapper.lockStreakMilestone(milestoneId)).orElse(null);
+        if (row == null) throw new BizException(422, "STREAK_MILESTONE_ID_INVALID");
+        Map<String, Object> before = new LinkedHashMap<>();
+        before.put("id", milestoneId);
+        before.put("day", ((Number) row.get("day")).intValue());
+        before.put("rewardType", row.get("rewardType"));
+        before.put("amount", ((BigDecimal) row.get("amount")).stripTrailingZeros().toPlainString());
+        before.put("reward", row.get("reward"));
+        before.put("badgeCode", row.get("badgeCode"));
+        before.put("status", ((Number) row.get("status")).intValue());
+        before.put("deleted", ((Number) row.get("deleted")).intValue());
+        return before;
+    }
+
+    private void requireActiveStreakMilestone(Map<String, Object> before) {
+        if (!Integer.valueOf(1).equals(before.get("status")) || !Integer.valueOf(0).equals(before.get("deleted"))) {
+            throw new BizException(422, "STREAK_MILESTONE_ID_INVALID");
+        }
+    }
+
+    private record StreakReward(String type, BigDecimal amount) {}
+
+    private StreakReward currentStreakReward(Map<String, Object> before) {
+        String type = String.valueOf(before.get("rewardType")).toUpperCase(Locale.ROOT);
+        BigDecimal amount = new BigDecimal((String) before.get("amount"));
+        if (!Set.of("UVT", "USDT", "SPIN", "BADGE").contains(type) || amount.signum() < 0
+                || ("SPIN".equals(type) && (amount.stripTrailingZeros().scale() > 0
+                    || amount.compareTo(BigDecimal.valueOf(Integer.MAX_VALUE)) > 0))) {
+            throw new BizException(422, "STREAK_REWARD_STATE_UNSUPPORTED");
+        }
+        return new StreakReward(type, amount);
+    }
+
+    private StreakReward parseStreakReward(String reward, Map<String, Object> before, StreakReward oldReward) {
+        if (reward.length() > 128) throw new BizException(422, "STREAK_REWARD_TEXT_TOO_LONG");
+        String text = reward.toUpperCase(Locale.ROOT);
+        if (Pattern.compile("(?<![A-Z0-9_])(?:NEX|POINTS)(?![A-Z0-9_])|积分").matcher(text).find()) {
+            throw new BizException(422, "REWARD_TYPE_UNSUPPORTED");
+        }
+        List<String> types = new ArrayList<>();
+        if (Pattern.compile("(?<![A-Z0-9_])UVT(?![A-Z0-9_])").matcher(text).find()) types.add("UVT");
+        if (Pattern.compile("(?<![A-Z0-9_])USDT(?![A-Z0-9_])|\\$").matcher(text).find()) types.add("USDT");
+        if (Pattern.compile("(?<![A-Z0-9_])SPIN(?![A-Z0-9_])|转盘").matcher(text).find()) types.add("SPIN");
+        if (Pattern.compile("(?<![A-Z0-9_])BADGE(?![A-Z0-9_])|徽章").matcher(text).find()) types.add("BADGE");
+        if (types.isEmpty()) throw new BizException(422, "REWARD_TYPE_UNSUPPORTED");
+        if (types.size() != 1) throw new BizException(422, "STREAK_REWARD_AMBIGUOUS");
+        String type = types.get(0);
+        if ("BADGE".equals(type)) {
+            String code = (String) before.get("badgeCode");
+            if (!StringUtils.hasText(code) || questEventMapper.get().activeStreakBadge(code) != 1) {
+                throw new BizException(422, "STREAK_BADGE_NOT_CONFIGURED");
+            }
+            return new StreakReward(type, "BADGE".equals(oldReward.type()) ? oldReward.amount() : BigDecimal.ZERO);
+        }
+        String number = "[0-9]+(?:\\.[0-9]+)?";
+        String label = "SPIN".equals(type) ? "(?:(?:LUCKY\\s+)?SPIN(?:\\s*票)?|转盘票?)" : type;
+        String expression = "(?:\\+?" + number + "\\s*" + label + "|" + label + "\\s*[×X*]?\\s*\\+?" + number
+                + ("USDT".equals(type) ? "|\\$\\s*\\+?" + number + "(?:\\s*USDT)?" : "") + ")";
+        if (!text.matches(expression)) throw new BizException(422, "STREAK_REWARD_AMOUNT_INVALID");
+        Matcher quantity = Pattern.compile(number).matcher(text);
+        quantity.find();
+        BigDecimal amount = new BigDecimal(quantity.group());
+        if (amount.stripTrailingZeros().scale() > 6 || amount.setScale(6).precision() > 18) {
+            throw new BizException(422, "STREAK_REWARD_AMOUNT_PRECISION_INVALID");
+        }
+        if ("SPIN".equals(type) && (amount.stripTrailingZeros().scale() > 0
+                || amount.compareTo(BigDecimal.valueOf(Integer.MAX_VALUE)) > 0)) {
+            throw new BizException(422, "STREAK_SPIN_INTEGER_REQUIRED");
+        }
+        return new StreakReward(type, amount);
+    }
+
+    private boolean streakRewardAmplifies(StreakReward before, StreakReward after) {
+        // Independent wallet assets and actual tickets have no approved netting or exchange valuation.
+        return !"BADGE".equals(after.type()) && after.amount().compareTo(
+                before.type().equals(after.type()) ? before.amount() : BigDecimal.ZERO) > 0;
+    }
+
+    private String streakRewardSummary(Map<String, Object> before, StreakReward reward, String name) {
+        return "连签 " + before.get("day") + " 天；" + reward.type() + " " + reward.amount().stripTrailingZeros().toPlainString()
+                + "；名称：" + name + "；固定徽章编码：" + before.get("badgeCode");
     }
 
     @Transactional
@@ -6085,22 +6207,6 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             return parseDecimal(value.toString()).stripTrailingZeros();
         }
         return BigDecimal.ZERO;
-    }
-
-    private String rewardTypeFromReward(String reward) {
-        String normalized = reward == null ? "" : reward.toUpperCase(Locale.ROOT);
-        if (normalized.matches(".*(?<![A-Z0-9_])NEX(?![A-Z0-9_]).*")) throw new IllegalArgumentException("REWARD_TYPE_UNSUPPORTED");
-        if (normalized.contains("USDT") || normalized.contains("$")) {
-            return "USDT";
-        }
-        if (normalized.contains("SPIN") || normalized.contains("转盘")) {
-            return "SPIN";
-        }
-        if (normalized.contains("BADGE") || normalized.contains("徽章")) {
-            return "BADGE";
-        }
-        if (normalized.contains("UVT")) return "UVT";
-        throw new IllegalArgumentException("REWARD_TYPE_UNSUPPORTED");
     }
 
     private String formatSignedNex(BigDecimal value) {
