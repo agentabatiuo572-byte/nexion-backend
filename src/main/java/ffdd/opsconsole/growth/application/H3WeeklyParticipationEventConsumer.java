@@ -30,14 +30,26 @@ public class H3WeeklyParticipationEventConsumer {
     @EventListener
     public void onOutboxMessage(EventOutboxMessage message) {
         if (!isEligibleSource(message)) return;
-        EventConsumerDeliveryService.ConsumerClaim claim = deliveryService.claim(
-                message, CONSUMER_GROUP, TOPIC, message.getEventId(), 0);
+        String taskNo = message.getAggregateId().trim();
+        boolean skipSimulation = false;
+        if (taskNo.startsWith("SIM-")) {
+            try {
+                Map<String, Object> payload = objectMapper.readValue(message.getPayload(), MAP_TYPE);
+                skipSimulation = positiveLong(payload.get("user_id")) != null;
+            } catch (Exception ignored) {
+                // Invalid payloads keep the original claim and failure path below.
+            }
+        }
+        EventConsumerDeliveryService.ConsumerClaim claim = skipSimulation
+                ? deliveryService.claimSkipped(message, CONSUMER_GROUP, TOPIC, message.getEventId(), 0,
+                        "H3_RULE_CYCLE_INELIGIBLE")
+                : deliveryService.claim(message, CONSUMER_GROUP, TOPIC, message.getEventId(), 0);
         if (claim.claimed()) {
+            if (skipSimulation) return;
             try {
                 Map<String, Object> payload = objectMapper.readValue(message.getPayload(), MAP_TYPE);
                 Long userId = positiveLong(payload.get("user_id"));
                 if (userId == null) throw new IllegalArgumentException("H3_COMPUTE_COMPLETION_USER_REQUIRED");
-                String taskNo = message.getAggregateId().trim();
                 if (taskNo.startsWith("SIM-")) {
                     deliveryService.markSkipped(CONSUMER_GROUP, claim.eventId(), "H3_RULE_CYCLE_INELIGIBLE");
                     return;
