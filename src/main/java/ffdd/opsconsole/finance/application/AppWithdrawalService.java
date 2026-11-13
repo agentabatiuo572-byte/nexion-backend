@@ -142,6 +142,45 @@ public class AppWithdrawalService {
                 "gateSource", "J1", "source", "D5+H1"));
     }
 
+    /** Parameter preview only: no risk decision, address approval, reservation or payout. */
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> testPreview(Long userId, BigDecimal amount) {
+        if (!FundsSandboxProfileGuard.isStrictDevelopmentProfile(environment.getActiveProfiles())
+                || !environment.getProperty("nexion.withdrawal.test-preview.enabled", Boolean.class, false)) {
+            return ApiResult.fail(404, "WITHDRAWAL_TEST_PREVIEW_DISABLED");
+        }
+        requireProductionWithdrawalSubject(userId);
+        if (userId == null || mapper.findActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
+        WalletRow wallet = mapper.walletForEligibility(userId);
+        if (wallet == null || wallet.usdtAvailable() == null || wallet.usdtAvailable().signum() < 0)
+            throw new BizException(503, "WITHDRAWAL_WALLET_UNAVAILABLE");
+        BigDecimal fee = requiredDecimal("withdrawal.network_confirm_fee_usd.bep20");
+        if (fee.signum() < 0 || fee.compareTo(new BigDecimal("25")) > 0
+                || fee.multiply(new BigDecimal("2")).stripTrailingZeros().scale() > 0)
+            throw new BizException(503, "D5_NETWORK_FEE_INVALID");
+        int dailyLimit = validatedDailyLimit();
+        BigDecimal ratio = validatedBalanceMaxRatio();
+        WithdrawalDayWindow day = WithdrawalDayWindow.at(clock);
+        int dailyCount = mapper.countBusinessDay(userId, day.fromInclusive(), day.toExclusive());
+        BigDecimal requested = amount == null ? null : money(amount);
+        if (requested != null && requested.signum() <= 0) throw new BizException(422, "WITHDRAWAL_AMOUNT_INVALID");
+        List<String> reasons = new java.util.ArrayList<>();
+        if (requested != null) {
+            if (requested.compareTo(MIN_WITHDRAWAL) < 0) reasons.add("BELOW_MINIMUM");
+            if (requested.compareTo(wallet.usdtAvailable()) > 0) reasons.add("INSUFFICIENT_BALANCE");
+            else if (requested.compareTo(wallet.usdtAvailable().multiply(ratio)) > 0) reasons.add("BALANCE_RATIO_LIMIT");
+            if (dailyCount >= dailyLimit) reasons.add("DAILY_LIMIT_REACHED");
+            if (requested.compareTo(fee) <= 0) reasons.add("NET_RECEIVE_NON_POSITIVE");
+        }
+        return ApiResult.ok(linked("testPreview", true, "readOnly", true, "canSubmit", false,
+                "validationScope", "amount-fee-balance-limits-only", "network", "USDT-BEP20",
+                "walletUsdt", wallet.usdtAvailable(), "minAmount", MIN_WITHDRAWAL,
+                "networkFeeUsdt", fee, "dailyLimitCount", dailyLimit, "dailyCount", dailyCount,
+                "balanceMaxRatio", ratio, "amount", requested,
+                "netReceiveUsdt", requested == null ? null : requested.subtract(fee).max(BigDecimal.ZERO),
+                "validationPassed", requested == null ? null : reasons.isEmpty(), "reasons", reasons));
+    }
+
     /** Read-only server risk/policy snapshot. It never reserves funds or records a decision. */
     @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> eligibility(Long userId, BigDecimal amount, String chain, String address,
