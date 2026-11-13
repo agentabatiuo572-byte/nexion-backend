@@ -14,7 +14,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class ComputeOutboxDispatchScheduler {
     public static final List<String> EVENT_TYPES = List.of("task.completed", "earnings.credited");
-    private static final int LANES_PER_TYPE = 8;
+    private static final int LANES_PER_TYPE = 16;
     public static final int MAX_WORKERS = EVENT_TYPES.size() * LANES_PER_TYPE;
 
     private final TaskScheduler scheduler;
