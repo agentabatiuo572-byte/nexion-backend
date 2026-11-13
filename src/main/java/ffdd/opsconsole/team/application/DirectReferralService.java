@@ -7,6 +7,8 @@ import ffdd.opsconsole.finance.mapper.EarningsReleaseMapper;
 import ffdd.opsconsole.risk.application.RiskReleaseParamsService;
 import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.outbox.EventConsumerDeliveryService;
+import ffdd.opsconsole.shared.outbox.EventOutboxMessage;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.team.domain.DirectReferralPolicy;
 import ffdd.opsconsole.team.mapper.DirectReferralMapper;
@@ -36,10 +38,11 @@ public class DirectReferralService {
     private final UnilevelCommissionService unilevel;
     private final org.springframework.beans.factory.ObjectProvider<DirectReferralService> self;
     private final SupportDirectReferralFundAdapter supportFund;
+    private final EventConsumerDeliveryService delivery;
     public DirectReferralService(DirectReferralMapper mapper,DirectReferralPolicyService policies,EarningsReleaseService earnings,
             EarningsReleaseMapper releaseMapper,RiskReleaseParamsService risk,TreasuryLedgerPostingFacade ledger,EventOutboxService outbox,ObjectMapper json,Clock clock,
             UnilevelCommissionService unilevel,org.springframework.beans.factory.ObjectProvider<DirectReferralService> self){
-        this(mapper,policies,earnings,releaseMapper,risk,ledger,outbox,json,clock,unilevel,self,null);
+        this(mapper,policies,earnings,releaseMapper,risk,ledger,outbox,json,clock,unilevel,self,null,null);
     }
     public DirectReferralService(DirectReferralMapper mapper,DirectReferralPolicyService policies,EarningsReleaseService earnings,
             EarningsReleaseMapper releaseMapper,RiskReleaseParamsService risk,TreasuryLedgerPostingFacade ledger,EventOutboxService outbox,ObjectMapper json,Clock clock){
@@ -54,6 +57,21 @@ public class DirectReferralService {
         if(prepared==NEW_REJECTED_EARNING)return 0;
         target.resumeSource(kind,ref);return prepared;
     }
+
+    /** Keeps the earning claim and preparation in one transaction; later release phases stay separate. */
+    @Transactional(rollbackFor=Exception.class)
+    public EarningDeliveryPreparation claimAndPrepareEarning(EventOutboxMessage message,String ref,Long claimedUserId) {
+        var claim=delivery.claim(message,DirectReferralConsumer.GROUP,"spring-direct-referral",message.getEventId(),0);
+        if(!claim.claimed())return new EarningDeliveryPreparation(claim,0,false);
+        int prepared=prepareSettlement("direct_device_earning",ref,claimedUserId);
+        if(prepared==NEW_REJECTED_EARNING){
+            delivery.markSuccess(DirectReferralConsumer.GROUP,claim.eventId(),0);
+            return new EarningDeliveryPreparation(claim,0,true);
+        }
+        return new EarningDeliveryPreparation(claim,prepared,false);
+    }
+
+    public record EarningDeliveryPreparation(EventConsumerDeliveryService.ConsumerClaim claim,int prepared,boolean finished) {}
     @Transactional(rollbackFor=Exception.class)
     public boolean release(String no){return releaseSelected(no,null);}
     @Transactional(rollbackFor=Exception.class)
