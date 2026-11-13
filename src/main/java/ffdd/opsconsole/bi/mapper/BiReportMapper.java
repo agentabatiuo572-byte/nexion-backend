@@ -563,7 +563,8 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                    last_action AS lastAction,
                    last_action_at AS lastActionAt,
                    reason,
-                   CASE WHEN snapshot_csv IS NOT NULL AND LENGTH(snapshot_csv) > 0 THEN TRUE ELSE FALSE END AS snapshotAvailable
+                   CASE WHEN snapshot_csv IS NOT NULL AND LENGTH(snapshot_csv) > 0 THEN TRUE ELSE FALSE END AS snapshotAvailable,
+                   created_at AS requestedAt
               FROM nx_admin_fourth_batch_report
              WHERE module_code = 'L5'
                AND is_deleted = 0
@@ -619,7 +620,8 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                    last_action AS lastAction,
                    last_action_at AS lastActionAt,
                    reason,
-                   CASE WHEN snapshot_csv IS NOT NULL AND LENGTH(snapshot_csv) > 0 THEN TRUE ELSE FALSE END AS snapshotAvailable
+                   CASE WHEN snapshot_csv IS NOT NULL AND LENGTH(snapshot_csv) > 0 THEN TRUE ELSE FALSE END AS snapshotAvailable,
+                   created_at AS requestedAt
               FROM nx_admin_fourth_batch_report
              WHERE module_code = 'L5'
                AND report_id = #{reportId}

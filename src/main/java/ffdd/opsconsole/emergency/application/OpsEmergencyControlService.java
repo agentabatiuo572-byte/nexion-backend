@@ -794,7 +794,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         int offset = Math.multiplyExact(page - 1, pageSize);
         List<Map<String, Object>> pagedAccounts = emergencyRepository.pageTamperAccounts(
                         range.startAt(), range.endAt(), effectiveThreshold, offset, pageSize).stream()
-                .map(this::tamperAccountView)
+                .map(this::tamperAccountReadView)
                 .toList();
         int totalBlocked = paths.stream().mapToInt(row -> intValue(row.get("count"))).sum();
         TamperRange previousRange = range.previous();
@@ -3274,6 +3274,13 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         account.put("fedToK4", fedToK4);
         account.put("b5Triggered", b5Triggered);
         account.put("alertState", firstText(row.get("alertState"), fedToK4 && b5Triggered ? "escalated" : "flagged"));
+        return account;
+    }
+
+    /** Overview projection, including the config-save receipt: keep the old last field and add the same event MAX's full stored time. */
+    private Map<String, Object> tamperAccountReadView(Map<String, Object> row) {
+        Map<String, Object> account = tamperAccountView(row);
+        account.put("lastOccurredAt", row.get("lastOccurredAt"));
         return account;
     }
 

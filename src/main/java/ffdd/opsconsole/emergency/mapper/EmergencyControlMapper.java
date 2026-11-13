@@ -879,6 +879,7 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
                    SUM(e.event_count) AS count,
                    CASE WHEN MAX(e.k4_accepted) = 1 THEN CONCAT('+', SUM(e.k4_delta)) ELSE '未喂送' END AS k4,
                    DATE_FORMAT(MAX(e.occurred_at), '%H:%i:%s') AS last,
+                   DATE_FORMAT(MAX(e.occurred_at), '%Y-%m-%d %H:%i:%s') AS lastOccurredAt,
                    GROUP_CONCAT(DISTINCT e.path_key ORDER BY e.path_key SEPARATOR ',') AS pathCsv,
                    COALESCE(NULLIF(MAX(e.cluster_code), ''), MAX(k.cluster_code), '') AS cluster,
                    CASE WHEN MAX(e.k4_accepted) = 1 THEN TRUE ELSE FALSE END AS fedToK4,

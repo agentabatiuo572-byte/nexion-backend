@@ -3058,7 +3058,19 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     }
 
     public ApiResult<Map<String, Object>> vouchers() {
+        return voucherResponse(false);
+    }
+
+    /** GET /growth/vouchers only: adds real pending H7 approval metadata without touching write paths. */
+    public ApiResult<Map<String, Object>> vouchersForRead() {
+        return voucherResponse(true);
+    }
+
+    private ApiResult<Map<String, Object>> voucherResponse(boolean includePendingApproval) {
         List<Map<String, Object>> rows = voucherRows();
+        if (includePendingApproval) {
+            rows = withVoucherPendingApprovals(rows);
+        }
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "H7");
         response.put("vouchers", rows);
@@ -4887,6 +4899,20 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         return voucherMapper.get().listVouchers().stream()
                 .map(this::voucherRowFromBusinessTable)
                 .toList();
+    }
+
+    private List<Map<String, Object>> withVoucherPendingApprovals(List<Map<String, Object>> rows) {
+        if (rows.isEmpty()) return rows;
+        if (pendingApprovalProjection == null) {
+            throw new IllegalStateException("PENDING_APPROVAL_PROJECTION_UNAVAILABLE");
+        }
+        var pending = pendingApprovalProjection.readVouchers(
+                rows.stream().map(row -> (String) row.get("id")).toList());
+        return rows.stream().map(row -> {
+            Map<String, Object> projected = new LinkedHashMap<>(row);
+            projected.put("pendingApproval", pending.get((String) row.get("id")));
+            return projected;
+        }).toList();
     }
 
     private List<Map<String, Object>> voucherSkuOptions() {

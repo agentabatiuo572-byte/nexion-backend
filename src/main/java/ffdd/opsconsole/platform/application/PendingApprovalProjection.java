@@ -18,6 +18,11 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class PendingApprovalProjection {
     private static final PendingApproval GENERIC = new PendingApproval(null, null, null);
+    private static final Map<String, String> VOUCHER_OPERATIONS = Map.of(
+            "h7_voucher_delete", "删除代金券",
+            "h7_voucher_revoke_available", "作废未使用的代金券");
+    private static final VoucherPendingApproval UNKNOWN_VOUCHER = new VoucherPendingApproval(null, null, null, null);
+
     private static final Map<String, Operation> OPERATIONS = Map.ofEntries(
             Map.entry("e4_order_cancel", new Operation("E", "device_order", "orderNo", "取消订单")),
             Map.entry("e4_order_terminal", new Operation("E", "device_order", "orderNo", "标记失败")),
@@ -38,6 +43,16 @@ public class PendingApprovalProjection {
         Map<String, PendingApproval> approvals = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
         for (var lock : lockMapper.selectPendingLocks(domain, targetType, authorizedIds)) {
             approvals.put(lock.targetId(), describe(domain, targetType, lock));
+        }
+        return approvals;
+    }
+
+    /** H7 list-only projection: active lock joined to its real pending ticket and exact delete/revoke command. */
+    public Map<String, VoucherPendingApproval> readVouchers(Collection<String> authorizedIds) {
+        if (authorizedIds == null || authorizedIds.isEmpty()) return Map.of();
+        Map<String, VoucherPendingApproval> approvals = new TreeMap<>();
+        for (var lock : lockMapper.selectPendingLocks("H", "voucher", authorizedIds)) {
+            approvals.put(lock.targetId(), describeVoucher(lock));
         }
         return approvals;
     }
@@ -72,6 +87,32 @@ public class PendingApprovalProjection {
         }
     }
 
+    private VoucherPendingApproval describeVoucher(AuditObjectLockMapper.PendingLock lock) {
+        if (lock.ticketId() == null || lock.ticketId().isBlank()
+                || lock.commandJson() == null || lock.operatorName() == null || lock.operatorName().isBlank()
+                || lock.createdAt() == null) return UNKNOWN_VOUCHER;
+        try {
+            JsonNode command = objectMapper.readTree(lock.commandJson());
+            String label = VOUCHER_OPERATIONS.get(command.path("op").asText());
+            JsonNode params = command.path("params");
+            if (label == null || !"H".equals(command.path("domain").asText())
+                    || !params.isObject() || params.size() != 2
+                    || !params.has("voucherId") || !params.has("expectedVersion")
+                    || !params.path("voucherId").isTextual()
+                    || !params.path("expectedVersion").isIntegralNumber()
+                    || !params.path("expectedVersion").canConvertToLong()
+                    || params.path("expectedVersion").longValue() <= 0) return UNKNOWN_VOUCHER;
+            String voucherId = params.path("voucherId").asText();
+            if (!voucherId.matches("[A-Za-z0-9_-]{1,80}") || !voucherId.equals(lock.targetId())) {
+                return UNKNOWN_VOUCHER;
+            }
+            return new VoucherPendingApproval(label, lock.ticketId(), lock.operatorName(),
+                    lock.createdAt().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+        } catch (JsonProcessingException invalidHistoricCommand) {
+            return UNKNOWN_VOUCHER;
+        }
+    }
+
     record Operation(String domain, String targetType, String idField, String label) {
         AuditLockTarget target(String id) {
             return new AuditLockTarget(domain, targetType, id);
@@ -79,4 +120,6 @@ public class PendingApprovalProjection {
     }
 
     public record PendingApproval(String action, String submittedBy, String submittedAt) {}
+
+    public record VoucherPendingApproval(String action, String ticketId, String submittedBy, String submittedAt) {}
 }
