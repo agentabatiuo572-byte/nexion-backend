@@ -220,7 +220,7 @@ public interface DirectReferralMapper extends BaseMapper<Object> {
     @Select("SELECT COUNT(*) FROM nx_earnings_release_entry WHERE user_id=#{id} AND source_ref IN (#{usdt},#{nex}) AND source_type IN ('DIRECT_REFERRAL','MOCK_DIRECT_REFERRAL') AND status='ACTIVE' AND bucket='withdrawable' AND is_deleted=0")
     int withdrawableReleaseCount(@Param("id") Long id,@Param("usdt") String usdt,@Param("nex") String nex);
     @Select("SELECT settlement_no FROM nx_direct_referral_settlement WHERE source_type='direct_purchase' AND source_ref=#{ref} ORDER BY id") List<String> purchaseGroups(String ref);
-    @Select("SELECT id,settlement_no settlementNo,refund_ratio refundRatio FROM nx_direct_referral_settlement WHERE (recovery_pending_usdt>0 OR recovery_pending_nex>0) AND source_environment=#{env} AND run_id=#{runId} AND id>#{cursor} ORDER BY id LIMIT 100")
+    @Select("SELECT id,settlement_no settlementNo,refund_ratio refundRatio FROM nx_direct_referral_settlement WHERE (recovery_pending_usdt>0.000000 OR recovery_pending_nex>0.000000)=1 AND source_environment=#{env} AND run_id=#{runId} AND id>#{cursor} ORDER BY id LIMIT 100")
     List<RecoveryRow> pendingRecovery(@Param("env") String env,@Param("runId") String runId,@Param("cursor") long cursor);
     record RecoveryRow(long id,String settlementNo,BigDecimal refundRatio) { }
     @Select("SELECT settlement_no FROM nx_direct_referral_settlement WHERE beneficiary_user_id=#{id} AND source_type=#{kind} AND source_environment=#{env} AND run_id=#{runId} AND status IN ('COOLING','FROZEN') ORDER BY id")
