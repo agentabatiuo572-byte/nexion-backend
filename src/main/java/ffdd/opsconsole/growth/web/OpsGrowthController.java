@@ -539,7 +539,7 @@ public class OpsGrowthController {
     @GetMapping("/vouchers")
     @PreAuthorize("hasAuthority('growth_h7_read')")
     public ApiResult<Map<String, Object>> vouchers() {
-        return growthService.vouchers();
+        return growthService.vouchersForRead();
     }
 
     @PostMapping("/vouchers")

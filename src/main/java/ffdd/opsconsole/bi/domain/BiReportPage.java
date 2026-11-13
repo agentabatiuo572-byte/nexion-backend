@@ -8,7 +8,13 @@ public record BiReportPage(
         long pageNum,
         long pageSize,
         List<BiReportView> records,
-        Map<String, ApprovalEligibility> approvalEligibility) {
+        Map<String, ApprovalEligibility> approvalEligibility,
+        Map<String, String> requesterDisplayNames) {
+
+    public BiReportPage(long total, long pageNum, long pageSize, List<BiReportView> records,
+                        Map<String, ApprovalEligibility> approvalEligibility) {
+        this(total, pageNum, pageSize, records, approvalEligibility, Map.of());
+    }
 
     public enum ApprovalEligibility {
         ELIGIBLE, SELF, MAKER_UNVERIFIED;

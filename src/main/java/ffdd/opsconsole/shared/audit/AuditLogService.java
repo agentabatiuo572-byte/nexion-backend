@@ -1,5 +1,6 @@
 package ffdd.opsconsole.shared.audit;
 
+import ffdd.opsconsole.auth.infrastructure.AdminEntity;
 import ffdd.opsconsole.auth.mapper.AdminMapper;
 import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.shared.audit.mapper.AuditLogMapper;
@@ -126,6 +127,39 @@ public class AuditLogService {
         }
         return makers;
     }
+
+    /** Pairs the exact successful create-audit maker with the current admin display name; never falls back to an id or email. */
+    public Map<String, BiReportMakerIdentity> findBiReportMakerIdentities(Collection<String> reportIds) {
+        Map<String, Long> makers = findBiReportMakers(reportIds);
+        if (makers.isEmpty()) {
+            return Map.of();
+        }
+        List<Long> ids = makers.values().stream()
+                .filter(id -> id != null && id > 0)
+                .distinct()
+                .toList();
+        Map<Long, String> names = new LinkedHashMap<>();
+        if (!ids.isEmpty()) {
+            List<AdminEntity> admins = adminMapper.selectBatchIds(ids);
+            if (admins != null) {
+                for (AdminEntity admin : admins) {
+                    if (admin == null || admin.getId() == null || Integer.valueOf(1).equals(admin.getIsDeleted())) {
+                        continue;
+                    }
+                    String name = firstText(admin.getNickname(), admin.getUsername());
+                    if (StringUtils.hasText(name)) {
+                        names.put(admin.getId(), name.trim());
+                    }
+                }
+            }
+        }
+        Map<String, BiReportMakerIdentity> identities = new LinkedHashMap<>();
+        makers.forEach((reportId, makerId) -> identities.put(reportId,
+                new BiReportMakerIdentity(makerId, names.get(makerId))));
+        return identities;
+    }
+
+    public record BiReportMakerIdentity(Long makerId, String displayName) { }
 
     /**
      * Returns only successful, exact A2 terminal outcomes for the supplied operation ids.

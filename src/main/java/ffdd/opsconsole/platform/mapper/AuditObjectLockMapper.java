@@ -44,7 +44,8 @@ public interface AuditObjectLockMapper extends BaseMapper<AuditObjectLockEntity>
 
     @Select("""
             <script>
-            SELECT l.target_id, t.command_json, t.operator_name, t.created_at
+            SELECT l.target_id AS targetId, t.operation_id AS ticketId,
+                   t.command_json AS commandJson, t.operator_name AS operatorName, t.created_at AS createdAt
             FROM nx_audit_object_lock l
             LEFT JOIN nx_audit_operation_ticket t ON t.operation_id = l.ticket_id
               AND t.is_deleted = 0 AND t.status = 'pending'
@@ -57,7 +58,8 @@ public interface AuditObjectLockMapper extends BaseMapper<AuditObjectLockEntity>
     List<PendingLock> selectPendingLocks(@Param("domain") String domain, @Param("type") String type,
                                         @Param("targetIds") Collection<String> targetIds);
 
-    record PendingLock(String targetId, String commandJson, String operatorName, LocalDateTime createdAt) {}
+    record PendingLock(String targetId, String ticketId, String commandJson, String operatorName,
+                       LocalDateTime createdAt) {}
 
     @Select("""
             SELECT target_id FROM nx_audit_object_lock

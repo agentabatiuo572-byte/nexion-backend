@@ -526,16 +526,24 @@ public class OpsBiService implements AuditReplayable {
                 pageNum,
                 pageSize);
         Map<String, ApprovalEligibility> eligibility = new LinkedHashMap<>();
+        Map<String, String> requesterDisplayNames = new LinkedHashMap<>();
         Long adminId = parseAdminIdFromContext();
         if (adminId != null && permissionCache.getPermissionCodes(adminId).contains("bi_l5_task_approve")) {
             List<String> pendingIds = page.getRecords().stream()
                     .filter(report -> nextStatus(report, "APPROVE") != null)
                     .map(BiReportView::reportId)
                     .toList();
-            Map<String, Long> makers = auditLogService.findBiReportMakers(pendingIds);
-            pendingIds.forEach(id -> eligibility.put(id, ApprovalEligibility.forActor(makers.get(id), adminId)));
+            Map<String, AuditLogService.BiReportMakerIdentity> makers =
+                    auditLogService.findBiReportMakerIdentities(pendingIds);
+            pendingIds.forEach(id -> {
+                AuditLogService.BiReportMakerIdentity maker = makers.get(id);
+                Long makerId = maker == null ? null : maker.makerId();
+                eligibility.put(id, ApprovalEligibility.forActor(makerId, adminId));
+                requesterDisplayNames.put(id, maker == null ? null : maker.displayName());
+            });
         }
-        return ApiResult.ok(new BiReportPage(page.getTotal(), page.getPageNum(), page.getPageSize(), page.getRecords(), eligibility));
+        return ApiResult.ok(new BiReportPage(page.getTotal(), page.getPageNum(), page.getPageSize(),
+                page.getRecords(), eligibility, requesterDisplayNames));
     }
 
     public ApiResult<Map<String, Object>> regulatoryTemplates() {
