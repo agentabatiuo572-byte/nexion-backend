@@ -414,9 +414,6 @@ public class AppCanonicalBoundaryService {
                         CanonicalStateMapper.E3CapacityConfig::configValue,
                         (left, right) -> right,
                         LinkedHashMap::new));
-        if (!validE3CapacityConfig(capacityConfig)) {
-            return ApiResult.fail(409, "E3_CAPACITY_CONFIG_INCOMPLETE");
-        }
         CanonicalStateMapper.UserCanonicalProfile profile = sandboxRuntime
                 ? mapper.sandboxUserCanonicalProfile(userId)
                 : developmentRuntime
@@ -430,6 +427,9 @@ public class AppCanonicalBoundaryService {
                 : developmentRuntime
                         ? mapper.developmentOwnedDevices(userId)
                         : mapper.ownedDevices(userId);
+        if ((rawDevices == null || !rawDevices.isEmpty()) && !validE3CapacityConfig(capacityConfig)) {
+            return ApiResult.fail(409, "E3_CAPACITY_CONFIG_INCOMPLETE");
+        }
         if (rawDevices != null) {
             for (CanonicalStateMapper.OwnedDevice device : rawDevices) {
                 try {

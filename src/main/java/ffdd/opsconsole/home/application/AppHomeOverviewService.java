@@ -121,9 +121,7 @@ public class AppHomeOverviewService {
                     weekStart, monthStart, now);
             PeriodRow todayEarnings = summary == null ? null : summary.today();
             PeriodRow yesterdaySameTimeEarnings = summary == null ? null : summary.yesterday();
-            earnings.put("today", todayEarnings != null && todayEarnings.jobCount() != null && todayEarnings.jobCount() == 0
-                    ? linked("usdt", BigDecimal.ZERO, "nex", BigDecimal.ZERO, "jobCount", 0L)
-                    : period(todayEarnings));
+            earnings.put("today", period(todayEarnings));
             earnings.put("todayVsYesterdayPct", percentageChange(todayEarnings, yesterdaySameTimeEarnings));
             BigDecimal todayUsdt = todayEarnings == null || todayEarnings.jobCount() == null ? null
                     : todayEarnings.jobCount() == 0 ? BigDecimal.ZERO : nonNegative(todayEarnings.usdt());
@@ -149,7 +147,8 @@ public class AppHomeOverviewService {
             Long activeDevices = mapper.activeDevices(userId, accountSandbox);
             int reservedSlots = Math.max(0, mapper.reservedDeviceOrderCount(userId));
             int trialSlots = mapper.reservedTrialSlotCount(userId);
-            result.put("onboarding", linked("cumulativePaidUsdt", fact(paid == null ? null : paid.amountUsdt(), paid == null ? null : paid.orderCount()),
+            result.put("onboarding", linked("cumulativePaidUsdt", paid != null && paid.orderCount() != null && paid.orderCount() == 0
+                            ? BigDecimal.ZERO : fact(paid == null ? null : paid.amountUsdt(), paid == null ? null : paid.orderCount()),
                     "activeDevices", activeDevices, "slotsUsed", (long) Math.max(0, mapper.activeSlotCount(userId)) + reservedSlots + trialSlots,
                     "slotCap", Math.max(1, mapper.deviceSlotCap()), "reservedSlotCount", reservedSlots, "trialSlotCount", trialSlots));
             AppHomeOverviewMapper.OnGridSummary grid = mapper.onGrid(sourceEnvironment, accountSandbox);
@@ -488,7 +487,8 @@ public class AppHomeOverviewService {
     }
 
     private Map<String, Object> period(PeriodRow row) {
-        if (row == null || row.jobCount() == null || row.jobCount() == 0) return linked("usdt", null, "nex", null, "jobCount", null);
+        if (row == null || row.jobCount() == null) return linked("usdt", null, "nex", null, "jobCount", null);
+        if (row.jobCount() == 0) return linked("usdt", BigDecimal.ZERO, "nex", BigDecimal.ZERO, "jobCount", 0L);
         return linked("usdt", nonNegative(row.usdt()), "nex", nonNegative(row.nex()), "jobCount", row.jobCount());
     }
 
