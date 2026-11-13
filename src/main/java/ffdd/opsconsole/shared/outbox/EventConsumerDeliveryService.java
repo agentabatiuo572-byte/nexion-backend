@@ -96,6 +96,22 @@ public class EventConsumerDeliveryService {
         return claim;
     }
 
+    /** Claims and skips an ineligible event in the same delivery transaction. */
+    @Transactional(rollbackFor = Exception.class)
+    public ConsumerClaim claimSkipped(
+            EventOutboxMessage message,
+            String consumerGroup,
+            String topic,
+            String msgId,
+            int rocketmqReconsumeTimes,
+            String reason) {
+        ConsumerClaim claim = claim(message, consumerGroup, topic, msgId, rocketmqReconsumeTimes);
+        if (claim.claimed()) {
+            markSkipped(consumerGroup, claim.eventId(), reason);
+        }
+        return claim;
+    }
+
     /** Moves an already claimed H3 delivery into a no-retry binding wait. */
     public void markPendingBinding(String consumerGroup, String eventId) {
         mapper.markPendingBinding(consumerGroup, eventId, STATUS_PENDING_BINDING);
