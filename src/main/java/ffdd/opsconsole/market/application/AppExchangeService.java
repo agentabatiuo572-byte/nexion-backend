@@ -479,7 +479,7 @@ public class AppExchangeService {
             List<NexMarketCurveFrame> frames = objectMapper.readValue(json, new TypeReference<>() {});
             if (frames.size() != 7 || frames.stream().anyMatch(f -> f.dayIndex() < 0 || f.dayIndex() > 6
                     || f.targetPrice() == null || f.targetPrice().compareTo(BigDecimal.ZERO) <= 0
-                    || f.pumpProbability() == null || f.volatilityPct() == null || f.volatilityPct().compareTo(BigDecimal.ZERO) <= 0)
+                    || f.pumpProbability() == null || f.volatilityPct() == null || f.volatilityPct().compareTo(BigDecimal.ZERO) < 0)
                     || frames.stream().map(NexMarketCurveFrame::dayIndex).distinct().count() != 7) {
                 throw new BizException(503, "G3_WEEKLY_CURVE_INVALID");
             }

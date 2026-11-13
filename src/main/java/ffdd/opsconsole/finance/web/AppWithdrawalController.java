@@ -45,6 +45,13 @@ public class AppWithdrawalController {
                 : service.eligibility(userId, request.amount(), request.chain(), request.address(), request.policyVersion());
     }
 
+    @GetMapping("/test-preview")
+    public ApiResult<Map<String, Object>> testPreview(
+            @RequestParam(required = false) BigDecimal amount, Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? unauthorized() : service.testPreview(userId, amount);
+    }
+
     @GetMapping("/{withdrawalNo}")
     public ApiResult<Map<String, Object>> get(
             @PathVariable String withdrawalNo, Authentication authentication) {
