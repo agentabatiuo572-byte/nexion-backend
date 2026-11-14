@@ -2,8 +2,8 @@ package ffdd.opsconsole.developer.web;
 
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.developer.application.OpsDeveloperAccessService;
+import ffdd.opsconsole.developer.dto.OpsDeveloperAccessPage;
 import ffdd.opsconsole.shared.api.ApiResult;
-import ffdd.opsconsole.shared.api.PageResult;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -27,7 +27,7 @@ public class OpsDeveloperAccessController {
     // This is a global data scope: only the explicit governance grant or the built-in
     // super-admin role can see requests. UI visibility is not used as an authorization gate.
     @PreAuthorize("hasAnyAuthority('developer_access_read','ROLE_SUPER_ADMIN')")
-    public ApiResult<PageResult<Map<String, Object>>> page(
+    public ApiResult<OpsDeveloperAccessPage> page(
             @RequestParam(required = false) Integer pageNum,
             @RequestParam(required = false) Integer pageSize,
             @RequestParam(required = false) String status,

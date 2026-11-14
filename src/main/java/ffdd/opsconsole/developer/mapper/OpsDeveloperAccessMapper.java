@@ -22,6 +22,16 @@ public interface OpsDeveloperAccessMapper extends BaseMapper<Object> {
             + " AND source_environment=#{sourceEnvironment}</if></script>")
     long count(@Param("status") String status, @Param("keyword") String keyword, @Param("sourceEnvironment") String sourceEnvironment);
 
+    @Select("<script>SELECT status, COUNT(*) AS count FROM nx_developer_access_request WHERE is_deleted=0"
+            + "<if test=\"keyword != null and keyword != ''\">"
+            + " AND (request_no LIKE CONCAT('%',#{keyword},'%') OR company LIKE CONCAT('%',#{keyword},'%')"
+            + " OR email LIKE CONCAT('%',#{keyword},'%') OR use_case LIKE CONCAT('%',#{keyword},'%'))"
+            + "</if><if test=\"sourceEnvironment != null and sourceEnvironment != ''\">"
+            + " AND source_environment=#{sourceEnvironment}</if>"
+            + " GROUP BY status</script>")
+    List<StatusCount> countByStatus(@Param("keyword") String keyword,
+                                    @Param("sourceEnvironment") String sourceEnvironment);
+
     @Select("<script>SELECT request_no requestNo,user_id userId,company,email,use_case useCase,status,"
             + "source_environment sourceEnvironment,run_id runId,reviewer,review_reason reviewReason,"
             + "reviewed_at reviewedAt,created_at createdAt,updated_at updatedAt"
@@ -92,6 +102,8 @@ public interface OpsDeveloperAccessMapper extends BaseMapper<Object> {
                     String status, String sourceEnvironment, String runId, String reviewer,
                     String reviewReason, LocalDateTime reviewedAt, LocalDateTime createdAt,
                     LocalDateTime updatedAt) { }
+
+    record StatusCount(String status, long count) { }
 
     record IdempotencyRow(String requestNo, String action, String idempotencyKey,
                           String requestHash, String status, String resultStatus,
