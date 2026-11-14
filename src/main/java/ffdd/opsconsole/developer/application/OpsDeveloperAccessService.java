@@ -1,8 +1,8 @@
 package ffdd.opsconsole.developer.application;
 
+import ffdd.opsconsole.developer.dto.OpsDeveloperAccessPage;
 import ffdd.opsconsole.developer.mapper.OpsDeveloperAccessMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
-import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import java.time.ZoneOffset;
@@ -26,15 +26,16 @@ import org.springframework.util.StringUtils;
 public class OpsDeveloperAccessService {
     private static final int DEFAULT_PAGE_SIZE = 20;
     private static final int MAX_PAGE_SIZE = 200;
-    private static final Set<String> STATUSES = Set.of("PENDING", "APPROVED", "REJECTED", "REVOKED", "EXPIRED");
+    private static final List<String> STATUS_ORDER = List.of("PENDING", "APPROVED", "REJECTED", "REVOKED", "EXPIRED");
+    private static final Set<String> STATUSES = Set.copyOf(STATUS_ORDER);
     private static final Pattern REQUEST_NO_PATTERN = Pattern.compile("DEV-[A-Z0-9]{16}");
 
     private final OpsDeveloperAccessMapper mapper;
     private final AuditLogService auditLogService;
 
-    public ApiResult<PageResult<Map<String, Object>>> page(Integer pageNum, Integer pageSize,
-                                                            String status, String keyword,
-                                                            String sourceEnvironment) {
+    public ApiResult<OpsDeveloperAccessPage> page(Integer pageNum, Integer pageSize,
+                                                  String status, String keyword,
+                                                  String sourceEnvironment) {
         String normalizedStatus = text(status);
         if (normalizedStatus != null) normalizedStatus = normalizedStatus.toUpperCase(Locale.ROOT);
         if (normalizedStatus != null && !STATUSES.contains(normalizedStatus)) {
@@ -57,7 +58,15 @@ public class OpsDeveloperAccessService {
         List<Map<String, Object>> records = mapper.page(normalizedStatus, normalizedKeyword, normalizedEnvironment,
                         (int) offset, normalizedSize)
                 .stream().map(this::view).toList();
-        return ApiResult.ok(new PageResult<>(total, normalizedPage, normalizedSize, records));
+        Map<String, Long> statusCounts = new LinkedHashMap<>();
+        STATUS_ORDER.forEach(value -> statusCounts.put(value, 0L));
+        mapper.countByStatus(normalizedKeyword, normalizedEnvironment).forEach(row -> {
+            if (STATUSES.contains(row.status())) {
+                statusCounts.put(row.status(), row.count());
+            }
+        });
+        return ApiResult.ok(new OpsDeveloperAccessPage(
+                total, normalizedPage, normalizedSize, records, statusCounts));
     }
 
     @Transactional
