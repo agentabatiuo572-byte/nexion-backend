@@ -418,4 +418,20 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
              WHERE rp.is_deleted = 0
             """)
     int disableAllRolePermissions(@Param("roleCode") String roleCode);
+
+    /** Counts the same distinct active API permission codes returned by the detail read, by role. */
+    @Select("""
+            SELECT rp.role_id AS roleId, COUNT(DISTINCT p.permission_code) AS count
+              FROM nx_admin_role_permission rp
+              JOIN nx_admin_permission p
+                ON p.id = rp.permission_id
+               AND p.status = 1
+               AND p.is_deleted = 0
+               AND p.resource_type = 'API'
+             WHERE rp.is_deleted = 0
+             GROUP BY rp.role_id
+            """)
+    List<RoleCount> countActivePermissionCodesByRole();
+
+    record RoleCount(Long roleId, long count) { }
 }

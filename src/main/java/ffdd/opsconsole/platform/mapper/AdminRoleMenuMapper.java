@@ -84,4 +84,14 @@ public interface AdminRoleMenuMapper extends BaseMapper<AdminRoleMenuEntity> {
     @Update("UPDATE nx_admin_role_menu SET is_deleted = 1, updated_at = NOW() WHERE role_id = #{roleId} AND is_deleted = 0")
     int disableAllRoleMenus(Long roleId);
 
+    /** Counts the same active role-menu binding rows returned by the detail read, by role. */
+    @Select("""
+            SELECT role_id AS roleId, COUNT(*) AS count
+              FROM nx_admin_role_menu
+             WHERE is_deleted = 0
+             GROUP BY role_id
+            """)
+    List<RoleCount> countActiveMenuGrantsByRole();
+
+    record RoleCount(Long roleId, long count) { }
 }
