@@ -21,6 +21,25 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     int networkUniqueIndexCount();
     @Select("SELECT EXISTS(SELECT 1 FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{network.chainId,javaType=java.lang.String}) OR EXISTS(SELECT 1 FROM nx_cregis_deposit_event WHERE project_id=#{projectId} AND chain_id=#{network.chainId,javaType=java.lang.String}) OR EXISTS(SELECT 1 FROM nx_cregis_chain_observation WHERE project_id=#{projectId} AND chain_id=#{network.chainId,javaType=java.lang.String}) OR EXISTS(SELECT 1 FROM nx_cregis_deposit_delivery WHERE chain_id=#{network.chainId,javaType=java.lang.String}) OR EXISTS(SELECT 1 FROM nx_cregis_exception_source WHERE project_id=#{projectId} AND chain_id=#{network.chainId,javaType=java.lang.String}) OR EXISTS(SELECT 1 FROM nx_withdrawal_order WHERE chain=CONCAT('USDT-',#{network.network,javaType=java.lang.String}) AND is_deleted=0 AND d5_payout_source='provider')")
     boolean hasNetworkActivity(@Param("network") CregisNetwork network,@Param("projectId") long projectId);
+    /** Additional historical money facts for the BEP20-only empty-pool bootstrap. */
+    @Select("""
+            SELECT EXISTS(SELECT 1 FROM nx_purchase_payment_intent
+                           WHERE provider_project=#{projectId} AND payment_method='CREGIS_USDT_BSC')
+                OR EXISTS(SELECT 1 FROM nx_purchase_payment_arrival
+                           WHERE provider_project=#{projectId} AND chain_id='2510')
+                OR EXISTS(SELECT 1 FROM nx_cregis_exception_refund
+                           WHERE project_id=#{projectId} AND chain_id='2510')
+                OR EXISTS(SELECT 1 FROM nx_cregis_exception_claim
+                           WHERE project_id=#{projectId} AND chain_id='2510')
+                OR EXISTS(SELECT 1 FROM nx_cregis_auto_forward_task
+                           WHERE project_id=#{projectId} AND chain_id='2510')
+                OR EXISTS(SELECT 1 FROM nx_cregis_funds_preparation_plan WHERE project_id=#{projectId})
+                OR EXISTS(SELECT 1 FROM nx_cregis_deposit_policy_snapshot
+                           WHERE project_id=#{projectId} AND chain_id='BSC')
+                OR EXISTS(SELECT 1 FROM nx_deposit_order WHERE chain_name='CREGIS_USDT_BEP20')
+                OR EXISTS(SELECT 1 FROM nx_withdrawal_order WHERE chain='USDT-BEP20')
+            """)
+    boolean hasBep20BootstrapMoneyActivity(@Param("projectId") long projectId);
     @Select("SELECT CASE WHEN is_deleted=0 THEN setting_value END FROM nx_emergency_control_setting WHERE setting_key=#{key} FOR SHARE")
     String lockWithdrawalEmergency(@Param("key") String key);
     @Select("SELECT COUNT(*) FROM nx_cregis_address_pool_policy WHERE id IN (2,3)")

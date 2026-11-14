@@ -17,6 +17,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -54,7 +55,8 @@ public class CregisDepositReconciliation {
         if (config.getMode() != CregisProperties.Mode.PROVIDER)
             throw new IllegalStateException("CREGIS_PROVIDER_DISABLED");
         Long first = db.firstAddressSecond(network,config.getProjectId());
-        boolean bootstrap=first==null && network==CregisNetwork.TRC20 && config.networkConfigured(network);
+        boolean bep20Bootstrap=first==null && network==CregisNetwork.BEP20 && config.networkConfigured(network);
+        boolean bootstrap=bep20Bootstrap || first==null && network==CregisNetwork.TRC20 && config.networkConfigured(network);
         if(bootstrap)first=Instant.now().getEpochSecond();
         if (first == null) return Map.of("status", "NO_ADDRESSES");
         db.ensureWatermark(network,Math.max(1, first - 3600));
@@ -72,33 +74,50 @@ public class CregisDepositReconciliation {
         try {
             db.failInterruptedReconcileRuns(network,config.getProjectId(), runId);
             db.createReconcileRun(network,runId, config.getProjectId(), start, end);
-            if(bootstrap) {
+            if(bep20Bootstrap) {
+                requireBep20Bootstrap(db.provisionGate(),db.networkSwitch(network));
+                if(router.provider().projectCoins().stream().noneMatch(coin->coin.addressEnabled()
+                        && network.chainId().equals(coin.chainId()) && network.tokenMatches(coin.tokenId())))
+                    throw new IllegalStateException("CREGIS_BEP20_BOOTSTRAP_ASSET_UNAVAILABLE");
+            } else if(bootstrap) {
                 if(db.hasNetworkActivity(network,config.getProjectId()) || payouts.recoveryReason()!=null
                         || db.unresolvedExposure(config.getProjectId(),false).signum()!=0
                         || router.provider().projectCoins().stream().noneMatch(coin->coin.addressEnabled()
                             && network.chainId().equals(coin.chainId()) && network.tokenMatches(coin.tokenId())))
                     throw new IllegalStateException("CREGIS_TRC20_BOOTSTRAP_NOT_EMPTY_OR_READY");
             }
-            Snapshot firstPass = snapshot(network,start, end);
-            Snapshot secondPass = snapshot(network,start, end);
+            Snapshot firstPass = snapshot(network,start, end,bep20Bootstrap);
+            Snapshot secondPass = snapshot(network,start, end,bep20Bootstrap);
             if (firstPass.total != secondPass.total || !firstPass.hash.equals(secondPass.hash))
                 throw new IllegalStateException("CREGIS_RECONCILE_PROVIDER_DRIFT");
             if(bootstrap && (firstPass.total!=0 || secondPass.total!=0))
                 throw new IllegalStateException("CREGIS_TRC20_BOOTSTRAP_PROVIDER_NOT_EMPTY");
-            long finalized = chain.finalizedHeight(network,config.getDepositConfirmations());
-            if (finalized >= 0) deposits.scanTrackedAddresses(network,finalized);
-            Long cursor = db.cursor(network);
+            BscDepositProof.Head bootstrapHead=bep20Bootstrap?chain.head(network):null;
+            long finalized = bep20Bootstrap?bootstrapHead.number()-config.getDepositConfirmations()+1
+                    :chain.finalizedHeight(network,config.getDepositConfirmations());
+            if (!bep20Bootstrap && finalized >= 0) deposits.scanTrackedAddresses(network,finalized);
+            Long cursor = bep20Bootstrap?Long.valueOf(finalized+1):db.cursor(network);
             if (finalized < 0 || cursor == null || cursor <= finalized)
                 throw new IllegalStateException("CREGIS_RECONCILE_CHAIN_CURSOR_INCOMPLETE");
             String chainHash = chain.blockHash(network,finalized);
+            if(bep20Bootstrap && !bootstrapHead.hash().equals(chain.blockHash(network,bootstrapHead.number())))
+                throw new IllegalStateException("CREGIS_BEP20_BOOTSTRAP_CHAIN_DRIFT");
             for (CregisGateway.DepositRow row : secondPass.rows) {
                 if (row.status() == 0 || !deposits.materializeProviderRow(row))
                     throw new IllegalStateException("CREGIS_RECONCILE_ROW_UNRESOLVED");
             }
-            deposits.auditCreditedProviderRows(network);
+            if(!bep20Bootstrap)deposits.auditCreditedProviderRows(network);
             TransactionTemplate tx = new TransactionTemplate(txManager);
+            if(bep20Bootstrap)tx.setIsolationLevel(TransactionDefinition.ISOLATION_SERIALIZABLE);
             tx.executeWithoutResult(ignored -> {
-                if(bootstrap && (db.lockProvisionGate()==null || db.hasNetworkActivity(network,config.getProjectId())
+                if(bep20Bootstrap) {
+                    requireBep20Bootstrap(db.lockProvisionGate(),db.lockNetworkSwitch(network));
+                    db.ensureCursor(network,cursor);
+                    Long lockedCursor=db.lockCursor(network);
+                    if(lockedCursor==null || lockedCursor>cursor || lockedCursor<cursor
+                            && db.advanceCursor(network,cursor,lockedCursor)!=1)
+                        throw new IllegalStateException("CREGIS_RECONCILE_CHAIN_CURSOR_INCOMPLETE");
+                } else if(bootstrap && (db.lockProvisionGate()==null || db.hasNetworkActivity(network,config.getProjectId())
                         || payouts.recoveryReason()!=null || db.unresolvedExposure(config.getProjectId(),false).signum()!=0))
                     throw new IllegalStateException("CREGIS_TRC20_BOOTSTRAP_NOT_EMPTY_OR_READY");
                 Long locked = db.lockReconcileWatermark(network);
@@ -108,7 +127,15 @@ public class CregisDepositReconciliation {
                         secondPass.rows.size(), secondPass.hash, cursor, chainHash) != 1
                         || db.advanceReconcileWatermark(network,prior, end, runId) != 1)
                     throw new IllegalStateException("CREGIS_RECONCILE_COMMIT_FAILED");
-                if(bootstrap)audit.recordRequired(ffdd.opsconsole.shared.audit.AuditLogWriteRequest.builder()
+                if(bep20Bootstrap)audit.recordRequired(ffdd.opsconsole.shared.audit.AuditLogWriteRequest.builder()
+                        .action("CREGIS_BEP20_EMPTY_POOL_RECONCILED").resourceType("CREGIS_RECONCILE").resourceId(runId)
+                        .actorType("SYSTEM").actorUsername("cregis-reconciliation").riskLevel("HIGH").result("SUCCESS")
+                        .detail(Map.ofEntries(Map.entry("source","EMPTY_POOL_BOOTSTRAP"),Map.entry("network",network.network()),
+                                Map.entry("windowStart",start),Map.entry("windowEnd",end),Map.entry("providerRows",0),
+                                Map.entry("chainHeadBlock",bootstrapHead.number()),Map.entry("chainHeadHash",bootstrapHead.hash()),
+                                Map.entry("finalizedBlock",finalized),Map.entry("chainCursorBlock",cursor),Map.entry("chainCursorHash",chainHash),
+                                Map.entry("evidenceScope","WINDOW_AND_EMPTY_LOCAL_TRACKED_SET_ONLY"))).build());
+                else if(bootstrap)audit.recordRequired(ffdd.opsconsole.shared.audit.AuditLogWriteRequest.builder()
                         .action("CREGIS_TRC20_EMPTY_POOL_RECONCILED").resourceType("CREGIS_RECONCILE").resourceId(runId)
                         .actorType("SYSTEM").actorUsername("cregis-reconciliation").riskLevel("HIGH").result("SUCCESS")
                         .detail(Map.of("source","EMPTY_POOL_BOOTSTRAP","network",network.network(),"windowStart",start,
@@ -127,12 +154,31 @@ public class CregisDepositReconciliation {
 
     public Map<String,Object> runOnce() { return runOnce(CregisNetwork.BEP20); }
 
-    private Snapshot snapshot(CregisNetwork network,long start, long end) {
+    private void requireBep20Bootstrap(Map<String,Object> gate,Map<String,Object> networkGate) {
+        BigDecimal exposure=db.unresolvedExposure(config.getProjectId(),false);
+        if(config.getMode()!=CregisProperties.Mode.PROVIDER || !config.networkConfigured(CregisNetwork.BEP20)
+                || config.getDepositConfirmations()<15 || gate==null || "BUSY".equals(gate.get("state"))
+                || on(gate.get("assignEnabled")) || on(gate.get("creditEnabled")) || on(gate.get("payoutEnabled"))
+                || networkGate==null || on(networkGate.get("depositEnabled"))
+                || db.hasNetworkActivity(CregisNetwork.BEP20,config.getProjectId())
+                || db.hasBep20BootstrapMoneyActivity(config.getProjectId()) || payouts.riskReason()!=null
+                || exposure==null || exposure.signum()!=0)
+            throw new IllegalStateException("CREGIS_BEP20_BOOTSTRAP_NOT_EMPTY_OR_READY");
+    }
+
+    private static boolean on(Object value) {
+        return Boolean.TRUE.equals(value) || value instanceof Number number && number.intValue()==1;
+    }
+
+    private Snapshot snapshot(CregisNetwork network,long start, long end,boolean emptyOnly) {
         List<CregisGateway.DepositRow> rows = new ArrayList<>();
         Set<Long> cids = new HashSet<>();
         long expected = -1;
         for (int page = 1; page <= 100; page++) {
             CregisGateway.DepositPage fetched = router.provider().depositPage(network,start, end, page, 100);
+            // Bootstrap must reject provider money facts before discoverProviderRow can persist any history.
+            if(emptyOnly && (fetched.total()!=0 || !fetched.rows().isEmpty()))
+                throw new IllegalStateException("CREGIS_BEP20_BOOTSTRAP_PROVIDER_NOT_EMPTY");
             if (expected == -1) expected = fetched.total();
             if (fetched.total() != expected || fetched.rows().size() > 100
                     || (expected > rows.size() && fetched.rows().isEmpty()))
