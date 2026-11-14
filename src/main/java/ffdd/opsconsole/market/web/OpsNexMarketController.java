@@ -9,7 +9,6 @@ import ffdd.opsconsole.market.application.G2G3AdminCommandService;
 import ffdd.opsconsole.market.application.G4AdminCommandService;
 import ffdd.opsconsole.market.application.GenesisCatalogService;
 import ffdd.opsconsole.market.application.OpsRepurchaseAdminService;
-import ffdd.opsconsole.market.application.G3ScheduledAdvanceService;
 import ffdd.opsconsole.market.dto.NexMarketAdvanceRequest;
 import ffdd.opsconsole.market.dto.NexMarketCurveUpdateRequest;
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
@@ -32,7 +31,6 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class OpsNexMarketController {
     private final OpsNexMarketService marketService;
-    private final G3ScheduledAdvanceService scheduledAdvanceService;
     private final G2G3AdminCommandService commandService;
     private final G4AdminCommandService g4CommandService;
     private final OpsRepurchaseAdminService repurchaseAdminService;
@@ -55,12 +53,6 @@ public class OpsNexMarketController {
     @PreAuthorize("hasAuthority('finprod_g3_read')")
     public ApiResult<Map<String, Object>> curveHistory() {
         return marketService.curveHistory();
-    }
-
-    @GetMapping("/curve/schedule-execution")
-    @PreAuthorize("hasAuthority('finprod_g3_read')")
-    public ApiResult<Map<String, Object>> scheduleExecution() {
-        return ApiResult.ok(scheduledAdvanceService.latestExecution());
     }
 
     @GetMapping("/repurchase")
