@@ -79,13 +79,18 @@ public class OpsPlatformRoleService {
         for (AdminRoleMenuMapper.RoleCount row : roleMenuMapper.countActiveMenuGrantsByRole()) {
             menuGrantCounts.put(row.roleId(), row.count());
         }
+        Map<Long, Long> enabledAdminCounts = new HashMap<>();
+        for (AdminRoleRelationMapper.RoleEnabledAdminCount row : roleRelationMapper.countEnabledAdminsByRole()) {
+            enabledAdminCounts.put(row.roleId(), row.enabledCount());
+        }
         List<RoleSummary> summaries = new ArrayList<>(roles.size());
         for (AdminRoleEntity role : roles) {
             summaries.add(new RoleSummary(role.getId(), role.getRoleCode(), role.getRoleName(),
                     role.getRemark(), role.getStatus(),
                     BUILTIN_ROLE_CODES.contains(role.getRoleCode()), countAdminsByRole(role.getId()),
                     permissionCounts.getOrDefault(role.getId(), 0L),
-                    menuGrantCounts.getOrDefault(role.getId(), 0L)));
+                    menuGrantCounts.getOrDefault(role.getId(), 0L),
+                    enabledAdminCounts.getOrDefault(role.getId(), 0L)));
         }
         return ApiResult.ok(new PlatformRoleOverview(summaries, summaries.size()));
     }

@@ -14,6 +14,7 @@ public record PlatformRoleOverview(List<RoleSummary> roles, int total) {
             boolean builtin,
             long adminCount,
             long permissionCount,
-            long menuGrantCount) {
+            long menuGrantCount,
+            long enabledAdminCount) {
     }
 }

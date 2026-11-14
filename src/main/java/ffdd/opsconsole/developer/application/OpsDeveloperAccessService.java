@@ -35,7 +35,7 @@ public class OpsDeveloperAccessService {
 
     public ApiResult<OpsDeveloperAccessPage> page(Integer pageNum, Integer pageSize,
                                                   String status, String keyword,
-                                                  String sourceEnvironment) {
+                                                  String sourceEnvironment, String sortDirection) {
         String normalizedStatus = text(status);
         if (normalizedStatus != null) normalizedStatus = normalizedStatus.toUpperCase(Locale.ROOT);
         if (normalizedStatus != null && !STATUSES.contains(normalizedStatus)) {
@@ -46,6 +46,12 @@ public class OpsDeveloperAccessService {
         if (normalizedEnvironment != null && !Set.of("PRODUCTION", "SANDBOX").contains(normalizedEnvironment)) {
             return ApiResult.fail(422, "DEVELOPER_ACCESS_ENVIRONMENT_INVALID");
         }
+        String normalizedSort = text(sortDirection);
+        if (normalizedSort != null) normalizedSort = normalizedSort.toUpperCase(Locale.ROOT);
+        if (normalizedSort != null && !Set.of("ASC", "DESC").contains(normalizedSort)) {
+            return ApiResult.fail(422, "DEVELOPER_ACCESS_SORT_INVALID");
+        }
+        boolean ascending = "ASC".equals(normalizedSort);
         int normalizedPage = pageNum == null || pageNum < 1 ? 1 : pageNum;
         int normalizedSize = pageSize == null ? DEFAULT_PAGE_SIZE : pageSize;
         if (normalizedSize < 1 || normalizedSize > MAX_PAGE_SIZE) {
@@ -56,7 +62,7 @@ public class OpsDeveloperAccessService {
         String normalizedKeyword = text(keyword);
         long total = mapper.count(normalizedStatus, normalizedKeyword, normalizedEnvironment);
         List<Map<String, Object>> records = mapper.page(normalizedStatus, normalizedKeyword, normalizedEnvironment,
-                        (int) offset, normalizedSize)
+                        ascending, (int) offset, normalizedSize)
                 .stream().map(this::view).toList();
         Map<String, Long> statusCounts = new LinkedHashMap<>();
         STATUS_ORDER.forEach(value -> statusCounts.put(value, 0L));

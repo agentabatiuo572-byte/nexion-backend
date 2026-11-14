@@ -42,9 +42,12 @@ public interface OpsDeveloperAccessMapper extends BaseMapper<Object> {
             + " OR email LIKE CONCAT('%',#{keyword},'%') OR use_case LIKE CONCAT('%',#{keyword},'%'))"
             + "</if><if test=\"sourceEnvironment != null and sourceEnvironment != ''\">"
             + " AND source_environment=#{sourceEnvironment}</if>"
-            + " ORDER BY created_at DESC,id DESC LIMIT #{offset},#{limit}</script>")
+            + "<choose><when test=\"ascending\"> ORDER BY created_at ASC,id ASC</when>"
+            + "<otherwise> ORDER BY created_at DESC,id DESC</otherwise></choose>"
+            + " LIMIT #{offset},#{limit}</script>")
     List<AccessRow> page(@Param("status") String status, @Param("keyword") String keyword,
                          @Param("sourceEnvironment") String sourceEnvironment,
+                         @Param("ascending") boolean ascending,
                          @Param("offset") int offset, @Param("limit") int limit);
 
     @Select("SELECT request_no requestNo,user_id userId,company,email,use_case useCase,status,"
