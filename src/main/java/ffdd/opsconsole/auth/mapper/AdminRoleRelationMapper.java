@@ -171,4 +171,19 @@ public interface AdminRoleRelationMapper extends BaseMapper<AdminRoleRelationEnt
                AND is_deleted = 0
             """)
     int disableRelationsByRole(@Param("roleId") Long roleId);
+
+    /** 每角色未删绑定中、账号启用且未删除的不同账号数；不按角色状态过滤。 */
+    @Select("""
+            SELECT rr.role_id AS roleId, COUNT(DISTINCT a.id) AS enabledCount
+              FROM nx_admin_role_relation rr
+              JOIN nx_admin a
+                ON a.id = rr.admin_id
+               AND a.is_deleted = 0
+               AND a.status = 1
+             WHERE rr.is_deleted = 0
+             GROUP BY rr.role_id
+            """)
+    List<RoleEnabledAdminCount> countEnabledAdminsByRole();
+
+    record RoleEnabledAdminCount(Long roleId, long enabledCount) { }
 }

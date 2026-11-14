@@ -32,8 +32,9 @@ public class OpsDeveloperAccessController {
             @RequestParam(required = false) Integer pageSize,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) String keyword,
-            @RequestParam(required = false) String sourceEnvironment) {
-        return service.page(pageNum, pageSize, status, keyword, sourceEnvironment);
+            @RequestParam(required = false) String sourceEnvironment,
+            @RequestParam(required = false) String sortDirection) {
+        return service.page(pageNum, pageSize, status, keyword, sourceEnvironment, sortDirection);
     }
 
     @PostMapping("/{requestNo}/approve")
