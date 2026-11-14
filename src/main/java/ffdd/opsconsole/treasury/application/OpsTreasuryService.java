@@ -747,7 +747,7 @@ public class OpsTreasuryService {
         response.put("accounts", accounts.stream().map(this::scaleAccount).toList());
         response.put("maturity7d", maturity7d());
         response.put("prev", section(
-                "reserveUsd", money(reserveUsd.subtract(prevNetFlow24hUsd)),
+                "reserveUsd", money(reserveUsd.subtract(netFlow24hUsd)),
                 "netFlow24hUsd", money(prevNetFlow24hUsd),
                 "queueBacklogCount", ledgerRepository.countActiveWithdrawalQueue(),
                 "avgRiskScore", avgRiskScore.longValue()));
