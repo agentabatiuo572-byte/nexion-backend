@@ -30,6 +30,14 @@ public class CregisPayoutControl {
 
     /** The existing reconciliation/risk qualifications apply before reopening any real-money switch. */
     public String recoveryReason() {
+        String reason = riskReason();
+        if (reason != null) return reason;
+        return db.recentCompleteReconcileCount(config.getProjectId()) == 1
+                ? null : "RECONCILIATION_REQUIRED";
+    }
+
+    /** First reconciliation needs the same risk checks without requiring its own prior success. */
+    String riskReason() {
         BigDecimal exposure = db.unresolvedExposure(config.getProjectId());
         if (exposure == null || exposure.compareTo(new BigDecimal("500")) >= 0
                 || db.criticalHeldDepositCount(config.getProjectId()) != 0
@@ -40,8 +48,7 @@ public class CregisPayoutControl {
                 || !db.uncertainAddresses(config.getProjectId()).isEmpty()
                 || !db.providerMissing(config.getProjectId()).isEmpty()
                 || !db.failedDeliveries(config.getProjectId()).isEmpty()) return "RISK_HOLD";
-        return db.recentCompleteReconcileCount(config.getProjectId()) == 1
-                ? null : "RECONCILIATION_REQUIRED";
+        return null;
     }
 
     public Map<String, Object> capability() {
