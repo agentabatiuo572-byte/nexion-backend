@@ -2049,7 +2049,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         response.put("skuReviewContractVersion", 1);
         response.put("taskClassPolicySupported", true);
         response.put("phaseOrder", phaseOrder);
-        response.put("phases", phases);
+        response.put("phases", phases.stream()
+                .map(phase -> new DevicePhaseView(
+                        phase.p(), phase.label(),
+                        phase.meta() == null ? "" : phase.meta(),
+                        phase.skus() == null ? "" : phase.skus(),
+                        phase.sortOrder(), phase.status(), phase.createdAt(), phase.updatedAt()))
+                .toList());
         response.put("platformMonth", platformMonth);
         response.put("phaseCurrent", currentPhase);
         response.put("h1Rhythm", h1Rhythm);
