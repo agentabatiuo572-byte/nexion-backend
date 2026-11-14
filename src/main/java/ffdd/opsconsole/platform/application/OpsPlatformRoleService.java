@@ -32,6 +32,7 @@ import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService.RecoveryStatus
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -70,11 +71,21 @@ public class OpsPlatformRoleService {
         List<AdminRoleEntity> roles = roleMapper.selectList(new LambdaQueryWrapper<AdminRoleEntity>()
                 .eq(AdminRoleEntity::getIsDeleted, 0)
                 .orderByAsc(AdminRoleEntity::getId));
+        Map<Long, Long> permissionCounts = new HashMap<>();
+        for (AdminRolePermissionMapper.RoleCount row : rolePermissionMapper.countActivePermissionCodesByRole()) {
+            permissionCounts.put(row.roleId(), row.count());
+        }
+        Map<Long, Long> menuGrantCounts = new HashMap<>();
+        for (AdminRoleMenuMapper.RoleCount row : roleMenuMapper.countActiveMenuGrantsByRole()) {
+            menuGrantCounts.put(row.roleId(), row.count());
+        }
         List<RoleSummary> summaries = new ArrayList<>(roles.size());
         for (AdminRoleEntity role : roles) {
             summaries.add(new RoleSummary(role.getId(), role.getRoleCode(), role.getRoleName(),
                     role.getRemark(), role.getStatus(),
-                    BUILTIN_ROLE_CODES.contains(role.getRoleCode()), countAdminsByRole(role.getId())));
+                    BUILTIN_ROLE_CODES.contains(role.getRoleCode()), countAdminsByRole(role.getId()),
+                    permissionCounts.getOrDefault(role.getId(), 0L),
+                    menuGrantCounts.getOrDefault(role.getId(), 0L)));
         }
         return ApiResult.ok(new PlatformRoleOverview(summaries, summaries.size()));
     }
