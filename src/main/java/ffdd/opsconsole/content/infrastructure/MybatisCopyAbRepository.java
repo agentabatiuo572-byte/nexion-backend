@@ -1033,7 +1033,9 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
                             variant.getVariantName(),
                             variant.getCopyVersion(),
                             variant.getSplitPct() == null ? 0 : variant.getSplitPct(),
-                            cvr);
+                            cvr,
+                            impressions,
+                            conversions);
                 })
                 .toList();
         CopyAudienceTarget audienceSnapshot = readAudience(
