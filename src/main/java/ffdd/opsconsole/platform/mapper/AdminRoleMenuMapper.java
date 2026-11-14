@@ -94,4 +94,14 @@ public interface AdminRoleMenuMapper extends BaseMapper<AdminRoleMenuEntity> {
     List<RoleCount> countActiveMenuGrantsByRole();
 
     record RoleCount(Long roleId, long count) { }
+    /** Same active binding rows as countActiveByMenuId, grouped for the menu overview. */
+    @Select("""
+            SELECT menu_id AS menuId, COUNT(*) AS count
+              FROM nx_admin_role_menu
+             WHERE is_deleted = 0
+             GROUP BY menu_id
+            """)
+    List<MenuBindingCount> countActiveMenuBindingsByMenu();
+
+    record MenuBindingCount(Long menuId, long count) { }
 }

@@ -19,6 +19,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -49,7 +50,15 @@ public class OpsPlatformMenuService {
         List<AdminMenuEntity> all = menuMapper.selectAllActive();
         Map<Long, List<AdminMenuEntity>> byParent = all.stream()
                 .collect(Collectors.groupingBy(e -> e.getParentId() == null ? 0L : e.getParentId()));
-        List<MenuTreeNode> tree = buildChildren(byParent, 0L);
+        Map<Long, Long> roleBindingCounts = new HashMap<>();
+        for (AdminRoleMenuMapper.MenuBindingCount row : roleMenuMapper.countActiveMenuBindingsByMenu()) {
+            roleBindingCounts.put(row.menuId(), row.count());
+        }
+        Map<Long, Long> activePermissionCounts = new HashMap<>();
+        for (AdminPermissionMapper.MenuPermissionCount row : permissionMapper.countActivePermissionsByMenu()) {
+            activePermissionCounts.put(row.menuId(), row.count());
+        }
+        List<MenuTreeNode> tree = buildChildren(byParent, 0L, roleBindingCounts, activePermissionCounts);
         int domainCount = (int) all.stream().filter(e -> e.getParentId() == null).count();
         int pageCount = all.size() - domainCount;
         int activeCount = (int) all.stream().filter(e -> e.getStatus() != null && e.getStatus() == 1).count();
@@ -246,11 +255,16 @@ public class OpsPlatformMenuService {
         return null;
     }
 
-    private List<MenuTreeNode> buildChildren(Map<Long, List<AdminMenuEntity>> byParent, Long parentId) {
+    private List<MenuTreeNode> buildChildren(Map<Long, List<AdminMenuEntity>> byParent, Long parentId,
+                                             Map<Long, Long> roleBindingCounts,
+                                             Map<Long, Long> activePermissionCounts) {
         List<AdminMenuEntity> children = byParent.getOrDefault(parentId, List.of());
         List<MenuTreeNode> nodes = new ArrayList<>(children.size());
         for (AdminMenuEntity e : children) {
-            nodes.add(new MenuTreeNode(toView(e), buildChildren(byParent, e.getId())));
+            nodes.add(new MenuTreeNode(toView(e),
+                    buildChildren(byParent, e.getId(), roleBindingCounts, activePermissionCounts),
+                    roleBindingCounts.getOrDefault(e.getId(), 0L),
+                    activePermissionCounts.getOrDefault(e.getId(), 0L)));
         }
         return nodes;
     }
