@@ -9,7 +9,8 @@ public record PlatformMenuTreeOverview(
         int pageCount,
         int activeCount) {
 
-    public record MenuTreeNode(MenuNodeView node, List<MenuTreeNode> children) {
+    public record MenuTreeNode(MenuNodeView node, List<MenuTreeNode> children,
+                               long roleBindingCount, long activePermissionCount) {
     }
 
     public record MenuNodeView(

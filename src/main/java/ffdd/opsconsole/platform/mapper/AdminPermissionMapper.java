@@ -127,4 +127,15 @@ public interface AdminPermissionMapper extends BaseMapper<AdminPermissionEntity>
 
     @Select("SELECT COUNT(*) FROM nx_admin_permission WHERE menu_id = #{menuId} AND status = 1 AND is_deleted = 0")
     long countActiveByMenuId(@Param("menuId") Long menuId);
+    /** Same active permission rows as countActiveByMenuId, grouped for the menu overview. */
+    @Select("""
+            SELECT menu_id AS menuId, COUNT(*) AS count
+              FROM nx_admin_permission
+             WHERE status = 1
+               AND is_deleted = 0
+             GROUP BY menu_id
+            """)
+    List<MenuPermissionCount> countActivePermissionsByMenu();
+
+    record MenuPermissionCount(Long menuId, long count) { }
 }
