@@ -216,9 +216,10 @@ public class AppProductCatalogService {
                 && StringUtils.hasText(target.datacenter()));
         item.put("gpu", display(target.gpuModel()));
         item.put("vram", target.vramTotalGb() == null || target.vramTotalGb() <= 0
-                ? "unavailable" : target.vramTotalGb() + "GB");
+                ? ("SHARE".equals(productType) ? "不适用（虚拟算力份额）" : "unavailable") : target.vramTotalGb() + "GB");
         item.put("hashRate", decimalText(target.hashrate()));
-        item.put("power", display(target.power()));
+        item.put("power", "SHARE".equals(productType) && !StringUtils.hasText(target.power())
+                ? "不适用（非独立设备）" : display(target.power()));
         item.put("datacenter", display(target.datacenter()));
         item.put("uptime", DeviceSkuSpecifications.display(target.uptime()));
         boolean validDocument = DeviceSkuSpecifications.validateDocument(target.specDocumentTitle(), target.specDocumentUrl()) == null;
