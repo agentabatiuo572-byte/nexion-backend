@@ -123,9 +123,33 @@ public class OpsReferralRewardService {
         List<Map<String, Object>> queried = mapper.recentSettlementsPage(accountSandbox, cursor, pageSize + 1);
         List<Map<String, Object>> fetched = queried == null ? List.of() : queried;
         boolean hasMore = fetched.size() > pageSize;
-        List<Map<String, Object>> page = fetched.stream().limit(pageSize).map(row -> {
+        List<Map<String, Object>> visible = fetched.stream().limit(pageSize).toList();
+        Map<String, ffdd.opsconsole.shared.audit.AuditLogService.H8SettlementBatch> settlementBatches =
+                audit.findH8SettlementBatches(visible.stream()
+                        .map(row -> row.get("settlementNo"))
+                        .filter(java.util.Objects::nonNull)
+                        .map(String::valueOf)
+                        .filter(value -> !value.isBlank())
+                        .toList());
+        Map<String, Long> frozenByTrace = new LinkedHashMap<>();
+        List<Map<String, Object>> page = visible.stream().map(row -> {
             Map<String, Object> publicRow = new LinkedHashMap<>(row);
             publicRow.remove("rowId");
+            Object createdAt = publicRow.get("createdAt");
+            LocalDateTime createdAtLocal = createdAt instanceof LocalDateTime value ? value
+                    : createdAt instanceof java.sql.Timestamp value ? value.toLocalDateTime() : null;
+            publicRow.put("createdAt", createdAtLocal == null ? null
+                    : createdAtLocal.atZone(DATABASE_ZONE).toOffsetDateTime().toString());
+            String settlementNo = String.valueOf(publicRow.get("settlementNo"));
+            var batch = settlementBatches.get(settlementNo);
+            if (batch == null || !batch.complete() || batch.settlementNos().isEmpty()) {
+                publicRow.put("frozenCount", null);
+            } else {
+                publicRow.put("frozenCount", frozenByTrace.computeIfAbsent(batch.traceId(),
+                        ignored -> mapper.countHoldsBySettlementNos(batch.settlementNos())));
+            }
+            publicRow.put("proposerName", batch == null ? null : batch.proposerName());
+            publicRow.put("approverName", batch == null ? null : batch.approverName());
             return publicRow;
         }).toList();
         String nextCursor = hasMore && !fetched.isEmpty()
@@ -139,6 +163,66 @@ public class OpsReferralRewardService {
         result.put("effectiveAt", effectiveAt.atZone(DATABASE_ZONE).toInstant());
         result.put("version", currentVersion);
         result.put("rewardSnapshotHash", snapshotHash);
+        return result;
+    }
+
+
+    /** Read-only preflight for one newbie; uses the same production qualification query as settlement, never writes. */
+    public Map<String, Object> settlementEligibility(Long invitedUserId) {
+        requireProductionH8UnavailableInStrictSandbox("H8_PRODUCTION_SETTLEMENT_FORBIDDEN_IN_SANDBOX");
+        if (invitedUserId == null || invitedUserId <= 0 || invitedUserId > 9_007_199_254_740_991L) {
+            throw new BizException(422, "REFERRAL_REWARD_INVITED_USER_INVALID");
+        }
+        boolean enabled = referralEnabled();
+        EffectiveRewards rewards = effectiveRewards();
+        boolean configReady = rewards.newcomerUsdt().signum() > 0
+                || rewards.newcomerNex().signum() > 0 || rewards.inviterNex().signum() > 0;
+        LocalDateTime effectiveAt = effectiveAtRequired();
+        boolean holdRisky = "risk_bucket".equals(lockMode());
+        ReferralRewardMapper.EligibilitySnapshot snapshot = mapper.eligibilitySnapshot(invitedUserId);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("invitedUserId", invitedUserId);
+        result.put("effectiveAt", effectiveAt.atZone(DATABASE_ZONE).toOffsetDateTime().toString());
+        result.put("configReady", configReady);
+        result.put("registeredAt", snapshot == null || snapshot.createdAt() == null ? null
+                : snapshot.createdAt().atZone(DATABASE_ZONE).toOffsetDateTime().toString());
+        result.put("walletPresent", snapshot == null ? null : Boolean.TRUE.equals(snapshot.walletPresent()));
+        result.put("settled", snapshot == null ? null : Boolean.TRUE.equals(snapshot.settled()));
+        result.put("freezeGift", snapshot == null ? null : snapshot.freezeGift());
+        List<ReferralRewardMapper.GiftHold> releaseHolds = snapshot == null
+                ? List.of() : mapper.releaseCandidates(invitedUserId);
+        long firstPaidOrder = snapshot == null ? 0L : mapper.firstPaidOrderCount(invitedUserId);
+        result.put("frozenGiftCount", snapshot == null ? null : releaseHolds.size());
+        result.put("firstPaidOrder", snapshot == null ? null : firstPaidOrder > 0);
+        boolean activeAccount = snapshot != null && "ACTIVE".equalsIgnoreCase(snapshot.status())
+                && !Integer.valueOf(1).equals(snapshot.isDeleted());
+        List<ReferralRewardMapper.ReferralRow> pending = snapshot == null ? List.of()
+                : mapper.findPendingReferrals(effectiveAt, "PRODUCTION", 0, holdRisky, 1, invitedUserId);
+        List<ReferralRewardMapper.ReferralRow> riskScope = snapshot == null ? List.of()
+                : mapper.findSettlementScopeCandidates(effectiveAt, "PRODUCTION", 0, 1, invitedUserId);
+        boolean candidate = enabled && configReady && !pending.isEmpty();
+        Boolean riskBlocked = enabled && configReady && !riskScope.isEmpty() ? !candidate : null;
+        result.put("riskBlocked", riskBlocked);
+        boolean freezeGift = Boolean.TRUE.equals(snapshot == null ? null : snapshot.freezeGift());
+        boolean settled = snapshot != null && Boolean.TRUE.equals(snapshot.settled());
+        boolean releasePossible = settled && freezeGift && firstPaidOrder > 0 && releaseHolds.stream()
+                .anyMatch(hold -> mapper.giftReleaseAllowed(invitedUserId, hold.sandbox(),
+                        "risk_bucket".equals(hold.lockMode())) == 1);
+        result.put("eligible", candidate);
+        result.put("willFreeze", candidate && freezeGift);
+        result.put("releasePossible", releasePossible);
+        String reason;
+        if (!enabled) reason = "DISABLED";
+        else if (!configReady) reason = "NOT_CONFIGURED";
+        else if (snapshot == null) reason = "USER_NOT_FOUND";
+        else if (!activeAccount) reason = "USER_NOT_ACTIVE";
+        else if (snapshot.createdAt() == null || snapshot.createdAt().isBefore(effectiveAt)) reason = "REGISTERED_BEFORE_EFFECTIVE_AT";
+        else if (!Boolean.TRUE.equals(snapshot.walletPresent())) reason = "WALLET_MISSING";
+        else if (Boolean.TRUE.equals(riskBlocked)) reason = "RISK_BLOCKED";
+        else if (settled) reason = releasePossible ? "ALREADY_SETTLED_GIFT_RELEASABLE" : "ALREADY_SETTLED";
+        else if (candidate) reason = "ELIGIBLE";
+        else reason = "NOT_ELIGIBLE";
+        result.put("reason", reason);
         return result;
     }
 

@@ -673,4 +673,151 @@ public interface AuditLogMapper extends BaseMapper<AuditLogEntity> {
     record LeadershipPoolSettlementAudit(String weekKey, String poolAmountUsdt,
                                          String totalVotes, String settledUsers) { }
 
+    /** Per-settlement H8 audits, linked to their own trace; no raw command-key grouping. */
+    @Select("""
+            <script>
+            SELECT settlementNo, traceId, actorUsername
+              FROM (
+                SELECT resource_id AS settlementNo, trace_id AS traceId, actor_username AS actorUsername
+                  FROM nx_audit_log
+                 WHERE is_deleted=0 AND resource_type='REFERRAL_REWARD'
+                   AND action='REFERRAL_REWARD_SETTLED' AND result='SUCCESS'
+                   AND resource_id IN
+                   <foreach collection="settlementNos" item="no" open="(" separator="," close=")">#{no}</foreach>
+                UNION ALL
+                SELECT JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) AS settlementNo,
+                       JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.traceId')) AS traceId,
+                       JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorUsername')) AS actorUsername
+                  FROM nx_audit_log_archive
+                 WHERE content_sha256 IS NOT NULL
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceType'))='REFERRAL_REWARD'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))='REFERRAL_REWARD_SETTLED'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.result'))='SUCCESS'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) IN
+                   <foreach collection="settlementNos" item="no" open="(" separator="," close=")">#{no}</foreach>
+              ) h8_rows
+            </script>
+            """)
+    List<H8SettlementAudit> findH8SettlementAuditsBySettlementNos(
+            @Param("settlementNos") Collection<String> settlementNos);
+
+    /** All per-settlement H8 audits for exact traces; count must match the batch audit settled count. */
+    @Select("""
+            <script>
+            SELECT settlementNo, traceId, actorUsername
+              FROM (
+                SELECT resource_id AS settlementNo, trace_id AS traceId, actor_username AS actorUsername
+                  FROM nx_audit_log
+                 WHERE is_deleted=0 AND resource_type='REFERRAL_REWARD'
+                   AND action='REFERRAL_REWARD_SETTLED' AND result='SUCCESS'
+                   AND trace_id IN
+                   <foreach collection="traceIds" item="trace" open="(" separator="," close=")">#{trace}</foreach>
+                UNION ALL
+                SELECT JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) AS settlementNo,
+                       JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.traceId')) AS traceId,
+                       JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorUsername')) AS actorUsername
+                  FROM nx_audit_log_archive
+                 WHERE content_sha256 IS NOT NULL
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceType'))='REFERRAL_REWARD'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))='REFERRAL_REWARD_SETTLED'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.result'))='SUCCESS'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.traceId')) IN
+                   <foreach collection="traceIds" item="trace" open="(" separator="," close=")">#{trace}</foreach>
+              ) h8_rows
+            </script>
+            """)
+    List<H8SettlementAudit> findH8SettlementAuditsByTraces(
+            @Param("traceIds") Collection<String> traceIds);
+
+    /** Batch audit carries the settled count for the same audit correlation trace. */
+    @Select("""
+            <script>
+            SELECT traceId, settled
+              FROM (
+                SELECT trace_id AS traceId,
+                       JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.settled')) AS settled
+                  FROM nx_audit_log
+                 WHERE is_deleted=0 AND resource_type='REFERRAL_REWARD'
+                   AND action='REFERRAL_REWARD_SETTLEMENT_RUN' AND result='SUCCESS'
+                   AND resource_id='batch'
+                   AND trace_id IN
+                   <foreach collection="traceIds" item="trace" open="(" separator="," close=")">#{trace}</foreach>
+                UNION ALL
+                SELECT JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.traceId')) AS traceId,
+                       JSON_UNQUOTE(JSON_EXTRACT(JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.detail')),'$.settled')) AS settled
+                  FROM nx_audit_log_archive
+                 WHERE content_sha256 IS NOT NULL
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceType'))='REFERRAL_REWARD'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))='REFERRAL_REWARD_SETTLEMENT_RUN'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.result'))='SUCCESS'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId'))='batch'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.traceId')) IN
+                   <foreach collection="traceIds" item="trace" open="(" separator="," close=")">#{trace}</foreach>
+              ) h8_rows
+            </script>
+            """)
+    List<H8SettlementBatchAudit> findH8SettlementBatchAuditsByTraces(
+            @Param("traceIds") Collection<String> traceIds);
+
+    /** Approval rows only for the H8 settlement's own trace; no raw key join. */
+    @Select("""
+            <script>
+            SELECT traceId, operationId, actorUsername
+              FROM (
+                SELECT trace_id AS traceId, resource_id AS operationId, actor_username AS actorUsername
+                  FROM nx_audit_log
+                 WHERE is_deleted=0 AND resource_type='A2_OPERATION'
+                   AND action='A2_OPERATION_APPROVED' AND result='SUCCESS' AND actor_type='ADMIN'
+                   AND trace_id IN
+                   <foreach collection="traceIds" item="trace" open="(" separator="," close=")">#{trace}</foreach>
+                UNION ALL
+                SELECT JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.traceId')) AS traceId,
+                       JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) AS operationId,
+                       JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorUsername')) AS actorUsername
+                  FROM nx_audit_log_archive
+                 WHERE content_sha256 IS NOT NULL
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceType'))='A2_OPERATION'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))='A2_OPERATION_APPROVED'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.result'))='SUCCESS'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorType'))='ADMIN'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.traceId')) IN
+                   <foreach collection="traceIds" item="trace" open="(" separator="," close=")">#{trace}</foreach>
+              ) h8_rows
+            </script>
+            """)
+    List<H8A2Approval> findH8A2ApprovalsByTraces(@Param("traceIds") Collection<String> traceIds);
+
+    /** Proposal actors by the approved operation id; keeps proposer separate from approver. */
+    @Select("""
+            <script>
+            SELECT operationId, actorUsername
+              FROM (
+                SELECT resource_id AS operationId, actor_username AS actorUsername, id AS seq
+                  FROM nx_audit_log
+                 WHERE is_deleted=0 AND resource_type='A2_OPERATION'
+                   AND action='A2_OPERATION_PROPOSED' AND result='SUCCESS' AND actor_type='ADMIN'
+                   AND resource_id IN
+                   <foreach collection="operationIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+                UNION ALL
+                SELECT JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) AS operationId,
+                       JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorUsername')) AS actorUsername,
+                       original_audit_id AS seq
+                  FROM nx_audit_log_archive
+                 WHERE content_sha256 IS NOT NULL
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceType'))='A2_OPERATION'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))='A2_OPERATION_PROPOSED'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.result'))='SUCCESS'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorType'))='ADMIN'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) IN
+                   <foreach collection="operationIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+              ) h8_rows
+             ORDER BY seq DESC
+            </script>
+            """)
+    List<A2SettlementProposal> findA2SettlementProposals(@Param("operationIds") Collection<String> operationIds);
+
+    record H8SettlementAudit(String settlementNo, String traceId, String actorUsername) { }
+    record H8SettlementBatchAudit(String traceId, String settled) { }
+    record H8A2Approval(String traceId, String operationId, String actorUsername) { }
+    record A2SettlementProposal(String operationId, String actorUsername) { }
 }

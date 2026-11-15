@@ -504,4 +504,165 @@ public class AuditLogService {
         }
         return result;
     }
+    /**
+     * H8 batch evidence keyed by the settlement audit's correlation trace.
+     * The trace is not a transaction-unique ID (a compliant client may supply/reuse it),
+     * so multiple/ambiguous batch evidence is returned as unavailable rather than merged.
+     * No command key is used for grouping: keys are scoped and reusable.
+     */
+    public Map<String, H8SettlementBatch> findH8SettlementBatches(Collection<String> settlementNos) {
+        if (settlementNos == null || settlementNos.isEmpty()) {
+            return Map.of();
+        }
+        List<String> requested = settlementNos.stream().map(AuditLogService::clean)
+                .filter(java.util.Objects::nonNull).distinct().toList();
+        if (requested.isEmpty()) {
+            return Map.of();
+        }
+        List<AuditLogMapper.H8SettlementAudit> requestedAudits =
+                auditLogMapper.findH8SettlementAuditsBySettlementNos(requested);
+        Map<String, java.util.Set<String>> tracesBySettlement = new LinkedHashMap<>();
+        Map<String, java.util.Set<String>> actorsBySettlement = new LinkedHashMap<>();
+        if (requestedAudits != null) {
+            for (AuditLogMapper.H8SettlementAudit row : requestedAudits) {
+                String settlementNo = row == null ? null : clean(row.settlementNo());
+                String traceId = row == null ? null : clean(row.traceId());
+                if (settlementNo == null || traceId == null) continue;
+                tracesBySettlement.computeIfAbsent(settlementNo,
+                        ignored -> new java.util.LinkedHashSet<>()).add(traceId);
+                String actor = clean(row.actorUsername());
+                if (actor != null) {
+                    actorsBySettlement.computeIfAbsent(settlementNo,
+                            ignored -> new java.util.LinkedHashSet<>()).add(actor);
+                }
+            }
+        }
+        Map<String, String> settlementTrace = new LinkedHashMap<>();
+        Map<String, String> settlementActor = new LinkedHashMap<>();
+        for (String no : requested) {
+            java.util.Set<String> traces = tracesBySettlement.get(no);
+            if (traces != null && traces.size() == 1) {
+                settlementTrace.put(no, traces.iterator().next());
+                java.util.Set<String> actors = actorsBySettlement.get(no);
+                if (actors != null && actors.size() == 1) {
+                    settlementActor.put(no, actors.iterator().next());
+                }
+            }
+        }
+        if (settlementTrace.isEmpty()) {
+            return Map.of();
+        }
+        List<String> traceIds = settlementTrace.values().stream().distinct().toList();
+        List<AuditLogMapper.H8SettlementBatchAudit> batchRows =
+                auditLogMapper.findH8SettlementBatchAuditsByTraces(traceIds);
+        Map<String, List<AuditLogMapper.H8SettlementBatchAudit>> batchesByTrace = new LinkedHashMap<>();
+        if (batchRows != null) {
+            for (AuditLogMapper.H8SettlementBatchAudit row : batchRows) {
+                String traceId = row == null ? null : clean(row.traceId());
+                if (traceId == null) continue;
+                batchesByTrace.computeIfAbsent(traceId,
+                        ignored -> new java.util.ArrayList<>()).add(row);
+            }
+        }
+        List<AuditLogMapper.H8SettlementAudit> traceAudits =
+                auditLogMapper.findH8SettlementAuditsByTraces(traceIds);
+        Map<String, java.util.Set<String>> settlementNosByTrace = new LinkedHashMap<>();
+        if (traceAudits != null) {
+            for (AuditLogMapper.H8SettlementAudit row : traceAudits) {
+                String traceId = row == null ? null : clean(row.traceId());
+                String settlementNo = row == null ? null : clean(row.settlementNo());
+                if (traceId == null || settlementNo == null) continue;
+                settlementNosByTrace.computeIfAbsent(traceId,
+                        ignored -> new java.util.LinkedHashSet<>()).add(settlementNo);
+            }
+        }
+        List<AuditLogMapper.H8A2Approval> approvals =
+                auditLogMapper.findH8A2ApprovalsByTraces(traceIds);
+        Map<String, java.util.Set<String>> operationsByTrace = new LinkedHashMap<>();
+        Map<String, java.util.Set<String>> actorsByTrace = new LinkedHashMap<>();
+        if (approvals != null) {
+            for (AuditLogMapper.H8A2Approval row : approvals) {
+                String traceId = row == null ? null : clean(row.traceId());
+                String operationId = row == null ? null : clean(row.operationId());
+                if (traceId == null || operationId == null) continue;
+                operationsByTrace.computeIfAbsent(traceId, ignored -> new java.util.LinkedHashSet<>())
+                        .add(operationId);
+                String actor = clean(row.actorUsername());
+                if (actor != null) {
+                    actorsByTrace.computeIfAbsent(traceId, ignored -> new java.util.LinkedHashSet<>())
+                            .add(actor);
+                }
+            }
+        }
+        List<String> operationIds = operationsByTrace.values().stream()
+                .filter(values -> values.size() == 1).map(values -> values.iterator().next())
+                .distinct().toList();
+        Map<String, String> proposers = new LinkedHashMap<>();
+        if (!operationIds.isEmpty()) {
+            auditLogMapper.findA2SettlementProposals(operationIds).forEach(row -> {
+                String operationId = row == null ? null : clean(row.operationId());
+                String actor = row == null ? null : clean(row.actorUsername());
+                if (operationId != null && actor != null) {
+                    proposers.putIfAbsent(operationId, actor);
+                }
+            });
+        }
+        List<String> usernames = new java.util.ArrayList<>();
+        actorsByTrace.values().forEach(usernames::addAll);
+        proposers.values().forEach(usernames::add);
+        Map<String, String> names = new LinkedHashMap<>();
+        List<String> distinctUsernames = usernames.stream().filter(StringUtils::hasText).distinct().toList();
+        if (!distinctUsernames.isEmpty()) {
+            List<AdminMapper.H8DisplayName> admins =
+                    adminMapper.findH8DisplayNamesByUsernames(distinctUsernames);
+            if (admins != null) {
+                for (AdminMapper.H8DisplayName admin : admins) {
+                    if (admin != null && StringUtils.hasText(admin.username())
+                            && StringUtils.hasText(admin.displayName())) {
+                        names.put(admin.username(), admin.displayName().trim());
+                    }
+                }
+            }
+        }
+        Map<String, H8SettlementBatch> result = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : settlementTrace.entrySet()) {
+            String trace = entry.getValue();
+            List<AuditLogMapper.H8SettlementBatchAudit> batch = batchesByTrace.get(trace);
+            if (batch == null || batch.size() != 1) continue;
+            Integer settled = parseSettled(batch.get(0).settled());
+            java.util.Set<String> siblings = settlementNosByTrace.get(trace);
+            if (settled == null || siblings == null || !siblings.contains(entry.getKey())
+                    || siblings.size() != settled || settled < 1) continue;
+            java.util.Set<String> operations = operationsByTrace.get(trace);
+            String operationId = operations != null && operations.size() == 1
+                    ? operations.iterator().next() : null;
+            java.util.Set<String> actors = actorsByTrace.get(trace);
+            String actor = settlementActor.get(entry.getKey());
+            String approver = operationId != null && actor != null && actors != null
+                    && actors.size() == 1 && actors.contains(actor) ? names.get(actor) : null;
+            String proposer = approver == null ? null : names.get(proposers.get(operationId));
+            result.put(entry.getKey(), new H8SettlementBatch(trace, proposer, approver,
+                    List.copyOf(siblings), true));
+        }
+        return result;
+    }
+
+    private static String clean(String value) {
+        if (!StringUtils.hasText(value)) return null;
+        String trimmed = value.trim();
+        return "null".equalsIgnoreCase(trimmed) ? null : trimmed;
+    }
+
+    private static Integer parseSettled(String raw) {
+        if (!StringUtils.hasText(raw)) return null;
+        try {
+            int value = Integer.parseInt(raw.trim());
+            return value >= 0 ? value : null;
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    public record H8SettlementBatch(String traceId, String proposerName, String approverName,
+                                    List<String> settlementNos, boolean complete) { }
 }

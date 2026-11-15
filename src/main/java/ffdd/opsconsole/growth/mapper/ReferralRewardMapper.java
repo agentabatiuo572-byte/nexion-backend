@@ -3,6 +3,7 @@ package ffdd.opsconsole.growth.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
@@ -407,6 +408,37 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                                            @Param("limit") int limit,
                                            @Param("onlyInvitedUserId") Long onlyInvitedUserId);
 
+    /**
+     * Same non-risk scope as findPendingReferrals (same inviter JOIN/wallet/registered/settled),
+     * used only to explain whether ELIGIBLE_RISK is the sole blocker. No release helper.
+     */
+    @Select("""
+            SELECT u.id AS invitedUserId, inviter.id AS inviterUserId
+              FROM nx_user u
+              LEFT JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
+               AND inviter.id<>u.id AND inviter.sandbox=u.sandbox
+               AND EXISTS (SELECT 1 FROM nx_user_wallet w WHERE w.user_id=inviter.id AND w.is_deleted=0 AND w.sandbox=u.sandbox)
+              JOIN nx_user_wallet invited_wallet ON invited_wallet.user_id = u.id
+                AND invited_wallet.is_deleted = 0
+                AND invited_wallet.sandbox = #{accountSandbox}
+
+              LEFT JOIN nx_referral_reward_settlement s
+                ON s.invited_user_id = u.id AND s.is_deleted = 0
+             WHERE u.is_deleted = 0 AND u.status = 'ACTIVE'
+               AND #{sourceEnvironment} = 'PRODUCTION'
+               AND COALESCE(u.sandbox, 0) = #{accountSandbox}
+               AND u.created_at >= #{effectiveAt}
+               AND s.id IS NULL
+               AND (#{onlyInvitedUserId} IS NULL OR u.id = #{onlyInvitedUserId})
+             ORDER BY u.created_at ASC, u.id ASC
+             LIMIT #{limit}
+            """)
+    List<ReferralRow> findSettlementScopeCandidates(@Param("effectiveAt") LocalDateTime effectiveAt,
+                                                    @Param("sourceEnvironment") String sourceEnvironment,
+                                                    @Param("accountSandbox") int accountSandbox,
+                                                    @Param("limit") int limit,
+                                                    @Param("onlyInvitedUserId") Long onlyInvitedUserId);
+
     @Select("""
             SELECT u.id AS invitedUserId, inviter.id AS inviterUserId
               FROM nx_user u
@@ -724,6 +756,44 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
     }
     @Select("SELECT user_id FROM nx_order WHERE order_no=#{no} AND payment_status='PAID' AND paid_at IS NOT NULL AND amount_usdt>0 AND is_deleted=0")
     Long paidOrderUser(String no);
+
+    @Select("""
+            SELECT u.id AS userId, u.created_at AS createdAt, COALESCE(u.sandbox,0) AS sandbox,
+                   u.status AS status, u.is_deleted AS isDeleted,
+                   EXISTS(SELECT 1 FROM nx_user_wallet w WHERE w.user_id=u.id AND w.is_deleted=0 AND w.sandbox=0) AS walletPresent,
+                   EXISTS(SELECT 1 FROM nx_referral_reward_settlement s WHERE s.invited_user_id=u.id AND s.is_deleted=0) AS settled,
+                   (SELECT r.freeze_gift FROM nx_user_registration_origin r WHERE r.user_id=u.id) AS freezeGift
+              FROM nx_user u
+             WHERE u.id=#{id} AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+             LIMIT 1
+            """)
+    EligibilitySnapshot eligibilitySnapshot(@Param("id") long id);
+
+    /** Read-only release mirror: per-hold settlement lock mode, no FOR UPDATE/release write. */
+    @Select("""
+            SELECT h.settlement_no AS settlementNo, h.user_id AS userId, h.sandbox, h.run_id AS runId,
+                   h.usdt, h.nex, s.lock_mode AS lockMode
+              FROM nx_registration_gift_hold h
+              JOIN nx_referral_reward_settlement s ON s.settlement_no=h.settlement_no
+             WHERE h.user_id=#{id} AND h.sandbox=0 AND h.state='FROZEN'
+            """)
+    List<GiftHold> releaseCandidates(@Param("id") long id);
+
+    @Select("""
+            <script>
+            SELECT COUNT(*) FROM nx_registration_gift_hold
+             WHERE sandbox=0
+               AND settlement_no IN
+               <foreach collection="settlementNos" item="no" open="(" separator="," close=")">#{no}</foreach>
+            </script>
+            """)
+    long countHoldsBySettlementNos(@Param("settlementNos") Collection<String> settlementNos);
+
+    @Select("SELECT COUNT(*) FROM nx_order WHERE user_id=#{id} AND payment_status='PAID' AND paid_at IS NOT NULL AND amount_usdt>0 AND is_deleted=0")
+    long firstPaidOrderCount(@Param("id") long id);
+
+    record EligibilitySnapshot(Long userId, LocalDateTime createdAt, Integer sandbox, String status,
+                               Integer isDeleted, Boolean walletPresent, Boolean settled, Boolean freezeGift) { }
 
     record ReferralRow(Long invitedUserId, Long inviterUserId) {}
     record AppReferralAccount(String referralCode, Integer sandbox, BigDecimal walletNexAvailable) {}

@@ -22,6 +22,19 @@ public interface AdminMapper extends BaseMapper<AdminEntity> {
 
     record AdminDisplayName(String username, String displayName) { }
 
+    @Select("""
+            <script>
+            SELECT username, COALESCE(NULLIF(nickname,''), NULLIF(username,'')) AS displayName
+              FROM nx_admin
+             WHERE is_deleted=0
+               AND username IN
+               <foreach collection="usernames" item="username" open="(" separator="," close=")">#{username}</foreach>
+            </script>
+            """)
+    List<H8DisplayName> findH8DisplayNamesByUsernames(@Param("usernames") Collection<String> usernames);
+
+    record H8DisplayName(String username, String displayName) { }
+
     @Select("SELECT id FROM nx_admin WHERE username=#{username} LIMIT 1")
     Long findIdByUsername(@Param("username") String username);
 
