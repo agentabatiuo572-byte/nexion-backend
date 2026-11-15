@@ -882,7 +882,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
              WHERE w.id=#{network.cursorId,javaType=int}
                AND r.project_id=#{projectId} AND r.chain_id=#{network.chainId,javaType=java.lang.String}
                AND r.status='COMPLETE' AND r.stable_passes=2 AND r.window_end=w.complete_through
-               AND r.chain_cursor_block>0 AND r.chain_cursor_hash IS NOT NULL
+               AND r.chain_cursor_block>0 AND r.chain_cursor_hash IS NOT NULL AND r.chain_cursor_hash<>''
                AND c.next_block>=r.chain_cursor_block
             """)
     Long completedReconcileWatermark(@Param("network") CregisNetwork network,@Param("projectId") long projectId);
