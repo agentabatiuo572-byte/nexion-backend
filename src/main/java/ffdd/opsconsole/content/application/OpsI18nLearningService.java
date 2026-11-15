@@ -50,6 +50,7 @@ import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -438,6 +439,12 @@ public class OpsI18nLearningService {
         try {
             saved = learningRepository.saveCourseVersion(courseId.trim(), request.version().trim(),
                     "DRAFT", normalizeCourseRequest(request), null, now());
+        } catch (DuplicateKeyException ex) {
+            // The visible-version checks above cannot see a soft-deleted row, but the
+            // (course_id, version_label) unique key still reserves that version. The INSERT
+            // did not create a row; rethrow as a business conflict so the service transaction
+            // rolls back and the idempotency wrapper records FAILED instead of an unknown/500.
+            throw new BizException(409, "LEARNING_COURSE_VERSION_ALREADY_EXISTS");
         } catch (IllegalStateException ex) {
             return ApiResult.fail(409, ex.getMessage());
         }

@@ -3,6 +3,7 @@ package ffdd.opsconsole.platform.web;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.platform.application.OpsEventCenterService;
 import ffdd.opsconsole.platform.application.A4OutboxDiagnosticsService;
+import ffdd.opsconsole.platform.dto.OutboxDeadLetterView;
 import ffdd.opsconsole.platform.dto.OutboxDiagnosticsView;
 import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.platform.application.A4EventRetentionService;
@@ -62,6 +63,11 @@ public class OpsEventCenterController {
             @RequestParam(defaultValue = "0") String afterId,
             @RequestParam(defaultValue = "25") int pageSize) {
         return ApiResult.ok(outboxDiagnosticsService.read(eventType, status, unresolvedOnly, afterId, pageSize));
+    }
+
+    @GetMapping("/outbox-dead-letters")
+    public ApiResult<OutboxDeadLetterView> outboxDeadLetters() {
+        return ApiResult.ok(outboxDiagnosticsService.deadLetters());
     }
 
     @GetMapping("/overview")

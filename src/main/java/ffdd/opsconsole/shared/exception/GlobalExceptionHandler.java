@@ -55,6 +55,12 @@ public class GlobalExceptionHandler {
         return ApiResult.fail(ex.getCode(),ex.getMessage(),ex.errorData());
     }
 
+    @ExceptionHandler(ObjectLockedByA2Exception.class)
+    public ApiResult<Map<String,Object>> handleObjectLockedByA2(ObjectLockedByA2Exception ex, HttpServletResponse response) {
+        response.setStatus(normalizeHttpStatus(ex.getCode()));
+        return ApiResult.fail(ex.getCode(), ex.getMessage(), ex.errorData());
+    }
+
     @ExceptionHandler(BizException.class)
     public ApiResult<Void> handleBiz(BizException ex, HttpServletResponse response) {
         response.setStatus(normalizeHttpStatus(ex.getCode()));

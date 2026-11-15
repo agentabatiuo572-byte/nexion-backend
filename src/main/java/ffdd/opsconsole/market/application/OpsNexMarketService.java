@@ -226,7 +226,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "gateUser", gateUser,
                 "gatePlatform", gatePlatform,
                 "gateGeo", gateGeo));
-        response.put("caps", exchangeCaps(todayUsd, platformCap));
+        response.put("caps", exchangeCaps(todayUsd, platformCap, pendingExchangeParamTickets()));
         response.put("queue", marketRepository.exchangeOrdersByStatuses(EXCHANGE_QUEUE_STATUSES, 50));
         response.put("gateDetails", map(
                 "user", gate("user", "单用户日额度拦截", "超过单用户日额度的拦截。进次日队列或拒绝。", "USER_CAP", gateUser),
@@ -3420,22 +3420,51 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "transfers", transfers);
     }
 
-    private List<Map<String, Object>> exchangeCaps(BigDecimal todayUsd, BigDecimal platformCap) {
+    private List<Map<String, Object>> exchangeCaps(BigDecimal todayUsd, BigDecimal platformCap,
+                                                   Map<String, String> pendingByKey) {
         BigDecimal userCap = readDecimal(EXCHANGE_USER_DAILY_CAP_KEY, new BigDecimal("50"));
         BigDecimal feePct = readDecimal(EXCHANGE_FEE_PCT_KEY, BigDecimal.ZERO);
         BigDecimal feeMin = readDecimal(EXCHANGE_FEE_MIN_KEY, new BigDecimal("0.50"));
         String queueMode = normalizeQueueMode(readText(EXCHANGE_QUEUE_MODE_KEY, "QUEUE"));
         return List.of(
                 cap("userDailyCap", "单用户日额度", "每人每天最多换出多少 USDT", userCap, displayUsd(userCap),
-                        "范围 $0-10,000 · 放宽过红线", true, null),
+                        "范围 $0-10,000 · 放宽过红线", true, null,
+                        pendingByKey.containsKey("userDailyCap"), pendingByKey.get("userDailyCap")),
                 cap("platformDailyCap", "平台日额度", "全平台每天兑换总池", platformCap, displayUsd(platformCap),
-                        "范围 $0-10,000,000 · 放宽过红线", true, percent(todayUsd, platformCap)),
+                        "范围 $0-10,000,000 · 放宽过红线", true, percent(todayUsd, platformCap),
+                        pendingByKey.containsKey("platformDailyCap"), pendingByKey.get("platformDailyCap")),
                 cap("fee", "兑换手续费率", "每笔 UVT->USDT 抽成 · 当前可为免费推广期", feePct, displayPct(feePct),
-                        "范围 0%-10% · 降费=放大流出过红线", true, null),
+                        "范围 0%-10% · 降费=放大流出过红线", true, null,
+                        pendingByKey.containsKey("fee"), pendingByKey.get("fee")),
                 cap("feeMin", "最低手续费", "开费后小额兑换的保底费", feeMin, displayUsd(feeMin),
-                        "范围 $0-5 · 随费率启用生效", true, null),
+                        "范围 $0-5 · 随费率启用生效", true, null,
+                        pendingByKey.containsKey("feeMin"), pendingByKey.get("feeMin")),
                 cap("queueMode", "超额度处置策略", "用户当日兑换超过额度时进次日队列还是直接拒绝", queueMode, displayQueueMode(queueMode),
-                        "枚举: 排队 / 拒绝", "QUEUE".equals(queueMode), null));
+                        "枚举: 排队 / 拒绝", "QUEUE".equals(queueMode), null,
+                        pendingByKey.containsKey("queueMode"), pendingByKey.get("queueMode")));
+    }
+
+    /**
+     * Active lock tickets for only the exact G2 parameters the caller may write. The lock table is
+     * shared with A2; a reader without that parameter's business authority gets no ticket, and the
+     * initiator, command payload and other objects' locks are never exposed.
+     */
+    private Map<String, String> pendingExchangeParamTickets() {
+        Long adminId = parseAdminIdFromContext();
+        if (adminId == null) return Map.of();
+        Set<String> permissions = permissionCache.getPermissionCodes(adminId);
+        List<String> authorizedKeys = EXCHANGE_PARAM_PERMISSION.entrySet().stream()
+                .filter(entry -> permissions.contains(entry.getValue()))
+                .map(Map.Entry::getKey)
+                .toList();
+        if (authorizedKeys.isEmpty()) return Map.of();
+        Map<String, String> pending = new LinkedHashMap<>();
+        for (var lock : lockMapper.selectActiveTargetLocks("G", "exchange_param", authorizedKeys)) {
+            // Keep the key even if a malformed row has a blank ticket: the active lock still blocks
+            // the write, so the cap must say pending; the id stays null rather than being guessed.
+            pending.put(lock.targetId(), lock.ticketId());
+        }
+        return pending;
     }
 
     private Map<String, Object> cap(
@@ -3446,7 +3475,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             String displayValue,
             String note,
             boolean loosen,
-            BigDecimal meterPct) {
+            BigDecimal meterPct,
+            boolean pending,
+            String pendingOperationId) {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("key", key);
         row.put("name", name);
@@ -3458,6 +3489,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (meterPct != null) {
             row.put("meterPct", meterPct);
         }
+        row.put("pendingApproval", pending);
+        row.put("pendingOperationId", StringUtils.hasText(pendingOperationId) ? pendingOperationId : null);
         return row;
     }
 
