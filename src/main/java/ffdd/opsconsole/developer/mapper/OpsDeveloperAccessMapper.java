@@ -62,6 +62,13 @@ public interface OpsDeveloperAccessMapper extends BaseMapper<Object> {
             + " FROM nx_developer_access_request WHERE request_no=#{requestNo} AND is_deleted=0 FOR UPDATE")
     AccessRow findForUpdate(@Param("requestNo") String requestNo);
 
+    @Select("<script>SELECT id AS userId,"
+            + " CONCAT('U', LPAD(id, GREATEST(8, LENGTH(CAST(id AS CHAR))), '0')) AS userNo"
+            + " FROM nx_user WHERE is_deleted=0 AND id IN"
+            + " <foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>"
+            + "</script>")
+    List<UserNoRow> userNos(@Param("ids") List<Long> ids);
+
     @Select("SELECT request_no requestNo,action,idempotency_key idempotencyKey,request_hash requestHash,status,"
             + "result_status resultStatus,result_reviewer resultReviewer,result_reason resultReason,"
             + "result_reviewed_at resultReviewedAt"
@@ -105,6 +112,8 @@ public interface OpsDeveloperAccessMapper extends BaseMapper<Object> {
                     String status, String sourceEnvironment, String runId, String reviewer,
                     String reviewReason, LocalDateTime reviewedAt, LocalDateTime createdAt,
                     LocalDateTime updatedAt) { }
+
+    record UserNoRow(Long userId, String userNo) { }
 
     record StatusCount(String status, long count) { }
 
