@@ -5,8 +5,23 @@ import ffdd.opsconsole.auth.infrastructure.AdminEntity;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
+import java.util.Collection;
+import java.util.List;
 
 public interface AdminMapper extends BaseMapper<AdminEntity> {
+    @Select("""
+            <script>
+            SELECT username, COALESCE(NULLIF(nickname,''), NULLIF(username,'')) AS displayName
+              FROM nx_admin
+             WHERE is_deleted=0
+               AND username IN
+               <foreach collection="usernames" item="username" open="(" separator="," close=")">#{username}</foreach>
+            </script>
+            """)
+    List<AdminDisplayName> findDisplayNamesByUsernames(@Param("usernames") Collection<String> usernames);
+
+    record AdminDisplayName(String username, String displayName) { }
+
     @Select("SELECT id FROM nx_admin WHERE username=#{username} LIMIT 1")
     Long findIdByUsername(@Param("username") String username);
 

@@ -576,4 +576,34 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
             this(eventId, eventType, retryCount, lastError, null);
         }
     }
+
+    /** Latest server-produced FAQ event whose payload version exactly matches the current FAQ version. */
+    @Select("""
+            <script>
+            SELECT faqId, operator
+              FROM (
+                SELECT aggregate_id AS faqId,
+                       JSON_UNQUOTE(JSON_EXTRACT(payload,'$.operator')) AS operator,
+                       ROW_NUMBER() OVER (PARTITION BY aggregate_id ORDER BY id DESC) AS rn
+                  FROM nx_event_outbox
+                 WHERE is_deleted=0
+                   AND aggregate_type='SUPPORT_FAQ'
+                   AND event_type='admin.support_faq_updated'
+                   AND (aggregate_id, JSON_UNQUOTE(JSON_EXTRACT(payload,'$.version'))) IN
+                   <foreach collection="refs" item="ref" open="(" separator="," close=")">
+                     (#{ref.faqId}, CAST(#{ref.version} AS CHAR))
+                   </foreach>
+              ) ranked
+             WHERE rn=1
+            </script>
+            """)
+    List<SupportFaqEventOperator> findLatestSupportFaqEventOperators(
+            @Param("refs") java.util.Collection<SupportFaqVersion> refs);
+
+    record SupportFaqVersion(String faqId, Integer version) {
+        public String getFaqId() { return faqId; }
+        public Integer getVersion() { return version; }
+    }
+
+    record SupportFaqEventOperator(String faqId, String operator) { }
 }

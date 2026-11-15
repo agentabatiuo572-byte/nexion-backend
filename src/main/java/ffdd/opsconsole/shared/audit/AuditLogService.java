@@ -478,4 +478,30 @@ public class AuditLogService {
     public record LeadershipPoolSettlement(String weekKey, BigDecimal poolAmountUsdt,
                                            BigDecimal totalVotes, Integer settledUsers) { }
 
+    /** Current admin display names by exact username; missing/deleted/blank maps to null, never id or email. */
+    public Map<String, String> findDisplayNamesByUsernames(Collection<String> usernames) {
+        if (usernames == null || usernames.isEmpty()) {
+            return Map.of();
+        }
+        List<String> normalized = usernames.stream()
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .distinct()
+                .toList();
+        if (normalized.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, String> result = new LinkedHashMap<>();
+        List<ffdd.opsconsole.auth.mapper.AdminMapper.AdminDisplayName> admins =
+                adminMapper.findDisplayNamesByUsernames(normalized);
+        if (admins != null) {
+            for (ffdd.opsconsole.auth.mapper.AdminMapper.AdminDisplayName admin : admins) {
+                if (admin != null && StringUtils.hasText(admin.username())
+                        && StringUtils.hasText(admin.displayName())) {
+                    result.put(admin.username(), admin.displayName().trim());
+                }
+            }
+        }
+        return result;
+    }
 }

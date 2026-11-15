@@ -702,4 +702,19 @@ public class EventOutboxService {
     private int normalizeLimit(int limit) {
         return Math.max(1, Math.min(limit, MAX_LIMIT));
     }
+
+    /** Maps each FAQ to the server operator of the event that matches its exact current version. */
+    public Map<String, String> findLatestSupportFaqOperators(
+            java.util.Collection<EventOutboxMapper.SupportFaqVersion> refs) {
+        if (refs == null || refs.isEmpty()) {
+            return Map.of();
+        }
+        List<EventOutboxMapper.SupportFaqEventOperator> rows = mapper.findLatestSupportFaqEventOperators(refs);
+        if (rows == null || rows.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, String> result = new HashMap<>();
+        rows.forEach(row -> result.put(row.faqId(), row.operator()));
+        return result;
+    }
 }
