@@ -57,6 +57,13 @@ public interface ConversationRepository {
     /** After snapshot validation, first reply may claim a never-answered, unassigned peer. */
     default boolean claimUnassignedPeerForWrite(String conversationNo, String staffId) { return false; }
 
+    /** Read-only projections for the M3 history/write distinction; no write authority. */
+    default String storedPeerAgentIdForRead(String conversationNo) { return null; }
+
+    default String storedPeerAgentNameForRead(String conversationNo) { return null; }
+
+    default String currentCustomerConversationForRead(Long userId, String ownerAgentId) { return null; }
+
     List<ContentConversationMessageView> messages(String conversationNo);
 
     /** Exact receipt target lookup; never loads the conversation's message bodies. */

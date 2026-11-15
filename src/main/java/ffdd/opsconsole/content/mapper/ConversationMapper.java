@@ -22,6 +22,25 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
     @Select("SELECT owner_agent_id FROM nx_conversation WHERE conversation_no=#{conversationNo} AND is_deleted=0 FOR SHARE")
     String storedPeerAgentId(@Param("conversationNo") String conversationNo);
 
+    @Select("SELECT owner_agent_id FROM nx_conversation WHERE conversation_no=#{conversationNo} AND is_deleted=0")
+    String storedPeerAgentIdForRead(@Param("conversationNo") String conversationNo);
+
+    @Select("SELECT COALESCE(NULLIF(owner_agent_name,''),'待分配') FROM nx_conversation WHERE conversation_no=#{conversationNo} AND is_deleted=0")
+    String storedPeerAgentNameForRead(@Param("conversationNo") String conversationNo);
+
+    @Select("""
+            SELECT conversation_no
+              FROM nx_conversation
+             WHERE user_id=#{userId}
+               AND owner_agent_id=#{ownerAgentId}
+               AND is_deleted=0
+               AND conversation_type IN ('advisor','support')
+             ORDER BY id DESC
+             LIMIT 1
+            """)
+    String currentCustomerConversationForRead(@Param("userId") Long userId,
+                                              @Param("ownerAgentId") String ownerAgentId);
+
     @Update("""
             UPDATE nx_conversation c
             JOIN nx_support_agent_user_assignment sa ON sa.user_id=c.user_id

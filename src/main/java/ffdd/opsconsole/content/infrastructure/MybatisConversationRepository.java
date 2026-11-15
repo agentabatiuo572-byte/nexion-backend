@@ -129,6 +129,23 @@ public class MybatisConversationRepository implements ConversationRepository {
     }
 
     @Override
+    public String storedPeerAgentIdForRead(String conversationNo) {
+        return mapper.storedPeerAgentIdForRead(conversationNo);
+    }
+
+    @Override
+    public String storedPeerAgentNameForRead(String conversationNo) {
+        return mapper.storedPeerAgentNameForRead(conversationNo);
+    }
+
+    @Override
+    public String currentCustomerConversationForRead(Long userId, String ownerAgentId) {
+        return userId == null || ownerAgentId == null
+                ? null
+                : mapper.currentCustomerConversationForRead(userId, ownerAgentId);
+    }
+
+    @Override
     public boolean claimUnassignedPeerForWrite(String conversationNo, String staffId) {
         return staffId != null
                 && org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()
