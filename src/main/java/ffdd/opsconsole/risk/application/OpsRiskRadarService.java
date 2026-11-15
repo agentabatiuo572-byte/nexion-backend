@@ -19,6 +19,9 @@ import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.treasury.application.BankRunThresholdPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -53,12 +56,17 @@ public class OpsRiskRadarService {
     private static final String TRIAGE_SCOPE = "B5_TRIAGE";
     private static final List<String> GATES = List.of("withdraw", "staking", "genesis", "exchange", "trial");
     private static final List<String> BACKLOG_STATES = List.of("submitted", "review-passed", "processing");
+    private static final ObjectMapper EVIDENCE_JSON = new ObjectMapper();
     private static final Map<String, String> TRIAGE_TARGETS = Map.of(
             "bankrun", "/finance/withdrawals",
             "abnormal-accounts", "/risk/multi-account",
             "withdraw-backlog", "/finance/withdrawals",
             "kill-switches", "/emergency/kill-switch",
-            "coverage", "/overview/dual-ledger");
+            "coverage", "/overview/dual-ledger",
+            // Recent-alert queue targets: K2 abuse, J3 tamper, K4 scoring.
+            "abuse", "/risk/abuse",
+            "tamper", "/emergency/tamper",
+            "scoring", "/risk/scoring");
 
     private final B5RiskRadarMapper mapper;
     private final PlatformConfigFacade configFacade;
@@ -164,7 +172,7 @@ public class OpsRiskRadarService {
                 "withdrawBacklog", section(
                         "byState", backlog,
                         "totalCount", backlogCount,
-                        "totalAmountUsdt", money(backlogAmount),
+                        "totalAmountUsdt", safe(backlogAmount),
                         "slaHours", 48,
                         "overSlaCount", overdue,
                         "light", overdue > 0 ? "yellow" : "green",
@@ -211,18 +219,123 @@ public class OpsRiskRadarService {
                 label = "其他风险信号";
                 target = "/risk/scoring";
             }
+            String handlingStatus = requireSignalField(row.get("handlingStatus"), "handlingStatus");
+            boolean unhandled = "open".equals(handlingStatus);
+            Map<String, Object> facts = signalFacts(text(row.get("signalNo")), signalType, text(row.get("evidence")));
             return section(
                     "signalNo", requireSignalField(row.get("signalNo"), "signalNo"),
                     "level", requireSignalField(row.get("level"), "level"),
                     "message", label,
+                    "signalType", signalType,
                     "userId", whole(row.get("userId")),
+                    "userNo", text(row.get("userNo")),
+                    "facts", facts,
                     "createdAt", requireSignalField(row.get("createdAt"), "createdAt"),
                     "target", target,
                     "handlingStatusAvailable", true,
-                    "handlingStatus", requireSignalField(row.get("handlingStatus"), "handlingStatus"),
+                    "handlingStatus", handlingStatus,
                     "handlingVersion", whole(row.get("handlingVersion")),
+                    "handledBy", unhandled ? null : text(row.get("handledBy")),
+                    "handledAt", unhandled ? null : text(row.get("handledAt")),
                     "deliveryStatus", requireSignalField(row.get("deliveryStatus"), "deliveryStatus"));
         }).toList();
+    }
+
+    private Map<String, Object> signalFacts(String signalNo, String signalType, String evidence) {
+        if (!StringUtils.hasText(signalNo) || !StringUtils.hasText(signalType) || !StringUtils.hasText(evidence)) {
+            return null;
+        }
+        String type = signalType.trim().toLowerCase(Locale.ROOT);
+        Map<String, Object> facts = new LinkedHashMap<>();
+        if ("tamper_detected".equals(type) && signalNo.startsWith("TAMPER-")) {
+            try {
+                JsonNode node = EVIDENCE_JSON.readTree(evidence);
+                putFact(facts, "tamperPath", node.path("tamperPath").asText(null));
+                putFact(facts, "attackEffect", node.path("attackEffect").asText(null));
+            } catch (JsonProcessingException ignored) {
+                // Malformed producer evidence remains unknown; internal errors must still propagate.
+            }
+            return facts.isEmpty() ? null : facts;
+        }
+        Map<String, String> pairs;
+        if ("risk.trial_cycle_detected".equals(type) && signalNo.startsWith("K2-TC-")) {
+            pairs = evidencePairs(evidence);
+            putFact(facts, "rowId", pairs.get("row"));
+            putFact(facts, "cycleCount", positiveInt(pairs.get("cycles")));
+            putFact(facts, "windowDays", positiveInt(pairs.get("windowDays")));
+        } else if (("risk.arbitrage_suspected".equals(type) || "risk.leaderboard_velocity_flagged".equals(type))
+                && signalNo.startsWith("K2-") && !signalNo.startsWith("K2-TC-")) {
+            pairs = evidencePairs(evidence);
+            putFact(facts, "rowId", pairs.get("row"));
+            putFact(facts, "view", pairs.get("view"));
+            putFact(facts, "action", pairs.get("action"));
+        } else if ("user_frozen".equals(type) && signalNo.startsWith("SIG-C2-")) {
+            pairs = evidencePairs(evidence);
+            putFact(facts, "source", pairs.get("source"));
+        } else if ("d1_chargeback_shortfall".equals(type) && signalNo.startsWith("RSK-CB-")) {
+            return d1ChargebackFacts(evidence);
+        } else {
+            // Manual/legacy/multi-account signals share arbitrary types/evidence but never a producer prefix.
+            return null;
+        }
+        return facts.isEmpty() ? null : facts;
+    }
+
+    private Map<String, Object> d1ChargebackFacts(String evidence) {
+        // Producer format is fixed comma-separated: case=...,walletShortfall=...,feeBufferShortfall=...,evidence=...
+        // Only the first three fields are projected; everything after ",evidence=" is never returned.
+        String walletMarker = ",walletShortfall=";
+        String feeMarker = ",feeBufferShortfall=";
+        String evidenceMarker = ",evidence=";
+        if (!evidence.startsWith("case=")) return null;
+        int walletAt = evidence.indexOf(walletMarker);
+        int feeAt = evidence.indexOf(feeMarker);
+        int evidenceAt = evidence.indexOf(evidenceMarker);
+        if (walletAt < 5 || feeAt <= walletAt || evidenceAt <= feeAt) return null;
+        Map<String, Object> facts = new LinkedHashMap<>();
+        putFact(facts, "caseNo", evidence.substring(5, walletAt).trim());
+        putFact(facts, "walletShortfallUsdt",
+                decimalOrNull(evidence.substring(walletAt + walletMarker.length(), feeAt)));
+        putFact(facts, "feeBufferShortfallUsdt",
+                decimalOrNull(evidence.substring(feeAt + feeMarker.length(), evidenceAt)));
+        return facts.isEmpty() ? null : facts;
+    }
+
+    private Map<String, String> evidencePairs(String evidence) {
+        Map<String, String> pairs = new LinkedHashMap<>();
+        for (String part : evidence.split(";")) {
+            int separator = part.indexOf('=');
+            if (separator <= 0) continue;
+            String key = part.substring(0, separator).trim();
+            String value = part.substring(separator + 1).trim();
+            if (StringUtils.hasText(key) && StringUtils.hasText(value)) pairs.putIfAbsent(key, value);
+        }
+        return pairs;
+    }
+
+    private void putFact(Map<String, Object> facts, String key, Object value) {
+        if (value == null) return;
+        if (value instanceof String text && !StringUtils.hasText(text)) return;
+        facts.put(key, value);
+    }
+
+    private Integer positiveInt(String value) {
+        if (!StringUtils.hasText(value)) return null;
+        try {
+            int parsed = Integer.parseInt(value.trim());
+            return parsed >= 0 ? parsed : null;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private BigDecimal decimalOrNull(String value) {
+        if (!StringUtils.hasText(value)) return null;
+        try {
+            return new BigDecimal(value.trim());
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     private List<Map<String, Object>> pressureHistory(List<Map<String, Object>> rows) {
@@ -570,7 +683,7 @@ public class OpsRiskRadarService {
             canonical.add(section(
                     "state", state,
                     "count", whole(row.get("count")),
-                    "amountUsdt", money(decimal(row.get("amountUsdt"))),
+                    "amountUsdt", safe(decimal(row.get("amountUsdt"))),
                     "overSlaCount", whole(row.get("overSlaCount")),
                     "slaHours", 48));
         }
@@ -721,9 +834,10 @@ public class OpsRiskRadarService {
     }
 
     private String coverageLight(TreasuryCoverageSnapshot coverage) {
+        // Reuse B1's exact redline decision; coverageRatio is display-rounded and can
+        // disagree at the boundary (e.g. reserve/liability + 100% redline).
+        if (coverage.redlineBreached()) return "red";
         BigDecimal ratio = safe(coverage.coverageRatio());
-        BigDecimal redline = safe(coverage.redlinePct());
-        if (ratio.compareTo(redline) < 0) return "red";
         if (ratio.compareTo(coverage.healthyPct()) < 0) return "yellow";
         return "green";
     }
