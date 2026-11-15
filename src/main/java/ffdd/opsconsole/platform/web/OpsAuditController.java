@@ -172,6 +172,7 @@ public class OpsAuditController {
             + " || (hasAuthority('risk_k2_write') && hasAnyAuthority('platform_a2_proposal_create','platform_a2_write'))"
             + " || @auditReplayBusinessPermissionGuard.hasF5ProposalAuthority()"
             + " || (hasAuthority('platform_a2_write') && hasAnyAuthority('user_c2_session_revoke_all','user_c5_session_revoke_all'))"
+            + " || (hasAuthority('platform_a2_write') && hasAuthority('growth_h1_override_revoke'))"
             + " || (hasAuthority('emergency_j1_gate_resume') && hasAuthority('platform_a2_write'))")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> proposalByIdempotencyKey(
             @RequestParam(name = "idempotencyKey", required = false) String idempotencyKey) {

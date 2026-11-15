@@ -2002,7 +2002,8 @@ public class AuditReplayBusinessPermissionGuard {
                 case "promotion_reward_correction" -> "CANCEL".equals(value(command.params(),"action"))
                         ?"growth_promotion_reward_cancel":"growth_promotion_reward_reverse";
                 case "h1_phase_dial" -> "growth_h1_write";
-                case "h1_phase_control", "h1_phase_override" -> "growth_h1_control_pin_write";
+                case "h1_phase_control" -> "growth_h1_control_pin_write";
+                case "h1_phase_override" -> "growth_h1_override_revoke";
                 case "h2_trial_cancel" -> "growth_h2_session_cancel";
                 case "h2_trial_charge" -> "growth_h2_session_charge";
                 case "h5_checkin_rule" -> "growth_h5_rule_write";

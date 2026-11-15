@@ -951,6 +951,12 @@ public class OpsAuditCenterService {
         boolean mine = Long.valueOf(actorId).equals(makerId);
         if (operationId == null && !mine) return ApiResult.fail(409, "A2_MAKER_ID_UNVERIFIED");
         if ("WITHDRAW".equals(verb) && !mine) return fail(OpsErrorCode.FORBIDDEN, "A2_WITHDRAW_MAKER_ONLY");
+        if ("PROPOSE".equals(verb) && command != null && "H".equalsIgnoreCase(command.domain())
+                && "h1_phase_override".equalsIgnoreCase(command.op())) {
+            // H1 override recovery must not inherit generic H-domain ticket visibility.
+            if (!canReadOwnProposal(ticket, command, actorId)) return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
+            return ApiResult.ok(toTicket(ticket, true));
+        }
         if ("PROPOSE".equals(verb) && (G4CatalogApproval.supports(command) || A4RegistryApproval.supports(command)
                 || G4ParamApproval.supports(command)
                 || H7VoucherDisposition.isOperation(command)
