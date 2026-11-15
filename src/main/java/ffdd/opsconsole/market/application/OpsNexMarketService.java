@@ -1209,7 +1209,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         boolean forbidden = "g3_override".equals(command.op())
                 ? "currentPrice".equals(str(params, "overrideKey"))
                 : curveFieldChanged(loadCurve(), normalizeFrames(replayMarketFrames(params.get("frames"))), "pumpProbability");
-        if (forbidden) throw new BizException(403, MANUAL_TUNING_FORBIDDEN);
+        if (forbidden) throw new BizException(422, MANUAL_TUNING_FORBIDDEN);
     }
 
     ApiResult<Map<String, Object>> applyApprovedMarketPolicy(String idempotencyKey, G3MarketPolicyChangeRequest request,
@@ -1249,7 +1249,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (guard != null) throw new BizException(guard.getCode(), guard.getMessage());
         if (!manualTuningAllowed && ("current-price".equals(request.action())
                 || ("curve-cell".equals(request.action()) && "pumpProbability".equals(request.field())))) {
-            throw new BizException(403, MANUAL_TUNING_FORBIDDEN);
+            throw new BizException(422, MANUAL_TUNING_FORBIDDEN);
         }
         Map<String, Object> beforeFields = new LinkedHashMap<>();
         Map<String, Object> afterFields = new LinkedHashMap<>();
@@ -1412,7 +1412,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (curveFieldChanged(before, frames, "pumpProbability")) {
             ApiResult<Map<String, Object>> permission = requirePermission("finprod_g3_curve_pump_prob_write");
             if (permission != null) return permission;
-            if (!manualTuningAllowed) return ApiResult.fail(403, MANUAL_TUNING_FORBIDDEN);
+            if (!manualTuningAllowed) return ApiResult.fail(422, MANUAL_TUNING_FORBIDDEN);
         }
         if (curveFieldChanged(before, frames, "volatilityPct")) {
             ApiResult<Map<String, Object>> permission = requirePermission("finprod_g3_write");
@@ -1588,7 +1588,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             return validation("G3_OVERRIDE_KEY_INVALID");
         }
         if (!manualTuningAllowed && "currentPrice".equals(overrideKey)) {
-            return ApiResult.fail(403, MANUAL_TUNING_FORBIDDEN);
+            return ApiResult.fail(422, MANUAL_TUNING_FORBIDDEN);
         }
         if (!StringUtils.hasText(request.value())) {
             return validation("VALUE_REQUIRED");
