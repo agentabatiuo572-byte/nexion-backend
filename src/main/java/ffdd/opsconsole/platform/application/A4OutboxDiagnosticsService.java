@@ -62,7 +62,7 @@ public class A4OutboxDiagnosticsService {
                 visible.stream().map(r -> new OutboxDiagnosticsView.Event(safeId(r.eventId()), safeType(r.eventType()),
                         safeStatus(r.status()), r.retryCount(), r.createdAt(), r.nextRetryAt(), r.errorCode(),
                         r.auditLinkUnresolved(), List.copyOf(receipts.getOrDefault(r.eventId(), List.of())),
-                        visibleUserNumbers.get(r.userId()))).toList(),
+                        r.userId() == null ? null : visibleUserNumbers.get(r.userId()))).toList(),
                 more ? Long.toString(visible.get(visible.size() - 1).id()) : null, more);
     }
 
