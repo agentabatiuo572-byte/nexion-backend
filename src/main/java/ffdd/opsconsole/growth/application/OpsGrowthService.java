@@ -319,7 +319,9 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         response.put("domain", "H1");
         response.put("currentMonth", currentMonth);
         response.put("currentPhase", currentPhaseForRhythm(currentMonth, totalMonths));
-        response.put("rhythm", rhythmOverview());
+        Map<String, Object> rhythm = rhythmOverview();
+        response.put("rhythm", rhythm);
+        response.put("rhythmState", rhythm.get("rhythmState"));
         response.put("schedule", phaseSchedule());
         response.put("phaseConfig", phaseConfig());
         Map<String, Object> activeDials = activeDials();
@@ -4598,6 +4600,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         response.put("currentMonth", currentMonth);
         response.put("currentPhase", currentPhase);
         response.put("phaseProgressPct", phaseProgressPct);
+        response.put("rhythmState", rhythmConfigState(totalMonths, currentMonth, phaseProgressPct));
         response.put("options", RHYTHM_TOTAL_OPTIONS);
         response.put("schedule", phaseSchedule());
         response.put("sources", List.of(
@@ -4631,6 +4634,95 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         schedule.put("nextAdvanceAt", null);
         schedule.put("automatic", false);
         return schedule;
+    }
+
+    /**
+     * Read-only config state for H1 rhythm. It never fills a missing value and never changes
+     * the legacy totalMonths/currentMonth/currentPhase/phaseProgressPct fields.
+     */
+    private Map<String, Object> rhythmConfigState(int totalMonths, int currentMonth, int phaseProgressPct) {
+        List<String> missing = new ArrayList<>();
+        List<Map<String, Object>> invalid = new ArrayList<>();
+        List<String> zero = new ArrayList<>();
+
+        Optional<String> totalRaw = nonBlankConfig(RHYTHM_TOTAL_MONTHS_KEY);
+        Integer totalValue = totalRaw.map(this::normalizedConfigInteger).orElse(null);
+        if (totalRaw.isEmpty()) {
+            missing.add(RHYTHM_TOTAL_MONTHS_KEY);
+        } else if (totalValue == null || !RHYTHM_TOTAL_OPTIONS.contains(totalValue)) {
+            invalid.add(configIssue(RHYTHM_TOTAL_MONTHS_KEY, "RHYTHM_TOTAL_MONTHS_INVALID"));
+        }
+
+        // The old read chain calls configDecimal(primary, legacy), but configDecimal returns 0
+        // for a missing/invalid primary and never uses the fallback. Do not let the legacy key
+        // make a missing primary look available.
+        Optional<String> currentRaw = nonBlankConfig(RHYTHM_CURRENT_MONTH_KEY);
+        Integer currentValue = currentRaw.map(this::normalizedConfigInteger).orElse(null);
+        if (currentRaw.isEmpty()) {
+            missing.add(RHYTHM_CURRENT_MONTH_KEY);
+        } else if (currentValue == null || currentValue < 1
+                || (totalMonths > 0 && currentValue > totalMonths)) {
+            invalid.add(configIssue(RHYTHM_CURRENT_MONTH_KEY, "RHYTHM_CURRENT_MONTH_OUT_OF_RANGE"));
+        }
+
+        Optional<String> progressRaw = nonBlankConfig(RHYTHM_PHASE_PROGRESS_KEY);
+        Integer progressValue = progressRaw.map(this::normalizedConfigInteger).orElse(null);
+        if (progressRaw.isEmpty()) {
+            missing.add(RHYTHM_PHASE_PROGRESS_KEY);
+        } else if (progressValue == null || progressValue < 0 || progressValue > 100) {
+            invalid.add(configIssue(RHYTHM_PHASE_PROGRESS_KEY, "RHYTHM_PHASE_PROGRESS_OUT_OF_RANGE"));
+        } else if (progressValue == 0) {
+            zero.add(RHYTHM_PHASE_PROGRESS_KEY);
+        }
+
+        Optional<String> phaseRaw = nonBlankConfig(CURRENT_PHASE_KEY);
+        if (phaseRaw.isEmpty()) {
+            missing.add(CURRENT_PHASE_KEY);
+        } else if (!phaseRaw.get().matches("P[1-6]")) {
+            invalid.add(configIssue(CURRENT_PHASE_KEY, "CURRENT_PHASE_INVALID"));
+        }
+
+        Optional<String> phaseConfigRaw = nonBlankConfig(PHASE_CONFIG_KEY);
+        if (phaseConfigRaw.isEmpty()) {
+            missing.add(PHASE_CONFIG_KEY);
+        } else {
+            Map<String, Object> parsedPhaseConfig = phaseConfig();
+            if (parsedPhaseConfig == null || parsedPhaseConfig.containsKey("invalidSource")) {
+                invalid.add(configIssue(PHASE_CONFIG_KEY, "PHASE_CONFIG_INVALID"));
+            }
+        }
+
+        Map<String, Object> state = new LinkedHashMap<>();
+        state.put("available", missing.isEmpty() && invalid.isEmpty());
+        state.put("missing", List.copyOf(missing));
+        state.put("invalid", List.copyOf(invalid));
+        state.put("zero", List.copyOf(zero));
+        state.put("totalMonths", totalMonths);
+        state.put("currentMonth", currentMonth);
+        state.put("phaseProgressPct", phaseProgressPct);
+        return state;
+    }
+
+    private Optional<String> nonBlankConfig(String key) {
+        return configFacade.activeValue(key)
+                .map(String::trim)
+                .filter(StringUtils::hasText);
+    }
+
+    private Integer normalizedConfigInteger(String raw) {
+        try {
+            return new BigDecimal(raw.trim().replace("%", "").replace(",", ""))
+                    .setScale(0, RoundingMode.DOWN).intValue();
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    private Map<String, Object> configIssue(String key, String reason) {
+        Map<String, Object> issue = new LinkedHashMap<>();
+        issue.put("key", key);
+        issue.put("reason", reason);
+        return issue;
     }
 
     private int rhythmTotalMonths() {
