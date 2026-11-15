@@ -379,7 +379,10 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
     int restoreRolePermissions(@Param("roleCode") String roleCode,
                                @Param("permissionCodes") Collection<String> permissionCodes);
 
-    /** 批量补插缺失的角色-权限绑定（A6 保存权限避免循环单条）。调用方须保证 permissionCodes 非空。 */
+    /**
+     * 批量补插缺失的角色-权限绑定（A6 保存权限避免循环单条）。
+     * 停用角色也保存白名单配置；实际鉴权另由启用角色过滤。调用方须保证 permissionCodes 非空。
+     */
     @Insert("""
             <script>
             INSERT INTO nx_admin_role_permission (role_id, permission_id)
@@ -394,7 +397,6 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
                  #{code}
                </foreach>
              WHERE r.role_code = #{roleCode}
-               AND r.status = 1
                AND r.is_deleted = 0
                AND NOT EXISTS (
                    SELECT 1

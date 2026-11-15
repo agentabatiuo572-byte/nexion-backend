@@ -915,6 +915,9 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             SELECT h.withdrawal_no AS withdrawalNo,
                    h.user_no AS userNo,
                    h.amount_text AS amountText,
+                   CAST(w.amount AS CHAR) AS amountValue,
+                   NULLIF(w.asset, '') AS currency,
+                   CASE WHEN w.id IS NULL THEN NULL ELSE 'WITHDRAWAL_ORDER' END AS amountSource,
                    h.rule_id AS ruleId,
                    h.dimension,
                    h.action,
@@ -924,6 +927,8 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                    ) AS reason,
                    DATE_FORMAT(h.created_at, '%Y-%m-%d %H:%i:%s') AS timeText
               FROM nx_admin_risk_withdraw_hit h
+              LEFT JOIN nx_withdrawal_order w
+                ON w.withdrawal_no = h.withdrawal_no AND w.is_deleted = 0
               LEFT JOIN nx_admin_risk_withdraw_rule r
                 ON r.rule_id = h.rule_id AND r.is_deleted = 0
               LEFT JOIN nx_risk_decision rd
@@ -944,6 +949,9 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             SELECT h.withdrawal_no AS withdrawalNo,
                    h.user_no AS userNo,
                    h.amount_text AS amountText,
+                   CAST(w.amount AS CHAR) AS amountValue,
+                   NULLIF(w.asset, '') AS currency,
+                   CASE WHEN w.id IS NULL THEN NULL ELSE 'WITHDRAWAL_ORDER' END AS amountSource,
                    h.rule_id AS ruleId,
                    h.dimension,
                    h.action,
@@ -953,6 +961,8 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                    ) AS reason,
                    DATE_FORMAT(h.created_at, '%Y-%m-%d %H:%i:%s') AS timeText
               FROM nx_admin_risk_withdraw_hit h
+              LEFT JOIN nx_withdrawal_order w
+                ON w.withdrawal_no = h.withdrawal_no AND w.is_deleted = 0
               LEFT JOIN nx_admin_risk_withdraw_rule r
                 ON r.rule_id = h.rule_id AND r.is_deleted = 0
               LEFT JOIN nx_risk_decision rd

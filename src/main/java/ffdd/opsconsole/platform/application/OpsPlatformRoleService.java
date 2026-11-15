@@ -353,17 +353,28 @@ public class OpsPlatformRoleService {
             roleMenuMapper.restoreRoleMenus(roleId, desiredMenus);
             roleMenuMapper.insertMissingRoleMenus(roleId, desiredMenus);
         }
+        ApiResult<PlatformRoleDetail> saved = detail(roleId);
+        if (saved.getData() == null) {
+            return saved;
+        }
+        // A disabled role may be preconfigured, but its actual saved whitelist must
+        // match the request before this transaction can claim success.
+        if (Integer.valueOf(0).equals(entity.getStatus())
+                && (!new java.util.HashSet<>(saved.getData().permissionCodes()).equals(new java.util.HashSet<>(desiredPerms))
+                    || !new java.util.HashSet<>(saved.getData().menuIds()).equals(new java.util.HashSet<>(desiredMenus)))) {
+            return ApiResult.fail(409, "A6_ROLE_GRANTS_NOT_PERSISTED");
+        }
         List<Long> adminIds = roleRelationMapper.selectAdminIdsByRole(roleId);
         evictAdmins(adminIds);
-        int permsAfter = rolePermissionMapper.selectActivePermissionCodesByRole(roleId).size();
-        int menusAfter = roleMenuMapper.selectActiveMenuIdsByRole(roleId).size();
+        int permsAfter = saved.getData().permissionCodes().size();
+        int menusAfter = saved.getData().menuIds().size();
         audit("A6_ROLE_GRANTS_CHANGED", roleId.toString(), request.reason(), request.operator(), idempotencyKey,
                 Map.of("roleCode", roleCode,
                         "permsBefore", permsBefore, "permsAfter", permsAfter,
                         "menusBefore", menusBefore, "menusAfter", menusAfter,
                         "affectedAdmins", adminIds.size()),
                 "HIGH");
-        return detail(roleId);
+        return saved;
     }
 
     private long countAdminsByRole(Long roleId) {

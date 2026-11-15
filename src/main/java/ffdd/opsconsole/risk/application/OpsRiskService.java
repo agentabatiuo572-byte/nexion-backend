@@ -73,6 +73,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -845,7 +846,8 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                             k3DryRunRoute("delay", "延迟", routeCountMap, "#f59e0b"),
                             k3DryRunRoute("manual", "人工审核", routeCountMap, "#3b82f6"),
                             k3DryRunRoute("freeze", "冻结", routeCountMap, "#ef4444"));
-                    LocalDateTime completedAt = LocalDateTime.now();
+                    ZonedDateTime completedAtWithZone = ZonedDateTime.now();
+                    LocalDateTime completedAt = completedAtWithZone.toLocalDateTime();
                     Map<String, Object> response = new LinkedHashMap<>();
                     response.put("batchNo", batchNo);
                     response.put("status", "COMPLETED");
@@ -857,6 +859,8 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     response.put("routeCounts", routeCounts);
                     response.put("primaryRuleIdsByWithdrawal", primaryRuleIds);
                     response.put("completedAt", completedAt);
+                    response.put("completedAtZone", completedAtWithZone.getZone().getId());
+                    response.put("completedAtOffset", completedAtWithZone.getOffset().getId());
                     auditRequired("K3_WITHDRAW_RULE_DRY_RUN_COMPLETED", "WITHDRAW_RULE_DRY_RUN", batchNo, actor, Map.of(
                             "batchNo", batchNo,
                             "evaluatedWithdrawals", candidates.size(),

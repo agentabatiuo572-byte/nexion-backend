@@ -47,6 +47,36 @@ public class PendingApprovalProjection {
         return approvals;
     }
 
+    /**
+     * Read-only K2 freeze projection. It is deliberately not added to {@link #OPERATIONS}:
+     * that map also drives the write-side {@link #coversTarget(AuditLockTarget)} guard, and
+     * K2's existing flag/blockgift/boardflag proposals must keep their old target semantics.
+     */
+    public Map<String, PendingApproval> readK2RowFreeze(Collection<String> authorizedIds) {
+        if (authorizedIds == null || authorizedIds.isEmpty()) return Map.of();
+        Map<String, PendingApproval> approvals = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        for (var lock : lockMapper.selectPendingLocks("K", "arbitrage_row", authorizedIds)) {
+            approvals.put(lock.targetId(), describeK2RowFreeze(lock));
+        }
+        return approvals;
+    }
+
+    private PendingApproval describeK2RowFreeze(AuditObjectLockMapper.PendingLock lock) {
+        if (lock.commandJson() == null || lock.operatorName() == null || lock.operatorName().isBlank()
+                || lock.createdAt() == null) return GENERIC;
+        try {
+            JsonNode command = objectMapper.readTree(lock.commandJson());
+            JsonNode params = command.path("params");
+            if (!"k2_row_freeze".equals(command.path("op").asText())
+                    || !"K".equals(command.path("domain").asText())
+                    || !lock.targetId().equals(params.path("rowId").asText().trim())) return GENERIC;
+            return new PendingApproval("冻结关联账户", lock.operatorName(),
+                    lock.createdAt().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+        } catch (JsonProcessingException invalidHistoricCommand) {
+            return GENERIC;
+        }
+    }
+
     /** H7 list-only projection: active lock joined to its real pending ticket and exact delete/revoke command. */
     public Map<String, VoucherPendingApproval> readVouchers(Collection<String> authorizedIds) {
         if (authorizedIds == null || authorizedIds.isEmpty()) return Map.of();

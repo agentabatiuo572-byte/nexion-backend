@@ -10,6 +10,7 @@ import ffdd.opsconsole.risk.application.OpsRiskService;
 import ffdd.opsconsole.risk.application.RiskReleaseParamsService;
 import ffdd.opsconsole.risk.domain.RiskArbitrageParamView;
 import ffdd.opsconsole.risk.domain.RiskArbitrageRowView;
+import ffdd.opsconsole.risk.domain.RiskArbitrageViewGroup;
 import ffdd.opsconsole.risk.domain.RiskCaseView;
 import ffdd.opsconsole.risk.domain.RiskRuleHitView;
 import ffdd.opsconsole.risk.domain.RiskRuleView;
@@ -139,6 +140,12 @@ public class OpsRiskController {
     private record ClusterWithPendingApproval(@JsonUnwrapped MultiAccountClusterRecord cluster,
                                               @JsonInclude(JsonInclude.Include.NON_NULL) PendingApproval pendingApproval) {}
 
+    private record ArbitrageRowWithPending(@JsonUnwrapped RiskArbitrageRowView row,
+                                           @JsonInclude(JsonInclude.Include.NON_NULL) PendingApproval pendingApproval) {}
+
+    private record ArbitrageViewWithPending(String key, String label, String sub, List<String> head, String note,
+                                            List<ArbitrageRowWithPending> rows) {}
+
     @PatchMapping("/multi-account/registration-params")
     @PreAuthorize("hasAuthority('risk_k1_read') && @superAdminAuthorization.isSuperAdmin(authentication)")
     public ApiResult<PlatformConfigResponse> updateK1RegistrationParam(
@@ -248,7 +255,28 @@ public class OpsRiskController {
     @GetMapping("/arbitrage/overview")
     @PreAuthorize("hasAuthority('risk_k2_read')")
     public ApiResult<Map<String, Object>> arbitrageOverview() {
-        return riskService.arbitrageOverview();
+        ApiResult<Map<String, Object>> result = riskService.arbitrageOverview();
+        if (result.getCode() != 0 || result.getData() == null) return result;
+        Map<String, Object> data = new java.util.LinkedHashMap<>(result.getData());
+        Object rawViews = data.get("views");
+        if (rawViews instanceof List<?> viewRows) {
+            List<RiskArbitrageViewGroup> groups = viewRows.stream()
+                    .filter(RiskArbitrageViewGroup.class::isInstance)
+                    .map(RiskArbitrageViewGroup.class::cast)
+                    .toList();
+            List<String> rowIds = groups.stream()
+                    .flatMap(group -> group.rows().stream())
+                    .map(RiskArbitrageRowView::rowId)
+                    .filter(id -> id != null && !id.isBlank())
+                    .toList();
+            var approvals = pendingApprovals.readK2RowFreeze(rowIds);
+            data.put("views", groups.stream().map(group -> new ArbitrageViewWithPending(
+                    group.key(), group.label(), group.sub(), group.head(), group.note(),
+                    group.rows().stream()
+                            .map(row -> new ArbitrageRowWithPending(row, approvals.get(row.rowId())))
+                            .toList())).toList());
+        }
+        return ApiResult.ok(data);
     }
 
     @PatchMapping("/arbitrage/params/{key}")
