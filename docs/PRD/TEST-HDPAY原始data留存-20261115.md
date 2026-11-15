@@ -1,0 +1,11 @@
+# HDPAY 创建响应data加密留存
+
+用户要求在下一笔手动4400 USDT请求中保留服务商原始data，核对code200后付款链接未通过校验的问题。仅在创建响应解析出data时，以JSON值完整加密留存内部日志（包含成功、未可信链接和拒绝响应）；JSON字符串解密后可还原原值。缺失data不伪造内容。复用FinanceSensitiveDataCipher的AES-GCM，AAD绑定订单摘要引用与响应正文SHA256。聊天、PRD、公开API及A2不包含原始付款令牌、密文或密钥。
+
+保留原始data的JSON语义值，不保证原响应JSON的空白或转义字节形式一致；完整响应正文仅保留摘要。诊断失败只记UNAVAILABLE，不改变付款处理结果。既有msg诊断保留，付款URL格式及域名校验、App/PC前端、资金开关、建单/幂等/结算规则均不变。用户自行创建真实订单，代理验收只连接隔离stub，不重新创建任何真实订单。
+
+付款页域名白名单属于服务器NEXION_HDPAY_PAYMENT_PAGE_HOSTS，PC目前无对应入口。现场新TEST只配置api.hdpayadmin.com；这只能证明白名单范围，不能证明4500单返回了哪个域名，也不能直接跳过校验。
+
+以隔离整包HTTP验证可信/未可信字符串付款页、非字符串data和空msg，检查可解密还原、错误AAD拒绝、幂等及公开信息无诊断泄露，钱包/账本不变。验收通过后提交test并通过Jenkins发布，核对实际运行版本后才通知用户可以手动下一单。
+
+验收回执：Java17整包构建成功，基线e83c9ce7。runId5b911d55bfa2的3个整包HTTP场景全部通过，包括data正确AAD解密还原/错误AAD拒绝、同键一次provider调用、公开接口及A2无诊断内容、钱包快照不变及账本无新增。测试仅使用内部Docker网络及回环stub，真实provider建单0。网关源SHA256为9928df96dd42d810530740cabb1ebc06024230750ee8cac3e4f1d02fa892e72c。运行时加密故障未注入，仅静态复核；不将隔离验证视为真实4400请求已捕获。证据在D:/workspace/artifacts/aws-test/hdpay-create-data-20261115/。

@@ -129,6 +129,7 @@ public final class HttpHdPayGateway implements HdPayGateway {
                 reason = "ACCEPTED";
                 return new PayPage(page);
             } finally {
+                recordCreateDataDiagnostic(requestBody, response, root);
                 if (!"ACCEPTED".equals(reason)) {
                     recordFailureDiagnostic("create", requestBody, response, root);
                 }
@@ -208,6 +209,26 @@ public final class HttpHdPayGateway implements HdPayGateway {
     private static String sha256(byte[] body) {
         try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(body)); }
         catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
+    }
+
+    private void recordCreateDataDiagnostic(Map<String, Object> request,
+            HttpResponse<byte[]> response, JsonNode root) {
+        if (root == null || !root.isObject() || !root.has("data")) return;
+        String orderRef = "sha256:" + sha256(request.get("merchantOrderId").toString()
+                .getBytes(StandardCharsets.UTF_8)).substring(0, 16);
+        String bodyHash = sha256(response.body());
+        try {
+            JsonNode data = root.get("data");
+            String value = data.toString();
+            String encrypted = diagnosticCipher.encrypt(value,
+                    "hdpay-create-data|" + orderRef + "|" + bodyHash);
+            log.info("HDPay create data diagnostic orderRef={} httpStatus={} providerCode={} bodySha256={} dataType={} dataLength={} encryptedData={}",
+                    orderRef, response.statusCode(), safeProviderCode(root), bodyHash,
+                    data.getNodeType(), value.length(), encrypted);
+        } catch (Exception unavailable) {
+            log.warn("HDPay create data diagnostic UNAVAILABLE orderRef={} bodySha256={}",
+                    orderRef, bodyHash);
+        }
     }
 
     private void recordFailureDiagnostic(String operation, Map<String, Object> request,
