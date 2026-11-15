@@ -46,7 +46,7 @@ import org.springframework.util.StringUtils;
 @ApplicationService
 @RequiredArgsConstructor
 public class F5CommissionService {
-    private static final Set<String> KINDS =
+    public static final Set<String> KINDS =
             Set.of("network", "binary", "peer", "cultivation", "leadership", "genesis", "direct_purchase", "direct_device_earning");
     private static final Set<String> STATUSES =
             Set.of("cooling", "unlocked", "withdrawn", "reversed", "frozen", "rejected", "recovery_pending");
