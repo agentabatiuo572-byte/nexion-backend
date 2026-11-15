@@ -12,12 +12,14 @@ import ffdd.opsconsole.content.dto.SupportKnowledgeDeleteRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -45,16 +47,28 @@ public class OpsSupportKnowledgeService {
 
     public ApiResult<SupportKnowledgeOverview> overview() {
         ensureSeedData();
+        List<SupportFaqView> faqs = knowledgeRepository.listFaqs();
         List<SupportSlaView> slaRules = knowledgeRepository.listSla();
+        List<EventOutboxMapper.SupportFaqVersion> refs = faqs.stream()
+                .map(faq -> new EventOutboxMapper.SupportFaqVersion(faq.id(), faq.version()))
+                .toList();
+        Map<String, String> operators = eventOutboxService.findLatestSupportFaqOperators(refs);
+        Map<String, String> displayNames = auditLogService.findDisplayNamesByUsernames(operators.values());
+        Map<String, String> faqLastModifiedBy = new LinkedHashMap<>();
+        faqs.forEach(faq -> {
+            String operator = operators.get(faq.id());
+            faqLastModifiedBy.put(faq.id(), operator == null ? null : displayNames.get(operator.trim()));
+        });
         return ApiResult.ok(new SupportKnowledgeOverview(
-                knowledgeRepository.listFaqs(),
+                faqs,
                 slaRules,
                 List.copyOf(FAQ_CATEGORIES),
                 List.copyOf(SURFACES),
                 List.copyOf(STATUSES),
                 slaQueues(slaRules),
                 slaEscalations(slaRules),
-                List.of("nx_help_article", "nx_support_sla_rule")));
+                List.of("nx_help_article", "nx_support_sla_rule"),
+                faqLastModifiedBy));
     }
 
     @Transactional(rollbackFor = Exception.class)
