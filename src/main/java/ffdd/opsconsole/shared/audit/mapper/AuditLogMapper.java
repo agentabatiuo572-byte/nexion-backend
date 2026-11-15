@@ -640,4 +640,37 @@ public interface AuditLogMapper extends BaseMapper<AuditLogEntity> {
             Integer retentionPolicyMonths,
             LocalDateTime expireAt) {
     }
+
+    /** Latest actual F4 leadership-pool settlement audit; aggregate only, no per-rank snapshot exists. */
+    @Select("""
+            SELECT weekKey, poolAmountUsdt, totalVotes, settledUsers
+              FROM (
+                SELECT resource_id AS weekKey,
+                       JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.poolAmountUsdt')) AS poolAmountUsdt,
+                       JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.totalVotes')) AS totalVotes,
+                       JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.settledUsers')) AS settledUsers,
+                       id AS seq
+                  FROM nx_audit_log
+                 WHERE is_deleted=0 AND resource_type='LEADERSHIP_POOL_SETTLEMENT'
+                   AND action='F4_LEADERSHIP_POOL_SETTLED' AND result='SUCCESS'
+                UNION ALL
+                SELECT JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) AS weekKey,
+                       JSON_UNQUOTE(JSON_EXTRACT(JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.detail')),'$.poolAmountUsdt')) AS poolAmountUsdt,
+                       JSON_UNQUOTE(JSON_EXTRACT(JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.detail')),'$.totalVotes')) AS totalVotes,
+                       JSON_UNQUOTE(JSON_EXTRACT(JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.detail')),'$.settledUsers')) AS settledUsers,
+                       original_audit_id AS seq
+                  FROM nx_audit_log_archive
+                 WHERE content_sha256 IS NOT NULL
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceType'))='LEADERSHIP_POOL_SETTLEMENT'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))='F4_LEADERSHIP_POOL_SETTLED'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.result'))='SUCCESS'
+              ) settlement_rows
+             ORDER BY seq DESC
+             LIMIT 1
+            """)
+    LeadershipPoolSettlementAudit findLatestLeadershipPoolSettlement();
+
+    record LeadershipPoolSettlementAudit(String weekKey, String poolAmountUsdt,
+                                         String totalVotes, String settledUsers) { }
+
 }

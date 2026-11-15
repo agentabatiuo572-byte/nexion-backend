@@ -192,11 +192,14 @@ public class OpsTreasuryService {
                     "period", asOf.minusHours(hoursAgo).toString(),
                     "coverageRatio", pctScale(ratios.get(index))));
         }
-        return ApiResult.ok(section(
+        BigDecimal coverageRatio = pctScale(decimal(snapshot.get("coverageRatio")));
+        BigDecimal netExposure = money(reserve.subtract(liabilities));
+        boolean valuationReliable = Boolean.TRUE.equals(snapshot.get("valuationReliable"));
+        Map<String, Object> response = section(
                 "reserveTotalUsdt", reserve,
                 "liabilityTotalUsdt", liabilities,
-                "coverageRatio", pctScale(decimal(snapshot.get("coverageRatio"))),
-                "netExposureUsdt", money(reserve.subtract(liabilities)),
+                "coverageRatio", coverageRatio,
+                "netExposureUsdt", netExposure,
                 "redLine", pctScale(decimal(snapshot.get("redlinePct"))),
                 "yellowLine", pctScale(decimal(snapshot.get("healthyPct"))),
                 "redlineBreached", Boolean.TRUE.equals(snapshot.get("redlineBreached")),
@@ -204,7 +207,13 @@ public class OpsTreasuryService {
                 "breaches", List.of(),
                 "asOf", asOf,
                 // Provenance marker, not display copy: the PC L3 contract requires a B1 source.
-                "source", "B1 双账本"));
+                "source", "B1 双账本");
+        // Same B1 snapshot provenance as the raw fields above; null valued values must stay explicit.
+        response.put("valuationReliable", valuationReliable);
+        response.put("valuationStatus", valuationStatus(valuationReliable));
+        response.put("valuedCoverageRatio", valuationReliable ? coverageRatio : null);
+        response.put("valuedNetExposureUsdt", valuationReliable ? netExposure : null);
+        return ApiResult.ok(response);
     }
 
     /** D3 canonical reserve source. Coverage is intentionally absent: B1 owns that decision. */

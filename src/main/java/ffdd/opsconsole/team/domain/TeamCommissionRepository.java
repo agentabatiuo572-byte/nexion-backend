@@ -42,6 +42,8 @@ public interface TeamCommissionRepository {
 
     List<Map<String, Object>> leadershipRanks();
 
+    List<Map<String, Object>> leadershipVoterRanks(int minRank);
+
     List<Map<String, Object>> quotaRows();
 
     default List<Map<String, Object>> quotaUsages(int limit) { return List.of(); }

@@ -7,6 +7,7 @@ import ffdd.opsconsole.shared.audit.mapper.AuditLogMapper;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import jakarta.servlet.http.HttpServletRequest;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -451,4 +452,30 @@ public class AuditLogService {
             Long userId,
             Long actorId,
             int limit) {}
+
+    /** Latest actual F4 leadership-pool settlement aggregate; per-rank data was never recorded. */
+    public LeadershipPoolSettlement latestLeadershipPoolSettlement() {
+        AuditLogMapper.LeadershipPoolSettlementAudit row =
+                auditLogMapper.findLatestLeadershipPoolSettlement();
+        if (row == null || !StringUtils.hasText(row.weekKey())) return null;
+        BigDecimal pool = decimalOrNull(row.poolAmountUsdt());
+        BigDecimal votes = decimalOrNull(row.totalVotes());
+        Integer users = integerOrNull(row.settledUsers());
+        if (pool == null || votes == null || users == null) return null;
+        return new LeadershipPoolSettlement(row.weekKey().trim(), pool, votes, users);
+    }
+
+    private static BigDecimal decimalOrNull(String raw) {
+        if (!StringUtils.hasText(raw)) return null;
+        try { return new BigDecimal(raw.trim()); } catch (NumberFormatException ex) { return null; }
+    }
+
+    private static Integer integerOrNull(String raw) {
+        if (!StringUtils.hasText(raw)) return null;
+        try { return Integer.valueOf(raw.trim()); } catch (NumberFormatException ex) { return null; }
+    }
+
+    public record LeadershipPoolSettlement(String weekKey, BigDecimal poolAmountUsdt,
+                                           BigDecimal totalVotes, Integer settledUsers) { }
+
 }
