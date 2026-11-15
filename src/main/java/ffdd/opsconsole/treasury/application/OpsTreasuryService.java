@@ -108,6 +108,7 @@ public class OpsTreasuryService {
             new BudgetSeed("commission", "返佣", "operations.budget.current-month.commission"),
             new BudgetSeed("genesis", "创世", "operations.budget.current-month.genesis"),
             new BudgetSeed("reserve", "储备", "operations.budget.current-month.reserve"));
+    private static final String B4_OPERATION_BUDGET_USAGE_UNDEFINED = "B4_OPERATION_BUDGET_USAGE_UNDEFINED";
     private static final List<GateSeed> B_RISK_GATE_SEEDS = List.of(
             new GateSeed("withdraw", "提现开关"),
             new GateSeed("exchange", "兑换开关"),
@@ -1879,6 +1880,8 @@ public class OpsTreasuryService {
         if (!available) {
             return section(
                     "available", false,
+                    "usageAvailable", false,
+                    "usageReason", B4_OPERATION_BUDGET_USAGE_UNDEFINED,
                     "reason", total.signum() == 0 && missing.isEmpty()
                             ? "B4_OPERATION_BUDGET_TOTAL_ZERO"
                             : "B4_OPERATION_BUDGET_SOURCE_INCOMPLETE",
@@ -1891,6 +1894,8 @@ public class OpsTreasuryService {
                 .divide(denominator, 2, RoundingMode.HALF_UP)));
         return section(
                 "available", true,
+                "usageAvailable", false,
+                "usageReason", B4_OPERATION_BUDGET_USAGE_UNDEFINED,
                 "totalUsdt", money(total),
                 "missingKeys", List.of(),
                 "rows", rows);
