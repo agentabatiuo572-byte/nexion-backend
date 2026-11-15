@@ -223,7 +223,7 @@ public class MybatisNexMarketRepository implements NexMarketRepository {
 
     @Override
     public BigDecimal stakingEstimatedInterestUsdt() {
-        BigDecimal value = stakingMapper.sumEstimatedInterestUsdt();
+        BigDecimal value = stakingMapper.sumEstimatedInterestUsdt(CANONICAL_STAKING_PRODUCT_CODES);
         return value == null ? BigDecimal.ZERO : value;
     }
 
