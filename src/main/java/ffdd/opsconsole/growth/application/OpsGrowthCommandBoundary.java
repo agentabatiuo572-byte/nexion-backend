@@ -1,15 +1,20 @@
 package ffdd.opsconsole.growth.application;
 
 import ffdd.opsconsole.growth.dto.GrowthPublicStatsUpdateRequest;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.domain.AuditLockTarget;
+import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.growth.dto.GrowthMissionEditRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionStatusRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
@@ -23,6 +28,7 @@ public class OpsGrowthCommandBoundary {
     private final AdminIdempotencyService idempotency;
     private final EventOutboxService outbox;
     private final java.util.Optional<ffdd.opsconsole.growth.mapper.GrowthQuestEventMapper> trialSessions;
+    private final AuditObjectLockMapper objectLocks;
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     public ApiResult<Map<String, Object>> execute(
@@ -46,6 +52,7 @@ public class OpsGrowthCommandBoundary {
         }
         String requestHash = hash(scope + "|" + requestText);
         Supplier<ApiResult<Map<String, Object>>> commandAction = () -> {
+            rejectPendingH4ObjectLock(normalizedModule, normalizedOperation, normalizedTarget);
             ApiResult<Map<String, Object>> result = action.get();
             if (result != null && result.getCode() == 0) {
                 outbox.publish("GROWTH_COMMAND", normalizedModule + ":" + normalizedTarget,
@@ -79,6 +86,32 @@ public class OpsGrowthCommandBoundary {
             }
             throw ex;
         }
+    }
+
+    private void rejectPendingH4ObjectLock(String module, String operation, String target) {
+        if (!"H4".equals(module) || A2ReplayContext.isReplaying()) return;
+        for (AuditLockTarget lockTarget : h4LockTargets(operation, target)) {
+            if (objectLocks.countActiveByTarget(lockTarget.domain(), lockTarget.type(), lockTarget.id()) > 0) {
+                throw new BizException(409, "OBJECT_LOCKED_BY_A2");
+            }
+        }
+    }
+
+    private List<AuditLockTarget> h4LockTargets(String operation, String target) {
+        return switch (operation) {
+            case "EVENT_RULE_UPDATE", "EVENT_REWARD_UPDATE", "EVENT_STATUS_UPDATE",
+                    "EVENT_LOCALIZED_CONTENT_UPDATE", "EVENT_FEATURED_UPDATE", "EVENT_DELETE" ->
+                    List.of(new AuditLockTarget("H", "h4_event_rule", target),
+                            new AuditLockTarget("H", "h4_legacy_event", target));
+            case "GENESIS_RAFFLE_CREATE", "GENESIS_RAFFLE_UPDATE" ->
+                    List.of(new AuditLockTarget("H", "h4_genesis_raffle", target));
+            case "WHEEL_GUARD_CREATE", "WHEEL_GUARD_UPDATE" ->
+                    List.of(new AuditLockTarget("H", "h4_wheel_guard", target));
+            case "WHEEL_TIER_CREATE", "WHEEL_TIER_UPDATE", "WHEEL_TIER_DELETE",
+                    "WHEEL_TIER_RETIRE", "WHEEL_PROBABILITIES_UPDATE" ->
+                    List.of(new AuditLockTarget("H", "h4_wheel_pool", "ACTIVE_POOL"));
+            default -> List.of();
+        };
     }
 
     private String commandScope(String module, String operation, String target, Object request) {
