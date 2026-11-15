@@ -168,7 +168,18 @@ public class G4ParamApproval {
         if (!params.keySet().equals(required) && !params.keySet().equals(allowed))
             throw new BizException(422, "G4_PARAM_PROPOSAL_INVALID");
         for (String field : required) {
-            if (text(params.get(field)).isBlank()) throw new BizException(422, "G4_PARAM_PROPOSAL_INVALID");
+            if (!text(params.get(field)).isBlank()) continue;
+            // G4-BE-12: GenesisCatalogService initializes dividend_base_formula to "". The
+            // server-bound old value is a legal empty string; preview/replay compare it
+            // exactly with the current server value. The key must still be present (checked
+            // above), and only an actual empty String is allowed, never a missing value.
+            if ("expectedValue".equals(field)
+                    && "divBase".equals(text(params.get("paramKey")))
+                    && params.get(field) instanceof String expectedValue
+                    && expectedValue.isEmpty()) {
+                continue;
+            }
+            throw new BizException(422, "G4_PARAM_PROPOSAL_INVALID");
         }
         String paramKey = text(params.get("paramKey"));
         if (!AMPLIFY_KEYS.contains(paramKey)) throw new BizException(422, "G4_PARAM_PROPOSAL_INVALID");
