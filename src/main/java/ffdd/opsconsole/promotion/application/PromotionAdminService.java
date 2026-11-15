@@ -92,7 +92,11 @@ public class PromotionAdminService {
         return db.list("SELECT * FROM nx_promotion_policy WHERE policy_id=? ORDER BY version",target);
     }
     public Map<String,Object> recover(String key,String operation,String target){
-        long actor=actor();permission(operation);validator.validate("CommandKey",key);
+        long actor=actor();
+        // Recovery is a read of the caller's own retained receipt; page read is enough.
+        if(!has("growth_promotion_read"))throw new BizException(403,"PROMOTION_PERMISSION_DENIED");
+        permissionFor(operation);
+        validator.validate("CommandKey",key);
         String scope=scope(actor,operation,target);var record=db.one("SELECT request_hash,created_at,updated_at FROM nx_admin_idempotency_record WHERE scope=? AND idempotency_key=? AND is_deleted=0",scope,key);
         if(record==null)return receipt("missing-"+sha256(key).substring(0,24),operation,target,key,"NOT_FOUND",null,null,Instant.now());
         var result=idempotency.recoveryResult(scope,key,text(record.get("request_hash")),Map.class);
