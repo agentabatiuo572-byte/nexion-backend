@@ -18,6 +18,7 @@ import ffdd.opsconsole.content.domain.TrustDisclosureStats;
 import ffdd.opsconsole.content.domain.TrustSectionView;
 import ffdd.opsconsole.content.domain.TrustSectionFieldView;
 import ffdd.opsconsole.content.domain.TrustSectionVersionView;
+import ffdd.opsconsole.content.domain.TrustPublishedSnapshotView;
 import ffdd.opsconsole.content.dto.DisclosureDraftRequest;
 import ffdd.opsconsole.content.dto.DisclosureChapterInput;
 import ffdd.opsconsole.content.dto.DisclosureGateUpdateRequest;
@@ -148,21 +149,32 @@ public class OpsTrustDisclosureService implements AuditReplayable {
     }
 
     public ApiResult<AppTrustSectionsView> publishedSections() {
+        return buildPublishedSections().publicResult();
+    }
+
+    /** I4-only status projection built from the same reads and withholding predicates as the App response. */
+    public ApiResult<TrustPublishedSnapshotView> publishedSnapshot() {
+        return ApiResult.ok(buildPublishedSections().snapshot());
+    }
+
+    private PublishedBuild buildPublishedSections() {
         if (isTrustSandboxRuntime()) {
             String runId = trustSandboxRunId();
-            if (runId == null) return ApiResult.fail(503, "TRUST_SECTION_SANDBOX_RUN_ID_REQUIRED");
-            return ApiResult.ok(sandboxPublishedTrustSections(runId));
+            if (runId == null) return failedPublishedSnapshot("TRUST_SECTION_SANDBOX_RUN_ID_REQUIRED", "SANDBOX", null);
+            AppTrustSectionsView view = sandboxPublishedTrustSections(runId);
+            return successfulPublishedSnapshot(view, sandboxSectionStatuses(view));
         }
 
         Map<String, TrustSectionView> published = new LinkedHashMap<>();
         for (TrustSectionView section : trustDisclosureRepository.listTrustSections()) {
             if (section == null || !"published".equalsIgnoreCase(section.status())) continue;
             if (!APP_PUBLISHED_TRUST_SECTION_KEYS.contains(section.key())) continue;
-            if (published.putIfAbsent(section.key(), section) != null) return invalidPublishedTrustSnapshot();
+            if (published.putIfAbsent(section.key(), section) != null) return invalidPublishedSnapshot();
         }
-        if (!published.keySet().equals(Set.copyOf(APP_PUBLISHED_TRUST_SECTION_KEYS))) return invalidPublishedTrustSnapshot();
+        if (!published.keySet().equals(Set.copyOf(APP_PUBLISHED_TRUST_SECTION_KEYS))) return invalidPublishedSnapshot();
 
         List<AppTrustSectionsView.Section> sections = new ArrayList<>();
+        List<TrustPublishedSnapshotView.SectionStatus> statuses = new ArrayList<>();
         for (String sectionKey : APP_PUBLISHED_TRUST_SECTION_KEYS) {
             TrustSectionView section = published.get(sectionKey);
             TrustSectionVersionView version = findSectionVersion(section.key(), section.version());
@@ -171,7 +183,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                     || !trimToEmpty(version.version()).equals(trimToEmpty(section.version()))
                     || !StringUtils.hasText(version.description()) || !StringUtils.hasText(version.structure())
                     || !validPublishedTrustFields(version.fields())) {
-                return invalidPublishedTrustSnapshot();
+                return invalidPublishedSnapshot();
             }
             // Editor content cannot supply measured finance, compliance, reserve ratio
             // AI-client counts or exchange-listing proof. Keep published versions
@@ -183,26 +195,79 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                     .noneMatch(field -> "document1Url".equals(field.key()) && isSafeTrustSectionLink(field.value()));
             boolean unsupportedSubhero = version.fields().stream().anyMatch(field ->
                     "subhero.en".equals(field.key()) && UNSUPPORTED_NEX_SUBHERO_CLAIMS.contains(field.value()));
-            List<AppTrustSectionsView.Field> fields = version.fields().stream()
-                    .map(field -> new AppTrustSectionsView.Field(field.key(), field.label(),
-                            unsupportedClaim || missingAudit
-                                    || ("auditsReserves".equals(section.key()) && field.key().startsWith("homepageProof."))
-                                    || ("nexNarrative".equals(section.key()) && "activeAiClients".equals(field.key()))
-                                    || ("nexNarrative".equals(section.key()) && field.key().startsWith("subhero.")
-                                        && (UNSUPPORTED_NEX_SUBHERO_CLAIMS.contains(field.value()) || unsupportedSubhero
-                                        && InterfaceLanguages.isAdditional(field.key().substring("subhero.".length()))))
-                                    ? "" : field.value()))
-                    .toList();
+            List<AppTrustSectionsView.Field> fields = new ArrayList<>();
+            List<TrustPublishedSnapshotView.FieldStatus> fieldStatuses = new ArrayList<>();
+            for (TrustSectionVersionView.Field field : version.fields()) {
+                String withheldReason = withheldFieldReason(section.key(), field, unsupportedClaim, missingAudit, unsupportedSubhero);
+                fields.add(new AppTrustSectionsView.Field(field.key(), field.label(),
+                        withheldReason == null ? field.value() : ""));
+                fieldStatuses.add(new TrustPublishedSnapshotView.FieldStatus(field.key(),
+                        withheldReason != null && StringUtils.hasText(field.value()), withheldReason));
+            }
             sections.add(new AppTrustSectionsView.Section(
                     section.key(), version.version(), version.description(), version.structure(), fields));
+            statuses.add(new TrustPublishedSnapshotView.SectionStatus(
+                    section.key(), version.version(), true, null, fieldStatuses));
         }
 
-        return ApiResult.ok(new AppTrustSectionsView(
-                true, "nx_trust_section_version:published", "PRODUCTION", "", sections));
+        AppTrustSectionsView view = new AppTrustSectionsView(
+                true, "nx_trust_section_version:published", "PRODUCTION", "", sections);
+        return successfulPublishedSnapshot(view, statuses);
     }
 
-    private ApiResult<AppTrustSectionsView> invalidPublishedTrustSnapshot() {
-        return ApiResult.fail(503, "TRUST_SECTION_PUBLISHED_SNAPSHOT_INVALID");
+    private String withheldFieldReason(String sectionKey, TrustSectionVersionView.Field field,
+                                       boolean unsupportedClaim, boolean missingAudit,
+                                       boolean unsupportedSubhero) {
+        if (unsupportedClaim) return "UNSUPPORTED_SECTION_CLAIM";
+        if (missingAudit) return "AUDIT_DOCUMENT_URL_MISSING";
+        if ("auditsReserves".equals(sectionKey) && field.key().startsWith("homepageProof.")) {
+            return "AUDIT_HOMEPAGE_PROOF";
+        }
+        if ("nexNarrative".equals(sectionKey) && "activeAiClients".equals(field.key())) {
+            return "AI_CLIENT_COUNT_UNSUPPORTED";
+        }
+        if ("nexNarrative".equals(sectionKey) && field.key().startsWith("subhero.")) {
+            if (UNSUPPORTED_NEX_SUBHERO_CLAIMS.contains(field.value())) return "SUBHERO_CLAIM_UNSUPPORTED";
+            if (unsupportedSubhero
+                    && InterfaceLanguages.isAdditional(field.key().substring("subhero.".length()))) {
+                return "SUBHERO_ADDITIONAL_LANGUAGE_UNSUPPORTED";
+            }
+        }
+        return null;
+    }
+
+    private List<TrustPublishedSnapshotView.SectionStatus> sandboxSectionStatuses(AppTrustSectionsView view) {
+        return view.sections().stream()
+                .map(section -> new TrustPublishedSnapshotView.SectionStatus(
+                        section.sectionKey(), section.version(), true, null,
+                        section.fields().stream()
+                                .map(field -> new TrustPublishedSnapshotView.FieldStatus(field.key(), false, null))
+                                .toList()))
+                .toList();
+    }
+
+    private PublishedBuild successfulPublishedSnapshot(AppTrustSectionsView view,
+                                                       List<TrustPublishedSnapshotView.SectionStatus> sections) {
+        return new PublishedBuild(ApiResult.ok(view),
+                new TrustPublishedSnapshotView(LocalDateTime.now(clock), true, null,
+                        view.source(), view.sourceEnvironment(), view.runId(), sections));
+    }
+
+    private PublishedBuild failedPublishedSnapshot(String reason, String environment, String runId) {
+        List<TrustPublishedSnapshotView.SectionStatus> sections = APP_PUBLISHED_TRUST_SECTION_KEYS.stream()
+                .map(key -> new TrustPublishedSnapshotView.SectionStatus(key, null, false, reason, List.of()))
+                .toList();
+        return new PublishedBuild(ApiResult.fail(503, reason),
+                new TrustPublishedSnapshotView(LocalDateTime.now(clock), false, reason,
+                        null, environment, runId, sections));
+    }
+
+    private PublishedBuild invalidPublishedSnapshot() {
+        return failedPublishedSnapshot("TRUST_SECTION_PUBLISHED_SNAPSHOT_INVALID", "PRODUCTION", "");
+    }
+
+    private record PublishedBuild(ApiResult<AppTrustSectionsView> publicResult,
+                                  TrustPublishedSnapshotView snapshot) {
     }
 
     @Transactional
