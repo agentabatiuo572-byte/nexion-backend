@@ -56,7 +56,7 @@ public class CregisDepositReconciliation {
             throw new IllegalStateException("CREGIS_PROVIDER_DISABLED");
         Long first = db.firstAddressSecond(network,config.getProjectId());
         // Continue a proven empty-pool baseline after payout activity, without requiring a deposit address.
-        if(first==null && network!=CregisNetwork.BEP20)
+        if(first==null && network!=CregisNetwork.BEP20 && config.getDepositConfirmations()>=15)
             first=db.completedReconcileWatermark(network,config.getProjectId());
         boolean bep20Bootstrap=first==null && network==CregisNetwork.BEP20 && config.networkConfigured(network);
         boolean bootstrap=bep20Bootstrap || first==null
