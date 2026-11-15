@@ -42,7 +42,7 @@ import org.springframework.util.StringUtils;
 
 @Repository
 public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
-    private static final Pattern FIRST_DECIMAL = Pattern.compile("[0-9]+(?:\\.[0-9]+)?");
+    private static final Pattern FIRST_DECIMAL = Pattern.compile("[0-9]+(?:,[0-9]{3})*(?:\\.[0-9]+)?");
     private static final TypeReference<List<String>> STRING_LIST = new TypeReference<>() {
     };
 
@@ -748,7 +748,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
             return BigDecimal.ZERO;
         }
         Matcher matcher = FIRST_DECIMAL.matcher(value.trim());
-        return matcher.find() ? new BigDecimal(matcher.group()) : BigDecimal.ZERO;
+        return matcher.find() ? new BigDecimal(matcher.group().replace(",", "")) : BigDecimal.ZERO;
     }
 
     private Integer firstInteger(String value) {
