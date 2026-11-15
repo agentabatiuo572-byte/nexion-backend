@@ -98,7 +98,6 @@ public class A2AccessPolicy {
                         || grants.contains(H5GrowthApproval.MAKER_AUTHORITY)
                         || grants.contains(H3GrowthApproval.MAKER_AUTHORITY)
                         || grants.contains(H4GrowthApproval.MAKER_AUTHORITY) || grants.contains(H4GrowthApproval.GUARD_AUTHORITY)
-                        || grants.contains("growth_h4_read")
                         || H7VoucherDisposition.canRecover(grants)
                         || (grants.contains(K2OtpInitialApproval.MAKER_AUTHORITY)
                             && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write")))
@@ -110,6 +109,23 @@ public class A2AccessPolicy {
                         || grants.contains("finprod_g4_emission_curve_write") || grants.contains("finprod_g4_airdrop_lock_days_write")
                         || grants.contains(G4CatalogApproval.PRICE_AUTHORITY)) return id;
             }
+        } catch (NumberFormatException ignored) { }
+        throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");
+    }
+
+    /**
+     * H4 page-read fallback for the original-key lookup only. Callers must still
+     * require the loaded ticket command to be H4 before returning it.
+     */
+    public long requireH4ProposalReader() {
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || !auth.isAuthenticated() || !(auth.getDetails() instanceof Map<?, ?> details)
+                || !"ADMIN".equals(details.get("subjectType")))
+            throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");
+        try {
+            long id = Long.parseLong(auth.getName());
+            if (roleResolver.isActiveAdministrator(id)
+                    && permissions.getPermissionCodes(id).contains("growth_h4_read")) return id;
         } catch (NumberFormatException ignored) { }
         throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");
     }

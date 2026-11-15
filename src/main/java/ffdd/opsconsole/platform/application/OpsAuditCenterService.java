@@ -162,7 +162,15 @@ public class OpsAuditCenterService {
 
     @Transactional(readOnly = true)
     public ApiResult<AuditOperationTicket> proposalByIdempotencyKey(String key) {
-        long actorId = accessPolicy.requireProposalReader();
+        long actorId;
+        boolean h4Only = false;
+        try {
+            actorId = accessPolicy.requireProposalReader();
+        } catch (BizException ex) {
+            if (ex.getCode() != 403) throw ex;
+            actorId = accessPolicy.requireH4ProposalReader();
+            h4Only = true;
+        }
         String operationId = auditLogService.findA2ProposalId(actorId, key);
         if (operationId == null) return ApiResult.fail(404, "A2_PROPOSAL_NOT_FOUND");
         AuditOperationTicketEntity ticket = ticketMapper.selectActiveByOperationId(operationId);
@@ -170,6 +178,9 @@ public class OpsAuditCenterService {
         AuditReplayCommand command = deserializeCommand(ticket.getCommandJson());
         if (!Long.valueOf(actorId).equals(ticketMakerId(ticket, command))) {
             return ApiResult.fail(409, "A2_MAKER_ID_UNVERIFIED");
+        }
+        if (h4Only && !H4GrowthApproval.supports(command)) {
+            return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
         }
         if (!canReadOwnProposal(ticket, command, actorId)) {
             return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
