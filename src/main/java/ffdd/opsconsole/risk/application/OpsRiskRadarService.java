@@ -497,14 +497,10 @@ public class OpsRiskRadarService {
             throw new BizException(400, "B5_SUBSCRIPTION_CHANNEL_REQUIRED");
         }
         if (email) {
-            throw new BizException(503, "B5_EMAIL_PROVIDER_UNAVAILABLE");
+            throw new BizException(409, "B5_EMAIL_PROVIDER_UNAVAILABLE");
         }
         if (webhook && (webhookUrl == null || !webhookUrl.startsWith("https://") || webhookUrl.length() > 500)) {
             throw new BizException(400, "B5_WEBHOOK_URL_INVALID");
-        }
-        if (webhook && !StringUtils.hasText(configFacade
-                .activeValue(B5RiskAlertDeliveryService.WEBHOOK_EGRESS_PROXY_KEY).orElse(""))) {
-            throw new BizException(503, "B5_WEBHOOK_EGRESS_PROXY_UNAVAILABLE");
         }
         if (webhook) {
             try {
@@ -531,6 +527,11 @@ public class OpsRiskRadarService {
     @Transactional
     ApiResult<Map<String, Object>> updateSubscriptionNew(
             String channels, String webhookUrl, long expectedVersion, String actor) {
+        // Checked after idempotency replay so a receipt created while the proxy was configured still replays.
+        if (channels.contains("webhook") && !StringUtils.hasText(configFacade
+                .activeValue(B5RiskAlertDeliveryService.WEBHOOK_EGRESS_PROXY_KEY).orElse(""))) {
+            throw new BizException(409, "B5_WEBHOOK_EGRESS_PROXY_UNAVAILABLE");
+        }
         long currentVersion = configVersion(SUBSCRIPTION_VERSION_KEY, true);
         if (expectedVersion != currentVersion) {
             throw new BizException(409, "B5_SUBSCRIPTION_VERSION_CONFLICT");
