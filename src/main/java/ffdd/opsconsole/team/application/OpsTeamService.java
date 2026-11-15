@@ -1618,7 +1618,7 @@ public class OpsTeamService implements AuditReplayable {
         String field = key.startsWith("F.unilevel.nex.") ? "nexPerUsd" : "usdtRate";
         if(layerNo==1&&"nexPerUsd".equals(field)&&sevenPolicy!=null&&sevenPolicy.sevenLayerActive(sevenPolicy.now())&&sevenPolicy.at(sevenPolicy.now()).schemaVersion()==2&&sevenPolicy.at(sevenPolicy.now()).purchase().enabled())return ApiResult.fail(409,"L1_LEGACY_NEX_READ_ONLY_DURING_SPLIT");
         Object businessValue = "usdtRate".equals(field)
-                ? percentRatio(value, BigDecimal.ZERO)
+                ? percentPointRatio(value, BigDecimal.ZERO)
                 : parseDecimal(value, BigDecimal.ZERO);
         String oldValue = unilevelRuleValue(commissionRepository, key);
         // A1 批1a 修复2:unilevel 版税费率上调放大佣金流出,B1 红线下阻断(usdtRate / nexPerUsd 上调 = 放大)。
@@ -1976,7 +1976,8 @@ public class OpsTeamService implements AuditReplayable {
                     return parseDecimal(newValue, BigDecimal.ZERO).compareTo(parseDecimal(oldValue, BigDecimal.ZERO)) > 0;
                 }
                 // usdtRate 百分比上调 = 版税费率放大
-                return percentRatio(newValue, BigDecimal.ZERO).compareTo(percentRatio(oldValue, BigDecimal.ZERO)) > 0;
+                return percentPointRatio(newValue, BigDecimal.ZERO)
+                        .compareTo(percentPointRatio(oldValue, BigDecimal.ZERO)) > 0;
             }
             return switch (key) {
                 case "F.cooldown" -> parseDecimal(newValue.replaceAll("[^0-9].*$", ""), BigDecimal.ZERO)
@@ -3693,6 +3694,15 @@ public class OpsTeamService implements AuditReplayable {
             }
             throw new IllegalArgumentException("Numeric value is invalid", ex);
         }
+    }
+
+    /** F2 unilevel UI is always percentage points; accept with/without '%' but never infer a ratio. */
+    private static BigDecimal percentPointRatio(String raw, BigDecimal fallback) {
+        if (!StringUtils.hasText(raw)) {
+            return BigDecimal.ZERO;
+        }
+        return parseDecimal(raw, fallback)
+                .divide(new BigDecimal("100"), 6, RoundingMode.HALF_UP);
     }
 
     private static BigDecimal percentRatio(String raw, BigDecimal fallback) {
