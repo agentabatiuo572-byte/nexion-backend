@@ -650,7 +650,14 @@ public class OpsI18nLearningService {
 
     @Transactional
     public ApiResult<LearningCourseView> updateCourseReward(String courseId, String idempotencyKey, LearningRewardUpdateRequest request) {
-        return updateCourseReward(courseId, idempotencyKey, request, null);
+        ApiResult<Void> guard = requireRewardUpdate(idempotencyKey, request);
+        if (guard != null) {
+            return fail(guard);
+        }
+        // The direct PATCH remains a separate command. Only the A2-approved
+        // updateApprovedCourseReward path, with its bound review and operationId,
+        // may write a course reward.
+        return ApiResult.fail(403, "LEARNING_COURSE_REWARD_APPROVAL_REQUIRED");
     }
 
     @Transactional(propagation = Propagation.MANDATORY)

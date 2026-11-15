@@ -6,7 +6,7 @@ import ffdd.opsconsole.content.application.SupportOwnershipService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
-import java.time.ZoneOffset;
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -246,7 +246,8 @@ public class OpsDeveloperAccessService {
     }
 
     private String instant(java.time.LocalDateTime value) {
-        return value == null ? null : value.atOffset(ZoneOffset.UTC).toInstant().toString();
+        return value == null ? null
+                : value.atZone(BusinessCalendar.STORAGE_ZONE).toInstant().toString();
     }
 
     private String text(String value) {
