@@ -98,6 +98,7 @@ public class A2AccessPolicy {
                         || grants.contains(H5GrowthApproval.MAKER_AUTHORITY)
                         || grants.contains(H3GrowthApproval.MAKER_AUTHORITY)
                         || grants.contains(H4GrowthApproval.MAKER_AUTHORITY) || grants.contains(H4GrowthApproval.GUARD_AUTHORITY)
+                        || grants.contains("growth_h4_read")
                         || H7VoucherDisposition.canRecover(grants)
                         || (grants.contains(K2OtpInitialApproval.MAKER_AUTHORITY)
                             && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write")))
@@ -241,8 +242,11 @@ public class A2AccessPolicy {
         }
         if (command.params() == null) return false;
         Object makerId = command.params().get("makerAdminId");
+        boolean authorityGranted = permissions.getPermissionCodes(actorId).contains(authority)
+                || (H4GrowthApproval.supports(command)
+                    && permissions.getPermissionCodes(actorId).contains("growth_h4_read"));
         return makerId instanceof Number && Long.toString(actorId).equals(makerId.toString())
-                && permissions.getPermissionCodes(actorId).contains(authority);
+                && authorityGranted;
     }
 
     private static boolean canReadOwnCourseRewardProposal(Set<String> grants) {

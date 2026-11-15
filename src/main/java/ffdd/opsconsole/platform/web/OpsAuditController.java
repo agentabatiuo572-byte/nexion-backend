@@ -165,7 +165,7 @@ public class OpsAuditController {
 
     @GetMapping("/operations/proposals/by-idempotency-key")
     @PreAuthorize("hasAnyAuthority('platform_a2_read','platform_a2_proposal_create','platform_a4_write','growth_h7_write','overview_b1_redline_write','overview_b5_threshold_write',"
-            + "'device_e2_write','growth_h8_write','growth_h5_write','growth_h3_write','growth_h4_write','growth_h4_wheel_pool_write','network_f1_write','network_f3_write','network_f4_pool_fund','finprod_g3_curve_target_price_write',"
+            + "'device_e2_write','growth_h8_write','growth_h5_write','growth_h3_write','growth_h4_write','growth_h4_read','growth_h4_wheel_pool_write','network_f1_write','network_f3_write','network_f4_pool_fund','finprod_g3_curve_target_price_write',"
             + "'finprod_g3_curve_pump_prob_write','finprod_g3_override_price_write','finprod_g3_write','finprod_g4_dividend_rate_write','finprod_g4_write','finprod_g4_price_write',"
             + "'finprod_g4_royalty_write','finprod_g4_airdrop_pct_write','finprod_g4_emission_curve_write','finprod_g4_airdrop_lock_days_write')"
             + " || (hasAuthority('content_i7_write') && hasAuthority('content_i7_course_reward_adjust'))"
