@@ -82,8 +82,8 @@ public interface A4OutboxDiagnosticsMapper extends BaseMapper<EventOutboxEntity>
             + "'F4_ALERT_ENVELOPE_INVALID','F4_ALERT_PAYLOAD_INVALID','F4_ALERT_AUDIT_NOT_UNIQUE',"
             + "'F4_ALERT_AUDIT_CONFLICT','F4_ALERT_AUDIT_ALREADY_CLAIMED','F4_ALERT_RECEIPT_FAILED',"
             + "'F4_ALERT_RECEIPT_CONFLICT','F4_ALERT_PUBLICATION_FAILED','F4_ALERT_VERIFICATION_UNAVAILABLE') THEN o.last_error ELSE 'OTHER_ERROR' END AS errorCode, "
-            + H3_USER_ID + " AS userId, "
-            + UNRESOLVED + " AS auditLinkUnresolved FROM nx_event_outbox o WHERE " + BACKLOG
+            + UNRESOLVED + " AS auditLinkUnresolved, "
+            + H3_USER_ID + " AS userId FROM nx_event_outbox o WHERE " + BACKLOG
             + " AND o.id &gt; #{afterId}"
             + "<if test='eventType != null'><choose><when test='eventType == &quot;UNREGISTERED_EVENT_TYPE&quot;'> AND "
             + SAFE_TYPE + " = 'UNREGISTERED_EVENT_TYPE'</when><otherwise> AND o.event_type = #{eventType} AND BINARY o.event_type = BINARY #{eventType}</otherwise></choose></if>"
