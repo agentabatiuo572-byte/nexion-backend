@@ -59,6 +59,12 @@ public class OpsGrowthController {
         return publicStatsService.overview();
     }
 
+    @GetMapping("/public-stats/app-display")
+    @PreAuthorize("hasAuthority('growth_h9_read')")
+    public ApiResult<Map<String, Object>> publicStatsAppDisplay() {
+        return publicStatsService.appDisplay();
+    }
+
     @PatchMapping("/public-stats")
     @PreAuthorize("hasAuthority('growth_h9_write')")
     public ApiResult<Map<String, Object>> updatePublicStats(

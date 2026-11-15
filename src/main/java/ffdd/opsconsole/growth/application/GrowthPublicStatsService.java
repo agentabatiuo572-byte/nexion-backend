@@ -134,10 +134,59 @@ public class GrowthPublicStatsService {
         return ApiResult.ok(projection);
     }
 
+    /**
+     * Management-only snapshot of the same App display sources. It reads the H9 aggregate once,
+     * the shared HomeDisplay batch once, and uses the same registration/online formulas as the public
+     * App projection. It does not change the public projection, write path, permissions or cache rules.
+     */
+    public ApiResult<Map<String, Object>> appDisplay() {
+        String runtimeError = runtimeError();
+        if (runtimeError != null) {
+            return ApiResult.fail(503, runtimeError);
+        }
+        RuntimeScope scope = runtimeScope();
+        ApiResult<Map<String, Object>> result = overview(scope);
+        if (result.getCode() != 0) {
+            return result;
+        }
+        Map<String, Object> data = result.getData();
+        Map<?, ?> values = (Map<?, ?>) data.get("values");
+        Map<String, Object> batch = homeDisplayBatch(scope);
+        long sampleNow = batch == null ? clock.millis() : longValue(batch.get("serverNow"));
+        Long registeredUsers = estimatedMembers(values, sampleNow);
+        Map<String, Object> display = homeDisplayAt(batch);
+        List<Map<String, Object>> unavailable = new ArrayList<>();
+        unavailable.add(Map.of("field", "activeJobsDisplay",
+                "reason", "NO_SERVER_PUBLIC_ACTIVE_JOBS_PROJECTION"));
+        unavailable.add(Map.of("field", "centers[].onlineNodes",
+                "reason", "APP_CLIENT_SIMULATION_NOT_SERVER_AUTHORITATIVE"));
+        if (registeredUsers == null) {
+            unavailable.add(Map.of("field", "registeredUsers",
+                    "reason", "H9_MEMBER_ESTIMATE_UNAVAILABLE"));
+        }
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("source", scope.sandbox()
+                ? "sandbox:h9-public-stats" : "server:home-display+public-stats");
+        response.put("sourceEnvironment", scope.sandbox() ? "SANDBOX" : "PRODUCTION");
+        response.put("version", data.get("version"));
+        response.put("capturedAt", Instant.ofEpochMilli(sampleNow).toString());
+        response.put("available", display != null);
+        response.put("reason", display != null ? null : scope.sandbox()
+                ? "HOME_DISPLAY_SANDBOX_UNAVAILABLE" : "HOME_DISPLAY_SNAPSHOT_UNAVAILABLE");
+        response.put("homeDisplay", display);
+        response.put("registeredUsers", registeredUsers);
+        response.put("activeJobsBase", values.get("activeJobsBase"));
+        response.put("activeJobsActual", null);
+        response.put("globeDisplay", values.get("globeDisplay"));
+        response.put("centerNodes", null);
+        response.put("unavailable", unavailable);
+        return ApiResult.ok(response);
+    }
+
     private Map<String, Object> networkPulse(RuntimeScope scope, Map<String, Object> overview) {
         Map<String, Object> pulse = new LinkedHashMap<>();
         Map<?, ?> values = (Map<?, ?>) overview.get("values");
-        pulse.put("registeredUsers", hasMemberTick(values) ? tickedMembers(values) : compoundedMembers(values));
+        pulse.put("registeredUsers", estimatedMembers(values, clock.millis()));
         pulse.put("onlineDevices", null);
         if (!scope.sandbox() && homeDisplay.isPresent()) {
             try {
@@ -153,9 +202,46 @@ public class GrowthPublicStatsService {
         return pulse;
     }
 
+    private Map<String, Object> homeDisplayBatch(RuntimeScope scope) {
+        if (scope.sandbox() || homeDisplay.isEmpty()) return null;
+        try {
+            return homeDisplay.get().current();
+        } catch (RuntimeException ex) {
+            log.warn("Home display snapshot unavailable for app-display/network pulse", ex);
+            return null;
+        }
+    }
+
+    private Map<String, Object> homeDisplayAt(Map<String, Object> batch) {
+        if (batch == null) return null;
+        long serverNow = longValue(batch.get("serverNow"));
+        long startAt = longValue(batch.get("startAt"));
+        long validUntil = longValue(batch.get("validUntil"));
+        long[] online = (long[]) batch.get("online");
+        long[] paidCents = (long[]) batch.get("paidCents");
+        if (serverNow >= validUntil || online.length == 0 || paidCents.length != online.length) return null;
+        boolean enabled = Boolean.TRUE.equals(batch.get("enabled"));
+        int index = enabled ? (int) Math.max(0L, (serverNow - startAt) / 1000) : 0;
+        if (index < 0 || index >= online.length) return null;
+        Map<String, Object> display = new LinkedHashMap<>();
+        display.put("enabled", enabled);
+        display.put("startAt", startAt);
+        display.put("serverNow", serverNow);
+        display.put("validUntil", validUntil);
+        display.put("sequence", longValue(batch.get("sequence")));
+        display.put("onlineDevices", online[index]);
+        display.put("paidCents", paidCents[index]);
+        display.put("paid", BigDecimal.valueOf(paidCents[index], 2));
+        return display;
+    }
+
     /** Legacy model kept for aggregates saved before ticking existed: base compounded monthly from the anchor. */
     private Long compoundedMembers(Map<?, ?> values) {
-        double months = Math.max(0, (clock.millis() - longValue(values.get("registeredUsersAnchorAt")))
+        return compoundedMembers(values, clock.millis());
+    }
+
+    private Long compoundedMembers(Map<?, ?> values, long nowMs) {
+        double months = Math.max(0, (nowMs - longValue(values.get("registeredUsersAnchorAt")))
                 / (30d * 24 * 3_600_000));
         double registered = longValue(values.get("registeredUsersBase")) * Math.pow(
                 1 + decimalValue(values.get("registeredUsersMonthlyGrowthPct")).doubleValue() / 100, months);
@@ -190,9 +276,17 @@ public class GrowthPublicStatsService {
     }
 
     private Long tickedMembers(Map<?, ?> values) {
+        return tickedMembers(values, clock.millis());
+    }
+
+    private Long tickedMembers(Map<?, ?> values, long nowMs) {
         return tickedMembers(longValue(values.get("registeredUsersBase")), longValue(values.get("registeredUsersAnchorAt")),
                 longValue(values.get(TICK_INTERVAL)), longValue(values.get(TICK_STEP_MIN)),
-                longValue(values.get(TICK_STEP_MAX)), clock.millis());
+                longValue(values.get(TICK_STEP_MAX)), nowMs);
+    }
+
+    private Long estimatedMembers(Map<?, ?> values, long nowMs) {
+        return hasMemberTick(values) ? tickedMembers(values, nowMs) : compoundedMembers(values, nowMs);
     }
 
     private static boolean hasMemberTick(Map<?, ?> values) {
