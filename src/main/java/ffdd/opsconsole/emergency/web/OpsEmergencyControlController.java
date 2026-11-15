@@ -40,6 +40,12 @@ public class OpsEmergencyControlController {
         return emergencyControlService.geoBlockOverview();
     }
 
+    @GetMapping("/geo-block/hit-summary")
+    @PreAuthorize("hasAuthority('emergency_j2_read')")
+    public ApiResult<Map<String, Object>> geoBlockHitSummary() {
+        return emergencyControlService.geoBlockHitSummary();
+    }
+
     @GetMapping("/geo-block/alerts")
     @PreAuthorize("hasAuthority('emergency_j2_read') and @superAdminAuthorization.isSuperAdmin(authentication)")
     public ApiResult<Map<String, Object>> geoBlockAlerts() {

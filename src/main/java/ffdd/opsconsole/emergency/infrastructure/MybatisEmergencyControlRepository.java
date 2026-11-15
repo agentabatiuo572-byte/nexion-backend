@@ -150,6 +150,11 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
     }
 
     @Override
+    public Map<String, Object> geoHitSummary() {
+        return mapper.geoHitSummary();
+    }
+
+    @Override
     public Map<String, Integer> geoEndpointHits() {
         return mapper.geoEndpointHits().stream()
                 .filter(row -> row.get("endpointKey") != null)

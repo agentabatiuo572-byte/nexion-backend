@@ -60,6 +60,10 @@ public interface EmergencyControlRepository {
 
     List<Map<String, Object>> geoHits();
 
+    default Map<String, Object> geoHitSummary() {
+        throw new UnsupportedOperationException("GEO_HIT_SUMMARY_UNAVAILABLE");
+    }
+
     Map<String, Integer> geoEndpointHits();
 
     List<Map<String, Object>> geoEdgeMetrics();
