@@ -319,7 +319,9 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
                     "overview_b1_redline_write", "overview_b5_threshold_write", "device_e2_write",
                     "network_f1_write", "network_f3_write", "network_f4_pool_fund", "growth_h8_write", "growth_h5_write", "growth_h3_write", "growth_h4_write", "growth_h4_wheel_pool_write", "finprod_g3_curve_target_price_write",
                     "finprod_g3_curve_pump_prob_write", "finprod_g3_override_price_write", "finprod_g3_write",
-                    "finprod_g4_dividend_rate_write", "finprod_g4_write", "finprod_g4_price_write");
+                    "finprod_g4_dividend_rate_write", "finprod_g4_write", "finprod_g4_price_write",
+                    "finprod_g4_royalty_write", "finprod_g4_airdrop_pct_write",
+                    "finprod_g4_emission_curve_write", "finprod_g4_airdrop_lock_days_write");
         }
         if (read && path.equals("/api/admin/platform/audit/operations/proposals/by-idempotency-key")) {
             // Method security and the DB policy limit legacy writers to their own C2/C5 revocation command.
