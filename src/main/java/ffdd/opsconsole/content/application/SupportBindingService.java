@@ -196,6 +196,13 @@ public class SupportBindingService {
                 throw new BizException(409,"SUPPORT_BINDING_VERSION_CONFLICT");
             previous.put(c.id(),old);
         }
+        boolean hasNewAssignment = customers.stream().anyMatch(c -> {
+            var old = previous.get(c.id());
+            return old == null || !old.agentAdminId().equals(r.targetAgentAdminId());
+        });
+        if (hasNewAssignment && Integer.valueOf(1).equals(mapper.targetBusyForUpdate(r.targetAgentAdminId()))) {
+            throw new BizException(422, "SUPPORT_AGENT_UNAVAILABLE");
+        }
         List<SupportAssignment> result=new ArrayList<>();
         for(var c:customers) {
             var old=previous.get(c.id());

@@ -183,6 +183,10 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
 
     @Select("<script>SELECT COUNT(DISTINCT a.id) " + ELIGIBLE_AGENT_FROM + " AND a.id=#{id} FOR SHARE</script>")
     int eligibleAgent(Long id);
+
+    /** Read the existing pause switch under the same profile share lock already taken by eligibleAgent. */
+    @Select("SELECT p.busy FROM nx_support_agent_profile p WHERE p.admin_id=#{id} AND p.is_deleted=0 FOR SHARE")
+    Integer targetBusyForUpdate(@Param("id") Long id);
     @Select("<script>SELECT COUNT(DISTINCT a.id) " + ELIGIBLE_AGENT_BASE_FROM + SupportGroupMapper.UNIQUE_QUALIFICATION_SNAPSHOT + " AND a.id=#{id}</script>")
     int eligibleAgentSnapshot(Long id);
 
