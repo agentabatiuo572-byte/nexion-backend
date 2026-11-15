@@ -2,6 +2,7 @@ package ffdd.opsconsole.finance.hdpay;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ffdd.opsconsole.finance.application.FinanceSensitiveDataCipher;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.net.InetSocketAddress;
@@ -32,6 +33,8 @@ public final class HttpHdPayGateway implements HdPayGateway {
     private final HdPayProperties properties;
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
+    @Autowired
+    private FinanceSensitiveDataCipher diagnosticCipher;
 
     private enum PublicReasonDisposition {
         NOT_APPLICABLE, MISSING, NON_TEXT, EMPTY, FILTERED, PRIVATE_ECHO, SAFE
@@ -126,6 +129,9 @@ public final class HttpHdPayGateway implements HdPayGateway {
                 reason = "ACCEPTED";
                 return new PayPage(page);
             } finally {
+                if (!"ACCEPTED".equals(reason)) {
+                    recordFailureDiagnostic("create", requestBody, response, root);
+                }
                 log.info("HDPay pay-in create response orderRef={} httpStatus={} providerCode={} codeType={} rootType={} dataType={} msgType={} bodySha256={} reason={} publicReasonDisposition={}",
                         "sha256:" + sha256(requestBody.get("merchantOrderId").toString()
                                 .getBytes(StandardCharsets.UTF_8)).substring(0, 16),
@@ -204,6 +210,30 @@ public final class HttpHdPayGateway implements HdPayGateway {
         catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
     }
 
+    private void recordFailureDiagnostic(String operation, Map<String, Object> request,
+            HttpResponse<byte[]> response, JsonNode root) {
+        String orderRef = "sha256:" + sha256(request.get("merchantOrderId").toString()
+                .getBytes(StandardCharsets.UTF_8)).substring(0, 16);
+        String bodyHash = sha256(response.body());
+        String associatedData = "hdpay-rejection|" + operation + "|" + orderRef + "|" + bodyHash;
+        try {
+            JsonNode parsed = root == null ? objectMapper.readTree(response.body()) : root;
+            JsonNode message = parsed == null ? null : parsed.get("msg");
+            if (message == null || !message.isTextual() || message.textValue().isBlank()) return;
+            String value = message.textValue();
+            boolean truncated = value.length() > 4096;
+            String encrypted = diagnosticCipher.encrypt(
+                    truncated ? value.substring(0, 4096) : value, associatedData);
+            log.info("HDPay rejection diagnostic operation={} orderRef={} httpStatus={} providerCode={} bodySha256={} messageLength={} truncated={} encryptedMessage={}",
+                    operation, orderRef, response.statusCode(), safeProviderCode(parsed), bodyHash,
+                    value.length(), truncated, encrypted);
+        } catch (Exception unavailable) {
+            // Diagnostic storage must not replace the provider's actual payment outcome.
+            log.warn("HDPay rejection diagnostic UNAVAILABLE operation={} orderRef={} bodySha256={}",
+                    operation, orderRef, bodyHash);
+        }
+    }
+
     @Override
     public PayOrder queryPayOrder(String merchantOrderId) {
         if (!properties.ready()) throw new HdPayGatewayException("HDPAY_CONFIGURATION_INCOMPLETE", false);
@@ -273,12 +303,14 @@ public final class HttpHdPayGateway implements HdPayGateway {
                 .build();
         HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            recordFailureDiagnostic("query", requestBody, response, null);
             throw new HdPayGatewayException("HDPAY_HTTP_" + response.statusCode(), false);
         }
         JsonNode root = objectMapper.readTree(response.body());
         JsonNode code = root == null ? null : root.get("code");
         if (code == null || !((code.isIntegralNumber() && code.canConvertToInt() && code.intValue() == 200)
                 || (code.isTextual() && "200".equals(code.textValue())))) {
+            recordFailureDiagnostic("query", requestBody, response, root);
             throw new HdPayGatewayException("HDPAY_QUERY_REJECTED", false);
         }
         return root;
