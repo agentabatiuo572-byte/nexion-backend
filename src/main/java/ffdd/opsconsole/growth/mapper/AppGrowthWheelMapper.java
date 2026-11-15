@@ -95,10 +95,13 @@ public interface AppGrowthWheelMapper {
             @Param("eventCode") String eventCode,
             @Param("spinDate") LocalDate spinDate);
 
+    // Legacy seed rows still use reward_kind='nex'. The published App accepts only UVT/USDT/coupon/points,
+    // so normalize this one asset alias in the read projection; never rewrite stored history.
     @Select("""
             SELECT id tierId,tier_name tierName,reward_name rewardName,
                    probability_pct probabilityPct,real_outflow realOutflow,
-                   LOWER(reward_kind) rewardKind,reward_amount rewardAmount,
+                   CASE WHEN LOWER(reward_kind)='nex' THEN 'uvt' ELSE LOWER(reward_kind) END rewardKind,
+                   reward_amount rewardAmount,
                    voucher_id voucherId,daily_stock dailyStock
               FROM nx_growth_wheel_tier
              WHERE status=1 AND is_deleted=0
@@ -109,7 +112,8 @@ public interface AppGrowthWheelMapper {
     @Select("""
             SELECT id tierId,tier_name tierName,reward_name rewardName,
                    probability_pct probabilityPct,real_outflow realOutflow,
-                   LOWER(reward_kind) rewardKind,reward_amount rewardAmount,
+                   CASE WHEN LOWER(reward_kind)='nex' THEN 'uvt' ELSE LOWER(reward_kind) END rewardKind,
+                   reward_amount rewardAmount,
                    voucher_id voucherId,daily_stock dailyStock
               FROM nx_growth_wheel_tier
              WHERE status=1 AND is_deleted=0
@@ -119,7 +123,8 @@ public interface AppGrowthWheelMapper {
 
     @Select("""
             SELECT spin_no spinId,spin_date spinDate,source_type sourceType,
-                   tier_id tierId,tier_name tierName,UPPER(reward_kind) rewardType,
+                   tier_id tierId,tier_name tierName,
+                   CASE WHEN LOWER(reward_kind)='nex' THEN 'UVT' ELSE UPPER(reward_kind) END rewardType,
                    reward_amount rewardAmount,tier_name rewardName,
                     downgraded,downgrade_reason downgradeReason,
                     DATE_FORMAT(created_at,'%Y-%m-%dT%H:%i:%s+08:00') awardedAt
