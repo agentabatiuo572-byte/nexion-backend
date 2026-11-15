@@ -1,6 +1,8 @@
 package ffdd.opsconsole.team.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -52,7 +54,17 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
                                                    @Param("limit") int limit);
 
     record AssignmentMemberRow(Long ownerUserId, Long memberUserId, String leg,
-                               String assignedBy, LocalDateTime assignedAt, String assignmentSource) { }
+                               String assignedBy, LocalDateTime assignedAt, String assignmentSource) {
+        /**
+         * The DB stores DATETIME in the fixed Asia/Shanghai storage contract; expose
+         * the same value as an offset-bearing instant while keeping assignedAt intact.
+         */
+        @JsonProperty("assignedAtIso")
+        public String assignedAtIso() {
+            return assignedAt == null ? null
+                    : assignedAt.atZone(BusinessCalendar.STORAGE_ZONE).toOffsetDateTime().toString();
+        }
+    }
     @Select("SELECT sandbox FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
     Integer userSandbox(@Param("userId") Long userId);
 
