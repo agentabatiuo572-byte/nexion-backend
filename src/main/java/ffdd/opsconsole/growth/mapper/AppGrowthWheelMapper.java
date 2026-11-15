@@ -152,6 +152,20 @@ public interface AppGrowthWheelMapper {
             """)
     int currentTierDailyAwards(@Param("spinDate") LocalDate spinDate, @Param("tierId") Long tierId);
 
+    @Select("""
+            SELECT COUNT(1) FROM nx_growth_wheel_spin
+             WHERE spin_date=#{spinDate} AND is_deleted=0
+            """)
+    long countDailySpins(@Param("spinDate") LocalDate spinDate);
+
+    @Select("""
+            SELECT tier_id tierId, COUNT(1) usedToday
+              FROM nx_growth_wheel_spin
+             WHERE spin_date=#{spinDate} AND is_deleted=0
+             GROUP BY tier_id
+            """)
+    List<TierDailyUsage> currentDailyTierUsage(@Param("spinDate") LocalDate spinDate);
+
     @Insert("""
             INSERT IGNORE INTO nx_growth_wheel_spin
               (spin_no,event_id,event_code,user_id,spin_date,source_type,source_id,
@@ -248,6 +262,8 @@ public interface AppGrowthWheelMapper {
             String voucherId,
             Integer dailyStock) {
     }
+
+    record TierDailyUsage(Long tierId, long usedToday) { }
 
     record Attribution(String phase, Integer accountAgeMonths, String cohort) {
     }

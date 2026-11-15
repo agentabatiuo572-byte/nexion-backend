@@ -2,6 +2,7 @@ package ffdd.opsconsole.developer.application;
 
 import ffdd.opsconsole.developer.dto.OpsDeveloperAccessPage;
 import ffdd.opsconsole.developer.mapper.OpsDeveloperAccessMapper;
+import ffdd.opsconsole.content.application.SupportOwnershipService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -9,6 +10,7 @@ import java.time.ZoneOffset;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -32,6 +34,7 @@ public class OpsDeveloperAccessService {
 
     private final OpsDeveloperAccessMapper mapper;
     private final AuditLogService auditLogService;
+    private final SupportOwnershipService supportOwnership;
 
     public ApiResult<OpsDeveloperAccessPage> page(Integer pageNum, Integer pageSize,
                                                   String status, String keyword,
@@ -64,6 +67,7 @@ public class OpsDeveloperAccessService {
         List<Map<String, Object>> records = mapper.page(normalizedStatus, normalizedKeyword, normalizedEnvironment,
                         ascending, (int) offset, normalizedSize)
                 .stream().map(this::view).toList();
+        attachUserNumbers(records);
         Map<String, Long> statusCounts = new LinkedHashMap<>();
         STATUS_ORDER.forEach(value -> statusCounts.put(value, 0L));
         mapper.countByStatus(normalizedKeyword, normalizedEnvironment).forEach(row -> {
@@ -214,6 +218,31 @@ public class OpsDeveloperAccessService {
         result.put("updatedAt", instant(row.updatedAt()));
         result.put("source", "server");
         return result;
+    }
+
+    private void attachUserNumbers(List<Map<String, Object>> records) {
+        if (!SupportOwnershipService.hasAuthority("user_c1hub_read")) {
+            records.forEach(record -> record.put("userNo", null));
+            return;
+        }
+        List<Long> userIds = records.stream()
+                .map(record -> record.get("userId"))
+                .filter(Long.class::isInstance)
+                .map(Long.class::cast)
+                .distinct()
+                .toList();
+        if (userIds.isEmpty()) return;
+        Map<Long, String> numbers = new HashMap<>();
+        mapper.userNos(userIds).forEach(row -> numbers.put(row.userId(), row.userNo()));
+        Set<Long> readable = supportOwnership.currentSupportReader()
+                ? supportOwnership.readableCustomerIds(userIds)
+                : null;
+        for (Map<String, Object> record : records) {
+            Object value = record.get("userId");
+            Long userId = value instanceof Long ? (Long) value : null;
+            String userNo = userId == null ? null : numbers.get(userId);
+            record.put("userNo", readable == null || (userId != null && readable.contains(userId)) ? userNo : null);
+        }
     }
 
     private String instant(java.time.LocalDateTime value) {

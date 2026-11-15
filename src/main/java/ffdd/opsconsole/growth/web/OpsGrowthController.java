@@ -8,6 +8,7 @@ import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.growth.application.OpsGrowthService;
 import ffdd.opsconsole.growth.application.OpsGrowthCommandBoundary;
 import ffdd.opsconsole.growth.application.GrowthPublicStatsService;
+import ffdd.opsconsole.growth.application.WheelDailyUsageService;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthPowerUpUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
@@ -44,6 +45,7 @@ public class OpsGrowthController {
     private final OpsGrowthService growthService;
     private final OpsGrowthCommandBoundary commandBoundary;
     private final GrowthPublicStatsService publicStatsService;
+    private final WheelDailyUsageService wheelDailyUsageService;
 
     @GetMapping("/quest-events/weekly-region-policy")
     @PreAuthorize("hasAuthority('growth_h3_read')")
@@ -154,6 +156,12 @@ public class OpsGrowthController {
     @PreAuthorize("hasAuthority('growth_h4_read')")
     public ApiResult<Map<String, Object>> questEventOverview() {
         return growthService.questEventOverview();
+    }
+
+    @GetMapping("/quest-events/wheel-daily-usage")
+    @PreAuthorize("hasAuthority('growth_h4_read')")
+    public ApiResult<Map<String, Object>> wheelDailyUsage() {
+        return wheelDailyUsageService.current();
     }
 
     @PatchMapping("/quest-events/config/{configKey}")
