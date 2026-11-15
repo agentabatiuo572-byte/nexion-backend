@@ -18,6 +18,7 @@ import ffdd.opsconsole.market.application.G3MarketApproval;
 import ffdd.opsconsole.market.application.G4CatalogApproval;
 import ffdd.opsconsole.market.application.G4DividendApproval;
 import ffdd.opsconsole.market.application.G4ParamApproval;
+import ffdd.opsconsole.team.application.F5CommissionService;
 import ffdd.opsconsole.team.application.TeamFundApproval;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -1746,10 +1747,11 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     private List<String> canonicalF5Kinds(Object raw) {
-        if (!(raw instanceof List<?> values) || values.isEmpty() || values.size() > 6) return List.of();
+        if (!(raw instanceof List<?> values) || values.isEmpty()
+                || values.size() > F5CommissionService.KINDS.size()) return List.of();
         List<String> kinds = values.stream().map(this::text).map(value -> value.toLowerCase(Locale.ROOT)).toList();
         List<String> canonical = kinds.stream().sorted().distinct().toList();
-        Set<String> allowed = Set.of("network", "binary", "peer", "cultivation", "leadership", "genesis");
+        Set<String> allowed = F5CommissionService.KINDS;
         return kinds.equals(canonical) && canonical.stream().allMatch(allowed::contains) ? canonical : List.of();
     }
 
