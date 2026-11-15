@@ -225,6 +225,12 @@ public class OpsAuditCenterService {
                 .count();
     }
 
+    /** A1 pending count by canonical command, not action text or the normalized source-domain letter. */
+    public int pendingA1OperationCount() {
+        ensureSeedData();
+        return ticketMapper.countPendingA1Commands();
+    }
+
     public ApiResult<AuditOperationTicket> approve(
             String idempotencyKey, String operationId, AuditOperationDecisionRequest request) {
         return idempotentTicket("APPROVE:" + operationId, idempotencyKey, request,

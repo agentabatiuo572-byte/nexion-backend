@@ -827,7 +827,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     }
 
     private int pendingA1OperationTickets() {
-        return auditCenterService.pendingOperationCountByActionMarker("(A1)");
+        return auditCenterService.pendingA1OperationCount();
     }
 
     /**

@@ -81,7 +81,8 @@ public class OpsExchangeController {
     }
 
     @GetMapping("/queue/process")
-    @PreAuthorize("hasAuthority('finprod_g2_write')")
+    // Exact receipt recovery is a read: the service still requires the authenticated owner.
+    @PreAuthorize("hasAuthority('finprod_g2_read')")
     public ApiResult<Map<String,Object>> queueBatchReceipt(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             Authentication authentication) {
