@@ -35,7 +35,11 @@ public class MybatisPlatformSystemHealthProvider implements PlatformSystemHealth
         long unresolved = number(result.getOrDefault("audit_link_unresolved", 0));
         String tone = backlog > 1000 || oldest > 3600 ? "bad" : backlog > 100 || oldest > 300 ? "warn" : "ok";
         return new HealthMetric(unresolved > 0 ? "bad" : tone, backlog + " 条 · 最久 " + oldest + " 秒"
-                + (unresolved > 0 ? " · " + unresolved + " 条画像事件缺少审计关联，待核验" : ""));
+                + (unresolved > 0 ? " · " + unresolved + " 条画像事件缺少审计关联，待核验" : ""),
+                Map.of(
+                        "backlogCount", backlog,
+                        "oldestSeconds", oldest,
+                        "auditLinkUnresolvedCount", unresolved));
     }
 
     private HealthMetric ledgerRead() {
@@ -70,7 +74,9 @@ public class MybatisPlatformSystemHealthProvider implements PlatformSystemHealth
     private Map<String, Object> probe(String name, String source, Supplier<HealthMetric> supplier) {
         try {
             HealthMetric metric = supplier.get();
-            return row(name, metric.tone(), metric.metric(), source, false);
+            Map<String, Object> row = row(name, metric.tone(), metric.metric(), source, false);
+            row.putAll(metric.details());
+            return row;
         } catch (RuntimeException ex) {
             return row(name, "bad", "读取失败 · 不推测正常状态", source, true);
         }
@@ -91,6 +97,9 @@ public class MybatisPlatformSystemHealthProvider implements PlatformSystemHealth
         return value instanceof Number number ? number.longValue() : Long.parseLong(String.valueOf(value));
     }
 
-    private record HealthMetric(String tone, String metric) {
+    private record HealthMetric(String tone, String metric, Map<String, Object> details) {
+        HealthMetric(String tone, String metric) {
+            this(tone, metric, Map.of());
+        }
     }
 }
