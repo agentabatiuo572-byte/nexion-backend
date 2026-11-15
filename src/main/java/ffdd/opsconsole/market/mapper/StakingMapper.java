@@ -257,12 +257,16 @@ public interface StakingMapper extends BaseMapper<StakingProductEntity> {
     int updateRepurchasePresetAmounts(@Param("productCodes") List<String> productCodes, @Param("presetAmounts") String presetAmounts);
 
     @Select("""
+            <script>
             SELECT COALESCE(SUM(estimated_interest_usdt), 0)
               FROM nx_staking_position
              WHERE is_deleted = 0
                AND UPPER(status) IN ('ACTIVE', 'MATURE_UNCLAIMED')
+               AND UPPER(product_code) IN
+               <foreach collection='productCodes' item='productCode' open='(' separator=',' close=')'>UPPER(#{productCode})</foreach>
+            </script>
             """)
-    BigDecimal sumEstimatedInterestUsdt();
+    BigDecimal sumEstimatedInterestUsdt(@Param("productCodes") List<String> productCodes);
 
     @Select("""
             <script>
