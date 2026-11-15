@@ -42,7 +42,7 @@ public class H4EventRuleService {
     private Map<String,Object> deletionSnapshot(String code, boolean lock) {
         return db.row("""
             SELECT q.*,r.revision rule_revision,r.enabled rule_enabled,r.activated_at rule_activated_at,
-                   r.starts_at rule_starts_at,r.ends_at rule_ends_at
+                   r.starts_at rule_starts_at,r.ends_at rule_ends_at,r.kind rule_kind
             FROM nx_event_quest q LEFT JOIN nx_growth_event_rule r ON r.event_code=q.quest_code
             WHERE q.quest_code=?
             """+(lock?" FOR UPDATE":""),code);
@@ -63,12 +63,13 @@ public class H4EventRuleService {
         String state=number(snapshot.get("status")).intValue()==2?"ended":!published?"draft":end!=null&&!now.isBefore(end)?"ended":start!=null&&now.isBefore(start)?"upcoming":"ongoing";
         String version;
         var versionFields=new TreeMap<String,String>();
-        snapshot.forEach((key,value)->versionFields.put(key,String.valueOf(value)));
+        snapshot.forEach((key,value)->{if(!"rule_kind".equals(key))versionFields.put(key,String.valueOf(value));});
         try {
             version=HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
                     .digest(encode(versionFields).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
         } catch(java.security.NoSuchAlgorithmException ex){throw new IllegalStateException(ex);}
-        return Map.of("deleteState",state,"deletable",Set.of("draft","ended").contains(state),"deleteVersion",version);
+        boolean hasRule=snapshot.get("rule_revision")!=null&&KINDS.contains(text(snapshot.get("rule_kind")).toLowerCase(Locale.ROOT));
+        return Map.of("deleteState",state,"deletable",Set.of("draft","ended").contains(state),"deleteVersion",version,"hasRule",hasRule);
     }
 
     /** The caller holds H4_EVENT. Keep economic facts and scheduler-visible rules intact. */
@@ -132,6 +133,8 @@ public class H4EventRuleService {
     }
     public Map<String,Object> view(Map<String,Object> row) {
         Map<String,Object> r=rules(row);
+        String code=text(row.get("event_code"));
+        boolean supported=CODES.contains(code);
         var missing=missing(text(row.get("event_code")),r,date(row.get("starts_at")),date(row.get("ends_at")));
         missing=new ArrayList<>(missing);
         if(!"evt-anniversary-spin".equals(row.get("event_code"))&&date(row.get("ends_at"))!=null&&!date(row.get("ends_at")).isAfter(LocalDateTime.now(ZoneOffset.UTC)))missing.add("endsAt");
@@ -140,7 +143,8 @@ public class H4EventRuleService {
         return values("eventCode",row.get("event_code"),"kind",row.get("kind"),"revision",row.get("revision"),
                 "enabled",number(row.get("enabled")).intValue()==1,"startsAt",iso(row.get("starts_at")),
                 "endsAt",iso(row.get("ends_at")),"rules",r,"rulesLocked",row.get("activated_at")!=null,
-                "readiness",Map.of("ready",missing.isEmpty(),"missing",missing));
+                "readiness",Map.of("ready",missing.isEmpty(),"missing",missing),
+                "supported",supported,"rewardCopyOnly",supported);
     }
     @Transactional(rollbackFor=Exception.class,isolation=org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public ApiResult<Map<String,Object>> update(String code,H4EventRuleRequest request) {
