@@ -400,7 +400,8 @@ public class OpsAuditController {
             + " || @g3MarketApproval.canPropose(#request.command())"
             + " || @learningCourseActivationApproval.canPropose(#request.command())"
             + " || @g4CatalogApproval.canPropose(#request.command())"
-            + " || @g4DividendApproval.canPropose(#request.command())))")
+            + " || @g4DividendApproval.canPropose(#request.command())"
+            + " || @g4ParamApproval.canPropose(#request.command())))")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> createOperation(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) AuditOperationProposalRequest request) {

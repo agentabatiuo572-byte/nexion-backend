@@ -1009,7 +1009,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 return validation("G4_GENESIS_PARAM_VALUE_INVALID");
             }
             // A2 approval replay carries the old value bound when the proposal was made.
-            ApiResult<Map<String, Object>> stale = requireUnchangedSnapshot(request.expectedValue(), oldValue,
+            // G4-BE-12: an explicit empty old value must still be compared, never skipped.
+            ApiResult<Map<String, Object>> stale = requireExactSnapshot(request.expectedValue(), oldValue,
                     "G4_GENESIS_PARAM_STALE");
             if (stale != null) {
                 return stale;
@@ -2310,6 +2311,22 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private ApiResult<Map<String, Object>> requireUnchangedSnapshot(String expectedValue, String currentValue,
                                                                     String staleCode) {
         if (!StringUtils.hasText(expectedValue)) {
+            return null;
+        }
+        if (!expectedValue.trim().equals(currentValue == null ? "" : currentValue.trim())) {
+            return ApiResult.fail(409, staleCode);
+        }
+        return null;
+    }
+
+    /**
+     * G4 A2 binds an explicit old value, including a legal empty dividend_base_formula.
+     * Compare it even when blank, so an empty snapshot cannot skip the stale check after the
+     * formula changes; a null expected value still means a direct write without a snapshot.
+     */
+    private ApiResult<Map<String, Object>> requireExactSnapshot(String expectedValue, String currentValue,
+                                                                String staleCode) {
+        if (expectedValue == null) {
             return null;
         }
         if (!expectedValue.trim().equals(currentValue == null ? "" : currentValue.trim())) {
