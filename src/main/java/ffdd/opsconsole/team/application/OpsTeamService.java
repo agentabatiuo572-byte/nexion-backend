@@ -1987,7 +1987,8 @@ public class OpsTeamService implements AuditReplayable {
                 case "F.binary.matchRate" -> BinarySettlementPolicyProvider.normalizeMatchRate(newValue)
                         .compareTo(currentBinaryMatchRate(oldValue)) > 0;
                 case "F.pool.top1MaxPct", "F.pool.top5MaxPct" ->
-                        percentRatio(newValue, BigDecimal.ZERO).compareTo(percentRatio(oldValue, BigDecimal.ZERO)) > 0;
+                        // These two caps are stored and settled as percentage points; compare the same unit.
+                        parseDecimal(newValue, BigDecimal.ZERO).compareTo(parseDecimal(oldValue, BigDecimal.ZERO)) > 0;
                 // 门槛下调 = 放大(更低门槛触发更多结算)
                 case "F.binary.threshold" -> {
                     BigDecimal next = BinarySettlementPolicyProvider.normalizeThreshold(newValue);
