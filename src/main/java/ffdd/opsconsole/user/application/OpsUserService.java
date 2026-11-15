@@ -73,6 +73,7 @@ import java.time.Duration;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -1428,6 +1429,14 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         long lockedShort = userRepository.countRegistrationLoginLocksToday("SHORT");
         long lockedLong = userRepository.countRegistrationLoginLocksToday("LONG");
         long configVersion = configLong(C6_CONFIG_VERSION_KEY, 0L);
+        boolean otpIncludesRegistration = false;
+        boolean otpCountsSuccessfulSends = false;
+        boolean captchaTriggeredProducerFound = false;
+        boolean countsUseBusinessDay = true;
+        boolean stuffingClusters7dIsCredentialStuffing = false;
+        boolean stuffingClusters7dCountsMultiAccountThresholdHits = true;
+        boolean stuffingClusters7dCountsFirstInsertedOnly = true;
+        boolean stuffingClusters7dIncludesAllDispositions = true;
         UserRegistrationRiskOverview overview = new UserRegistrationRiskOverview(
                 new UserRegistrationRiskStats(
                         userRepository.countRegistrationOtpToday(),
@@ -1438,7 +1447,15 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                         userRepository.countRegistrationStuffingClusters7d(),
                         captchaState.disabled(),
                         captchaState.restoreAt() == null ? "" : captchaState.restoreAt().toString(),
-                        captchaState.remainingSeconds()),
+                        captchaState.remainingSeconds(),
+                        otpIncludesRegistration,
+                        otpCountsSuccessfulSends,
+                        captchaTriggeredProducerFound,
+                        countsUseBusinessDay,
+                        stuffingClusters7dIsCredentialStuffing,
+                        stuffingClusters7dCountsMultiAccountThresholdHits,
+                        stuffingClusters7dCountsFirstInsertedOnly,
+                        stuffingClusters7dIncludesAllDispositions),
                 REGISTRATION_RISK_PARAM_DEFINITIONS.stream()
                         .map(definition -> registrationRiskParamView(definition, configVersion))
                         .toList(),
@@ -1455,7 +1472,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                         "nx_config_item:auth.risk.*"),
                 List.of("C6 writes require Idempotency-Key and Confirm-with-Reason",
                         "K1 multi-account params are rejected here with 422 " + K1_REJECT_CODE,
-                        "CAPTCHA off is whitelist-only, absolute-deadline bounded, and automatically restored"));
+                        "CAPTCHA off is whitelist-only, absolute-deadline bounded, and automatically restored"),
+                captchaAlwaysScenes(),
+                h5RegisterCaptcha(),
+                true);
         return ApiResult.ok(overview);
     }
 
@@ -3437,6 +3457,25 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             if (value >= 0 && value <= 50) return value;
         } catch (NumberFormatException ignored) { }
         throw new BizException(503, "C6_CAPTCHA_THRESHOLD_INVALID");
+    }
+
+    private List<String> captchaAlwaysScenes() {
+        String raw = configFacade.activeValue("auth.risk.captcha_always_scenes").orElse("register");
+        Set<String> always = Arrays.stream(raw.split(","))
+                .map(String::trim)
+                .filter(value -> !value.isEmpty())
+                .map(value -> value.toUpperCase(Locale.ROOT))
+                .collect(java.util.stream.Collectors.toSet());
+        if (!Set.of("REGISTER", "LOGIN", "RESET").containsAll(always)) {
+            return List.of("REGISTER", "LOGIN", "RESET");
+        }
+        return List.of("REGISTER", "LOGIN", "RESET").stream()
+                .filter(always::contains)
+                .toList();
+    }
+
+    private boolean h5RegisterCaptcha() {
+        return !"0".equals(configFacade.activeValue("auth.risk.h5_register_captcha").orElse("1"));
     }
 
     private int sessionIdleDays() {

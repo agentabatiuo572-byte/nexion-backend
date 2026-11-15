@@ -11,5 +11,8 @@ public record UserRegistrationRiskOverview(
         String k1RejectCode,
         String k1Path,
         List<String> sources,
-        List<String> redlines) {
+        List<String> redlines,
+        List<String> captchaAlwaysScenes,
+        boolean h5RegisterCaptcha,
+        boolean h5RegisterMissingDeviceCaptcha) {
 }
