@@ -1988,9 +1988,15 @@ public class OpsTeamService implements AuditReplayable {
                 case "F.pool.ratio" -> LeadershipPoolConfigGuard.isConfiguredRateIncrease(oldValue, newValue);
                 case "F.binary.matchRate" -> BinarySettlementPolicyProvider.normalizeMatchRate(newValue)
                         .compareTo(currentBinaryMatchRate(oldValue)) > 0;
-                case "F.pool.top1MaxPct", "F.pool.top5MaxPct" ->
-                        // These two caps are stored and settled as percentage points; compare the same unit.
-                        parseDecimal(newValue, BigDecimal.ZERO).compareTo(parseDecimal(oldValue, BigDecimal.ZERO)) > 0;
+                case "F.pool.top1MaxPct", "F.pool.top5MaxPct" -> {
+                    // These two caps are stored and settled as percentage points; compare the same unit.
+                    // An unconfigured cap settles with LeadershipPoolService's default (25 / 60), never 0.
+                    BigDecimal current = parseDecimal(
+                            StringUtils.hasText(oldValue) ? oldValue
+                                    : "F.pool.top1MaxPct".equals(key) ? "25" : "60",
+                            BigDecimal.ZERO);
+                    yield parseDecimal(newValue, BigDecimal.ZERO).compareTo(current) > 0;
+                }
                 // 门槛下调 = 放大(更低门槛触发更多结算)
                 case "F.binary.threshold" -> {
                     BigDecimal next = BinarySettlementPolicyProvider.normalizeThreshold(newValue);
