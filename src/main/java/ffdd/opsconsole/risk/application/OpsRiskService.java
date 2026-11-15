@@ -62,6 +62,8 @@ import ffdd.opsconsole.risk.dto.RiskScoringEscalateRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringSourceRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringWeightsRequest;
 import ffdd.opsconsole.risk.dto.RiskSignalRequest;
+import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
+import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.user.facade.UserAccountControlFacade;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
@@ -171,6 +173,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private final SuperAdminAuthorization superAdminAuthorization;
     private final UserAccountControlFacade userAccountControlFacade;
     private final EventOutboxService eventOutboxService;
+    private final TreasuryCoverageFacade coverageFacade;
     private final ChainAddressReputationGateway chainAddressReputationGateway;
     private final RiskReleaseParamsService riskReleaseParamsService;
     private final K4RiskScorer k4RiskScorer = new K4RiskScorer();
@@ -657,6 +660,9 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                                 OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K3_RULE_TRANSITION_INVALID",
                                 request.reason(), idempotencyKey);
                     }
+                    if (k3RuleStateChangeRelaxes(before, state)) {
+                        requireK3CoveragePrecheck("STATE_CHANGE", normalized, actor, request.reason(), idempotencyKey);
+                    }
                     RiskRuleView updated = riskRepository.updateWithdrawRuleState(
                             normalized, request.expectedVersion(), state).orElse(null);
                     if (updated == null) {
@@ -746,6 +752,9 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                         return rejectK3Write("CONFIG_CHANGE", normalized, actor,
                                 OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K3_RULE_PRIORITY_CONFLICT",
                                 request.reason(), idempotencyKey);
+                    }
+                    if (k3RuleUpdateRelaxes(before, normalizedCondition, action)) {
+                        requireK3CoveragePrecheck("CONFIG_CHANGE", normalized, actor, request.reason(), idempotencyKey);
                     }
                     RiskRuleView updated = riskRepository.updateWithdrawRuleConfiguration(
                             normalized, request.expectedVersion(), normalizedCondition, action, priority).orElse(null);
@@ -2560,6 +2569,266 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 .build());
         return ApiResult.fail(status, reasonCode);
     }
+
+    /**
+     * T11 K3 relaxation gate: only a direction that can amplify fund outflow is checked,
+     * against the current exact B1 ratio and redline. No future volume is forecast and no
+     * Δ is added, so the check is the current coverage ratio versus the redline. A blocked
+     * write keeps every rule, version and business fact unchanged; the rejection audit
+     * commits independently and the exception fails the idempotency claim, so the same key
+     * can be retried once coverage recovers (same contract as the K1 release-parameter gate).
+     */
+    private void requireK3CoveragePrecheck(
+            String operation, String resourceId, String actor, String requestReason, String idempotencyKey) {
+        TreasuryCoverageSnapshot coverage;
+        try {
+            coverage = coverageFacade.snapshot();
+        } catch (RuntimeException unavailable) {
+            rejectK3Coverage(operation, resourceId, actor, OpsErrorCode.COVERAGE_UNAVAILABLE.httpStatus(),
+                    "K3_COVERAGE_UNAVAILABLE", requestReason, idempotencyKey, null);
+            return;
+        }
+        if (coverage == null || !coverage.reliable()
+                || coverage.coverageRatio() == null || coverage.redlinePct() == null
+                || coverage.coverageRatio().signum() < 0 || coverage.redlinePct().signum() <= 0) {
+            rejectK3Coverage(operation, resourceId, actor, OpsErrorCode.COVERAGE_UNAVAILABLE.httpStatus(),
+                    "K3_COVERAGE_UNAVAILABLE", requestReason, idempotencyKey, coverage);
+            return;
+        }
+        if (coverage.redlineBreached()) {
+            rejectK3Coverage(operation, resourceId, actor,
+                    OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                    OpsErrorCode.COVERAGE_BELOW_REDLINE.name(), requestReason, idempotencyKey, coverage);
+        }
+    }
+
+    private void rejectK3Coverage(
+            String operation, String resourceId, String actor, int status, String reasonCode,
+            String requestReason, String idempotencyKey, TreasuryCoverageSnapshot coverage) {
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("operation", operation);
+        detail.put("reasonCode", reasonCode);
+        detail.put("requestReason", trimmed(requestReason));
+        detail.put("idempotencyKey", trimmed(idempotencyKey));
+        detail.put("businessDataChanged", false);
+        if (coverage != null) {
+            detail.put("coverageRatio", coverage.coverageRatio());
+            detail.put("coverageRedlinePct", coverage.redlinePct());
+            detail.put("coverageReliable", coverage.reliable());
+            detail.put("coverageRedlineBreached", coverage.redlineBreached());
+        }
+        auditLogService.recordRequiredInNewTransaction(AuditLogWriteRequest.builder()
+                .action("K3_WITHDRAW_RULE_WRITE_REJECTED")
+                .resourceType("WITHDRAW_RULE")
+                .resourceId(resourceId)
+                .bizNo(resourceId)
+                .actorType("ADMIN")
+                .actorUsername(actor)
+                .result("REJECTED")
+                .riskLevel("HIGH")
+                .detail(detail)
+                .build());
+        throw new BizException(status, reasonCode);
+    }
+
+    /**
+     * A 'pass' rule never participates in the evaluator, so disabling it changes nothing.
+     * The only transition that removes an effective restriction is active → paused.
+     */
+    private boolean k3RuleStateChangeRelaxes(RiskRuleView before, String afterState) {
+        if (before == null || !"paused".equals(afterState)) {
+            return false;
+        }
+        if (!"active".equalsIgnoreCase(trimmed(before.state()))) {
+            return false;
+        }
+        return k3ActionSeverity(before.action()) != 0;
+    }
+
+    /**
+     * Active rules drive D2 immediately. Paused rules were active before, so relaxing their
+     * stored configuration while paused is the same relaxation when they are re-enabled;
+     * gating it here closes the pause → edit → enable path. Drafts have no current effect
+     * and activation only adds a restriction, so they are not gated.
+     */
+    private boolean k3RuleUpdateRelaxes(RiskRuleView before, String afterCondition, String afterAction) {
+        String state = trimmed(before.state()).toLowerCase(Locale.ROOT);
+        if (!"active".equals(state) && !"paused".equals(state)) {
+            return false;
+        }
+        int beforeSeverity = k3ActionSeverity(before.action());
+        int afterSeverity = k3ActionSeverity(afterAction);
+        // A pass rule never participates in the evaluator. Changing or keeping 'pass' cannot
+        // remove a restriction; turning it into delay/manual/freeze only adds one.
+        if (beforeSeverity == 0) {
+            return false;
+        }
+        if (beforeSeverity < 0 || afterSeverity < 0) {
+            return true;
+        }
+        K3TriggerRelation relation = k3TriggerRelation(before.dimension(), before.conditionText(), afterCondition);
+        // Only "not fewer triggers with no weaker action" is provably not a relaxation.
+        // Mixed or unparsable changes are treated as relaxation (gate) rather than guessed.
+        return afterSeverity < beforeSeverity
+                || relation == K3TriggerRelation.AFTER_SUBSET
+                || relation == K3TriggerRelation.INCOMPARABLE;
+    }
+
+    private int k3ActionSeverity(String action) {
+        return K3_ACTION_SEVERITY.getOrDefault(trimmed(action).toLowerCase(Locale.ROOT), -1);
+    }
+
+    /**
+     * Compares the withdrawal set that triggers the rule. AFTER_SUBSET means the new
+     * configuration triggers on fewer withdrawals (relaxation); AFTER_SUPERSET means more
+     * (tightening). Operator strictness is part of the set: >= covers >, <= covers <.
+     */
+    private K3TriggerRelation k3TriggerRelation(String dimension, String beforeCondition, String afterCondition) {
+        String before = k3ConditionCore(beforeCondition);
+        String after = k3ConditionCore(afterCondition);
+        return switch (k3RuleDimension(dimension)) {
+            case AMOUNT -> {
+                Matcher beforeMatch = K3_AMOUNT_RULE.matcher(before);
+                Matcher afterMatch = K3_AMOUNT_RULE.matcher(after);
+                yield beforeMatch.matches() && afterMatch.matches()
+                        ? k3LowerBoundRelation(
+                                parseMoney(beforeMatch.group(2), -1), ">=".equals(beforeMatch.group(1)),
+                                parseMoney(afterMatch.group(2), -1), ">=".equals(afterMatch.group(1)))
+                        : K3TriggerRelation.INCOMPARABLE;
+            }
+            case VELOCITY -> {
+                Matcher beforeMatch = K3_VELOCITY_RULE.matcher(before);
+                Matcher afterMatch = K3_VELOCITY_RULE.matcher(after);
+                yield beforeMatch.matches() && afterMatch.matches()
+                        ? k3UnionRelation(
+                                k3LowerBoundRelation(
+                                        parseInt(beforeMatch.group(2), -1), ">=".equals(beforeMatch.group(1)),
+                                        parseInt(afterMatch.group(2), -1), ">=".equals(afterMatch.group(1))),
+                                k3LowerBoundRelation(
+                                        parseMoney(beforeMatch.group(4), -1), ">=".equals(beforeMatch.group(3)),
+                                        parseMoney(afterMatch.group(4), -1), ">=".equals(afterMatch.group(3))))
+                        : K3TriggerRelation.INCOMPARABLE;
+            }
+            case NEW_ACCOUNT -> {
+                Matcher beforeMatch = K3_NEW_ACCOUNT_RULE.matcher(before);
+                Matcher afterMatch = K3_NEW_ACCOUNT_RULE.matcher(after);
+                yield beforeMatch.matches() && afterMatch.matches()
+                        ? k3UpperBoundRelation(
+                                parseInt(beforeMatch.group(2), -1), "<=".equals(beforeMatch.group(1)),
+                                parseInt(afterMatch.group(2), -1), "<=".equals(afterMatch.group(1)))
+                        : K3TriggerRelation.INCOMPARABLE;
+            }
+            case ADDRESS -> {
+                Optional<K3AddressReputationRuleConfig> beforeConfig = K3AddressReputationRuleConfig.parse(before);
+                Optional<K3AddressReputationRuleConfig> afterConfig = K3AddressReputationRuleConfig.parse(after);
+                yield beforeConfig.isPresent() && afterConfig.isPresent()
+                        ? k3AddressRelation(beforeConfig.get(), afterConfig.get())
+                        : K3TriggerRelation.INCOMPARABLE;
+            }
+            case UNKNOWN -> K3TriggerRelation.INCOMPARABLE;
+        };
+    }
+
+    private K3TriggerRelation k3LowerBoundRelation(
+            int beforeThreshold, boolean beforeInclusive, int afterThreshold, boolean afterInclusive) {
+        if (beforeThreshold < 0 || afterThreshold < 0) {
+            return K3TriggerRelation.INCOMPARABLE;
+        }
+        if (afterThreshold < beforeThreshold) return K3TriggerRelation.AFTER_SUPERSET;
+        if (afterThreshold > beforeThreshold) return K3TriggerRelation.AFTER_SUBSET;
+        if (afterInclusive && !beforeInclusive) return K3TriggerRelation.AFTER_SUPERSET;
+        if (!afterInclusive && beforeInclusive) return K3TriggerRelation.AFTER_SUBSET;
+        return K3TriggerRelation.EQUAL;
+    }
+
+    private K3TriggerRelation k3UpperBoundRelation(
+            int beforeThreshold, boolean beforeInclusive, int afterThreshold, boolean afterInclusive) {
+        if (beforeThreshold < 0 || afterThreshold < 0) {
+            return K3TriggerRelation.INCOMPARABLE;
+        }
+        if (afterThreshold > beforeThreshold) return K3TriggerRelation.AFTER_SUPERSET;
+        if (afterThreshold < beforeThreshold) return K3TriggerRelation.AFTER_SUBSET;
+        if (afterInclusive && !beforeInclusive) return K3TriggerRelation.AFTER_SUPERSET;
+        if (!afterInclusive && beforeInclusive) return K3TriggerRelation.AFTER_SUBSET;
+        return K3TriggerRelation.EQUAL;
+    }
+
+    /** The velocity rule matches on count OR sum, so the union moves only when both arms do. */
+    private K3TriggerRelation k3UnionRelation(K3TriggerRelation count, K3TriggerRelation sum) {
+        if (count == K3TriggerRelation.INCOMPARABLE || sum == K3TriggerRelation.INCOMPARABLE) {
+            return K3TriggerRelation.INCOMPARABLE;
+        }
+        if (count == sum) return count;
+        if (count == K3TriggerRelation.EQUAL) return sum;
+        if (sum == K3TriggerRelation.EQUAL) return count;
+        return K3TriggerRelation.INCOMPARABLE;
+    }
+
+    private K3TriggerRelation k3AddressRelation(
+            K3AddressReputationRuleConfig before, K3AddressReputationRuleConfig after) {
+        if (before.source() == after.source()) {
+            return before.source() == K3AddressReputationRuleConfig.Source.INTERNAL
+                    ? K3TriggerRelation.EQUAL
+                    : k3AddressThresholdRelation(before.lowThreshold(), after.lowThreshold());
+        }
+        if (before.source() == K3AddressReputationRuleConfig.Source.INTERNAL
+                && after.source() == K3AddressReputationRuleConfig.Source.COMBINED) {
+            return K3TriggerRelation.AFTER_SUPERSET;
+        }
+        if (before.source() == K3AddressReputationRuleConfig.Source.COMBINED
+                && after.source() == K3AddressReputationRuleConfig.Source.INTERNAL) {
+            return K3TriggerRelation.AFTER_SUBSET;
+        }
+        if (before.source() == K3AddressReputationRuleConfig.Source.THIRD_PARTY
+                && after.source() == K3AddressReputationRuleConfig.Source.COMBINED) {
+            // after = internal ∪ (score < afterThreshold), before = (score < beforeThreshold).
+            // It is a superset only when the third-party arm does not shrink: the added
+            // internal arm cannot be assumed to cover the lost third-party range.
+            return after.lowThreshold().compareTo(before.lowThreshold()) >= 0
+                    ? K3TriggerRelation.AFTER_SUPERSET
+                    : K3TriggerRelation.INCOMPARABLE;
+        }
+        // internal <-> third-party and combined -> third-party are data-dependent.
+        return K3TriggerRelation.INCOMPARABLE;
+    }
+
+    private K3TriggerRelation k3AddressThresholdRelation(BigDecimal before, BigDecimal after) {
+        int comparison = after.compareTo(before);
+        if (comparison < 0) return K3TriggerRelation.AFTER_SUBSET;
+        if (comparison > 0) return K3TriggerRelation.AFTER_SUPERSET;
+        return K3TriggerRelation.EQUAL;
+    }
+
+    private K3RuleDimension k3RuleDimension(String dimension) {
+        String actual = trimmed(dimension).toLowerCase(Locale.ROOT);
+        if (k3Dimension(actual, "金额", "amount", "largeamountusdt")) return K3RuleDimension.AMOUNT;
+        if (k3Dimension(actual, "速度", "velocity", "velocity24h")) return K3RuleDimension.VELOCITY;
+        if (k3Dimension(actual, "新账户", "accountage", "newaccount", "newaccountprotectdays")) {
+            return K3RuleDimension.NEW_ACCOUNT;
+        }
+        if (k3Dimension(actual, "地址信誉", "address", "addressreputation", "addressreputationsource")) {
+            return K3RuleDimension.ADDRESS;
+        }
+        return K3RuleDimension.UNKNOWN;
+    }
+
+    private boolean k3Dimension(String actual, String... candidates) {
+        for (String candidate : candidates) {
+            if (actual.equals(candidate) || actual.contains(candidate)) return true;
+        }
+        return false;
+    }
+
+    private String k3ConditionCore(String value) {
+        String text = trimmed(value).replace('，', ',');
+        int arrow = text.indexOf("->");
+        if (arrow < 0) arrow = text.indexOf('→');
+        return arrow < 0 ? text : text.substring(0, arrow).trim();
+    }
+
+    private enum K3RuleDimension { AMOUNT, VELOCITY, NEW_ACCOUNT, ADDRESS, UNKNOWN }
+
+    private enum K3TriggerRelation { AFTER_SUBSET, EQUAL, AFTER_SUPERSET, INCOMPARABLE }
 
     private <T> ApiResult<T> rejectK4Write(
             String operation,
