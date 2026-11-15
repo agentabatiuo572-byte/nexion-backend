@@ -358,6 +358,19 @@ public class OpsNotificationCampaignService {
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<NotificationCapRuleView> updateCapRule(String tier, String idempotencyKey, NotificationCapUpdateRequest request) {
+        return updateCapRuleInternal(tier, idempotencyKey, request, false);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<NotificationCapRuleView> updateApprovedCapRule(String tier, String idempotencyKey, NotificationCapUpdateRequest request) {
+        if (A2ReplayContext.operationId() == null) {
+            return ApiResult.fail(403, "NOTIFICATION_CAP_APPROVAL_REQUIRED");
+        }
+        return updateCapRuleInternal(tier, idempotencyKey, request, true);
+    }
+
+    private ApiResult<NotificationCapRuleView> updateCapRuleInternal(String tier, String idempotencyKey,
+            NotificationCapUpdateRequest request, boolean approved) {
         String normalizedTier = normalizeTier(tier);
         if (!TIERS.contains(normalizedTier)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_TIER_UNSUPPORTED");
@@ -378,6 +391,11 @@ public class OpsNotificationCampaignService {
         }
         return executeIdempotent("I3_NOTIFICATION_CAP_UPDATE", idempotencyKey,
                 requestHash("cap", normalizedTier, operator(request.operator()), request), () -> {
+                    if (!approved) {
+                        // Direct PATCH has no approved A2 command/review context; reject before
+                        // reading the cap row, applying retention, or writing success audit.
+                        return ApiResult.fail(403, "NOTIFICATION_CAP_APPROVAL_REQUIRED");
+                    }
                     if (!A2ReplayContext.isReplaying()
                             && lockMapper.countActiveByTarget("I", "notification_cap", normalizedTier) > 0) {
                         return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");

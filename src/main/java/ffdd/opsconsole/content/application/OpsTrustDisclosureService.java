@@ -2037,7 +2037,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                         str(p, "expectedCap"),
                         operator,
                         reason);
-                return notificationCampaignService.updateCapRule(str(p, "tier"), idem, req);
+                return notificationCampaignService.updateApprovedCapRule(str(p, "tier"), idem, req);
             }
             case "i4_trust_section_manage" -> {
                 // 1 op + action param 覆盖 publish/rollback/archive 3 方法,共享 trust_section:{sectionKey} 锁
