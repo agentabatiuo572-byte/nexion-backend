@@ -410,6 +410,7 @@ public class OpsTeamService implements AuditReplayable {
         Map<String, Object> coverageOverview = new LinkedHashMap<>();
         coverageOverview.put("coverageRatio", coverage.coverageRatio());
         coverageOverview.put("redlinePct", coverage.redlinePct());
+        coverageOverview.put("reliable", coverage.reliable());
         response.put("coverage", coverageOverview);
         response.put("sources", List.of(
                 "nx_v_rank_config",
