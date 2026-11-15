@@ -18,6 +18,7 @@ import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.risk.facade.RiskTamperSignalFacade;
@@ -115,6 +116,7 @@ public class OpsTreasuryService {
             new GateSeed("trial", "试用开关"));
     private final TreasuryLedgerRepository ledgerRepository;
     private final PlatformConfigFacade configFacade;
+    private final AuditObjectLockMapper lockMapper;
     private final EmergencyControlRepository emergencyRepository;
     private final RiskTamperSignalFacade riskTamperSignalFacade;
     private final AuditLogService auditLogService;
@@ -1116,6 +1118,11 @@ public class OpsTreasuryService {
             Long expectedVersion,
             String operator,
             String approvalOperationId) {
+        if (!A2ReplayContext.isReplaying()
+                && (values.redlinePct() != null || values.healthyPct() != null)
+                && lockMapper.countActiveByTarget("B", "coverage_thresholds", "current") > 0) {
+            throw new BizException(409, "OBJECT_LOCKED_BY_A2");
+        }
         ledgerRepository.lockOperationMutex(B1_THRESHOLD_MUTEX);
         B1ThresholdChange change = thresholdChange(values);
         ApiResult<Void> validation = validateThresholdChange(change, expectedVersion, approvalOperationId != null);
