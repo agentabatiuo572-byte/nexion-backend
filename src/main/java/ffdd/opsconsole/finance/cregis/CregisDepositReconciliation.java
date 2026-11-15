@@ -1,6 +1,7 @@
 package ffdd.opsconsole.finance.cregis;
 
 import ffdd.opsconsole.finance.mapper.CregisDepositMapper;
+import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -53,7 +54,9 @@ public class CregisDepositReconciliation {
     @Transactional(propagation=Propagation.NOT_SUPPORTED)
     public Map<String, Object> runOnce(CregisNetwork network) {
         if (config.getMode() != CregisProperties.Mode.PROVIDER)
-            throw new IllegalStateException("CREGIS_PROVIDER_DISABLED");
+            // No provider call or reconcile write has happened yet; return an explicit
+            // 4xx business rejection instead of a persisted 500/unknown envelope.
+            throw new BizException(409, "CREGIS_PROVIDER_DISABLED");
         Long first = db.firstAddressSecond(network,config.getProjectId());
         // Continue a proven empty-pool baseline after payout activity, without requiring a deposit address.
         if(first==null && network!=CregisNetwork.BEP20 && config.getDepositConfirmations()>=15)
