@@ -35,6 +35,8 @@ public final class L4OperationsAnalytics {
             "device.purchase_completed", "quest.dispatched", "quest.completed", "daily.checkin",
             "referral.bound", "referral.invite_sent", "commission.paid", "checkout.completed",
             "auth.register_completed", "store.viewed", "app.dau");
+    /** A4RuntimePolicyService.eventRetentionMonths lower bound; the minimum guaranteed history floor. */
+    private static final int MIN_RETENTION_MONTHS = 13;
 
     private L4OperationsAnalytics() {
     }
@@ -71,6 +73,21 @@ public final class L4OperationsAnalytics {
                 .filter(item -> !item.ts().isBefore(range.from()) && !item.ts().isAfter(range.to()))
                 .filter(item -> "ALL".equals(normalizedPhase) || normalizedPhase.equals(item.phase()))
                 .toList();
+        Range previousRange = range.previous();
+        LocalDateTime historyStart = historyCoverageStart(now);
+        boolean currentCovered = !range.from().isBefore(historyStart);
+        boolean previousCovered = !previousRange.from().isBefore(historyStart);
+        List<Fact> previousSelected = all.stream()
+                .filter(item -> !item.ts().isBefore(previousRange.from()) && !item.ts().isAfter(previousRange.to()))
+                .filter(item -> "ALL".equals(normalizedPhase) || normalizedPhase.equals(item.phase()))
+                .toList();
+        boolean comparisonAvailable = currentCovered && previousCovered
+                && !selected.isEmpty() && !previousSelected.isEmpty();
+        String comparisonReason = !currentCovered
+                ? "CURRENT_WINDOW_OUTSIDE_RETENTION_FLOOR"
+                : !previousCovered ? "PREVIOUS_WINDOW_OUTSIDE_RETENTION_FLOOR"
+                : selected.isEmpty() ? "CURRENT_WINDOW_NO_FACTS"
+                : previousSelected.isEmpty() ? "PREVIOUS_WINDOW_NO_FACTS" : null;
 
         long actorRequired = selected.stream().filter(item -> ACTOR_EVENTS.contains(item.event())).count();
         long actorPresent = selected.stream()
@@ -101,6 +118,7 @@ public final class L4OperationsAnalytics {
                 "network", network(selected, actorComplete),
                 "phaseEffect", phaseEffect(selected, actorComplete, normalizedPhase),
                 "history", history,
+                "comparison", comparison(previousSelected, previousRange, comparisonAvailable, comparisonReason, normalizedPeriod),
                 "quality", linked(
                         "serverCanonical", true,
                         "sameActorRates", actorComplete,
@@ -123,6 +141,89 @@ public final class L4OperationsAnalytics {
                     "message", "所选周期没有可核验的运营事件，未生成比率或趋势。"));
         }
         return result;
+    }
+
+    /**
+     * Previous same-length window from the already parsed A4 facts. Complete history requires both the
+     * 400-day query bound and the explicit 13-month retention floor; the later bound is the safe start.
+     * Empty windows are explicitly unavailable because they are not evidence of a true zero.
+     */
+    private static Map<String, Object> comparison(
+            List<Fact> previousSelected, Range previousRange, boolean available, String reason, String period) {
+        var calendar = ffdd.opsconsole.shared.config.BusinessCalendar.legacy();
+        Map<String, Object> block = linked(
+                "available", available,
+                "reason", reason,
+                "previousPeriod", linked(
+                        "from", calendar.dateAtStorage(previousRange.from()).toString(),
+                        "to", calendar.dateAtStorage(previousRange.to()).toString(),
+                        "fromAt", previousRange.from().toString(),
+                        "toAt", previousRange.to().toString()));
+        if (!available) {
+            block.put("device", null);
+            block.put("tasks", null);
+            block.put("network", null);
+            block.put("quality", null);
+            block.put("excludedSnapshots", excludedSnapshots());
+            return block;
+        }
+
+        long actorRequired = previousSelected.stream().filter(item -> ACTOR_EVENTS.contains(item.event())).count();
+        long actorPresent = previousSelected.stream()
+                .filter(item -> ACTOR_EVENTS.contains(item.event()) && hasText(item.actor()))
+                .count();
+        boolean actorComplete = actorRequired == actorPresent;
+        double actorCoverage = actorRequired == 0 ? 100.0 : pct(actorPresent, actorRequired);
+        List<Map<String, Object>> previousHistory = history(previousSelected, period);
+        long completionVolume = previousHistory.stream()
+                .mapToLong(row -> ((Number) row.get("tasksCompleted")).longValue())
+                .sum();
+        Map<String, Object> deviceSummary = summary(device(previousSelected));
+        Map<String, Object> taskSummary = summary(tasks(previousSelected, actorComplete, completionVolume, period));
+        Map<String, Object> networkSummary = summary(network(previousSelected, actorComplete));
+
+        block.put("device", linked("summary", linked(
+                "periodPurchasedDevices", deviceSummary.get("periodPurchasedDevices"),
+                "periodRetiredDevices", deviceSummary.get("periodRetiredDevices"),
+                "periodLockedDevices", deviceSummary.get("periodLockedDevices"),
+                "periodFirstYieldDevices", deviceSummary.get("periodFirstYieldDevices"),
+                "dailyYieldUsdt", deviceSummary.get("dailyYieldUsdt"),
+                "dailyYieldNex", deviceSummary.get("dailyYieldNex"),
+                "degradationLossUsdt", deviceSummary.get("degradationLossUsdt"))));
+        block.put("tasks", linked("summary", linked(
+                "dispatched", taskSummary.get("dispatched"),
+                "completed", taskSummary.get("completed"),
+                "acceptanceRate", taskSummary.get("acceptanceRate"),
+                "checkinActive", taskSummary.get("checkinActive"))));
+        block.put("network", linked("summary", networkSummary));
+        block.put("quality", linked(
+                "sameActorRates", actorComplete,
+                "actorCoveragePct", actorCoverage,
+                "incompleteRatesAreNull", true));
+        block.put("excludedSnapshots", excludedSnapshots());
+        return block;
+    }
+
+    private static List<Map<String, Object>> excludedSnapshots() {
+        return List.of(
+                linked("field", "device.summary.activeDevices",
+                        "reason", "current live DB snapshot, not a historical A4 event fact"),
+                linked("field", "tasks.summary.queueSaturation",
+                        "reason", "latest event snapshot, not a window flow"),
+                linked("field", "liveFacts",
+                        "reason", "current live DB counts, not historical event facts"));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> summary(Map<String, Object> section) {
+        return (Map<String, Object>) section.get("summary");
+    }
+
+    private static LocalDateTime historyCoverageStart(LocalDateTime now) {
+        var calendar = ffdd.opsconsole.shared.config.BusinessCalendar.legacy();
+        LocalDateTime queryStart = calendar.storageStart(calendar.dateAtStorage(now).minusDays(400));
+        LocalDateTime retentionStart = now.minusMonths(MIN_RETENTION_MONTHS);
+        return retentionStart.isAfter(queryStart) ? retentionStart : queryStart;
     }
 
     private static Map<String, Object> device(List<Fact> rows) {
@@ -448,10 +549,12 @@ public final class L4OperationsAnalytics {
                 throw new IllegalArgumentException("L4_CUSTOM_RANGE_INVALID");
             }
             // R-1: custom dates are business dates; bounds are stored (Beijing) timestamps.
-            return new Range(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(start), ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(end.plusDays(1)).minusNanos(1));
+            long days = ChronoUnit.DAYS.between(start, end) + 1;
+            return new Range(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(start),
+                    ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(end.plusDays(1)).minusNanos(1), days);
         }
         long days = "day".equals(period) ? 1 : "month".equals(period) ? 30 : 7;
-        return new Range(now.minusDays(days), now);
+        return new Range(now.minusDays(days), now, days);
     }
 
     private static LocalDate parseDate(String value) {
@@ -540,7 +643,10 @@ public final class L4OperationsAnalytics {
         return result;
     }
 
-    private record Range(LocalDateTime from, LocalDateTime to) {
+    private record Range(LocalDateTime from, LocalDateTime to, long days) {
+        private Range previous() {
+            return new Range(from.minusDays(days), from.minusNanos(1), days);
+        }
     }
 
     private record Fact(
