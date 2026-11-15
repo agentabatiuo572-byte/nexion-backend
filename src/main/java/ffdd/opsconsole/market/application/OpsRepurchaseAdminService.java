@@ -7,6 +7,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.exception.ObjectLockedByA2Exception;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
@@ -77,9 +78,11 @@ public class OpsRepurchaseAdminService {
             // tightening ones, must wait; approval replay is the only path allowed through.
             // Keep this new-write gate inside the idempotency callback: an already confirmed
             // success key must return its receipt before a later ticket's lock is considered.
-            if (!A2ReplayContext.isReplaying()
-                    && locks.countActiveByTarget("G", "repurchase_param", param) > 0) {
-                throw new BizException(409, "OBJECT_LOCKED_BY_A2");
+            if (!A2ReplayContext.isReplaying()) {
+                var activeLocks = locks.selectActiveTargetLocks("G", "repurchase_param", List.of(param));
+                if (!activeLocks.isEmpty()) {
+                    throw new ObjectLockedByA2Exception(activeLocks.get(0).ticketId());
+                }
             }
             return updateInternal(param, idempotencyKey, request);
         });

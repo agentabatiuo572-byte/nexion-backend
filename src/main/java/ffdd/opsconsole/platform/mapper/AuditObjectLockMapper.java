@@ -62,6 +62,19 @@ public interface AuditObjectLockMapper extends BaseMapper<AuditObjectLockEntity>
                        LocalDateTime createdAt) {}
 
     @Select("""
+            <script>
+            SELECT target_id, ticket_id FROM nx_audit_object_lock
+            WHERE target_domain = #{domain} AND target_type = #{type} AND is_deleted = 0
+              AND target_id IN
+              <foreach collection="targetIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+            </script>
+            """)
+    List<TargetLock> selectActiveTargetLocks(@Param("domain") String domain, @Param("type") String type,
+                                             @Param("targetIds") Collection<String> targetIds);
+
+    record TargetLock(String targetId, String ticketId) {}
+
+    @Select("""
             SELECT target_id FROM nx_audit_object_lock
             WHERE target_domain = #{domain} AND target_type = #{type} AND is_deleted = 0
             ORDER BY target_id
