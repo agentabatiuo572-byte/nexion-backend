@@ -105,6 +105,8 @@ public class A2AccessPolicy {
                         || grants.contains("finprod_g3_curve_target_price_write") || grants.contains("finprod_g3_curve_pump_prob_write")
                         || grants.contains("finprod_g3_override_price_write") || grants.contains("finprod_g3_write")
                         || grants.contains("finprod_g4_dividend_rate_write") || grants.contains("finprod_g4_write")
+                        || grants.contains("finprod_g4_royalty_write") || grants.contains("finprod_g4_airdrop_pct_write")
+                        || grants.contains("finprod_g4_emission_curve_write") || grants.contains("finprod_g4_airdrop_lock_days_write")
                         || grants.contains(G4CatalogApproval.PRICE_AUTHORITY)) return id;
             }
         } catch (NumberFormatException ignored) { }

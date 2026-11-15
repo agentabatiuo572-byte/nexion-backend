@@ -331,7 +331,9 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
                     "risk_k2_write", "content_i7_course_reward_adjust", "growth_h7_write", "emergency_j1_gate_resume",
                     "device_e2_write", "network_f1_write", "network_f3_write", "network_f4_pool_fund", "growth_h8_write", "growth_h5_write", "growth_h3_write", "growth_h4_write", "growth_h4_wheel_pool_write", "finprod_g3_curve_target_price_write",
                     "finprod_g3_curve_pump_prob_write", "finprod_g3_override_price_write", "finprod_g3_write",
-                    "finprod_g4_dividend_rate_write", "finprod_g4_write", "finprod_g4_price_write");
+                    "finprod_g4_dividend_rate_write", "finprod_g4_write", "finprod_g4_price_write",
+                    "finprod_g4_royalty_write", "finprod_g4_airdrop_pct_write",
+                    "finprod_g4_emission_curve_write", "finprod_g4_airdrop_lock_days_write");
         }
         if (read && path.equals("/api/admin/market/nex/genesis/dividend-approval-state")) {
             return RequiredAuthority.exact("finprod_g4_dividend_rate_write", "finprod_g4_write");
