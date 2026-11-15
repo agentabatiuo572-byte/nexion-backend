@@ -440,13 +440,14 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 .filter(pool -> "UVT".equalsIgnoreCase(pool.product()))
                 .map(StakingPoolDef::lockedUsd)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
-        long pendingCount = marketRepository.stakingPositionCountByStatus("PENDING_LOCK");
-        long activeCount = marketRepository.stakingPositionCountByStatus("ACTIVE");
-        long matureCount = marketRepository.stakingPositionCountByStatus("MATURE_UNCLAIMED");
-        long claimedCount = marketRepository.stakingPositionCountByStatus("CLAIMED");
-        long slashedCount = marketRepository.stakingPositionCountByStatus("SLASHED");
-        long refundedCount = marketRepository.stakingPositionCountByStatus("REFUNDED");
-        long earlyWithdrawnMonth = marketRepository.stakingPositionCountByStatus("EARLY_WITHDRAWN");
+        java.time.LocalDateTime stakingNow = java.time.LocalDateTime.now(clock);
+        long pendingCount = marketRepository.stakingPositionCountByStatus("PENDING_LOCK", stakingNow);
+        long activeCount = marketRepository.stakingPositionCountByStatus("ACTIVE", stakingNow);
+        long matureCount = marketRepository.stakingPositionCountByStatus("MATURE_UNCLAIMED", stakingNow);
+        long claimedCount = marketRepository.stakingPositionCountByStatus("CLAIMED", stakingNow);
+        long slashedCount = marketRepository.stakingPositionCountByStatus("SLASHED", stakingNow);
+        long refundedCount = marketRepository.stakingPositionCountByStatus("REFUNDED", stakingNow);
+        long earlyWithdrawnMonth = marketRepository.stakingPositionCountByStatus("EARLY_WITHDRAWN", stakingNow);
         long killedCount = pools.stream()
                 .filter(pool -> Boolean.TRUE.equals(pool.get("killed")))
                 .count();
@@ -474,13 +475,13 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         response.put("disclosureGate", map("staking", disclosureGateActive("staking")));
         response.put("pools", pools);
         response.put("positions", List.of(
-                stakingPositionGroup("pending_lock", "pending_lock 待确认", "支付或链上确认中,服务器确认后进入 active。", pendingCount),
-                stakingPositionGroup("active", "active 计息中", "按开仓时锁定 APY 线性计息,参数更新不追溯。", activeCount),
-                stakingPositionGroup("mature_unclaimed", "mature_unclaimed 到期未领", "到期后生成待领取的锁定金额及奖励,claim 写 D4 账单。", matureCount),
-                stakingPositionGroup("claimed", "claimed 已领取", "锁定金额及奖励已原子入账并写 D4。", claimedCount),
-                stakingPositionGroup("early_withdrawn", "本月 early_withdrawn 提前解锁", "提前解锁按锁定金额扣款并放弃未领取的质押奖励。", earlyWithdrawnMonth),
-                stakingPositionGroup("slashed", "slashed 熔断处置", "G1 熔断按结构化处置方案终结持仓;恢复只能走 J1。", slashedCount),
-                stakingPositionGroup("refunded", "refunded 锁定失败退款", "开仓失败后锁定金额已退回钱包。", refundedCount)));
+                stakingPositionGroup("pending_lock", "pending_lock 待确认", "支付或链上确认中,服务器确认后进入 active。", pendingCount, stakingNow),
+                stakingPositionGroup("active", "active 计息中", "按开仓时锁定 APY 线性计息,参数更新不追溯。", activeCount, stakingNow),
+                stakingPositionGroup("mature_unclaimed", "mature_unclaimed 到期未领", "到期后生成待领取的锁定金额及奖励,claim 写 D4 账单。", matureCount, stakingNow),
+                stakingPositionGroup("claimed", "claimed 已领取", "锁定金额及奖励已原子入账并写 D4。", claimedCount, stakingNow),
+                stakingPositionGroup("early_withdrawn", "本月 early_withdrawn 提前解锁", "提前解锁按锁定金额扣款并放弃未领取的质押奖励。", earlyWithdrawnMonth, stakingNow),
+                stakingPositionGroup("slashed", "slashed 熔断处置", "G1 熔断按结构化处置方案终结持仓;恢复只能走 J1。", slashedCount, stakingNow),
+                stakingPositionGroup("refunded", "refunded 锁定失败退款", "开仓失败后锁定金额已退回钱包。", refundedCount, stakingNow)));
         response.put("stateMachine", List.of(
                 "pending_lock",
                 "active",
@@ -2657,8 +2658,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "precheck", "raising APY, lowering early withdrawal penalty, restoring sale, or clearing a kill switch requires B1 coverage redline check");
     }
 
-    private Map<String, Object> stakingPositionGroup(String status, String label, String note, long count) {
-        List<Map<String, Object>> rows = marketRepository.stakingPositionsByStatus(status.toUpperCase(Locale.ROOT), 50).stream()
+    private Map<String, Object> stakingPositionGroup(String status, String label, String note, long count, java.time.LocalDateTime now) {
+        List<Map<String, Object>> rows = marketRepository.stakingPositionsByStatus(status.toUpperCase(Locale.ROOT), 50, now).stream()
                 .map(this::stakingPosition)
                 .toList();
         return map("status", status, "label", label, "note", note, "count", count, "rows", rows);
@@ -2677,6 +2678,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "unlockAt", position.unlockAt(),
                 "estimatedInterest", displayUsd(safeBig(position.estimatedInterestUsdt())),
                 "status", position.status(),
+                "storedStatus", position.storedStatus(),
                 "statusLabel", position.statusLabel(),
                 "statusTone", position.statusTone(),
                 "note", stakingPositionNote(position));

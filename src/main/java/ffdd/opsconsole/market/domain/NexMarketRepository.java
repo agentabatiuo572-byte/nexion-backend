@@ -78,11 +78,11 @@ public interface NexMarketRepository {
 
     BigDecimal stakingEstimatedInterestUsdt();
 
-    long stakingPositionCountByStatus(String status);
+    long stakingPositionCountByStatus(String status, java.time.LocalDateTime now);
 
     long stakingEarlyWithdrawnCountSince(LocalDateTime since);
 
-    List<StakingPositionView> stakingPositionsByStatus(String status, int limit);
+    List<StakingPositionView> stakingPositionsByStatus(String status, int limit, java.time.LocalDateTime now);
 
     void ensureRepurchaseSeedData();
 

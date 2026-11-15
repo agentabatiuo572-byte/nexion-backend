@@ -19,6 +19,7 @@ public record StakingPositionView(
         LocalDateTime unlockAt,
         BigDecimal estimatedInterestUsdt,
         String status,
+        String storedStatus,
         String statusLabel,
         String statusTone,
         LocalDateTime claimedAt,

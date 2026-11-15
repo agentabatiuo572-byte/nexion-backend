@@ -18,9 +18,21 @@ import org.apache.ibatis.annotations.Update;
 public interface StakingMapper extends BaseMapper<StakingProductEntity> {
     String G1_POSITION_SCOPE = """
              WHERE sp.is_deleted = 0
-               AND UPPER(sp.status) = UPPER(#{status})
                AND UPPER(sp.product_code) IN
                <foreach collection='productCodes' item='productCode' open='(' separator=',' close=')'>#{productCode}</foreach>
+             <choose>
+               <when test='status.equalsIgnoreCase("ACTIVE")'>
+                 AND UPPER(sp.status) = 'ACTIVE'
+                 AND sp.unlock_at &gt; #{now}
+               </when>
+               <when test='status.equalsIgnoreCase("MATURE_UNCLAIMED")'>
+                 AND (UPPER(sp.status) = 'MATURE_UNCLAIMED'
+                   OR (UPPER(sp.status) = 'ACTIVE' AND sp.unlock_at &lt;= #{now}))
+               </when>
+               <otherwise>
+                 AND UPPER(sp.status) = UPPER(#{status})
+               </otherwise>
+             </choose>
              <if test='status.equalsIgnoreCase("EARLY_WITHDRAWN")'>
                AND sp.early_withdrawn_at >= """ + BusinessPeriodSql.Legacy.MONTH_START + """
                AND sp.early_withdrawn_at &lt; """ + BusinessPeriodSql.Legacy.NEXT_MONTH_START + """
@@ -260,7 +272,8 @@ public interface StakingMapper extends BaseMapper<StakingProductEntity> {
             </script>
             """)
     long countG1PositionsByStatus(@Param("status") String status,
-                                  @Param("productCodes") List<String> productCodes);
+                                  @Param("productCodes") List<String> productCodes,
+                                  @Param("now") LocalDateTime now);
 
     @Select("""
             SELECT COUNT(1)
@@ -287,25 +300,27 @@ public interface StakingMapper extends BaseMapper<StakingProductEntity> {
                    sp.locked_at AS lockedAt,
                    sp.unlock_at AS unlockAt,
                    sp.estimated_interest_usdt AS estimatedInterestUsdt,
-                   UPPER(sp.status) AS status,
-                   CASE UPPER(sp.status)
-                     WHEN 'PENDING_LOCK' THEN '待确认'
-                     WHEN 'ACTIVE' THEN '计息中'
-                     WHEN 'MATURE_UNCLAIMED' THEN '到期未领'
-                     WHEN 'CLAIMED' THEN '已领取'
-                     WHEN 'EARLY_WITHDRAWN' THEN '提前解锁'
-                     WHEN 'SLASHED' THEN '已扣罚'
-                     WHEN 'REFUNDED' THEN '已退款'
+                   CASE WHEN UPPER(sp.status) = 'ACTIVE' AND sp.unlock_at &lt;= #{now}
+                        THEN 'MATURE_UNCLAIMED' ELSE UPPER(sp.status) END AS status,
+                   UPPER(sp.status) AS storedStatus,
+                   CASE WHEN UPPER(sp.status) = 'ACTIVE' AND sp.unlock_at &lt;= #{now} THEN '到期未领'
+                     WHEN UPPER(sp.status) = 'PENDING_LOCK' THEN '待确认'
+                     WHEN UPPER(sp.status) = 'ACTIVE' THEN '计息中'
+                     WHEN UPPER(sp.status) = 'MATURE_UNCLAIMED' THEN '到期未领'
+                     WHEN UPPER(sp.status) = 'CLAIMED' THEN '已领取'
+                     WHEN UPPER(sp.status) = 'EARLY_WITHDRAWN' THEN '提前解锁'
+                     WHEN UPPER(sp.status) = 'SLASHED' THEN '已扣罚'
+                     WHEN UPPER(sp.status) = 'REFUNDED' THEN '已退款'
                      ELSE UPPER(sp.status)
                    END AS statusLabel,
-                   CASE UPPER(sp.status)
-                     WHEN 'PENDING_LOCK' THEN 'warn'
-                     WHEN 'ACTIVE' THEN 'ok'
-                     WHEN 'MATURE_UNCLAIMED' THEN 'warn'
-                     WHEN 'CLAIMED' THEN 'dim'
-                     WHEN 'EARLY_WITHDRAWN' THEN 'bad'
-                     WHEN 'SLASHED' THEN 'bad'
-                     WHEN 'REFUNDED' THEN 'dim'
+                   CASE WHEN UPPER(sp.status) = 'ACTIVE' AND sp.unlock_at &lt;= #{now} THEN 'warn'
+                     WHEN UPPER(sp.status) = 'PENDING_LOCK' THEN 'warn'
+                     WHEN UPPER(sp.status) = 'ACTIVE' THEN 'ok'
+                     WHEN UPPER(sp.status) = 'MATURE_UNCLAIMED' THEN 'warn'
+                     WHEN UPPER(sp.status) = 'CLAIMED' THEN 'dim'
+                     WHEN UPPER(sp.status) = 'EARLY_WITHDRAWN' THEN 'bad'
+                     WHEN UPPER(sp.status) = 'SLASHED' THEN 'bad'
+                     WHEN UPPER(sp.status) = 'REFUNDED' THEN 'dim'
                      ELSE 'dim'
                    END AS statusTone,
                    sp.claimed_at AS claimedAt,
@@ -321,7 +336,8 @@ public interface StakingMapper extends BaseMapper<StakingProductEntity> {
             """)
     List<StakingPositionView> listG1PositionsByStatus(@Param("status") String status,
                                                     @Param("productCodes") List<String> productCodes,
-                                                    @Param("limit") int limit);
+                                                    @Param("limit") int limit,
+                                                    @Param("now") LocalDateTime now);
 
     @Select("""
             <script>

@@ -228,8 +228,8 @@ public class MybatisNexMarketRepository implements NexMarketRepository {
     }
 
     @Override
-    public long stakingPositionCountByStatus(String status) {
-        return stakingMapper.countG1PositionsByStatus(status, CANONICAL_STAKING_PRODUCT_CODES);
+    public long stakingPositionCountByStatus(String status, java.time.LocalDateTime now) {
+        return stakingMapper.countG1PositionsByStatus(status, CANONICAL_STAKING_PRODUCT_CODES, now);
     }
 
     @Override
@@ -238,8 +238,8 @@ public class MybatisNexMarketRepository implements NexMarketRepository {
     }
 
     @Override
-    public List<StakingPositionView> stakingPositionsByStatus(String status, int limit) {
-        return stakingMapper.listG1PositionsByStatus(status, CANONICAL_STAKING_PRODUCT_CODES, limit);
+    public List<StakingPositionView> stakingPositionsByStatus(String status, int limit, java.time.LocalDateTime now) {
+        return stakingMapper.listG1PositionsByStatus(status, CANONICAL_STAKING_PRODUCT_CODES, limit, now);
     }
 
     @Override
