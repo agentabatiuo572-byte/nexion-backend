@@ -1756,8 +1756,11 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                     }
                     updates.put(tierName, probability);
                 }
+                String tierKind = String.valueOf(row.get("kind")).toLowerCase(Locale.ROOT);
+                // Legacy nex tiers pay the same UVT reward, so raising their probability must take the
+                // same A2/redline path; they stay outside the editable kind whitelist.
                 if (probability.compareTo(before) > 0
-                        && WHEEL_REDEEMABLE_KINDS.contains(String.valueOf(row.get("kind")).toLowerCase(Locale.ROOT))) {
+                        && WHEEL_REDEEMABLE_KINDS.contains("nex".equals(tierKind) ? "uvt" : tierKind)) {
                     amplifies = true;
                 }
             }
