@@ -52,6 +52,27 @@ public interface AuditOperationTicketMapper extends BaseMapper<AuditOperationTic
             """)
     AuditOperationTicketEntity selectActiveByOperationId(@Param("operationId") String operationId);
 
+    /** Canonical A1 pending proposals; source_domain is normalized to A, so command_json is the discriminator. */
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_audit_operation_ticket
+             WHERE is_deleted = 0
+               AND status = 'pending'
+               AND command_json IS NOT NULL
+               AND JSON_VALID(command_json)
+               AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(command_json, '$.domain'))) = 'A'
+               AND LOWER(JSON_UNQUOTE(JSON_EXTRACT(command_json, '$.op'))) IN (
+                   'a1_account_create',
+                   'a1_account_update_profile',
+                   'a1_account_change_role',
+                   'a1_account_status_update',
+                   'a1_account_reset_2fa',
+                   'a1_account_force_logout',
+                   'a1_security_baseline_update'
+               )
+            """)
+    int countPendingA1Commands();
+
     /** Serializes terminal decisions and clears pre-lock reads before rechecking authorization. */
     @Options(flushCache = Options.FlushCachePolicy.TRUE, useCache = false)
     @Select("""

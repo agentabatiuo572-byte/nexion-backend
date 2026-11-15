@@ -91,17 +91,16 @@ public class PublishedHowContentService {
     public ApiResult<Map<String, Object>> adminView() {
         try {
             Map<String, Object> value = read();
-            if (!hasAdminDocumentShape(value)) value = defaultAdminDocument();
+            if (value == null) return adminUnavailable();
+            if (value.isEmpty()) value = defaultAdminDocument();
+            else if (!hasAdminDocumentShape(value)) return adminUnavailable();
             value = PublishedContentSnapshot.admin(value);
             PublishedContentSnapshot.markDefaultPublic(value);
             value.put("source", "server");
             value.put("configKey", CONFIG_KEY);
             return ApiResult.ok(value);
         } catch (Exception ex) {
-            Map<String, Object> value = defaultAdminDocument();
-            value.put("source", "server");
-            value.put("configKey", CONFIG_KEY);
-            return ApiResult.ok(value);
+            return adminUnavailable();
         }
     }
 
@@ -152,6 +151,7 @@ public class PublishedHowContentService {
 
     private ApiResult<Map<String, Object>> invalid() { return ApiResult.fail(422, "HOW_CONTENT_INVALID"); }
     private ApiResult<Map<String, Object>> unavailable() { return ApiResult.fail(503, "HOW_CONTENT_UNAVAILABLE"); }
+    private ApiResult<Map<String, Object>> adminUnavailable() { return ApiResult.fail(503, "HOW_CONTENT_UNAVAILABLE"); }
     private Map<String, Object> read() throws Exception { return read(false); }
     private Map<String, Object> read(boolean lock) throws Exception {
         String raw = (lock ? config.activeValueForUpdate(CONFIG_KEY) : config.activeValue(CONFIG_KEY)).orElse("{}");

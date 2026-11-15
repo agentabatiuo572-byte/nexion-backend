@@ -12,6 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.core.env.Environment;
@@ -56,14 +57,16 @@ public class PublishedDeveloperDocsService {
     public ApiResult<Map<String, Object>> adminView() {
         try {
             Map<String, Object> value = read();
+            if (value == null) return adminUnavailable();
             if (value.isEmpty()) value = defaultAdminDocument();
+            else if (!hasAdminDocumentShape(value)) return adminUnavailable();
             value = PublishedContentSnapshot.admin(value);
             PublishedContentSnapshot.markDefaultPublic(value);
             value.put("source", "server");
             value.put("configKey", CONFIG_KEY);
             return ApiResult.ok(value);
         } catch (Exception ex) {
-            return ApiResult.ok(Map.of("status", "UNPUBLISHED", "version", "", "locales", Map.of(), "configKey", CONFIG_KEY));
+            return adminUnavailable();
         }
     }
 
@@ -120,6 +123,18 @@ public class PublishedDeveloperDocsService {
         if(!(raw instanceof Number number)||number.longValue()<0||number.doubleValue()!=number.longValue())
             throw new IllegalArgumentException("DEVELOPER_DOCS_REVISION_INVALID");
         return number.longValue();
+    }
+
+    private boolean hasAdminDocumentShape(Map<String,Object> value) {
+        if (value == null || !(value.get("version") instanceof String version) || version.isBlank()
+                || !Set.of("UNPUBLISHED", "DRAFT", "PUBLISHED").contains(value.get("status"))
+                || !(value.get("locales") instanceof Map<?, ?> locales) || locales.isEmpty()) return false;
+        try { return revision(value) >= 0; }
+        catch (RuntimeException ex) { return false; }
+    }
+
+    private ApiResult<Map<String, Object>> adminUnavailable() {
+        return ApiResult.fail(503, "DEVELOPER_DOCS_UNAVAILABLE");
     }
 
     private boolean validLocale(Map<String, Object> locale) {
