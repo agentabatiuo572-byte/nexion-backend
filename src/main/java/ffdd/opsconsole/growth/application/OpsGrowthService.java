@@ -3658,7 +3658,22 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                     copy.put("state", eventStatus(id));
                     copy.put("reward", eventReward(id));
                     copy.put("featured", eventFeatured(id));
-                    if(h4EventRules!=null)copy.putAll(h4EventRules.deletionInfo(id));
+                    if(h4EventRules==null){
+                        copy.put("supported",null);
+                        copy.put("rewardCopyOnly",null);
+                    }else{
+                        copy.putAll(h4EventRules.deletionInfo(id));
+                        boolean supported=H4EventRuleService.CODES.contains(id);
+                        copy.put("supported",supported);
+                        if(!supported){
+                            copy.put("rewardCopyOnly",Boolean.FALSE);
+                        }else{
+                            Object hasRule=copy.get("hasRule");
+                            // A confirmed missing active rule follows the real write branch:
+                            // supports && hasRule is false. Null means the rule row was not read.
+                            copy.put("rewardCopyOnly",hasRule instanceof Boolean present?present:null);
+                        }
+                    }
                     return copy;
                 })
                 .toList();
