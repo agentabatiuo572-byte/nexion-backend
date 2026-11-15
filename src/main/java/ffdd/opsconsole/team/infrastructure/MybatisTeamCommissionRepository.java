@@ -137,6 +137,11 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     }
 
     @Override
+    public List<Map<String, Object>> leadershipVoterRanks(int minRank) {
+        return mapper.leadershipVoterRanks(minRank);
+    }
+
+    @Override
     public List<Map<String, Object>> quotaRows() {
         return mapper.quotaRows();
     }

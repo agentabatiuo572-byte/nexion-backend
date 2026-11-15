@@ -1,6 +1,7 @@
 package ffdd.opsconsole.shared.outbox;
 
 import ffdd.opsconsole.platform.application.A2RuntimePolicy;
+import ffdd.opsconsole.platform.application.A4UserNumberService;
 import ffdd.opsconsole.platform.dto.H3OutboxRedriveRequest;
 import ffdd.opsconsole.platform.dto.H3OutboxRedriveView;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -14,7 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -24,7 +25,6 @@ import org.springframework.util.StringUtils;
  * canonical completion delivery after both DEAD snapshots are CAS-verified.
  */
 @Service
-@RequiredArgsConstructor
 public class H3DeadLetterRedriveService {
     private static final String IDEMPOTENCY_SCOPE_PREFIX = "A4_H3_OUTBOX_REDRIVE:";
     private static final String DEAD_STATUS = "DEAD";
@@ -39,6 +39,31 @@ public class H3DeadLetterRedriveService {
     private final AdminIdempotencyService idempotencyService;
     private final A2RuntimePolicy a2RuntimePolicy;
     private final AuditLogService auditLogService;
+    private final A4UserNumberService userNumbers;
+
+    @Autowired
+    public H3DeadLetterRedriveService(EventOutboxMapper outboxMapper,
+            EventConsumerDeliveryMapper deliveryMapper,
+            AdminIdempotencyService idempotencyService,
+            A2RuntimePolicy a2RuntimePolicy,
+            AuditLogService auditLogService,
+            A4UserNumberService userNumbers) {
+        this.outboxMapper = outboxMapper;
+        this.deliveryMapper = deliveryMapper;
+        this.idempotencyService = idempotencyService;
+        this.a2RuntimePolicy = a2RuntimePolicy;
+        this.auditLogService = auditLogService;
+        this.userNumbers = userNumbers;
+    }
+
+    /** Compatibility constructor for focused tests that do not exercise the optional user projection. */
+    H3DeadLetterRedriveService(EventOutboxMapper outboxMapper,
+            EventConsumerDeliveryMapper deliveryMapper,
+            AdminIdempotencyService idempotencyService,
+            A2RuntimePolicy a2RuntimePolicy,
+            AuditLogService auditLogService) {
+        this(outboxMapper, deliveryMapper, idempotencyService, a2RuntimePolicy, auditLogService, null);
+    }
 
     public H3OutboxRedriveView redrive(String eventId, String idempotencyKey, H3OutboxRedriveRequest request) {
         String normalizedEventId = normalizeEventId(eventId);
@@ -52,11 +77,15 @@ public class H3DeadLetterRedriveService {
         String actor = StringUtils.hasText(AdminActorResolver.resolve(null)) ? AdminActorResolver.resolve(null) : "unknown";
         String normalizedReason = request.reason().trim();
         String normalizedKey = idempotencyKey.trim();
-        return idempotencyService.execute(IDEMPOTENCY_SCOPE_PREFIX + normalizedEventId, normalizedKey,
+        H3OutboxRedriveView receipt = idempotencyService.execute(
+                IDEMPOTENCY_SCOPE_PREFIX + normalizedEventId, normalizedKey,
                 requestHash(actor, normalizedEventId, normalizedReason, expectedRetryCount,
                         expectedDeliveryStatus, expectedDeliveryAttemptCount), H3OutboxRedriveView.class,
                 () -> redriveLocked(actor, normalizedKey, normalizedEventId, normalizedReason, expectedRetryCount,
                         expectedDeliveryStatus, expectedDeliveryAttemptCount));
+        // The replayable POST receipt never carries a user number. This also strips
+        // a value from a receipt written by the prior candidate implementation.
+        return receipt == null ? null : receipt.withoutUserNo();
     }
 
     public H3OutboxRedriveView preview(String eventId) {
@@ -65,7 +94,7 @@ public class H3DeadLetterRedriveService {
         EventConsumerDeliveryMapper.H3DeadLetterDeliveryRow delivery =
                 deliveryMapper.findDeadH3QuestCompletionDelivery(normalizedEventId);
         if (outbox == null || delivery == null) throw new BizException(409, ELIGIBILITY_ERROR);
-        return view(outbox, DEAD_STATUS, delivery, DEAD_STATUS);
+        return view(outbox, DEAD_STATUS, delivery, DEAD_STATUS, true);
     }
 
     private H3OutboxRedriveView redriveLocked(
@@ -96,15 +125,17 @@ public class H3DeadLetterRedriveService {
                 .riskLevel("HIGH")
                 .detail(auditDetail(reason, idempotencyKey, outbox, delivery))
                 .build());
-        return view(outbox, PENDING_STATUS, delivery, FAILED_STATUS);
+        return view(outbox, PENDING_STATUS, delivery, FAILED_STATUS, false);
     }
 
     private H3OutboxRedriveView view(
             EventOutboxMapper.H3DeadLetterRow outbox, String outboxStatus,
-            EventConsumerDeliveryMapper.H3DeadLetterDeliveryRow delivery, String deliveryStatus) {
+            EventConsumerDeliveryMapper.H3DeadLetterDeliveryRow delivery, String deliveryStatus,
+            boolean includeUserNo) {
         return new H3OutboxRedriveView(outbox.eventId(), outbox.eventType(), outboxStatus,
                 outbox.retryCount(), safeFailureSummary(outbox.lastError()), deliveryStatus,
-                delivery.attemptCount(), safeFailureSummary(delivery.lastError()));
+                delivery.attemptCount(), safeFailureSummary(delivery.lastError()),
+                includeUserNo && userNumbers != null ? userNumbers.userNo(outbox.userId()) : null);
     }
 
     private Map<String, Object> auditDetail(

@@ -496,7 +496,12 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
             SELECT event_id AS eventId,
                    event_type AS eventType,
                    retry_count AS retryCount,
-                   last_error AS lastError
+                   last_error AS lastError,
+                   CASE WHEN is_server_authoritative = 1
+                         AND JSON_VALID(payload)
+                         AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.user_id')) REGEXP '^[1-9][0-9]{0,18}$'
+                        THEN CAST(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.user_id')) AS UNSIGNED)
+                        ELSE NULL END AS userId
              FROM nx_event_outbox
              WHERE event_id = #{eventId}
                AND status = 'DEAD'
@@ -517,7 +522,12 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
             SELECT event_id AS eventId,
                    event_type AS eventType,
                    retry_count AS retryCount,
-                   last_error AS lastError
+                   last_error AS lastError,
+                   CASE WHEN is_server_authoritative = 1
+                         AND JSON_VALID(payload)
+                         AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.user_id')) REGEXP '^[1-9][0-9]{0,18}$'
+                        THEN CAST(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.user_id')) AS UNSIGNED)
+                        ELSE NULL END AS userId
               FROM nx_event_outbox
              WHERE event_id = #{eventId}
                AND status = 'DEAD'
@@ -560,6 +570,10 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
     record SchemaPropertyGateRow(String propertyName, String propertyType, boolean requiredField) {
     }
 
-    record H3DeadLetterRow(String eventId, String eventType, int retryCount, String lastError) {
+    record H3DeadLetterRow(String eventId, String eventType, int retryCount, String lastError, Long userId) {
+        /** Compatibility constructor for callers without the optional source user. */
+        public H3DeadLetterRow(String eventId, String eventType, int retryCount, String lastError) {
+            this(eventId, eventType, retryCount, lastError, null);
+        }
     }
 }

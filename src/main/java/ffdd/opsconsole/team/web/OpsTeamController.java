@@ -69,6 +69,12 @@ public class OpsTeamController {
         return teamService.leadershipPool();
     }
 
+    @GetMapping("/leadership-pool/vote-projection")
+    @PreAuthorize("hasAuthority('network_f4_read')")
+    public ApiResult<Map<String, Object>> leadershipPoolVoteProjection() {
+        return teamService.leadershipPoolVoteProjection();
+    }
+
     @GetMapping("/ambassador-policy")
     @PreAuthorize("hasAuthority('network_f4_read')")
     public ApiResult<Map<String, Object>> ambassadorPolicy() {

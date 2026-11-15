@@ -295,6 +295,106 @@ public class OpsTeamService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
+    /** Read-only F4 vote-value projection: current estimate plus latest actual settlement audit. */
+    public ApiResult<Map<String, Object>> leadershipPoolVoteProjection() {
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("domain", "F4");
+        response.put("estimate", leadershipPoolEstimate());
+        response.put("settled", leadershipPoolSettledVoteValue());
+        response.put("sources", List.of(
+                "nx_v_rank_config",
+                "nx_team_member",
+                "nx_config_item:team.ui.F.pool.*",
+                "nx_audit_log:F4_LEADERSHIP_POOL_SETTLED"));
+        return ApiResult.ok(response);
+    }
+
+    private Map<String, Object> leadershipPoolEstimate() {
+        Map<String, Object> estimate = new LinkedHashMap<>();
+        Map<String, Object> summary = commissionRepository.leadershipPoolSummary();
+        int weeklySettledCount = intValue(summary.get("weeklySettledCount"), 0);
+        if (weeklySettledCount > 0) {
+            estimate.put("available", false);
+            estimate.put("reason", "CURRENT_WEEK_SETTLED");
+            return estimate;
+        }
+        LeadershipPoolConfigGuard.SettlementConfig config;
+        try {
+            config = new LeadershipPoolConfigGuard(configFacade).requireValid();
+        } catch (LeadershipPoolConfigGuard.ConfigUnavailableException failure) {
+            estimate.put("available", false);
+            estimate.put("reason", "SETTLEMENT_CONFIG_UNAVAILABLE");
+            return estimate;
+        }
+        BigDecimal poolUsd = LeadershipPoolProjection.amount(summary, config);
+        List<Map<String, Object>> ranks = commissionRepository.leadershipVoterRanks(config.unlockRank());
+        List<Map<String, Object>> rankRows = new ArrayList<>();
+        BigDecimal totalVotes = BigDecimal.ZERO;
+        int eligibleCount = 0;
+        for (Map<String, Object> rank : ranks) {
+            int rankNo = intValue(rank.get("v"), 0);
+            int votesPerMember = intValue(rank.get("votes"), 0);
+            int eligible = intValue(rank.get("pop"), 0);
+            if (rankNo < config.unlockRank() || votesPerMember <= 0 || eligible <= 0) continue;
+            BigDecimal votes = BigDecimal.valueOf(votesPerMember)
+                    .multiply(BigDecimal.valueOf(eligible));
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("rank", "V" + rankNo);
+            row.put("eligibleCount", eligible);
+            row.put("votesPerMember", votesPerMember);
+            row.put("totalVotes", votes);
+            rankRows.add(row);
+            totalVotes = totalVotes.add(votes);
+            eligibleCount += eligible;
+        }
+        if (eligibleCount == 0 || totalVotes.signum() <= 0) {
+            estimate.put("available", false);
+            estimate.put("reason", "NO_ELIGIBLE_VOTERS");
+            return estimate;
+        }
+        if (poolUsd == null || poolUsd.signum() <= 0) {
+            estimate.put("available", false);
+            estimate.put("reason", "NO_CURRENT_POOL");
+            return estimate;
+        }
+        estimate.put("available", true);
+        estimate.put("period", "CURRENT_WEEK");
+        estimate.put("currency", "USDT");
+        estimate.put("poolUsd", poolUsd);
+        estimate.put("eligibleCount", eligibleCount);
+        estimate.put("totalVotes", totalVotes);
+        estimate.put("perVoteUsd", perVoteUsd(poolUsd, totalVotes));
+        estimate.put("ranks", rankRows);
+        estimate.put("ranksAvailability", "CURRENT_ELIGIBILITY_ESTIMATE");
+        return estimate;
+    }
+
+    private Map<String, Object> leadershipPoolSettledVoteValue() {
+        Map<String, Object> settled = new LinkedHashMap<>();
+        AuditLogService.LeadershipPoolSettlement audit = auditLogService.latestLeadershipPoolSettlement();
+        if (audit == null) {
+            settled.put("available", false);
+            settled.put("reason", "NO_SETTLEMENT_AUDIT");
+            return settled;
+        }
+        settled.put("available", true);
+        settled.put("period", "SETTLED_WEEK");
+        settled.put("currency", "USDT");
+        settled.put("weekKey", audit.weekKey());
+        settled.put("poolUsd", audit.poolAmountUsdt());
+        settled.put("totalVotes", audit.totalVotes());
+        settled.put("settledUsers", audit.settledUsers());
+        settled.put("perVoteUsd", perVoteUsd(audit.poolAmountUsdt(), audit.totalVotes()));
+        settled.put("ranks", null);
+        settled.put("ranksAvailability", "PER_RANK_NOT_RECORDED");
+        return settled;
+    }
+
+    private BigDecimal perVoteUsd(BigDecimal poolUsd, BigDecimal totalVotes) {
+        if (poolUsd == null || totalVotes == null || totalVotes.signum() <= 0) return null;
+        return poolUsd.divide(totalVotes, 6, RoundingMode.DOWN);
+    }
+
     public ApiResult<Map<String, Object>> leadershipPool() {
         Map<String, Object> response = new LinkedHashMap<>();
         Map<String, Object> pool = leadershipPoolReadModel();

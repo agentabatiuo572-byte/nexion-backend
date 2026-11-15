@@ -1423,6 +1423,23 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             """)
     List<Map<String, Object>> listLeadershipVoters(@Param("minRank") int minRank);
 
+    /** Same self-row/vote population as listLeadershipVoters, grouped by current rank for read-only estimates. */
+    @Select("""
+            SELECT CAST(SUBSTRING(m.v_rank, 2) AS UNSIGNED) AS v,
+                   c.leadership_votes AS votes,
+                   COUNT(*) AS pop
+              FROM nx_team_member m
+              JOIN nx_v_rank_config c ON c.rank_code = m.v_rank AND c.is_deleted = 0
+             WHERE m.user_id = m.member_user_id
+               AND m.v_rank REGEXP '^V[1-8]$'
+               AND CAST(SUBSTRING(m.v_rank, 2) AS UNSIGNED) >= #{minRank}
+               AND c.leadership_votes > 0
+               AND m.is_deleted = 0
+             GROUP BY m.v_rank, c.leadership_votes
+             ORDER BY v ASC, votes ASC
+            """)
+    List<Map<String, Object>> leadershipVoterRanks(@Param("minRank") int minRank);
+
     /**
      * F4: 平台某周(ISO YEARWEEK)已付订单 USDT 小计之和(领导池注入数据源)。
      * @param weekCode YEARWEEK(paid_at,1) 整数(如 202630)
