@@ -85,6 +85,7 @@ public class A2AccessPolicy {
                 if (grants.contains("platform_a2_read") || grants.contains("platform_a2_proposal_create")
                         || (grants.contains("platform_a2_write")
                             && (grants.contains("user_c2_session_revoke_all") || grants.contains("user_c5_session_revoke_all")))
+                        || (grants.contains("platform_a2_write") && grants.contains("growth_h1_override_revoke"))
                         || grants.stream().anyMatch(AuditReplayBusinessPermissionGuard.F5_ACTION_AUTHORITIES::contains)
                         || grants.contains(A4RegistryApproval.MAKER_AUTHORITY)
                         || (grants.contains(OpsKillSwitchService.RESTORE_AUTHORITY) && grants.contains("platform_a2_write"))
@@ -143,6 +144,11 @@ public class A2AccessPolicy {
         String domain = ticket.getSourceDomain().trim().substring(0, 1).toUpperCase(Locale.ROOT);
         // Exact maker ID was already matched by the durable proposal lookup.
         if (!domain.matches("[A-M]")) return false;
+        if ("H".equals(domain) && "h1_phase_override".equalsIgnoreCase(command == null ? "" : command.op())) {
+            // The current revoke authority is the terminal gate for this action. Do not fall back
+            // to platform_a2_read/H-domain visibility after the maker loses it.
+            return canReadOwnH1Override(command, actorId, grants);
+        }
         if ("C".equals(domain) && AuditReplayBusinessPermissionGuard.isUserSessionRevocation(command)) {
             return (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write"))
                     && (grants.contains("user_c2_session_revoke_all") || grants.contains("user_c5_session_revoke_all"));
@@ -167,7 +173,18 @@ public class A2AccessPolicy {
         return scope.ownActorOnly() || scope.canSee(domain, ticket.getOperatorName());
     }
 
+    /** H1 override maker recovery: exact maker, existing revoke authority, no A2 global read grant. */
+    private boolean canReadOwnH1Override(AuditReplayCommand command, long actorId, Set<String> grants) {
+        return command != null
+                && "H".equalsIgnoreCase(command.domain())
+                && "h1_phase_override".equalsIgnoreCase(command.op())
+                && roleResolver.isActiveAdministrator(actorId)
+                && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write"))
+                && grants.contains("growth_h1_override_revoke");
+    }
+
     boolean canAccessOwnBusinessProposal(AuditReplayCommand command, long actorId) {
+        if (canReadOwnH1Override(command, actorId, permissions.getPermissionCodes(actorId))) return true;
         if (command != null && "C".equalsIgnoreCase(command.domain())
                 && ("c2_account_freeze".equals(command.op()) || "c2_account_unfreeze".equals(command.op()))) {
             // Both recovery callers have already verified the original maker's numeric ID.
