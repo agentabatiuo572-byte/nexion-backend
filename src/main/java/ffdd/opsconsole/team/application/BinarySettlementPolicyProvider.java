@@ -172,12 +172,23 @@ public class BinarySettlementPolicyProvider {
         }
     }
 
-    private boolean strictBoolean(String raw) {
+    /**
+     * The one F3 pause parser used by settlement, admin reads and writes.
+     * Unknown/missing input stays null; callers decide whether that is an error.
+     */
+    public static Boolean parsePaused(String raw) {
+        if (!StringUtils.hasText(raw)) return null;
         return switch (raw.trim().toLowerCase(Locale.ROOT)) {
             case "true", "1", "on" -> true;
             case "false", "0", "off" -> false;
-            default -> throw new PolicyBlocked("F3_PAUSED_CONFIG_INVALID");
+            default -> null;
         };
+    }
+
+    private boolean strictBoolean(String raw) {
+        Boolean parsed = parsePaused(raw);
+        if (parsed == null) throw new PolicyBlocked("F3_PAUSED_CONFIG_INVALID");
+        return parsed;
     }
 
     private boolean strictEnabled(String raw) {

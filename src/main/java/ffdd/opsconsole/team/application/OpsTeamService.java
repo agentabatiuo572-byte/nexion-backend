@@ -1518,9 +1518,12 @@ public class OpsTeamService implements AuditReplayable {
             persistedValue = BinarySettlementPolicyProvider.normalizeMatchRate(value).movePointRight(2).toPlainString() + "%";
         } else if ("F.binary.threshold".equals(key)) {
             persistedValue = BinarySettlementPolicyProvider.normalizeThreshold(value).toPlainString();
+        } else if ("F.binary.paused".equals(key)) {
+            persistedValue = Boolean.TRUE.equals(BinarySettlementPolicyProvider.parsePaused(value)) ? "on" : "off";
         } else {
             persistedValue = value;
         }
+        String effectiveValue = "F.binary.paused".equals(key) ? persistedValue : value;
         configFacade.upsertAdminValue(configKey, persistedValue, "TEXT", "team", "F domain authoritative policy state");
         if(affectsSeven&&sevenPolicy!=null)sevenPolicy.bumpSevenLayerRevision();
         // F4 发布即校验(简报 #48):F.pool.* 的 configVersion 是 LeadershipPoolConfigGuard 的
@@ -1531,11 +1534,11 @@ public class OpsTeamService implements AuditReplayable {
         // 结算链路独立 fail-closed,不依赖此版本号。
         String settlementConfigIncompleteKey = key.startsWith("F.pool.") ? leadershipPoolConfigIncompleteKey() : null;
         Long settlementConfigVersion = settlementConfigIncompleteKey == null ? bumpLeadershipPoolConfigVersion(key) : null;
-        postCommissionLedgerIfStatusChanged(key, value);
+        postCommissionLedgerIfStatusChanged(key, effectiveValue);
         Map<String, Object> auditDetail = new LinkedHashMap<>();
         auditDetail.put("key", key);
         auditDetail.put("oldValue", oldValue);
-        auditDetail.put("newValue", value);
+        auditDetail.put("newValue", effectiveValue);
         auditDetail.put("reason", request.reason().trim());
         auditDetail.put("idempotencyKey", idempotencyKey.trim());
         if (settlementConfigVersion != null) auditDetail.put("settlementConfigVersion", settlementConfigVersion);
@@ -1546,13 +1549,13 @@ public class OpsTeamService implements AuditReplayable {
             auditDetail.put("pauseSnapshotState", pauseChange.mode());
         }
         audit("F_TEAM_UI_CONFIG_CHANGED", configKey, actor(request.operator()), auditDetail, pauseChange != null);
-        publishApprovedUiConfigOutbox(key, oldValue, value, request, pauseChange);
+        publishApprovedUiConfigOutbox(key, oldValue, effectiveValue, request, pauseChange);
         Map<String, Object> response = overview().getData();
         Map<String, Object> updated = new LinkedHashMap<>();
         updated.put("key", key);
         updated.put("configKey", configKey);
         updated.put("oldValue", oldValue);
-        updated.put("newValue", value);
+        updated.put("newValue", effectiveValue);
         if (settlementConfigVersion != null) updated.put("settlementConfigVersion", settlementConfigVersion);
         if (settlementConfigIncompleteKey != null) {
             updated.put("settlementConfigIncompleteKey", settlementConfigIncompleteKey);
@@ -2402,6 +2405,7 @@ public class OpsTeamService implements AuditReplayable {
         config.put("gvResetCron", configText("F.binary.gvResetCron", ""));
         config.put("settlePeriod", configText("F.binary.settlePeriod", ""));
         config.put("residualPolicy", configText("F.binary.residualPolicy", ""));
+        config.put("paused", BinarySettlementPolicyProvider.parsePaused(configText("F.binary.paused", "")));
         config.put("residualPool", f3ResidualPool(summary));
         config.put("residualSub", "未匹配体量按当前沉淀策略处理");
         return config;
@@ -3132,6 +3136,11 @@ public class OpsTeamService implements AuditReplayable {
         switch (key) {
             case "F.binary.threshold" -> BinarySettlementPolicyProvider.normalizeThreshold(value);
             case "F.binary.matchRate" -> BinarySettlementPolicyProvider.normalizeMatchRate(value);
+            case "F.binary.paused" -> {
+                if (BinarySettlementPolicyProvider.parsePaused(value) == null) {
+                    throw new IllegalArgumentException("F_TEAM_TOGGLE_INVALID");
+                }
+            }
             default -> { }
         }
     }
@@ -3140,7 +3149,7 @@ public class OpsTeamService implements AuditReplayable {
     private void validateUiConfig(String key, String value) {
         validateBinaryUiConfig(key, value);
         switch (key) {
-            case "F.vrank.permanent", "F.leaderboard.paused", "F.binary.paused" -> {
+            case "F.vrank.permanent", "F.leaderboard.paused" -> {
                 if (!"on".equalsIgnoreCase(value) && !"off".equalsIgnoreCase(value)) {
                     throw new IllegalArgumentException("F_TEAM_TOGGLE_INVALID");
                 }
