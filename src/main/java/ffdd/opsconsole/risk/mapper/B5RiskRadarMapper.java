@@ -147,9 +147,13 @@ public interface B5RiskRadarMapper {
                    END AS level,
                    s.signal_type AS signalType,
                    s.user_id AS userId,
+                   s.evidence AS evidence,
+                   CONCAT('U', LPAD(s.user_id, GREATEST(8, LENGTH(CAST(s.user_id AS CHAR))), '0')) AS userNo,
                    DATE_FORMAT(s.created_at, '%Y-%m-%dT%H:%i:%s') AS createdAt,
                    COALESCE(d.handling_status, 'open') AS handlingStatus,
                    COALESCE(d.version, 0) AS handlingVersion,
+                   d.handled_by AS handledBy,
+                   DATE_FORMAT(d.handled_at, '%Y-%m-%dT%H:%i:%s') AS handledAt,
                    COALESCE((SELECT CASE WHEN x.receipt_source='mock' THEN 'SANDBOX_DELIVERED'
                                         ELSE x.delivery_status END
                                FROM nx_admin_risk_alert_delivery x
@@ -313,7 +317,7 @@ public interface B5RiskRadarMapper {
     @Select("""
             SELECT states.state,
                    COUNT(w.id) AS count,
-                   COALESCE(SUM(w.amount), 0) AS amountUsdt,
+                   COALESCE(SUM(CASE WHEN UPPER(w.asset)='USDT' THEN w.amount ELSE 0 END), 0) AS amountUsdt,
                    COALESCE(SUM(CASE WHEN w.created_at < DATE_SUB(NOW(), INTERVAL 48 HOUR) THEN 1 ELSE 0 END), 0)
                      AS overSlaCount
               FROM (

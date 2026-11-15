@@ -36,7 +36,9 @@ public class OpsRiskRadarController {
             "/risk/multi-account", "risk_k1_read",
             "/risk/abuse", "risk_k2_read",
             "/emergency/kill-switch", "emergency_j1_read",
-            "/overview/dual-ledger", "overview_b1_read");
+            "/overview/dual-ledger", "overview_b1_read",
+            "/emergency/tamper", "emergency_j3_read",
+            "/risk/scoring", "risk_k4_read");
     private final OpsRiskRadarService service;
 
     @GetMapping("/radar")
@@ -106,7 +108,8 @@ public class OpsRiskRadarController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody B5TriageRequest request,
             Authentication authentication) {
-        String required = request == null ? null : TARGET_READ_AUTHORITIES.get(request.target());
+        String target = request == null || request.target() == null ? null : request.target().trim();
+        String required = TARGET_READ_AUTHORITIES.get(target);
         if (required != null && (authentication == null || authentication.getAuthorities().stream()
                 .noneMatch(authority -> required.equals(authority.getAuthority())))) {
             throw new AccessDeniedException("B5_TRIAGE_TARGET_READ_REQUIRED");
