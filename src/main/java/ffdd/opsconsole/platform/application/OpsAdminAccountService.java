@@ -326,6 +326,9 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (!usernameChanged && !displayNameChanged && !emailChanged && !avatarChanged && !genderChanged) {
             return ApiResult.ok(current);
         }
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
 
         Long adminId = parseAccountId(current.id()).orElseThrow();
         if (adminMapper.updateProfileIfVersion(adminId, accountVersionNumber(current.version()), username, displayName, firstText(email)) != 1) {
@@ -397,11 +400,13 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
                 && lockMapper.countActiveByTarget("A", "account", current.id()) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
-        if ("super".equals(current.role())
-                && "enabled".equals(current.status())
+        if (AdminAccountGovernance.effectiveSuper(current.role(), current.status(), current.tfa())
                 && !"super".equals(nextRole)
                 && effectiveSupers(operators()) - 1 < minEffectiveSupers()) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "MIN_EFFECTIVE_SUPER_REQUIRED");
+        }
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
 
         Long adminId = parseAccountId(current.id()).orElseThrow();
@@ -463,10 +468,12 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
             }
         }
         if ("disabled".equals(nextStatus)
-                && "super".equals(current.role())
-                && "enabled".equals(current.status())
+                && AdminAccountGovernance.effectiveSuper(current.role(), current.status(), current.tfa())
                 && effectiveSupers(operators()) - 1 < minEffectiveSupers()) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "MIN_EFFECTIVE_SUPER_REQUIRED");
+        }
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
 
         Long adminId = parseAccountId(current.id()).orElseThrow();
@@ -523,14 +530,16 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (!current.tfa()) {
             return ApiResult.fail(409, "ADMIN_MFA_NOT_BOUND");
         }
-        if ("super".equals(current.role())
-                && "enabled".equals(current.status())
+        if (AdminAccountGovernance.effectiveSuper(current.role(), current.status(), current.tfa())
                 && effectiveSupers(currentOperators) - 1 < minEffectiveSupers()) {
             return ApiResult.fail(403, "MIN_EFFECTIVE_SUPER_REQUIRED");
         }
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("A", "account", current.id()) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
         Long adminId = parseAccountId(current.id()).orElseThrow();
         if (adminMapper.incrementVersionIfVersion(adminId, accountVersionNumber(current.version())) != 1) {
@@ -619,6 +628,9 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("A", "account", current.id()) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
         LocalDateTime revokedAt = LocalDateTime.now();
         String now = revokedAt.format(ISO);
