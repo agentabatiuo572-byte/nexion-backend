@@ -874,6 +874,18 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     int ensureWatermark(@Param("network") CregisNetwork network,@Param("second") long second);
     @Select("SELECT complete_through FROM nx_cregis_reconcile_watermark WHERE id=#{network.cursorId,javaType=int}")
     Long reconcileWatermark(@Param("network") CregisNetwork network);
+    /** A committed baseline can resume after inactivity; payout freshness is checked independently. */
+    @Select("""
+            SELECT w.complete_through FROM nx_cregis_reconcile_watermark w
+              JOIN nx_cregis_reconcile_run r ON r.run_id=w.last_run_id
+              JOIN nx_cregis_chain_cursor c ON c.id=w.id
+             WHERE w.id=#{network.cursorId,javaType=int}
+               AND r.project_id=#{projectId} AND r.chain_id=#{network.chainId,javaType=java.lang.String}
+               AND r.status='COMPLETE' AND r.stable_passes=2 AND r.window_end=w.complete_through
+               AND r.chain_cursor_block>0 AND r.chain_cursor_hash IS NOT NULL
+               AND c.next_block>=r.chain_cursor_block
+            """)
+    Long completedReconcileWatermark(@Param("network") CregisNetwork network,@Param("projectId") long projectId);
     @Update("""
             UPDATE nx_cregis_reconcile_watermark
                SET active_run_id=#{runId},lease_until=DATE_ADD(NOW(), INTERVAL 30 MINUTE)
