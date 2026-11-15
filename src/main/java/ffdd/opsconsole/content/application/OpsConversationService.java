@@ -11,6 +11,7 @@ import ffdd.opsconsole.content.domain.ContentConversationMessageView;
 import ffdd.opsconsole.content.domain.ContentConversationView;
 import ffdd.opsconsole.content.domain.ConversationCustomerProfile;
 import ffdd.opsconsole.content.domain.ConversationRepository;
+import ffdd.opsconsole.content.domain.ConversationWriteState;
 import ffdd.opsconsole.content.domain.CustomerProfileRepository;
 import ffdd.opsconsole.content.dto.ConversationArchiveRequest;
 import ffdd.opsconsole.content.dto.ConversationArchiveBatchRequest;
@@ -146,7 +147,31 @@ public class OpsConversationService {
         List<ContentConversationMessageView> messages = conversationRepository.messages(conversation.conversationNo());
         // 跨域聚合客户档案(只读辅助);内部对每个子域 try/catch 降级,绝不抛异常中断会话详情。
         ConversationCustomerProfile customerProfile = includeCustomerProfile?buildCustomerProfile(conversation):null;
-        return ApiResult.ok(new ContentConversationDetail(conversation, messages, customerProfile));
+        return ApiResult.ok(new ContentConversationDetail(conversation, messages, customerProfile,
+                false, null, conversationWriteState(conversation)));
+    }
+
+    /**
+     * Read-only distinction between the thread owner and the current assignment.
+     * It never grants write authority: reply still checks peer/current-thread.
+     */
+    private ConversationWriteState conversationWriteState(ContentConversationView conversation) {
+        String currentAssignmentAgentId = conversation.ownerAgentId();
+        String threadOwnerAgentId = conversationRepository.storedPeerAgentIdForRead(conversation.conversationNo());
+        String threadOwnerAgentName = conversationRepository.storedPeerAgentNameForRead(conversation.conversationNo());
+        String writableConversationNo = currentAssignmentAgentId == null
+                ? null
+                : conversationRepository.currentCustomerConversationForRead(
+                        conversation.userId(), currentAssignmentAgentId);
+        boolean canReply = writableConversationNo != null
+                && writableConversationNo.equals(conversation.conversationNo());
+        return new ConversationWriteState(
+                threadOwnerAgentId,
+                threadOwnerAgentName,
+                currentAssignmentAgentId,
+                conversation.ownerAgentName(),
+                writableConversationNo,
+                canReply);
     }
 
     @Transactional(rollbackFor = Exception.class)
