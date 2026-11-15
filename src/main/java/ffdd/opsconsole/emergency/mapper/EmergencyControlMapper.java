@@ -470,6 +470,18 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
     List<Map<String, Object>> geoHits();
 
     @Select("""
+            SELECT COALESCE(SUM(event_count), 0) AS totalBlockedEvents,
+                   COUNT(DISTINCT country_code) AS countryCount,
+                   DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 1 DAY), '%Y-%m-%d %H:%i:%s') AS windowStart,
+                   DATE_FORMAT(NOW(), '%Y-%m-%d %H:%i:%s') AS capturedAt
+              FROM nx_emergency_geo_block_event
+             WHERE is_deleted = 0
+               AND recorded_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+               AND recorded_at <= NOW()
+            """)
+    Map<String, Object> geoHitSummary();
+
+    @Select("""
             SELECT endpoint_key AS endpointKey,
                    SUM(event_count) AS count
               FROM nx_emergency_geo_block_event

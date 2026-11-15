@@ -3188,6 +3188,25 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         return emergencyRepository.geoHits();
     }
 
+    /** Dedicated management read: all-country SUM over the same rolling 24h event table, no country LIMIT. */
+    public ApiResult<Map<String, Object>> geoBlockHitSummary() {
+        Map<String, Object> summary = emergencyRepository.geoHitSummary();
+        return ApiResult.ok(map(
+                "domain", "J2",
+                "window", "ROLLING_24H",
+                "available", true,
+                "windowStart", stringValue(summary.get("windowStart"), ""),
+                "capturedAt", stringValue(summary.get("capturedAt"), ""),
+                "totalBlockedEvents", longValue(summary.get("totalBlockedEvents")),
+                "countryCount", longValue(summary.get("countryCount")),
+                "source", List.of("nx_emergency_geo_block_event"),
+                "sourceFields", List.of("event_count", "recorded_at"),
+                "definition", "SUM(event_count) over all country_code in recorded_at [NOW()-1DAY, NOW()]",
+                "coverage", "recorded_geo_block_events_only",
+                "uniqueUsers", false,
+                "allAccessProof", false));
+    }
+
     private Map<String, Object> tamperAlertConfig() {
         int threshold = emergencyRepository.settingValue(TAMPER_THRESHOLD)
                 .map(Integer::parseInt)
@@ -3597,6 +3616,16 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
             return Integer.parseInt(string.trim());
         }
         return 0;
+    }
+
+    private long longValue(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value instanceof String string && StringUtils.hasText(string)) {
+            return Long.parseLong(string.trim());
+        }
+        return 0L;
     }
 
     private boolean boolValue(Object value) {
