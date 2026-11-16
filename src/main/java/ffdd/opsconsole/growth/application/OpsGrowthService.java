@@ -2886,6 +2886,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         if (amount.stripTrailingZeros().scale() > 6 || amount.setScale(6).precision() > 18) {
             throw new BizException(422, "STREAK_REWARD_AMOUNT_PRECISION_INVALID");
         }
+        if (amount.signum() <= 0) throw new BizException(422, "STREAK_REWARD_AMOUNT_INVALID");
         if ("SPIN".equals(type) && (amount.stripTrailingZeros().scale() > 0
                 || amount.compareTo(BigDecimal.valueOf(Integer.MAX_VALUE)) > 0)) {
             throw new BizException(422, "STREAK_SPIN_INTEGER_REQUIRED");
