@@ -972,9 +972,38 @@ public class OpsCopyAbService {
         if (!StringUtils.hasText(winner.version())) {
             return ApiResult.fail(409, "COPY_EXPERIMENT_WINNER_VERSION_INVALID");
         }
-        String winnerPosition = copyAbRepository.findVersion(current.copyKey(), winner.version().trim())
-                .map(CopyVersionRow::copyPosition).orElse(null);
-        ApiResult<CopyExperimentRow> positionConflict = validatePositionUniqueness(current.copyKey(), winnerPosition);
+        CopyVersionRow winnerVersion = copyAbRepository.findVersion(current.copyKey(), winner.version().trim()).orElse(null);
+        if (winnerVersion == null) {
+            return ApiResult.fail(409, "COPY_EXPERIMENT_WINNER_VERSION_INVALID");
+        }
+        if (!StringUtils.hasText(winnerVersion.surface())
+                || (!StringUtils.hasText(winnerVersion.audience()) && winnerVersion.audienceTarget() == null)
+                || !StringUtils.hasText(winnerVersion.trafficSplit()) || !StringUtils.hasText(winnerVersion.versionNote())
+                || !StringUtils.hasText(winnerVersion.zh()) || !StringUtils.hasText(winnerVersion.en())
+                || !StringUtils.hasText(winnerVersion.vi()) || !StringUtils.hasText(winnerVersion.copyPosition())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_FIELDS_REQUIRED");
+        }
+        if (current.copyKey().trim().length() > 96 || winnerVersion.versionNote().trim().length() > 255) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_METADATA_INVALID");
+        }
+        ApiResult<CopyContentRow> audienceGuard = validateAudience(
+                winnerVersion.audienceTarget(), winnerVersion.audience());
+        if (audienceGuard != null) {
+            return ApiResult.fail(audienceGuard.getCode(), audienceGuard.getMessage());
+        }
+        ApiResult<CopyContentRow> payloadGuard = validateCopyPayload(
+                winnerVersion.surface(), winnerVersion.trafficSplit(), winnerVersion.zh(), winnerVersion.en(),
+                winnerVersion.vi(), winnerVersion.translations(), request.reason());
+        if (payloadGuard != null) {
+            return ApiResult.fail(payloadGuard.getCode(), payloadGuard.getMessage());
+        }
+        ApiResult<CopyContentRow> positionGuard = validatePositionReference(
+                winnerVersion.copyPosition(), winnerVersion.surface());
+        if (positionGuard != null) {
+            return ApiResult.fail(positionGuard.getCode(), positionGuard.getMessage());
+        }
+        ApiResult<CopyExperimentRow> positionConflict = validatePositionUniqueness(
+                current.copyKey(), winnerVersion.copyPosition());
         if (positionConflict != null) {
             return positionConflict;
         }
