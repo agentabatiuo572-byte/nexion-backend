@@ -248,6 +248,12 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
             version.setIsDeleted(0);
         } else {
             version = latestVersion(key, "DRAFT");
+            if (version != null && draftHoldsOtherText(version, zh, en, vi, translations)) {
+                // An unpublished draft holding different text is someone's work in progress. A publish
+                // coming from another source (an I1 copy publish, a template save) must be told instead of
+                // silently replacing it: the draft is left as it is and the caller rejects with a conflict.
+                throw new BizException(409, "I18N_DRAFT_OVERWRITE_CONFLICT");
+            }
             if (version == null) {
                 I18nMessageVersionEntity latest = latestVersion(key, null);
                 version = new I18nMessageVersionEntity();
@@ -273,6 +279,16 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
             publishTranslations(key, translations, now);
         }
         return toVersionPair(version);
+    }
+
+    /** True when the stored draft's text differs from what this publish would write. */
+    private boolean draftHoldsOtherText(I18nMessageVersionEntity draft, String zh, String en, String vi,
+                                        Map<String, String> translations) {
+        return !java.util.Objects.equals(draft.getZhValue(), zh.trim())
+                || !java.util.Objects.equals(draft.getEnValue(), en.trim())
+                || !java.util.Objects.equals(draft.getViValue(), vi.trim())
+                || !MessageTranslations.read(draft.getTranslationsJson())
+                        .equals(MessageTranslations.read(MessageTranslations.json(translations)));
     }
 
     @Override
