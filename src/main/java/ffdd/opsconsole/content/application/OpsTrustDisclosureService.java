@@ -99,6 +99,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
             "^v[1-9][0-9]{0,8}(?:\\.[0-9]{1,8})*$", Pattern.CASE_INSENSITIVE);
     private static final Pattern JURISDICTION_CODE_PATTERN = Pattern.compile("^[A-Z][A-Z0-9_-]{1,15}$");
     private static final Pattern TRUST_FIELD_KEY_PATTERN = Pattern.compile("^[A-Za-z][A-Za-z0-9._-]{0,63}$");
+    private static final Pattern APP_TRUST_FIELD_KEY_PATTERN = Pattern.compile("^[A-Za-z][A-Za-z0-9]*(?:[._-][A-Za-z0-9]+)*$");
     private static final Pattern LOCALIZED_TRUST_FIELD_PATTERN = Pattern.compile("^(.+?)[._-](" + String.join("|", InterfaceLanguages.CODES) + ")$", Pattern.CASE_INSENSITIVE);
     private static final Pattern ACCEPTANCE_RUN_ID_PATTERN = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9._-]{7,95}$");
     private static final Pattern LINK_LIKE_PATTERN = Pattern.compile(
@@ -409,6 +410,8 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (!hasCompleteLocalizedFields(version.fields())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_TRILINGUAL_FIELDS_REQUIRED");
         }
+        ApiResult<Void> appFieldGuard = requireAppPublicFields(version.fields());
+        if (appFieldGuard != null) return fail(appFieldGuard);
         String actor = authenticatedOperator();
         TrustSectionView updated = trustDisclosureRepository.publishTrustSectionVersion(current.key(), version.version(), actor, now());
         requiredAudit("I4_TRUST_SECTION_PUBLISHED", "TRUST_SECTION", current.key(), actor, idempotencyKey, request.reason(), Map.of(
@@ -466,6 +469,8 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (target == null || (!"published".equalsIgnoreCase(target.status()) && !"superseded".equalsIgnoreCase(target.status()))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_VERSION_NOT_FOUND");
         }
+        ApiResult<Void> appFieldGuard = requireAppPublicFields(target.fields());
+        if (appFieldGuard != null) return fail(appFieldGuard);
         String actor = authenticatedOperator();
         TrustSectionView updated = trustDisclosureRepository.publishTrustSectionVersion(current.key(), target.version(), actor, now());
         requiredAudit("I4_TRUST_SECTION_ROLLED_BACK", "TRUST_SECTION", current.key(), actor, idempotencyKey, request.reason(), Map.of(
@@ -1517,6 +1522,23 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         }
         return !languagesByFamily.isEmpty()
                 && languagesByFamily.values().stream().allMatch(languages -> languages.containsAll(Set.of("zh", "vi", "en")));
+    }
+
+    /** Mirrors the App trust-section parser's per-section field contract: 1..80, strict ASCII key segments. */
+    private ApiResult<Void> requireAppPublicFields(List<TrustSectionVersionView.Field> fields) {
+        if (fields == null || fields.isEmpty() || fields.size() > 80) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_STRUCTURED_FIELDS_INVALID");
+        }
+        Set<String> keys = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        for (TrustSectionVersionView.Field field : fields) {
+            if (field == null || !StringUtils.hasText(field.key())
+                    || !APP_TRUST_FIELD_KEY_PATTERN.matcher(field.key().trim()).matches()
+                    || !StringUtils.hasText(field.label()) || field.value() == null
+                    || !keys.add(field.key().trim())) {
+                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_STRUCTURED_FIELDS_INVALID");
+            }
+        }
+        return null;
     }
 
     private boolean validPublishedTrustFields(List<TrustSectionVersionView.Field> fields) {
