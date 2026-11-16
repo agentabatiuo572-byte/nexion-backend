@@ -1149,22 +1149,23 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             throw new BizException(503, "G3_WEEKLY_CURVE_INVALID");
         }
         int activeDay = effectiveActiveDayIndex();
-        BigDecimal activePrice = currentPrice();
+        BigDecimal activePrice = currentPriceOrNull();
         NexMarketCurveFrame activeFrame = frameFor(frames, activeDay);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "G3");
         response.put("asset", "UVT");
         response.put("currency", "USDT");
         response.put("currentPrice", activePrice);
+        response.put("priceAvailable", activePrice != null);
         response.put("activeDayIndex", activeDay);
         response.put("activeFrame", activeFrame);
         response.put("weekPeakPrice", weekPeak(frames));
         response.put("frames", frames);
         response.put("curveRevision", marketPolicyRevision("curve", writeCurve(frames)));
-        response.put("priceRevision", marketPolicyRevision("price", activePrice.stripTrailingZeros().toPlainString()));
+        response.put("priceRevision", activePrice == null ? "" : marketPolicyRevision("price", activePrice.stripTrailingZeros().toPlainString()));
         response.put("scheduleRevision", marketPolicyRevision("schedule", configFacade.activeValue(SCHEDULE_CONTROL_KEY).orElse(null)));
         response.put("controls", controls());
-        response.put("overrides", overrides(activeFrame));
+        response.put("overrides", overrides(activeFrame, activePrice));
         response.put("coverage", coverage());
         response.put("sunsetExclusions", sunsetExclusions());
         response.put("serverCanonical", true);
@@ -2064,6 +2065,11 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 .orElse(BigDecimal.ZERO);
     }
 
+    /** The management G3 read keeps a missing price distinct from a real numeric zero. */
+    private BigDecimal currentPriceOrNull() {
+        return marketRepository.latestNexUsdtPrice().orElse(null);
+    }
+
     private BigDecimal deltaPercent(BigDecimal oldPrice, BigDecimal newPrice) {
         if (oldPrice == null || oldPrice.compareTo(BigDecimal.ZERO) == 0) {
             return BigDecimal.ZERO;
@@ -2257,9 +2263,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return control;
     }
 
-    private Map<String, Object> overrides(NexMarketCurveFrame activeFrame) {
+    private Map<String, Object> overrides(NexMarketCurveFrame activeFrame, BigDecimal activePrice) {
         Map<String, Object> overrides = new LinkedHashMap<>();
-        overrides.put("currentPrice", currentPrice());
+        overrides.put("currentPrice", activePrice);
         String volatilityFallback = activeFrame == null ? "" : activeFrame.volatilityPct().stripTrailingZeros().toPlainString();
         overrides.put("volatilityPct", readText(VOLATILITY_KEY, volatilityFallback));
         overrides.put("oracle", readText(ORACLE_KEY, "内部做市"));
@@ -3731,10 +3737,16 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
 
     private Map<String, Object> coverage() {
         TreasuryCoverageSnapshot snapshot = coverageFacade.snapshot();
+        boolean reliable = snapshot != null && snapshot.reliable();
+        BigDecimal coverageRatio = reliable ? snapshot.coverageRatio() : null;
+        BigDecimal redlinePct = reliable ? snapshot.redlinePct() : null;
+        Boolean redlineBreached = coverageRatio != null && redlinePct != null
+                ? coverageRatio.compareTo(redlinePct) < 0 : null;
         Map<String, Object> coverage = new LinkedHashMap<>();
-        coverage.put("coverageRatio", snapshot.coverageRatio());
-        coverage.put("redlinePct", snapshot.redlinePct());
-        coverage.put("redlineBreached", snapshot.coverageRatio().compareTo(snapshot.redlinePct()) < 0);
+        coverage.put("coverageRatio", coverageRatio);
+        coverage.put("redlinePct", redlinePct);
+        coverage.put("redlineBreached", redlineBreached);
+        coverage.put("reliable", reliable);
         coverage.put("precheck", "week peak UVT liability is checked before raising price or pump probability");
         return coverage;
     }
