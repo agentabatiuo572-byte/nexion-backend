@@ -117,6 +117,14 @@ public class AuditLogService {
         return matches.isEmpty() ? null : matches.get(0);
     }
 
+    /** An old K4 receipt may be replayed only by the single actor recorded on its success audit. */
+    public boolean isK4BatchRecomputeOwner(long recordId, String scope, String key, String hash, long actor) {
+        if (recordId < 1 || actor < 1 || !StringUtils.hasText(scope)
+                || !StringUtils.hasText(key) || !StringUtils.hasText(hash)) return false;
+        List<Long> owners = auditLogMapper.findK4BatchRecomputeOwners(recordId, scope, key.trim(), hash);
+        return owners != null && owners.size() == 1 && Long.valueOf(actor).equals(owners.get(0));
+    }
+
     public List<AuditLogRecord> listForExport(AuditLogQueryRequest request, int maxRows) {
         return list(request, Math.max(1, Math.min(maxRows, 5000)));
     }

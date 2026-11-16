@@ -1598,22 +1598,22 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     "K4_MODEL_VERSION_REQUIRED", request.reason(), idempotencyKey);
         }
         List<String> requested = canonicalK4ScoreUserOrder(request.userNos());
-        if (requested.size() > 1000) {
-            return rejectK4Write("batchRecompute", "batch", actor, 422,
-                    "K4_SCORE_BATCH_TOO_LARGE", request.reason(), idempotencyKey);
-        }
-        // Every multi-user K4 writer acquires the per-user score roots in the same order.
-        // This prevents inverse client order from creating U1->U2 / U2->U1 deadlocks.
-        List<String> targets = requested.isEmpty()
-                ? canonicalK4ScoreUserOrder(riskRepository.scoreUserNos())
-                : requested;
-        if (targets.size() > 1000) {
-            return rejectK4Write("batchRecompute", "batch", actor, 422,
-                    "K4_SCORE_BATCH_TOO_LARGE", request.reason(), idempotencyKey);
-        }
+        ApiResult<Map<String, Object>> legacy = legacyK4BatchReceipt(
+                idempotencyKey, requested, request, actor);
+        if (legacy != null) return legacy;
+        String batchHash = requestHash(String.join(",", requested),
+                String.valueOf(request.expectedModelVersion()), request.reason());
         return executeK4Write("batchRecompute", "batch", actor, request.reason(), idempotencyKey, () ->
-                idempotentCommand("K4_SCORE_BATCH_RECOMPUTE", idempotencyKey,
-                requestHash(String.join(",", targets), String.valueOf(request.expectedModelVersion()), request.reason()), () -> {
+                idempotentCommand("K4_SCORE_BATCH_RECOMPUTE", idempotencyKey, batchHash, () -> {
+                    // The empty-list marker is the original empty intent; only a genuinely new
+                    // execution expands the current score-user set and enforces the cap.
+                    List<String> targets = requested.isEmpty()
+                            ? canonicalK4ScoreUserOrder(riskRepository.scoreUserNos())
+                            : requested;
+                    if (targets.size() > 1000) {
+                        return rejectK4Write("batchRecompute", "batch", actor, 422,
+                                "K4_SCORE_BATCH_TOO_LARGE", request.reason(), idempotencyKey);
+                    }
                     RiskScoreModelView model = riskRepository.activeScoringModel().orElse(null);
                     if (model == null) {
                         return rejectK4Write("batchRecompute", "batch", actor, 409,
@@ -1645,6 +1645,46 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                             "idempotencyKey", idempotencyKey.trim()));
                     return ApiResult.ok(Map.of("count", results.size(), "users", results));
                 }));
+    }
+
+    @SuppressWarnings("unchecked")
+    private ApiResult<Map<String, Object>> legacyK4BatchReceipt(
+            String idempotencyKey, List<String> requested, RiskScoreBatchCommandRequest request, String actor) {
+        var active = idempotencyService.activeReceipt("K4_SCORE_BATCH_RECOMPUTE", idempotencyKey);
+        if (active == null) return null;
+        Long adminId = authenticatedK4AdminId();
+        if (adminId == null) throw new BizException(409, "K4_SCORE_BATCH_RECEIPT_OWNER_UNPROVEN");
+        if (!auditLogService.isK4BatchRecomputeOwner(active.recordId(), "K4_SCORE_BATCH_RECOMPUTE",
+                idempotencyKey.trim(), active.requestHash(), adminId)) {
+            throw new BizException(409, "K4_SCORE_BATCH_RECEIPT_OWNER_UNPROVEN");
+        }
+        var recovered = idempotencyService.recoveryResult("K4_SCORE_BATCH_RECOMPUTE",
+                idempotencyKey, active.requestHash(), ApiResult.class);
+        if (recovered.status() != AdminIdempotencyService.RecoveryStatus.SUCCEEDED
+                || recovered.response() == null) {
+            throw new BizException(409, "K4_SCORE_BATCH_RECEIPT_UNREADABLE");
+        }
+        ApiResult<?> receipt = recovered.response();
+        List<String> oldTargets = k4ReceiptTargets(receipt);
+        if (oldTargets == null) throw new BizException(409, "K4_SCORE_BATCH_RECEIPT_UNREADABLE");
+        if (!requested.isEmpty() && !requested.equals(oldTargets)) return null;
+        String oldHash = requestHash(String.join(",", oldTargets),
+                String.valueOf(request.expectedModelVersion()), request.reason());
+        if (!oldHash.equals(active.requestHash())) return null;
+        return (ApiResult<Map<String, Object>>) receipt;
+    }
+
+    private List<String> k4ReceiptTargets(ApiResult<?> receipt) {
+        if (receipt == null || receipt.getCode() != 0
+                || !(receipt.getData() instanceof Map<?, ?> data)
+                || !(data.get("users") instanceof List<?> users)) return null;
+        List<String> targets = new ArrayList<>(users.size());
+        for (Object item : users) {
+            if (!(item instanceof Map<?, ?> row) || !(row.get("userNo") instanceof String userNo)
+                    || !StringUtils.hasText(userNo)) return null;
+            targets.add(userNo);
+        }
+        return canonicalK4ScoreUserOrder(targets);
     }
 
     public ApiResult<RiskScoreUserView> overrideScore(String userNo, String idempotencyKey, RiskScoreOverrideRequest request) {
@@ -1883,6 +1923,19 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
 
     private String authenticatedK4Operator() {
         return authenticatedK3Operator();
+    }
+
+    private Long authenticatedK4AdminId() {
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()
+                || !(authentication.getDetails() instanceof Map<?, ?> details)
+                || !"ADMIN".equals(details.get("subjectType"))) return null;
+        try {
+            long id = Long.parseLong(authentication.getName());
+            return id > 0 ? id : null;
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     private RiskScoreUserView withK4ScoreHistory(RiskScoreUserView user) {

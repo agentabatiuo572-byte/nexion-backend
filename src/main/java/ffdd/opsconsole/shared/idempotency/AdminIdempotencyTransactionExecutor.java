@@ -74,6 +74,15 @@ public class AdminIdempotencyTransactionExecutor {
         }
     }
 
+    /** A committed, unexpired success receipt locator; never claims or executes. */
+    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
+    public AdminIdempotencyService.ActiveReceipt activeReceipt(String scope, String idempotencyKey) {
+        AdminIdempotencyRecordEntity record = recordMapper.selectActive(scope, idempotencyKey);
+        if (record == null || !STATUS_SUCCEEDED.equals(record.getStatus())
+                || !StringUtils.hasText(record.getResponseJson())) return null;
+        return new AdminIdempotencyService.ActiveReceipt(record.getId(), record.getRequestHash());
+    }
+
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public <T> Claim<T> claimRetained(String scope, String idempotencyKey, String requestHash,
                                     LocalDateTime expiresAt, Class<T> responseType) {
