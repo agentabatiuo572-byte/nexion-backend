@@ -186,7 +186,7 @@ public class AdminCommandInvestigationService {
                 entry.setFactAction(original.getScope());
             } else if (request.evidenceAuditId() != null) {
                 var fact = investigations.successEvidence(request.evidenceAuditId(), original);
-                if (allowedFact(original.getScope(), fact)) {
+                if (allowedFact(original, fact)) {
                     entry.setConclusion("SUCCEEDED");
                     entry.setEvidenceType("SUCCESS_AUDIT:" + fact.getId());
                     entry.setFactType(fact.getResourceType());
@@ -272,7 +272,8 @@ public class AdminCommandInvestigationService {
         } catch (JsonProcessingException invalid) { return false; }
     }
 
-    private boolean allowedFact(String scope, AuditLogRecord fact) {
+    private boolean allowedFact(AdminIdempotencyRecordEntity original, AuditLogRecord fact) {
+        String scope = original.getScope();
         if (fact == null || !StringUtils.hasText(fact.getResourceId()) || !StringUtils.hasText(fact.getResourceType())) return false;
         String action = fact.getAction();
         if ("A2_COMMAND".equals(scope)) return "A2_OPERATION".equals(fact.getResourceType())
@@ -400,10 +401,11 @@ public class AdminCommandInvestigationService {
                             .equals(fact.getResourceId());
         }
         if (AdminCommandOrigin.a3FeatureFlagScope(scope)) {
-            String physicalKey = "feature." + scope.substring("A3_FEATURE_FLAG:".length());
+            // Stored scopes are uppercase; the server-bound target preserves the canonical physical key.
+            String physicalKey = original.getOriginTarget();
             return "A3_PLATFORM_CONFIG".equals(fact.getResourceType())
                     && "ADMIN_FEATURE_FLAG_CHANGED".equals(action)
-                    && physicalKey.equals(fact.getResourceId());
+                    && physicalKey != null && physicalKey.equals(fact.getResourceId());
         }
         if ("A3_PLATFORM_EXPERIENCE".equals(scope)) {
             return "A3_PLATFORM_EXPERIENCE".equals(fact.getResourceType())
