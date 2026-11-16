@@ -191,7 +191,11 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    SUM(CASE WHEN UPPER(status) IN ('PAID','SETTLED') THEN 1 ELSE 0 END) AS paidOrSettledEventCount,
                    SUM(CASE WHEN UPPER(status) IN ('PAID','SETTLED')
                             THEN CASE WHEN UPPER(currency)='USDT' THEN amount_usdt ELSE amount_nex END
-                            ELSE 0 END) AS paidOrSettledAmountRaw
+                            ELSE 0 END) AS paidOrSettledAmountRaw,
+                   SUM(CASE WHEN UPPER(status) = 'PAID' THEN 1 ELSE 0 END) AS paidEventCount,
+                   SUM(CASE WHEN UPPER(status) = 'PAID'
+                            THEN CASE WHEN UPPER(currency)='USDT' THEN amount_usdt ELSE amount_nex END
+                            ELSE 0 END) AS paidAmountRaw
               FROM nx_commission_event
              WHERE is_deleted = 0
                AND UPPER(currency) IN ('USDT','UVT')
