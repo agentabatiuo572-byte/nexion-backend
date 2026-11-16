@@ -298,8 +298,8 @@ public class AdminCommandInvestigationService {
                 && "J4_SOP_PLAYBOOK_EXECUTED".equals(action);
         if (scope.startsWith("J4_PLAYBOOK_CANCEL:")) return "SOP_PLAYBOOK_EXECUTION".equals(fact.getResourceType())
                 && "J4_SOP_PLAYBOOK_CANCEL_REQUESTED".equals(action);
-        if (scope.startsWith("J4_PLAYBOOK_RESUME:")) return "SOP_PLAYBOOK_EXECUTION".equals(fact.getResourceType())
-                && "J4_SOP_PLAYBOOK_RECOVERY_STARTED".equals(action);
+        // Resume records J4_SOP_PLAYBOOK_RECOVERY_STARTED before reconcileStaleExecution and can still end in a
+        // partial rejection, so that audit is not proof of a completed recovery: only a retained receipt counts.
         if (scope.startsWith("J4_PLAYBOOK_ROLLBACK:")) return "SOP_PLAYBOOK_EXECUTION".equals(fact.getResourceType())
                 && "J4_SOP_PLAYBOOK_ROLLED_BACK".equals(action);
         return Set.of("D2_WITHDRAWAL_CHAIN_CONFIRMED", "D2_WITHDRAWAL_REVIEW_APPROVE", "D2_WITHDRAWAL_REVIEW_REJECT",
