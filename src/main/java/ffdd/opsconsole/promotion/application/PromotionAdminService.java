@@ -225,6 +225,8 @@ public class PromotionAdminService {
     public Map<String,Object> save(String id,Map<String,Object> request){
         validator.validate("DraftWrite",request);var p=visibleActivity(id,true);require(!Set.of("ENDED","ARCHIVED").contains(commandState(p)),"PROMOTION_READ_ONLY");
         require(p.get("draft_version")!=null,"PROMOTION_DRAFT_MISSING");var v=db.version(id,number(p.get("draft_version")),true);
+        require(request.get("expectedVersion")!=null,"PROMOTION_CONCURRENT_CHANGE");
+        require(number(v.get("version"))==number(request.get("expectedVersion")),"PROMOTION_CONCURRENT_CHANGE");
         require(number(v.get("revision"))==number(request.get("expectedRevision")),"PROMOTION_CONCURRENT_CHANGE");require("DRAFT".equals(v.get("status")),"PROMOTION_VERSION_READ_ONLY");
         var draft=mergeDraft(parse(v.get("contract_json")),map(request.get("draft")));validator.validate("Draft",draft);validateWindow(draft);banners.validateAsset(draft.get("bannerAssetId"));identities(id,draft,false);
         changed(db.write("UPDATE nx_promotion_version SET contract_json=?,content_hash=?,starts_at=?,ends_at=?,status='DRAFT',approved_by=NULL,approved_at=NULL,approval_ref=NULL,resolved_policies_json=NULL,revision=revision+1 WHERE activity_id=? AND version=? AND revision=?",
@@ -243,7 +245,12 @@ public class PromotionAdminService {
     }
     public Map<String,Object> newVersion(String id,Map<String,Object> request,boolean copy){
         validator.validate("Action",request);var p=visibleActivity(id,true);require(number(p.get("revision"))==number(request.get("expectedRevision")),"PROMOTION_CONCURRENT_CHANGE");
-        Object source=p.get("draft_version")!=null?p.get("draft_version"):p.get("active_version");require(source!=null,"PROMOTION_VERSION_MISSING");var draft=parse(db.version(id,number(source),false).get("contract_json"));
+        Object source=p.get("draft_version")!=null?p.get("draft_version"):p.get("active_version");require(source!=null,"PROMOTION_VERSION_MISSING");
+        if(copy){
+            require(request.get("expectedSourceVersion")!=null,"PROMOTION_CONCURRENT_CHANGE");
+            require(number(source)==number(request.get("expectedSourceVersion")),"PROMOTION_CONCURRENT_CHANGE");
+        }
+        var draft=parse(db.version(id,number(source),false).get("contract_json"));
         if(copy)return createDraft(draft);
         require(!Set.of("ENDED","ARCHIVED").contains(commandState(p))&&p.get("draft_version")==null,"PROMOTION_DRAFT_EXISTS_OR_READ_ONLY");
         long version=db.count("SELECT COALESCE(MAX(version),0)+1 FROM nx_promotion_version WHERE activity_id=?",id);insertVersion(id,version,draft);

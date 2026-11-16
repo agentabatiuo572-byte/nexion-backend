@@ -5036,6 +5036,9 @@
           "expectedRevision": {
             "$ref": "#/components/schemas/Revision"
           },
+          "expectedVersion": {
+            "$ref": "#/components/schemas/Revision"
+          },
           "reason": {
             "type": "string",
             "minLength": 1,
@@ -5074,6 +5077,9 @@
         "type": "object",
         "properties": {
           "expectedRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "expectedSourceVersion": {
             "$ref": "#/components/schemas/Revision"
           },
           "reason": {
