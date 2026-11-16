@@ -438,10 +438,13 @@ public class OpsAuditCenterService {
             var proposedReward = OpsI18nLearningService.courseRewardAmount(params.get("rewardNex"));
             rewardReview = learning.reviewCourseReward(expectedTarget.id(), proposedReward, makerId);
             ticket.setOperationType("fund");
-            ticket.setAmplifies(proposedReward.compareTo(new BigDecimal(rewardReview.rewardNex())) > 0 ? 1 : 0);
+            BigDecimal currentReward = rewardReview.rewardNex() == null
+                    ? BigDecimal.ZERO : new BigDecimal(rewardReview.rewardNex());
+            ticket.setAmplifies(proposedReward.compareTo(currentReward) > 0 ? 1 : 0);
             ticket.setSos(0);
             ticket.setRoleGate("超管");
-            ticket.setBeforeValue(rewardReview.version() + " · r" + rewardReview.revision() + " · " + rewardReview.rewardNex() + " UVT");
+            ticket.setBeforeValue(rewardReview.version() + " · r" + rewardReview.revision() + " · "
+                    + (rewardReview.rewardNex() == null ? "—" : rewardReview.rewardNex() + " UVT"));
             ticket.setAfterValue(rewardReview.version() + " · "
                     + proposedReward.setScale(6, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString() + " UVT");
         }

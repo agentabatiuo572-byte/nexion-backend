@@ -1228,7 +1228,7 @@ public class OpsTeamService implements AuditReplayable {
         return executeIdempotent(
                 "F1_VRANK_THRESHOLD_UPDATE",
                 idempotencyKey,
-                requestHash("threshold", rank, field, request.value(), request.reason(), actor(request.operator())),
+                vRankRequestHash(request.expectedRevision(), "threshold", rank, field, request.value(), request.reason(), actor(request.operator())),
                 () -> updateVRankThresholdInternal(rank, field, idempotencyKey, request));
     }
 
@@ -1278,7 +1278,7 @@ public class OpsTeamService implements AuditReplayable {
         return executeIdempotent(
                 "F1_VRANK_REWARD_ADD",
                 idempotencyKey,
-                requestHash(
+                vRankRequestHash(request.expectedRevision(),
                         "add", rank, request.type(), request.amount(), request.voucherId(),
                         request.skuId(), request.custom(), request.reason(), actor(request.operator())),
                 () -> addVRankRewardInternal(rank, idempotencyKey, request));
@@ -1315,7 +1315,7 @@ public class OpsTeamService implements AuditReplayable {
         return executeIdempotent(
                 "F1_VRANK_REWARD_UPDATE",
                 idempotencyKey,
-                requestHash(
+                vRankRequestHash(request.expectedRevision(),
                         "update", rank, rewardId, request.type(), request.amount(), request.voucherId(),
                         request.skuId(), request.custom(), request.reason(), actor(request.operator())),
                 () -> updateVRankRewardInternal(rank, rewardId, idempotencyKey, request));
@@ -1356,7 +1356,7 @@ public class OpsTeamService implements AuditReplayable {
         return executeIdempotent(
                 "F1_VRANK_REWARD_REMOVE",
                 idempotencyKey,
-                requestHash(
+                vRankRequestHash(request.expectedRevision(),
                         "remove", rank, rewardId, request.type(), request.amount(), request.voucherId(),
                         request.skuId(), request.custom(), request.reason(), actor(request.operator())),
                 () -> removeVRankRewardInternal(rank, rewardId, idempotencyKey, request));
@@ -3108,6 +3108,13 @@ public class OpsTeamService implements AuditReplayable {
                 hash,
                 ApiResult.class,
                 (Supplier) action);
+    }
+
+    private String vRankRequestHash(String expectedRevision, Object... parts) {
+        if (expectedRevision == null) return requestHash(parts);
+        Object[] command = java.util.Arrays.copyOf(parts, parts.length + 1);
+        command[parts.length] = expectedRevision;
+        return requestHash(command);
     }
 
     private String requestHash(Object... parts) {
