@@ -2494,14 +2494,28 @@ public class OpsTreasuryService {
         if (row.bizNo() == null) return null;
         String userId = row.userId() == null ? null : row.userId().toString();
         String userNo = trimToNull(row.userNo());
+        String masked = maskUserNo(userNo);
         String[] segments = row.bizNo().split(":", -1);
         // Account tokens are separate from dates, course IDs and other reference metadata.
         for (int index = 0; index < segments.length; index++) {
-            if (segments[index].equals(userId) || segments[index].equals(userNo)) {
-                segments[index] = maskUserNo(userNo);
+            if (isBillReferenceAccount(segments[index], userId, userNo)) {
+                segments[index] = masked;
+                continue;
             }
+            // A composite id such as F3-BINARY-{userId}-{yyyymmdd} keeps the account inside a dash-joined token.
+            String[] parts = segments[index].split("-", -1);
+            if (parts.length < 2) continue;
+            for (int part = 0; part < parts.length; part++) {
+                if (isBillReferenceAccount(parts[part], userId, userNo)) parts[part] = masked;
+            }
+            segments[index] = String.join("-", parts);
         }
         return String.join(":", segments);
+    }
+
+    /** Matches this row's own account only, so amounts, dates and event ids in a reference stay readable. */
+    private boolean isBillReferenceAccount(String token, String userId, String userNo) {
+        return token != null && !token.isEmpty() && (token.equals(userId) || token.equals(userNo));
     }
 
     private String csvCell(Object value) {
