@@ -836,6 +836,21 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             """)
     BigDecimal activeWheelProbabilitySum();
 
+    /**
+     * Awards persisted by the spin transaction itself, grouped by reward asset. A committed spin row and
+     * its wallet credit / voucher grant share one transaction, so this is an award fact, not an intent.
+     */
+    @Select("""
+            SELECT UPPER(reward_kind) AS asset,
+                   COUNT(1) AS awardedCount,
+                   COALESCE(SUM(reward_amount), 0) AS awardedAmount
+              FROM nx_growth_wheel_spin
+             WHERE spin_date = #{spinDate} AND is_deleted = 0
+             GROUP BY UPPER(reward_kind)
+             ORDER BY UPPER(reward_kind)
+            """)
+    List<Map<String, Object>> wheelAwardsOnDate(@Param("spinDate") java.time.LocalDate spinDate);
+
     /** Real persisted spins for one wheel day; the same column the wheel itself enforces its daily limits on. */
     @Select("""
             SELECT COUNT(1) FROM nx_growth_wheel_spin
