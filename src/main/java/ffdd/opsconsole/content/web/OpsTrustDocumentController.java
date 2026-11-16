@@ -56,7 +56,7 @@ public class OpsTrustDocumentController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey) {
         return ApiResult.ok(service.upload(slot, file,
                 new TrustDocumentUploadRequest(version, language, referenceNo, verifyUrl, reason, expectedSha256),
-                idempotencyKey, AdminActorResolver.resolve(null)));
+                idempotencyKey, AdminActorResolver.resolve(null), AdminActorResolver.subjectId()));
     }
 
     // HIGH：恢复随系统发布的默认文件
@@ -66,6 +66,7 @@ public class OpsTrustDocumentController {
             @PathVariable String slot,
             @RequestBody TrustDocumentRestoreRequest request,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey) {
-        return ApiResult.ok(service.restoreDefault(slot, request, idempotencyKey, AdminActorResolver.resolve(null)));
+        return ApiResult.ok(service.restoreDefault(slot, request, idempotencyKey,
+                AdminActorResolver.resolve(null), AdminActorResolver.subjectId()));
     }
 }
