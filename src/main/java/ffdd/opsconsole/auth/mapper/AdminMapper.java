@@ -37,6 +37,20 @@ public interface AdminMapper extends BaseMapper<AdminEntity> {
 
     @Select("""
             <script>
+            SELECT id, username, COALESCE(NULLIF(nickname,''), NULLIF(username,'')) AS displayName
+              FROM nx_admin
+             WHERE is_deleted=0
+               AND id IN
+               <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+            </script>
+            """)
+    List<AdminIdIdentity> findIdentitiesByIds(@Param("ids") Collection<Long> ids);
+
+    /** Display name keeps the repository-wide nickname-before-username order. */
+    record AdminIdIdentity(Long id, String username, String displayName) { }
+
+    @Select("""
+            <script>
             SELECT username, COALESCE(NULLIF(nickname,''), NULLIF(username,'')) AS displayName
               FROM nx_admin
              WHERE is_deleted=0

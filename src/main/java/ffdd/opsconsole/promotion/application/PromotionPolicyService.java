@@ -1,5 +1,6 @@
 package ffdd.opsconsole.promotion.application;
 
+import ffdd.opsconsole.auth.mapper.AdminMapper;
 import ffdd.opsconsole.promotion.mapper.PromotionMapper;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.time.*;
@@ -15,15 +16,60 @@ public class PromotionPolicyService {
     private final PromotionContractValidator validator;
     private final PromotionPolicyResolver resolver;
     private final PromotionNativeContractResolver natives;
+    private final AdminMapper admins;
 
-    public Map<String,Object> get(String id,long version){return resolver.view(row(id,version,false));}
+    public Map<String,Object> get(String id,long version){return withApproverIdentity(List.of(resolver.view(row(id,version,false)))).get(0);}
     public Map<String,Object> page(String kind,String state,String cursor,int limit){
         int size=Math.min(100,Math.max(1,limit));long offset=cursor==null?0:number(cursor);
         if(offset<0)throw new BizException(422,"PROMOTION_CURSOR_INVALID");
         var rows=db.list("SELECT * FROM nx_promotion_policy WHERE (? IS NULL OR kind=?) AND (? IS NULL OR status=?) ORDER BY policy_id,version LIMIT ? OFFSET ?",kind,kind,state,state,size+1,offset);
-        boolean more=rows.size()>size;var items=rows.stream().limit(size).map(resolver::view).toList();
+        boolean more=rows.size()>size;var items=withApproverIdentity(rows.stream().limit(size).map(resolver::view).toList());
         return values("items",items,"hasMore",more,"nextCursor",more?String.valueOf(offset+size):null);
     }
+    /**
+     * Admin-only projection: the real approver of these policy rows, resolved from approved_by against
+     * current non-deleted admins. approvedBy itself stays exactly as stored; when that account no longer
+     * exists, or was never recorded, approvedByAdmin is null instead of a guessed name or the last editor.
+     */
+    private List<Map<String,Object>> withApproverIdentity(List<Map<String,Object>> views){
+        Map<Long,AdminMapper.AdminIdIdentity> identities=identities(views.stream()
+                .map(view->approvedById(view.get("approvedBy"))).filter(Objects::nonNull).distinct().toList());
+        List<Map<String,Object>> enriched=new ArrayList<>(views.size());
+        for(Map<String,Object> view:views){
+            Long approvedBy=approvedById(view.get("approvedBy"));
+            AdminMapper.AdminIdIdentity identity=approvedBy==null?null:identities.get(approvedBy);
+            Map<String,Object> copy=new LinkedHashMap<>(view);
+            copy.put("approvedByAdmin",identity==null?null:values("id",identity.id(),
+                    "displayName",identity.displayName(),"username",identity.username()));
+            enriched.add(copy);
+        }
+        return enriched;
+    }
+
+    private Map<Long,AdminMapper.AdminIdIdentity> identities(List<Long> ids){
+        if(ids.isEmpty())return Map.of();
+        try{
+            Map<Long,AdminMapper.AdminIdIdentity> found=new LinkedHashMap<>();
+            for(AdminMapper.AdminIdIdentity identity:admins.findIdentitiesByIds(ids)){
+                if(identity!=null&&identity.id()!=null)found.put(identity.id(),identity);
+            }
+            return found;
+        }catch(RuntimeException ignored){
+            // A missing name must never fail the policy read; the stored number stays the only fact.
+            return Map.of();
+        }
+    }
+
+    private static Long approvedById(Object approvedBy){
+        if(approvedBy==null)return null;
+        try{
+            long id=Long.parseLong(String.valueOf(approvedBy).trim());
+            return id>0?id:null;
+        }catch(NumberFormatException ignored){
+            return null;
+        }
+    }
+
     public Map<String,Object> create(String id,Map<String,Object> request){
         validator.validate(id==null?"PolicyDraft":"PolicyVersionInput",request);
         var content=map(request.get("content"));long version=1;
