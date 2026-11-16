@@ -47,6 +47,10 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (target == null && (scope.startsWith("GROWTH:H2:") || scope.startsWith("K1_WHITELIST_")
                 || scope.startsWith("D3_SENSITIVE_EXPORT_") || scope.startsWith("C2_ACCOUNT_LIST_UPSERT:")
                 || "D3_FORECAST_CONFIG_UPDATE".equals(scope) || "I5_DISCLOSURE_GATE_UPDATE".equals(scope))) target = scope;
+        if (target == null && h9CommandScope(scope)) {
+            target = scope.startsWith("GROWTH:H9:DEVICE_RANK_UPDATE:")
+                    ? scope.substring("GROWTH:H9:DEVICE_RANK_UPDATE:".length()).toLowerCase(java.util.Locale.ROOT) : "PUBLIC_STATS";
+        }
         // A collection route is not an object identity. It must never lock unrelated objects.
         if (target != null && target.length() > 512) target = null;
         if (targets.isEmpty() && target != null) targets = List.of(new Target(
@@ -78,6 +82,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (scope.startsWith("I5")) return "content_i5_read";
         if (java.util.Set.of("I4_DISCLOSURE_PUBLISH", "I4_GATE_ADJUST").contains(scope)) return "content_i5_read";
         if (i4TrustWrite(scope)) return "content_i4_read";
+        if (h9CommandScope(scope)) return "growth_h9_read";
         if (scope.startsWith("F1_VRANK_")) return "network_f1_read";
         if ("F4_AMBASSADOR_POLICY_UPDATE".equals(scope) || scope.startsWith("F4_MATERIAL_REVIEW:")) return "network_f4_read";
         if (java.util.Set.of("F5_COMMISSION_REVERSE", "F5_COMMISSION_REISSUE", "F5_COMMISSION_SUSPENSION",
@@ -100,6 +105,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || "FINANCE:D7:CONFIG_UPDATE".equals(scope) || "D7_PAYOUT_VND_CONFIG".equals(scope)
                 || scope.startsWith("I1_COPY_") || scope.startsWith("I2_NOVA_")
                 || j4PlaybookWrite(scope)
+                || h9CommandScope(scope)
                 || fCommandScope(scope)
                 || "A2_COMMAND".equals(scope) || "L_BI_REPORT_CREATE".equals(scope) || scope.startsWith("L_BI_REPORT_ACTION"));
     }
@@ -143,6 +149,12 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         return scope != null && scope.startsWith("I4_TRUST_SECTION_DRAFT_");
     }
 
+    /** The two H9 writers: public-stats and the environment-scoped device-rank config. */
+    public static boolean h9CommandScope(String scope) {
+        return scope != null && ("GROWTH:H9:PUBLIC_STATS_UPDATE:PUBLIC_STATS".equals(scope)
+                || scope.matches("GROWTH:H9:DEVICE_RANK_UPDATE:(?i:growth\\.device_rank\\.model|h9\\.dr\\.sb\\.[0-9a-f]{32})"));
+    }
+
     /** These commands write transactional local configuration, with no provider/remote business call. */
     public static boolean localConfiguration(String scope) {
         return java.util.Set.of("I5_JURISDICTION_CREATE", "I5_JURISDICTION_UPDATE", "I5_DISCLOSURE_DRAFT_SAVE",
@@ -154,6 +166,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || "D6_FX_QUOTE_UPDATE".equals(scope) || "D6_FX_QUOTE".equals(scope)
                 || "FINANCE:D7:CONFIG_UPDATE".equals(scope) || "D7_PAYOUT_VND_CONFIG".equals(scope)
                 || j4LocalRecord(scope)
+                || h9CommandScope(scope)
                 || fLocalConfiguration(scope)
                 || i4TrustDraftOnly(scope)
                 || scope != null && (scope.startsWith("E2_POOL_") || scope.startsWith("E5_DEVICE_") || scope.startsWith("E6_PHONE_"));

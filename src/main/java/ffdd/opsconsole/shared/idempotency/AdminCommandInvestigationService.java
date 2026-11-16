@@ -333,6 +333,17 @@ public class AdminCommandInvestigationService {
                     "ADMIN_COMMISSION_USER_SUSPENDED", "ADMIN_COMMISSION_USER_RESUMED",
                     "ADMIN_COMMISSION_ANOMALY_CONFIG_CHANGED").contains(action);
         }
+        if (AdminCommandOrigin.h9CommandScope(scope)) {
+            if ("GROWTH:H9:PUBLIC_STATS_UPDATE:PUBLIC_STATS".equals(scope)) {
+                return "GROWTH_PUBLIC_STATS".equals(fact.getResourceType())
+                        && "GROWTH_H9_PUBLIC_STATS_UPDATED".equals(action)
+                        && ("H9".equals(fact.getResourceId()) || fact.getResourceId().startsWith("H9:"));
+            }
+            return "GROWTH_DEVICE_RANK".equals(fact.getResourceType())
+                    && "GROWTH_H9_DEVICE_RANK_UPDATED".equals(action)
+                    && scope.substring("GROWTH:H9:DEVICE_RANK_UPDATE:".length()).toLowerCase(java.util.Locale.ROOT)
+                            .equals(fact.getResourceId());
+        }
         return Set.of("D2_WITHDRAWAL_CHAIN_CONFIRMED", "D2_WITHDRAWAL_REVIEW_APPROVE", "D2_WITHDRAWAL_REVIEW_REJECT",
                 "D2_WITHDRAWAL_REVIEW_REFUND", "D2_WITHDRAWAL_REVIEW_DELAY", "D2_WITHDRAWAL_REVIEW_FREEZE",
                 "D3_FORECAST_CONFIG_CHANGED", "D3_TREASURY_RESERVE_INJECTION", "D3_RECONCILIATION_EXPORTED", "D3_LIABILITIES_EXPORTED", "D3_SENSITIVE_EXPORT_A2_AUDITED",
@@ -534,7 +545,8 @@ public class AdminCommandInvestigationService {
     }
 
     private void validateIdentity(String scope, String key, String hash, boolean requireHash) {
-        if (scope == null || !scope.matches("[A-Z0-9_.:-]{1,96}") || !AdminCommandOrigin.supported(scope)
+        if (scope == null || !(scope.matches("[A-Z0-9_.:-]{1,96}") || AdminCommandOrigin.h9CommandScope(scope))
+                || !AdminCommandOrigin.supported(scope)
                 || key == null || key.isBlank() || key.length() > 128 || !key.equals(key.trim())
                 || requireHash && hash == null || hash != null && !hash.matches("[a-fA-F0-9]{64}"))
             throw new BizException(422, "INVESTIGATION_ORIGINAL_IDENTITY_INVALID");
