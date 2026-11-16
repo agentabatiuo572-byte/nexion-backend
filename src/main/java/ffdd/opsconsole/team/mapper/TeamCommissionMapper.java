@@ -881,7 +881,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     List<Map<String, Object>> commissionEvents(@Param("limit") int limit);
 
     @Select("""
-            SELECT status, version,
+            SELECT status, version, unlock_at AS unlockAt,
                    CONCAT('U', LPAD(user_id, GREATEST(8, CHAR_LENGTH(CAST(user_id AS CHAR))), '0')) AS user,
                    CASE
                      WHEN UPPER(status) = 'FROZEN' THEN 'frozen'
@@ -964,7 +964,13 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                SET status=#{nextStatus},
                    frozen_from_status=CASE WHEN #{nextStatus}='FROZEN' THEN #{expectedStatus}
                                            WHEN #{expectedStatus}='FROZEN' THEN NULL ELSE frozen_from_status END,
-                   unlock_at=CASE WHEN #{nextStatus}='UNLOCKED' THEN COALESCE(unlock_at,NOW()) ELSE unlock_at END,
+                   unlock_at=CASE
+                     WHEN #{nextStatus}='UNLOCKED' THEN COALESCE(unlock_at,NOW())
+                     WHEN #{nextStatus}='COOLING' AND #{expectedStatus}='FROZEN' AND unlock_at IS NOT NULL THEN
+                       DATE_ADD(NOW(), INTERVAL GREATEST(0,
+                         TIMESTAMPDIFF(SECOND, updated_at, unlock_at)) SECOND)
+                     ELSE unlock_at
+                   END,
                    version=version+1,updated_at=NOW()
              WHERE is_deleted=0 AND (CONCAT('CM-',id)=#{eventId} OR order_no=#{eventId})
                AND (UPPER(status)=#{expectedStatus}
