@@ -114,7 +114,6 @@ public class OpsEventCenterController {
             @RequestBody(required = false) RetentionExecutionRequest request) {
         if (!StringUtils.hasText(idempotencyKey)) throw new BizException(400, "IDEMPOTENCY_KEY_REQUIRED");
         if (request == null) throw new BizException(422, "REASON_REQUIRED");
-        a2RuntimePolicy.validateReason(request.reason());
         String actor = StringUtils.hasText(AdminActorResolver.resolve(null)) ? AdminActorResolver.resolve(null) : "unknown";
         String key = idempotencyKey.trim();
         return ApiResult.ok(idempotencyService.execute("A4_EVENT_RETENTION_RUN", key,
@@ -139,6 +138,7 @@ public class OpsEventCenterController {
     }
 
     private RetentionExecutionView executeRetention(String actor, String idempotencyKey, String reason) {
+        a2RuntimePolicy.validateReason(reason);
         A4EventRetentionService.RetentionRun run = eventRetentionService.runNow();
         RetentionExecutionView view = new RetentionExecutionView(run.retentionMonths(), run.cutoff(), run.lockAcquired(),
                 0, 0, run.outboxRows(), run.behaviorFactRows());

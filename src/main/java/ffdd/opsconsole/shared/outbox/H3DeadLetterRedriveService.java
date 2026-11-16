@@ -69,7 +69,6 @@ public class H3DeadLetterRedriveService {
         String normalizedEventId = normalizeEventId(eventId);
         if (!StringUtils.hasText(idempotencyKey)) throw new BizException(400, "IDEMPOTENCY_KEY_REQUIRED");
         if (request == null) throw new BizException(422, "REASON_REQUIRED");
-        a2RuntimePolicy.validateReason(request.reason());
         int expectedRetryCount = requiredCount(request.expectedRetryCount(), "A4_H3_OUTBOX_RETRY_COUNT_INVALID");
         String expectedDeliveryStatus = requiredDeadDeliveryStatus(request.expectedDeliveryStatus());
         int expectedDeliveryAttemptCount = requiredCount(
@@ -100,6 +99,7 @@ public class H3DeadLetterRedriveService {
     private H3OutboxRedriveView redriveLocked(
             String actor, String idempotencyKey, String eventId, String reason, int expectedRetryCount,
             String expectedDeliveryStatus, int expectedDeliveryAttemptCount) {
+        a2RuntimePolicy.validateReason(reason);
         EventOutboxMapper.H3DeadLetterRow outbox = outboxMapper.lockDeadH3ThresholdEvent(eventId);
         if (outbox == null) throw new BizException(409, ELIGIBILITY_ERROR);
         EventConsumerDeliveryMapper.H3DeadLetterDeliveryRow delivery =

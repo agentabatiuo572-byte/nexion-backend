@@ -99,7 +99,6 @@ public class OpsAuditController {
             @RequestBody(required = false) RetentionExecutionRequest request) {
         if (!StringUtils.hasText(idempotencyKey)) throw new BizException(400, OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         if (request == null) throw new BizException(422, "REASON_REQUIRED");
-        a2RuntimePolicy.validateReason(request.reason());
         String actor = StringUtils.hasText(AdminActorResolver.resolve(null)) ? AdminActorResolver.resolve(null) : "unknown";
         String key = idempotencyKey.trim();
         return ApiResult.ok(idempotencyService.execute("A2_AUDIT_RETENTION_RUN", key,
@@ -108,6 +107,7 @@ public class OpsAuditController {
     }
 
     private RetentionExecutionView executeRetention(String actor, String idempotencyKey, String reason) {
+        a2RuntimePolicy.validateReason(reason);
         AuditRetentionService.RetentionRun run = auditRetentionService.runNow();
         RetentionExecutionView view = new RetentionExecutionView(run.retentionMonths(), run.cutoff(), run.lockAcquired(),
                 run.archivedRows(), run.affectedRows(), 0, 0);
