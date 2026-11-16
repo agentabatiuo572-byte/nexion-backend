@@ -806,7 +806,9 @@ public class F5CommissionService {
     private Map<String, Object> eventView(Map<String, Object> raw) {
         Map<String, Object> row = new LinkedHashMap<>(raw);
         var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
-        if (direct != null && direct.groupForEvent(longValue(raw.get("eventId"))) != null) row.putAll(direct.eventSnapshot(longValue(raw.get("eventId"))));
+        Long eventId = longValue(raw.get("eventId"));
+        boolean grouped = direct != null && eventId != null && direct.groupForEvent(eventId) != null;
+        if (grouped) row.putAll(direct.eventSnapshot(eventId));
         String commissionId = text(raw.get("commissionId"));
         Long userId = longValue(raw.get("userId"));
         String status = text(row.get("status"));
@@ -830,7 +832,65 @@ public class F5CommissionService {
             default -> status;
         });
         row.put("auditKey", "F.commission." + commissionId + ".status");
+        row.putAll(actionAvailability(grouped, text(row.get("rawStatus")), text(row.get("groupStatus")),
+                text(row.get("kind")), longValue(row.get("unlockAt")), flagValue(row.get("reversalRecorded"))));
         return row;
+    }
+
+    /**
+     * 当前读取快照下两操作是否可提交。与 F5 写入口保持同一状态、冷却、结算组口径；
+     * 只做投影，不调用 release/reverse，也不替代写入前的原复核。
+     */
+    private Map<String, Object> actionAvailability(boolean grouped, String status, String groupStatus,
+            String sourceType, Long unlockAt, boolean reversalRecorded) {
+        if (status.isBlank() || (grouped && groupStatus.isBlank())) {
+            return linked(
+                    "canUnlock", false,
+                    "unlockBlockedReason", "F5_COMMISSION_STATE_UNAVAILABLE",
+                    "canReverse", false,
+                    "reverseBlockedReason", "F5_COMMISSION_STATE_UNAVAILABLE");
+        }
+        String eventState = OpsTeamService.canonicalCommissionState(status);
+        String groupState = OpsTeamService.canonicalCommissionState(groupStatus);
+        boolean coolingActive = unlockAt != null && unlockAt > Instant.now().toEpochMilli();
+        boolean canUnlock;
+        String unlockBlockedReason = null;
+        boolean canReverse;
+        String reverseBlockedReason = null;
+        if (grouped) {
+            boolean groupOpen = "network".equals(sourceType)
+                    ? Set.of("COOLING", "FROZEN", "UNLOCKED").contains(groupState)
+                    : Set.of("COOLING", "UNLOCKED").contains(groupState);
+            boolean unlockState = "COOLING".equals(eventState);
+            canUnlock = unlockState && groupOpen && !reversalRecorded && !coolingActive;
+            if (!canUnlock) {
+                if (!unlockState) unlockBlockedReason = "INVALID_STATE_TRANSITION";
+                else if (!groupOpen || reversalRecorded) unlockBlockedReason = "DIRECT_REFERRAL_RELEASE_STATE_CONFLICT";
+                else unlockBlockedReason = "DIRECT_REFERRAL_COOLING_ACTIVE";
+            }
+            // reverseEvent 的组状态统一允许 COOLING/FROZEN/UNLOCKED；非网络组直接走整组 reverse，不读单事件状态。
+            boolean reverseGroupOpen = Set.of("COOLING", "FROZEN", "UNLOCKED").contains(groupState);
+            boolean reverseState = !"network".equals(sourceType)
+                    || Set.of("COOLING", "FROZEN", "UNLOCKED", "AVAILABLE").contains(eventState);
+            canReverse = reverseGroupOpen && !reversalRecorded && reverseState;
+            if (!canReverse) reverseBlockedReason = "COMMISSION_REVERSE_STATE_CONFLICT";
+        } else {
+            // 无分组 legacy 的 A2 解锁只受状态机约束，冷却期内仍可手工解锁。
+            canUnlock = "COOLING".equals(eventState);
+            if (!canUnlock) unlockBlockedReason = "INVALID_STATE_TRANSITION";
+            // 无分组冲正允许 PENDING/COOLING/UNLOCKED/AVAILABLE，FROZEN 不在现执行范围。
+            canReverse = Set.of("COOLING", "UNLOCKED", "AVAILABLE").contains(eventState);
+            if (!canReverse) reverseBlockedReason = "COMMISSION_REVERSE_STATE_CONFLICT";
+        }
+        return linked(
+                "canUnlock", canUnlock,
+                "unlockBlockedReason", unlockBlockedReason,
+                "canReverse", canReverse,
+                "reverseBlockedReason", reverseBlockedReason);
+    }
+
+    private boolean flagValue(Object value) {
+        return Boolean.TRUE.equals(value) || (value instanceof Number number && number.intValue() != 0);
     }
 
     private Map<String, Object> summary(
