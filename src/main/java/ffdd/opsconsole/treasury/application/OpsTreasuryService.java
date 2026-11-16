@@ -761,9 +761,7 @@ public class OpsTreasuryService {
         response.put("maturity7d", maturity7d());
         response.put("prev", section(
                 "reserveUsd", money(reserveUsd.subtract(netFlow24hUsd)),
-                "netFlow24hUsd", money(prevNetFlow24hUsd),
-                "queueBacklogCount", ledgerRepository.countActiveWithdrawalQueue(),
-                "avgRiskScore", avgRiskScore.longValue()));
+                "netFlow24hUsd", money(prevNetFlow24hUsd)));
         return new DualLedgerSnapshot(response, healthyForAlert);
     }
 
