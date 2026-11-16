@@ -211,6 +211,7 @@ public interface SupportGroupMapper {
           JOIN nx_support_agent_profile p ON p.admin_id=a.id
           JOIN nx_support_account_qualification_history scope_q ON scope_q.admin_id=a.id
         WHERE scope_member.group_id=#{group} AND a.status=1 AND a.is_deleted=0 AND p.enabled=1 AND p.is_deleted=0
+          AND p.busy=0
           AND scope_q.qualification_kind='SERVICE' AND scope_q.state='ENABLED' AND
         """ + UNIQUE_MEMBER + " AND " + UNIQUE_QUALIFICATION + """
           AND EXISTS(SELECT 1 FROM nx_admin_role_relation rr JOIN nx_admin_role r ON r.id=rr.role_id
@@ -218,7 +219,7 @@ public interface SupportGroupMapper {
         ORDER BY a.id FOR SHARE</script>
         """)
     List<Candidate> candidates(Long group);
-    /** Automatic first-inquiry/fallback only; supervisor preview/confirm keeps {@link #candidates(Long)}. */
+    /** Automatic first-inquiry/fallback only; supervisor preview/confirm excludes the same busy flag via {@link #candidates(Long)}. */
     @Select("""
         <script>SELECT scope_member.agent_admin_id agentId,a.version accountVersion,p.version profileVersion,
           scope_member.id memberId,scope_member.version memberVersion,scope_q.id qualificationId,scope_q.version qualificationVersion
