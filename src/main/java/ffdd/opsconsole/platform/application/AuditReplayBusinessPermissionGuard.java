@@ -1522,7 +1522,7 @@ public class AuditReplayBusinessPermissionGuard {
         if (targetId.isBlank()) {
             return null;
         }
-        boolean amplifies = !"f_ui_config".equals(operation)
+        boolean amplifies = "f_config".equals(operation)
                 || OpsTeamService.uiConfigAmplifies(configFacade, teamCommissionRepository, key, nextValue);
         return new DelegatedProposalDescriptor(
                 "F 域配置调整 · " + key,
