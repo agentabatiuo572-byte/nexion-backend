@@ -3123,7 +3123,7 @@ public class OpsTeamService implements AuditReplayable {
         };
     }
 
-    private String configKey(String key) {
+    private static String configKey(String key) {
         return switch (key) {
             case "directRoyaltyPct" -> "team.direct_royalty_pct";
             case "networkRoyaltyPct" -> "team.network_royalty_pct";
@@ -3134,6 +3134,58 @@ public class OpsTeamService implements AuditReplayable {
             case "hardwareQuotaPerRank" -> "team.hardware_quota_per_rank";
             default -> throw new IllegalArgumentException("Unsupported F team policy key");
         };
+    }
+
+    /**
+     * Current value shown on an A2 F configuration proposal. Reads through the
+     * same authoritative keys as the write path and preserves the stored unit;
+     * an absent source is reported as unknown rather than a zero/default DTO.
+     */
+    public static String proposalCurrentValue(
+            PlatformConfigFacade configs, TeamCommissionRepository rules, String operation, String key) {
+        if ("f_config".equals(operation)) {
+            return fConfigProposalCurrentValue(configs, key);
+        }
+        if ("f_unilevel_rule".equals(operation) || isUnilevelRuleKey(key)) {
+            return unilevelProposalCurrentValue(rules, key);
+        }
+        if ("f_ui_config".equals(operation)) {
+            return configs.activeValue(uiConfigStorageKey(key))
+                    .filter(StringUtils::hasText)
+                    .map(String::trim)
+                    .orElse("未知（当前值不可用）");
+        }
+        return "未知（当前值不可用）";
+    }
+
+    private static String fConfigProposalCurrentValue(PlatformConfigFacade configs, String key) {
+        return configs.activeValue(configKey(key))
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .map(value -> appendUnit(value, fConfigUnit(key)))
+                .orElse("未知（当前值不可用）");
+    }
+
+    private static String appendUnit(String value, String unit) {
+        if (!StringUtils.hasText(unit)) return value;
+        if ("%".equals(unit)) return value.endsWith("%") ? value : value + "%";
+        return value.endsWith(unit) ? value : value + " " + unit;
+    }
+
+    private static String fConfigUnit(String key) {
+        return switch (key) {
+            case "directRoyaltyPct", "networkRoyaltyPct", "binaryPairRatePct", "maxCombinedOutflowPct" -> "%";
+            case "minPayoutUsdt" -> "USDT";
+            case "rankWindowDays" -> "天";
+            case "hardwareQuotaPerRank" -> "台";
+            default -> "";
+        };
+    }
+
+    private static String unilevelProposalCurrentValue(TeamCommissionRepository rules, String key) {
+        String current = unilevelRuleValue(rules, key);
+        if (!StringUtils.hasText(current)) return "未知（当前值不可用）";
+        return key.startsWith("F.unilevel.nex.") ? current + " UVT/USDT" : current + "%";
     }
 
     private BigDecimal normalizeValue(String key, String raw) {
