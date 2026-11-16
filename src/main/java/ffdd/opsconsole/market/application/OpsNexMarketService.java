@@ -2460,7 +2460,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                         (product.termDays() == null ? 0 : product.termDays()) + "d",
                         percentFromBps(product.apyBps()),
                         percentFromBps(product.earlyPenaltyBps()),
-                        safeBig(product.minAmount()).setScale(2, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString(),
+                        stakingMinAmountText(product.minAmount()),
                         safeBig(product.lockedUsd()),
                         product.asset(),
                         "ACTIVE".equalsIgnoreCase(product.status()),
@@ -2631,8 +2631,17 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if ("penalty".equals(def.key())) {
             return value + "% principal + forfeit interest";
         }
+        if (value == null) return null;
         BigDecimal amount = parseRepurchaseNumber(value, BigDecimal.ZERO);
         return amount.stripTrailingZeros().toPlainString() + " " + pool.minAsset();
+    }
+
+    /**
+     * The stored minimum exactly as DECIMAL(18,6) holds it: no rounding, and no zero invented for a
+     * row whose minimum is missing.
+     */
+    private String stakingMinAmountText(BigDecimal minAmount) {
+        return minAmount == null ? null : minAmount.stripTrailingZeros().toPlainString();
     }
 
     private String displayStakingLocked(BigDecimal value) {
