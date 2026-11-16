@@ -21,6 +21,16 @@ public interface AdminCommandInvestigationMapper extends BaseMapper<AdminCommand
     List<AdminIdempotencyRecordEntity> findOriginals(@Param("key") String key, @Param("method") String method,
             @Param("path") String path, @Param("actor") long actor, @Param("investigator") boolean investigator);
 
+    /** Owner proof for direct writes: the audit fact carries the server-injected command identity. */
+    @Select("""
+            SELECT DISTINCT actor_id FROM nx_audit_log
+             WHERE is_deleted=0 AND actor_type='ADMIN' AND result IN ('SUCCESS', 'SUCCEEDED')
+               AND BINARY JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$._adminCommand.scope'))=BINARY #{scope}
+               AND BINARY JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$._adminCommand.commandKey'))=BINARY #{key}
+             LIMIT 2
+            """)
+    List<Long> findReceiptOwners(@Param("scope") String scope, @Param("key") String key);
+
     @Options(flushCache = Options.FlushCachePolicy.TRUE, useCache = false)
     @Select("""
             SELECT * FROM nx_admin_idempotency_record

@@ -50,6 +50,10 @@ public class AdminCommandInvestigationService {
                           String originalStatus, boolean locked, boolean newOperationAllowed,
                           AdminCommandInvestigationEntity investigation) {}
 
+    public record ReceiptStatus(String state) {}
+
+    private enum ReceiptFamily { A1_ACCOUNT, A1_PERMISSION, A6, A7, F4 }
+
     /** Looks up server-owned bindings; a client need not reproduce a business service's hash algorithm. */
     @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
     public List<Receipt> discover(String key, String method, String path) {
@@ -80,6 +84,25 @@ public class AdminCommandInvestigationService {
         var latest = investigations.latest(original.getId());
         requireFactReader(original, latest);
         return receipt(original, latest);
+    }
+
+    /** Minimal status for direct writes that predate AdminCommandOrigin. Never returns a response payload. */
+    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
+    public ReceiptStatus status(String scope, String commandKey) {
+        long actor = requireAdmin();
+        ReceiptFamily family = receiptFamily(scope);
+        if (family == null) throw new BizException(422, "RECEIPT_SCOPE_INVALID");
+        if (commandKey == null || commandKey.isBlank() || commandKey.length() > 128
+                || !commandKey.equals(commandKey.trim())) {
+            throw new BizException(422, "RECEIPT_COMMAND_KEY_INVALID");
+        }
+        requireReceiptReader(family, actor);
+        var original = records.selectCurrent(scope, commandKey);
+        if (original == null || !Integer.valueOf(0).equals(original.getIsDeleted())) {
+            return new ReceiptStatus("NOT_FOUND");
+        }
+        if (!receiptOwner(original, family, actor)) return new ReceiptStatus("UNKNOWN");
+        return new ReceiptStatus(receiptState(original));
     }
 
     /** Records evidence and fences the old command. Never invokes a business writer or accepts a result payload. */
@@ -335,6 +358,63 @@ public class AdminCommandInvestigationService {
                 || key == null || key.isBlank() || key.length() > 128 || !key.equals(key.trim())
                 || requireHash && hash == null || hash != null && !hash.matches("[a-fA-F0-9]{64}"))
             throw new BizException(422, "INVESTIGATION_ORIGINAL_IDENTITY_INVALID");
+    }
+
+    private ReceiptFamily receiptFamily(String scope) {
+        if (scope == null || scope.length() > 96) return null;
+        if (scope.matches("A1:ACCOUNT_(?:CREATE|PASSWORD_RESET):[1-9][0-9]{0,18}")) return ReceiptFamily.A1_ACCOUNT;
+        if ("A1_PERMISSION_REGISTER".equals(scope)) return ReceiptFamily.A1_PERMISSION;
+        if (scope.matches("A6_ROLE_(?:CREATE:[A-Za-z0-9_-]{1,64}|UPDATE:[1-9][0-9]{0,18})")) return ReceiptFamily.A6;
+        if (scope.matches("A7_MENU_(?:CREATE:[A-Za-z0-9_-]{1,64}|UPDATE:[1-9][0-9]{0,18}|DELETE:[1-9][0-9]{0,18})")) return ReceiptFamily.A7;
+        if (scope.matches("F4_MATERIAL_REVIEW:[1-9][0-9]{0,18}:[1-9][0-9]{0,18}")) return ReceiptFamily.F4;
+        return null;
+    }
+
+    private void requireReceiptReader(ReceiptFamily family, long actor) {
+        String authority = switch (family) {
+            case A1_ACCOUNT, A1_PERMISSION -> "platform_a1_read";
+            case A6 -> "platform_a6_read";
+            case A7 -> "platform_a7_read";
+            case F4 -> "network_f4_read";
+        };
+        if (!permissions.getPermissionCodes(actor).contains(authority)) throw denied();
+    }
+
+    private boolean receiptOwner(AdminIdempotencyRecordEntity original, ReceiptFamily family, long actor) {
+        return switch (family) {
+            case A1_ACCOUNT -> original.getScope().endsWith(":" + actor);
+            case F4 -> {
+                String[] parts = original.getScope().split(":");
+                yield parts.length == 3 && Long.toString(actor).equals(parts[1]);
+            }
+            default -> {
+                List<Long> owners = investigations.findReceiptOwners(original.getScope(), original.getIdempotencyKey());
+                yield owners != null && owners.size() == 1 && Long.valueOf(actor).equals(owners.get(0));
+            }
+        };
+    }
+
+    private String receiptState(AdminIdempotencyRecordEntity original) {
+        String status = original.getStatus();
+        if ("PROCESSING".equals(status)) return "PROCESSING";
+        if ("FAILED".equals(status)) return "FAILED";
+        if ("SUCCEEDED".equals(status) || "CONFIRMED_SUCCEEDED".equals(status)) {
+            Integer code = businessCode(original.getResponseJson());
+            if (code == null) return "UNKNOWN";
+            return code == 0 ? "SUCCEEDED" : "REJECTED";
+        }
+        return "UNKNOWN";
+    }
+
+    private Integer businessCode(String responseJson) {
+        if (!StringUtils.hasText(responseJson)) return null;
+        try {
+            var value = json.readTree(responseJson);
+            return value != null && value.has("code") && value.get("code").canConvertToInt()
+                    ? value.get("code").asInt() : null;
+        } catch (JsonProcessingException ex) {
+            return null;
+        }
     }
 
     private Receipt receipt(AdminIdempotencyRecordEntity original, AdminCommandInvestigationEntity latest) {

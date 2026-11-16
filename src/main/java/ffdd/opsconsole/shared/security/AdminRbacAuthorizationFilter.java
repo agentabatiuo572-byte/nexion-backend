@@ -35,6 +35,8 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
     private static final String STAKING_POOL_RESTORE_PATH =
             "/api/admin/market/staking/pools/*/restore";
     private static final String STAKING_POOL_RESTORE_AUTHORITY = "emergency_j1_gate_resume";
+    private static final String RECEIPT_STATUS_PATH =
+            "/api/admin/commands/investigations/receipt-status";
     private static final String PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED";
     private static final Set<String> PASSWORD_CHANGE_REQUIRED_STATUSES = Set.of(
             PASSWORD_CHANGE_REQUIRED,
@@ -180,10 +182,12 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
                 && (HttpMethod.GET.matches(request.getMethod()) || HttpMethod.POST.matches(request.getMethod()));
         boolean supportCommandRead = HttpMethod.GET.matches(request.getMethod())
                 && pathMatcher.match("/api/admin/content/support-workbench/commands/*",path);
+        boolean commandReceiptStatusRead = HttpMethod.GET.matches(request.getMethod())
+                && RECEIPT_STATUS_PATH.equals(path);
         boolean dashboardExportRequest = HttpMethod.POST.matches(request.getMethod())
                 && "/api/admin/ops-dashboard/exports".equals(path);
         if ((reasonPolicyRead || businessCalendarRead || selfAvatarRequest || selfInviteRequest || supportCommandRead
-                || dashboardExportRequest || "/api/admin/auth/activity".equals(path))
+                || commandReceiptStatusRead || dashboardExportRequest || "/api/admin/auth/activity".equals(path))
                 && !isTrustedAuthenticatedAdmin(authentication)) {
             auditDenial(request, authentication, "ADMIN_SUBJECT_REQUIRED", null);
             reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_SUBJECT_REQUIRED");
@@ -194,7 +198,8 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_PASSWORD_CHANGE_REQUIRED");
             return;
         }
-        if (reasonPolicyRead || businessCalendarRead || selfAvatarRequest || selfInviteRequest || supportCommandRead) {
+        if (reasonPolicyRead || businessCalendarRead || selfAvatarRequest || selfInviteRequest
+                || supportCommandRead || commandReceiptStatusRead) {
             filterChain.doFilter(request, response);
             return;
         }
