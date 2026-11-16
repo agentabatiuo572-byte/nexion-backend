@@ -4,7 +4,9 @@ import com.fasterxml.jackson.annotation.JsonFormat;
 import ffdd.opsconsole.finance.mapper.EarningsReleaseMapper;
 import ffdd.opsconsole.finance.mapper.EarningsReleaseMapper.BucketAmount;
 import ffdd.opsconsole.finance.mapper.EarningsReleaseMapper.ProtectedEntry;
+import ffdd.opsconsole.finance.mapper.EarningsReleaseMapper.RecoveryEntry;
 import ffdd.opsconsole.finance.mapper.EarningsReleaseMapper.RiskCluster;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.risk.application.RiskReleaseParamsService;
 import ffdd.opsconsole.risk.dto.EarningsManualReleaseRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -391,6 +393,16 @@ public class EarningsReleaseService {
     @Transactional(rollbackFor = Exception.class)
     protected ApiResult<Map<String, Object>> manualReleaseOnce(String entryNo,
                                                                 EarningsManualReleaseRequest request) {
+        return manualReleaseOnce(entryNo, request, null);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    protected ApiResult<Map<String, Object>> manualReleaseOnce(String entryNo,
+                                                                EarningsManualReleaseRequest request,
+                                                                Map<?,?> expectedBefore) {
+        if (!A2ReplayContext.isReplaying()) {
+            throw new BizException(409, "K1_EARNINGS_RELEASE_APPROVAL_REQUIRED");
+        }
         SupportFundEarningsAdapter.Capture fundBefore=null;
         if(fundEarnings!=null) {
             var route=mapper.fundEntryRoute(entryNo);
@@ -401,8 +413,14 @@ public class EarningsReleaseService {
                 fundBefore=fundEarnings.begin(owner);
             }
         }
+        if (expectedBefore != null) {
+            RecoveryEntry locked = mapper.lockRecoveryEntry(entryNo);
+            if (!entrySnapshot(locked).equals(expectedBefore)) {
+                throw new BizException(409, "K1_EARNINGS_RELEASE_STALE");
+            }
+        }
         ProtectedEntry entry = mapper.lockProtectedEntry(entryNo);
-        if (entry == null) throw new BizException(409, "EARNINGS_RELEASE_ENTRY_NOT_PROTECTED");
+        if (entry == null) throw new BizException(409, "K1_EARNINGS_RELEASE_ENTRY_NOT_PROTECTED");
         if(fundBefore!=null && fundBefore.customerId()!=entry.userId())throw new BizException(409,"EARNINGS_RELEASE_ENTRY_NOT_PROTECTED");
         var fundEntry=fundBefore==null?null:fundEarnings.entry(entryNo);
         TreasuryCoverageSnapshot coverage = params.requireCoverageForAmplifyingRelease();
@@ -423,6 +441,84 @@ public class EarningsReleaseService {
                 .riskLevel("HIGH").detail(detail).build());
         if(fundBefore!=null)fundEarnings.release(fundBefore,fundEntry);
         return ApiResult.ok(Map.of("entryNo", entryNo, "bucket", "withdrawable", "releaseSource", "manual"));
+    }
+
+    public record ApprovalReview(String action, String before, String after) {}
+
+    /** Minimal locked projection for A2 binding: source/status plus gross, recovered and net. */
+    @Transactional
+    public Map<String,Object> approvalBefore(String entryNo) {
+        if (!StringUtils.hasText(entryNo)) throw new BizException(422, "K1_EARNINGS_RELEASE_ENTRY_REQUIRED");
+        RecoveryEntry row = mapper.recoveryEntry(entryNo.trim());
+        if (row == null || !"ACTIVE".equals(row.status()) || !Integer.valueOf(0).equals(row.isDeleted())
+                || !Set.of("pending_review", "bonus_locked").contains(row.bucket())
+                || row.amount() == null || row.recoveredAmount() == null
+                || row.amount().subtract(row.recoveredAmount()).signum() <= 0) {
+            throw new BizException(409, "K1_EARNINGS_RELEASE_ENTRY_NOT_PROTECTED");
+        }
+        Map<String,Object> before = new LinkedHashMap<>();
+        before.put("entryNo", row.entryNo());
+        before.put("userId", String.valueOf(row.userId()));
+        before.put("sourceType", row.sourceType());
+        before.put("sourceRef", row.sourceRef());
+        before.put("sourceEnvironment", row.sourceEnvironment());
+        before.put("asset", row.asset());
+        before.put("grossAmount", plain(row.amount()));
+        before.put("recoveredAmount", plain(row.recoveredAmount()));
+        before.put("netAmount", plain(row.amount().subtract(row.recoveredAmount())));
+        before.put("bucket", row.bucket());
+        before.put("status", row.status());
+        return before;
+    }
+
+    /** Proposal-time preview: checks the protected entry and existing exact B1, writes nothing. */
+    @Transactional
+    public ApprovalReview previewApproval(String entryNo) {
+        Map<String,Object> before = approvalBefore(entryNo);
+        TreasuryCoverageSnapshot coverage = params.requireCoverageForAmplifyingRelease();
+        String summary = "收益 " + before.get("entryNo") + "；用户 " + before.get("userId")
+                + "；" + before.get("asset") + " 净额 " + before.get("netAmount")
+                + "；来源 " + before.get("sourceType") + "/" + before.get("sourceRef")
+                + "；" + before.get("bucket") + " → withdrawable"
+                + "；当前覆盖率 " + coverage.coverageRatio().stripTrailingZeros().toPlainString()
+                + "% / 红线 " + coverage.redlinePct().stripTrailingZeros().toPlainString() + "%";
+        return new ApprovalReview("人工放行收益", summary,
+                "批准后仅将该受保护 entry 的 bucket 改为 withdrawable，净额 " + before.get("netAmount")
+                        + "；不新发奖、不生成提现单、不重复记账；冻结/簇/钱包限制仍按后续提现链执行");
+    }
+
+    /** A2-approved path: compare the full bound entry snapshot, then reuse the official release. */
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> applyApproved(
+            String entryNo, String reason, String operator, Map<?,?> expectedBefore) {
+        if (!A2ReplayContext.isReplaying()) throw new BizException(403, "K1_APPROVAL_FORBIDDEN");
+        return manualReleaseOnce(entryNo.trim(), new EarningsManualReleaseRequest(reason, operator), expectedBefore);
+    }
+
+    private Map<String,Object> entrySnapshot(RecoveryEntry row) {
+        if (row == null || !"ACTIVE".equals(row.status()) || !Integer.valueOf(0).equals(row.isDeleted())
+                || !Set.of("pending_review", "bonus_locked").contains(row.bucket())
+                || row.amount() == null || row.recoveredAmount() == null
+                || row.amount().subtract(row.recoveredAmount()).signum() <= 0) {
+            throw new BizException(409, "K1_EARNINGS_RELEASE_ENTRY_NOT_PROTECTED");
+        }
+        Map<String,Object> before = new LinkedHashMap<>();
+        before.put("entryNo", row.entryNo());
+        before.put("userId", String.valueOf(row.userId()));
+        before.put("sourceType", row.sourceType());
+        before.put("sourceRef", row.sourceRef());
+        before.put("sourceEnvironment", row.sourceEnvironment());
+        before.put("asset", row.asset());
+        before.put("grossAmount", plain(row.amount()));
+        before.put("recoveredAmount", plain(row.recoveredAmount()));
+        before.put("netAmount", plain(row.amount().subtract(row.recoveredAmount())));
+        before.put("bucket", row.bucket());
+        before.put("status", row.status());
+        return before;
+    }
+
+    private String plain(BigDecimal value) {
+        return value == null ? "" : value.stripTrailingZeros().toPlainString();
     }
 
     public void assertWithdrawable(Long userId, BigDecimal walletAvailable, BigDecimal requested) {

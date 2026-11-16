@@ -5,6 +5,7 @@ import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.growth.application.H5GrowthApproval;
 import ffdd.opsconsole.growth.application.H3GrowthApproval;
 import ffdd.opsconsole.growth.application.H4GrowthApproval;
+import ffdd.opsconsole.risk.application.K1RiskApproval;
 import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
 import ffdd.opsconsole.market.application.G2G7ParamApproval;
@@ -65,6 +66,7 @@ public class AuditReplayDispatcher {
             Map.entry("J", Set.of("j1_gate_resume", "j1_gate_kill", "j1_batch_kill", "j2_country_manage",
                     "j2_emergency_block", "j3_alert_config", "j4_playbook_execute", "j4_playbook_rollback")),
             Map.entry("K", Set.of("k1_cluster_freeze", "k1_cluster_release", "k1_cluster_cleared", "k1_cluster_flag",
+                    "k1_release_param", "k1_earnings_release",
                     "k2_row_flag", "k2_row_blockgift", "k2_row_boardflag", "k2_row_freeze", "k3_rule_create",
                     "k3_rule_toggle", "k3_rule_archive", "k4_user_override", "k4_user_recompute")),
             Map.entry("L", Set.of("l5_task_approve")));
@@ -96,6 +98,8 @@ public class AuditReplayDispatcher {
     @Autowired
     private H4GrowthApproval h4GrowthApproval;
     @Autowired
+    private K1RiskApproval k1RiskApproval;
+    @Autowired
     private K2OtpInitialApproval k2OtpInitialApproval;
     @Autowired
     private LearningCourseActivationApproval learningCourseActivationApproval;
@@ -105,7 +109,7 @@ public class AuditReplayDispatcher {
     private boolean specialized(AuditReplayCommand cmd) {
         return A4RegistryApproval.supports(cmd) || G4CatalogApproval.supports(cmd)
                 || LearningCourseActivationApproval.supports(cmd) || H4GrowthApproval.supports(cmd)
-                || G4DividendApproval.supports(cmd) || G4ParamApproval.supports(cmd) || H3GrowthApproval.supports(cmd) || K2OtpInitialApproval.supports(cmd)
+                || G4DividendApproval.supports(cmd) || G4ParamApproval.supports(cmd) || H3GrowthApproval.supports(cmd) || K1RiskApproval.supports(cmd) || K2OtpInitialApproval.supports(cmd)
                 || G2G7ParamApproval.supports(cmd)
                 || G3MarketApproval.supports(cmd) || H5GrowthApproval.supports(cmd) || H8RewardParamApproval.supports(cmd)
                 || TeamFundApproval.supports(cmd) || E2TaskPricingApproval.supports(cmd)
@@ -152,6 +156,10 @@ public class AuditReplayDispatcher {
         }
         if (H3GrowthApproval.supports(cmd)) {
             return h3GrowthApproval.replay(cmd, ctx,
+                    A2ReplayContext.authenticatedAdminId(), A2ReplayContext.operationId());
+        }
+        if (K1RiskApproval.supports(cmd)) {
+            return k1RiskApproval.replay(cmd, ctx,
                     A2ReplayContext.authenticatedAdminId(), A2ReplayContext.operationId());
         }
         if (K2OtpInitialApproval.supports(cmd)) {

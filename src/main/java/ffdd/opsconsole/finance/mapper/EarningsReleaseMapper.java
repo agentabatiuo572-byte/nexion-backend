@@ -53,6 +53,8 @@ public interface EarningsReleaseMapper {
     RecoveryWallet lockRecoveryWallet(@Param("userId") Long userId, @Param("expectedSandbox") int expectedSandbox);
     @Select("SELECT entry_no entryNo,user_id userId,source_type sourceType,source_ref sourceRef,asset,amount,bucket,status,source_environment sourceEnvironment,is_deleted isDeleted,recovered_amount recoveredAmount,source_debit_baseline debitBaseline,source_wallet_id sourceWalletId FROM nx_earnings_release_entry WHERE entry_no=#{entryNo} FOR UPDATE")
     RecoveryEntry lockRecoveryEntry(@Param("entryNo") String entryNo);
+    @Select("SELECT entry_no entryNo,user_id userId,source_type sourceType,source_ref sourceRef,asset,amount,bucket,status,source_environment sourceEnvironment,is_deleted isDeleted,recovered_amount recoveredAmount,source_debit_baseline debitBaseline,source_wallet_id sourceWalletId FROM nx_earnings_release_entry WHERE entry_no=#{entryNo}")
+    RecoveryEntry recoveryEntry(@Param("entryNo") String entryNo);
     @Update("""
             UPDATE nx_user_wallet SET
                 usdt_available=usdt_available-CASE WHEN #{asset}='USDT' THEN #{amount} ELSE 0 END,

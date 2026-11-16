@@ -14,6 +14,7 @@ import ffdd.opsconsole.growth.application.H5GrowthApproval;
 import ffdd.opsconsole.growth.application.H3GrowthApproval;
 import ffdd.opsconsole.growth.application.H4GrowthApproval;
 import ffdd.opsconsole.growth.application.H7VoucherDisposition;
+import ffdd.opsconsole.risk.application.K1RiskApproval;
 import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.infrastructure.AuditOperationTicketEntity;
@@ -99,6 +100,8 @@ public class A2AccessPolicy {
                         || grants.contains(H3GrowthApproval.MAKER_AUTHORITY)
                         || grants.contains(H4GrowthApproval.MAKER_AUTHORITY) || grants.contains(H4GrowthApproval.GUARD_AUTHORITY)
                         || H7VoucherDisposition.canRecover(grants)
+                        || (grants.contains(K1RiskApproval.MAKER_AUTHORITY)
+                            && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write")))
                         || (grants.contains(K2OtpInitialApproval.MAKER_AUTHORITY)
                             && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write")))
                         || grants.contains("network_f1_write") || grants.contains("network_f3_write") || grants.contains("network_f4_pool_fund")
@@ -183,6 +186,10 @@ public class A2AccessPolicy {
                 && grants.contains("platform_a2_proposal_create")
                 && grants.contains(AuditReplayBusinessPermissionGuard.E4_REFUND_AUTHORITY)) return true;
         if ("F".equals(domain) && replayBusinessPermissionGuard.canRecoverF5Proposal(command, grants)) return true;
+        if ("K".equals(domain) && K1RiskApproval.supports(command)) {
+            return grants.contains(K1RiskApproval.MAKER_AUTHORITY)
+                    && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write"));
+        }
         if (!grants.contains("platform_a2_read")) {
             return grants.contains("platform_a2_proposal_create")
                     && (!StringUtils.hasText(ticket.getCommandJson()) || ("D".equals(domain)
@@ -241,6 +248,8 @@ public class A2AccessPolicy {
             authority = H3GrowthApproval.MAKER_AUTHORITY;
         } else if (H5GrowthApproval.supports(command)) {
             authority = H5GrowthApproval.MAKER_AUTHORITY;
+        } else if (K1RiskApproval.supports(command)) {
+            authority = K1RiskApproval.MAKER_AUTHORITY;
         } else if (H8RewardParamApproval.supports(command)) {
             authority = H8RewardParamApproval.MAKER_AUTHORITY;
         } else if (K2OtpInitialApproval.supports(command)) {
@@ -258,11 +267,14 @@ public class A2AccessPolicy {
         }
         if (command.params() == null) return false;
         Object makerId = command.params().get("makerAdminId");
-        boolean authorityGranted = permissions.getPermissionCodes(actorId).contains(authority)
+        Set<String> grants = permissions.getPermissionCodes(actorId);
+        boolean proposalAuthority = grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write");
+        boolean authorityGranted = grants.contains(authority)
                 || (H4GrowthApproval.supports(command)
-                    && permissions.getPermissionCodes(actorId).contains("growth_h4_read"));
+                    && grants.contains("growth_h4_read"));
         return makerId instanceof Number && Long.toString(actorId).equals(makerId.toString())
-                && authorityGranted;
+                && authorityGranted
+                && (!K1RiskApproval.supports(command) || proposalAuthority);
     }
 
     private static boolean canReadOwnCourseRewardProposal(Set<String> grants) {
