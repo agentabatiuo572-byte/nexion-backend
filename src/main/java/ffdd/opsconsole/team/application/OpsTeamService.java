@@ -1600,7 +1600,7 @@ public class OpsTeamService implements AuditReplayable {
             persistedValue = String.valueOf(
                     parseDecimal(value.replaceAll("[^0-9].*$", ""), BigDecimal.ZERO).intValueExact());
         } else if ("F.pool.settleCron".equals(key)) {
-            persistedValue = LeadershipPoolSettleScheduler.normalizeCron(value);
+            persistedValue = LeadershipPoolSettleScheduler.normalizeWeeklyCron(value);
         } else if ("F.pool.ratio".equals(key)) {
             persistedValue = LeadershipPoolConfigGuard.canonicalConfiguredPercent(value);
         } else if ("F.binary.matchRate".equals(key)) {
@@ -3528,7 +3528,7 @@ public class OpsTeamService implements AuditReplayable {
             case "F.pool.ratio" -> LeadershipPoolConfigGuard.parseConfiguredRate(value);
             case "F.pool.unlockVRank" -> LeadershipPoolConfigGuard.parseConfiguredUnlockRank(value);
             case "F.pool.periodPrize" -> validatePeriodPrize(value);
-            case "F.pool.settleCron" -> LeadershipPoolSettleScheduler.normalizeCron(value);
+            case "F.pool.settleCron" -> LeadershipPoolSettleScheduler.normalizeWeeklyCron(value);
             case "F.partner.tiers" -> validatePartnerTiers(value);
             case "F.vrank.titles" -> validateVrankTitles(value);
             default -> {
