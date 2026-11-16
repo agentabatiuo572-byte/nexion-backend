@@ -265,6 +265,7 @@ public class AdminCommandInvestigationService {
         if ("I4_TRUST_DOCUMENT".equals(scope)) return "TRUST_DOCUMENT".equals(fact.getResourceType())
                 && Set.of("I4_TRUST_DOCUMENT_UPLOADED", "I4_TRUST_DOCUMENT_RESTORED").contains(action);
         if (scope.startsWith("I7_COURSE_")) return i7CourseEvidence(scope, fact);
+        if (scope.startsWith("M4_SUPPORT_FAQ_")) return m4FaqEvidence(scope, fact);
         if (scope.startsWith("I3_NOTIFICATION_CAMPAIGN_")) return "NOTIFICATION_CAMPAIGN".equals(fact.getResourceType())
                 && i3CampaignActions(scope).contains(action);
         if (scope.startsWith("I6_I18N_")) return i6I18nEvidence(scope, fact);
@@ -448,6 +449,17 @@ public class AdminCommandInvestigationService {
         if (scope.startsWith("I7_COURSE_PUBLISH")) return course && "I7_LEARNING_COURSE_PUBLISHED".equals(action);
         if (scope.startsWith("I7_COURSE_ARCHIVE")) return course && "I7_LEARNING_COURSE_ARCHIVED".equals(action);
         if (scope.startsWith("I7_COURSE_FEATURED")) return course && "I7_LEARNING_FEATURED_CHANGED".equals(action);
+        return false;
+    }
+
+    /** M4 FAQ writes: one knowledge resource, and only the action this scope itself writes. */
+    private boolean m4FaqEvidence(String scope, AuditLogRecord fact) {
+        if (!"SUPPORT_KNOWLEDGE".equals(fact.getResourceType())) return false;
+        String action = fact.getAction();
+        if (scope.startsWith("M4_SUPPORT_FAQ_CREATE")) return "M4_SUPPORT_FAQ_CREATED".equals(action);
+        if (scope.startsWith("M4_SUPPORT_FAQ_UPDATE")) return "M4_SUPPORT_FAQ_UPDATED".equals(action);
+        if (scope.startsWith("M4_SUPPORT_FAQ_STATUS")) return "M4_SUPPORT_FAQ_STATUS_CHANGED".equals(action);
+        if (scope.startsWith("M4_SUPPORT_FAQ_DELETE")) return "M4_SUPPORT_FAQ_DELETED".equals(action);
         return false;
     }
 
