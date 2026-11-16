@@ -5086,18 +5086,18 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     private List<Map<String, Object>> phaseAttribution() {
         // P1-P6 归因目录必须与 H1 的六阶段节奏完整对齐，B4 深链可直接定位任一阶段。
         return List.of(
-                phaseAttributionRow("P1", "新手上手期", "新用户与任务加成驱动激活", "newUserBonusMultiplier", "2", "增长主导"),
-                phaseAttributionRow("P2", "裂变扩散期", "邀请奖励拉新驱动裂变", "inviteRewardMultiplier", "1.5", "增长主导"),
-                phaseAttributionRow("P3", "沉淀转化期", "锁定计划加成驱动沉淀", "reinvestMultiplier", "2", "增长+运营"),
-                phaseAttributionRow("P4", "拐点调节期", "提现冷却与合规审查共同控制流出", "withdrawCooldownDays", "35", "增长+风控"),
-                phaseAttributionRow("P5", "稳态运营期", "团队平衡奖励封顶与提现费率维持资金稳态", "binaryDailyCap", "2000", "增长+资金"),
-                phaseAttributionRow("P6", "软退场期", "增强合规审查与提现费率约束尾部风险", "complianceHoldEnabled", "是", "增长+风控"));
+                phaseAttributionRow("P1", "新用户与任务加成驱动激活", "newUserBonusMultiplier", "2", "增长主导"),
+                phaseAttributionRow("P2", "邀请奖励拉新驱动裂变", "inviteRewardMultiplier", "1.5", "增长主导"),
+                phaseAttributionRow("P3", "锁定计划加成驱动沉淀", "reinvestMultiplier", "2", "增长+运营"),
+                phaseAttributionRow("P4", "提现冷却与合规审查共同控制流出", "withdrawCooldownDays", "35", "增长+风控"),
+                phaseAttributionRow("P5", "团队平衡奖励封顶与提现费率维持资金稳态", "binaryDailyCap", "2000", "增长+资金"),
+                phaseAttributionRow("P6", "增强合规审查与提现费率约束尾部风险", "complianceHoldEnabled", "是", "增长+风控"));
     }
 
-    private Map<String, Object> phaseAttributionRow(String phase, String name, String driver, String paramKey, String value, String owner) {
+    private Map<String, Object> phaseAttributionRow(String phase, String driver, String paramKey, String value, String owner) {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("phase", phase);
-        row.put("name", name);
+        row.put("name", GrowthRhythmSnapshot.phaseNames().get(phase));
         row.put("driver", driver);
         row.put("paramKey", paramKey);
         row.put("value", value);

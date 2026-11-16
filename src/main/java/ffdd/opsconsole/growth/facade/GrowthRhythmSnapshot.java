@@ -32,6 +32,17 @@ public record GrowthRhythmSnapshot(
     private static final String RHYTHM_CURRENT_MONTH_KEY = "H1.rhythm.currentMonth";
     private static final String RHYTHM_PHASE_PROGRESS_KEY = "H1.rhythm.phaseProgressPct";
     private static final List<Integer> RHYTHM_TOTAL_OPTIONS = List.of(9, 12, 15, 18, 24);
+    private static final Map<String, String> PHASE_NAMES = Map.of(
+            "P1", "新手上手期",
+            "P2", "裂变扩散期",
+            "P3", "沉淀转化期",
+            "P4", "拐点调节期",
+            "P5", "稳态运营期",
+            "P6", "软退场期");
+
+    public static Map<String, String> phaseNames() {
+        return PHASE_NAMES;
+    }
 
     public GrowthRhythmSnapshot(
             int totalMonths,
