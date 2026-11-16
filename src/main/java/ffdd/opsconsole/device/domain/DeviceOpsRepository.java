@@ -28,6 +28,11 @@ public interface DeviceOpsRepository {
 
     Optional<DeviceOpsView> restoreDevice(Long deviceId, LocalDateTime restoredAt);
 
+    /** FALSE/empty when the row is missing; the caller decides the refusal. */
+    default Optional<String> ownershipStatus(Long deviceId) {
+        return Optional.empty();
+    }
+
     default long countActiveDevicesByUser(Long userId) {
         return 0;
     }

@@ -464,15 +464,25 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             """)
     int restoreDevice(@Param("deviceId") Long deviceId, @Param("restoredAt") LocalDateTime restoredAt);
 
+    // Restore and legal re-activation only lift the pause this admin pair created. Any other reason
+    // (refund, user deactivation, phone replacement/offline/battery, trade-in replace/recycle) is a
+    // live protection and stays in force, so neither path can hand back an operable device.
     @Update("""
             UPDATE nx_user_device_runtime
                SET online_status = 'OFFLINE',
-                   paused_reason = NULL,
+                   paused_reason = CASE
+                     WHEN NULLIF(TRIM(paused_reason), '') IS NULL THEN NULL
+                     WHEN UPPER(TRIM(paused_reason)) IN ('UNBIND', 'DEACTIVATE') THEN NULL
+                     ELSE paused_reason END,
                    heartbeat_at = #{restoredAt},
                    updated_at = NOW()
              WHERE user_device_id = #{deviceId} AND is_deleted = 0
             """)
     int restoreDeviceRuntime(@Param("deviceId") Long deviceId, @Param("restoredAt") LocalDateTime restoredAt);
+
+    /** E5: the ownership state a restore or activation must honour — OWNED means still this user's. */
+    @Select("SELECT UPPER(ownership_status) FROM nx_user_device WHERE id = #{deviceId} AND is_deleted = 0")
+    String deviceOwnershipStatus(@Param("deviceId") Long deviceId);
 
     @Select("""
             SELECT AVG(ageMonths) AS averageAgeMonths,
