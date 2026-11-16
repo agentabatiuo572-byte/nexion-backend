@@ -73,6 +73,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (j2GeoWrite(scope)) return "emergency_j2_read";
         if (scope.startsWith("I1_COPY_")) return "content_i1_read";
         if (scope.startsWith("I2_NOVA_")) return "content_i2_read";
+        if (j4PlaybookWrite(scope)) return "emergency_j4_read";
         if (scope.startsWith("J1")) return "emergency_j1_read";
         if (scope.startsWith("I5")) return "content_i5_read";
         if (java.util.Set.of("I4_DISCLOSURE_PUBLISH", "I4_GATE_ADJUST").contains(scope)) return "content_i5_read";
@@ -91,7 +92,24 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || "D6_FX_QUOTE_UPDATE".equals(scope) || "D6_FX_QUOTE".equals(scope)
                 || "FINANCE:D7:CONFIG_UPDATE".equals(scope) || "D7_PAYOUT_VND_CONFIG".equals(scope)
                 || scope.startsWith("I1_COPY_") || scope.startsWith("I2_NOVA_")
+                || "J3_ALERT_CONFIG".equals(scope) || j4PlaybookWrite(scope)
                 || "A2_COMMAND".equals(scope) || "L_BI_REPORT_CREATE".equals(scope) || scope.startsWith("L_BI_REPORT_ACTION"));
+    }
+
+    /** Only the four J4 writes that stay inside the transaction: config records, a drill record, a cancel flag. */
+    private static boolean j4LocalRecord(String scope) {
+        if (scope == null) return false;
+        return "J4_PLAYBOOK_CREATE".equals(scope) || scope.startsWith("J4_PLAYBOOK_UPDATE:")
+                || scope.startsWith("J4_PLAYBOOK_DRILL:") || scope.startsWith("J4_PLAYBOOK_CANCEL:");
+    }
+
+    /** The seven J4 playbook writes that carry an idempotency scope. */
+    private static boolean j4PlaybookWrite(String scope) {
+        if (scope == null) return false;
+        return "J4_PLAYBOOK_CREATE".equals(scope) || scope.startsWith("J4_PLAYBOOK_UPDATE:")
+                || scope.startsWith("J4_PLAYBOOK_DRILL:") || scope.startsWith("J4_PLAYBOOK_EXECUTE:")
+                || scope.startsWith("J4_PLAYBOOK_CANCEL:") || scope.startsWith("J4_PLAYBOOK_RESUME:")
+                || scope.startsWith("J4_PLAYBOOK_ROLLBACK:");
     }
 
     /** These commands write transactional local configuration, with no provider/remote business call. */
@@ -104,6 +122,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || "D5_WITHDRAWAL_LIMITS_UPDATE".equals(scope) || "D5_WITHDRAWAL_LIMITS".equals(scope)
                 || "D6_FX_QUOTE_UPDATE".equals(scope) || "D6_FX_QUOTE".equals(scope)
                 || "FINANCE:D7:CONFIG_UPDATE".equals(scope) || "D7_PAYOUT_VND_CONFIG".equals(scope)
+                || j4LocalRecord(scope)
                 || scope != null && (scope.startsWith("E2_POOL_") || scope.startsWith("E5_DEVICE_") || scope.startsWith("E6_PHONE_"));
     }
 
