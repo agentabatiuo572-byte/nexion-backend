@@ -459,6 +459,10 @@ public class OpsCopyAbService {
         if (positionGuard != null) {
             return positionGuard;
         }
+        ApiResult<CopyContentRow> positionConflict = validatePositionUniqueness(current.key(), request.copyPosition());
+        if (positionConflict != null) {
+            return positionConflict;
+        }
         CopyContentRow updated = copyAbRepository.publishVersion(current.key(), normalizePublish(request, version), now());
         syncPublishedI18n(updated);
         auditRequired("I1_COPY_VERSION_PUBLISHED", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
@@ -516,6 +520,10 @@ public class OpsCopyAbService {
         ApiResult<CopyContentRow> versionGuard = validateNewVersionSelection(request.copyKey().trim(), request.version());
         if (versionGuard != null) {
             return versionGuard;
+        }
+        ApiResult<CopyContentRow> positionConflict = validatePositionUniqueness(request.copyKey().trim(), request.copyPosition());
+        if (positionConflict != null) {
+            return positionConflict;
         }
         CopyContentRow created;
         try {
@@ -603,6 +611,10 @@ public class OpsCopyAbService {
         ApiResult<CopyContentRow> positionGuard = validatePositionReference(target.copyPosition(), target.surface());
         if (positionGuard != null) {
             return positionGuard;
+        }
+        ApiResult<CopyContentRow> positionConflict = validatePositionUniqueness(current.key(), target.copyPosition());
+        if (positionConflict != null) {
+            return positionConflict;
         }
         CopyContentRow updated = copyAbRepository.rollbackVersion(current.key(), target.version(), operator(request.operator()), now());
         syncPublishedI18n(updated);
@@ -960,6 +972,12 @@ public class OpsCopyAbService {
         if (!StringUtils.hasText(winner.version())) {
             return ApiResult.fail(409, "COPY_EXPERIMENT_WINNER_VERSION_INVALID");
         }
+        String winnerPosition = copyAbRepository.findVersion(current.copyKey(), winner.version().trim())
+                .map(CopyVersionRow::copyPosition).orElse(null);
+        ApiResult<CopyExperimentRow> positionConflict = validatePositionUniqueness(current.copyKey(), winnerPosition);
+        if (positionConflict != null) {
+            return positionConflict;
+        }
 
         CopyExperimentRow adopted = copyAbRepository.adoptExperimentWinner(
                 current.id(), current.copyKey(), winner.version().trim(), operator(request.operator()), now());
@@ -1234,6 +1252,14 @@ public class OpsCopyAbService {
             parts.add("registeredDays<=" + normalized.registrationDaysMax());
         }
         return String.join(" · ", parts);
+    }
+
+    private <T> ApiResult<T> validatePositionUniqueness(String copyKey, String positionKey) {
+        if (copyAbRepository.hasOtherPublishedCopyAtPosition(copyKey, positionKey)) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                    "COPY_POSITION_ALREADY_PUBLISHED");
+        }
+        return null;
     }
 
     private ApiResult<CopyContentRow> validatePositionReference(String positionKey, String surface) {

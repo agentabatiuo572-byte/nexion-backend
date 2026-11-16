@@ -24,6 +24,14 @@ public interface CopyAbRepository {
         return findCopy(copyKey);
     }
 
+    /**
+     * True when another non-deleted published copy already occupies this UI position.
+     * The MyBatis repository overrides this; the default keeps test/legacy implementations source-compatible.
+     */
+    default boolean hasOtherPublishedCopyAtPosition(String copyKey, String positionKey) {
+        return false;
+    }
+
     List<CopyVersionRow> listVersions(String copyKey);
 
     Optional<CopyVersionRow> findVersion(String copyKey, String version);

@@ -97,6 +97,18 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
     }
 
     @Override
+    public boolean hasOtherPublishedCopyAtPosition(String copyKey, String positionKey) {
+        if (!StringUtils.hasText(copyKey) || !StringUtils.hasText(positionKey)) {
+            return false;
+        }
+        return copyMapper.selectCount(new LambdaQueryWrapper<CopyContentEntity>()
+                .eq(CopyContentEntity::getCopyPosition, positionKey.trim())
+                .eq(CopyContentEntity::getStatus, "PUBLISHED")
+                .eq(CopyContentEntity::getIsDeleted, 0)
+                .ne(CopyContentEntity::getCopyKey, copyKey.trim())) > 0;
+    }
+
+    @Override
     public List<CopyVersionRow> listVersions(String copyKey) {
         return versionMapper.selectList(new LambdaQueryWrapper<CopyVersionEntity>()
                         .eq(CopyVersionEntity::getIsDeleted, 0)
