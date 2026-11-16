@@ -726,6 +726,13 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     private ApiResult<Void> validateOrdinaryProposalPermission(AuditReplayCommand command, String operation) {
+        if ("F".equalsIgnoreCase(command.domain()) && "f_config_batch".equals(operation)) {
+            for (AuditReplayCommand item : fConfigBatchCommands(command.params())) {
+                ApiResult<Void> permission = validateOrdinaryProposalPermission(item, item.op());
+                if (permission.getCode() != 0) return permission;
+            }
+            return ApiResult.ok();
+        }
         if ("E".equalsIgnoreCase(command.domain()) && "e2_phone_tier".equals(operation)) {
             return validateE2PhoneTierPermission(command);
         }
@@ -1415,6 +1422,22 @@ public class AuditReplayBusinessPermissionGuard {
 
     private DelegatedProposalDescriptor delegatedFDescriptor(
             String operation, Map<String, Object> params) {
+        if ("f_config_batch".equals(operation)) {
+            List<DelegatedProposalDescriptor> items = fConfigBatchCommands(params).stream()
+                    .map(item -> delegatedFDescriptor(item.op(), item.params())).toList();
+            if (items.stream().anyMatch(java.util.Objects::isNull)) return null;
+            String objectId = items.stream().map(DelegatedProposalDescriptor::objectId)
+                    .collect(java.util.stream.Collectors.joining(","));
+            List<String> sources = items.stream().map(DelegatedProposalDescriptor::sourceDomain).distinct().toList();
+            return new DelegatedProposalDescriptor(
+                    "网络参数整批原子调整 · " + items.size() + " 项", objectId,
+                    items.stream().map(item -> item.objectId() + "=" + item.beforeValue())
+                            .collect(java.util.stream.Collectors.joining(" / ")),
+                    items.stream().map(item -> item.objectId() + "=" + item.afterValue())
+                            .collect(java.util.stream.Collectors.joining(" / ")),
+                    sources.size() == 1 ? sources.get(0) : "F", "fund",
+                    items.stream().anyMatch(DelegatedProposalDescriptor::amplifies), null);
+        }
         if ("f_ui_config".equals(operation) && ffdd.opsconsole.team.application.AmbassadorMaterialService.isProposal(new AuditReplayCommand("F",operation,params))) {
             var proposal=ambassadorMaterials.proposal(new AuditReplayCommand("F",operation,params));
             String id=String.valueOf(proposal.get("applicationId"));
@@ -1754,6 +1777,11 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     private List<AuditLockTarget> delegatedTargets(AuditReplayCommand command) {
+        if (command != null && "F".equalsIgnoreCase(text(command.domain()))
+                && "f_config_batch".equalsIgnoreCase(text(command.op()))) {
+            return fConfigBatchCommands(command.params()).stream()
+                    .map(item -> delegatedFDescriptor(item.op(), item.params()).target()).toList();
+        }
         if (command != null && "F".equalsIgnoreCase(text(command.domain()))
                 && "f5_commission_reissue".equalsIgnoreCase(text(command.op()))) {
             return canonicalF5CommissionIds(command.params() == null ? null : command.params().get("commissionIds"))
@@ -2119,6 +2147,32 @@ public class AuditReplayBusinessPermissionGuard {
             case "e6_compute_config", "e6_compute_config_batch", "e6_phone_calibration" -> "device_e6_read";
             default -> null;
         };
+    }
+
+    /** Mirrors the batch writer's ordered key/value items without executing or creating sub-proposals. */
+    private List<AuditReplayCommand> fConfigBatchCommands(Map<String, Object> params) {
+        Object rawChanges = params == null ? null : params.get("changes");
+        if (!(rawChanges instanceof List<?> changes) || changes.isEmpty() || changes.size() > 32) {
+            throw new ffdd.opsconsole.shared.exception.BizException(422, "F_CONFIG_BATCH_INVALID");
+        }
+        List<AuditReplayCommand> commands = new ArrayList<>(changes.size());
+        for (Object item : changes) {
+            if (!(item instanceof Map<?, ?> change)) {
+                throw new ffdd.opsconsole.shared.exception.BizException(422, "F_CONFIG_BATCH_ITEM_INVALID");
+            }
+            String key = value(change, "key");
+            String next = value(change, "value");
+            if (key.isBlank() || next.isBlank()) {
+                throw new ffdd.opsconsole.shared.exception.BizException(422, "F_CONFIG_BATCH_ITEM_INVALID");
+            }
+            Map<String, Object> values = Map.of("key", key, "value", next);
+            String operation = fConfigAuthority("f_config", values) != null ? "f_config" : "f_ui_config";
+            if (fConfigAuthority(operation, values) == null) {
+                throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_BUSINESS_PERMISSION_UNMAPPED");
+            }
+            commands.add(new AuditReplayCommand("F", operation, values));
+        }
+        return List.copyOf(commands);
     }
 
     private String fConfigAuthority(String operation, Map<String, Object> params) {
