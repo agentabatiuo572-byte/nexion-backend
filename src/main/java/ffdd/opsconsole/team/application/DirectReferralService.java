@@ -434,7 +434,7 @@ public class DirectReferralService {
         return changed;
     }
 
-    public Map<String,Object> eventSnapshot(Long eventId){String no=mapper.groupForEvent(eventId);if(no==null)return Map.of();var value=view(mapper.group(no));if("network".equals(value.get("kind"))){var event=mapper.eventView(eventId);value.put("status",text(event,"status").toLowerCase(Locale.ROOT));value.put("operationScope","single_event");}else value.put("operationScope","dual_asset_group");return value;}
+    public Map<String,Object> eventSnapshot(Long eventId){String no=mapper.groupForEvent(eventId);if(no==null)return Map.of();var value=view(mapper.group(no));value.put("groupStatus",text(value,"status"));if("network".equals(value.get("kind"))){var event=mapper.eventView(eventId);value.put("status",text(event,"status").toLowerCase(Locale.ROOT));value.put("operationScope","single_event");}else value.put("operationScope","dual_asset_group");return value;}
     public List<Map<String,Object>> pendingForOps(String kind,Long user,String cohort){var scope=policies.scope();return mapper.pendingForOps(scope.sourceEnvironment(),scope.runId(),kind,user,cohort).stream().map(this::view).toList();}
 
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
