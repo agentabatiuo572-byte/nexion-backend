@@ -684,6 +684,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                AND a.is_deleted = 0
                AND a.period = 'week'
                AND UPPER(a.action_type) IN ('FRAUD', 'DISQUALIFIED', 'RISK')
+               AND a.created_at >= """ + VietnamBusinessPeriodSql.WEEK_START + """
+               AND a.created_at < """ + VietnamBusinessPeriodSql.NEXT_WEEK_START + """
              WHERE ranked.rank_no <= #{limit}
              ORDER BY ranked.rank_no ASC
             """;
@@ -706,6 +708,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                               WHERE is_deleted = 0
                                 AND period = 'week'
                                 AND UPPER(action_type) IN ('FRAUD', 'DISQUALIFIED', 'RISK')
+                                AND created_at >= """ + VietnamBusinessPeriodSql.WEEK_START + """
+                                AND created_at < """ + VietnamBusinessPeriodSql.NEXT_WEEK_START + """
                              UNION
                              SELECT user_id AS member_user_id
                                FROM nx_risk_signal
@@ -728,6 +732,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                         WHERE is_deleted = 0
                           AND period = 'week'
                           AND UPPER(action_type) IN ('FRAUD', 'DISQUALIFIED', 'RISK')
+                          AND created_at >= """ + VietnamBusinessPeriodSql.WEEK_START + """
+                          AND created_at < """ + VietnamBusinessPeriodSql.NEXT_WEEK_START + """
                      ) > 0 THEN 'disqualified'
                      WHEN (
                        SELECT COUNT(DISTINCT user_id)
@@ -1092,6 +1098,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                       AND a.period = 'week'
                       AND a.member_user_id = m.member_user_id
                       AND UPPER(a.action_type) IN ('FRAUD', 'DISQUALIFIED', 'RISK')
+                      AND a.created_at >= """ + VietnamBusinessPeriodSql.WEEK_START + """
+                      AND a.created_at < """ + VietnamBusinessPeriodSql.NEXT_WEEK_START + """
                )
              GROUP BY m.member_user_id
              ORDER BY SUM(m.volume) DESC, m.member_user_id ASC
