@@ -150,10 +150,11 @@ public class TrustDocumentService {
     }
 
     public TrustDocumentsView.Document upload(String slot, MultipartFile file, TrustDocumentUploadRequest request,
-            String idempotencyKey, String actor) {
+            String idempotencyKey, String actor, String actorId) {
         requireSlot(slot);
         requireSlotAuthority(slot);
         String key = requireIdempotencyKey(idempotencyKey);
+        requireStableActor(actorId);
         String reason = requireReason(request.reason());
         byte[] bytes = pdfBytes(file);
         String version = optional(request.version(), VERSION, "TRUST_DOCUMENT_VERSION_INVALID");
@@ -166,8 +167,17 @@ public class TrustDocumentService {
         int pageCount = pageCount(bytes);
         String sha256 = sha256(bytes);
         String requestHash = sha256(String.join("\u0000", slot, sha256, text(version), text(language), text(referenceNo),
+                text(verifyUrl), fileName, reason, text(request.expectedSha256()), text(actorId)).getBytes(StandardCharsets.UTF_8));
+        String legacyHash = sha256(String.join("\u0000", slot, sha256, text(version), text(language), text(referenceNo),
                 text(verifyUrl), fileName, reason, text(request.expectedSha256()), text(actor)).getBytes(StandardCharsets.UTF_8));
-        requireCurrent(slot, mapper.find(slot), request.expectedSha256());
+        // A stable subject id, not the masked display name, owns the receipt. An active success for this exact
+        // command may replay despite the old expectedSha; a new execution still validates the current SHA below.
+        var active = idempotency.activeReceipt(IDEMPOTENCY_SCOPE, key);
+        boolean replaySucceeded = active != null && requestHash.equals(active.requestHash());
+        if (!replaySucceeded) {
+            rejectLegacyReceipt(key, legacyHash, requestHash);
+            requireCurrent(slot, mapper.find(slot), request.expectedSha256());
+        }
         // Stored before the transaction so a slow transfer holds no connection or row. The key is the content hash,
         // so a retry reuses the object; replaced files stay in storage as the audit trail's history.
         String objectKey = "admin/content/trust-documents/%s/%s.pdf".formatted(slot, sha256);
@@ -199,13 +209,17 @@ public class TrustDocumentService {
     }
 
     public TrustDocumentsView.Document restoreDefault(String slot, TrustDocumentRestoreRequest request,
-            String idempotencyKey, String actor) {
+            String idempotencyKey, String actor, String actorId) {
         requireSlot(slot);
         requireSlotAuthority(slot);
         String key = requireIdempotencyKey(idempotencyKey);
+        requireStableActor(actorId);
         String reason = requireReason(request.reason());
-        String requestHash = sha256(String.join("\u0000", slot, reason, text(request.expectedSha256()), text(actor))
+        String requestHash = sha256(String.join("\u0000", slot, reason, text(request.expectedSha256()), text(actorId))
                 .getBytes(StandardCharsets.UTF_8));
+        String legacyHash = sha256(String.join("\u0000", slot, reason, text(request.expectedSha256()), text(actor))
+                .getBytes(StandardCharsets.UTF_8));
+        rejectLegacyReceipt(key, legacyHash, requestHash);
         return idempotency.execute(IDEMPOTENCY_SCOPE, key, requestHash, TrustDocumentsView.Document.class, () -> {
             TrustDocumentRow current = mapper.find(slot);
             if (current == null) throw new BizException(409, "TRUST_DOCUMENT_ALREADY_DEFAULT");
@@ -263,6 +277,24 @@ public class TrustDocumentService {
         boolean allowed = authentication != null && authentication.isAuthenticated()
                 && authentication.getAuthorities().stream().anyMatch(item -> SENSITIVE_AUTHORITY.equals(item.getAuthority()));
         if (!allowed) throw new BizException(OpsErrorCode.FORBIDDEN.httpStatus(), "TRUST_DOCUMENT_FORBIDDEN");
+    }
+
+    private static void requireStableActor(String actorId) {
+        // The receipt fingerprint must bind a stable ADMIN subject id, never a masked display name.
+        if (!StringUtils.hasText(actorId)) {
+            throw new BizException(OpsErrorCode.FORBIDDEN.httpStatus(), "TRUST_DOCUMENT_ACTOR_REQUIRED");
+        }
+    }
+
+    private void rejectLegacyReceipt(String key, String legacyHash, String requestHash) {
+        if (legacyHash.equals(requestHash)) return;
+        var status = idempotency.recoveryStatus(IDEMPOTENCY_SCOPE, key, legacyHash);
+        if (status != AdminIdempotencyService.RecoveryStatus.NOT_FOUND
+                && status != AdminIdempotencyService.RecoveryStatus.MISMATCH) {
+            // Older I4 receipts bound only the masked display name. Their owner is unproven without stable
+            // actorId plus matching _adminCommand evidence, so never replay or re-execute them automatically.
+            throw new BizException(409, "TRUST_DOCUMENT_LEGACY_COMMAND_REVIEW_REQUIRED");
+        }
     }
 
     private String requireCurrent(String slot, TrustDocumentRow current, String expectedSha256) {

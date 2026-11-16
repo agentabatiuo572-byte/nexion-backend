@@ -57,6 +57,29 @@ public final class AdminActorResolver {
         return StringUtils.hasText(stableId) ? "admin:" + stableId.trim() : trim(trustedInternalFallback);
     }
 
+    /**
+     * 稳定管理员主体编号，仅用于幂等指纹的身份绑定；展示 actor 仍由 {@link #resolve(String)} 负责。
+     * 只接受 subjectType=ADMIN 的正整数 principal，取不到可信身份时返回 null，不回落打码显示名。
+     */
+    public static String subjectId() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null
+                || !authentication.isAuthenticated()
+                || authentication instanceof AnonymousAuthenticationToken
+                || !(authentication.getDetails() instanceof Map<?, ?> details)
+                || !"ADMIN".equals(text(details.get("subjectType")))) {
+            return null;
+        }
+        String principal = trim(authentication.getName());
+        if (!StringUtils.hasText(principal)) return null;
+        try {
+            long id = Long.parseLong(principal);
+            return id > 0 ? Long.toString(id) : null;
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
     /** 保留前 3 位与后 2 位,中间固定 4 个星号(与展示侧同口径)。非电话形状原样返回。 */
     static String maskPhone(String value) {
         if (!PHONE_LIKE.matcher(value).matches()) return value;
