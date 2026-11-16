@@ -26,7 +26,14 @@ public class OpsMediaController {
     private final OpsMediaUploadService uploadService;
 
     @PostMapping(value = "/uploads", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @PreAuthorize("hasAuthority('device_e1_write') or (hasAuthority('growth_promotion_edit') and #domain == 'growth' and #usage == 'promotion-banner')")
+    // The H4 reward disposition needs its own evidence images, and the console uploads them as
+    // domain=growth / usage=promotion-evidence. Only the reward disposition authorities may use that
+    // purpose; every other purpose keeps its existing rule, so this grants no E1, banner or general
+    // media write and the plain H4 read authority still cannot upload.
+    @PreAuthorize("hasAuthority('device_e1_write')"
+            + " or (hasAuthority('growth_promotion_edit') and #domain == 'growth' and #usage == 'promotion-banner')"
+            + " or (#domain == 'growth' and #usage == 'promotion-evidence'"
+            + " and hasAnyAuthority('growth_promotion_reward_cancel', 'growth_promotion_reward_reverse', 'growth_promotion_reward_resolve'))")
     public ApiResult<UploadedAsset> upload(
             @RequestPart("file") MultipartFile file,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
