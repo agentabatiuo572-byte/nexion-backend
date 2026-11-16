@@ -261,6 +261,9 @@ public class AdminCommandInvestigationService {
                 && "E.compute.phoneRisk.settings".equals(fact.getResourceId());
         if ("J3_ALERT_CONFIG".equals(scope)) return "TAMPER_ALERT_CONFIG".equals(fact.getResourceType())
                 && "J3_TAMPER_ALERT_CONFIG_CHANGED".equals(action);
+        if (scope.startsWith("I4_TRUST_SECTION_")) return i4TrustSectionEvidence(scope, fact);
+        if ("I4_TRUST_DOCUMENT".equals(scope)) return "TRUST_DOCUMENT".equals(fact.getResourceType())
+                && Set.of("I4_TRUST_DOCUMENT_UPLOADED", "I4_TRUST_DOCUMENT_RESTORED").contains(action);
         if (scope.startsWith("I3_NOTIFICATION_CAMPAIGN_")) return "NOTIFICATION_CAMPAIGN".equals(fact.getResourceType())
                 && i3CampaignActions(scope).contains(action);
         if (scope.startsWith("I6_I18N_")) return i6I18nEvidence(scope, fact);
@@ -393,6 +396,22 @@ public class AdminCommandInvestigationService {
         if (scope.startsWith("I2_NOVA_TEMPLATE_DELETE:")) return java.util.Set.of("I2_NOVA_TEMPLATE_DELETED");
         if ("I2_NOVA_TEMPLATE_CREATE".equals(scope)) return java.util.Set.of("I2_NOVA_TEMPLATE_CREATED");
         return java.util.Set.of();
+    }
+
+    /** I4 trust-section writes: the section or draft-version resource, with this scope's own action. */
+    private boolean i4TrustSectionEvidence(String scope, AuditLogRecord fact) {
+        String action = fact.getAction();
+        boolean sectionResource = "TRUST_SECTION".equals(fact.getResourceType());
+        boolean versionResource = "TRUST_SECTION_VERSION".equals(fact.getResourceType());
+        return switch (scope) {
+            case "I4_TRUST_SECTION_PUBLISH" -> sectionResource && "I4_TRUST_SECTION_PUBLISHED".equals(action);
+            case "I4_TRUST_SECTION_ROLLBACK" -> sectionResource && "I4_TRUST_SECTION_ROLLED_BACK".equals(action);
+            case "I4_TRUST_SECTION_ARCHIVE" -> sectionResource && "I4_TRUST_SECTION_ARCHIVED".equals(action);
+            case "I4_TRUST_SECTION_DRAFT_CREATE" -> versionResource && "I4_TRUST_SECTION_DRAFT_CREATED".equals(action);
+            case "I4_TRUST_SECTION_DRAFT_UPDATE" -> versionResource && "I4_TRUST_SECTION_DRAFT_UPDATED".equals(action);
+            case "I4_TRUST_SECTION_DRAFT_DELETE" -> versionResource && "I4_TRUST_SECTION_DRAFT_DELETED".equals(action);
+            default -> false;
+        };
     }
 
     /** I3 campaign writes: the campaign resource, and only the action that scope itself writes. */

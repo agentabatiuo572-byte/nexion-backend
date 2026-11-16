@@ -77,6 +77,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (scope.startsWith("J1")) return "emergency_j1_read";
         if (scope.startsWith("I5")) return "content_i5_read";
         if (java.util.Set.of("I4_DISCLOSURE_PUBLISH", "I4_GATE_ADJUST").contains(scope)) return "content_i5_read";
+        if (i4TrustWrite(scope)) return "content_i4_read";
         if (scope.startsWith("F1_VRANK_")) return "network_f1_read";
         if ("F4_AMBASSADOR_POLICY_UPDATE".equals(scope) || scope.startsWith("F4_MATERIAL_REVIEW:")) return "network_f4_read";
         if (java.util.Set.of("F5_COMMISSION_REVERSE", "F5_COMMISSION_REISSUE", "F5_COMMISSION_SUSPENSION",
@@ -92,6 +93,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || scope.startsWith("GROWTH:H2:")
                 || "J3_ALERT_CONFIG".equals(scope)
                 || scope.startsWith("I3_NOTIFICATION_CAMPAIGN_") || scope.startsWith("I6_I18N_")
+                || i4TrustWrite(scope)
                 || j2GeoWrite(scope)
                 || "D5_WITHDRAWAL_LIMITS_UPDATE".equals(scope) || "D5_WITHDRAWAL_LIMITS".equals(scope)
                 || "D6_FX_QUOTE_UPDATE".equals(scope) || "D6_FX_QUOTE".equals(scope)
@@ -127,6 +129,20 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 "F5_COMMISSION_SUSPENSION", "F5_COMMISSION_ANOMALY_CONFIG").contains(scope));
     }
 
+    /**
+     * The I4 trust-section and trust-document commands. Only the draft commands are local
+     * configuration: publish, rollback, archive and the PDF upload change the public trust surface or
+     * write stored objects, so a rollback there must stay unknown rather than be called not-executed.
+     */
+    private static boolean i4TrustWrite(String scope) {
+        if (scope == null) return false;
+        return scope.startsWith("I4_TRUST_SECTION_") || "I4_TRUST_DOCUMENT".equals(scope);
+    }
+
+    private static boolean i4TrustDraftOnly(String scope) {
+        return scope != null && scope.startsWith("I4_TRUST_SECTION_DRAFT_");
+    }
+
     /** These commands write transactional local configuration, with no provider/remote business call. */
     public static boolean localConfiguration(String scope) {
         return java.util.Set.of("I5_JURISDICTION_CREATE", "I5_JURISDICTION_UPDATE", "I5_DISCLOSURE_DRAFT_SAVE",
@@ -139,6 +155,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || "FINANCE:D7:CONFIG_UPDATE".equals(scope) || "D7_PAYOUT_VND_CONFIG".equals(scope)
                 || j4LocalRecord(scope)
                 || fLocalConfiguration(scope)
+                || i4TrustDraftOnly(scope)
                 || scope != null && (scope.startsWith("E2_POOL_") || scope.startsWith("E5_DEVICE_") || scope.startsWith("E6_PHONE_"));
     }
 
