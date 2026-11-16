@@ -482,7 +482,7 @@ public class OpsDeviceController {
             @PathVariable String operation,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody DeviceTradeinActionRequest request) {
-        return deviceService.executeTradeinAction(operation, idempotencyKey, request);
+        return deviceService.executeTradeinActionBound(operation, idempotencyKey, request);
     }
 
     @PostMapping("/users/{userId}/tradein/{operation}")

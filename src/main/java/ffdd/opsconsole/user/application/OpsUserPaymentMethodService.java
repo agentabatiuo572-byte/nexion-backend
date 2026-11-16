@@ -59,9 +59,10 @@ public class OpsUserPaymentMethodService {
         requireUser(userId);
         requireScopedRuntime();
         String sourceEnvironment = sandboxGuard.sourceEnvironment();
-        return idempotency.execute("USER_PAYMENT_METHOD_UNBIND:" + sourceEnvironment, key,
+        return idempotency.executeBound("USER_PAYMENT_METHOD_UNBIND:" + sourceEnvironment, key,
                 hash(sourceEnvironment + ":" + userId + ":" + methodId + ":" + request.expectedVersion() + ":" + request.reason()),
-                Map.class, () -> doUnbind(userId, methodId, key, request));
+                Map.class, "user_c1hub_read", String.valueOf(methodId),
+                () -> doUnbind(userId, methodId, key, request));
     }
 
     @Transactional
@@ -70,9 +71,10 @@ public class OpsUserPaymentMethodService {
         requireUser(userId);
         requireScopedRuntime();
         String sourceEnvironment = sandboxGuard.sourceEnvironment();
-        return idempotency.execute("USER_PAYMENT_METHOD_REBIND_NOTICE:" + sourceEnvironment, key,
+        return idempotency.executeBound("USER_PAYMENT_METHOD_REBIND_NOTICE:" + sourceEnvironment, key,
                 hash(sourceEnvironment + ":" + userId + ":" + methodId + ":" + request.expectedVersion() + ":" + request.reason()),
-                Map.class, () -> doNotifyRebind(userId, methodId, key, request));
+                Map.class, "user_c1hub_read", String.valueOf(methodId),
+                () -> doNotifyRebind(userId, methodId, key, request));
     }
 
     @Transactional
@@ -81,7 +83,8 @@ public class OpsUserPaymentMethodService {
         if (!StringUtils.hasText(request.expectedValue())) {
             throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "EXPECTED_NICKNAME_REQUIRED");
         }
-        return idempotency.execute("USER_NICKNAME_RESET", key, hash(userId + ":" + request.reason()), Map.class, () -> {
+        return idempotency.executeBound("USER_NICKNAME_RESET", key, hash(userId + ":" + request.reason()), Map.class,
+                "user_c1hub_read", String.valueOf(userId), () -> {
             requireUser(userId);
             String before = mapper.currentNickname(userId);
             if (!request.expectedValue().trim().equals(before)) {

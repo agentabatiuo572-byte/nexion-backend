@@ -354,6 +354,21 @@ public class AdminCommandInvestigationService {
                     && scope.substring("A3_PLATFORM_PARAM:".length()).toLowerCase(java.util.Locale.ROOT)
                             .equals(fact.getResourceId());
         }
+        if (AdminCommandOrigin.userDetailScope(scope)) {
+            if (scope.startsWith("USER_PAYMENT_METHOD_UNBIND:")) {
+                return "USER_PAYMENT_METHOD".equals(fact.getResourceType())
+                        && "USER_PAYMENT_METHOD_UNBIND".equals(action);
+            }
+            if (scope.startsWith("USER_PAYMENT_METHOD_REBIND_NOTICE:")) {
+                return "USER_PAYMENT_METHOD".equals(fact.getResourceType())
+                        && "USER_PAYMENT_METHOD_REBIND_NOTICE".equals(action);
+            }
+            return "USER".equals(fact.getResourceType()) && "USER_NICKNAME_RESET".equals(action);
+        }
+        if (AdminCommandOrigin.e3TradeinScope(scope)) {
+            return "DEVICE".equals(fact.getResourceType())
+                    && "ADMIN.TRADEIN_ACTION_EXECUTED".equals(action);
+        }
         return Set.of("D2_WITHDRAWAL_CHAIN_CONFIRMED", "D2_WITHDRAWAL_REVIEW_APPROVE", "D2_WITHDRAWAL_REVIEW_REJECT",
                 "D2_WITHDRAWAL_REVIEW_REFUND", "D2_WITHDRAWAL_REVIEW_DELAY", "D2_WITHDRAWAL_REVIEW_FREEZE",
                 "D3_FORECAST_CONFIG_CHANGED", "D3_TREASURY_RESERVE_INJECTION", "D3_RECONCILIATION_EXPORTED", "D3_LIABILITIES_EXPORTED", "D3_SENSITIVE_EXPORT_A2_AUDITED",
@@ -556,6 +571,7 @@ public class AdminCommandInvestigationService {
         if (scope.startsWith("L_BI_REPORT_ACTION_")) return;
         if ("F_TEAM_CONFIG_UPDATE".equals(scope)) return; // exact per-key authority is stored on the original
         if (AdminCommandOrigin.a3PlatformParamScope(scope)) return; // exact authority is stored on the original
+        if (AdminCommandOrigin.e3TradeinScope(scope)) return; // exact entry authority is stored on the original
         String authority = scope.startsWith("L_BI_") ? "bi_l1_read" : AdminCommandOrigin.readAuthority(scope);
         if (authority == null || !permissions.getPermissionCodes(actor).contains(authority)) throw denied();
     }
