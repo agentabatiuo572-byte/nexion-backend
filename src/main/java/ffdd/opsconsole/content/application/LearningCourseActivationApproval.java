@@ -177,9 +177,12 @@ public class LearningCourseActivationApproval {
 
     private ObjectNode currentReview(CourseActivation activation) {
         var current = activation.current();
-        return objectMapper.createObjectNode()
+        ObjectNode review = objectMapper.createObjectNode()
                 .put("courseId", current.id()).put("version", current.version()).put("revision", current.revision())
-                .put("status", current.status()).put("rewardNex", current.rewardNex().toPlainString());
+                .put("status", current.status());
+        if (current.rewardNex() == null) review.putNull("rewardNex");
+        else review.put("rewardNex", current.rewardNex().toPlainString());
+        return review;
     }
 
     private ObjectNode targetReview(CourseActivation activation) {
@@ -187,8 +190,9 @@ public class LearningCourseActivationApproval {
         ObjectNode after = objectMapper.valueToTree(target == null ? activation.current() : target.payload());
         after.remove(List.of("id", "title", "body", "featured", "operator", "reason", "expectedRevision", "publishState"));
         after.put("courseId", activation.current().id()).put("version", activation.targetVersion())
-                .put("status", "published").put("sourceStatus", target == null ? "LEGACY_DRAFT" : target.status())
-                .put("rewardNex", activation.targetReward().toPlainString());
+                .put("status", "published").put("sourceStatus", target == null ? "LEGACY_DRAFT" : target.status());
+        if (activation.targetReward() == null) after.putNull("rewardNex");
+        else after.put("rewardNex", activation.targetReward().toPlainString());
         if (target == null) after.putNull("revision"); else after.put("revision", target.revision());
         return after;
     }

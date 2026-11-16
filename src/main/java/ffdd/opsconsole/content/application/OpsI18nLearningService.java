@@ -29,6 +29,8 @@ import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
+import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -101,8 +103,9 @@ public class OpsI18nLearningService {
         if (guard != null) {
             return fail(guard);
         }
-        learningRepository.recomputeIntegrity(now());
-        I18nLearningOverview overview = currentOverview();
+        LocalDateTime scannedAt = now();
+        learningRepository.recomputeIntegrity(scannedAt);
+        I18nLearningOverview overview = currentOverview(scannedAt);
         audit("I6_I18N_INTEGRITY_RESCANNED", "I18N_SCAN", "full", request.operator(), idempotencyKey, request.reason(), Map.of(
                 "remainingIssues", overview.stats().integrityIssues()));
         return ApiResult.ok(overview);
@@ -548,7 +551,8 @@ public class OpsI18nLearningService {
 
         boolean amplifies() {
             // T11-7：只要目标历史版本有奖励（> 0），回滚一律走审批，等额、降额也算。
-            return targetReward().signum() > 0;
+            BigDecimal reward = targetReward();
+            return reward != null && reward.signum() > 0;
         }
     }
 
@@ -617,8 +621,11 @@ public class OpsI18nLearningService {
                         request.operator(), idempotencyKey, request.reason(), detail);
             }
             case ROLLBACK -> {
-                detail.putAll(Map.of("from", current.version(), "to", target.version(), "rewardNex", activation.targetReward(),
-                        "coverageRatio", coverage.coverageRatio(), "redlinePct", coverage.redlinePct()));
+                detail.put("from", current.version());
+                detail.put("to", target.version());
+                detail.put("rewardNex", activation.targetReward());
+                detail.put("coverageRatio", coverage.coverageRatio());
+                detail.put("redlinePct", coverage.redlinePct());
                 audit("I7_LEARNING_COURSE_VERSION_ROLLED_BACK", "LEARNING_COURSE_VERSION", current.id() + ":" + target.version(),
                         request.operator(), idempotencyKey, request.reason(), detail);
             }
@@ -640,9 +647,10 @@ public class OpsI18nLearningService {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
         LearningCourseView updated = learningRepository.updateCourseStatus(current.id(), "archived", now());
-        audit("I7_LEARNING_COURSE_ARCHIVED", "LEARNING_COURSE", current.id(), request.operator(), idempotencyKey, request.reason(), Map.of(
-                "from", current.status(),
-                "rewardNex", current.rewardNex()));
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("from", current.status());
+        detail.put("rewardNex", current.rewardNex());
+        audit("I7_LEARNING_COURSE_ARCHIVED", "LEARNING_COURSE", current.id(), request.operator(), idempotencyKey, request.reason(), detail);
         return ApiResult.ok(updated);
     }
 
@@ -660,7 +668,8 @@ public class OpsI18nLearningService {
         }
 
         static CourseRewardReview fromCourse(LearningCourseView course, long makerAdminId) {
-            return new CourseRewardReview(course.version(), course.revision(), course.rewardNex().toPlainString(), makerAdminId);
+            return new CourseRewardReview(course.version(), course.revision(),
+                    course.rewardNex() == null ? null : course.rewardNex().toPlainString(), makerAdminId);
         }
     }
 
@@ -715,16 +724,16 @@ public class OpsI18nLearningService {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        if (request.rewardNex().compareTo(current.rewardNex()) > 0
+        if (request.rewardNex().compareTo(current.rewardNex() == null ? BigDecimal.ZERO : current.rewardNex()) > 0
                 && coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
             return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
         }
         LearningCourseView updated = learningRepository.updateCourseReward(current.id(), request.rewardNex().setScale(6, RoundingMode.HALF_UP), now());
-        Map<String, Object> detail = new LinkedHashMap<>(Map.of(
-                "from", current.rewardNex(),
-                "to", updated.rewardNex(),
-                "coverageRatio", coverage.coverageRatio(),
-                "redlinePct", coverage.redlinePct()));
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("from", current.rewardNex());
+        detail.put("to", updated.rewardNex());
+        detail.put("coverageRatio", coverage.coverageRatio());
+        detail.put("redlinePct", coverage.redlinePct());
         if (review != null) {
             detail.put("version", current.version());
             detail.put("reviewedRevision", current.revision());
@@ -763,6 +772,10 @@ public class OpsI18nLearningService {
     }
 
     private I18nLearningOverview currentOverview() {
+        return currentOverview(null);
+    }
+
+    private I18nLearningOverview currentOverview(LocalDateTime scanAtOverride) {
         List<I18nNamespaceView> namespaces = learningRepository.listNamespaces();
         List<I18nMessagePairView> messages = learningRepository.listMessagePairs();
         List<I18nIntegrityIssueView> issues = learningRepository.listIntegrityIssues();
@@ -795,12 +808,22 @@ public class OpsI18nLearningService {
                 courses,
                 REWARD_RANGE,
                 featuredCourseId(courses),
-                metrics(online),
+                null,
                 CATEGORIES,
                 FORMATS,
                 LEVELS,
                 STATUSES,
-                SOURCES);
+                SOURCES,
+                scanAtOverride != null ? scanAtOverride : latestScanAt());
+    }
+
+    private LocalDateTime latestScanAt() {
+        AuditLogQueryRequest query = new AuditLogQueryRequest();
+        query.setAction("I6_I18N_INTEGRITY_RESCANNED");
+        query.setResourceType("I18N_SCAN");
+        query.setLimit(1);
+        List<AuditLogRecord> rows = auditLogService.list(query);
+        return rows == null || rows.isEmpty() ? null : rows.get(0).getCreatedAt();
     }
 
     private List<LearningMetricView> metrics(int onlineCourses) {
@@ -808,7 +831,8 @@ public class OpsI18nLearningService {
     }
 
     private String weeklyNexPayout() {
-        return learningRepository.weeklyGrantedLearningReward().setScale(2, RoundingMode.HALF_UP).toPlainString() + " UVT";
+        BigDecimal value = learningRepository.weeklyGrantedLearningReward();
+        return value.stripTrailingZeros().toPlainString() + " UVT";
     }
 
     private String featuredCourseId(List<LearningCourseView> courses) {
