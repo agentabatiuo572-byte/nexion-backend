@@ -938,7 +938,10 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                      WHEN UPPER(status) IN ('COOLING', 'PENDING')
                        AND unlock_at IS NOT NULL AND unlock_at <= NOW() THEN '可提'
                      ELSE '计提'
-                   END AS state
+                   END AS state,
+                   (SELECT s.source_type FROM nx_direct_referral_settlement s
+                     WHERE s.usdt_event_id = nx_commission_event.id OR s.nex_event_id = nx_commission_event.id
+                     LIMIT 1) AS settlementSourceType
               FROM nx_commission_event
              WHERE id = #{eventId} AND is_deleted = 0
             """)
