@@ -511,6 +511,36 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
             """)
     List<Map<String, Object>> geoEdgeMetrics();
 
+    @Select("""
+            SELECT id,
+                   DATE_FORMAT(recorded_at, '%Y-%m-%d %H:%i:%s') AS recordedAt,
+                   country_code AS countryCode,
+                   COALESCE(country_name, country_code) AS countryName,
+                   endpoint_key AS endpointKey,
+                   source,
+                   event_count AS eventCount
+              FROM nx_emergency_geo_block_event
+             WHERE is_deleted = 0
+               AND (#{countryCode} IS NULL OR country_code = #{countryCode})
+               AND (#{endpointKey} IS NULL OR endpoint_key = #{endpointKey})
+             ORDER BY recorded_at DESC, id DESC
+             LIMIT #{pageSize} OFFSET #{offset}
+            """)
+    List<Map<String, Object>> geoBlockEventRows(@Param("countryCode") String countryCode,
+                                                @Param("endpointKey") String endpointKey,
+                                                @Param("pageSize") int pageSize,
+                                                @Param("offset") int offset);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_emergency_geo_block_event
+             WHERE is_deleted = 0
+               AND (#{countryCode} IS NULL OR country_code = #{countryCode})
+               AND (#{endpointKey} IS NULL OR endpoint_key = #{endpointKey})
+            """)
+    long countGeoBlockEvents(@Param("countryCode") String countryCode,
+                             @Param("endpointKey") String endpointKey);
+
     @Insert("""
             INSERT INTO nx_emergency_geo_block_event (
                 country_code, country_name, endpoint_key, source, event_count,
