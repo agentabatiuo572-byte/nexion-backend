@@ -170,7 +170,12 @@ public class TaskPoolService {
         if(ids==null||ids.isEmpty()||ids.size()>300||ids.stream().anyMatch(id->id==null||id.isBlank()))throw new BizException(422,"TASK_TYPE_IDS_REQUIRED");
         return ids.stream().distinct().sorted().toList();
     }
-    private void reason(String reason) {if(reason==null||reason.trim().length()<8||reason.trim().length()>200)throw new BizException(422,"REASON_LENGTH_INVALID");}
+    private void reason(String reason) {
+        if(reason==null)throw new BizException(422,"REASON_LENGTH_INVALID");
+        String trimmed=reason.trim();
+        int length=trimmed.codePointCount(0,trimmed.length());
+        if(length<8||length>200)throw new BizException(422,"REASON_LENGTH_INVALID");
+    }
     private void event(String event,String code,String reason,Map<String,Object> detail) {
         var payload=new LinkedHashMap<String,Object>(detail);payload.put("poolCode",code);payload.put("reason",reason.trim());
         String actor=AdminActorResolver.resolve(null);payload.put("operator",actor);
