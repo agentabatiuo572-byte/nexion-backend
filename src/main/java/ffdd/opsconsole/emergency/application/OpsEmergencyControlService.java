@@ -28,6 +28,7 @@ import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -3190,6 +3191,28 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
 
     private List<Map<String, Object>> geoHits() {
         return emergencyRepository.geoHits();
+    }
+
+    /**
+     * One row per request the edge actually refused, read from the same event table the summary sums.
+     * The edge filter rejects before authentication, so a refused request carries no user identity:
+     * this read never fills that in.
+     */
+    public ApiResult<PageResult<Map<String, Object>>> geoBlockHitDetail(
+            String countryCode, String endpointKey, Integer pageNum, Integer pageSize) {
+        String country = countryCode == null ? null : countryCode.trim().toUpperCase(Locale.ROOT);
+        if (country != null && (country.isEmpty() || !country.matches("[A-Z]{2}"))) {
+            throw new BizException(422, "J2_GEO_HIT_COUNTRY_INVALID");
+        }
+        String endpoint = endpointKey == null || endpointKey.trim().isEmpty() ? null : endpointKey.trim();
+        long safePage = pageNum == null || pageNum < 1 ? 1L : pageNum;
+        long safeSize = pageSize == null || pageSize < 1 ? 20L : Math.min(pageSize, 100);
+        long offset = (safePage - 1L) * safeSize;
+        if (offset > Integer.MAX_VALUE) throw new BizException(422, "J2_GEO_HIT_PAGE_INVALID");
+        long total = emergencyRepository.countGeoBlockEvents(country, endpoint);
+        List<Map<String, Object>> records = emergencyRepository
+                .geoBlockEventRows(country, endpoint, (int) safeSize, (int) offset);
+        return ApiResult.ok(new PageResult<>(total, safePage, safeSize, records));
     }
 
     /** Dedicated management read: all-country SUM over the same rolling 24h event table, no country LIMIT. */

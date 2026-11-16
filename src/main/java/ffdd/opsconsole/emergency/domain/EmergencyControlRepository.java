@@ -68,6 +68,16 @@ public interface EmergencyControlRepository {
 
     List<Map<String, Object>> geoEdgeMetrics();
 
+    /** Per-row block facts exactly as the edge filter recorded them; no identity is invented. */
+    default List<Map<String, Object>> geoBlockEventRows(
+            String countryCode, String endpointKey, int pageSize, int offset) {
+        return List.of();
+    }
+
+    default long countGeoBlockEvents(String countryCode, String endpointKey) {
+        return 0L;
+    }
+
     default void recordGeoBlockEvent(
             String countryCode, String countryName, String endpointKey, String source) {
         // In-memory test repositories may ignore runtime request metrics.
