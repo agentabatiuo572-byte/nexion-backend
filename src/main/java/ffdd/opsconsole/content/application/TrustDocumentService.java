@@ -61,6 +61,8 @@ public class TrustDocumentService {
     private static final int PAGE_CACHE_LIMIT = 4 * MAX_PAGES;
     private static final String SENSITIVE_AUTHORITY = "content_i4_trust_section_manage";
     private static final String IDEMPOTENCY_SCOPE = "I4_TRUST_DOCUMENT";
+    /** Domain marker for the stable-subject receipt fingerprint; legacy hashes have no such prefix. */
+    private static final String SUBJECT_HASH_DOMAIN = "I4_ADMIN_SUBJECT_V1";
     private static final Pattern VERSION = Pattern.compile("[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}");
     private static final Pattern LANGUAGE = Pattern.compile("[\\p{L}][\\p{L} ()/-]{0,31}");
     private static final Pattern REFERENCE = Pattern.compile("[A-Za-z0-9][A-Za-z0-9 #./-]{0,63}");
@@ -166,8 +168,11 @@ public class TrustDocumentService {
         String fileName = fileName(file.getOriginalFilename(), slot);
         int pageCount = pageCount(bytes);
         String sha256 = sha256(bytes);
-        String requestHash = sha256(String.join("\u0000", slot, sha256, text(version), text(language), text(referenceNo),
-                text(verifyUrl), fileName, reason, text(request.expectedSha256()), text(actorId)).getBytes(StandardCharsets.UTF_8));
+        // The new namespace starts with a fixed marker: a legacy hash starts with the slot, so a display name that
+        // happens to equal someone's stable id can never reproduce this fingerprint.
+        String requestHash = sha256(String.join("\u0000", SUBJECT_HASH_DOMAIN, slot, sha256, text(version), text(language),
+                text(referenceNo), text(verifyUrl), fileName, reason, text(request.expectedSha256()), text(actorId))
+                .getBytes(StandardCharsets.UTF_8));
         String legacyHash = sha256(String.join("\u0000", slot, sha256, text(version), text(language), text(referenceNo),
                 text(verifyUrl), fileName, reason, text(request.expectedSha256()), text(actor)).getBytes(StandardCharsets.UTF_8));
         // A stable subject id, not the masked display name, owns the receipt. An active success for this exact
@@ -215,8 +220,8 @@ public class TrustDocumentService {
         String key = requireIdempotencyKey(idempotencyKey);
         requireStableActor(actorId);
         String reason = requireReason(request.reason());
-        String requestHash = sha256(String.join("\u0000", slot, reason, text(request.expectedSha256()), text(actorId))
-                .getBytes(StandardCharsets.UTF_8));
+        String requestHash = sha256(String.join("\u0000", SUBJECT_HASH_DOMAIN, slot, reason,
+                text(request.expectedSha256()), text(actorId)).getBytes(StandardCharsets.UTF_8));
         String legacyHash = sha256(String.join("\u0000", slot, reason, text(request.expectedSha256()), text(actor))
                 .getBytes(StandardCharsets.UTF_8));
         rejectLegacyReceipt(key, legacyHash, requestHash);
