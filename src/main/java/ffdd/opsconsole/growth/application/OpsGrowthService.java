@@ -3828,10 +3828,14 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         for (Map<String, Object> row : questEventMapper.get().wheelAwardsOnDate(spinDate)) {
             Map<String, Object> award = new LinkedHashMap<>();
             award.put("count", row.get("awardedCount"));
-            award.put("amount", row.get("awardedAmount"));
+            // Money only where the wheel actually credited a wallet: same real_outflow the payout guard uses.
+            // A coupon tier creates a voucher grant, so its face value is never reported as awarded money.
+            award.put("realOutflowCount", row.get("realOutflowCount"));
+            award.put("amount", row.get("realOutflowAmount"));
             byAsset.put(String.valueOf(row.get("asset")), award);
         }
         result.put("available", true);
+        result.put("amountBasis", "real_outflow = 1");
         result.put("byAsset", byAsset);
         return result;
     }
@@ -4422,15 +4426,22 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 "COUNT_ROWS", "achieved_at >= window_start", null, null, "available=true"));
         basis.put("weekMsNex", statBasis("nx_earning_milestone", "ROLLING_7_DAYS", "NOW() - INTERVAL 7 DAY",
                 "SUM", "achieved_at >= window_start AND reward_nex summed", null, "UVT", "available=true"));
-        basis.put("lucky15Config", statBasis("nx_growth_checkin_rule", "CONFIG", null, "RULE_VALUE",
-                "rule_key = growth.checkin.lucky_1_5_pct", null, null, "available=true"));
-        basis.put("lucky2Config", statBasis("nx_growth_checkin_rule", "CONFIG", null, "RULE_VALUE",
-                "rule_key = growth.checkin.lucky_2_pct", null, null, "available=true"));
+        basis.put("lucky15Config", statBasis("nx_growth_checkin_rule.current_value", "CONFIG", null, "RULE_VALUE",
+                "rule_key = p15", null, "PERCENT", "available=true",
+                "ZERO_FALLBACK:missing_blank_unparseable_or_table_unavailable_returns_0"));
+        basis.put("lucky2Config", statBasis("nx_growth_checkin_rule.current_value", "CONFIG", null, "RULE_VALUE",
+                "rule_key = p2", null, "PERCENT", "available=true",
+                "ZERO_FALLBACK:missing_blank_unparseable_or_table_unavailable_returns_0"));
         return basis;
     }
 
     private Map<String, Object> statBasis(String source, String windowType, String window, String aggregate,
             String condition, String denominator, String unit, String availability) {
+        return statBasis(source, windowType, window, aggregate, condition, denominator, unit, availability, null);
+    }
+
+    private Map<String, Object> statBasis(String source, String windowType, String window, String aggregate,
+            String condition, String denominator, String unit, String availability, String fallback) {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("source", source);
         row.put("windowType", windowType);
@@ -4440,6 +4451,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         row.put("denominator", denominator);
         row.put("unit", unit);
         row.put("availability", availability);
+        row.put("fallback", fallback);
         return row;
     }
 
