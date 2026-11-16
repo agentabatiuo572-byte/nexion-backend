@@ -365,6 +365,8 @@ public class AdminCommandInvestigationService {
         if (scope.startsWith("I2_NOVA_TEMPLATE_DELETE:")) return java.util.Set.of("I2_NOVA_TEMPLATE_DELETED");
         if ("I2_NOVA_TEMPLATE_CREATE".equals(scope)) return java.util.Set.of("I2_NOVA_TEMPLATE_CREATED");
         return java.util.Set.of();
+    }
+
     /** I3 campaign writes: the campaign resource, and only the action that scope itself writes. */
     private static java.util.Set<String> i3CampaignActions(String scope) {
         return switch (scope) {
