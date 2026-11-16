@@ -939,9 +939,10 @@ public class F5CommissionService {
             totals.merge(currency, amount, BigDecimal::add);
             count = Math.addExact(count, rowCount);
         }
+        // The stored amounts are DECIMAL(18,6); the summary reports their own precision, never a re-rounded one.
         return linked(
-                "usdt", totals.getOrDefault("USDT", BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP),
-                "nex", totals.getOrDefault("UVT", BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP),
+                "usdt", totals.getOrDefault("USDT", BigDecimal.ZERO),
+                "nex", totals.getOrDefault("UVT", BigDecimal.ZERO),
                 "count", count);
     }
 
