@@ -52,7 +52,7 @@ public class AdminCommandInvestigationService {
 
     public record ReceiptStatus(String state) {}
 
-    private enum ReceiptFamily { A1_ACCOUNT, A1_PERMISSION, A1_AVATAR_CANCEL, A6, A7, F4 }
+    private enum ReceiptFamily { A1_ACCOUNT, A1_PERMISSION, A1_AVATAR_CANCEL, A6, A7, F4, D5, D6, D7 }
 
     /** Looks up server-owned bindings; a client need not reproduce a business service's hash algorithm. */
     @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
@@ -269,6 +269,18 @@ public class AdminCommandInvestigationService {
                 && "J2_GEO_EDGE_JUDGE_SOURCE_CHANGED".equals(action);
         if ("J2_EMERGENCY_BLOCK".equals(scope)) return "GEO_COUNTRY_BATCH".equals(fact.getResourceType())
                 && "J2_GEO_EMERGENCY_BLOCK_CREATED".equals(action);
+        if (Set.of("D5_WITHDRAWAL_LIMITS_UPDATE", "D5_WITHDRAWAL_LIMITS").contains(scope)) {
+            return "WITHDRAWAL_PARAM".equals(fact.getResourceType())
+                    && "D5_WITHDRAWAL_PARAM_CHANGED".equals(action);
+        }
+        if (Set.of("D6_FX_QUOTE_UPDATE", "D6_FX_QUOTE").contains(scope)) {
+            return "FX_QUOTE_CONFIG".equals(fact.getResourceType())
+                    && "FX_QUOTE_UPDATED".equals(action);
+        }
+        if (Set.of("FINANCE:D7:CONFIG_UPDATE", "D7_PAYOUT_VND_CONFIG").contains(scope)) {
+            return "PAYOUT_VND_CONFIG".equals(fact.getResourceType())
+                    && "D7_PAYOUT_VND_CONFIG_UPDATED".equals(action);
+        }
         return Set.of("D2_WITHDRAWAL_CHAIN_CONFIRMED", "D2_WITHDRAWAL_REVIEW_APPROVE", "D2_WITHDRAWAL_REVIEW_REJECT",
                 "D2_WITHDRAWAL_REVIEW_REFUND", "D2_WITHDRAWAL_REVIEW_DELAY", "D2_WITHDRAWAL_REVIEW_FREEZE",
                 "D3_FORECAST_CONFIG_CHANGED", "D3_TREASURY_RESERVE_INJECTION", "D3_RECONCILIATION_EXPORTED", "D3_LIABILITIES_EXPORTED", "D3_SENSITIVE_EXPORT_A2_AUDITED",
@@ -381,6 +393,9 @@ public class AdminCommandInvestigationService {
         if (scope.matches("A6_ROLE_(?:CREATE:[A-Za-z0-9_-]{1,64}|UPDATE:[1-9][0-9]{0,18})")) return ReceiptFamily.A6;
         if (scope.matches("A7_MENU_(?:CREATE:[A-Za-z0-9_-]{1,64}|UPDATE:[1-9][0-9]{0,18}|DELETE:[1-9][0-9]{0,18})")) return ReceiptFamily.A7;
         if (scope.matches("F4_MATERIAL_REVIEW:[1-9][0-9]{0,18}:[1-9][0-9]{0,18}")) return ReceiptFamily.F4;
+        if (Set.of("D5_WITHDRAWAL_LIMITS_UPDATE", "D5_WITHDRAWAL_LIMITS").contains(scope)) return ReceiptFamily.D5;
+        if (Set.of("D6_FX_QUOTE_UPDATE", "D6_FX_QUOTE").contains(scope)) return ReceiptFamily.D6;
+        if (Set.of("FINANCE:D7:CONFIG_UPDATE", "D7_PAYOUT_VND_CONFIG").contains(scope)) return ReceiptFamily.D7;
         return null;
     }
 
@@ -390,6 +405,9 @@ public class AdminCommandInvestigationService {
             case A6 -> "platform_a6_read";
             case A7 -> "platform_a7_read";
             case F4 -> "network_f4_read";
+            case D5 -> "finance_d5_read";
+            case D6 -> "finance_d6_read";
+            case D7 -> "finance_d7_read";
         };
         if (!permissions.getPermissionCodes(actor).contains(authority)) throw denied();
     }

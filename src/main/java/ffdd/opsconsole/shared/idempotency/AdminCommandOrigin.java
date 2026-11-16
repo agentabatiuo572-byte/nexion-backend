@@ -61,9 +61,9 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (scope.startsWith("E5_DEVICE_")) return "device_e5_read";
         if (scope.startsWith("E6_PHONE_")) return "device_e6_read";
         if (scope.startsWith("D3")) return "finance_d3_read";
-        if ("D5_WITHDRAWAL_LIMITS".equals(scope)) return "finance_d5_read";
-        if ("D6_FX_QUOTE".equals(scope)) return "finance_d6_read";
-        if ("D7_PAYOUT_VND_CONFIG".equals(scope)) return "finance_d7_read";
+        if ("D5_WITHDRAWAL_LIMITS_UPDATE".equals(scope) || "D5_WITHDRAWAL_LIMITS".equals(scope)) return "finance_d5_read";
+        if ("D6_FX_QUOTE_UPDATE".equals(scope) || "D6_FX_QUOTE".equals(scope)) return "finance_d6_read";
+        if ("FINANCE:D7:CONFIG_UPDATE".equals(scope) || "D7_PAYOUT_VND_CONFIG".equals(scope)) return "finance_d7_read";
         if (scope.startsWith("E4")) return "device_e4_read";
         if (scope.startsWith("H2") || scope.startsWith("GROWTH:H2:")) return "growth_h2_read";
         if (scope.startsWith("K1")) return "risk_k1_read";
@@ -82,6 +82,9 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || scope.startsWith("GROWTH:H2:")
                 || "J3_ALERT_CONFIG".equals(scope)
                 || j2GeoWrite(scope)
+                || "D5_WITHDRAWAL_LIMITS_UPDATE".equals(scope) || "D5_WITHDRAWAL_LIMITS".equals(scope)
+                || "D6_FX_QUOTE_UPDATE".equals(scope) || "D6_FX_QUOTE".equals(scope)
+                || "FINANCE:D7:CONFIG_UPDATE".equals(scope) || "D7_PAYOUT_VND_CONFIG".equals(scope)
                 || "A2_COMMAND".equals(scope) || "L_BI_REPORT_CREATE".equals(scope) || scope.startsWith("L_BI_REPORT_ACTION"));
     }
 
@@ -92,6 +95,9 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 "I5_DISCLOSURE_GATE_UPDATE").contains(scope)
                 || "J3_ALERT_CONFIG".equals(scope)
                 || j2GeoWrite(scope)
+                || "D5_WITHDRAWAL_LIMITS_UPDATE".equals(scope) || "D5_WITHDRAWAL_LIMITS".equals(scope)
+                || "D6_FX_QUOTE_UPDATE".equals(scope) || "D6_FX_QUOTE".equals(scope)
+                || "FINANCE:D7:CONFIG_UPDATE".equals(scope) || "D7_PAYOUT_VND_CONFIG".equals(scope)
                 || scope != null && (scope.startsWith("E2_POOL_") || scope.startsWith("E5_DEVICE_") || scope.startsWith("E6_PHONE_"));
     }
 
