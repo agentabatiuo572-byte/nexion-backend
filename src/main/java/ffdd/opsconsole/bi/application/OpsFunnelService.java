@@ -179,7 +179,7 @@ public class OpsFunnelService {
                         "cohort", filter.valueOrAll(filter.cohort()),
                         "phase", filter.valueOrAll(filter.phase()),
                         "ref", filter.valueOrAll(filter.ref())),
-                "fields", "stage,event,lifecycle,distinct_users,previous_users,cvr_from_prev,cohort,phase,ref",
+                "fields", "stage,event,lifecycle,distinct_users,previous_users,cvr_from_prev,cohort,phase,ref,sample_status",
                 "rowCount", stages.size(),
                 "containsPii", false,
                 "maskingPolicy", "NONE",
