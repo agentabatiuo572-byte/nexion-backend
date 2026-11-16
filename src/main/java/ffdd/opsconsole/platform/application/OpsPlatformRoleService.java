@@ -312,20 +312,9 @@ public class OpsPlatformRoleService {
         // snapshot is required — the current server state is never substituted for what was seen.
         // Approval re-runs this same check against the snapshotted command, so a pause between the
         // proposal and the decision is caught too.
-        if (request.expectedPermissionCodes() == null || request.expectedMenuIds() == null) {
-            return ApiResult.fail(422, "ROLE_GRANTS_EXPECTED_REQUIRED");
-        }
-        List<String> expectedPerms = normalizePermissionCodes(request.expectedPermissionCodes());
-        List<Long> expectedMenus = normalizeMenuIds(request.expectedMenuIds());
-        if (expectedPerms == null || expectedMenus == null) {
-            return ApiResult.fail(422, "ROLE_GRANTS_EXPECTED_INVALID");
-        }
-        if (!new java.util.HashSet<>(expectedPerms)
-                        .equals(new java.util.HashSet<>(rolePermissionMapper.selectActivePermissionCodesByRole(roleId)))
-                || !new java.util.HashSet<>(expectedMenus)
-                        .equals(new java.util.HashSet<>(roleMenuMapper.selectActiveMenuIdsByRole(roleId)))) {
-            return ApiResult.fail(409, "ROLE_GRANTS_STALE");
-        }
+        ApiResult<Void> snapshot = validateRoleGrantsSnapshot(roleId,
+                request.expectedPermissionCodes(), request.expectedMenuIds());
+        if (snapshot.getCode() != 0) return snapshot;
 
         if (!A2ReplayContext.isReplaying()) {
             String authenticatedOperator = actor(request.operator());
@@ -333,8 +322,8 @@ public class OpsPlatformRoleService {
             params.put("roleId", roleId);
             params.put("permissionCodes", desiredPerms);
             params.put("menuIds", desiredMenus);
-            params.put("expectedPermissionCodes", expectedPerms);
-            params.put("expectedMenuIds", expectedMenus);
+            params.put("expectedPermissionCodes", request.expectedPermissionCodes());
+            params.put("expectedMenuIds", request.expectedMenuIds());
             params.put("reason", request.reason());
             params.put("operator", authenticatedOperator);
             AuditOperationProposalRequest proposal = new AuditOperationProposalRequest(
@@ -415,6 +404,37 @@ public class OpsPlatformRoleService {
 
     private AdminRoleEntity loadActiveForUpdate(Long roleId) {
         return roleId == null ? null : roleMapper.selectActiveForUpdate(roleId);
+    }
+
+    /** Generic A2 proposals must check the same snapshot before a ticket or lock is created. */
+    public ApiResult<Void> validateRoleGrantsProposal(Map<String, Object> params) {
+        if (params == null || params.get("expectedPermissionCodes") == null || params.get("expectedMenuIds") == null)
+            return ApiResult.fail(422, "ROLE_GRANTS_EXPECTED_REQUIRED");
+        if (!(params.get("expectedPermissionCodes") instanceof List<?> permissions)
+                || !(params.get("expectedMenuIds") instanceof List<?> menus)
+                || permissions.stream().anyMatch(value -> !(value instanceof String)))
+            return ApiResult.fail(422, "ROLE_GRANTS_EXPECTED_INVALID");
+        try {
+            Long roleId = Long.valueOf(String.valueOf(params.get("roleId")));
+            List<Long> menuIds = menus.stream().map(value -> Long.valueOf(String.valueOf(value))).toList();
+            return validateRoleGrantsSnapshot(roleId,
+                    permissions.stream().map(String.class::cast).toList(), menuIds);
+        } catch (NumberFormatException invalid) {
+            return ApiResult.fail(422, "ROLE_GRANTS_EXPECTED_INVALID");
+        }
+    }
+
+    private ApiResult<Void> validateRoleGrantsSnapshot(Long roleId, List<String> permissions, List<Long> menus) {
+        if (permissions == null || menus == null) return ApiResult.fail(422, "ROLE_GRANTS_EXPECTED_REQUIRED");
+        List<String> expectedPerms = normalizePermissionCodes(permissions);
+        List<Long> expectedMenus = normalizeMenuIds(menus);
+        if (expectedPerms == null || expectedMenus == null) return ApiResult.fail(422, "ROLE_GRANTS_EXPECTED_INVALID");
+        if (!new java.util.HashSet<>(expectedPerms)
+                        .equals(new java.util.HashSet<>(rolePermissionMapper.selectActivePermissionCodesByRole(roleId)))
+                || !new java.util.HashSet<>(expectedMenus)
+                        .equals(new java.util.HashSet<>(roleMenuMapper.selectActiveMenuIdsByRole(roleId))))
+            return ApiResult.fail(409, "ROLE_GRANTS_STALE");
+        return ApiResult.ok();
     }
 
     private List<String> normalizePermissionCodes(List<String> values) {

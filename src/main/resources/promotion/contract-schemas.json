@@ -1409,6 +1409,9 @@
           "expectedSourceVersion": {
             "$ref": "#/components/schemas/Revision"
           },
+          "expectedSourceRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
           "reason": {
             "type": "string",
             "minLength": 1,

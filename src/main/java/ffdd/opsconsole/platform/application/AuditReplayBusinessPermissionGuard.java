@@ -175,6 +175,8 @@ public class AuditReplayBusinessPermissionGuard {
     @Autowired
     private A4RegistryApproval a4RegistryApproval;
     @Autowired
+    private org.springframework.beans.factory.ObjectProvider<OpsPlatformRoleService> platformRoles;
+    @Autowired
     private SuperAdminAuthorization superAdmins;
     @Autowired
     private OpsKillSwitchService killSwitches;
@@ -420,6 +422,10 @@ public class AuditReplayBusinessPermissionGuard {
             return ApiResult.fail(422,"PROMOTION_CORRECTION_FIELDS_INVALID");
         ApiResult<Void> ordinaryPermission = validateOrdinaryProposalPermission(command, operation);
         if (ordinaryPermission.getCode() != 0) return ordinaryPermission;
+        if ("A".equalsIgnoreCase(command.domain()) && "a6_role_grants_update".equals(operation)) {
+            ApiResult<Void> snapshot = platformRoles.getObject().validateRoleGrantsProposal(command.params());
+            if (snapshot.getCode() != 0) return snapshot;
+        }
         if ("H".equalsIgnoreCase(command.domain()) && "h5_checkin_rule".equals(operation)) {
             ApiResult<Void> stale = growth.validateCheckInRuleProposal(command.params());
             if (stale.getCode() != 0) return stale;

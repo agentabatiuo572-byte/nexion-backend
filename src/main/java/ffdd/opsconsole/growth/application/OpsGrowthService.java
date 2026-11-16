@@ -2663,21 +2663,11 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 || !(ruleKey instanceof String rawKey) || !StringUtils.hasText(rawKey)) {
             return ApiResult.ok();
         }
-        String key;
-        try {
-            key = normalizeCheckInRuleKey(rawKey);
-        } catch (RuntimeException invalid) {
-            return ApiResult.ok();
-        }
+        String key = normalizeCheckInRuleKey(rawKey);
         if (questEventMapper.isEmpty()) {
             return ApiResult.ok();
         }
-        String persistedValue;
-        try {
-            persistedValue = questEventMapper.get().checkInRuleValue(key);
-        } catch (RuntimeException unavailable) {
-            return ApiResult.ok();
-        }
+        String persistedValue = questEventMapper.get().checkInRuleValue(key);
         if (!StringUtils.hasText(persistedValue)) {
             return ApiResult.ok();
         }
