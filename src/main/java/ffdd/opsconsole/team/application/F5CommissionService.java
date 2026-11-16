@@ -81,7 +81,8 @@ public class F5CommissionService {
         long total = mapper.countEvents(
                 normalized.kind(), normalized.currency(), normalized.userId(), normalized.status(), normalized.cohort());
         List<Map<String, Object>> sample = mapper.queryExportEvents(null, null, null, null, null, null, 200);
-        List<Map<String, Object>> anomalies = anomalyViews(sample);
+        AnomalySnapshot anomalySnapshot = anomalyViews(sample);
+        List<Map<String, Object>> anomalies = anomalySnapshot.anomalies();
         List<Map<String, Object>> kindAggregates = mapper.aggregateCommissionKinds();
         List<Map<String, Object>> statusAggregates = mapper.aggregateCommissionStatuses();
         if (kindAggregates == null || statusAggregates == null) {
@@ -132,6 +133,7 @@ public class F5CommissionService {
                 "nextCursor", nextCursor == null ? "" : String.valueOf(nextCursor),
                 "total", total));
         response.put("anomalies", anomalies);
+        response.put("layerRatioComparisons", anomalySnapshot.layerRatioComparisons());
         response.put("coolingPolicy", coolingPolicy());
         response.put("operationHistory", mapper.recentOperations(50));
         response.put("activeSuspensions", mapper.activeSuspensions(100));
@@ -353,15 +355,17 @@ public class F5CommissionService {
     }
 
     public ApiResult<Map<String, Object>> anomalies(String type, Long cursor) {
-        List<Map<String, Object>> anomalies = anomalyViews(
+        AnomalySnapshot snapshot = anomalyViews(
                 mapper.queryExportEvents(null, null, null, null, null, cursor, 200));
+        List<Map<String, Object>> anomalies = snapshot.anomalies();
         if (StringUtils.hasText(type)) {
             String expected = type.trim().toLowerCase(Locale.ROOT);
             anomalies = anomalies.stream()
                     .filter(row -> expected.equals(String.valueOf(row.get("type")).toLowerCase(Locale.ROOT)))
                     .toList();
         }
-        return ApiResult.ok(linked("items", anomalies, "nextCursor", ""));
+        return ApiResult.ok(linked("items", anomalies, "nextCursor", "",
+                "layerRatioComparisons", snapshot.layerRatioComparisons()));
     }
 
     public ApiResult<Map<String, Object>> reverse(
@@ -681,7 +685,10 @@ public class F5CommissionService {
                 "frozenOpenEvents", frozen));
     }
 
-    private List<Map<String, Object>> anomalyViews(List<Map<String, Object>> source) {
+    private record AnomalySnapshot(
+            List<Map<String, Object>> anomalies, List<Map<String, Object>> layerRatioComparisons) { }
+
+    private AnomalySnapshot anomalyViews(List<Map<String, Object>> source) {
         List<Map<String, Object>> rows = source.stream().map(this::eventView).toList();
         Map<List<String>, List<Map<String, Object>>> byKindAndCurrency = new LinkedHashMap<>();
         for (Map<String, Object> row : rows) {
@@ -734,21 +741,17 @@ public class F5CommissionService {
                         "K1/K2 高频簇复核"));
             }
         }
-        anomalies.addAll(layerRatioAnomalies(rows));
-        return anomalies;
+        AnomalySnapshot layerRatios = layerRatioAnomalies(rows);
+        anomalies.addAll(layerRatios.anomalies());
+        return new AnomalySnapshot(List.copyOf(anomalies), layerRatios.layerRatioComparisons());
     }
 
-    private List<Map<String, Object>> layerRatioAnomalies(List<Map<String, Object>> rows) {
-        Map<String, Map<Integer, BigDecimal>> theoryByCurrency = Map.of(
-                "USDT", new LinkedHashMap<>(), "UVT", new LinkedHashMap<>());
+    private AnomalySnapshot layerRatioAnomalies(List<Map<String, Object>> rows) {
+        Map<Integer, BigDecimal> theory = new LinkedHashMap<>();
         for (Map<String, Object> row : mapper.theoreticalLayerRates()) {
             Long layer = longValue(row.get("layer"));
-            if (layer == null) continue;
-            if (row.get("theoreticalPct") != null) {
-                theoryByCurrency.get("USDT").put(layer.intValue(), decimal(row.get("theoreticalPct")));
-            }
-            if (row.get("theoreticalUvtPerUsd") != null) {
-                theoryByCurrency.get("UVT").put(layer.intValue(), decimal(row.get("theoreticalUvtPerUsd")));
+            if (layer != null && row.get("theoreticalPct") != null) {
+                theory.put(layer.intValue(), decimal(row.get("theoreticalPct")));
             }
         }
         Map<String, List<Map<String, Object>>> byCurrency = new LinkedHashMap<>();
@@ -757,31 +760,49 @@ public class F5CommissionService {
                 byCurrency.computeIfAbsent(text(row.get("currency")), ignored -> new ArrayList<>()).add(row);
             }
         }
+        BigDecimal theoryTotal = theory.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
         BigDecimal threshold = layerRatioThreshold();
         List<Map<String, Object>> anomalies = new ArrayList<>();
+        List<Map<String, Object>> comparisons = new ArrayList<>();
         for (Map.Entry<String, List<Map<String, Object>>> currency : byCurrency.entrySet()) {
-            Map<Integer, BigDecimal> theory = theoryByCurrency.get(currency.getKey());
-            if (theory == null || theory.isEmpty()) continue;
-            BigDecimal networkTotal = currency.getValue().stream().map(row -> decimal(row.get("amount")))
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-            BigDecimal theoryTotal = theory.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
-            if (networkTotal.signum() <= 0 || theoryTotal.signum() <= 0) continue;
+            if (!"USDT".equals(currency.getKey())) {
+                comparisons.add(linked("currency", currency.getKey(), "available", false,
+                        "reason", "F5_LAYER_RATIO_THEORY_UNAVAILABLE", "layers", null,
+                        "theoreticalPct", null, "deviation", null));
+                continue;
+            }
             Map<Integer, BigDecimal> actual = new LinkedHashMap<>();
+            boolean missingLayer = false;
             for (Map<String, Object> row : currency.getValue()) {
                 Long layer = longValue(row.get("layer"));
-                if (layer != null) actual.merge(layer.intValue(), decimal(row.get("amount")), BigDecimal::add);
+                if (layer == null || !theory.containsKey(layer.intValue())) {
+                    missingLayer = true;
+                } else {
+                    actual.merge(layer.intValue(), decimal(row.get("amount")), BigDecimal::add);
+                }
             }
+            BigDecimal networkTotal = actual.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+            String unavailable = theory.isEmpty() || theoryTotal.signum() <= 0
+                    ? "F5_LAYER_RATIO_THEORY_UNAVAILABLE"
+                    : missingLayer ? "F5_LAYER_RATIO_LAYER_UNAVAILABLE"
+                    : networkTotal.signum() <= 0 ? "F5_LAYER_RATIO_SAMPLE_UNAVAILABLE" : null;
+            if (unavailable != null) {
+                comparisons.add(linked("currency", currency.getKey(), "available", false,
+                        "reason", unavailable, "layers", null, "theoreticalPct", null, "deviation", null));
+                continue;
+            }
+            List<Map<String, Object>> layers = new ArrayList<>();
             for (Map.Entry<Integer, BigDecimal> entry : actual.entrySet()) {
-                BigDecimal expected = theory.get(entry.getKey());
-                if (expected == null) continue;
                 BigDecimal actualPct = entry.getValue().multiply(new BigDecimal("100"))
                         .divide(networkTotal, 6, RoundingMode.HALF_UP);
-                BigDecimal theoreticalPct = expected.multiply(new BigDecimal("100"))
+                BigDecimal theoreticalPct = theory.get(entry.getKey()).multiply(new BigDecimal("100"))
                         .divide(theoryTotal, 6, RoundingMode.HALF_UP);
                 BigDecimal deviation = actualPct.subtract(theoreticalPct).abs();
+                layers.add(linked("layer", entry.getKey(), "actualPct", actualPct,
+                        "theoreticalPct", theoreticalPct, "deviation", deviation));
                 if (deviation.compareTo(threshold) > 0) {
                     anomalies.add(linked(
-                            "id", "LAYER-" + currency.getKey() + "-L" + entry.getKey(),
+                            "id", "LAYER-L" + entry.getKey(),
                             "type", "layer-ratio", "currency", currency.getKey(),
                             "userId", "",
                             "cluster", "K4",
@@ -792,8 +813,10 @@ public class F5CommissionService {
                             "status", "open"));
                 }
             }
+            comparisons.add(linked("currency", currency.getKey(), "available", true, "reason", null,
+                    "basis", "CURRENT_ACTIVE_UNILEVEL_USDT_RATE", "layers", List.copyOf(layers)));
         }
-        return anomalies;
+        return new AnomalySnapshot(List.copyOf(anomalies), List.copyOf(comparisons));
     }
 
     private Map<String, Object> anomaly(

@@ -518,8 +518,7 @@ public interface F5CommissionMapper {
     List<Map<String, Object>> activeSuspensions(@Param("limit") int limit);
 
     @Select("""
-            SELECT layer_no AS layer, ROUND(usdt_rate * 100, 6) AS theoreticalPct,
-                   nex_per_usd AS theoreticalUvtPerUsd
+            SELECT layer_no AS layer, ROUND(usdt_rate * 100, 6) AS theoreticalPct
               FROM nx_commission_rule
              WHERE LOWER(commission_type) = 'unilevel'
                AND status = 1
