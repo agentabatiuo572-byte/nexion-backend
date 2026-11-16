@@ -683,13 +683,14 @@ public class F5CommissionService {
 
     private List<Map<String, Object>> anomalyViews(List<Map<String, Object>> source) {
         List<Map<String, Object>> rows = source.stream().map(this::eventView).toList();
-        Map<String, List<Map<String, Object>>> byKind = new LinkedHashMap<>();
+        Map<List<String>, List<Map<String, Object>>> byKindAndCurrency = new LinkedHashMap<>();
         for (Map<String, Object> row : rows) {
-            byKind.computeIfAbsent(text(row.get("kind")), ignored -> new ArrayList<>()).add(row);
+            List<String> key = List.of(text(row.get("kind")), text(row.get("currency")));
+            byKindAndCurrency.computeIfAbsent(key, ignored -> new ArrayList<>()).add(row);
         }
         List<Map<String, Object>> anomalies = new ArrayList<>();
         double sigmaThreshold = anomalySigma().doubleValue();
-        for (Map.Entry<String, List<Map<String, Object>>> entry : byKind.entrySet()) {
+        for (Map.Entry<List<String>, List<Map<String, Object>>> entry : byKindAndCurrency.entrySet()) {
             double mean = entry.getValue().stream().mapToDouble(row -> decimal(row.get("amount")).doubleValue()).average().orElse(0);
             double variance = entry.getValue().stream()
                     .mapToDouble(row -> {
@@ -702,12 +703,14 @@ public class F5CommissionService {
                 for (Map<String, Object> row : entry.getValue()) {
                     double z = Math.abs(decimal(row.get("amount")).doubleValue() - mean) / standardDeviation;
                     if (z > sigmaThreshold) {
-                        anomalies.add(anomaly(
+                        Map<String, Object> anomaly = anomaly(
                                 "amount",
                                 row,
-                                "单笔金额偏离 " + entry.getKey() + " 均值 "
+                                "单笔金额偏离 " + entry.getKey().get(0) + " 均值 "
                                         + BigDecimal.valueOf(z).setScale(2, RoundingMode.HALF_UP) + "σ",
-                                "K4 金额异常维度"));
+                                "K4 金额异常维度");
+                        anomaly.put("currency", entry.getKey().get(1));
+                        anomalies.add(anomaly);
                     }
                 }
             }
@@ -736,55 +739,58 @@ public class F5CommissionService {
     }
 
     private List<Map<String, Object>> layerRatioAnomalies(List<Map<String, Object>> rows) {
-        Map<Integer, BigDecimal> theory = new LinkedHashMap<>();
+        Map<String, Map<Integer, BigDecimal>> theoryByCurrency = Map.of(
+                "USDT", new LinkedHashMap<>(), "UVT", new LinkedHashMap<>());
         for (Map<String, Object> row : mapper.theoreticalLayerRates()) {
             Long layer = longValue(row.get("layer"));
-            if (layer != null) {
-                theory.put(layer.intValue(), decimal(row.get("theoreticalPct")));
+            if (layer == null) continue;
+            if (row.get("theoreticalPct") != null) {
+                theoryByCurrency.get("USDT").put(layer.intValue(), decimal(row.get("theoreticalPct")));
+            }
+            if (row.get("theoreticalUvtPerUsd") != null) {
+                theoryByCurrency.get("UVT").put(layer.intValue(), decimal(row.get("theoreticalUvtPerUsd")));
             }
         }
-        BigDecimal networkTotal = rows.stream()
-                .filter(row -> "network".equals(text(row.get("kind"))))
-                .map(row -> decimal(row.get("amount")))
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        if (networkTotal.signum() <= 0 || theory.isEmpty()) {
-            return List.of();
-        }
-        BigDecimal theoryTotal = theory.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
-        if (theoryTotal.signum() <= 0) {
-            return List.of();
-        }
-        Map<Integer, BigDecimal> actual = new LinkedHashMap<>();
+        Map<String, List<Map<String, Object>>> byCurrency = new LinkedHashMap<>();
         for (Map<String, Object> row : rows) {
-            if (!"network".equals(text(row.get("kind")))) continue;
-            Long layer = longValue(row.get("layer"));
-            if (layer != null) {
-                actual.merge(layer.intValue(), decimal(row.get("amount")), BigDecimal::add);
+            if ("network".equals(text(row.get("kind")))) {
+                byCurrency.computeIfAbsent(text(row.get("currency")), ignored -> new ArrayList<>()).add(row);
             }
         }
         BigDecimal threshold = layerRatioThreshold();
         List<Map<String, Object>> anomalies = new ArrayList<>();
-        for (Map.Entry<Integer, BigDecimal> entry : actual.entrySet()) {
-            BigDecimal expected = theory.get(entry.getKey());
-            if (expected == null) continue;
-            BigDecimal actualPct = entry.getValue()
-                    .multiply(new BigDecimal("100"))
-                    .divide(networkTotal, 6, RoundingMode.HALF_UP);
-            BigDecimal theoreticalPct = expected
-                    .multiply(new BigDecimal("100"))
-                    .divide(theoryTotal, 6, RoundingMode.HALF_UP);
-            BigDecimal deviation = actualPct.subtract(theoreticalPct).abs();
-            if (deviation.compareTo(threshold) > 0) {
-                anomalies.add(linked(
-                        "id", "LAYER-L" + entry.getKey(),
-                        "type", "layer-ratio",
-                        "userId", "",
-                        "cluster", "K4",
-                        "evidence", "L" + entry.getKey() + " 实际占比 "
-                                + actualPct.setScale(2, RoundingMode.HALF_UP) + "% / 理论占比 "
-                                + theoreticalPct.setScale(2, RoundingMode.HALF_UP) + "%",
-                        "relatedKCluster", "K4 层比例套利维度",
-                        "status", "open"));
+        for (Map.Entry<String, List<Map<String, Object>>> currency : byCurrency.entrySet()) {
+            Map<Integer, BigDecimal> theory = theoryByCurrency.get(currency.getKey());
+            if (theory == null || theory.isEmpty()) continue;
+            BigDecimal networkTotal = currency.getValue().stream().map(row -> decimal(row.get("amount")))
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            BigDecimal theoryTotal = theory.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+            if (networkTotal.signum() <= 0 || theoryTotal.signum() <= 0) continue;
+            Map<Integer, BigDecimal> actual = new LinkedHashMap<>();
+            for (Map<String, Object> row : currency.getValue()) {
+                Long layer = longValue(row.get("layer"));
+                if (layer != null) actual.merge(layer.intValue(), decimal(row.get("amount")), BigDecimal::add);
+            }
+            for (Map.Entry<Integer, BigDecimal> entry : actual.entrySet()) {
+                BigDecimal expected = theory.get(entry.getKey());
+                if (expected == null) continue;
+                BigDecimal actualPct = entry.getValue().multiply(new BigDecimal("100"))
+                        .divide(networkTotal, 6, RoundingMode.HALF_UP);
+                BigDecimal theoreticalPct = expected.multiply(new BigDecimal("100"))
+                        .divide(theoryTotal, 6, RoundingMode.HALF_UP);
+                BigDecimal deviation = actualPct.subtract(theoreticalPct).abs();
+                if (deviation.compareTo(threshold) > 0) {
+                    anomalies.add(linked(
+                            "id", "LAYER-" + currency.getKey() + "-L" + entry.getKey(),
+                            "type", "layer-ratio", "currency", currency.getKey(),
+                            "userId", "",
+                            "cluster", "K4",
+                            "evidence", "L" + entry.getKey() + " 实际占比 "
+                                    + actualPct.setScale(2, RoundingMode.HALF_UP) + "% / 理论占比 "
+                                    + theoreticalPct.setScale(2, RoundingMode.HALF_UP) + "%",
+                            "relatedKCluster", "K4 层比例套利维度",
+                            "status", "open"));
+                }
             }
         }
         return anomalies;
