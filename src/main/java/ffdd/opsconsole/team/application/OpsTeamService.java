@@ -2897,6 +2897,7 @@ public class OpsTeamService implements AuditReplayable {
         row.put("id", parseLongFromMap(raw.get("id")));
         row.put("quotaCode", String.valueOf(raw.getOrDefault("quotaCode", "")));
         row.put("productNo", String.valueOf(raw.getOrDefault("productNo", "")));
+        row.put("monthlyQuota", raw.get("cap"));
         row.put("name", String.valueOf(raw.getOrDefault("name", "Quota")));
         row.put("directRefs", intValue(raw.get("directRefs"), 0));
         BigDecimal monthComputePoints = decimalValue(raw.get("monthComputePoints"), BigDecimal.ZERO);
