@@ -32,7 +32,22 @@ public class AuditRetentionService {
 
     @Transactional(rollbackFor = Exception.class)
     public RetentionRun runNow() {
+        return runNowInternal(null);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public RetentionRun runNow(Integer expectedRetentionMonths) {
+        if (expectedRetentionMonths == null) {
+            throw new ffdd.opsconsole.shared.exception.BizException(422, "RETENTION_EXPECTED_MONTHS_REQUIRED");
+        }
+        return runNowInternal(expectedRetentionMonths);
+    }
+
+    private RetentionRun runNowInternal(Integer expectedRetentionMonths) {
         int months = policy.retentionMonths();
+        if (expectedRetentionMonths != null && expectedRetentionMonths != months) {
+            throw new ffdd.opsconsole.shared.exception.BizException(409, "RETENTION_PARAMETERS_STALE");
+        }
         LocalDateTime now = LocalDateTime.now();
         if (!Integer.valueOf(1).equals(mapper.tryAcquireRetentionLock())) {
             return new RetentionRun(months, now, 0, 0, false);
