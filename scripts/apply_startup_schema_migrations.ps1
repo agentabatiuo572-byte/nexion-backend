@@ -466,6 +466,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261107_b35_withdrawal_review_route.sql")
   (Join-Path $root "scripts\migrations\20261107_be27_ambassador_materials.sql")
   (Join-Path $root "scripts\migrations\20261107_be27_ambassador_budget_grant.sql")
+  (Join-Path $root "scripts\migrations\20261116_a1_be07_f4_review_command_key.sql")
   (Join-Path $root "scripts\migrations\20261108_b38_finance_rbac_scope.sql")
   (Join-Path $root "scripts\migrations\20261108_b38_unknown_operation_authority.sql")
   (Join-Path $root "scripts\migrations\20261108_b43_support_c3_scope.sql")

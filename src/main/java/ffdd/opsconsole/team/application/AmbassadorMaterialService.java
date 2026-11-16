@@ -181,7 +181,7 @@ public class AmbassadorMaterialService {
                     || request.recognizedBudgetUsdt().signum()<0 || request.recognizedBudgetUsdt().precision()-request.recognizedBudgetUsdt().scale()>12)
                     || passed && request.recognizedBudgetUsdt()==null) throw invalid("AMBASSADOR_RECOGNIZED_BUDGET_INVALID");
             mapper.insertReview(id,current.revision(),request.stage(),request.decision(),admin,AdminActorResolver.resolve(null),request.reason().trim(),
-                    request.verifiedAttendees(),request.recognizedBudgetUsdt(),encode(requestedMissing));
+                    request.verifiedAttendees(),request.recognizedBudgetUsdt(),encode(requestedMissing),key.trim());
             Map<String,Object> detail=new LinkedHashMap<>();
             detail.put("materialRevision",current.revision()); detail.put("stage",request.stage()); detail.put("decision",request.decision());
             detail.put("reason",request.reason().trim()); detail.put("verifiedAttendees",request.verifiedAttendees());
@@ -297,7 +297,7 @@ public class AmbassadorMaterialService {
         data.put("proposalBlockers",proposalBlockers);
         data.put("canProposeApproval",proposalBlockers.isEmpty());
         data.put("legacyApproved","APPROVED".equals(app.status()) && current==null);
-        data.put("reviewHistory",reviews.stream().map(r->{var view=reviewView(r);view.put("materialRevision",r.revision());view.put("stage",r.stage());return view;}).toList());
+        data.put("reviewHistory",reviews.stream().map(r->{var view=reviewView(r);if(admin!=null)view.put("idempotencyKey",r.idempotencyKey());view.put("materialRevision",r.revision());view.put("stage",r.stage());return view;}).toList());
         return data;
     }
 

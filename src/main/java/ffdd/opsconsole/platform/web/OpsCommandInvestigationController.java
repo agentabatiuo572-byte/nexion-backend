@@ -30,6 +30,12 @@ public class OpsCommandInvestigationController {
         return ApiResult.ok(service.read(scope, commandKey, requestHash));
     }
 
+    @GetMapping("/receipt-status")
+    public ApiResult<AdminCommandInvestigationService.ReceiptStatus> receiptStatus(
+            @RequestParam String scope, @RequestParam String commandKey) {
+        return ApiResult.ok(service.status(scope, commandKey));
+    }
+
     @PostMapping
     public ApiResult<AdminCommandInvestigationService.Receipt> investigate(
             @RequestBody AdminCommandInvestigationService.Request request) {
