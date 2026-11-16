@@ -160,6 +160,7 @@ public class OpsRiskRadarService {
                 "liabilitiesUsdt", money(coverage.liabilitiesUsd()),
                 "ratioReserveUsdt", safe(coverage.ratioReserveUsd()),
                 "ratioLiabilitiesUsdt", safe(coverage.ratioLiabilitiesUsd()),
+                "unit", "USDT",
                 "source", "B1:TreasuryCoverageFacade");
 
         return section(
