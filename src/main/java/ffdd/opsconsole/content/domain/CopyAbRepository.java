@@ -25,8 +25,8 @@ public interface CopyAbRepository {
     }
 
     /**
-     * True when another non-deleted published copy already occupies this UI position.
-     * The MyBatis repository overrides this; the default keeps test/legacy implementations source-compatible.
+     * True when another copy that is live for public position reads already occupies this position:
+     * PUBLISHED or DRAFT_SAVED with a current PUBLISHED version. The default keeps test/legacy implementations source-compatible.
      */
     default boolean hasOtherPublishedCopyAtPosition(String copyKey, String positionKey) {
         return false;

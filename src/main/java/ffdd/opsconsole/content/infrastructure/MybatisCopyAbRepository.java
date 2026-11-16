@@ -101,11 +101,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         if (!StringUtils.hasText(copyKey) || !StringUtils.hasText(positionKey)) {
             return false;
         }
-        return copyMapper.selectCount(new LambdaQueryWrapper<CopyContentEntity>()
-                .eq(CopyContentEntity::getCopyPosition, positionKey.trim())
-                .eq(CopyContentEntity::getStatus, "PUBLISHED")
-                .eq(CopyContentEntity::getIsDeleted, 0)
-                .ne(CopyContentEntity::getCopyKey, copyKey.trim())) > 0;
+        return copyMapper.countOtherLiveCopiesAtPosition(copyKey.trim(), positionKey.trim()) > 0;
     }
 
     @Override
