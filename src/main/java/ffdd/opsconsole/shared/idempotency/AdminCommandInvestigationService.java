@@ -302,6 +302,12 @@ public class AdminCommandInvestigationService {
             return "A4_EVENT_RETENTION".equals(fact.getResourceType())
                     && "A4_EVENT_RETENTION_MANUAL_EXECUTED".equals(action);
         }
+        if (scope.startsWith("A4_PARAM:")) return "A4_EVENT_CENTER_PARAM".equals(fact.getResourceType())
+                && "A4_EVENT_PARAM_CHANGED".equals(action);
+        if (scope.startsWith("A4_EVENT_LIFECYCLE:")) return "A4_EVENT_LIFECYCLE".equals(fact.getResourceType())
+                && "A4_EVENT_LIFECYCLE_CHANGED".equals(action);
+        if (scope.startsWith("A4_H3_OUTBOX_REDRIVE:")) return "EVENT_OUTBOX".equals(fact.getResourceType())
+                && "A4_H3_OUTBOX_REDRIVEN".equals(action);
         if (scope.startsWith("I4_TRUST_SECTION_")) return i4TrustSectionEvidence(scope, fact);
         if ("I4_TRUST_DOCUMENT".equals(scope)) return "TRUST_DOCUMENT".equals(fact.getResourceType())
                 && Set.of("I4_TRUST_DOCUMENT_UPLOADED", "I4_TRUST_DOCUMENT_RESTORED").contains(action);
@@ -642,7 +648,8 @@ public class AdminCommandInvestigationService {
 
     private void validateIdentity(String scope, String key, String hash, boolean requireHash) {
         if (scope == null || !(scope.matches("[A-Z0-9_.:-]{1,96}")
-                || AdminCommandOrigin.h9CommandScope(scope) || AdminCommandOrigin.a3PlatformParamScope(scope))
+                || AdminCommandOrigin.h9CommandScope(scope) || AdminCommandOrigin.a3PlatformParamScope(scope)
+                || (AdminCommandOrigin.a4CommandScope(scope) && scope.matches("[A-Za-z0-9_.:-]{1,96}")))
                 || !AdminCommandOrigin.supported(scope)
                 || key == null || key.isBlank() || key.length() > 128 || !key.equals(key.trim())
                 || requireHash && hash == null || hash != null && !hash.matches("[a-fA-F0-9]{64}"))
