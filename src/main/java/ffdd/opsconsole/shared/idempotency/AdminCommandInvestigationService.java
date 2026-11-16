@@ -399,6 +399,18 @@ public class AdminCommandInvestigationService {
                     && scope.substring("A3_PLATFORM_PARAM:".length()).toLowerCase(java.util.Locale.ROOT)
                             .equals(fact.getResourceId());
         }
+        if (AdminCommandOrigin.a3FeatureFlagScope(scope)) {
+            String physicalKey = "feature." + scope.substring("A3_FEATURE_FLAG:".length());
+            return "A3_PLATFORM_CONFIG".equals(fact.getResourceType())
+                    && "ADMIN_FEATURE_FLAG_CHANGED".equals(action)
+                    && physicalKey.equals(fact.getResourceId());
+        }
+        if ("A3_PLATFORM_EXPERIENCE".equals(scope)) {
+            return "A3_PLATFORM_EXPERIENCE".equals(fact.getResourceType())
+                    && "A3_PLATFORM_EXPERIENCE_CHANGED".equals(action)
+                    && java.util.Set.of("platform.experience.share.base_url",
+                            "platform.experience.interface_languages").contains(fact.getResourceId());
+        }
         if (AdminCommandOrigin.userDetailScope(scope)) {
             if (scope.startsWith("USER_PAYMENT_METHOD_UNBIND:")) {
                 return "USER_PAYMENT_METHOD".equals(fact.getResourceType())
@@ -649,6 +661,8 @@ public class AdminCommandInvestigationService {
     private void validateIdentity(String scope, String key, String hash, boolean requireHash) {
         if (scope == null || !(scope.matches("[A-Z0-9_.:-]{1,96}")
                 || AdminCommandOrigin.h9CommandScope(scope) || AdminCommandOrigin.a3PlatformParamScope(scope)
+                || AdminCommandOrigin.a3FeatureFlagScope(scope)
+                || "A3_PLATFORM_EXPERIENCE".equals(scope)
                 || (AdminCommandOrigin.a4CommandScope(scope) && scope.matches("[A-Za-z0-9_.:-]{1,96}")))
                 || !AdminCommandOrigin.supported(scope)
                 || key == null || key.isBlank() || key.length() > 128 || !key.equals(key.trim())
