@@ -307,6 +307,25 @@ public class OpsPlatformRoleService {
                 || !new java.util.HashSet<>(validMenus).equals(new java.util.HashSet<>(desiredMenus))) {
             return ApiResult.fail(422, "ROLE_GRANTS_UNKNOWN_PERMISSION_OR_MENU");
         }
+        // A6: the request replaces the whole grant set, so a proposal built on a snapshot that has
+        // since moved would silently undo grants or revocations made meanwhile. The proposer's own
+        // snapshot is required — the current server state is never substituted for what was seen.
+        // Approval re-runs this same check against the snapshotted command, so a pause between the
+        // proposal and the decision is caught too.
+        if (request.expectedPermissionCodes() == null || request.expectedMenuIds() == null) {
+            return ApiResult.fail(422, "ROLE_GRANTS_EXPECTED_REQUIRED");
+        }
+        List<String> expectedPerms = normalizePermissionCodes(request.expectedPermissionCodes());
+        List<Long> expectedMenus = normalizeMenuIds(request.expectedMenuIds());
+        if (expectedPerms == null || expectedMenus == null) {
+            return ApiResult.fail(422, "ROLE_GRANTS_EXPECTED_INVALID");
+        }
+        if (!new java.util.HashSet<>(expectedPerms)
+                        .equals(new java.util.HashSet<>(rolePermissionMapper.selectActivePermissionCodesByRole(roleId)))
+                || !new java.util.HashSet<>(expectedMenus)
+                        .equals(new java.util.HashSet<>(roleMenuMapper.selectActiveMenuIdsByRole(roleId)))) {
+            return ApiResult.fail(409, "ROLE_GRANTS_STALE");
+        }
 
         if (!A2ReplayContext.isReplaying()) {
             String authenticatedOperator = actor(request.operator());
@@ -314,6 +333,8 @@ public class OpsPlatformRoleService {
             params.put("roleId", roleId);
             params.put("permissionCodes", desiredPerms);
             params.put("menuIds", desiredMenus);
+            params.put("expectedPermissionCodes", expectedPerms);
+            params.put("expectedMenuIds", expectedMenus);
             params.put("reason", request.reason());
             params.put("operator", authenticatedOperator);
             AuditOperationProposalRequest proposal = new AuditOperationProposalRequest(
