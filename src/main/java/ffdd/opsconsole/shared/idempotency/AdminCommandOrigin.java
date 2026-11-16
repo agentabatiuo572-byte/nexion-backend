@@ -73,6 +73,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if ("FINANCE:D7:CONFIG_UPDATE".equals(scope) || "D7_PAYOUT_VND_CONFIG".equals(scope)) return "finance_d7_read";
         if (scope.startsWith("E4")) return "device_e4_read";
         if (scope.startsWith("H2") || scope.startsWith("GROWTH:H2:")) return "growth_h2_read";
+        if (scope.startsWith("GROWTH:H4:WHEEL_TIER_RETIRE:")) return "growth_h4_read";
         if (scope.startsWith("K1")) return "risk_k1_read";
         if ("J3_ALERT_CONFIG".equals(scope)) return "emergency_j3_read";
         if (scope.startsWith("I3_NOTIFICATION_CAMPAIGN_")) return "content_i3_read";
@@ -102,6 +103,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         return scope != null && (scope.matches("(?:D2|D3|E4|H2|K1|J1|I5|C[1-6])(?:[_:].*)?")
                 || scope.startsWith("E2_POOL_") || scope.startsWith("E5_DEVICE_") || scope.startsWith("E6_PHONE_")
                 || scope.startsWith("GROWTH:H2:")
+                || scope.startsWith("GROWTH:H4:WHEEL_TIER_RETIRE:")
                 || "J3_ALERT_CONFIG".equals(scope)
                 || scope.startsWith("I3_NOTIFICATION_CAMPAIGN_") || scope.startsWith("I6_I18N_")
                 || i7CourseWrite(scope)
