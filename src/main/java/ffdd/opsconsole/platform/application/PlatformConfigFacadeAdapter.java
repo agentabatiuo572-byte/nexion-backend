@@ -32,6 +32,12 @@ public class PlatformConfigFacadeAdapter implements PlatformConfigFacade {
     }
 
     @Override
+    public Map<String, String> activeValuesByKeys(java.util.Collection<String> keys) {
+        return configRepository.findActiveByKeys(keys).stream()
+                .collect(Collectors.toMap(PlatformConfigItem::configKey, PlatformConfigItem::configValue));
+    }
+
+    @Override
     public SessionLifetimes sessionLifetimes() {
         return sessionLifetimeCache == null ? PlatformConfigFacade.super.sessionLifetimes() : sessionLifetimeCache.read();
     }

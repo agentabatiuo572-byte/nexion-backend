@@ -114,16 +114,34 @@ public class AppWithdrawalService {
     public ApiResult<Map<String, Object>> policy(Long userId) {
         requireProductionWithdrawalSubject(userId);
         if (userId == null || mapper.findActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
-        PolicySnapshot policy = currentPolicy();
-        int dailyLimit = validatedDailyLimit();
-        BigDecimal balanceMaxRatio = validatedBalanceMaxRatio();
+        Map<String, Object> providerCapability = providerPayout.capability();
+        List<Map<String, Object>> networkCapabilities = providerPayout.networkCapabilities(providerCapability);
+        Map<String, String> policyValues;
+        try {
+            policyValues = config.activeValuesByKeys(List.of(
+                    "withdrawal.d5.version", "withdrawal.network_confirm_fee_usd.trc20",
+                    "withdrawal.network_confirm_fee_usd.bep20", "withdrawal.network_confirm_fee_usd.erc20",
+                    "withdrawal.nex_fee_offset_rate", "withdrawal.small_amount_threshold_usd",
+                    "withdrawal.payout_sla_hours", "withdrawal.trc20.enabled",
+                    "withdrawal.bep20.enabled", "withdrawal.erc20.enabled",
+                    "withdrawal.daily_count_limit", "withdrawal.max_balance_pct", STRONG_REVIEW_THRESHOLD_KEY));
+        } catch (RuntimeException ex) {
+            throw new BizException(503, "D5_POLICY_VERSION_UNAVAILABLE");
+        }
+        PolicySnapshot policy = currentPolicy(
+                () -> Boolean.TRUE.equals(providerCapability.get("enabled")),
+                network -> networkCapabilities.stream().anyMatch(capability ->
+                        network.network().equals(capability.get("network"))
+                                && Boolean.TRUE.equals(capability.get("enabled"))), policyValues);
+        int dailyLimit = validatedDailyLimit(() -> requiredDecimal("withdrawal.daily_count_limit", policyValues));
+        BigDecimal balanceMaxRatio = validatedBalanceMaxRatio(() -> requiredDecimal("withdrawal.max_balance_pct", policyValues));
         GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
         if (rhythm == null || !rhythm.reliable() || !StringUtils.hasText(rhythm.currentPhase()) || rhythm.currentMonth() < 1
                 || rhythm.withdrawCooldownDays() < 0) {
             throw new BizException(503, "WITHDRAWAL_POLICY_UNAVAILABLE");
         }
         boolean withdrawalEnabled = withdrawGateEnabled();
-        BigDecimal strongReviewThreshold = strongReviewThreshold();
+        BigDecimal strongReviewThreshold = strongReviewThreshold(policyValues.get(STRONG_REVIEW_THRESHOLD_KEY));
         return ApiResult.ok(linked(
                 "minAmount", MIN_WITHDRAWAL, "dailyLimitCount", dailyLimit,
                 "balanceMaxRatio", balanceMaxRatio,
@@ -135,8 +153,8 @@ public class AppWithdrawalService {
                 "policyVersion", policy.policyVersion(),
                 "cooldownDays", rhythm.withdrawCooldownDays(),
                 "complianceHoldEnabled", rhythm.complianceHoldEnabled(),
-                "enabledNetworks", policy.enabledNetworks(), "providerPayout", providerPayout.capability(),
-                "networkCapabilities", providerPayout.networkCapabilities(),
+                "enabledNetworks", policy.enabledNetworks(), "providerPayout", providerCapability,
+                "networkCapabilities", networkCapabilities,
                 "currentPhase", rhythm.currentPhase(),
                 "currentMonth", rhythm.currentMonth(), "withdrawalEnabled", withdrawalEnabled,
                 "gateSource", "J1", "source", "D5+H1"));
@@ -630,7 +648,10 @@ public class AppWithdrawalService {
     }
 
     private BigDecimal strongReviewThreshold() {
-        String raw = config.activeValue(STRONG_REVIEW_THRESHOLD_KEY).orElse(null);
+        return strongReviewThreshold(config.activeValue(STRONG_REVIEW_THRESHOLD_KEY).orElse(null));
+    }
+
+    private BigDecimal strongReviewThreshold(String raw) {
         try {
             BigDecimal value = new BigDecimal(raw == null ? "" : raw.trim());
             if (value.compareTo(MIN_WITHDRAWAL) < 0 || value.compareTo(new BigDecimal("10000000")) > 0) {
@@ -643,8 +664,12 @@ public class AppWithdrawalService {
     }
 
     private int validatedDailyLimit() {
+        return validatedDailyLimit(() -> requiredDecimal("withdrawal.daily_count_limit"));
+    }
+
+    private int validatedDailyLimit(java.util.function.Supplier<BigDecimal> read) {
         try {
-            int value = requiredDecimal("withdrawal.daily_count_limit").intValueExact();
+            int value = read.get().intValueExact();
             if (value < 1 || value > 10) throw new ArithmeticException("range");
             return value;
         } catch (RuntimeException ex) {
@@ -653,9 +678,13 @@ public class AppWithdrawalService {
     }
 
     private BigDecimal validatedBalanceMaxRatio() {
+        return validatedBalanceMaxRatio(() -> requiredDecimal("withdrawal.max_balance_pct"));
+    }
+
+    private BigDecimal validatedBalanceMaxRatio(java.util.function.Supplier<BigDecimal> read) {
         BigDecimal value;
         try {
-            value = requiredDecimal("withdrawal.max_balance_pct");
+            value = read.get();
         } catch (RuntimeException ex) {
             throw new BizException(503, "D5_BALANCE_RATIO_INVALID");
         }
@@ -746,27 +775,51 @@ public class AppWithdrawalService {
     }
 
     private PolicySnapshot currentPolicy() {
+        return currentPolicy(providerPayout::enabled, providerPayout::enabled);
+    }
+
+    private PolicySnapshot currentPolicy(
+            java.util.function.BooleanSupplier globalPayoutEnabled,
+            java.util.function.Predicate<CregisNetwork> networkPayoutEnabled) {
+        Map<String, String> policyValues;
+        try {
+            policyValues = config.activeValuesByKeys(List.of(
+                    "withdrawal.d5.version", "withdrawal.network_confirm_fee_usd.trc20",
+                    "withdrawal.network_confirm_fee_usd.bep20", "withdrawal.network_confirm_fee_usd.erc20",
+                    "withdrawal.nex_fee_offset_rate", "withdrawal.small_amount_threshold_usd",
+                    "withdrawal.payout_sla_hours", "withdrawal.trc20.enabled",
+                    "withdrawal.bep20.enabled", "withdrawal.erc20.enabled"));
+        } catch (RuntimeException ex) {
+            throw new BizException(503, "D5_POLICY_VERSION_UNAVAILABLE");
+        }
+        return currentPolicy(globalPayoutEnabled, networkPayoutEnabled, policyValues);
+    }
+
+    private PolicySnapshot currentPolicy(
+            java.util.function.BooleanSupplier globalPayoutEnabled,
+            java.util.function.Predicate<CregisNetwork> networkPayoutEnabled,
+            Map<String, String> policyValues) {
         long version;
         try {
-            version = requiredDecimal("withdrawal.d5.version").longValueExact();
+            version = requiredDecimal("withdrawal.d5.version", policyValues).longValueExact();
         } catch (RuntimeException ex) {
             throw new BizException(503, "D5_POLICY_VERSION_UNAVAILABLE");
         }
         Map<String, BigDecimal> fees = new LinkedHashMap<>();
-        fees.put("trc20", requiredDecimal("withdrawal.network_confirm_fee_usd.trc20"));
-        fees.put("bep20", requiredDecimal("withdrawal.network_confirm_fee_usd.bep20"));
-        fees.put("erc20", requiredDecimal("withdrawal.network_confirm_fee_usd.erc20"));
+        fees.put("trc20", requiredDecimal("withdrawal.network_confirm_fee_usd.trc20", policyValues));
+        fees.put("bep20", requiredDecimal("withdrawal.network_confirm_fee_usd.bep20", policyValues));
+        fees.put("erc20", requiredDecimal("withdrawal.network_confirm_fee_usd.erc20", policyValues));
         if (fees.values().stream().anyMatch(fee -> fee.signum() < 0
                 || fee.compareTo(new BigDecimal("25")) > 0
                 || fee.multiply(new BigDecimal("2")).stripTrailingZeros().scale() > 0)) {
             throw new BizException(503, "D5_NETWORK_FEE_INVALID");
         }
-        BigDecimal nexOffsetRate = requiredDecimal("withdrawal.nex_fee_offset_rate");
+        BigDecimal nexOffsetRate = requiredDecimal("withdrawal.nex_fee_offset_rate", policyValues);
         if (nexOffsetRate.signum() <= 0) throw new BizException(503, "D5_NEX_OFFSET_INVALID");
-        BigDecimal smallAmountThresholdUsd = requiredDecimal("withdrawal.small_amount_threshold_usd");
+        BigDecimal smallAmountThresholdUsd = requiredDecimal("withdrawal.small_amount_threshold_usd", policyValues);
         int payoutSlaHours;
         try {
-            payoutSlaHours = requiredDecimal("withdrawal.payout_sla_hours").intValueExact();
+            payoutSlaHours = requiredDecimal("withdrawal.payout_sla_hours", policyValues).intValueExact();
         } catch (ArithmeticException ex) {
             throw new BizException(503, "D5_PAYOUT_SLA_INVALID");
         }
@@ -775,11 +828,11 @@ public class AppWithdrawalService {
                 || payoutSlaHours < 1 || payoutSlaHours > 168) {
             throw new BizException(503, "D5_WD01_CONFIG_INVALID");
         }
-        boolean payoutAllowed = cryptoPayoutAllowed();
+        boolean payoutAllowed = !providerMode() || globalPayoutEnabled.getAsBoolean();
         List<String> enabled = payoutAllowed
                 ? CHAINS.stream().sorted().filter(chain -> !providerMode() || ("USDT-BEP20".equals(chain) || "USDT-ERC20".equals(chain))
-                        && providerPayout.enabled(CregisNetwork.fromNetwork(chain.substring(5))))
-                    .filter(this::networkEnabled).toList() : List.of();
+                        && networkPayoutEnabled.test(CregisNetwork.fromNetwork(chain.substring(5))))
+                    .filter(chain -> networkEnabled(chain, policyValues)).toList() : List.of();
 
         String versionMaterial = version + "|" + fees + "|" + nexOffsetRate.stripTrailingZeros().toPlainString()
                 + "|" + smallAmountThresholdUsd.stripTrailingZeros().toPlainString()
@@ -788,14 +841,14 @@ public class AppWithdrawalService {
                 payoutSlaHours, enabled, hash(versionMaterial));
     }
 
-    private boolean networkEnabled(String chain) {
+    private boolean networkEnabled(String chain, Map<String, String> policyValues) {
         String key = switch (chain) {
             case "USDT-TRC20" -> "withdrawal.trc20.enabled";
             case "USDT-BEP20" -> "withdrawal.bep20.enabled";
             case "USDT-ERC20" -> "withdrawal.erc20.enabled";
             default -> throw new BizException(422, "WITHDRAWAL_CHAIN_INVALID");
         };
-        return config.activeValue(key).map(String::trim).map(String::toLowerCase)
+        return Optional.ofNullable(policyValues.get(key)).map(String::trim).map(String::toLowerCase)
                 .filter(Set.of("true", "false", "1", "0", "on", "off")::contains)
                 .map(Set.of("true", "1", "on")::contains)
                 .orElseThrow(() -> new BizException(503, "D5_NETWORK_CONFIG_UNAVAILABLE"));
@@ -816,8 +869,16 @@ public class AppWithdrawalService {
     }
 
     private BigDecimal requiredDecimal(String key) {
+        return requiredDecimal(key, () -> config.activeValue(key));
+    }
+
+    private BigDecimal requiredDecimal(String key, Map<String, String> values) {
+        return requiredDecimal(key, () -> Optional.ofNullable(values.get(key)));
+    }
+
+    private BigDecimal requiredDecimal(String key, java.util.function.Supplier<Optional<String>> read) {
         try {
-            return config.activeValue(key).filter(StringUtils::hasText)
+            return read.get().filter(StringUtils::hasText)
                     .map(String::trim).map(BigDecimal::new)
                     .orElseThrow(() -> new IllegalStateException(key));
         } catch (RuntimeException ex) {

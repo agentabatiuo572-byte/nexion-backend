@@ -259,6 +259,15 @@ public class AppTaskAssignmentService {
 
     @Transactional(readOnly = true)
     public ApiResult<AppTaskAssignmentsResponse> assignments(Long userId) {
+        return assignments(userId, false);
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResult<AppTaskAssignmentsResponse> assignmentsForSimulatedRead(Long userId) {
+        return assignments(userId, true);
+    }
+
+    private ApiResult<AppTaskAssignmentsResponse> assignments(Long userId, boolean omitCompletedSimulated) {
         requireUser(userId);
         if (FundsSandboxProfileGuard.isStrictIsolatedProfile(
                 environment == null ? new String[0] : environment.getActiveProfiles())) {
@@ -271,7 +280,9 @@ public class AppTaskAssignmentService {
         List<Long> ownedDeviceIds = ownedDevices.stream().map(DeviceRow::id).toList();
         List<AssignmentRow> rows = ownedDeviceIds.isEmpty()
                 ? List.of()
-                : safe(mapper.assignmentsForDevices(userId, sourceEnvironment, ownedDeviceIds));
+                : safe(omitCompletedSimulated
+                        ? mapper.readAssignmentsForDevices(userId, sourceEnvironment, ownedDeviceIds, true)
+                        : mapper.assignmentsForDevices(userId, sourceEnvironment, ownedDeviceIds));
         List<AppTaskDeviceState> devices = ownedDevices.stream().map(device -> {
             DeviceLockRow lock = mapper.deviceTaskLock(userId, device.id(), sourceEnvironment);
             AppTaskAssignmentView current = rows.stream()

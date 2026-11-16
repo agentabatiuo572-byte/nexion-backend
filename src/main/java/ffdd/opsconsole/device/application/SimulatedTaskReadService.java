@@ -30,7 +30,7 @@ public class SimulatedTaskReadService {
 
     @Transactional(readOnly=true)
     public Map<String,Object> assignments(long userId) {
-        var response=legacy.assignments(userId);
+        var response=legacy.assignmentsForSimulatedRead(userId);
         if(response.getCode()!=0 || response.getData()==null)throw new BizException(response.getCode(),response.getMessage());
         var original=response.getData();
         var current=simulated.currentTasksByUser(userId);

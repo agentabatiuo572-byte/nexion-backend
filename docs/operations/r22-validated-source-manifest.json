@@ -1,0 +1,118 @@
+{
+  "schema": "r22-validated-production-source-closure/v1",
+  "productionBaseline": "c516c3007b12b7e7aab34e30e00f8b4d74c0c025",
+  "validatedCandidateJarSha256": "b83ba5e1fc534d5caf31ecb2fad3ea016e578f08dcc0aca8d6c2bba55d36f94c",
+  "validatedSourceFamilies": 20,
+  "overlayEntries": 35,
+  "branchVariant": "main-canonical-validated-r22",
+  "files": [
+    {
+      "path": "src/main/java/ffdd/opsconsole/finance/application/AppWithdrawalService.java",
+      "validatedSourceSha256": "ea4fcb55c2a815f7a426f2580972d6aaa9cf328b331283d1197a47f801c8c7bf",
+      "integratedSourceSha256": "ea4fcb55c2a815f7a426f2580972d6aaa9cf328b331283d1197a47f801c8c7bf"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/finance/cregis/CregisPayoutControl.java",
+      "validatedSourceSha256": "ddf6034de25fdb319af66df4348b47d0b412996cdc3b029927b254ae22cdbd79",
+      "integratedSourceSha256": "ddf6034de25fdb319af66df4348b47d0b412996cdc3b029927b254ae22cdbd79"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/platform/facade/PlatformConfigFacade.java",
+      "validatedSourceSha256": "617a5bcc540c2a32950ad4dc04bbde13d96719bd4842cc8d2d29a119c3da04d8",
+      "integratedSourceSha256": "617a5bcc540c2a32950ad4dc04bbde13d96719bd4842cc8d2d29a119c3da04d8"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/platform/domain/PlatformConfigRepository.java",
+      "validatedSourceSha256": "533f0b8db87e7a60b6f070d276085310e7211a06a49b7c11dbdb711aec50dcc6",
+      "integratedSourceSha256": "533f0b8db87e7a60b6f070d276085310e7211a06a49b7c11dbdb711aec50dcc6"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/platform/infrastructure/MybatisPlatformConfigRepository.java",
+      "validatedSourceSha256": "05d1203078f892b9b4aea1e3f99d1d853beb42bc8987290a89d936a864d28713",
+      "integratedSourceSha256": "05d1203078f892b9b4aea1e3f99d1d853beb42bc8987290a89d936a864d28713"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/platform/application/PlatformConfigFacadeAdapter.java",
+      "validatedSourceSha256": "62fecf11abe778ee24718971beaced055f9e9d7e5b0ad04537d3e113c4a019ab",
+      "integratedSourceSha256": "62fecf11abe778ee24718971beaced055f9e9d7e5b0ad04537d3e113c4a019ab"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/treasury/application/OpsTreasuryService.java",
+      "validatedSourceSha256": "95b6388d8b90e2860103b840835a19f4cb5b4d3223a82e4be56b325429017875",
+      "integratedSourceSha256": "95b6388d8b90e2860103b840835a19f4cb5b4d3223a82e4be56b325429017875"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/treasury/application/TreasuryCoverageFacadeAdapter.java",
+      "validatedSourceSha256": "95d85c22daa34dd12a244cef6c89c0ad029d199bed1c2a133f080db0fea6f1c0",
+      "integratedSourceSha256": "95d85c22daa34dd12a244cef6c89c0ad029d199bed1c2a133f080db0fea6f1c0"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/growth/facade/GrowthRhythmSnapshot.java",
+      "validatedSourceSha256": "caad9f9de6676d199525a7e9d2bf7c3723bdca70e98e99d99501566c16022a02",
+      "integratedSourceSha256": "caad9f9de6676d199525a7e9d2bf7c3723bdca70e98e99d99501566c16022a02"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/device/mapper/SimulatedTaskMapper.java",
+      "validatedSourceSha256": "7a3b593f007dcd1906091c7b6bc052fb3130589f0c169b1f775e265247343579",
+      "integratedSourceSha256": "7a3b593f007dcd1906091c7b6bc052fb3130589f0c169b1f775e265247343579"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/home/application/AppHomeOverviewService.java",
+      "validatedSourceSha256": "02d3933226dbb5e238392403fdef28e89791ead6d4bbbe3a53b516992846db37",
+      "integratedSourceSha256": "02d3933226dbb5e238392403fdef28e89791ead6d4bbbe3a53b516992846db37"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/device/application/SimulatedTaskService.java",
+      "validatedSourceSha256": "eedae60f6b45fbd843ba397a61181d12726ec1e8b633989ca8c219edb7c35694",
+      "integratedSourceSha256": "eedae60f6b45fbd843ba397a61181d12726ec1e8b633989ca8c219edb7c35694"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/home/application/HomeSharedSnapshotCache.java",
+      "validatedSourceSha256": "9af891c90cc6bf2b64e9a955acca77d85e5300d031e972544b62f3ca958b5614",
+      "integratedSourceSha256": "9af891c90cc6bf2b64e9a955acca77d85e5300d031e972544b62f3ca958b5614"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/home/mapper/AppHomeOverviewMapper.java",
+      "validatedSourceSha256": "e8a6a78a9be54dc38f01877785002fea7da7fc27840e1d71adfc9c2634e9d64a",
+      "integratedSourceSha256": "e8a6a78a9be54dc38f01877785002fea7da7fc27840e1d71adfc9c2634e9d64a"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/device/mapper/AppTaskAssignmentMapper.java",
+      "validatedSourceSha256": "1ec0435704d57933270390e3b133123bb7cf603207f3bb5bf2253079b3afe8d2",
+      "integratedSourceSha256": "1ec0435704d57933270390e3b133123bb7cf603207f3bb5bf2253079b3afe8d2"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/content/application/SupportAnalyticsFactSampler.java",
+      "validatedSourceSha256": "6d84ab67bf7ecac6ed0ed1082a963ea17587c0e305fedd0938faa0472225f840",
+      "integratedSourceSha256": "6d84ab67bf7ecac6ed0ed1082a963ea17587c0e305fedd0938faa0472225f840"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/content/application/SupportLeaderboardSamplingScheduler.java",
+      "validatedSourceSha256": "3cc6ae6954b6445424c2fe769aace1aa55ac91c756142e96031d855297a99712",
+      "integratedSourceSha256": "3cc6ae6954b6445424c2fe769aace1aa55ac91c756142e96031d855297a99712"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/device/application/AppTaskAssignmentService.java",
+      "validatedSourceSha256": "3802b7aa8d28aaa5c2f337998a438a4f2f081ae1d465f955b297d9f80ae6201e",
+      "integratedSourceSha256": "3802b7aa8d28aaa5c2f337998a438a4f2f081ae1d465f955b297d9f80ae6201e"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/device/application/SimulatedTaskReadService.java",
+      "validatedSourceSha256": "9f790cce51b2caa489af65831250601b207ca7fa7a4bb579accdd9b5b0fdfd7f",
+      "integratedSourceSha256": "9f790cce51b2caa489af65831250601b207ca7fa7a4bb579accdd9b5b0fdfd7f"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/shared/security/mapper/AuthSessionMapper.java",
+      "validatedSourceSha256": "0db4231bd57e77966af7b190cd61a607e64001c1610e251e16f0d2a9d52dc776",
+      "integratedSourceSha256": "0db4231bd57e77966af7b190cd61a607e64001c1610e251e16f0d2a9d52dc776"
+    }
+  ],
+  "supportingTestAdaptations": [],
+  "productionPrerequisites": {
+    "homeIndex": "idx_sim_task_home_live_cov",
+    "homeIndexVisible": true,
+    "cutoffEnvironment": "NEXION_SIMULATED_TASKS_ABANDON_BEFORE",
+    "approvedCutoffBusinessUtcPlus8": "2026-11-14T21:59:23.782716",
+    "privatePressureFacilitiesExcluded": true
+  }
+}

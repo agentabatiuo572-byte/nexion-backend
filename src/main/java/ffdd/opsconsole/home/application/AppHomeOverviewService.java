@@ -36,12 +36,15 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
+import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataAccessException;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /** Server-only projection. Missing production facts are represented as null/empty collections. */
 @Service
@@ -74,8 +77,8 @@ public class AppHomeOverviewService {
     private final HomeSharedSnapshotCache sharedSnapshotCache;
     private final Clock clock;
     private final Environment runtimeEnvironment;
+    private final PlatformTransactionManager transactions;
 
-    @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> overview(Long userId) {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
         boolean isolatedProfile = isStrictProfile(runtimeEnvironment.getActiveProfiles(), SANDBOX_PROFILES, false);
@@ -87,11 +90,21 @@ public class AppHomeOverviewService {
         // The compute proof rail may still be simulated in local development,
         // but it must not redirect persisted homepage reads to Sandbox tables.
         String sourceEnvironment = productionProfile ? "PRODUCTION" : proofVerifier.sourceEnvironment();
-        boolean sandbox = isolatedProfile;
+        TransactionTemplate readOnly = new TransactionTemplate(transactions);
+        readOnly.setReadOnly(true);
+        readOnly.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+        Supplier<ApiResult<Map<String, Object>>> completion = readOnly.execute(
+                status -> overviewInTransaction(userId, isolatedProfile, sourceEnvironment));
+        // Complete public facts only after the account snapshot has released its connection.
+        return completion.get();
+    }
+
+    private Supplier<ApiResult<Map<String, Object>>> overviewInTransaction(Long userId, boolean sandbox,
+                                                                          String sourceEnvironment) {
         boolean accountSandbox = sandbox;
         AppHomeOverviewMapper.UserEnvironmentRow accountEnvironment = mapper.userEnvironment(userId);
         if (accountEnvironment == null || accountEnvironment.sandbox() != accountSandbox) {
-            return ApiResult.fail(403, "USER_ENVIRONMENT_MISMATCH");
+            return () -> ApiResult.fail(403, "USER_ENVIRONMENT_MISMATCH");
         }
         try {
             LocalDateTime now = LocalDateTime.ofInstant(clock.instant(), SERVER_ZONE);
@@ -104,9 +117,10 @@ public class AppHomeOverviewService {
             if (sandbox) {
                 String runId = acceptanceRunId();
                 if (!validSandboxRunId(runId)) {
-                    return ApiResult.fail(503, "APP_HOME_SANDBOX_RUN_ID_REQUIRED");
+                    return () -> ApiResult.fail(503, "APP_HOME_SANDBOX_RUN_ID_REQUIRED");
                 }
-                return sandboxOverview(userId, runId, now, dayStart, weekStart, monthStart);
+                ApiResult<Map<String, Object>> response = sandboxOverview(userId, runId, now, dayStart, weekStart, monthStart);
+                return () -> response;
             }
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("serverCanonical", true);
@@ -136,11 +150,10 @@ public class AppHomeOverviewService {
             result.put("earnings", earnings);
             result.put("earningsLedgerMode", "SETTLED");
             result.put("earningsLedger", earningsLedger(mapper.earningsLedger(userId, sourceEnvironment)));
-            HomeSharedSnapshotCache.Snapshot sharedSnapshot = sharedSnapshotCache.current();
             List<MarketProductRow> marketProducts = safe(mapper.marketProducts());
-            result.put("marketBoard", marketBoard(
-                    safe(mapper.marketTasks()), safe(sharedSnapshot == null
-                            ? mapper.marketTaskPriceHistory() : sharedSnapshot.marketTaskPriceHistory()), marketProducts));
+            List<MarketTaskRow> marketTasks = safe(mapper.marketTasks());
+            // Preserve response key order; this request-local map is published only by completion.
+            result.put("marketBoard", null);
             result.put("doTheMath", doTheMath(
                     userId, mapper.highestActiveDevice(userId, accountSandbox), marketProducts));
             result.put("weeklyPromo", promo());
@@ -153,18 +166,36 @@ public class AppHomeOverviewService {
                     "slotCap", Math.max(1, mapper.deviceSlotCap()), "reservedSlotCount", reservedSlots, "trialSlotCount", trialSlots));
             AppHomeOverviewMapper.OnGridSummary grid = mapper.onGrid(sourceEnvironment, accountSandbox);
             Long activeJobs = grid == null ? null : grid.activeJobs();
-            if (activeJobs != null && runtimeEnvironment.getProperty("nexion.simulated-tasks.enabled", Boolean.class, false)) {
-                activeJobs += sharedSnapshot == null ? mapper.activeRuleSlots(sourceEnvironment, accountSandbox, now)
-                        : sharedSnapshot.activeRuleSlotsCount();
-            }
-            result.put("onGrid", linked("clients", clients(mapper.onGridClients(accountSandbox)),
+            boolean includeSimulatedSlots = activeJobs != null
+                    && runtimeEnvironment.getProperty("nexion.simulated-tasks.enabled", Boolean.class, false);
+            Map<String, Object> onGrid = linked("clients", clients(mapper.onGridClients(accountSandbox)),
                     "activeDevices", mapper.globalActiveDevices(accountSandbox),
                     "activeJobs", activeJobs,
-                    "perSecUsdt", fact(grid == null ? null : grid.perSecUsdt(), grid == null ? null : grid.activeJobs())));
+                    "perSecUsdt", fact(grid == null ? null : grid.perSecUsdt(), grid == null ? null : grid.activeJobs()));
+            result.put("onGrid", onGrid);
             result.put("source", PRODUCTION_SOURCE);
-            return ApiResult.ok(result);
+            return () -> {
+                try {
+                    HomeSharedSnapshotCache.Snapshot snapshot = sharedSnapshotCache.current();
+                    HomeSharedSnapshotCache.Snapshot historySnapshot = snapshot != null
+                            && snapshot.validUntil() > clock.millis() ? snapshot : null;
+                    result.put("marketBoard", marketBoard(marketTasks, safe(historySnapshot == null
+                            ? mapper.marketTaskPriceHistory() : historySnapshot.marketTaskPriceHistory()), marketProducts));
+                    if (includeSimulatedSlots) {
+                        HomeSharedSnapshotCache.Snapshot slotsSnapshot = snapshot != null
+                                && snapshot.validUntil() > clock.millis() ? snapshot : null;
+                        LocalDateTime publicNow = LocalDateTime.ofInstant(clock.instant(), SERVER_ZONE);
+                        onGrid.put("activeJobs", activeJobs + (slotsSnapshot == null
+                                ? mapper.activeRuleSlots(sourceEnvironment, accountSandbox, publicNow)
+                                : slotsSnapshot.activeRuleSlotsCount()));
+                    }
+                    return ApiResult.ok(result);
+                } catch (DataAccessException ex) {
+                    return ApiResult.fail(503, "APP_HOME_OVERVIEW_UNAVAILABLE");
+                }
+            };
         } catch (DataAccessException ex) {
-            return ApiResult.fail(503, "APP_HOME_OVERVIEW_UNAVAILABLE");
+            return () -> ApiResult.fail(503, "APP_HOME_OVERVIEW_UNAVAILABLE");
         }
     }
 

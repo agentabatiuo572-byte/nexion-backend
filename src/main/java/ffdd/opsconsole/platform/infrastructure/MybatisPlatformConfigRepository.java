@@ -44,6 +44,15 @@ public class MybatisPlatformConfigRepository implements PlatformConfigRepository
     }
 
     @Override
+    public List<PlatformConfigItem> findActiveByKeys(Collection<String> configKeys) {
+        return mapper.selectList(new LambdaQueryWrapper<PlatformConfigItemEntity>()
+                        .in(PlatformConfigItemEntity::getConfigKey, configKeys)
+                        .eq(PlatformConfigItemEntity::getStatus, 1)
+                        .eq(PlatformConfigItemEntity::getIsDeleted, 0))
+                .stream().map(this::toDomain).toList();
+    }
+
+    @Override
     public Optional<PlatformConfigItem> findActiveByKeyForUpdate(String configKey) {
         return Optional.ofNullable(mapper.selectActiveByKeyForUpdate(configKey)).map(this::toDomain);
     }

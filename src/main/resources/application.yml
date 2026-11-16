@@ -42,6 +42,8 @@ spring:
       password: ${NEXION_REDIS_PASSWORD:}
 
 nexion:
+  simulated-tasks:
+    abandon-before: ${NEXION_SIMULATED_TASKS_ABANDON_BEFORE:}
   websocket:
     max-connections: ${NEXION_WEBSOCKET_MAX_CONNECTIONS:2000}
   developer:

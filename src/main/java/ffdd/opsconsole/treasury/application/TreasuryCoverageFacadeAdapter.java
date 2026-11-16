@@ -15,7 +15,7 @@ public class TreasuryCoverageFacadeAdapter implements TreasuryCoverageFacade {
 
     @Override
     public TreasuryCoverageSnapshot snapshot() {
-        Map<String, Object> dualLedger = treasuryService.dualLedger().getData();
+        Map<String, Object> dualLedger = treasuryService.decisionCoverage().getData();
         if (dualLedger == null) {
             return new TreasuryCoverageSnapshot(BigDecimal.ZERO, BigDecimal.ZERO, false);
         }
