@@ -71,11 +71,11 @@ public interface EmergencyControlRepository {
     /** Per-row block facts exactly as the edge filter recorded them; no identity is invented. */
     default List<Map<String, Object>> geoBlockEventRows(
             String countryCode, String endpointKey, int pageSize, int offset) {
-        return List.of();
+        throw new UnsupportedOperationException("GEO_BLOCK_HIT_DETAIL_UNAVAILABLE");
     }
 
     default long countGeoBlockEvents(String countryCode, String endpointKey) {
-        return 0L;
+        throw new UnsupportedOperationException("GEO_BLOCK_HIT_DETAIL_UNAVAILABLE");
     }
 
     default void recordGeoBlockEvent(
