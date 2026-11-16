@@ -3052,9 +3052,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     "nx_genesis_series.price_usdt",
                     "NUMBER",
                     "9999",
-                    "一级购买单价",
-                    "只影响后续一级购买，历史权益保留快照",
-                    "提高单价会提高未来释放基数，并触发 B1 覆盖率红线预检",
+                    "系列当前价（分红计价）",
+                    "系列当前价用于现有有效持仓的每日分红；生效后按新价计算后续应付，已结算记录不回算。",
+                    "调高系列当前价会增加现有有效持仓的每日应付，须由另一位管理员审批；提案和批准时均检查新增应付后的 B1 覆盖率，批准前不生效。",
                     true,
                     GenesisParamKind.MONEY);
             case "dividend" -> new GenesisParamDef(

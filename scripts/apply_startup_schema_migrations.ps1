@@ -481,6 +481,9 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261109_datacenter_retirement.sql")
   # Normalize retained H4 asset aliases without replaying the historical prize-pool seed.
   (Join-Path $root "scripts\migrations\20261116_h4_wheel_reward_kind_uvt.sql"),
+  # Clean known current display copy after legacy seeds; never create prize tiers
+  # or rewrite published content versions and historical evidence.
+  (Join-Path $root "scripts\migrations\20261116_bug426_current_uvt_display_names.sql"),
   # Fence stale J4 execution progress writes with the generation claimed by recovery.
   (Join-Path $root "scripts\migrations\20261116_j4_sop_execution_generation.sql")
 )
