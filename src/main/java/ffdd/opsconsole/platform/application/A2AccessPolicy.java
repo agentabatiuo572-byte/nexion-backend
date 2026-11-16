@@ -94,6 +94,7 @@ public class A2AccessPolicy {
                         || canReadOwnCourseRewardProposal(grants)
                         || grants.contains("overview_b5_threshold_write")
                         || grants.contains(E2TaskPricingApproval.MAKER_AUTHORITY)
+                        || grants.contains("emergency_j4_playbook_execute")
                         || grants.contains(H8RewardParamApproval.MAKER_AUTHORITY)
                         || grants.contains(H5GrowthApproval.MAKER_AUTHORITY)
                         || grants.contains(H3GrowthApproval.MAKER_AUTHORITY)
@@ -206,6 +207,10 @@ public class A2AccessPolicy {
 
     boolean canAccessOwnBusinessProposal(AuditReplayCommand command, long actorId) {
         if (canReadOwnH1Override(command, actorId, permissions.getPermissionCodes(actorId))) return true;
+        if (isJ4ExecuteProposal(command)) {
+            return roleResolver.isActiveAdministrator(actorId)
+                    && permissions.getPermissionCodes(actorId).contains("emergency_j4_playbook_execute");
+        }
         if (command != null && "C".equalsIgnoreCase(command.domain())
                 && ("c2_account_freeze".equals(command.op()) || "c2_account_unfreeze".equals(command.op()))) {
             // Both recovery callers have already verified the original maker's numeric ID.
@@ -265,6 +270,13 @@ public class A2AccessPolicy {
                     && permissions.getPermissionCodes(actorId).contains("growth_h4_read"));
         return makerId instanceof Number && Long.toString(actorId).equals(makerId.toString())
                 && authorityGranted;
+    }
+
+    /** Only the J4 execution proposal; the exact original maker is checked by the caller. */
+    private static boolean isJ4ExecuteProposal(AuditReplayCommand command) {
+        return command != null
+                && "J".equalsIgnoreCase(command.domain())
+                && "j4_playbook_execute".equalsIgnoreCase(command.op());
     }
 
     /**
