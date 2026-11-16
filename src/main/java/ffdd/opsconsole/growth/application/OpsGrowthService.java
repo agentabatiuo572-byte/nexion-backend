@@ -749,6 +749,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         response.put("wheelTiers", wheelTiers());
         response.put("wheelSignature", wheelPoolSignature());
         response.put("wheelEvUsd", wheelEvUsd());
+        response.put("wheelEvByAsset", wheelEvByAsset());
         response.put("wheelGuards", wheelGuards());
         response.put("trackables", trackables());
         response.put("coverage", coverage());
@@ -3413,6 +3414,14 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         stats.put("trackJoin", join);
         stats.put("trackDone", done);
         stats.put("trackClaim", claim);
+        // Real wheel rows for the wheel's own current day; the wheel records spin_date itself, so this is
+        // the same column its daily limits are enforced on. Unknown stays null instead of a made-up zero.
+        stats.put("wheelSpinsToday", wheelSpinsToday());
+        stats.put("wheelSpinsTodayBasis", "nx_growth_wheel_spin.spin_date");
+        // No H4-region-restriction source exists: event definitions and prize slots are not such a count.
+        stats.put("regionRestrictionCount", null);
+        stats.put("regionRestrictionsAvailable", false);
+        stats.put("regionRestrictionsReason", "H4_REGION_RESTRICTION_SOURCE_MISSING");
         return stats;
     }
 
@@ -3774,15 +3783,35 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         return growthRows(GrowthQuestEventMapper::wheelTiers);
     }
 
+    /** Real persisted spins for the wheel's current day, or null when the business table is unavailable. */
+    private Long wheelSpinsToday() {
+        if (questEventMapper.isEmpty()) return null;
+        // The wheel records spin_date as the UTC date (AppGrowthWheelService uses the same basis).
+        return questEventMapper.get().countWheelSpinsOnDate(java.time.LocalDate.now(java.time.ZoneOffset.UTC));
+    }
+
+    /**
+     * Same expectation calculation as before, reported per reward asset: amount x probability for the real
+     * tiers, at the stored precision. Adding assets together would silently mix UVT and USDT.
+     */
+    private Map<String, BigDecimal> wheelEvByAsset() {
+        Map<String, BigDecimal> totals = new LinkedHashMap<>();
+        for (Map<String, Object> row : wheelTiers()) {
+            if (!truthy(row.get("real"))) continue;
+            String rawKind = row.get("kind") == null ? "" : String.valueOf(row.get("kind")).trim();
+            String asset = rawKind.isEmpty() ? "UNKNOWN" : rawKind.toUpperCase(Locale.ROOT);
+            BigDecimal ev = parseDecimal(String.valueOf(row.get("amount")), BigDecimal.ZERO)
+                    .multiply(parseDecimal(String.valueOf(row.get("prob")), BigDecimal.ZERO))
+                    .divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP);
+            totals.merge(asset, ev, BigDecimal::add);
+        }
+        return totals;
+    }
+
     private BigDecimal wheelEvUsd() {
-        BigDecimal value = wheelTiers().stream()
-                .filter(row -> truthy(row.get("real")))
-                .map(row -> parseDecimal(String.valueOf(row.get("amount")), BigDecimal.ZERO)
-                        .multiply(parseDecimal(String.valueOf(row.get("prob")), BigDecimal.ZERO))
-                        .divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP))
-                .reduce(BigDecimal.ZERO, BigDecimal::add)
-                .setScale(2, RoundingMode.HALF_UP)
-                .stripTrailingZeros();
+        Map<String, BigDecimal> byAsset = wheelEvByAsset();
+        BigDecimal value = byAsset.getOrDefault("USDT",
+                byAsset.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add)).stripTrailingZeros();
         return new BigDecimal(value.toPlainString());
     }
 

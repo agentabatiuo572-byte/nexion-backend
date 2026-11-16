@@ -836,6 +836,13 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             """)
     BigDecimal activeWheelProbabilitySum();
 
+    /** Real persisted spins for one wheel day; the same column the wheel itself enforces its daily limits on. */
+    @Select("""
+            SELECT COUNT(1) FROM nx_growth_wheel_spin
+             WHERE spin_date = #{spinDate} AND is_deleted = 0
+            """)
+    long countWheelSpinsOnDate(@Param("spinDate") java.time.LocalDate spinDate);
+
     @Select("SELECT lock_key FROM nx_admin_operation_mutex WHERE lock_key = 'H4_WHEEL' FOR UPDATE")
     String lockWheelMutation();
 
