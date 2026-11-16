@@ -590,6 +590,10 @@ public class OpsNovaService {
         if (!"DRAFT".equalsIgnoreCase(current.get().status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_TEMPLATE_NOT_DRAFT");
         }
+        if (request.translations() == null && businessChannelWithoutVariables(normalizedChannel)
+                && carriesTranslationPlaceholder(current.get())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
+        }
         boolean updatedInDatabase = novaRepository.updateTemplateIfCurrent(
                 current.get(), request.name().trim(), request.cta().trim(), request.version().trim(),
                 request.titleZh().trim(), request.bodyZh().trim(), request.titleVi().trim(), request.bodyVi().trim(),
@@ -1008,7 +1012,13 @@ public class OpsNovaService {
     private boolean carriesPlaceholder(NovaTemplateView template) {
         return !placeholders(template.titleZh()).isEmpty() || !placeholders(template.bodyZh()).isEmpty()
                 || !placeholders(template.titleVi()).isEmpty() || !placeholders(template.bodyVi()).isEmpty()
-                || !placeholders(template.titleEn()).isEmpty() || !placeholders(template.bodyEn()).isEmpty();
+                || !placeholders(template.titleEn()).isEmpty() || !placeholders(template.bodyEn()).isEmpty()
+                || carriesTranslationPlaceholder(template);
+    }
+
+    private boolean carriesTranslationPlaceholder(NovaTemplateView template) {
+        return template.translations().values().stream().anyMatch(value ->
+                !placeholders(value.title()).isEmpty() || !placeholders(value.body()).isEmpty());
     }
 
     private boolean hasCompleteLocalizedContent(NovaTemplateView template) {
