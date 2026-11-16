@@ -1412,14 +1412,17 @@ public class OpsTeamService implements AuditReplayable {
         if (guard != null) {
             return guard;
         }
+        // The writer trims the key before it writes, so the receipt has to bind the same canonical key;
+        // otherwise a key sent with surrounding whitespace writes successfully without an origin.
+        String bindingKey = request.key() == null ? null : request.key().trim();
         return executeBound(
                 "F_TEAM_CONFIG_UPDATE",
                 idempotencyKey,
                 request.expectedMaterialRevision() == null
                         ? requestHash("config", request.key(), request.value(), request.reason(), actor(request.operator()))
                         : requestHash("config", request.key(), request.value(), request.reason(), actor(request.operator()), request.expectedMaterialRevision()),
-                resolveReadAuthority(request.key()),
-                request.key(),
+                resolveReadAuthority(bindingKey),
+                bindingKey,
                 () -> updateConfigInternal(idempotencyKey, request));
     }
 
