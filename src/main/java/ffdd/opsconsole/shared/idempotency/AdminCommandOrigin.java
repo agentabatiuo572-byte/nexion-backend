@@ -54,6 +54,10 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (target == null && a3PlatformParamScope(scope)) {
             target = scope.substring("A3_PLATFORM_PARAM:".length());
         }
+        // The A4 scope suffix is the canonical server identity (event parameter key, event name, event id),
+        // so it wins over the raw path variable whichever alias the caller used.
+        String canonicalA4Target = a4Target(scope);
+        if (canonicalA4Target != null) target = canonicalA4Target;
         // A collection route is not an object identity. It must never lock unrelated objects.
         if (target != null && target.length() > 512) target = null;
         if (targets.isEmpty() && target != null) targets = List.of(new Target(
@@ -91,6 +95,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (i4TrustWrite(scope)) return "content_i4_read";
         if (h9CommandScope(scope)) return "growth_h9_read";
         if (a3PlatformParamScope(scope)) return null; // Bound per canonical key by executeBound.
+        if (a4CommandScope(scope)) return "platform_a4_read";
         if (userDetailScope(scope)) return "user_c1hub_read";
         if (e3TradeinScope(scope)) return null; // Bound per entry (E3 or C2) by executeBound.
         if (scope.startsWith("F1_VRANK_")) return "network_f1_read";
@@ -121,10 +126,30 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || j4PlaybookWrite(scope)
                 || h9CommandScope(scope)
                 || a3PlatformParamScope(scope)
+                || a4CommandScope(scope)
                 || userDetailScope(scope)
                 || e3TradeinScope(scope)
                 || fCommandScope(scope)
                 || "A2_COMMAND".equals(scope) || "L_BI_REPORT_CREATE".equals(scope) || scope.startsWith("L_BI_REPORT_ACTION"));
+    }
+
+    /**
+     * The three A4 writes that are still direct: one event parameter, one lifecycle transition, one H3 redrive.
+     * Schema, property and domain-extension writes are not here: they only run inside the A2 approval replay,
+     * whose own command is A2_COMMAND, and a nested sub-record is not a command an operator issued.
+     */
+    public static boolean a4CommandScope(String scope) {
+        return scope != null && (scope.startsWith("A4_PARAM:") || scope.startsWith("A4_EVENT_LIFECYCLE:")
+                || scope.startsWith("A4_H3_OUTBOX_REDRIVE:"));
+    }
+
+    /** Canonical server-side identity of the A4 command, taken from the scope the service itself built. */
+    private static String a4Target(String scope) {
+        if (scope == null) return null;
+        if (scope.startsWith("A4_PARAM:")) return scope.substring("A4_PARAM:".length());
+        if (scope.startsWith("A4_EVENT_LIFECYCLE:")) return scope.substring("A4_EVENT_LIFECYCLE:".length());
+        if (scope.startsWith("A4_H3_OUTBOX_REDRIVE:")) return scope.substring("A4_H3_OUTBOX_REDRIVE:".length());
+        return null;
     }
 
     /** Only the four J4 writes that stay inside the transaction: config records, a drill record, a cancel flag. */
