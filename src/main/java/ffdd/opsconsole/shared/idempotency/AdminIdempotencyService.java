@@ -81,6 +81,13 @@ public class AdminIdempotencyService {
 
     public record RecoveryResult<T>(RecoveryStatus status, T response) {}
 
+    public record ActiveReceipt(long recordId, String requestHash) {}
+
+    /** Locates an unexpired successful receipt without returning its response. */
+    public ActiveReceipt activeReceipt(String scope, String idempotencyKey) {
+        return transactionExecutor.activeReceipt(normalizeScope(scope), normalizeIdempotencyKey(idempotencyKey));
+    }
+
     private <T> T execute(String scope, String idempotencyKey, String requestHash, Class<T> responseType,
                           Supplier<T> action, boolean retainSuccess) {
         return execute(scope, idempotencyKey, requestHash, responseType, action, retainSuccess, false);

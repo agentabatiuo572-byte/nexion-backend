@@ -14,6 +14,19 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 public interface AuditLogMapper extends BaseMapper<AuditLogEntity> {
+    @Select("""
+            SELECT DISTINCT actor_id FROM nx_audit_log
+             WHERE is_deleted=0 AND actor_type='ADMIN' AND result='SUCCESS'
+               AND action='K4_SCORE_BATCH_RECOMPUTED'
+               AND BINARY JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$._adminCommand.recordId'))=CAST(#{recordId} AS CHAR)
+               AND BINARY JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$._adminCommand.scope'))=BINARY #{scope}
+               AND BINARY JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$._adminCommand.commandKey'))=BINARY #{key}
+               AND BINARY JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$._adminCommand.requestHash'))=BINARY #{hash}
+             LIMIT 2
+            """)
+    List<Long> findK4BatchRecomputeOwners(@Param("recordId") long recordId, @Param("scope") String scope,
+                                           @Param("key") String key, @Param("hash") String hash);
+
     /** Exact durable command identity; retention may move the audit into its cold payload. */
     @Select("""
             SELECT operationId,
