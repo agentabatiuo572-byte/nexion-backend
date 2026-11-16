@@ -54,6 +54,14 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (target == null && a3PlatformParamScope(scope)) {
             target = scope.substring("A3_PLATFORM_PARAM:".length());
         }
+        if (target == null && a3FeatureFlagScope(scope)) {
+            target = "feature." + scope.substring("A3_FEATURE_FLAG:".length());
+        }
+        if (target == null && "A3_PLATFORM_EXPERIENCE".equals(scope)) {
+            // The experience update writes several platform.experience.* keys in one command; its
+            // canonical object is the experience configuration command, not an arbitrary one key.
+            target = "A3_PLATFORM_EXPERIENCE";
+        }
         // The A4 scope suffix is the canonical server identity (event parameter key, event name, event id),
         // so it wins over the raw path variable whichever alias the caller used.
         String canonicalA4Target = a4Target(scope);
@@ -94,6 +102,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (java.util.Set.of("I4_DISCLOSURE_PUBLISH", "I4_GATE_ADJUST").contains(scope)) return "content_i5_read";
         if (i4TrustWrite(scope)) return "content_i4_read";
         if (h9CommandScope(scope)) return "growth_h9_read";
+        if (a3FeatureFlagScope(scope) || "A3_PLATFORM_EXPERIENCE".equals(scope)) return "platform_a3_read";
         if (a3PlatformParamScope(scope)) return null; // Bound per canonical key by executeBound.
         if (a4CommandScope(scope)) return "platform_a4_read";
         if (userDetailScope(scope)) return "user_c1hub_read";
@@ -125,6 +134,8 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || scope.startsWith("I1_COPY_") || scope.startsWith("I2_NOVA_")
                 || j4PlaybookWrite(scope)
                 || h9CommandScope(scope)
+                || a3FeatureFlagScope(scope)
+                || "A3_PLATFORM_EXPERIENCE".equals(scope)
                 || a3PlatformParamScope(scope)
                 || a4CommandScope(scope)
                 || userDetailScope(scope)
@@ -181,6 +192,13 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
     public static boolean a3PlatformParamScope(String scope) {
         if (scope == null || scope.length() > 96 || !scope.startsWith("A3_PLATFORM_PARAM:")) return false;
         String key = scope.substring("A3_PLATFORM_PARAM:".length());
+        return key.matches("[A-Za-z0-9_.-]{1,80}");
+    }
+
+    /** The A3 feature flag command uses the feature definition key, not the physical feature.* config key. */
+    public static boolean a3FeatureFlagScope(String scope) {
+        if (scope == null || scope.length() > 96 || !scope.startsWith("A3_FEATURE_FLAG:")) return false;
+        String key = scope.substring("A3_FEATURE_FLAG:".length());
         return key.matches("[A-Za-z0-9_.-]{1,80}");
     }
 
