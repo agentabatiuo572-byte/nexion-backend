@@ -12,6 +12,7 @@ import ffdd.opsconsole.risk.domain.RiskScoreOverrideView;
 import ffdd.opsconsole.risk.domain.RiskWithdrawCandidateView;
 import ffdd.opsconsole.risk.infrastructure.RiskDecisionEntity;
 import java.util.List;
+import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -1536,6 +1537,48 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
              ORDER BY FIELD(r.view_key,'trial','tradein','gift','board'), r.id ASC
             """)
     List<RiskArbitrageRowRecord> arbitrageRows();
+
+    /** Raw welcome-gift amounts behind a K2 gift row; no ROUND and no blocked-gift fabrication. */
+    @Select("""
+            SELECT CONCAT('K2-GIFT-C', LEFT(SHA2(cluster.cluster_id, 256), 40)) AS rowId,
+                   SUM(settlement.newcomer_usdt) AS usdtRaw,
+                   SUM(settlement.newcomer_nex) AS nexRaw,
+                   COUNT(DISTINCT settlement.id) AS settledCount
+              FROM nx_admin_risk_multi_account_cluster cluster
+              JOIN nx_referral_reward_settlement settlement
+                ON settlement.is_deleted = 0
+               AND UPPER(settlement.status) = 'SETTLED'
+              JOIN nx_user invited
+                ON invited.id = settlement.invited_user_id
+               AND invited.is_deleted = 0
+               AND JSON_VALID(cluster.nodes_json) = 1
+               AND JSON_SEARCH(cluster.nodes_json, 'one',
+                       CONCAT('U', LPAD(invited.id,
+                           GREATEST(8, CHAR_LENGTH(CAST(invited.id AS CHAR))), '0'))) IS NOT NULL
+             WHERE cluster.is_deleted = 0
+               AND cluster.nodes_json IS NOT NULL
+             GROUP BY cluster.cluster_id
+            """)
+    List<Map<String, Object>> arbitrageGiftAmounts();
+
+    /** Raw current-week USDT behind a K2 board row, read from the same snapshot projection. */
+    @Select("""
+            SELECT r.row_id AS rowId, MAX(s.cumulative_usdt) AS usdtRaw
+              FROM nx_admin_risk_arbitrage_row r
+              JOIN nx_user u
+                ON u.is_deleted = 0
+               AND CONCAT('U', LPAD(u.id,
+                       GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')) = r.cell1
+              JOIN nx_risk_k2_leaderboard_snapshot s
+                ON s.user_id = u.id
+               AND s.is_deleted = 0
+               AND s.period_type = 'week'
+               AND s.period_key = DATE_FORMAT(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.WEEK_DATE + """
+                   , '%Y-%m-%d')
+             WHERE r.view_key = 'board' AND r.is_deleted = 0
+             GROUP BY r.row_id
+            """)
+    List<Map<String, Object>> arbitrageBoardAmounts();
 
     @Select("""
             SELECT r.row_id AS rowId,r.view_key AS viewKey,r.cluster_id AS clusterId,

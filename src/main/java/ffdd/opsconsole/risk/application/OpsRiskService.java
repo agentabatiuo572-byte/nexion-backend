@@ -948,7 +948,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         List<RiskArbitrageParamView> currentParams = riskRepository.arbitrageParams();
         int[] trialBoundary = trialCycleBoundary(currentParams);
         refreshK2AuthoritativeProjection(currentParams, trialBoundary);
-        List<RiskArbitrageRowView> rows = riskRepository.arbitrageRows();
+        List<RiskArbitrageRowView> rows = withK2StructuredFacts(riskRepository.arbitrageRows());
         Map<String, List<RiskArbitrageRowView>> byView = rows.stream()
                 .map(row -> {
                     if (!"board".equals(row.viewKey()) || row.cells().size() < 3) return row;
@@ -958,7 +958,8 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     cells.set(2, multiplier.group(1) + " 倍");
                     return new RiskArbitrageRowView(
                             row.rowId(), row.viewKey(), row.clusterId(), cells, row.level(), row.actions(),
-                            row.disposition(), row.version(), row.clusterStatus(), row.clusterVersion());
+                            row.disposition(), row.version(), row.clusterStatus(), row.clusterVersion(),
+                            row.structured());
                 })
                 .collect(Collectors.groupingBy(RiskArbitrageRowView::viewKey, LinkedHashMap::new, Collectors.toList()));
         List<RiskArbitrageViewGroup> views = k2Views(trialBoundary[1]).stream()
@@ -1000,6 +1001,81 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 "nx_admin_risk_arbitrage_row"));
         response.put("redlines", List.of("K2 only marks and emits signals", "account freezing is linked to K1 action chain", "welcome gift blocking never touches settled assets"));
         return ApiResult.ok(response);
+    }
+
+    private List<RiskArbitrageRowView> withK2StructuredFacts(List<RiskArbitrageRowView> rows) {
+        Map<String, Map<String, Object>> facts = k2StructuredFacts();
+        return rows.stream().map(row -> {
+            Map<String, Object> structured = new LinkedHashMap<>(row.structured());
+            Map<String, Object> rowFacts = facts.get(row.rowId());
+            if (rowFacts != null) structured.putAll(rowFacts);
+            if ("trial".equals(row.viewKey())) {
+                Integer eventCount = k2TrialEventCount(row);
+                if (eventCount != null) structured.put("trialStartEventCount", eventCount);
+                structured.put("trialCellMeaning", "TRIAL_STARTED_EVENT_COUNT_NOT_REWARD");
+                structured.put("trialEventBasis", "H2 trial.started event count materialized in cell2");
+            }
+            if (structured.isEmpty()) return row;
+            return new RiskArbitrageRowView(
+                    row.rowId(), row.viewKey(), row.clusterId(), row.cells(), row.level(), row.actions(),
+                    row.disposition(), row.version(), row.clusterStatus(), row.clusterVersion(), structured);
+        }).toList();
+    }
+
+    private Map<String, Map<String, Object>> k2StructuredFacts() {
+        Map<String, Map<String, Object>> facts = new LinkedHashMap<>();
+        for (Map<String, Object> raw : riskMapper.arbitrageGiftAmounts()) {
+            String rowId = String.valueOf(raw.get("rowId") == null ? "" : raw.get("rowId"));
+            if (!StringUtils.hasText(rowId)) continue;
+            Map<String, Object> fact = new LinkedHashMap<>();
+            List<Map<String, Object>> amounts = new ArrayList<>();
+            amounts.add(k2Amount("USDT", k2Decimal(raw.get("usdtRaw"))));
+            amounts.add(k2Amount("UVT", k2Decimal(raw.get("nexRaw"))));
+            fact.put("amounts", amounts);
+            fact.put("settledCount", k2Integer(raw.get("settledCount")));
+            fact.put("blockedCount", null);
+            fact.put("blockedCountAvailable", false);
+            fact.put("blockedCountBasis", "NO_PERSISTED_DENIED_GIFT_FACT");
+            fact.put("amountBasis", "nx_referral_reward_settlement.newcomer_usdt/newcomer_nex; SETTLED rows; same cluster membership as gift projection");
+            fact.put("cellMeaning", "SETTLED_GIFTS_WITH_LEGACY_BLOCKED_CELL");
+            facts.put(rowId, fact);
+        }
+        for (Map<String, Object> raw : riskMapper.arbitrageBoardAmounts()) {
+            String rowId = String.valueOf(raw.get("rowId") == null ? "" : raw.get("rowId"));
+            if (!StringUtils.hasText(rowId)) continue;
+            Map<String, Object> fact = new LinkedHashMap<>();
+            fact.put("amounts", List.of(k2Amount("USDT", k2Decimal(raw.get("usdtRaw")))));
+            fact.put("amountBasis", "nx_risk_k2_leaderboard_snapshot.cumulative_usdt; current business week; latest bucket");
+            fact.put("cellMeaning", "CURRENT_WEEK_CUMULATIVE_USDT");
+            facts.put(rowId, fact);
+        }
+        return facts;
+    }
+
+    private Map<String, Object> k2Amount(String currency, BigDecimal amountRaw) {
+        Map<String, Object> amount = new LinkedHashMap<>();
+        amount.put("currency", currency);
+        amount.put("amountRaw", amountRaw);
+        return amount;
+    }
+
+    private Integer k2TrialEventCount(RiskArbitrageRowView row) {
+        if (row.cells().size() < 2) return null;
+        Matcher matcher = Pattern.compile("^(\\d+)").matcher(row.cells().get(1).trim());
+        if (!matcher.find()) return null;
+        try { return Integer.parseInt(matcher.group(1)); }
+        catch (NumberFormatException invalid) { return null; }
+    }
+
+    private static BigDecimal k2Decimal(Object value) {
+        if (value == null) return null;
+        try { return new BigDecimal(String.valueOf(value)); }
+        catch (NumberFormatException invalid) { return null; }
+    }
+
+    private static Integer k2Integer(Object value) {
+        BigDecimal decimal = k2Decimal(value);
+        return decimal == null ? null : decimal.intValue();
     }
 
     private static List<K2ViewSpec> k2Views(int trialDays) {
