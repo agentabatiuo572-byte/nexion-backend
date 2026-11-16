@@ -52,7 +52,7 @@ public class AdminCommandInvestigationService {
 
     public record ReceiptStatus(String state) {}
 
-    private enum ReceiptFamily { A1_ACCOUNT, A1_PERMISSION, A6, A7, F4 }
+    private enum ReceiptFamily { A1_ACCOUNT, A1_PERMISSION, A1_AVATAR_CANCEL, A6, A7, F4 }
 
     /** Looks up server-owned bindings; a client need not reproduce a business service's hash algorithm. */
     @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
@@ -364,6 +364,7 @@ public class AdminCommandInvestigationService {
         if (scope == null || scope.length() > 96) return null;
         if (scope.matches("A1:ACCOUNT_(?:CREATE|PASSWORD_RESET):[1-9][0-9]{0,18}")) return ReceiptFamily.A1_ACCOUNT;
         if ("A1_PERMISSION_REGISTER".equals(scope)) return ReceiptFamily.A1_PERMISSION;
+        if (scope.matches("A1:AVATAR_CANCEL:[1-9][0-9]{0,18}:[a-f0-9-]{36}")) return ReceiptFamily.A1_AVATAR_CANCEL;
         if (scope.matches("A6_ROLE_(?:CREATE:[A-Za-z0-9_-]{1,64}|UPDATE:[1-9][0-9]{0,18})")) return ReceiptFamily.A6;
         if (scope.matches("A7_MENU_(?:CREATE:[A-Za-z0-9_-]{1,64}|UPDATE:[1-9][0-9]{0,18}|DELETE:[1-9][0-9]{0,18})")) return ReceiptFamily.A7;
         if (scope.matches("F4_MATERIAL_REVIEW:[1-9][0-9]{0,18}:[1-9][0-9]{0,18}")) return ReceiptFamily.F4;
@@ -372,7 +373,7 @@ public class AdminCommandInvestigationService {
 
     private void requireReceiptReader(ReceiptFamily family, long actor) {
         String authority = switch (family) {
-            case A1_ACCOUNT, A1_PERMISSION -> "platform_a1_read";
+            case A1_ACCOUNT, A1_PERMISSION, A1_AVATAR_CANCEL -> "platform_a1_read";
             case A6 -> "platform_a6_read";
             case A7 -> "platform_a7_read";
             case F4 -> "network_f4_read";
@@ -383,6 +384,10 @@ public class AdminCommandInvestigationService {
     private boolean receiptOwner(AdminIdempotencyRecordEntity original, ReceiptFamily family, long actor) {
         return switch (family) {
             case A1_ACCOUNT -> original.getScope().endsWith(":" + actor);
+            case A1_AVATAR_CANCEL -> {
+                String[] parts = original.getScope().split(":");
+                yield parts.length == 4 && Long.toString(actor).equals(parts[2]);
+            }
             case F4 -> {
                 String[] parts = original.getScope().split(":");
                 yield parts.length == 3 && Long.toString(actor).equals(parts[1]);
