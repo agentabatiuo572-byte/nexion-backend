@@ -655,6 +655,11 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
     }
 
     @Override
+    public List<String> listAllCourseVersionLabels(String courseId) {
+        return courseVersionMapper.listAllVersionLabels(courseId);
+    }
+
+    @Override
     public Optional<LearningCourseVersionView> findCourseVersion(String courseId, String version) {
         return Optional.ofNullable(courseVersionMapper.selectOne(new LambdaQueryWrapper<LearningCourseVersionEntity>()
                         .eq(LearningCourseVersionEntity::getCourseId, courseId)

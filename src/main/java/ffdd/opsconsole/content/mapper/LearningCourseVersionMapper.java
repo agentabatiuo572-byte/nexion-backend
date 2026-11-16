@@ -16,4 +16,12 @@ public interface LearningCourseVersionMapper extends BaseMapper<LearningCourseVe
              FOR UPDATE
             """)
     List<LearningCourseVersionEntity> lockCourseVersions(@Param("courseId") String courseId);
+
+    /** The unique key still reserves soft-deleted labels, so next-version reads must include them. */
+    @Select("""
+            SELECT version_label
+              FROM nx_learning_course_version
+             WHERE course_id = #{courseId}
+            """)
+    List<String> listAllVersionLabels(@Param("courseId") String courseId);
 }
