@@ -1962,7 +1962,11 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             SELECT s.user_no AS userNo,s.model_score AS modelScore,s.model_version AS modelVersion,
                    s.row_version AS rowVersion,
                    COALESCE(DATE_FORMAT(s.as_of,'%Y-%m-%d %H:%i:%s'),DATE_FORMAT(s.updated_at,'%Y-%m-%d %H:%i:%s')) AS asOf,
-                   s.updated_text AS updatedText
+                   s.updated_text AS updatedText,
+                   (SELECT h.contributions_json FROM nx_admin_risk_score_history h
+                     WHERE h.user_no=s.user_no AND h.is_deleted=0
+                       AND s.model_version=CONCAT('k4-v',h.model_version) AND h.model_score=s.model_score
+                     ORDER BY h.id DESC LIMIT 1) AS capturedContributionsJson
               FROM nx_admin_risk_score_user s
               JOIN nx_user u
                 ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
@@ -1999,7 +2003,11 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             SELECT s.user_no AS userNo,s.model_score AS modelScore,s.model_version AS modelVersion,
                    s.row_version AS rowVersion,
                    COALESCE(DATE_FORMAT(s.as_of,'%Y-%m-%d %H:%i:%s'),DATE_FORMAT(s.updated_at,'%Y-%m-%d %H:%i:%s')) AS asOf,
-                   s.updated_text AS updatedText
+                   s.updated_text AS updatedText,
+                   (SELECT h.contributions_json FROM nx_admin_risk_score_history h
+                     WHERE h.user_no=s.user_no AND h.is_deleted=0
+                       AND s.model_version=CONCAT('k4-v',h.model_version) AND h.model_score=s.model_score
+                     ORDER BY h.id DESC LIMIT 1) AS capturedContributionsJson
               FROM nx_admin_risk_score_user s
               JOIN nx_admin_risk_score_model m
                 ON m.state = 'active'
@@ -2112,6 +2120,31 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     long countScoreUsersNeedingProjection(@Param("modelVersion") long modelVersion);
 
     @Select("""
+            WITH withdrawal_by_asset AS (
+                SELECT w.user_id, w.asset,
+                       SUM(CASE WHEN w.created_at >= NOW()-INTERVAL 24 HOUR THEN 1 ELSE 0 END) AS count24h,
+                       SUM(CASE WHEN w.created_at >= NOW()-INTERVAL 24 HOUR THEN w.amount ELSE 0 END) AS amount24h,
+                       SUM(CASE WHEN w.created_at >= NOW()-INTERVAL 7 DAY THEN 1 ELSE 0 END) AS count7d,
+                       SUM(CASE WHEN w.created_at >= NOW()-INTERVAL 7 DAY THEN w.amount ELSE 0 END) AS amount7d,
+                       SUM(CASE WHEN w.created_at < NOW()-INTERVAL 7 DAY THEN 1 ELSE 0 END) AS baselineCount,
+                       SUM(CASE WHEN w.created_at < NOW()-INTERVAL 7 DAY THEN w.amount ELSE 0 END) AS baselineAmount,
+                       MAX(CASE WHEN w.created_at >= NOW()-INTERVAL 24 HOUR THEN w.amount ELSE NULL END) AS max24h
+                  FROM nx_withdrawal_order w
+                  JOIN nx_user evidence_user ON evidence_user.id = w.user_id
+                 WHERE CONCAT('U',LPAD(evidence_user.id,GREATEST(8,CHAR_LENGTH(CAST(evidence_user.id AS CHAR))),'0')) = #{userNo}
+                   AND w.is_deleted=0 AND w.created_at >= NOW()-INTERVAL 37 DAY
+                 GROUP BY w.user_id, w.asset
+            ), withdrawal_capture AS (
+                SELECT user_id, JSON_ARRAYAGG(JSON_OBJECT(
+                    'currency', asset,
+                    'count24h', count24h, 'amount24h', CAST(amount24h AS CHAR),
+                    'count7d', count7d, 'amount7d', CAST(amount7d AS CHAR),
+                    'baselineCount', baselineCount, 'baselineAmount', CAST(baselineAmount AS CHAR),
+                    'baselineDailyCount', CAST(baselineCount / 30.0 AS CHAR),
+                    'baselineDailyAmount', CAST(baselineAmount / 30.0 AS CHAR),
+                    'max24h', CAST(max24h AS CHAR))) AS assets
+                  FROM withdrawal_by_asset GROUP BY user_id
+            )
             SELECT CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')) AS userNo,
                    COALESCE((SELECT MAX(c.account_count)
                                FROM nx_admin_risk_multi_account_cluster c
@@ -2160,7 +2193,17 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                      AS anomalySignals,
                    EXISTS(SELECT 1 FROM nx_risk_signal s
                            WHERE s.user_id=u.id AND s.is_deleted=0 AND s.signal_type='TAMPER_DETECTED'
-                             AND s.created_at>=NOW()-INTERVAL 30 DAY) AS tamperDetected
+                             AND s.created_at>=NOW()-INTERVAL 30 DAY) AS tamperDetected,
+                   JSON_OBJECT(
+                       'source', 'nx_withdrawal_order', 'amountBasis', 'ASSET_REQUESTED_GROSS',
+                       'capturedAt', DATE_FORMAT(NOW(), '%Y-%m-%dT%H:%i:%s'), 'timeZone', 'Asia/Shanghai',
+                       'statusFilter', 'ALL', 'baselineDivisorDays', 30,
+                       'windows', JSON_OBJECT(
+                           '24h', JSON_OBJECT('fromInclusive', DATE_FORMAT(NOW()-INTERVAL 24 HOUR, '%Y-%m-%dT%H:%i:%s'), 'toExclusive', NULL),
+                           '7d', JSON_OBJECT('fromInclusive', DATE_FORMAT(NOW()-INTERVAL 7 DAY, '%Y-%m-%dT%H:%i:%s'), 'toExclusive', NULL),
+                           'baseline', JSON_OBJECT('fromInclusive', DATE_FORMAT(NOW()-INTERVAL 37 DAY, '%Y-%m-%dT%H:%i:%s'),
+                               'toExclusive', DATE_FORMAT(NOW()-INTERVAL 7 DAY, '%Y-%m-%dT%H:%i:%s'))),
+                       'assets', COALESCE((SELECT assets FROM withdrawal_capture WHERE user_id=u.id), JSON_ARRAY())) AS withdrawalEvidenceJson
               FROM nx_user u
              WHERE CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=#{userNo}
                AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
@@ -2725,7 +2768,8 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     }
 
     record ScoreUserRecord(
-            String userNo, Integer modelScore, String modelVersion, Long rowVersion, String asOf, String updatedText) {
+            String userNo, Integer modelScore, String modelVersion, Long rowVersion, String asOf, String updatedText,
+            String capturedContributionsJson) {
     }
 
     record ScoreUserSearchRecord(String userNo, Integer modelScore, String modelVersion, String updatedText,
@@ -2750,7 +2794,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             java.math.BigDecimal withdrawalBaselineDailyCount,
             java.math.BigDecimal withdrawalBaselineDailyAmount,
             java.math.BigDecimal maxWithdrawal24h,
-            Integer accountAgeDays, Integer anomalySignals, Boolean tamperDetected) {
+            Integer accountAgeDays, Integer anomalySignals, Boolean tamperDetected, String withdrawalEvidenceJson) {
     }
 
     record RiskParamRecord(String key, String name, String value, String unit, String sub, String note,

@@ -16,8 +16,22 @@ public record RiskScoreRawInput(
         java.math.BigDecimal maxWithdrawal24h,
         Integer accountAgeDays,
         Integer anomalySignals,
-        Boolean tamperDetected
+        Boolean tamperDetected,
+        java.util.Map<String, Object> withdrawalEvidence
 ) {
+    public RiskScoreRawInput(
+            String userNo, Integer multiAccountClusterSize, Boolean multiAccountFraud,
+            Integer arbitrageSignals, Boolean severeArbitrage,
+            Integer withdrawalCount24h, java.math.BigDecimal withdrawalAmount24h,
+            Integer withdrawalCount7d, java.math.BigDecimal withdrawalAmount7d,
+            java.math.BigDecimal withdrawalBaselineDailyCount, java.math.BigDecimal withdrawalBaselineDailyAmount,
+            java.math.BigDecimal maxWithdrawal24h, Integer accountAgeDays, Integer anomalySignals, Boolean tamperDetected) {
+        this(userNo, multiAccountClusterSize, multiAccountFraud, arbitrageSignals, severeArbitrage,
+                withdrawalCount24h, withdrawalAmount24h, withdrawalCount7d, withdrawalAmount7d,
+                withdrawalBaselineDailyCount, withdrawalBaselineDailyAmount, maxWithdrawal24h,
+                accountAgeDays, anomalySignals, tamperDetected, null);
+    }
+
     public RiskScoreRawInput(
             String userNo, Integer multiAccountClusterSize, Boolean multiAccountFraud,
             Integer arbitrageSignals, Boolean severeArbitrage,

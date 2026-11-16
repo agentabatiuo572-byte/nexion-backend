@@ -660,6 +660,11 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         }
         Optional<RiskScoreOverrideView> override = Optional.ofNullable(mapper.activeScoreOverride(row.userNo()));
         int effectiveScore = override.map(RiskScoreOverrideView::overrideScore).orElse(row.modelScore());
+        Map<String, Map<String, Object>> captured = new java.util.HashMap<>();
+        for (RiskScoreContributionView contribution : parseMap(row.capturedContributionsJson(),
+                new TypeReference<List<RiskScoreContributionView>>() {}, List.<RiskScoreContributionView>of())) {
+            if (contribution.structured() != null) captured.put(contribution.dimKey(), contribution.structured());
+        }
         return Optional.of(new RiskScoreUserView(
                 row.userNo(),
                 row.modelScore(),
@@ -674,7 +679,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                 mapper.scoreContributions(row.userNo()).stream()
                         .map(c -> new RiskScoreContributionView(
                                 c.dimKey(), c.name(), c.hit(), c.evidence(),
-                                c.subScore(), c.weightPct(), c.points()))
+                                c.subScore(), c.weightPct(), c.points(), captured.get(c.dimKey())))
                         .toList(),
                 List.of()));
     }
@@ -774,7 +779,8 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                 row.withdrawalCount7d(), row.withdrawalAmount7d(),
                 row.withdrawalBaselineDailyCount(), row.withdrawalBaselineDailyAmount(), row.maxWithdrawal24h(),
                 row.accountAgeDays(),
-                row.anomalySignals(), row.tamperDetected()));
+                row.anomalySignals(), row.tamperDetected(),
+                parseMap(row.withdrawalEvidenceJson(), new TypeReference<Map<String, Object>>() {}, null)));
     }
 
     @Override
