@@ -188,7 +188,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             AS simState, sim.last_error AS simLastError, sim.next_action_at AS simNextActionAt,
             current_sim.task_no AS simTaskNo, current_sim.task_name AS simTaskName,
             current_sim.task_class AS simTaskClass, current_sim.started_at AS simTaskStartedAt,
-            current_sim.due_at AS simTaskDueAt
+            current_sim.due_at AS simTaskDueAt, d.ownership_status AS ownershipStatus
             """;
 
     @Select("SELECT COUNT(*) FROM nx_user_device WHERE is_deleted = 0")
