@@ -2065,7 +2065,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 .orElse(BigDecimal.ZERO);
     }
 
-    /** The management G3 read keeps a missing price distinct from a real numeric zero. */
+    /** The management G3 read exposes only an authoritative positive price. */
     private BigDecimal currentPriceOrNull() {
         return marketRepository.latestNexUsdtPrice().filter(price -> price.signum() > 0).orElse(null);
     }
