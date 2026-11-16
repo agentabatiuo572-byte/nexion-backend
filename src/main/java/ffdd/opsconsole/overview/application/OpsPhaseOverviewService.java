@@ -50,6 +50,9 @@ public class OpsPhaseOverviewService {
                 ? current
                 : requireSnapshot(growthRhythmFacade.snapshotAtMonth(selectedMonth));
         Distribution distribution = distribution(current.totalMonths(), filter.phase());
+        Map<String, String> phaseNames = GrowthRhythmSnapshot.phaseNames();
+        distribution.phases().forEach(row -> row.put("phaseName", phaseNames.get(row.get("phase"))));
+        distribution.months().forEach(row -> row.put("phaseName", phaseNames.get(row.get("phase"))));
         Map<String, Object> response = linked(
                 "available", distribution.totalUsers() > 0,
                 "reason", distribution.totalUsers() > 0 ? "" : "B4_PHASE_DISTRIBUTION_EMPTY",
@@ -57,10 +60,13 @@ public class OpsPhaseOverviewService {
                         "granularity", filter.granularity(),
                         "month", selectedMonth,
                         "phase", valueOrAll(filter.phase()),
+                        "phaseName", filter.phase() == null ? null : phaseNames.get(filter.phase()),
                         "monthOptions", monthOptions(current.totalMonths()),
-                        "phaseOptions", List.of("P1", "P2", "P3", "P4", "P5", "P6")),
+                        "phaseOptions", List.of("P1", "P2", "P3", "P4", "P5", "P6"),
+                        "phaseNames", phaseNames),
                 "rhythm", linked(
                         "currentPhase", current.currentPhase(),
+                        "currentPhaseName", phaseNames.get(current.currentPhase()),
                         "currentMonth", current.currentMonth(),
                         "totalMonths", current.totalMonths(),
                         "phaseProgressPct", current.phaseProgressPct()),
