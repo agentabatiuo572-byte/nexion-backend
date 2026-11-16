@@ -44,7 +44,7 @@ public class SupportAnalyticsPrivateQueryService {
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> query(Map<String,List<String>> raw) {
         try {return execute(raw);}
-        catch(DataAccessException ex){LOG.warn("Support analytics query read failed",ex);throw unavailable();}
+        catch(DataAccessException ex){throw unavailable();}
     }
     private Map<String,Object> execute(Map<String,List<String>> raw) {
         var q=SupportAnalyticsQueryRequest.fromParameters(raw).normalize(CURRENCIES,SORTS);
@@ -62,14 +62,13 @@ public class SupportAnalyticsPrivateQueryService {
             sources=readSources(scope,c,grants,groups);
             version=SupportAnalyticsQueryVersion.evaluate(q,evidence(q,evaluation,sources));
         } catch(DataAccessException | IllegalArgumentException | IllegalStateException | NullPointerException ex) {
-            LOG.warn("Support analytics source evaluation failed",ex);
             reauthorize(q,scope,grants,groups);throw unavailable();
         } catch(BizException ex) {
-            reauthorize(q,scope,grants,groups);if(ex.getCode()==503){LOG.warn("Support analytics source unavailable",ex);throw unavailable();}throw ex;
+            reauthorize(q,scope,grants,groups);if(ex.getCode()==503){throw unavailable();}throw ex;
         }
         // Reauthorization always precedes version comparison, including unverifiable/failed sources.
         reauthorize(q,scope,grants,groups);
-        if(version.status()==SupportAnalyticsQueryVersion.Status.FAILED){LOG.warn("Support analytics source version failed");throw unavailable();}
+        if(version.status()==SupportAnalyticsQueryVersion.Status.FAILED){throw unavailable();}
         try {SupportAnalyticsQueryVersion.requireExpected(q,version);}
         catch(SupportAnalyticsQueryVersion.VersionConflict ex){throw new BizException(409,ex.getMessage());}
         if(q.filter()!=ServiceFilter.ALL && q.filter()!=ServiceFilter.WINDOW_ACTIVE && sources.taskRead()!=SupportAnalyticsQueryVersion.ReadState.COMPLETE)throw unavailable();
@@ -110,7 +109,13 @@ public class SupportAnalyticsPrivateQueryService {
     }
     private static Set<PermissionStamp> grantKeys(List<PermissionStamp> rows) {return new HashSet<>(rows);}
     private static <T> List<T> checked(List<T> rows) {if(rows==null || rows.stream().anyMatch(Objects::isNull))throw unavailable();return List.copyOf(rows);}
-    private static BizException unavailable(){return new BizException(503,"SUPPORT_ANALYTICS_SOURCE_UNAVAILABLE");}
+    private static BizException unavailable(){return unavailable("SUPPORT_ANALYTICS_SOURCE_UNAVAILABLE");}
+    private static BizException unavailable(String reason){
+        LOG.warn("Support analytics query unavailable reason={}",reason);
+        return new BizException(503,reason);
+    }
+    private static BizException historyIncomplete(){return unavailable("SUPPORT_ANALYTICS_HISTORY_INCOMPLETE");}
+    private static BizException detailMismatch(){return unavailable("SUPPORT_ANALYTICS_DETAIL_MISMATCH");}
     private static boolean bool(Integer v){return Integer.valueOf(1).equals(v);}
     private static Boolean nullableBool(Integer v){if(v!=null && v!=0 && v!=1)throw unavailable();return v==null?null:v==1;}
     private static void validateView(Normalized q) {
@@ -135,9 +140,9 @@ public class SupportAnalyticsPrivateQueryService {
         var facts=new ArrayList<Detail>();
         Money expected;
         if(q.view()==View.NET_CONTRIBUTIONS) {
-            if(c.netRead==null || !c.netRead.complete(c.financialIds))throw unavailable();
+            if(c.netRead==null || !c.netRead.complete(c.financialIds))throw historyIncomplete();
             expected=evaluation.result().financialSummary().currencies().stream().filter(v->q.currency().equals(v.currency()))
-                .map(CurrencyTotals::net).findFirst().orElseThrow(SupportAnalyticsPrivateQueryService::unavailable);
+                .map(CurrencyTotals::net).findFirst().orElseThrow(SupportAnalyticsPrivateQueryService::historyIncomplete);
             var groups=evaluation.result().groups().stream().map(GroupAggregate::groupId).collect(java.util.stream.Collectors.toSet());
             var events=new LinkedHashMap<String,Detail>();
             for(var change:c.netRead.periodChanges(c.financialIds,q.currency(),evaluation.result().query(),c.scope,groups,null)) {
@@ -152,7 +157,7 @@ public class SupportAnalyticsPrivateQueryService {
         } else {
             var kind=q.view()==View.FIRST_DEPOSITS?SupportPaymentFacts.Kind.DEPOSIT:SupportPaymentFacts.Kind.DEVICE_PURCHASE;
             expected=evaluation.result().financialSummary().firstSources().stream().filter(v->q.currency().equals(v.currency()))
-                .map(v->kind==SupportPaymentFacts.Kind.DEPOSIT?v.deposits():v.purchases()).findFirst().orElseThrow(SupportAnalyticsPrivateQueryService::unavailable);
+                .map(v->kind==SupportPaymentFacts.Kind.DEPOSIT?v.deposits():v.purchases()).findFirst().orElseThrow(SupportAnalyticsPrivateQueryService::historyIncomplete);
             for(var fact:c.selected) {
                 var first=c.first.get(fact.customerId());var history=c.firstHistory.get(fact.customerId());
                 if(fact.kind()!=kind || !q.currency().equals(fact.currency()) || first==null || !first.factId().equals(fact.factId())
@@ -175,8 +180,10 @@ public class SupportAnalyticsPrivateQueryService {
                 "kind",fact.kind(),"currency",q.currency(),"amount",decimal(fact.amount()),"succeededAt",time(fact.at()),
                 "agentId",fact.agentId()==null?null:fact.agentId().toString(),"groupId",fact.groupId()==null?null:fact.groupId().toString())));
         }
-        if(expected.confirmedAmount()==null || total.compareTo(expected.confirmedAmount())!=0)throw unavailable();
-        if(q.view()!=View.NET_CONTRIBUTIONS && !Objects.equals(expected.confirmedEvents(),(long)facts.size()))throw unavailable();
+        if(expected.confirmedAmount()==null)throw historyIncomplete();
+        if(total.compareTo(expected.confirmedAmount())!=0)throw detailMismatch();
+        if(q.view()!=View.NET_CONTRIBUTIONS && expected.confirmedEvents()==null)throw historyIncomplete();
+        if(q.view()!=View.NET_CONTRIBUTIONS && !Objects.equals(expected.confirmedEvents(),(long)facts.size()))throw detailMismatch();
         return map("currency",q.currency(),"status",expected.status().name(),"observedAmount",decimal(expected.observedAmount()),
             "totalAmount",decimal(total),"visibleAmount",decimal(visible),"restrictedAmount",decimal(total.subtract(visible)),
             "totalCount",(long)facts.size(),"visibleCount",(long)rows.size(),"restrictedCount",(long)facts.size()-rows.size(),
