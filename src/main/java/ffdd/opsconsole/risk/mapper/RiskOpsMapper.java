@@ -926,7 +926,8 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                        rd.reason,
                        CONCAT(h.dimension, '规则命中:', COALESCE(r.condition_text, h.rule_id), ' -> ', h.action)
                    ) AS reason,
-                   DATE_FORMAT(h.created_at, '%Y-%m-%d %H:%i:%s') AS timeText
+                   DATE_FORMAT(h.created_at, '%Y-%m-%d %H:%i:%s') AS timeText,
+                   r.condition_text AS conditionText
               FROM nx_admin_risk_withdraw_hit h
               LEFT JOIN nx_withdrawal_order w
                 ON w.withdrawal_no = h.withdrawal_no AND w.is_deleted = 0
@@ -960,7 +961,8 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                        rd.reason,
                        CONCAT(h.dimension, '规则命中:', COALESCE(r.condition_text, h.rule_id), ' -> ', h.action)
                    ) AS reason,
-                   DATE_FORMAT(h.created_at, '%Y-%m-%d %H:%i:%s') AS timeText
+                   DATE_FORMAT(h.created_at, '%Y-%m-%d %H:%i:%s') AS timeText,
+                   r.condition_text AS conditionText
               FROM nx_admin_risk_withdraw_hit h
               LEFT JOIN nx_withdrawal_order w
                 ON w.withdrawal_no = h.withdrawal_no AND w.is_deleted = 0
