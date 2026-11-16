@@ -1,6 +1,7 @@
 -- A1-BE-07: retain the original command key on new F4 material-review history rows.
--- Manual migration only: this file is intentionally not registered in
--- scripts/apply_startup_schema_migrations.ps1, and it does not backfill old rows.
+-- Registered after the F4 material tables in the startup migration list.
+-- The managed release migration scanner also discovers this forward migration.
+-- Existing review rows are not backfilled.
 SET @f4_review_command_key_exists = (
     SELECT COUNT(*) FROM information_schema.columns
      WHERE table_schema = DATABASE()

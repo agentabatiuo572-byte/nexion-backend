@@ -250,7 +250,12 @@ public class PromotionAdminService {
             require(request.get("expectedSourceVersion")!=null,"PROMOTION_CONCURRENT_CHANGE");
             require(number(source)==number(request.get("expectedSourceVersion")),"PROMOTION_CONCURRENT_CHANGE");
         }
-        var draft=parse(db.version(id,number(source),false).get("contract_json"));
+        var sourceRow=db.version(id,number(source),false);
+        if(copy){
+            require(request.get("expectedSourceRevision")!=null,"PROMOTION_CONCURRENT_CHANGE");
+            require(number(sourceRow.get("revision"))==number(request.get("expectedSourceRevision")),"PROMOTION_CONCURRENT_CHANGE");
+        }
+        var draft=parse(sourceRow.get("contract_json"));
         if(copy)return createDraft(draft);
         require(!Set.of("ENDED","ARCHIVED").contains(commandState(p))&&p.get("draft_version")==null,"PROMOTION_DRAFT_EXISTS_OR_READ_ONLY");
         long version=db.count("SELECT COALESCE(MAX(version),0)+1 FROM nx_promotion_version WHERE activity_id=?",id);insertVersion(id,version,draft);
