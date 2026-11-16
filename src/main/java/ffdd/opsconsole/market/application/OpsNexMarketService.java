@@ -768,8 +768,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "monthlyCapacity", parseRepurchaseNumber(readText("G.genesis.lottery.monthlyCapacity", "100000"), BigDecimal.ZERO),
                 "ticketsIssuedThisMonth", issuedTickets,
                 "source", "G.genesis.lottery.monthlyCapacity"));
+        Map<String, String> pendingByKey = pendingRepurchaseParamTickets();
         response.put("params", product.map(value -> repurchaseParamDefs().stream()
-                .map(def -> repurchaseParamRow(def, value))
+                .map(def -> repurchaseParamRow(def, value,
+                        pendingByKey.containsKey(def.key()), pendingByKey.get(def.key())))
                 .toList())
                 .orElse(List.of()));
         response.put("phaseGate", map(
@@ -2840,7 +2842,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         };
     }
 
-    private Map<String, Object> repurchaseParamRow(RepurchaseParamDef def, StakingProductView product) {
+    private Map<String, Object> repurchaseParamRow(
+            RepurchaseParamDef def, StakingProductView product,
+            boolean pendingApproval, String pendingOperationId) {
         String value = repurchaseValue(def, product);
         return map(
                 "key", def.key(),
@@ -2852,7 +2856,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "note", def.note(),
                 "newOnly", def.newOnly(),
                 "b1RedlineTriggered", def.kind() == RepurchaseParamKind.PERCENT || def.kind() == RepurchaseParamKind.MULTIPLIER,
-                "valueType", def.valueType());
+                "valueType", def.valueType(),
+                "pendingApproval", pendingApproval,
+                "pendingOperationId", StringUtils.hasText(pendingOperationId) ? pendingOperationId : null);
     }
 
     private String normalizeRepurchaseParamValue(RepurchaseParamDef def, String rawValue) {
@@ -3462,6 +3468,28 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         for (var lock : lockMapper.selectActiveTargetLocks("G", "exchange_param", authorizedKeys)) {
             // Keep the key even if a malformed row has a blank ticket: the active lock still blocks
             // the write, so the cap must say pending; the id stays null rather than being guessed.
+            pending.put(lock.targetId(), lock.ticketId());
+        }
+        return pending;
+    }
+
+    /**
+     * Active G7 lock tickets for only the exact repurchase parameters the caller may write.
+     * A reader without a parameter's write authority gets no pending flag or ticket for that key;
+     * another initiator, command payload and other objects' locks are never exposed. The lock row
+     * itself is the authority: a blank ticket still means pending, with a null operation id.
+     */
+    private Map<String, String> pendingRepurchaseParamTickets() {
+        Long adminId = parseAdminIdFromContext();
+        if (adminId == null) return Map.of();
+        Set<String> permissions = permissionCache.getPermissionCodes(adminId);
+        List<String> authorizedKeys = REPURCHASE_PARAM_PERMISSION.entrySet().stream()
+                .filter(entry -> permissions.contains(entry.getValue()))
+                .map(Map.Entry::getKey)
+                .toList();
+        if (authorizedKeys.isEmpty()) return Map.of();
+        Map<String, String> pending = new LinkedHashMap<>();
+        for (var lock : lockMapper.selectActiveTargetLocks("G", "repurchase_param", authorizedKeys)) {
             pending.put(lock.targetId(), lock.ticketId());
         }
         return pending;
