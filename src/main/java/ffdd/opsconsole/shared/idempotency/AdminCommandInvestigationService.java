@@ -345,6 +345,11 @@ public class AdminCommandInvestigationService {
                     && scope.substring("GROWTH:H9:DEVICE_RANK_UPDATE:".length()).toLowerCase(java.util.Locale.ROOT)
                             .equals(fact.getResourceId());
         }
+        if (AdminCommandOrigin.a3PlatformParamScope(scope)) {
+            return "A3_PLATFORM_PARAM".equals(fact.getResourceType())
+                    && "A3_PLATFORM_PARAM_CHANGED".equals(action)
+                    && scope.substring("A3_PLATFORM_PARAM:".length()).equals(fact.getResourceId());
+        }
         return Set.of("D2_WITHDRAWAL_CHAIN_CONFIRMED", "D2_WITHDRAWAL_REVIEW_APPROVE", "D2_WITHDRAWAL_REVIEW_REJECT",
                 "D2_WITHDRAWAL_REVIEW_REFUND", "D2_WITHDRAWAL_REVIEW_DELAY", "D2_WITHDRAWAL_REVIEW_FREEZE",
                 "D3_FORECAST_CONFIG_CHANGED", "D3_TREASURY_RESERVE_INJECTION", "D3_RECONCILIATION_EXPORTED", "D3_LIABILITIES_EXPORTED", "D3_SENSITIVE_EXPORT_A2_AUDITED",
@@ -535,6 +540,7 @@ public class AdminCommandInvestigationService {
         // Report actions bind the report's actual domain; requireReader checks that stored authority next.
         if (scope.startsWith("L_BI_REPORT_ACTION_")) return;
         if ("F_TEAM_CONFIG_UPDATE".equals(scope)) return; // exact per-key authority is stored on the original
+        if (AdminCommandOrigin.a3PlatformParamScope(scope)) return; // exact authority is stored on the original
         String authority = scope.startsWith("L_BI_") ? "bi_l1_read" : AdminCommandOrigin.readAuthority(scope);
         if (authority == null || !permissions.getPermissionCodes(actor).contains(authority)) throw denied();
     }
@@ -565,7 +571,8 @@ public class AdminCommandInvestigationService {
     }
 
     private void validateIdentity(String scope, String key, String hash, boolean requireHash) {
-        if (scope == null || !(scope.matches("[A-Z0-9_.:-]{1,96}") || AdminCommandOrigin.h9CommandScope(scope))
+        if (scope == null || !(scope.matches("[A-Z0-9_.:-]{1,96}")
+                || AdminCommandOrigin.h9CommandScope(scope) || AdminCommandOrigin.a3PlatformParamScope(scope))
                 || !AdminCommandOrigin.supported(scope)
                 || key == null || key.isBlank() || key.length() > 128 || !key.equals(key.trim())
                 || requireHash && hash == null || hash != null && !hash.matches("[a-fA-F0-9]{64}"))
