@@ -2067,7 +2067,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
 
     /** The management G3 read keeps a missing price distinct from a real numeric zero. */
     private BigDecimal currentPriceOrNull() {
-        return marketRepository.latestNexUsdtPrice().orElse(null);
+        return marketRepository.latestNexUsdtPrice().filter(price -> price.signum() > 0).orElse(null);
     }
 
     private BigDecimal deltaPercent(BigDecimal oldPrice, BigDecimal newPrice) {
