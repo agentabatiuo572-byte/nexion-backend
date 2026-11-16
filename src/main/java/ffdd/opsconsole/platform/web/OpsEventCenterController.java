@@ -141,7 +141,7 @@ public class OpsEventCenterController {
             String actor, String idempotencyKey, String reason, Integer expectedRetentionMonths) {
         a2RuntimePolicy.validateReason(reason);
         A4EventRetentionService.RetentionRun run = eventRetentionService.runNow(expectedRetentionMonths);
-        RetentionExecutionView view = new RetentionExecutionView(run.retentionMonths(), run.cutoff(), run.lockAcquired(),
+        RetentionExecutionView view = new RetentionExecutionView(run.retentionMonths(), run.evaluatedAt(), run.lockAcquired(),
                 0, 0, run.outboxRows(), run.behaviorFactRows());
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action("A4_EVENT_RETENTION_MANUAL_EXECUTED").resourceType("A4_EVENT_RETENTION")
@@ -149,6 +149,7 @@ public class OpsEventCenterController {
                 .result(run.lockAcquired() ? "SUCCESS" : "LOCKED").riskLevel("HIGH")
                 .detail(Map.ofEntries(Map.entry("reason", reason.trim()), Map.entry("idempotencyKey", idempotencyKey),
                         Map.entry("retentionMonths", view.retentionMonths()), Map.entry("evaluatedAt", view.evaluatedAt().toString()),
+                        Map.entry("cutoff", run.cutoff().toString()),
                         Map.entry("lockAcquired", view.lockAcquired()), Map.entry("archivedRows", 0), Map.entry("deletedRows", 0),
                         Map.entry("outboxRows", view.outboxRows()), Map.entry("behaviorFactRows", view.behaviorFactRows()),
                         Map.entry("idempotent", true), Map.entry("terminalOutboxOnly", true)))
@@ -174,13 +175,21 @@ public class OpsEventCenterController {
     private RetentionExecutionView retentionView(AuditLogRecord record) {
         try {
             Map<?, ?> detail = objectMapper.readValue(record.getDetailJson(), Map.class);
+            java.time.LocalDateTime evaluatedAt = java.time.LocalDateTime.parse(String.valueOf(detail.get("evaluatedAt")));
+            if (!detail.containsKey("cutoff") && !Boolean.FALSE.equals(detail.get("lockAcquired"))) {
+                // Historical successful manual rows put the cutoff in evaluatedAt. The audit row's own
+                // creation time is the remaining real execution-record time; never use the read clock.
+                evaluatedAt = record.getCreatedAt();
+            }
+            if (evaluatedAt == null) throw new IllegalArgumentException("A4_RETENTION_EXECUTION_TIME_MISSING");
             return new RetentionExecutionView(number(detail.get("retentionMonths")),
-                    java.time.LocalDateTime.parse(String.valueOf(detail.get("evaluatedAt"))),
+                    evaluatedAt,
                     Boolean.TRUE.equals(detail.get("lockAcquired")), number(detail.get("archivedRows")),
                     number(detail.get("deletedRows")), number(detail.get("outboxRows")),
                     number(detail.get("behaviorFactRows")));
         } catch (Exception ex) {
-            return null;
+            // A present but unreadable row is not the same as no manual run at all.
+            throw new BizException(500, "A4_RETENTION_RUN_UNREADABLE");
         }
     }
 

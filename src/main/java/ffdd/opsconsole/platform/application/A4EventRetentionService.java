@@ -51,7 +51,7 @@ public class A4EventRetentionService {
             throw new ffdd.opsconsole.shared.exception.BizException(409, "RETENTION_PARAMETERS_STALE");
         }
         if (!Integer.valueOf(1).equals(mapper.tryAcquireRetentionLock())) {
-            return new RetentionRun(months, evaluatedAt, 0, 0, false);
+            return new RetentionRun(months, evaluatedAt, evaluatedAt, 0, 0, false);
         }
         try {
             LocalDateTime cutoff = evaluatedAt.minusMonths(months);
@@ -68,7 +68,7 @@ public class A4EventRetentionService {
                             "outboxRows", outbox, "behaviorFactRows", behaviorFacts,
                             "terminalOutboxOnly", true, "idempotent", true))
                     .build());
-            return new RetentionRun(months, cutoff, outbox, behaviorFacts, true);
+            return new RetentionRun(months, evaluatedAt, cutoff, outbox, behaviorFacts, true);
         } finally {
             mapper.releaseRetentionLock();
         }
@@ -95,7 +95,13 @@ public class A4EventRetentionService {
     }
 
     public record RetentionRun(
-            int retentionMonths, LocalDateTime cutoff, int outboxRows, int behaviorFactRows, boolean lockAcquired) {
+            int retentionMonths, LocalDateTime evaluatedAt, LocalDateTime cutoff,
+            int outboxRows, int behaviorFactRows, boolean lockAcquired) {
+        /** Keeps the legacy five-field construction shape when no separate execution time is available. */
+        public RetentionRun(int retentionMonths, LocalDateTime cutoff,
+                            int outboxRows, int behaviorFactRows, boolean lockAcquired) {
+            this(retentionMonths, cutoff, cutoff, outboxRows, behaviorFactRows, lockAcquired);
+        }
         public int affectedRows() { return outboxRows + behaviorFactRows; }
     }
 }
