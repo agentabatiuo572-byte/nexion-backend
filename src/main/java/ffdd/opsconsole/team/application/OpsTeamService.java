@@ -2383,10 +2383,17 @@ public class OpsTeamService implements AuditReplayable {
 
     private Map<String, Object> normalizeUnilevelRate(Map<String, Object> raw) {
         String level = textValue(raw, "level", "");
+        Object rawUsdtPct = raw.get("usdtPct");
+        Object rawNexReward = raw.get("nexReward");
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("level", level);
-        row.put("usdtPct", decimalValue(raw.get("usdtPct"), BigDecimal.ZERO).stripTrailingZeros());
-        row.put("nexReward", decimalValue(raw.get("nexReward"), BigDecimal.ZERO).stripTrailingZeros());
+        // Keep the legacy numeric values (old clients require non-null, non-negative
+        // numbers), but expose whether each raw projection was absent. A real zero
+        // remains a configured zero: only a null/missing raw value sets the flag.
+        row.put("usdtPct", decimalValue(rawUsdtPct, BigDecimal.ZERO).stripTrailingZeros());
+        row.put("nexReward", decimalValue(rawNexReward, BigDecimal.ZERO).stripTrailingZeros());
+        row.put("usdtPctMissing", rawUsdtPct == null);
+        row.put("nexRewardMissing", rawNexReward == null);
         row.put("label", textValue(raw, "label", ""));
         row.put("direct", boolValue(raw.get("direct"), false));
         row.put("configKey", "nx_commission_rule:UNILEVEL:" + level + ".usdt_rate");
