@@ -261,6 +261,8 @@ public class AdminCommandInvestigationService {
                 && "E.compute.phoneRisk.settings".equals(fact.getResourceId());
         if ("J3_ALERT_CONFIG".equals(scope)) return "TAMPER_ALERT_CONFIG".equals(fact.getResourceType())
                 && "J3_TAMPER_ALERT_CONFIG_CHANGED".equals(action);
+        if (scope.startsWith("GROWTH:H4:WHEEL_TIER_RETIRE")) return "WHEEL_CONFIG".equals(fact.getResourceType())
+                && "H4_WHEEL_TIER_RETIRED".equals(action);
         if (scope.startsWith("I4_TRUST_SECTION_")) return i4TrustSectionEvidence(scope, fact);
         if ("I4_TRUST_DOCUMENT".equals(scope)) return "TRUST_DOCUMENT".equals(fact.getResourceType())
                 && Set.of("I4_TRUST_DOCUMENT_UPLOADED", "I4_TRUST_DOCUMENT_RESTORED").contains(action);
