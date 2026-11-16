@@ -7,6 +7,7 @@ import java.math.RoundingMode;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.springframework.util.StringUtils;
 
 public record GrowthRhythmSnapshot(
@@ -53,11 +54,13 @@ public record GrowthRhythmSnapshot(
 
     public static GrowthRhythmSnapshot from(PlatformConfigFacade configFacade, OpsReadTimeSeedPolicy readTimeSeedPolicy) {
         boolean allowFallback = false;
-        int totalMonths = rhythmTotalMonths(configFacade, allowFallback);
-        int currentMonth = rhythmCurrentMonth(configFacade, totalMonths, allowFallback);
+        Map<String, String> configValues = new LinkedHashMap<>(configFacade.activeValuesByKeys(
+                List.of(RHYTHM_TOTAL_MONTHS_KEY, RHYTHM_CURRENT_MONTH_KEY, CURRENT_PHASE_KEY)));
+        int totalMonths = rhythmTotalMonths(configValues, allowFallback);
+        int currentMonth = rhythmCurrentMonth(configValues, totalMonths, allowFallback);
         String computedPhase = currentMonth > 0 && totalMonths > 0 ? phaseForRhythmMonth(currentMonth, totalMonths) : "";
-        String currentPhase = activeValue(configFacade, CURRENT_PHASE_KEY, computedPhase, allowFallback);
-        return create(configFacade, totalMonths, currentMonth, currentPhase, allowFallback);
+        String currentPhase = activeValue(configValues, CURRENT_PHASE_KEY, computedPhase, allowFallback);
+        return create(configFacade, configValues, totalMonths, currentMonth, currentPhase, allowFallback);
     }
 
     public static GrowthRhythmSnapshot fromMonth(
@@ -65,32 +68,41 @@ public record GrowthRhythmSnapshot(
             OpsReadTimeSeedPolicy readTimeSeedPolicy,
             int month) {
         boolean allowFallback = false;
-        int totalMonths = rhythmTotalMonths(configFacade, allowFallback);
+        Map<String, String> configValues = new LinkedHashMap<>(configFacade.activeValuesByKeys(
+                List.of(RHYTHM_TOTAL_MONTHS_KEY)));
+        int totalMonths = rhythmTotalMonths(configValues, allowFallback);
         int selectedMonth = totalMonths < 1 || month < 1 ? 0 : clamp(month, 1, totalMonths);
         String selectedPhase = selectedMonth < 1 ? "" : phaseForRhythmMonth(selectedMonth, totalMonths);
-        return create(configFacade, totalMonths, selectedMonth, selectedPhase, allowFallback);
+        return create(configFacade, configValues, totalMonths, selectedMonth, selectedPhase, allowFallback);
     }
 
     private static GrowthRhythmSnapshot create(
             PlatformConfigFacade configFacade,
+            Map<String, String> configValues,
             int totalMonths,
             int currentMonth,
             String currentPhase,
             boolean allowFallback) {
-        List<String> reliabilityErrors = validateRequiredFacts(configFacade, totalMonths, currentMonth, currentPhase);
+        String prefix = "growth.phase.month." + currentMonth + ".";
+        configValues.putAll(configFacade.activeValuesByKeys(List.of(
+                RHYTHM_PHASE_PROGRESS_KEY,
+                prefix + "newUserBonusMultiplier", prefix + "inviteRewardMultiplier", prefix + "reinvestMultiplier",
+                prefix + "withdrawPenaltyFeeRate", prefix + "withdrawCooldownDays", prefix + "binaryDailyCap",
+                prefix + "questBonusMultiplier", prefix + "complianceHoldEnabled")));
+        List<String> reliabilityErrors = validateRequiredFacts(configValues, totalMonths, currentMonth, currentPhase);
         return new GrowthRhythmSnapshot(
                 totalMonths,
                 currentMonth,
                 currentPhase,
-                clamp(configInt(configFacade, RHYTHM_PHASE_PROGRESS_KEY, 58, allowFallback), 0, 100),
-                monthDial(configFacade, currentMonth, "newUserBonusMultiplier", defaultMonthDial(currentMonth, "newUserBonusMultiplier"), allowFallback),
-                monthDial(configFacade, currentMonth, "inviteRewardMultiplier", defaultMonthDial(currentMonth, "inviteRewardMultiplier"), allowFallback),
-                monthDial(configFacade, currentMonth, "reinvestMultiplier", defaultMonthDial(currentMonth, "reinvestMultiplier"), allowFallback),
-                percent(monthDial(configFacade, currentMonth, "withdrawPenaltyFeeRate", defaultMonthDial(currentMonth, "withdrawPenaltyFeeRate"), allowFallback)),
-                monthDial(configFacade, currentMonth, "withdrawCooldownDays", defaultMonthDial(currentMonth, "withdrawCooldownDays"), allowFallback).setScale(0, RoundingMode.DOWN).intValue(),
-                monthDial(configFacade, currentMonth, "binaryDailyCap", defaultMonthDial(currentMonth, "binaryDailyCap"), allowFallback),
-                monthDial(configFacade, currentMonth, "questBonusMultiplier", defaultMonthDial(currentMonth, "questBonusMultiplier"), allowFallback),
-                monthDial(configFacade, currentMonth, "complianceHoldEnabled", defaultMonthDial(currentMonth, "complianceHoldEnabled"), allowFallback).signum() > 0,
+                clamp(configInt(configValues, RHYTHM_PHASE_PROGRESS_KEY, 58, allowFallback), 0, 100),
+                monthDial(configValues, currentMonth, "newUserBonusMultiplier", defaultMonthDial(currentMonth, "newUserBonusMultiplier"), allowFallback),
+                monthDial(configValues, currentMonth, "inviteRewardMultiplier", defaultMonthDial(currentMonth, "inviteRewardMultiplier"), allowFallback),
+                monthDial(configValues, currentMonth, "reinvestMultiplier", defaultMonthDial(currentMonth, "reinvestMultiplier"), allowFallback),
+                percent(monthDial(configValues, currentMonth, "withdrawPenaltyFeeRate", defaultMonthDial(currentMonth, "withdrawPenaltyFeeRate"), allowFallback)),
+                monthDial(configValues, currentMonth, "withdrawCooldownDays", defaultMonthDial(currentMonth, "withdrawCooldownDays"), allowFallback).setScale(0, RoundingMode.DOWN).intValue(),
+                monthDial(configValues, currentMonth, "binaryDailyCap", defaultMonthDial(currentMonth, "binaryDailyCap"), allowFallback),
+                monthDial(configValues, currentMonth, "questBonusMultiplier", defaultMonthDial(currentMonth, "questBonusMultiplier"), allowFallback),
+                monthDial(configValues, currentMonth, "complianceHoldEnabled", defaultMonthDial(currentMonth, "complianceHoldEnabled"), allowFallback).signum() > 0,
                 List.of(
                         RHYTHM_TOTAL_MONTHS_KEY,
                         RHYTHM_CURRENT_MONTH_KEY,
@@ -127,8 +139,8 @@ public record GrowthRhythmSnapshot(
         return map;
     }
 
-    private static BigDecimal monthDial(PlatformConfigFacade configFacade, int month, String key, BigDecimal fallback, boolean allowFallback) {
-        return decimal(configFacade, "growth.phase.month." + month + "." + key, fallback, allowFallback);
+    private static BigDecimal monthDial(Map<String, String> configValues, int month, String key, BigDecimal fallback, boolean allowFallback) {
+        return decimal(configValues, "growth.phase.month." + month + "." + key, fallback, allowFallback);
     }
 
     private static BigDecimal defaultMonthDial(int month, String key) {
@@ -144,13 +156,13 @@ public record GrowthRhythmSnapshot(
         };
     }
 
-    private static int rhythmTotalMonths(PlatformConfigFacade configFacade, boolean allowFallback) {
-        int total = configInt(configFacade, RHYTHM_TOTAL_MONTHS_KEY, 12, allowFallback);
+    private static int rhythmTotalMonths(Map<String, String> configValues, boolean allowFallback) {
+        int total = configInt(configValues, RHYTHM_TOTAL_MONTHS_KEY, 12, allowFallback);
         return RHYTHM_TOTAL_OPTIONS.contains(total) ? total : 0;
     }
 
-    private static int rhythmCurrentMonth(PlatformConfigFacade configFacade, int totalMonths, boolean allowFallback) {
-        int month = configFacade.activeValue(RHYTHM_CURRENT_MONTH_KEY)
+    private static int rhythmCurrentMonth(Map<String, String> configValues, int totalMonths, boolean allowFallback) {
+        int month = Optional.ofNullable(configValues.get(RHYTHM_CURRENT_MONTH_KEY))
                 .filter(StringUtils::hasText)
                 .map(value -> parseInt(value, 7, allowFallback))
                 .orElseGet(() -> allowFallback ? 7 : 0);
@@ -171,23 +183,23 @@ public record GrowthRhythmSnapshot(
         return "P6";
     }
 
-    private static String activeValue(PlatformConfigFacade configFacade, String key, String fallback, boolean allowFallback) {
-        return configFacade.activeValue(key)
+    private static String activeValue(Map<String, String> configValues, String key, String fallback, boolean allowFallback) {
+        return Optional.ofNullable(configValues.get(key))
                 .map(String::trim)
                 .filter(StringUtils::hasText)
                 .orElseGet(() -> allowFallback ? fallback : "");
     }
 
-    private static int configInt(PlatformConfigFacade configFacade, String key, int fallback, boolean allowFallback) {
-        return configFacade.activeValue(key)
+    private static int configInt(Map<String, String> configValues, String key, int fallback, boolean allowFallback) {
+        return Optional.ofNullable(configValues.get(key))
                 .map(String::trim)
                 .filter(StringUtils::hasText)
                 .map(value -> parseInt(value, fallback, allowFallback))
                 .orElseGet(() -> allowFallback ? fallback : 0);
     }
 
-    private static BigDecimal decimal(PlatformConfigFacade configFacade, String key, BigDecimal fallback, boolean allowFallback) {
-        return configFacade.activeValue(key)
+    private static BigDecimal decimal(Map<String, String> configValues, String key, BigDecimal fallback, boolean allowFallback) {
+        return Optional.ofNullable(configValues.get(key))
                 .map(String::trim)
                 .filter(StringUtils::hasText)
                 .map(value -> parseDecimal(value, fallback, allowFallback))
@@ -215,32 +227,32 @@ public record GrowthRhythmSnapshot(
     }
 
     private static List<String> validateRequiredFacts(
-            PlatformConfigFacade configFacade, int totalMonths, int currentMonth, String currentPhase) {
+            Map<String, String> configValues, int totalMonths, int currentMonth, String currentPhase) {
         List<String> errors = new java.util.ArrayList<>();
         if (!RHYTHM_TOTAL_OPTIONS.contains(totalMonths)) errors.add(RHYTHM_TOTAL_MONTHS_KEY);
         if (currentMonth < 1 || currentMonth > totalMonths) errors.add(RHYTHM_CURRENT_MONTH_KEY);
         if (currentPhase == null || !currentPhase.matches("P[1-6]")) errors.add(CURRENT_PHASE_KEY);
-        validateDecimal(configFacade, RHYTHM_PHASE_PROGRESS_KEY, BigDecimal.ZERO, new BigDecimal("100"), errors);
+        validateDecimal(configValues, RHYTHM_PHASE_PROGRESS_KEY, BigDecimal.ZERO, new BigDecimal("100"), errors);
         String prefix = "growth.phase.month." + currentMonth + ".";
-        validateDecimal(configFacade, prefix + "newUserBonusMultiplier", new BigDecimal("0.01"), new BigDecimal("10"), errors);
-        validateDecimal(configFacade, prefix + "inviteRewardMultiplier", new BigDecimal("0.01"), new BigDecimal("10"), errors);
-        validateDecimal(configFacade, prefix + "reinvestMultiplier", new BigDecimal("0.01"), new BigDecimal("10"), errors);
-        validateDecimal(configFacade, prefix + "withdrawPenaltyFeeRate", BigDecimal.ZERO, BigDecimal.ONE, errors);
-        validateInteger(configFacade, prefix + "withdrawCooldownDays", 0, 365, errors);
-        validateDecimal(configFacade, prefix + "binaryDailyCap", BigDecimal.ZERO, new BigDecimal("1000000000"), errors);
-        validateDecimal(configFacade, prefix + "questBonusMultiplier", new BigDecimal("0.01"), new BigDecimal("10"), errors);
-        validateInteger(configFacade, prefix + "complianceHoldEnabled", 0, 1, errors);
+        validateDecimal(configValues, prefix + "newUserBonusMultiplier", new BigDecimal("0.01"), new BigDecimal("10"), errors);
+        validateDecimal(configValues, prefix + "inviteRewardMultiplier", new BigDecimal("0.01"), new BigDecimal("10"), errors);
+        validateDecimal(configValues, prefix + "reinvestMultiplier", new BigDecimal("0.01"), new BigDecimal("10"), errors);
+        validateDecimal(configValues, prefix + "withdrawPenaltyFeeRate", BigDecimal.ZERO, BigDecimal.ONE, errors);
+        validateInteger(configValues, prefix + "withdrawCooldownDays", 0, 365, errors);
+        validateDecimal(configValues, prefix + "binaryDailyCap", BigDecimal.ZERO, new BigDecimal("1000000000"), errors);
+        validateDecimal(configValues, prefix + "questBonusMultiplier", new BigDecimal("0.01"), new BigDecimal("10"), errors);
+        validateInteger(configValues, prefix + "complianceHoldEnabled", 0, 1, errors);
         return List.copyOf(errors);
     }
 
     private static void validateDecimal(
-            PlatformConfigFacade configFacade,
+            Map<String, String> configValues,
             String key,
             BigDecimal min,
             BigDecimal max,
             List<String> errors) {
         try {
-            BigDecimal value = configFacade.activeValue(key)
+            BigDecimal value = Optional.ofNullable(configValues.get(key))
                     .filter(StringUtils::hasText)
                     .map(String::trim)
                     .map(raw -> new BigDecimal(raw.replace("%", "")))
@@ -252,13 +264,13 @@ public record GrowthRhythmSnapshot(
     }
 
     private static void validateInteger(
-            PlatformConfigFacade configFacade,
+            Map<String, String> configValues,
             String key,
             int min,
             int max,
             List<String> errors) {
         try {
-            int value = configFacade.activeValue(key)
+            int value = Optional.ofNullable(configValues.get(key))
                     .filter(StringUtils::hasText)
                     .map(String::trim)
                     .map(raw -> new BigDecimal(raw).intValueExact())

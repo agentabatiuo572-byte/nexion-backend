@@ -23,6 +23,8 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
     private static final org.slf4j.Logger LOG=org.slf4j.LoggerFactory.getLogger(SupportAnalyticsFactSampler.class);
     private static final Set<String> LOG_REASONS=Set.of("SUPPORT_ANALYTICS_NET_READ_FAILED","SUPPORT_ANALYTICS_RULES_NOT_READY",
             "SUPPORT_ANALYTICS_CACHE_INVALID","SUPPORT_ANALYTICS_CACHE_UNAVAILABLE","SUPPORT_ANALYTICS_CACHE_LEASE_LOST","SUPPORT_ANALYTICS_COMPUTATION_FAILED");
+    @org.springframework.beans.factory.annotation.Value("${nexion.support.background-sampling.enabled:true}")
+    private boolean backgroundSamplingEnabled=true;
     private final SupportAnalyticsFactMapper mapper;
     private final FinanceSupportPaymentFactsFacade payments;
     private final SupportFundsReadFacade funds;
@@ -55,7 +57,7 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
         reads.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);reads.setReadOnly(true);
     }
     @Override public void afterSingletonsInstantiated() {
-        if(!guard.productionSupportAutomationAllowed())return;
+        if(!backgroundSamplingEnabled || !guard.productionSupportAutomationAllowed())return;
         try {
             boolean ready=false;
             try {current();ready=true;}
@@ -67,7 +69,7 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
     }
     @Scheduled(cron="0 * * * * *",scheduler="supportAnalyticsFactTaskScheduler")
     public void poll() {
-        if(!started.get() || !guard.productionSupportAutomationAllowed())return;
+        if(!backgroundSamplingEnabled || !started.get() || !guard.productionSupportAutomationAllowed())return;
         try {refresh();}
         catch(RuntimeException failure){LOG.warn("Support analytics minute computation failed reason={}; previous generation retained",failureReason(failure));}
     }

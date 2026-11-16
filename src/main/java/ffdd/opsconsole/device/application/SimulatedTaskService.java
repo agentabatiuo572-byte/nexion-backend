@@ -14,6 +14,8 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -28,13 +30,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
-/** One shared SQL due loop. Reads never issue work, extend a phone interval, or credit money. */
+/** Independent SQL due consumers. Reads never issue work, extend a phone interval, or credit money. */
 @Service
 public class SimulatedTaskService implements SchedulingConfigurer {
     private static final Logger LOG=LoggerFactory.getLogger(SimulatedTaskService.class);
     private static final int BATCH_SIZE=500,CATCH_UP_LIMIT=12;
-    private static final int SETTLEMENT_THREADS = 10;
-    private static final int SLOTS_PER_BATCH = 600;
+    private static final int INITIAL_THREADS = 20, DUE_THREADS = 40;
     private enum DueResult { EMPTY, ADVANCED, UNCHANGED }
     private final SimulatedTaskMapper mapper;
     private final AppTaskAssignmentMapper assignments;
@@ -45,10 +46,16 @@ public class SimulatedTaskService implements SchedulingConfigurer {
     private final Environment environment;
     private final Clock clock;
     private final DeviceMonthlyTargetService monthlyTargets;
+    private final LocalDateTime liveDueFrom;
+    private final LocalDateTime abandonBefore;
     private final AtomicLong initialCursor=new AtomicLong();
-    private final ExecutorService settlementWorkers;
+    private final ExecutorService initialWorkers;
+    private final ScheduledThreadPoolExecutor dueWorkers;
+    private final AtomicInteger dueTurn = new AtomicInteger();
+    private boolean dueStarted;
     private volatile boolean stopping;
     private boolean moreWork;
+    private Instant nextInitialAt;
 
     public SimulatedTaskService(SimulatedTaskMapper mapper,AppTaskAssignmentMapper assignments,
             SimulatedTaskPolicyService policies,SimulatedTaskSettlementService settlement,SimulatedTaskLifecycleService lifecycle,
@@ -56,22 +63,48 @@ public class SimulatedTaskService implements SchedulingConfigurer {
         this.monthlyTargets=monthlyTargets;
         this.mapper=mapper;this.assignments=assignments;this.policies=policies;this.settlement=settlement;this.lifecycle=lifecycle;
         this.transaction=new TransactionTemplate(transactions);this.environment=environment;this.clock=clock;
-        AtomicInteger workerNumber = new AtomicInteger();
-        settlementWorkers = Executors.newFixedThreadPool(SETTLEMENT_THREADS,
-                job -> new Thread(job, "settlement-due-" + workerNumber.incrementAndGet()));
+        this.liveDueFrom=now();
+        String boundary=environment.getProperty("nexion.simulated-tasks.abandon-before","");
+        this.abandonBefore=boundary.isBlank()?null:LocalDateTime.parse(boundary);
+        if(abandonBefore!=null && abandonBefore.isAfter(liveDueFrom))
+            throw new IllegalArgumentException("SIMULATED_ABANDON_BOUNDARY_IN_FUTURE");
+        LOG.info("Simulated task due fairness boundary={} abandonBefore={}",liveDueFrom,abandonBefore);
+        AtomicInteger initialNumber = new AtomicInteger();
+        initialWorkers = Executors.newFixedThreadPool(INITIAL_THREADS,
+                job -> new Thread(job, "settlement-initial-" + initialNumber.incrementAndGet()));
+        AtomicInteger dueNumber = new AtomicInteger();
+        dueWorkers = new ScheduledThreadPoolExecutor(DUE_THREADS,
+                job -> new Thread(job, "settlement-due-" + dueNumber.incrementAndGet()));
+        dueWorkers.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
     }
 
-    /** Stop claiming new slots when shutdown begins; in-flight slot transactions still finish. */
     @EventListener(ContextClosedEvent.class)
-    public void contextClosed() { stopping = true; }
+    public void contextClosed() {
+        // Only scheduling admission uses this lock; no database work runs under it.
+        synchronized (dueWorkers) {
+            stopping = true;
+            dueWorkers.shutdown();
+        }
+    }
 
     @PreDestroy
     void stopSettlementWorkers() {
-        stopping = true;
-        // A tick holds this monitor until all in-flight slot transactions finish.
+        contextClosed();
+        // The initial tick retains this monitor until all its user groups drain.
         synchronized (this) {
-            settlementWorkers.shutdown();
+            initialWorkers.shutdown();
         }
+        boolean interrupted = false;
+        for (ExecutorService workers : List.of(dueWorkers, initialWorkers)) {
+            while (!workers.isTerminated()) {
+                try {
+                    workers.awaitTermination(1, TimeUnit.DAYS);
+                } catch (InterruptedException failure) {
+                    interrupted = true;
+                }
+            }
+        }
+        if (interrupted) Thread.currentThread().interrupt();
     }
     public record PhoneOnlineResult(boolean onlineConfirmed,int retryAfterSeconds,RuntimeRow runtime) { }
     public boolean enabled(){return environment.getProperty("nexion.simulated-tasks.enabled",Boolean.class,false);}
@@ -144,55 +177,107 @@ public class SimulatedTaskService implements SchedulingConfigurer {
     public void configureTasks(ScheduledTaskRegistrar tasks) {
         tasks.addTriggerTask(this::tick, context -> {
             Instant completed=context.lastCompletion();
-            return completed==null ? context.getClock().instant().plusSeconds(30)
-                    : completed.plusSeconds(moreWork ? 1 : 30);
+            if(completed==null)return context.getClock().instant().plusSeconds(30);
+            Instant next=completed.plusMillis(moreWork ? 100 : 30_000);
+            return !stopping && nextInitialAt!=null && nextInitialAt.isBefore(next) ? nextInitialAt : next;
         });
     }
 
     public synchronized void tick() {
         moreWork=false;
+        Instant initialAt=nextInitialAt;
+        nextInitialAt=null;
         if(stopping || !enabled())return;
-        LocalDateTime observed=now();
-        boolean advancedDue=settleDue(observed),advancedInitial=false;
+        if(!dueStarted) {
+            dueStarted=true;
+            for(int worker=0;worker<DUE_THREADS;worker++)scheduleDue(0);
+        }
         if(stopping)return;
-        var candidates=mapper.initialDevices(initialCursor.get(),BATCH_SIZE);
-        if(candidates.isEmpty())initialCursor.set(0);
-        for(var candidate:candidates){
-            if(stopping)return;
-            initialCursor.set(candidate.deviceId());advancedInitial|=processInitial(candidate);
+        boolean scanInitial=initialAt==null || !clock.instant().isBefore(initialAt);
+        var candidates=scanInitial ? mapper.initialDevices(initialCursor.get(),BATCH_SIZE,now()) : List.<Candidate>of();
+        if(scanInitial && candidates.isEmpty()) {
+            initialCursor.set(0);
+            initialAt=clock.instant().plusSeconds(5);
         }
-        moreWork=(candidates.size()==BATCH_SIZE && advancedInitial) || ((advancedDue || advancedInitial) && mapper.hasDue(now()));
-    }
-    private boolean settleDue(LocalDateTime observed) {
-        List<CompletableFuture<Integer>> batches = new ArrayList<>();
-        for (int worker = 0; worker < SETTLEMENT_THREADS; worker++) {
-            batches.add(CompletableFuture.supplyAsync(() -> {
-                int claimed = 0, advanced = 0;
-                for (; claimed < SLOTS_PER_BATCH && !stopping; claimed++) {
-                    var result = processNextDue(observed);
-                    if (result == DueResult.EMPTY) break;
-                    if (result == DueResult.ADVANCED) advanced++;
+        Map<Long,List<Candidate>> byUser=new LinkedHashMap<>();
+        for(var candidate:candidates)
+            byUser.computeIfAbsent(candidate.userId(),ignored->new ArrayList<>()).add(candidate);
+        List<CompletableFuture<Boolean>> batches=new ArrayList<>();
+        for(var group:byUser.values()) {
+            batches.add(CompletableFuture.supplyAsync(()->{
+                boolean advanced=false;
+                for(var candidate:group) {
+                    if(stopping)return advanced;
+                    advanced|=processInitial(candidate);
                 }
-                LOG.debug("Settlement batch worker={} claimed={} advanced={}",
-                        Thread.currentThread().getName(), claimed, advanced);
                 return advanced;
-            }, settlementWorkers));
+            },initialWorkers));
         }
+        // Drain every user group before advancing the cursor or releasing the shutdown monitor.
         CompletableFuture.allOf(batches.toArray(CompletableFuture[]::new)).join();
-        return batches.stream().anyMatch(batch -> batch.join() > 0);
+        if(stopping)return;
+        if(!candidates.isEmpty()) {
+            initialCursor.set(candidates.get(candidates.size()-1).deviceId());
+            initialAt=clock.instant().plusMillis(100);
+        }
+        boolean advancedInitial=batches.stream().anyMatch(batch->batch.join());
+        moreWork=(candidates.size()==BATCH_SIZE && advancedInitial) || (advancedInitial && mapper.hasDue(now()));
+        nextInitialAt=initialAt;
+    }
+    private void scheduleDue(long delayMillis) {
+        synchronized (dueWorkers) {
+            if(!stopping)dueWorkers.schedule(this::consumeDue,delayMillis,TimeUnit.MILLISECONDS);
+        }
     }
 
-    private DueResult processNextDue(LocalDateTime observed) {
+    private void consumeDue() {
+        if(stopping)return;
+        long delayMillis=5_000;
+        try {
+            if(enabled()) {
+                DueResult result=processNextDue(now(),(dueTurn.getAndIncrement() & 1)==0);
+                delayMillis=result==DueResult.EMPTY ? 1_000 : 0;
+            }
+        } catch(RuntimeException failure) {
+            LOG.warn("Simulated due consumer failed before completion; retrying",failure);
+        } finally {
+            // Each completed slot supplies only its own successor, independent of initial scans.
+            scheduleDue(delayMillis);
+        }
+    }
+
+    private DueResult processNextDue(LocalDateTime observed, boolean currentFirst) {
         var claimed = new AtomicReference<DueCandidate>();
         try {
             return transaction.execute(status -> {
-                var candidate = mapper.claimDue(observed);
+                if(stopping)return DueResult.EMPTY;
+                var candidate = currentFirst ? mapper.claimCurrentDue(observed) : mapper.claimDue(observed);
+                if(candidate==null && currentFirst)candidate=mapper.claimDue(observed);
                 if (candidate == null) return DueResult.EMPTY;
                 claimed.set(candidate);
                 if (!candidate.activeAccount()) throw error(403,"SIMULATED_ACCOUNT_NOT_ACTIVE");
                 var device = mapper.lockSettlementDevice(candidate.userId(),candidate.deviceId());
                 if(device==null)throw error(403,"SIMULATED_DEVICE_NOT_SETTLEABLE");
-                return advanceCandidate(device,observed,false) ? DueResult.ADVANCED : DueResult.UNCHANGED;
+                boolean advanced=advanceCandidate(device,observed,false);
+                if(advanced && !stopping) {
+                    int additional=0;
+                    for(var next:mapper.runtimesByUser(candidate.userId())) {
+                        if(stopping || additional==5)break;
+                        if(next.deviceId()==candidate.deviceId() || next.nextActionAt()==null
+                                || next.nextActionAt().isAfter(observed))continue;
+                        additional++;
+                        var priorClaimed=claimed.get();
+                        claimed.set(new DueCandidate(next.userId(),next.deviceId(),next.generation(),
+                                next.currentTaskNo(),next.nextActionAt(),candidate.activeAccount()));
+                        var additionalDevice=mapper.lockDevice(next.userId(),next.deviceId());
+                        if(additionalDevice==null) {
+                            claimed.set(priorClaimed);
+                            continue;
+                        }
+                        advanced|=advanceCandidate(additionalDevice,now(),false);
+                    }
+                }
+                return advanced ? DueResult.ADVANCED : DueResult.UNCHANGED;
             });
         } catch (RuntimeException failure) {
             var candidate = claimed.get();
@@ -205,6 +290,7 @@ public class SimulatedTaskService implements SchedulingConfigurer {
     private boolean processInitial(Candidate candidate) {
         try {
             transaction.execute(status->{
+                if(stopping)return null;
                 var device=owned(candidate.userId(),candidate.deviceId());
                 var runtime=mapper.lockRuntime(candidate.deviceId());
                 if(!active(device) || device.pendingDeactivate())return null;
@@ -213,7 +299,11 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                         || !"DEVICE_PAUSED".equals(runtime.lastError()) && !device.activatedAt().isAfter(runtime.intervalStartedAt())))return null;
                 startInterval(device,runtime,now(),null);return null;
             });
-            return Boolean.TRUE.equals(transaction.execute(status->advanceCandidate(owned(candidate.userId(),candidate.deviceId()),now(),true)));
+            if(stopping)return false;
+            return Boolean.TRUE.equals(transaction.execute(status->{
+                if(stopping)return false;
+                return advanceCandidate(owned(candidate.userId(),candidate.deviceId()),now(),true);
+            }));
         } catch(RuntimeException failure) {
             defer(candidate.deviceId(),null,failure);
             return false;
@@ -287,13 +377,28 @@ public class SimulatedTaskService implements SchedulingConfigurer {
             }
         }
         LocalDateTime knownTargetCycleStart=null;
+        LocalDateTime directSuccessorStart=null;
         for(int n=0;n<CATCH_UP_LIMIT;n++) {
+            TaskRow insertedTask=null;
             if(runtime.currentTaskNo()==null) {
+                if(runtime.stopAfterCurrent() && !runtime.finishAfterAt().isAfter(observed))
+                    return save(runtime,runtime.nextStartAt(),null,null,"STOPPED","AFTER_CURRENT");
+                if(cutoff!=null && !cutoff.isAfter(observed))
+                    return save(runtime,cutoff,null,null,"PHONE_VALIDITY_EXPIRED".equals(stopReason)?"EXPIRED":"STOPPED",stopReason);
                 if(runtime.stopAfterCurrent() && !runtime.nextStartAt().isBefore(runtime.finishAfterAt())
                         || device.pendingDeactivate() && !runtime.stopAfterCurrent() && runtime.stopAt()==null)
                     return save(runtime,runtime.nextStartAt(),null,null,"STOPPED","AFTER_CURRENT");
                 if(cutoff!=null && !runtime.nextStartAt().isBefore(cutoff))
                     return save(runtime,runtime.nextStartAt(),null,null,"PHONE_VALIDITY_EXPIRED".equals(stopReason)?"EXPIRED":"STOPPED",stopReason);
+                // An issued predecessor completed in this transaction may retain its not-yet-due successor.
+                // Cold/stale empty runtimes and the fixed history cutoff keep the original skip rule.
+                if(abandonBefore!=null && runtime.nextStartAt().isBefore(abandonBefore)
+                        || runtime.nextStartAt().isBefore(observed.minusSeconds(60))
+                            && !runtime.nextStartAt().equals(directSuccessorStart)) {
+                    LOG.info("Simulated unissued history skipped device={} from={} to={} abandonBefore={}",
+                            device.deviceId(),runtime.nextStartAt(),observed,abandonBefore);
+                    runtime=save(runtime,observed,null,observed,"RUNNING",null);
+                }
                 var policy=policies.policyAt(runtime.productCode(),runtime.nextStartAt());
                 var pool=policy==null?List.<SimulatedTaskPolicyService.TaskTypeSnapshot>of()
                         :policy.taskTypes().stream().filter(SimulatedTaskPolicyService.TaskTypeSnapshot::enabled).toList();
@@ -316,6 +421,7 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                         return save(runtime,runtime.nextStartAt(),null,next,"WAITING_CONFIG",null);
                     }
                     runtime=save(runtime,policy.effectiveAt(),null,policy.effectiveAt(),"RUNNING",null);
+                    directSuccessorStart=null;
                     if(cutoff!=null && !runtime.nextStartAt().isBefore(cutoff))
                         return save(runtime,runtime.nextStartAt(),null,null,"PHONE_VALIDITY_EXPIRED".equals(stopReason)?"EXPIRED":"STOPPED",stopReason);
                     if(runtime.stopAfterCurrent() && !runtime.nextStartAt().isBefore(runtime.finishAfterAt()))
@@ -340,6 +446,14 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                 var type=pool.get(DeviceMonthlyTargetPacing.select(device.deviceId(),runtime.generation(),runtime.nextStartAt(),pool.size()));
                 if(type.poolCode()!=null && !"PHONE".equals(type.poolCode()) && (runtime.phone() || policy.monthlyTargetUsdt()==null))
                     throw error(422,"SKU_POOL_TARGET_REQUIRED");
+                if(runtime.nextStartAt().equals(directSuccessorStart)
+                        && !runtime.nextStartAt().plusSeconds(type.durationSeconds()).isAfter(observed)) {
+                    LOG.info("Simulated unissued history skipped device={} from={} to={} abandonBefore={}",
+                            device.deviceId(),runtime.nextStartAt(),observed,abandonBefore);
+                    runtime=save(runtime,observed,null,observed,"RUNNING",null);
+                    directSuccessorStart=null;
+                    continue;
+                }
                 var projection=E3DeviceCapacityPolicy.project(device.productCode(),device.deviceType(),device.purchasedAt(),device.activatedAt(),
                         runtime.nextStartAt(),policy.e3Config());
                 BigDecimal reward=E3DeviceCapacityPolicy.applyCapacity(type.baseReward(),projection);
@@ -359,18 +473,35 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                         type.baseReward(),reward,(target==null?projection.capacityPct():target.capacityPct()).movePointLeft(2),daily==null?BigDecimal.ZERO:daily,
                         wallet.walletId(),wallet.incarnation(),runtime.nextStartAt(),runtime.nextStartAt().plusSeconds(type.durationSeconds()),"RUNNING",null,null,null,target==null?null:target.cycleStart(),target==null?null:target.snapshotJson());
                 if(mapper.insertTask(task)!=1)throw error(409,"SIMULATED_TASK_CREATION_CONFLICT");
+                insertedTask=task;
                 runtime=save(runtime,runtime.nextStartAt(),task.taskNo(),earlier(task.dueAt(),cutoff),"RUNNING",null);
             }
-            var task=mapper.lockTask(runtime.currentTaskNo());
+            var task=insertedTask!=null?insertedTask:mapper.lockTask(runtime.currentTaskNo());
             if(task==null || task.userId()!=runtime.userId() || task.deviceId()!=runtime.deviceId()
                     || task.generation()!=runtime.generation() || !"RUNNING".equals(task.status()))
                 throw error(409,"SIMULATED_TASK_IDENTITY_CONFLICT");
+            if(abandonBefore!=null && task.startedAt().isBefore(abandonBefore)) {
+                if(task.postedAt()!=null)throw error(409,"SIMULATED_TASK_ALREADY_POSTED");
+                mapper.wallets(task.userId());
+                if(mapper.cancelTask(task.taskNo(),"HISTORY_ABANDONED")!=1)
+                    throw error(409,"SIMULATED_TASK_CANCELLATION_CONFLICT");
+                monthlyTargets.cancel(task);
+                LOG.info("Simulated task history abandoned device={} task={} startedAt={} abandonBefore={}",
+                        task.deviceId(),task.taskNo(),task.startedAt(),abandonBefore);
+                runtime=save(runtime,observed,null,observed,"RUNNING",null);
+                continue;
+            }
             if(!task.dueAt().isAfter(observed) && (cutoff==null || !task.dueAt().isAfter(cutoff))) {
                 LocalDateTime posted=now();
                 if(mapper.completeTask(task.taskNo(),posted)!=1)throw error(409,"SIMULATED_TASK_SETTLEMENT_CONFLICT");
                 settlement.settle(task,posted);
                 knownTargetCycleStart=task.targetCycleStart();
-                runtime=save(runtime,task.dueAt(),null,task.dueAt(),"RUNNING",null);
+                directSuccessorStart=task.dueAt();
+                // The next durable save remains in this same transaction; terminal paths still save below.
+                runtime=new RuntimeRow(runtime.deviceId(),runtime.userId(),runtime.instanceNo(),runtime.productCode(),runtime.phone(),
+                        runtime.generation(),runtime.intervalStartedAt(),runtime.phoneValidUntil(),runtime.stopAt(),runtime.stopAfterCurrent(),
+                        runtime.finishAfterAt(),task.dueAt(),null,task.dueAt(),"RUNNING",
+                        runtime.stopAt()!=null && "DEVICE_PAUSED".equals(runtime.lastError())?"DEVICE_PAUSED":null);
                 if(runtime.stopAfterCurrent() && !task.dueAt().isBefore(runtime.finishAfterAt())
                         || device.pendingDeactivate() && !runtime.stopAfterCurrent() && runtime.stopAt()==null)
                     return save(runtime,task.dueAt(),null,null,"STOPPED","ORDER_REFUND".equals(stopReason)?"ORDER_REFUND":"AFTER_CURRENT");
@@ -382,11 +513,12 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                 monthlyTargets.cancel(task);
                 return save(runtime,cutoff,null,null,"PHONE_VALIDITY_EXPIRED".equals(stopReason)?"EXPIRED":"STOPPED",stopReason);
             }
+            if(insertedTask!=null)return runtime;
             return save(runtime,runtime.nextStartAt(),task.taskNo(),earlier(task.dueAt(),cutoff),"RUNNING",null);
         }
         if(runtime.stopAt()!=null || runtime.stopAfterCurrent())
             return save(runtime,runtime.nextStartAt(),runtime.currentTaskNo(),runtime.nextActionAt(),"CLOSING",runtime.lastError());
-        return runtime;
+        return save(runtime,runtime.nextStartAt(),runtime.currentTaskNo(),runtime.nextActionAt(),runtime.state(),runtime.lastError());
     }
 
     /** UTF-8, business-zone ISO local timestamp with exactly six fractional digits. */

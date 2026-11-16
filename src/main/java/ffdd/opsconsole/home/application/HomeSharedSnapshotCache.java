@@ -13,6 +13,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.locks.ReentrantLock;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.env.Environment;
 import org.springframework.dao.DataAccessException;
@@ -31,6 +32,7 @@ class HomeSharedSnapshotCache {
     private final Clock clock;
     private final Environment environment;
     private final String key;
+    private final ReentrantLock refreshLock = new ReentrantLock(true);
     // The HTTP mapper formats to whole seconds. Cache timestamps must retain their SQL precision.
     private final JsonMapper json = JsonMapper.builder().addModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
@@ -56,6 +58,20 @@ class HomeSharedSnapshotCache {
     record Snapshot(long validUntil, Long activeRuleSlotsCount, List<TaskPriceHistoryRow> marketTaskPriceHistory) {}
 
     Snapshot current() {
+        Snapshot snapshot = readCurrent();
+        if (snapshot != null || key == null) return snapshot;
+        refreshLock.lock();
+        try {
+            snapshot = readCurrent();
+            if (snapshot != null) return snapshot;
+            refresh();
+            return readCurrent();
+        } finally {
+            refreshLock.unlock();
+        }
+    }
+
+    private Snapshot readCurrent() {
         if (key == null) return null;
         try {
             String cached = redis.opsForValue().get(key);
@@ -77,19 +93,24 @@ class HomeSharedSnapshotCache {
     // Refresh on a start-to-start cadence while retaining the original five-second sampling budget.
     @Scheduled(fixedRate = 2_000)
     public void refresh() {
-        if (key == null) return;
-        // Start the freshness budget before either SQL statement, including their pool wait time.
-        long validUntil = clock.millis() + MAX_AGE_MILLIS;
+        refreshLock.lock();
         try {
-            long slots = environment.getProperty("nexion.simulated-tasks.enabled", Boolean.class, false)
-                    ? mapper.activeRuleSlots("PRODUCTION", false,
-                        LocalDateTime.ofInstant(clock.instant(), SERVER_ZONE)) : 0L;
-            List<TaskPriceHistoryRow> history = mapper.marketTaskPriceHistory();
-            String payload = json.writeValueAsString(new Snapshot(validUntil, slots, history == null ? List.of() : history));
-            long remainingMillis = validUntil - clock.millis();
-            if (remainingMillis > 0) redis.opsForValue().set(key, payload, Duration.ofMillis(remainingMillis));
-        } catch (DataAccessException | JsonProcessingException ex) {
-            log.debug("Home shared snapshot refresh failed; request SQL remains available", ex);
+            if (key == null) return;
+            // Start the freshness budget before either SQL statement, including their pool wait time.
+            long validUntil = clock.millis() + MAX_AGE_MILLIS;
+            try {
+                long slots = environment.getProperty("nexion.simulated-tasks.enabled", Boolean.class, false)
+                        ? mapper.activeRuleSlots("PRODUCTION", false,
+                            LocalDateTime.ofInstant(clock.instant(), SERVER_ZONE)) : 0L;
+                List<TaskPriceHistoryRow> history = mapper.marketTaskPriceHistory();
+                String payload = json.writeValueAsString(new Snapshot(validUntil, slots, history == null ? List.of() : history));
+                long remainingMillis = validUntil - clock.millis();
+                if (remainingMillis > 0) redis.opsForValue().set(key, payload, Duration.ofMillis(remainingMillis));
+            } catch (DataAccessException | JsonProcessingException ex) {
+                log.debug("Home shared snapshot refresh failed; request SQL remains available", ex);
+            }
+        } finally {
+            refreshLock.unlock();
         }
     }
 }

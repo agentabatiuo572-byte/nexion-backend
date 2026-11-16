@@ -214,7 +214,6 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
             throw new IllegalStateException("Session activity requires a transaction");
         }
         if (lockAccount(userId) == null || countFixedContext(sessionId, userId) == 0) return 0;
-        if (lockActiveUserSession(sessionId, userId) == 0) return 0;
         // Re-evaluate deadlines in a fresh statement after acquiring the unique-token row lock.
         return touchLockedActiveUserSession(sessionId, userId, idleDays);
     }

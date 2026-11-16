@@ -20,6 +20,11 @@ public class WithdrawalNetworkPolicy {
     private final AppWithdrawalMapper withdrawals;
 
     public List<Map<String,Object>> statuses() {
+        return statuses(key -> config.activeValue(key).orElse(""),
+                network -> (String)payouts.capability(network).get("disabledReason"));
+    }
+    private List<Map<String,Object>> statuses(java.util.function.Function<String,String> readConfig,
+                                              java.util.function.Function<CregisNetwork,String> capabilityReason) {
         var rows=new ArrayList<Map<String,Object>>();
         String gateValue = Optional.ofNullable(withdrawals.emergencyValue("killswitch.withdraw"))
                 .or(() -> Optional.ofNullable(withdrawals.emergencyValue("emergency.killswitch.withdraw")))
@@ -28,7 +33,7 @@ public class WithdrawalNetworkPolicy {
                 "disabled", "disable", "off", "false", "0").contains(gateValue);
         boolean gateEnabled = gateKnown && KillSwitchState.parse(gateValue);
         for(String network:List.of("TRC20","BEP20","ERC20")) {
-            String value=config.activeValue("withdrawal."+network.toLowerCase(Locale.ROOT)+".enabled").orElse("").trim().toLowerCase(Locale.ROOT);
+            String value=readConfig.apply("withdrawal."+network.toLowerCase(Locale.ROOT)+".enabled").trim().toLowerCase(Locale.ROOT);
             if(!Set.of("true","false","1","0","on","off").contains(value))throw new BizException(503,"D5_NETWORK_CONFIG_UNAVAILABLE");
             boolean configured=Set.of("true","1","on").contains(value);
             String reason=!configured?"NETWORK_SWITCH_OFF"
@@ -37,7 +42,7 @@ public class WithdrawalNetworkPolicy {
                     :cregis.getMode()==CregisProperties.Mode.DISABLED?"NOT_CONFIGURED"
                     :null;
             if(reason==null && cregis.getMode()==CregisProperties.Mode.PROVIDER)
-                reason=(String)payouts.capability(CregisNetwork.fromNetwork(network)).get("disabledReason");
+                reason=capabilityReason.apply(CregisNetwork.fromNetwork(network));
             var row=new LinkedHashMap<String,Object>();row.put("network","USDT-"+network);row.put("configured",configured);
             row.put("enabled",reason==null);row.put("disabledReason",reason);rows.add(row);
         }
@@ -73,6 +78,20 @@ public class WithdrawalNetworkPolicy {
     }
     public List<String> enabledNetworks() {
         return statuses().stream().filter(row->Boolean.TRUE.equals(row.get("enabled"))).map(row->(String)row.get("network")).toList();
+    }
+    public List<String> enabledNetworks(Map<String,String> configValues) {
+        return statuses(key -> configValues.getOrDefault(key,""),
+                network -> (String)payouts.capability(network).get("disabledReason")).stream()
+                .filter(row -> Boolean.TRUE.equals(row.get("enabled")))
+                .map(row -> (String)row.get("network")).toList();
+    }
+    public List<String> enabledNetworks(Map<String,String> configValues, List<Map<String,Object>> networkCapabilities) {
+        Map<String,String> reasons=new HashMap<>();
+        for(var capability:networkCapabilities)
+            reasons.put((String)capability.get("network"),(String)capability.get("disabledReason"));
+        return statuses(key -> configValues.getOrDefault(key,""), network -> reasons.get(network.network())).stream()
+                .filter(row -> Boolean.TRUE.equals(row.get("enabled")))
+                .map(row -> (String)row.get("network")).toList();
     }
     /** Lock ordering only: closed channels must still allow a successful receipt to replay. */
     public void lockBeforeUser() {

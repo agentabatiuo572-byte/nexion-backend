@@ -236,9 +236,9 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
                          @Param("sandbox") boolean sandbox);
 
     @Select("""
-            SELECT COUNT(*)
-            FROM nx_simulated_device_runtime slot
-            JOIN nx_visible_simulated_task job ON job.task_no = slot.current_task_no
+            SELECT STRAIGHT_JOIN COUNT(*)
+            FROM nx_simulated_task job FORCE INDEX (idx_sim_task_home_live_cov)
+            JOIN nx_simulated_device_runtime slot ON job.task_no = slot.current_task_no
                  AND job.user_id = slot.user_id AND job.user_device_id = slot.user_device_id
                  AND job.generation = slot.generation AND BINARY job.instance_no = BINARY slot.instance_no
             JOIN nx_user_device device ON device.id = slot.user_device_id AND device.user_id = slot.user_id
@@ -257,6 +257,9 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
                    OR (slot.phone = 1 AND runtime.paused_reason IN ('PHONE_OFFLINE','PHONE_LOW_BATTERY')))
               AND (slot.stop_at IS NULL OR slot.stop_at > #{observed})
               AND (slot.phone = 0 OR slot.phone_valid_until > #{observed})
+              AND NOT EXISTS (SELECT 1 FROM nx_compute_retired_task a
+                               WHERE a.user_id = job.user_id
+                                 AND a.task_no = job.task_no COLLATE utf8mb4_0900_ai_ci)
             """)
     long activeRuleSlots(@Param("sourceEnvironment") String sourceEnvironment, @Param("sandbox") boolean sandbox,
                          @Param("observed") LocalDateTime observed);
