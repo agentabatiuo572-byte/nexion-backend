@@ -4393,7 +4393,54 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         Map<String, Object> stats = new LinkedHashMap<>(growthMap(GrowthQuestEventMapper::checkInStats));
         stats.put("lucky15Config", lucky15Pct.stripTrailingZeros().toPlainString() + "%");
         stats.put("lucky2Config", lucky2Pct.stripTrailingZeros().toPlainString() + "%");
+        stats.put("statBasis", checkInStatBasis());
         return stats;
+    }
+
+    /**
+     * Machine-readable basis for every H5 statistic, mirroring the SQL in
+     * GrowthQuestEventMapper.checkInStats(): which table, which window, which aggregate and which
+     * condition produced each number. Values, labels and rules are untouched.
+     */
+    private Map<String, Object> checkInStatBasis() {
+        Map<String, Object> basis = new LinkedHashMap<>();
+        basis.put("todaySign", statBasis("nx_daily_check_in", "BUSINESS_DAY_TODAY", "GrowthTeam.TODAY",
+                "COUNT_DISTINCT_USER", "check_in_date = window", null, null, "available=true"));
+        basis.put("signRate", statBasis("nx_daily_check_in / nx_user_streak", "BUSINESS_DAY_TODAY", "GrowthTeam.TODAY",
+                "RATIO_OF_DISTINCT_USERS", "check_in_date = window", "COUNT_DISTINCT_USER(nx_user_streak)", "PERCENT_1_DECIMAL",
+                "available=true"));
+        basis.put("lucky15Actual", statBasis("nx_daily_check_in", "BUSINESS_DAY_TODAY", "GrowthTeam.TODAY",
+                "COUNT_ROWS_RATIO", "check_in_date = window AND reward_multiplier >= 1.5", "COUNT_ROWS(same window)",
+                "PERCENT_1_DECIMAL", "available=true"));
+        basis.put("lucky2Actual", statBasis("nx_daily_check_in", "BUSINESS_DAY_TODAY", "GrowthTeam.TODAY",
+                "COUNT_ROWS_RATIO", "check_in_date = window AND reward_multiplier >= 2", "COUNT_ROWS(same window)",
+                "PERCENT_1_DECIMAL", "available=true"));
+        basis.put("weekRevive", statBasis("nx_user_streak_power_up", "ROLLING_7_DAYS", "NOW() - INTERVAL 7 DAY",
+                "COUNT_ROWS", "activated_at >= window_start AND (power_up_code LIKE %revive% OR power_up_status = 'revived')",
+                null, null, "available=true"));
+        basis.put("weekMsTrigger", statBasis("nx_earning_milestone", "ROLLING_7_DAYS", "NOW() - INTERVAL 7 DAY",
+                "COUNT_ROWS", "achieved_at >= window_start", null, null, "available=true"));
+        basis.put("weekMsNex", statBasis("nx_earning_milestone", "ROLLING_7_DAYS", "NOW() - INTERVAL 7 DAY",
+                "SUM", "achieved_at >= window_start AND reward_nex summed", null, "UVT", "available=true"));
+        basis.put("lucky15Config", statBasis("nx_growth_checkin_rule", "CONFIG", null, "RULE_VALUE",
+                "rule_key = growth.checkin.lucky_1_5_pct", null, null, "available=true"));
+        basis.put("lucky2Config", statBasis("nx_growth_checkin_rule", "CONFIG", null, "RULE_VALUE",
+                "rule_key = growth.checkin.lucky_2_pct", null, null, "available=true"));
+        return basis;
+    }
+
+    private Map<String, Object> statBasis(String source, String windowType, String window, String aggregate,
+            String condition, String denominator, String unit, String availability) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("source", source);
+        row.put("windowType", windowType);
+        row.put("window", window);
+        row.put("aggregate", aggregate);
+        row.put("condition", condition);
+        row.put("denominator", denominator);
+        row.put("unit", unit);
+        row.put("availability", availability);
+        return row;
     }
 
     private List<Map<String, Object>> checkInRules() {
