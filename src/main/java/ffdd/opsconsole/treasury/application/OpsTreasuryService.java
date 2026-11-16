@@ -2498,19 +2498,27 @@ public class OpsTreasuryService {
         String[] segments = row.bizNo().split(":", -1);
         // Account tokens are separate from dates, course IDs and other reference metadata.
         for (int index = 0; index < segments.length; index++) {
-            if (isBillReferenceAccount(segments[index], userId, userNo)) {
-                segments[index] = masked;
-                continue;
-            }
-            // A composite id such as F3-BINARY-{userId}-{yyyymmdd} keeps the account inside a dash-joined token.
-            String[] parts = segments[index].split("-", -1);
-            if (parts.length < 2) continue;
-            for (int part = 0; part < parts.length; part++) {
-                if (isBillReferenceAccount(parts[part], userId, userNo)) parts[part] = masked;
-            }
-            segments[index] = String.join("-", parts);
+            segments[index] = isBillReferenceAccount(segments[index], userId, userNo)
+                    ? masked
+                    : maskBinarySettlementAccount(segments[index], userId, userNo, masked);
         }
         return String.join(":", segments);
+    }
+
+    /**
+     * Only the two binary settlement ids carry the account between dashes:
+     * F3-BINARY-{account}-{yyyyMMdd} and BINARY-{account}-{yyyyMMdd}. Nothing else is touched, so an
+     * event id, an order number or a date that happens to equal the account stays as the business wrote it.
+     */
+    private String maskBinarySettlementAccount(String segment, String userId, String userNo, String masked) {
+        int accountIndex = segment.startsWith("F3-BINARY-") ? 2 : segment.startsWith("BINARY-") ? 1 : -1;
+        if (accountIndex < 0) return segment;
+        String[] parts = segment.split("-", -1);
+        if (parts.length <= accountIndex || !isBillReferenceAccount(parts[accountIndex], userId, userNo)) {
+            return segment;
+        }
+        parts[accountIndex] = masked;
+        return String.join("-", parts);
     }
 
     /** Matches this row's own account only, so amounts, dates and event ids in a reference stay readable. */
