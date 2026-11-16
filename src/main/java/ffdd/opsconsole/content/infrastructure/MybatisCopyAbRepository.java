@@ -347,7 +347,6 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         copy.setDraftAudienceJson(writeAudience(request.audienceTarget()));
         copy.setDraftTrafficSplit(request.trafficSplit().trim());
         copy.setDraftNote(request.versionNote().trim());
-        copy.setStatus("DRAFT_SAVED");
         copy.setRevision(nextRevision(copy));
         copy.setLastOperator(operator(request.operator()));
         copy.setUpdatedAt(now);

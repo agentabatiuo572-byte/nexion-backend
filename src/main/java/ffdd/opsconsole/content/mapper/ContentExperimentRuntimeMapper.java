@@ -154,7 +154,7 @@ public interface ContentExperimentRuntimeMapper extends BaseMapper<Object> {
                AND v.is_deleted = 0
              WHERE c.copy_key = #{copyKey}
                AND c.is_deleted = 0
-               AND c.status = 'PUBLISHED'
+               AND c.status IN ('PUBLISHED', 'DRAFT_SAVED')
                AND v.status = 'PUBLISHED'
              LIMIT 1
             """)
@@ -170,7 +170,7 @@ public interface ContentExperimentRuntimeMapper extends BaseMapper<Object> {
               JOIN nx_content_copy c
                 ON c.copy_position = p.position_key
                AND c.is_deleted = 0
-               AND c.status = 'PUBLISHED'
+               AND c.status IN ('PUBLISHED', 'DRAFT_SAVED')
               JOIN nx_content_copy_version v
                 ON v.copy_key = c.copy_key
                AND v.version = c.current_version
