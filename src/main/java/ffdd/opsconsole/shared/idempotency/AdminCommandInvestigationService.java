@@ -703,8 +703,12 @@ public class AdminCommandInvestigationService {
         return "UNKNOWN";
     }
 
-    /** The stored reply refused the command with a non-zero business code. */
+    /**
+     * The only accepted rejection fact: the command completed (SUCCEEDED) and its own stored reply
+     * carries a valid non-zero business code. FAILED, PROCESSING or a missing code prove nothing.
+     */
     private boolean businessRejected(AdminIdempotencyRecordEntity original) {
+        if (!"SUCCEEDED".equals(original.getStatus())) return false;
         Integer code = businessCode(original.getResponseJson());
         return code != null && code != 0;
     }
