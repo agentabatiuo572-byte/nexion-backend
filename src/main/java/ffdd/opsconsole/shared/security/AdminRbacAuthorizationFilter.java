@@ -345,7 +345,11 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         }
         // Method security additionally binds these grants to the requested media namespace.
         if (HttpMethod.POST.matches(method) && path.equals("/api/admin/media/uploads")) {
-            return RequiredAuthority.exact("device_e1_write", "growth_promotion_edit");
+            // Reward disposition grants may reach the endpoint; the controller binds each grant to its
+            // own purpose, so this adds no general media write.
+            return RequiredAuthority.exact("device_e1_write", "growth_promotion_edit",
+                    "growth_promotion_reward_cancel", "growth_promotion_reward_reverse",
+                    "growth_promotion_reward_resolve");
         }
         if (HttpMethod.GET.matches(method) && pathMatcher.match("/api/admin/media/uploads/*/preview-url", path)) {
             return RequiredAuthority.exact("device_e1_read", "growth_promotion_read", "growth_promotion_edit");
