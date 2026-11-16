@@ -77,7 +77,7 @@ public class OpsRiskRadarController {
     }
 
     @GetMapping("/alert-subscription")
-    @PreAuthorize("hasAuthority('overview_b5_subscribe')")
+    @PreAuthorize("hasAuthority('overview_b5_read')")
     public ApiResult<Map<String, Object>> subscription() {
         return service.subscription();
     }
