@@ -360,6 +360,31 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
              ORDER BY permission_code
             </script>
             """)
+    /**
+     * The permission codes that are not explicitly read-only, using the same classification the permission
+     * catalogue already applies (CRITICAL/non-empty unknown -> HIGH, untyped falls back to the _read/_write
+     * suffix, everything else HIGH). Used to keep the built-in AUDITOR role read-only.
+     */
+    @Select("""
+            <script>
+            SELECT p.permission_code
+              FROM nx_admin_permission p
+             WHERE p.is_deleted = 0 AND p.status = 1
+               AND p.permission_code IN
+               <foreach collection="permissionCodes" item="code" open="(" separator="," close=")">#{code}</foreach>
+               AND CASE
+                     WHEN UPPER(TRIM(p.perm_type)) = 'READ' THEN 'READ'
+                     WHEN UPPER(TRIM(p.perm_type)) = 'CRITICAL' THEN 'HIGH'
+                     WHEN UPPER(TRIM(p.perm_type)) IN ('WRITE', 'HIGH') THEN UPPER(TRIM(p.perm_type))
+                     WHEN NULLIF(TRIM(p.perm_type), '') IS NOT NULL THEN 'HIGH'
+                     WHEN RIGHT(LOWER(TRIM(p.permission_code)), 5) = '_read' THEN 'READ'
+                     WHEN RIGHT(LOWER(TRIM(p.permission_code)), 6) = '_write' THEN 'WRITE'
+                     ELSE 'HIGH'
+                   END <> 'READ'
+            </script>
+            """)
+    List<String> selectNonReadPermissionCodes(@Param("permissionCodes") Collection<String> permissionCodes);
+
     List<String> selectExistingActivePermissionCodes(
             @Param("permissionCodes") Collection<String> permissionCodes);
 

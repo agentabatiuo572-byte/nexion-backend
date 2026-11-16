@@ -300,6 +300,16 @@ public class OpsPlatformRoleService {
         if (desiredPerms == null || desiredMenus == null) {
             return ApiResult.fail(422, "ROLE_GRANTS_INVALID");
         }
+        // The built-in AUDITOR role is read-only by its own seed contract. The request replaces the whole
+        // grant set, so refuse any non-read permission here — the single point both the proposal and the
+        // A2 replay pass through. Classification comes from perm_type/the catalogue's existing fallback,
+        // never from a name guess, and stored grants are left untouched.
+        if ("AUDITOR".equalsIgnoreCase(roleCode) && !desiredPerms.isEmpty()) {
+            List<String> nonRead = rolePermissionMapper.selectNonReadPermissionCodes(desiredPerms);
+            if (nonRead != null && !nonRead.isEmpty()) {
+                return ApiResult.fail(403, "AUDIT_ROLE_WRITE_FORBIDDEN");
+            }
+        }
         List<String> validPerms = desiredPerms.isEmpty()
                 ? List.of() : rolePermissionMapper.selectExistingActivePermissionCodes(desiredPerms);
         List<Long> validMenus = desiredMenus.isEmpty()
