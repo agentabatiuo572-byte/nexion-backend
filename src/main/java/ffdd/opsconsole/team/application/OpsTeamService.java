@@ -2376,6 +2376,9 @@ public class OpsTeamService implements AuditReplayable {
             statistic.put("paidOrSettledStatuses", List.of("PAID", "SETTLED"));
             statistic.put("paidOrSettledAmountRaw", decimalValue(raw.get("paidOrSettledAmountRaw"), null));
             statistic.put("paidOrSettledEventCount", intValue(raw.get("paidOrSettledEventCount"), 0));
+            statistic.put("paidStatuses", List.of("PAID"));
+            statistic.put("paidAmountRaw", decimalValue(raw.get("paidAmountRaw"), null));
+            statistic.put("paidEventCount", intValue(raw.get("paidEventCount"), 0));
             statistic.put("statusMarkerOnly", true);
             statistic.put("cashSettlementTimeAvailable", false);
             statistic.put("basis", "nx_commission_event.created_at; PAID/SETTLED are current status markers, not cash transfer or paid_at proof");
@@ -2395,6 +2398,9 @@ public class OpsTeamService implements AuditReplayable {
                 statistic.put("paidOrSettledStatuses", List.of("PAID", "SETTLED"));
                 statistic.put("paidOrSettledAmountRaw", null);
                 statistic.put("paidOrSettledEventCount", null);
+                statistic.put("paidStatuses", List.of("PAID"));
+                statistic.put("paidAmountRaw", null);
+                statistic.put("paidEventCount", null);
                 statistic.put("statusMarkerOnly", true);
                 statistic.put("cashSettlementTimeAvailable", false);
                 statistic.put("basis", "nx_commission_event.created_at; no rows for this currency in the rolling window");
