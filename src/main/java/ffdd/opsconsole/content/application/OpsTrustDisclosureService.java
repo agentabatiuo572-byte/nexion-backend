@@ -499,8 +499,12 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         trustDisclosureRepository.lockTrustSection(sectionKey);
         TrustSectionView section = findSection(sectionKey);
         if (section == null) return ApiResult.fail(404, "TRUST_SECTION_NOT_FOUND");
+        TrustSectionVersionView published = findSectionVersion(section.key(), section.version());
+        TrustSectionDraftRequest normalized = withTrustSectionFields(request,
+                preserveOmittedAdditionalLocales(request.fields(),
+                        published == null ? List.of() : published.fields(), List.of()));
         ApiResult<Void> schemaGuard = requireFixedSectionFieldSchema(section,
-                request.fields().stream().map(TrustSectionFieldInput::key).toList());
+                normalized.fields().stream().map(TrustSectionFieldInput::key).toList());
         if (schemaGuard != null) return fail(schemaGuard);
         if (findSectionVersion(sectionKey, request.version()) != null) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "TRUST_SECTION_VERSION_ALREADY_EXISTS");
@@ -510,7 +514,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (snapshotGuard != null) return fail(snapshotGuard);
         String actor = authenticatedOperator();
         TrustSectionVersionView saved = trustDisclosureRepository.saveTrustSectionDraft(
-                sectionKey.trim(), withTrustSectionOperator(request, actor), now());
+                sectionKey.trim(), withTrustSectionOperator(normalized, actor), now());
         audit("I4_TRUST_SECTION_DRAFT_CREATED", "TRUST_SECTION_VERSION", sectionKey + ":" + saved.version(), actor, idempotencyKey, request.reason(), Map.of(
                 "fieldCount", saved.fields().size(), "revision", saved.revision()));
         return ApiResult.ok(saved);
@@ -548,15 +552,19 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         }
         TrustSectionView section = findSection(sectionKey);
         if (section == null) return ApiResult.fail(404, "TRUST_SECTION_NOT_FOUND");
+        TrustSectionVersionView published = findSectionVersion(section.key(), section.version());
+        TrustSectionDraftRequest normalized = withTrustSectionFields(request,
+                preserveOmittedAdditionalLocales(request.fields(),
+                        published == null ? List.of() : published.fields(), current.fields()));
         ApiResult<Void> snapshotGuard = requireTrustSectionSnapshot(
                 section, request.expectedSectionVersion(), request.expectedSectionStatus());
         if (snapshotGuard != null) return fail(snapshotGuard);
         ApiResult<Void> schemaGuard = requireFixedSectionFieldSchema(section,
-                request.fields().stream().map(TrustSectionFieldInput::key).toList());
+                normalized.fields().stream().map(TrustSectionFieldInput::key).toList());
         if (schemaGuard != null) return fail(schemaGuard);
         String actor = authenticatedOperator();
         TrustSectionVersionView saved = trustDisclosureRepository.saveTrustSectionDraft(
-                sectionKey.trim(), withTrustSectionOperator(request, actor), now());
+                sectionKey.trim(), withTrustSectionOperator(normalized, actor), now());
         audit("I4_TRUST_SECTION_DRAFT_UPDATED", "TRUST_SECTION_VERSION", sectionKey + ":" + version, actor, idempotencyKey, request.reason(), Map.of(
                 "fromRevision", current.revision(), "toRevision", saved.revision()));
         return ApiResult.ok(saved);
@@ -1524,6 +1532,63 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 && languagesByFamily.values().stream().allMatch(languages -> languages.containsAll(Set.of("zh", "vi", "en")));
     }
 
+    /**
+     * Old editors submit only the base languages. Keep an already stored, legal
+     * additional locale of the same section when the request omitted it; never
+     * import an unknown key or a field from another section.
+     */
+    private List<TrustSectionFieldInput> preserveOmittedAdditionalLocales(
+            List<TrustSectionFieldInput> requested,
+            List<TrustSectionVersionView.Field> publishedFields,
+            List<TrustSectionVersionView.Field> draftFields) {
+        Map<String, TrustSectionFieldInput> supplied = new LinkedHashMap<>();
+        for (TrustSectionFieldInput field : requested) {
+            if (field != null && StringUtils.hasText(field.key())) {
+                supplied.putIfAbsent(field.key().trim().toLowerCase(Locale.ROOT), field);
+            }
+        }
+        Map<String, TrustSectionFieldInput> existing = new LinkedHashMap<>();
+        appendAdditionalLocaleSource(existing, publishedFields);
+        appendAdditionalLocaleSource(existing, draftFields);
+        Map<String, TrustSectionFieldInput> known = new LinkedHashMap<>(existing);
+        known.putAll(supplied);
+        List<TrustSectionFieldInput> merged = new ArrayList<>(requested);
+        for (Map.Entry<String, TrustSectionFieldInput> entry : existing.entrySet()) {
+            if (supplied.containsKey(entry.getKey())) continue;
+            TrustSectionFieldInput field = entry.getValue();
+            Matcher matcher = LOCALIZED_TRUST_FIELD_PATTERN.matcher(field.key().trim());
+            if (!matcher.matches() || !InterfaceLanguages.isAdditional(matcher.group(2).toLowerCase(Locale.ROOT))
+                    || !hasEnglishLocale(known, matcher.group(1))) {
+                continue;
+            }
+            merged.add(field);
+            supplied.put(entry.getKey(), field);
+        }
+        return merged;
+    }
+
+    private void appendAdditionalLocaleSource(
+            Map<String, TrustSectionFieldInput> target, List<TrustSectionVersionView.Field> fields) {
+        if (fields == null) return;
+        for (TrustSectionVersionView.Field field : fields) {
+            if (field != null && StringUtils.hasText(field.key())) {
+                target.put(field.key().trim().toLowerCase(Locale.ROOT),
+                        new TrustSectionFieldInput(field.key(), field.label(), field.value()));
+            }
+        }
+    }
+
+    private boolean hasEnglishLocale(Map<String, TrustSectionFieldInput> fields, String family) {
+        for (TrustSectionFieldInput field : fields.values()) {
+            Matcher matcher = LOCALIZED_TRUST_FIELD_PATTERN.matcher(field.key().trim());
+            if (matcher.matches() && family.equalsIgnoreCase(matcher.group(1))
+                    && "en".equalsIgnoreCase(matcher.group(2))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** Mirrors the App trust-section parser's per-section field contract: 1..80, strict ASCII key segments. */
     private ApiResult<Void> requireAppPublicFields(List<TrustSectionVersionView.Field> fields) {
         if (fields == null || fields.isEmpty() || fields.size() > 80) {
@@ -2001,6 +2066,14 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 .action(action).resourceType(resourceType).resourceId(resourceId).bizNo(resourceId)
                 .actorType("ADMIN").actorUsername(operator(operator)).result("SUCCESS").riskLevel("HIGH")
                 .detail(detail).build());
+    }
+
+    private TrustSectionDraftRequest withTrustSectionFields(
+            TrustSectionDraftRequest request, List<TrustSectionFieldInput> fields) {
+        return new TrustSectionDraftRequest(
+                request.version(), request.description(), request.structure(), fields,
+                request.expectedRevision(), request.expectedSectionVersion(), request.expectedSectionStatus(),
+                request.operator(), request.reason());
     }
 
     private TrustSectionDraftRequest withTrustSectionOperator(
