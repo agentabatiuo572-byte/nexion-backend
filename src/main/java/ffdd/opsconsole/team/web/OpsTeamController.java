@@ -75,6 +75,26 @@ public class OpsTeamController {
         return teamService.leadershipPoolVoteProjection();
     }
 
+    /**
+     * F4 payout preview: what each rank would be paid, after the head caps, before the proposal.
+     * Read-only — it settles, locks and writes nothing.
+     */
+    @GetMapping("/leadership-pool/payout-preview")
+    @PreAuthorize("hasAuthority('network_f4_read')")
+    public ApiResult<Map<String, Object>> leadershipPoolPayoutPreview(
+            @RequestParam(defaultValue = "week") String period,
+            @RequestParam(required = false) String periodKey) {
+        return leadershipPoolService.previewLeaderboardPayout(period, periodKey);
+    }
+
+    /** F4 leaderboard rows: whether a disqualification would pass the same evidence check, and which. */
+    @GetMapping("/leadership-pool/disqualification-readiness")
+    @PreAuthorize("hasAuthority('network_f4_read')")
+    public ApiResult<Map<String, Object>> leadershipPoolDisqualificationReadiness(
+            @RequestParam(defaultValue = "50") int limit) {
+        return leadershipPoolService.leaderboardDisqualificationReadiness(limit);
+    }
+
     @GetMapping("/ambassador-policy")
     @PreAuthorize("hasAuthority('network_f4_read')")
     public ApiResult<Map<String, Object>> ambassadorPolicy() {
