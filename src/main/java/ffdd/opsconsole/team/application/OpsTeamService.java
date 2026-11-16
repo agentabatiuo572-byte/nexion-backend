@@ -2812,15 +2812,31 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     private List<Map<String, Object>> voteWeights() {
-        return leadershipRanks().stream()
-                .map(row -> {
-                    Map<String, Object> weight = new LinkedHashMap<>();
-                    weight.put("v", "V" + intValue(row.get("v"), 0));
-                    weight.put("votes", decimalValue(row.get("votes"), BigDecimal.ZERO));
-                    weight.put("source", "nx_v_rank_config");
-                    return weight;
-                })
-                .toList();
+        // Management read must keep an active level with a legal zero vote value editable.
+        // Business leadershipRanks() intentionally stays positive-only for participant/ranking reads.
+        List<Map<String, Object>> weights = new ArrayList<>();
+        for (Map<String, Object> row : commissionRepository.vRankRows()) {
+            int level = voteWeightLevel(row.get("v"));
+            int votes = intValue(row.get("votes"), 0);
+            if (level < 1 || level > 8 || votes < 0) continue;
+            Map<String, Object> weight = new LinkedHashMap<>();
+            weight.put("v", "V" + level);
+            weight.put("votes", BigDecimal.valueOf(votes));
+            weight.put("source", "nx_v_rank_config");
+            weights.add(weight);
+        }
+        return weights;
+    }
+
+    private int voteWeightLevel(Object value) {
+        String raw = String.valueOf(value == null ? "" : value).trim().toUpperCase(Locale.ROOT);
+        if (raw.startsWith("V")) raw = raw.substring(1);
+        try {
+            int level = Integer.parseInt(raw);
+            return level >= 1 && level <= 8 ? level : 0;
+        } catch (NumberFormatException invalid) {
+            return 0;
+        }
     }
 
     private Map<String, Object> commissionSummary(List<Map<String, Object>> commissionEvents) {
