@@ -350,8 +350,8 @@ public class DirectReferralService {
             String from=text(requested,"status");
             if("UNLOCKED".equals(target)){releaseSelected(no,eventId);return;}
             if(("FROZEN".equals(target)&&Set.of("COOLING","PENDING").contains(from))||("COOLING".equals(target)&&"FROZEN".equals(from))){
-                if("COOLING".equals(target)&&requested.get("unlockAt")==null)
-                    throw new BizException(409,"F5_COOLDOWN_DEADLINE_UNRECOVERABLE");
+                String unfreezeBlocked=OpsTeamService.commissionUnfreezeBlockedReason(from,target,requested.get("unlockAt"));
+                if(unfreezeBlocked!=null)throw new BizException(409,unfreezeBlocked);
                 if("COOLING".equals(target)&&held(number(row,"beneficiary_user_id"),"network"))throw new BizException(409,"DIRECT_REFERRAL_SPONSOR_FROZEN");
                 mapper.recoveredEventStatus(eventId,target);return;
             }

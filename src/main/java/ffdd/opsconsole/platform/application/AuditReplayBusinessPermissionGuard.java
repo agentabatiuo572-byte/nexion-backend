@@ -437,6 +437,20 @@ public class AuditReplayBusinessPermissionGuard {
             return OpsDeviceService.validateBundleDiscountProposal(command.params());
         }
         if ("F".equalsIgnoreCase(command.domain())) {
+            if ("f_commission_status".equals(operation)
+                    && "COOLING".equals(OpsTeamService.canonicalCommissionState(value(command.params(), "value")))) {
+                String key = value(command.params(), "key");
+                if (key.matches("F\\.commission\\.CM-[1-9]\\d*\\.status")) {
+                    Long eventId = strictLong(key.substring("F.commission.CM-".length(), key.length() - ".status".length()), 1, Long.MAX_VALUE);
+                    Map<String, Object> event = eventId == null ? null : teamCommissionRepository.commissionEventById(eventId);
+                    if (event != null && (event.get("settlementSourceType") == null
+                            || "network".equals(event.get("settlementSourceType")))) {
+                        String unfreezeBlocked = OpsTeamService.commissionUnfreezeBlockedReason(
+                                OpsTeamService.canonicalCommissionState(String.valueOf(event.get("status"))), "COOLING", event.get("unlockAt"));
+                        if (unfreezeBlocked != null) return ApiResult.fail(409, unfreezeBlocked);
+                    }
+                }
+            }
             if ("f_ui_config".equals(operation)) {
                 OpsTeamService.validateBinaryUiConfig(value(command.params(), "key"), value(command.params(), "value"));
             }

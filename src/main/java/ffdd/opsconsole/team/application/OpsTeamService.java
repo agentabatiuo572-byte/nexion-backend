@@ -1955,9 +1955,9 @@ public class OpsTeamService implements AuditReplayable {
             }
         }
         if(direct!=null)direct.lockEventSource(directEventId,"UNLOCKED".equals(toCanonical));
-        if ("FROZEN".equals(fromCanonical) && "COOLING".equals(toCanonical) && oldEvent.get("unlockAt") == null) {
-            // Historical pause cleared the deadline; never reconstruct a deadline or release it by guess.
-            return ApiResult.fail(409, "F5_COOLDOWN_DEADLINE_UNRECOVERABLE");
+        String unfreezeBlocked = commissionUnfreezeBlockedReason(fromCanonical, toCanonical, oldEvent.get("unlockAt"));
+        if (unfreezeBlocked != null) {
+            return ApiResult.fail(409, unfreezeBlocked);
         }
         if (!commissionRepository.updateCommissionStatusCas(eventId,fromCanonical,toCanonical,request.expectedVersion())) {
             return ApiResult.fail(409, "F5_COMMISSION_VERSION_CONFLICT");
@@ -2009,6 +2009,12 @@ public class OpsTeamService implements AuditReplayable {
      * F5 佣金事件状态归一化(PRD F5②:cooling/unlocked/withdrawn/reversed + 任务 A1 转换图 frozen/settled/paid)。
      * nx_commission_event 历史数据混用中英文,统一归一为大写英文供状态机判断。
      */
+    /** Shared by proposal validation and the two existing deadline-dependent replay paths. */
+    public static String commissionUnfreezeBlockedReason(String from, String to, Object unlockAt) {
+        return "FROZEN".equals(from) && "COOLING".equals(to) && unlockAt == null
+                ? "F5_COOLDOWN_DEADLINE_UNRECOVERABLE" : null;
+    }
+
     public static String canonicalCommissionState(String raw) {
         String normalized = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
         return switch (normalized) {
