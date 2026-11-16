@@ -169,11 +169,16 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         return null;
     }
 
-    /** Only the four J4 writes that stay inside the transaction: config records, a drill record, a cancel flag. */
+    /**
+     * J4 writes that stay inside the transaction: config records, a drill record, a cancel flag, and
+     * recovery reconciliation. Resume only reads durable facts and writes local progress/audit/outbox;
+     * it never invokes a domain action or restores a switch itself.
+     */
     private static boolean j4LocalRecord(String scope) {
         if (scope == null) return false;
         return "J4_PLAYBOOK_CREATE".equals(scope) || scope.startsWith("J4_PLAYBOOK_UPDATE:")
-                || scope.startsWith("J4_PLAYBOOK_DRILL:") || scope.startsWith("J4_PLAYBOOK_CANCEL:");
+                || scope.startsWith("J4_PLAYBOOK_DRILL:") || scope.startsWith("J4_PLAYBOOK_CANCEL:")
+                || scope.startsWith("J4_PLAYBOOK_RESUME:");
     }
 
     /** The seven J4 playbook writes that carry an idempotency scope. */
