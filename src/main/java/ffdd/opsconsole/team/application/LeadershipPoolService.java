@@ -12,7 +12,10 @@ import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
 import ffdd.opsconsole.team.domain.LeaderboardComputePoints;
 import ffdd.opsconsole.team.mapper.TeamCommissionMapper;
+import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
+import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -76,6 +79,7 @@ public class LeadershipPoolService {
     private final EventOutboxService eventOutboxService;
     private final LeadershipPoolConfigGuard settlementConfigGuard;
     private final LeadershipPoolConfigAlertService settlementConfigAlertService;
+    private final TreasuryCoverageFacade coverageFacade;
 
     /** Scheduler entry point: resolve the database-canonical ISO week at execution time. */
     @Transactional(rollbackFor = Exception.class)
@@ -105,8 +109,13 @@ public class LeadershipPoolService {
             throw new BizException(422, "F4_SETTLEMENT_REASON_REQUIRED");
         }
         String normalizedOperator = operator == null || operator.isBlank() ? "unknown-admin" : operator.trim();
-        return injectAndSettleTrusted(
-                teamCommissionMapper.currentYearWeek(), null, "ADMIN", normalizedOperator, normalizedReason);
+        int weekCode = teamCommissionMapper.currentYearWeek();
+        // The coverage check belongs to the money write, not only to the proposal: an already settled
+        // week stays a no-op so a repeated approval cannot start failing on a later coverage read.
+        if (teamCommissionMapper.countLeadershipByWeek(String.valueOf(weekCode)) <= 0) {
+            requirePayoutCoverage();
+        }
+        return injectAndSettleTrusted(weekCode, null, "ADMIN", normalizedOperator, normalizedReason);
     }
 
     /**
@@ -243,6 +252,11 @@ public class LeadershipPoolService {
         String normalizedReason = reason == null ? "" : reason.trim();
         LeaderboardPeriod settledPeriod = resolveClosedLeaderboardPeriod(period, requestedPeriodKey);
         if (normalizedReason.length() < 8) throw new BizException(422, "F4_SETTLEMENT_REASON_REQUIRED");
+        // Same as the pool payout: check before the first event or wallet write, and keep an already
+        // settled period a no-op instead of failing it on coverage.
+        if (teamCommissionMapper.countLeaderboardBySettlementKey(settledPeriod.key()) <= 0) {
+            requirePayoutCoverage();
+        }
         return settleLeaderboardPrize(settledPeriod.period(), settledPeriod.key(),
                 settledPeriod.from(), settledPeriod.to(), null, "ADMIN",
                 operator == null || operator.isBlank() ? "unknown-admin" : operator.trim(), normalizedReason);
@@ -535,6 +549,22 @@ public class LeadershipPoolService {
         result.put("minComputePoints", minPoints);
         result.put("rows", rows);
         return ApiResult.ok(result);
+    }
+
+    /**
+     * F4 payout coverage, the same contract the reissue path applies: an unavailable or unreliable
+     * snapshot is refused instead of being read as zero, and a ratio exactly at the redline passes.
+     */
+    private void requirePayoutCoverage() {
+        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        if (coverage == null || !coverage.reliable()) {
+            throw new BizException(503, "COVERAGE_SNAPSHOT_UNAVAILABLE");
+        }
+        if (coverage.coverageRatio() == null || coverage.redlinePct() == null
+                || coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
+            throw new BizException(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                    OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        }
     }
 
     /** The pool the settlement reads for a period: the configured weekly pool, else the period prize. */
