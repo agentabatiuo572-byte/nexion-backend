@@ -4,6 +4,7 @@ import ffdd.opsconsole.shared.config.VietnamBusinessPeriod;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -239,41 +240,11 @@ public class LeadershipPoolService {
     @Transactional(rollbackFor = Exception.class)
     public int settleApprovedLeaderboardPeriod(String period, String requestedPeriodKey, String operator, String reason) {
         if (!A2ReplayContext.isReplaying()) throw new BizException(409, "A2_CONFIRMATION_REQUIRED");
-        String canonical = period == null ? "" : period.trim();
         String normalizedReason = reason == null ? "" : reason.trim();
-        if (!Set.of("today", "week", "month", "allTime").contains(canonical)) {
-            throw new BizException(422, "F4_LEADERBOARD_PERIOD_INVALID");
-        }
+        LeaderboardPeriod settledPeriod = resolveClosedLeaderboardPeriod(period, requestedPeriodKey);
         if (normalizedReason.length() < 8) throw new BizException(422, "F4_SETTLEMENT_REASON_REQUIRED");
-        LocalDate today = VietnamBusinessPeriod.dateAt(java.time.Instant.now());
-        LocalDateTime from = null;
-        LocalDateTime to = VietnamBusinessPeriod.storageBoundary(today.plusDays(1));
-        String key;
-        if ("today".equals(canonical)) {
-            LocalDate date = parseDateOrNull(requestedPeriodKey);
-            if (date == null || !date.isBefore(today)) throw new BizException(422, "F4_CLOSED_PERIOD_REQUIRED");
-            from = VietnamBusinessPeriod.storageBoundary(date);
-            to = VietnamBusinessPeriod.storageBoundary(date.plusDays(1));
-            key = "today:" + date;
-        } else if ("week".equals(canonical)) {
-            LocalDate monday = parseDateOrNull(requestedPeriodKey);
-            if (monday == null || monday.getDayOfWeek() != DayOfWeek.MONDAY
-                    || monday.plusWeeks(1).isAfter(today)) throw new BizException(422, "F4_CLOSED_PERIOD_REQUIRED");
-            from = VietnamBusinessPeriod.storageBoundary(monday);
-            to = VietnamBusinessPeriod.storageBoundary(monday.plusWeeks(1));
-            key = "week:" + monday;
-        } else if ("month".equals(canonical)) {
-            YearMonth month = parseMonthOrNull(requestedPeriodKey);
-            if (month == null || !month.isBefore(YearMonth.from(today))) {
-                throw new BizException(422, "F4_CLOSED_PERIOD_REQUIRED");
-            }
-            from = VietnamBusinessPeriod.storageBoundary(month.atDay(1));
-            to = VietnamBusinessPeriod.storageBoundary(month.plusMonths(1).atDay(1));
-            key = "month:" + month;
-        } else {
-            key = "allTime:lifetime";
-        }
-        return settleLeaderboardPrize(canonical, key, from, to, null, "ADMIN",
+        return settleLeaderboardPrize(settledPeriod.period(), settledPeriod.key(),
+                settledPeriod.from(), settledPeriod.to(), null, "ADMIN",
                 operator == null || operator.isBlank() ? "unknown-admin" : operator.trim(), normalizedReason);
     }
 
@@ -313,10 +284,7 @@ public class LeadershipPoolService {
             throw new IllegalStateException("F4_LEADERBOARD_MUTEX_UNAVAILABLE");
         }
         if (teamCommissionMapper.countLeaderboardBySettlementKey(settlementKey) > 0) return 0;
-        BigDecimal prizePool = "week".equals(period)
-                ? configMoney(CONFIG_KEY_LEADERBOARD_POOL).filter(value -> value.signum() > 0)
-                        .orElseGet(() -> configuredPeriodPrize(period))
-                : configuredPeriodPrize(period);
+        BigDecimal prizePool = leaderboardPrizePool(period);
         if (prizePool.signum() <= 0) return 0;
         BigDecimal minPoints = LeaderboardComputePoints.minimum(
                 configFacade.activeValue(LeaderboardComputePoints.CONFIG_KEY).orElse(null));
@@ -334,32 +302,24 @@ public class LeadershipPoolService {
 
         BigDecimal top1Cap = prizePool.multiply(configPercent(CONFIG_KEY_TOP1_MAX_PCT, new BigDecimal("25")));
         BigDecimal top5Cap = prizePool.multiply(configPercent(CONFIG_KEY_TOP5_MAX_PCT, new BigDecimal("60")));
-        BigDecimal totalWeight = BigDecimal.valueOf((long) candidates.size() * (candidates.size() + 1) / 2);
+        List<LeaderboardPayoutRow> payout = allocateLeaderboardPrize(prizePool, top1Cap, top5Cap, candidates);
         BigDecimal allocated = BigDecimal.ZERO;
-        BigDecimal allocatedTop5 = BigDecimal.ZERO;
         int settled = 0;
-        for (int index = 0; index < candidates.size(); index++) {
-            Long userId = asLong(candidates.get(index).get("userId"));
-            if (userId == null) continue;
-            BigDecimal weight = BigDecimal.valueOf(candidates.size() - index);
-            BigDecimal share = prizePool.multiply(weight).divide(totalWeight, SCALE, RoundingMode.DOWN);
-            if (index == 0) share = share.min(top1Cap);
-            if (index < 5) share = share.min(top5Cap.subtract(allocatedTop5).max(BigDecimal.ZERO));
-            if (share.signum() <= 0) continue;
+        for (LeaderboardPayoutRow row : payout) {
+            if (row.amount().signum() <= 0) continue;
             String remark = "F4 leaderboard | settlementKey=" + settlementKey + "| period=" + period
-                    + " rank=" + (index + 1)
+                    + " rank=" + (row.index() + 1)
                     + " top1MaxPct=" + configText(CONFIG_KEY_TOP1_MAX_PCT, "25")
                     + " top5MaxPct=" + configText(CONFIG_KEY_TOP5_MAX_PCT, "60");
             Long eventId = commissionRepository.insertCommissionEvent(
-                    userId, COMMISSION_LEADERBOARD_PRIZE, null, CURRENCY_USDT,
-                    share, ZERO, STATUS_UNLOCKED, 0, remark);
+                    row.userId(), COMMISSION_LEADERBOARD_PRIZE, null, CURRENCY_USDT,
+                    row.amount(), ZERO, STATUS_UNLOCKED, 0, remark);
             if (eventId == null) throw new IllegalStateException("F4_LEADERBOARD_EVENT_INSERT_FAILED");
             ledgerPostingFacade.releaseCommissionFunds(eventId);
             eventOutboxService.publish("LEADERBOARD_PRIZE", "F4-LB-" + settlementKey + "-" + eventId,
-                    "commission.paid", linked("userId", userId, "kind", COMMISSION_LEADERBOARD_PRIZE,
-                            "currency", CURRENCY_USDT, "amount", share, "commissionEventId", eventId));
-            allocated = allocated.add(share);
-            if (index < 5) allocatedTop5 = allocatedTop5.add(share);
+                    "commission.paid", linked("userId", row.userId(), "kind", COMMISSION_LEADERBOARD_PRIZE,
+                            "currency", CURRENCY_USDT, "amount", row.amount(), "commissionEventId", eventId));
+            allocated = allocated.add(row.amount());
             settled++;
         }
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
@@ -375,6 +335,214 @@ public class LeadershipPoolService {
                         "minComputePoints", minPoints, "settledUsers", settled, "reason", reason))
                 .build());
         return settled;
+    }
+
+    /** A closed leaderboard period: the settlement key and the business window it covers. */
+    private record LeaderboardPeriod(String period, String key, LocalDateTime from, LocalDateTime to) { }
+
+    /** One ranked payout: the share the ranking grants, the amount the head caps leave, and why. */
+    private record LeaderboardPayoutRow(int index, Long userId, BigDecimal computePoints,
+            BigDecimal uncappedAmount, BigDecimal amount, List<String> limitedBy) { }
+
+    /** Resolves and validates the closed period an approved payout names, exactly as it did before. */
+    private LeaderboardPeriod resolveClosedLeaderboardPeriod(String period, String requestedPeriodKey) {
+        String canonical = period == null ? "" : period.trim();
+        if (!Set.of("today", "week", "month", "allTime").contains(canonical)) {
+            throw new BizException(422, "F4_LEADERBOARD_PERIOD_INVALID");
+        }
+        LocalDate today = VietnamBusinessPeriod.dateAt(java.time.Instant.now());
+        LocalDateTime from = null;
+        LocalDateTime to = VietnamBusinessPeriod.storageBoundary(today.plusDays(1));
+        String key;
+        if ("today".equals(canonical)) {
+            LocalDate date = parseDateOrNull(requestedPeriodKey);
+            if (date == null || !date.isBefore(today)) throw new BizException(422, "F4_CLOSED_PERIOD_REQUIRED");
+            from = VietnamBusinessPeriod.storageBoundary(date);
+            to = VietnamBusinessPeriod.storageBoundary(date.plusDays(1));
+            key = "today:" + date;
+        } else if ("week".equals(canonical)) {
+            LocalDate monday = parseDateOrNull(requestedPeriodKey);
+            if (monday == null || monday.getDayOfWeek() != DayOfWeek.MONDAY
+                    || monday.plusWeeks(1).isAfter(today)) throw new BizException(422, "F4_CLOSED_PERIOD_REQUIRED");
+            from = VietnamBusinessPeriod.storageBoundary(monday);
+            to = VietnamBusinessPeriod.storageBoundary(monday.plusWeeks(1));
+            key = "week:" + monday;
+        } else if ("month".equals(canonical)) {
+            YearMonth month = parseMonthOrNull(requestedPeriodKey);
+            if (month == null || !month.isBefore(YearMonth.from(today))) {
+                throw new BizException(422, "F4_CLOSED_PERIOD_REQUIRED");
+            }
+            from = VietnamBusinessPeriod.storageBoundary(month.atDay(1));
+            to = VietnamBusinessPeriod.storageBoundary(month.plusMonths(1).atDay(1));
+            key = "month:" + month;
+        } else {
+            key = "allTime:lifetime";
+        }
+        return new LeaderboardPeriod(canonical, key, from, to);
+    }
+
+    /**
+     * The payout the settlement applies: a weight-based share per ranked user, reduced by the top1 and
+     * top5 head caps. The preview and the settlement both call this, so the numbers an operator sees
+     * before approving are the numbers that get paid.
+     */
+    private List<LeaderboardPayoutRow> allocateLeaderboardPrize(BigDecimal prizePool, BigDecimal top1Cap,
+            BigDecimal top5Cap, List<Map<String, Object>> candidates) {
+        BigDecimal totalWeight = BigDecimal.valueOf((long) candidates.size() * (candidates.size() + 1) / 2);
+        BigDecimal allocatedTop5 = BigDecimal.ZERO;
+        List<LeaderboardPayoutRow> rows = new ArrayList<>(candidates.size());
+        for (int index = 0; index < candidates.size(); index++) {
+            Long userId = asLong(candidates.get(index).get("userId"));
+            if (userId == null) continue;
+            BigDecimal weight = BigDecimal.valueOf(candidates.size() - index);
+            BigDecimal uncapped = prizePool.multiply(weight).divide(totalWeight, SCALE, RoundingMode.DOWN);
+            BigDecimal share = uncapped;
+            List<String> limitedBy = new ArrayList<>(2);
+            if (index == 0 && share.compareTo(top1Cap) > 0) {
+                share = top1Cap;
+                limitedBy.add("top1MaxPct");
+            }
+            if (index < 5) {
+                BigDecimal remainingTop5 = top5Cap.subtract(allocatedTop5).max(BigDecimal.ZERO);
+                if (share.compareTo(remainingTop5) > 0) {
+                    share = remainingTop5;
+                    limitedBy.add("top5MaxPct");
+                }
+            }
+            // A rank the caps reduced to zero is still part of the ranking an operator confirms: keep
+            // the row so the preview shows every paid rank and the pre-cap total stays complete, and
+            // let the settlement skip it when it inserts events.
+            if (share.signum() > 0 && index < 5) allocatedTop5 = allocatedTop5.add(share);
+            rows.add(new LeaderboardPayoutRow(index, userId, asBigDecimal(candidates.get(index).get("computePoints")),
+                    uncapped, share, List.copyOf(limitedBy)));
+        }
+        return rows;
+    }
+
+    /** Same display label the leaderboard reads use for a member number. */
+    private static String leaderboardUserNo(Long userId) {
+        String raw = String.valueOf(userId);
+        return "U" + "0".repeat(Math.max(0, Math.max(8, raw.length()) - raw.length())) + raw;
+    }
+
+    /**
+     * Read-only payout preview for a leaderboard period: rank, real user, the share the ranking grants,
+     * the amount the head caps leave and which cap cut it. Nothing is locked, settled, audited or
+     * written, and no settlement key is claimed, so this can be read before the proposal.
+     */
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> previewLeaderboardPayout(String requestedPeriod, String requestedPeriodKey) {
+        LeaderboardPeriod period = resolveClosedLeaderboardPeriod(requestedPeriod, requestedPeriodKey);
+        BigDecimal prizePool = leaderboardPrizePool(period.period());
+        BigDecimal minPoints = LeaderboardComputePoints.minimum(
+                configFacade.activeValue(LeaderboardComputePoints.CONFIG_KEY).orElse(null));
+        int topN = switch (period.period()) {
+            case "today" -> 20;
+            case "week" -> 50;
+            default -> 100;
+        };
+        BigDecimal top1Pct = configPercent(CONFIG_KEY_TOP1_MAX_PCT, new BigDecimal("25"));
+        BigDecimal top5Pct = configPercent(CONFIG_KEY_TOP5_MAX_PCT, new BigDecimal("60"));
+        boolean paused = configBoolean(CONFIG_KEY_LEADERBOARD_PAUSED, false);
+        boolean alreadySettled = teamCommissionMapper.countLeaderboardBySettlementKey(period.key()) > 0;
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("period", period.period());
+        result.put("periodKey", period.key());
+        result.put("paused", paused);
+        result.put("alreadySettled", alreadySettled);
+        result.put("prizePoolUsdt", prizePool);
+        result.put("rankingMetric", LeaderboardComputePoints.METRIC);
+        result.put("minComputePoints", minPoints);
+        result.put("topN", topN);
+        result.put("top1MaxPct", top1Pct.movePointRight(2).stripTrailingZeros().toPlainString());
+        result.put("top5MaxPct", top5Pct.movePointRight(2).stripTrailingZeros().toPlainString());
+        if (prizePool.signum() <= 0) {
+            result.put("available", false);
+            result.put("reason", "F4_LEADERBOARD_POOL_NOT_CONFIGURED");
+            result.put("rows", List.of());
+            return ApiResult.ok(result);
+        }
+        List<Map<String, Object>> candidates = commissionRepository.leaderboardCandidates(
+                period.period(), period.from(), period.to(), minPoints, topN);
+        List<LeaderboardPayoutRow> payout = allocateLeaderboardPrize(prizePool, prizePool.multiply(top1Pct),
+                prizePool.multiply(top5Pct), candidates);
+        List<Map<String, Object>> rows = new ArrayList<>(payout.size());
+        BigDecimal beforeCaps = BigDecimal.ZERO;
+        BigDecimal payable = BigDecimal.ZERO;
+        for (LeaderboardPayoutRow row : payout) {
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("rank", row.index() + 1);
+            entry.put("userId", row.userId());
+            entry.put("userNo", leaderboardUserNo(row.userId()));
+            entry.put("computePoints", row.computePoints());
+            entry.put("amountBeforeCaps", row.uncappedAmount());
+            entry.put("amount", row.amount());
+            entry.put("limitedBy", row.limitedBy());
+            rows.add(entry);
+            beforeCaps = beforeCaps.add(row.uncappedAmount());
+            payable = payable.add(row.amount());
+        }
+        result.put("candidateCount", candidates.size());
+        result.put("rankedCount", rows.size());
+        result.put("paidCount", (int) payout.stream().filter(row -> row.amount().signum() > 0).count());
+        result.put("amountBeforeCaps", beforeCaps);
+        result.put("payableAmount", payable);
+        result.put("reducedByCaps", beforeCaps.subtract(payable));
+        result.put("rows", rows);
+        boolean hasPayableRow = payout.stream().anyMatch(row -> row.amount().signum() > 0);
+        boolean available = !paused && !alreadySettled && hasPayableRow;
+        result.put("available", available);
+        result.put("reason", available ? "" : paused ? "F4_LEADERBOARD_PAUSED"
+                : alreadySettled ? "F4_LEADERBOARD_ALREADY_SETTLED"
+                : rows.isEmpty() ? "F4_LEADERBOARD_NO_CANDIDATES"
+                : "F4_LEADERBOARD_NOTHING_PAYABLE");
+        return ApiResult.ok(result);
+    }
+
+    /**
+     * Read-only: for every current-week candidate, whether the same evidence the disposition validates
+     * exists, and which reference it is. Rows without evidence say so instead of inventing a reason.
+     */
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> leaderboardDisqualificationReadiness(int limit) {
+        LocalDate monday = VietnamBusinessPeriod.dateAt(java.time.Instant.now())
+                .with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
+        LocalDateTime from = VietnamBusinessPeriod.storageBoundary(monday);
+        LocalDateTime to = VietnamBusinessPeriod.storageBoundary(monday.plusWeeks(1));
+        BigDecimal minPoints = LeaderboardComputePoints.minimum(
+                configFacade.activeValue(LeaderboardComputePoints.CONFIG_KEY).orElse(null));
+        List<Map<String, Object>> candidates = commissionRepository.leaderboardCandidates(
+                "week", from, to, minPoints, Math.max(1, Math.min(limit, 50)));
+        List<Map<String, Object>> rows = new ArrayList<>(candidates.size());
+        for (int index = 0; index < candidates.size(); index++) {
+            Long memberUserId = asLong(candidates.get(index).get("userId"));
+            if (memberUserId == null) continue;
+            String evidence = commissionRepository.leaderboardDisqualificationEvidence(memberUserId);
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("rank", index + 1);
+            entry.put("memberUserId", memberUserId);
+            entry.put("userNo", leaderboardUserNo(memberUserId));
+            entry.put("computePoints", asBigDecimal(candidates.get(index).get("computePoints")));
+            entry.put("disqualificationAvailable", evidence != null);
+            entry.put("riskEvidenceRef", evidence == null ? "" : evidence);
+            entry.put("reason", evidence == null ? "NO_RISK_EVIDENCE" : "");
+            rows.add(entry);
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("period", "week");
+        result.put("periodKey", monday.toString());
+        result.put("rankingMetric", LeaderboardComputePoints.METRIC);
+        result.put("minComputePoints", minPoints);
+        result.put("rows", rows);
+        return ApiResult.ok(result);
+    }
+
+    /** The pool the settlement reads for a period: the configured weekly pool, else the period prize. */
+    private BigDecimal leaderboardPrizePool(String period) {
+        return "week".equals(period)
+                ? configMoney(CONFIG_KEY_LEADERBOARD_POOL).filter(value -> value.signum() > 0)
+                        .orElseGet(() -> configuredPeriodPrize(period))
+                : configuredPeriodPrize(period);
     }
 
     BigDecimal configuredPeriodPrize(String period) {
