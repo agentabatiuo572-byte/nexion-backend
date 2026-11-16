@@ -1232,7 +1232,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             Map<String, Object> current = lockMission(kind, code);
             if (current == null) return validation("H3_MISSION_NOT_FOUND");
             if (intValue(current.get("status"), -1) != expected) return ApiResult.fail(409, "H3_MISSION_STALE");
-            if ("MISSION".equals(kind) && target == 1 && RETIRED_STAKING_MISSION_CODES.contains(code)) {
+            if ("MISSION".equals(kind) && target == 1 && RETIRED_STAKING_MISSION_CODES.contains(code.toLowerCase(Locale.ROOT))) {
                 return validation("H3_MISSION_RETIRED");
             }
             if ("MISSION".equals(kind) && target == 1 && WEEKLY_WITHOUT_VERIFIED_COMPLETION.contains(code)) {
@@ -1355,7 +1355,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
      * beginner-group check needs no new type framework or fuzzier matching.
      */
     private boolean stakingMissionCode(String code) {
-        return code != null && (code.contains("stake") || code.contains("lock"));
+        String normalized = code.toLowerCase(Locale.ROOT);
+        return normalized.contains("stake") || normalized.contains("lock");
     }
 
     private String normalizeMissionCategory(String raw) {
