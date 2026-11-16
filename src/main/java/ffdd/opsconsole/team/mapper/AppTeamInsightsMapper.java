@@ -147,8 +147,8 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
                      WHERE a.is_deleted=0 AND LOWER(a.period)=LOWER(#{actionPeriod})
                        AND a.member_user_id=owner.id
                        AND UPPER(a.action_type) IN ('FRAUD','DISQUALIFIED','RISK')
-                       <if test="fromInclusive != null">AND a.created_at&gt;=#{fromInclusive}</if>
-                       <if test="toExclusive != null">AND a.created_at&lt;#{toExclusive}</if>
+                       <if test="actionPeriod != null and actionPeriod.equalsIgnoreCase('week') and fromInclusive != null">AND a.created_at&gt;=#{fromInclusive}</if>
+                       <if test="actionPeriod != null and actionPeriod.equalsIgnoreCase('week') and toExclusive != null">AND a.created_at&lt;#{toExclusive}</if>
                  )
               UNION ALL
               SELECT n.owner_id,n.sandbox,child.id,n.depth+1,CONCAT(n.path,child.id,',')
