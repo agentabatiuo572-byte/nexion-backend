@@ -1731,8 +1731,13 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
                 return updateSecurityBaseline(idem, str(p, "baselineKey"), req);
             }
             case "a6_role_grants_update" -> {
+                // The snapshotted set travels with the command so the approval re-checks it instead of
+                // trusting the current grants; tickets proposed before the snapshot existed carry none
+                // and are refused rather than approved over an unknown base.
                 PlatformRoleGrantsUpdateRequest req = new PlatformRoleGrantsUpdateRequest(
-                        strings(p.get("permissionCodes")), longs(p.get("menuIds")), reason, operator);
+                        strings(p.get("permissionCodes")), longs(p.get("menuIds")), reason, operator,
+                        p.containsKey("expectedPermissionCodes") ? strings(p.get("expectedPermissionCodes")) : null,
+                        p.containsKey("expectedMenuIds") ? longs(p.get("expectedMenuIds")) : null);
                 return platformRoleService.updateRoleGrants(Long.valueOf(str(p, "roleId")), idem, req);
             }
             case "a6_role_disable" -> {
