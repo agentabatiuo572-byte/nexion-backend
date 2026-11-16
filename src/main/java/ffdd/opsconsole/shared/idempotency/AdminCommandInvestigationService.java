@@ -737,7 +737,12 @@ public class AdminCommandInvestigationService {
     private String receiptState(AdminIdempotencyRecordEntity original) {
         String status = original.getStatus();
         if ("PROCESSING".equals(status)) return "PROCESSING";
-        if ("FAILED".equals(status)) return "FAILED";
+        if ("FAILED".equals(status)) {
+            // Only the origin-backed failure path persists a trusted business reply; a bare
+            // FAILED row (or a legacy row without provenance) still proves no business result.
+            Integer code = original.getOriginAdminId() == null ? null : businessCode(original.getResponseJson());
+            return code != null && code != 0 ? "REJECTED" : "FAILED";
+        }
         if ("CONFIRMED_REJECTED".equals(status)) return "REJECTED";
         if ("SUCCEEDED".equals(status) || "CONFIRMED_SUCCEEDED".equals(status)) {
             Integer code = businessCode(original.getResponseJson());

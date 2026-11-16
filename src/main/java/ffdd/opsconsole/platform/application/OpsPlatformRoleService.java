@@ -27,6 +27,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.idempotency.AdminCommandBusinessRejection;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService.RecoveryStatus;
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
@@ -526,7 +527,12 @@ public class OpsPlatformRoleService {
         return idempotencyService.executeRetained(scope, key, requestHash(scope, request, key, actorId),
                 ApiResult.class, () -> {
                     ApiResult<?> result = action.get();
-                    if (result.getCode() != 0) throw new BizException(result.getCode(), result.getMessage());
+                    if (result.getCode() != 0) {
+                        Map<String, Object> rejection = new LinkedHashMap<>();
+                        rejection.put("code", result.getCode());
+                        rejection.put("message", result.getMessage());
+                        throw new AdminCommandBusinessRejection(result.getCode(), result.getMessage(), rejection);
+                    }
                     return result;
                 });
     }
