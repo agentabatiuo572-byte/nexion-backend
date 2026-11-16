@@ -1534,10 +1534,12 @@ public class AuditReplayBusinessPermissionGuard {
         }
         boolean amplifies = "f_config".equals(operation)
                 || OpsTeamService.uiConfigAmplifies(configFacade, teamCommissionRepository, key, nextValue);
+        String beforeValue = OpsTeamService.proposalCurrentValue(
+                configFacade, teamCommissionRepository, operation, key);
         return new DelegatedProposalDescriptor(
                 "F 域配置调整 · " + key,
                 key,
-                "以服务器执行时状态为准",
+                beforeValue,
                 nextValue,
                 fSourceDomain(operation, key),
                 amplifies ? "fund" : "param",
