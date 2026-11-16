@@ -287,6 +287,21 @@ public class AdminCommandInvestigationService {
             return "PAYOUT_VND_CONFIG".equals(fact.getResourceType())
                     && "D7_PAYOUT_VND_CONFIG_UPDATED".equals(action);
         }
+        // J4 playbooks: each scope accepts only its own success audit, never the started/partial variants.
+        if ("J4_PLAYBOOK_CREATE".equals(scope)) return "SOP_PLAYBOOK".equals(fact.getResourceType())
+                && "J4_SOP_PLAYBOOK_CREATED".equals(action);
+        if (scope.startsWith("J4_PLAYBOOK_UPDATE:")) return "SOP_PLAYBOOK".equals(fact.getResourceType())
+                && "J4_SOP_PLAYBOOK_EDITED".equals(action);
+        if (scope.startsWith("J4_PLAYBOOK_DRILL:")) return "SOP_PLAYBOOK_EXECUTION".equals(fact.getResourceType())
+                && "J4_SOP_PLAYBOOK_DRILL_COMPLETED".equals(action);
+        if (scope.startsWith("J4_PLAYBOOK_EXECUTE:")) return "SOP_PLAYBOOK_EXECUTION".equals(fact.getResourceType())
+                && "J4_SOP_PLAYBOOK_EXECUTED".equals(action);
+        if (scope.startsWith("J4_PLAYBOOK_CANCEL:")) return "SOP_PLAYBOOK_EXECUTION".equals(fact.getResourceType())
+                && "J4_SOP_PLAYBOOK_CANCEL_REQUESTED".equals(action);
+        if (scope.startsWith("J4_PLAYBOOK_RESUME:")) return "SOP_PLAYBOOK_EXECUTION".equals(fact.getResourceType())
+                && "J4_SOP_PLAYBOOK_RECOVERY_STARTED".equals(action);
+        if (scope.startsWith("J4_PLAYBOOK_ROLLBACK:")) return "SOP_PLAYBOOK_EXECUTION".equals(fact.getResourceType())
+                && "J4_SOP_PLAYBOOK_ROLLED_BACK".equals(action);
         return Set.of("D2_WITHDRAWAL_CHAIN_CONFIRMED", "D2_WITHDRAWAL_REVIEW_APPROVE", "D2_WITHDRAWAL_REVIEW_REJECT",
                 "D2_WITHDRAWAL_REVIEW_REFUND", "D2_WITHDRAWAL_REVIEW_DELAY", "D2_WITHDRAWAL_REVIEW_FREEZE",
                 "D3_FORECAST_CONFIG_CHANGED", "D3_TREASURY_RESERVE_INJECTION", "D3_RECONCILIATION_EXPORTED", "D3_LIABILITIES_EXPORTED", "D3_SENSITIVE_EXPORT_A2_AUDITED",
