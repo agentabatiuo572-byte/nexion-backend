@@ -82,6 +82,8 @@ public interface TeamCommissionRepository {
 
     Map<String, Object> commissionEventById(long eventId);
 
+    int countEventUserSuspended(long eventId);
+
     List<Map<String, Object>> commissionKindSummary();
 
     List<Map<String, Object>> commissionAuditFeed(int limit);

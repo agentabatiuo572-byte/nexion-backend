@@ -897,6 +897,18 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             """)
     Map<String, Object> commissionEventById(@Param("eventId") long eventId);
 
+    /** F5 unlock gate: whether the event's owner is suspended for that commission kind. */
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_commission_event e
+              JOIN nx_commission_user_suspension s
+                ON s.user_id = e.user_id
+               AND s.kind = LOWER(e.commission_type)
+               AND s.status = 'SUSPENDED'
+             WHERE e.id = #{eventId} AND e.is_deleted = 0
+            """)
+    int countEventUserSuspended(@Param("eventId") long eventId);
+
     @Select("""
             SELECT LOWER(commission_type) AS `key`,
                    UPPER(commission_type) AS code,
