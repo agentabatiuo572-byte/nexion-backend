@@ -668,8 +668,18 @@ public class AdminCommandInvestigationService {
                 || (AdminCommandOrigin.a4CommandScope(scope) && scope.matches("[A-Za-z0-9_.:-]{1,96}")))
                 || !AdminCommandOrigin.supported(scope)
                 || key == null || key.isBlank() || key.length() > 128 || !key.equals(key.trim())
-                || requireHash && hash == null || hash != null && !hash.matches("[a-fA-F0-9]{64}"))
+                || requireHash && hash == null || hash != null && !hashFormatAllowed(scope, hash))
             throw new BizException(422, "INVESTIGATION_ORIGINAL_IDENTITY_INVALID");
+    }
+
+    /**
+     * The platform experience writer keeps Integer.toHexString(hashCode()) so an in-flight command can be
+     * replayed, which is one to eight lowercase hex characters; every other scope stores a 64 character
+     * digest. Accepting the real stored form here keeps the exact-match check below unchanged for all.
+     */
+    private boolean hashFormatAllowed(String scope, String hash) {
+        if ("A3_PLATFORM_EXPERIENCE".equals(scope) && hash.matches("[0-9a-f]{1,8}")) return true;
+        return hash.matches("[a-fA-F0-9]{64}");
     }
 
     private ReceiptFamily receiptFamily(String scope) {
