@@ -4561,7 +4561,8 @@ public class OpsTeamService implements AuditReplayable {
                 response.put("authoritativeReread", true);
                 return ApiResult.ok(response);
             }
-            // f_unilevel_rule: key 承载 layerNo + 字段(F.unilevel.L{n} usdtRate / F.unilevel.nex.L{n} nexPerUsd)。amplifies true(费率)。
+            // f_unilevel_rule: key 承载 layerNo + 字段(F.unilevel.L{n} usdtRate / F.unilevel.nex.L{n} nexPerUsd)。
+            // 方向由服务器按当前值与拟改值同单位比较：费率调低=param，调高=fund。
             case "f_unilevel_rule" -> {
                 String key = str(p, "key");
                 TeamCommissionConfigUpdateRequest req = new TeamCommissionConfigUpdateRequest(key, str(p, "value"), reason, operator);
