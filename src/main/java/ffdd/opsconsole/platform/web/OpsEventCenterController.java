@@ -118,7 +118,7 @@ public class OpsEventCenterController {
         String key = idempotencyKey.trim();
         return ApiResult.ok(idempotencyService.execute("A4_EVENT_RETENTION_RUN", key,
                 retentionHash(actor, request.reason()), RetentionExecutionView.class,
-                () -> executeRetention(actor, key, request.reason())));
+                () -> executeRetention(actor, key, request.reason(), request.expectedRetentionMonths())));
     }
 
     /** Retries one audited, governed H3 source event after ordinary delivery is DEAD. */
@@ -137,9 +137,10 @@ public class OpsEventCenterController {
         return ApiResult.ok(h3DeadLetterRedriveService.preview(eventId));
     }
 
-    private RetentionExecutionView executeRetention(String actor, String idempotencyKey, String reason) {
+    private RetentionExecutionView executeRetention(
+            String actor, String idempotencyKey, String reason, Integer expectedRetentionMonths) {
         a2RuntimePolicy.validateReason(reason);
-        A4EventRetentionService.RetentionRun run = eventRetentionService.runNow();
+        A4EventRetentionService.RetentionRun run = eventRetentionService.runNow(expectedRetentionMonths);
         RetentionExecutionView view = new RetentionExecutionView(run.retentionMonths(), run.cutoff(), run.lockAcquired(),
                 0, 0, run.outboxRows(), run.behaviorFactRows());
         auditLogService.recordRequired(AuditLogWriteRequest.builder()

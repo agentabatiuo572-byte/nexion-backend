@@ -103,12 +103,13 @@ public class OpsAuditController {
         String key = idempotencyKey.trim();
         return ApiResult.ok(idempotencyService.execute("A2_AUDIT_RETENTION_RUN", key,
                 retentionHash(actor, request.reason()), RetentionExecutionView.class,
-                () -> executeRetention(actor, key, request.reason())));
+                () -> executeRetention(actor, key, request.reason(), request.expectedRetentionMonths())));
     }
 
-    private RetentionExecutionView executeRetention(String actor, String idempotencyKey, String reason) {
+    private RetentionExecutionView executeRetention(
+            String actor, String idempotencyKey, String reason, Integer expectedRetentionMonths) {
         a2RuntimePolicy.validateReason(reason);
-        AuditRetentionService.RetentionRun run = auditRetentionService.runNow();
+        AuditRetentionService.RetentionRun run = auditRetentionService.runNow(expectedRetentionMonths);
         RetentionExecutionView view = new RetentionExecutionView(run.retentionMonths(), run.cutoff(), run.lockAcquired(),
                 run.archivedRows(), run.affectedRows(), 0, 0);
         auditLogService.recordRequired(AuditLogWriteRequest.builder()

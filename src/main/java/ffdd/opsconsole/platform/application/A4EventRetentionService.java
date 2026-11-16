@@ -33,8 +33,23 @@ public class A4EventRetentionService {
 
     @Transactional(rollbackFor = Exception.class)
     public RetentionRun runNow() {
+        return runNowInternal(null);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public RetentionRun runNow(Integer expectedRetentionMonths) {
+        if (expectedRetentionMonths == null) {
+            throw new ffdd.opsconsole.shared.exception.BizException(422, "RETENTION_EXPECTED_MONTHS_REQUIRED");
+        }
+        return runNowInternal(expectedRetentionMonths);
+    }
+
+    private RetentionRun runNowInternal(Integer expectedRetentionMonths) {
         LocalDateTime evaluatedAt = LocalDateTime.now();
         int months = policy.eventRetentionMonths();
+        if (expectedRetentionMonths != null && expectedRetentionMonths != months) {
+            throw new ffdd.opsconsole.shared.exception.BizException(409, "RETENTION_PARAMETERS_STALE");
+        }
         if (!Integer.valueOf(1).equals(mapper.tryAcquireRetentionLock())) {
             return new RetentionRun(months, evaluatedAt, 0, 0, false);
         }
