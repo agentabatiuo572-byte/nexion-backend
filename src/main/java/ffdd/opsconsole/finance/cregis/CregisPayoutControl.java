@@ -77,9 +77,13 @@ public class CregisPayoutControl {
     }
     /** Address support and payout support are distinct Cregis project permissions. */
     public Map<String,Object> capability(CregisNetwork network) {
-        var result = new LinkedHashMap<String,Object>();
         boolean configured = configured(network);
-        String reason = configured ? (String) capability().get("disabledReason") : "NOT_CONFIGURED";
+        return capability(network, configured,
+                configured ? (String) capability().get("disabledReason") : "NOT_CONFIGURED");
+    }
+
+    private Map<String,Object> capability(CregisNetwork network, boolean configured, String reason) {
+        var result = new LinkedHashMap<String,Object>();
         if (configured && reason == null && db.recentCompleteReconcileCountForNetwork(network, config.getProjectId()) != 1)
             reason = "RECONCILIATION_REQUIRED";
         if (configured && reason == null) {
@@ -100,6 +104,14 @@ public class CregisPayoutControl {
     public boolean enabled(CregisNetwork network) { return Boolean.TRUE.equals(capability(network).get("enabled")); }
     public java.util.List<Map<String,Object>> networkCapabilities() {
         return java.util.Arrays.stream(CregisNetwork.values()).map(this::capability).toList();
+    }
+    /** Reuses only the global result supplied by the current policy response. */
+    public java.util.List<Map<String,Object>> networkCapabilities(Map<String,Object> globalCapability) {
+        return java.util.Arrays.stream(CregisNetwork.values()).map(network -> {
+            boolean configured = configured(network);
+            return capability(network, configured,
+                    configured ? (String) globalCapability.get("disabledReason") : "NOT_CONFIGURED");
+        }).toList();
     }
     public int requiredConfirmations() { return Math.max(15, config.getDepositConfirmations()); }
     private static boolean on(Object value) {

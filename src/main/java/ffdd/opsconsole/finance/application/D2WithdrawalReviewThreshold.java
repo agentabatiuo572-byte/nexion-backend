@@ -14,7 +14,10 @@ final class D2WithdrawalReviewThreshold {
     private D2WithdrawalReviewThreshold() {}
 
     static BigDecimal read(PlatformConfigFacade config) {
-        String raw = config.activeValue(KEY).orElse(null);
+        return read(config.activeValue(KEY).orElse(null));
+    }
+
+    static BigDecimal read(String raw) {
         if (raw == null) return null;
         try {
             BigDecimal value = new BigDecimal(raw.trim());
@@ -27,6 +30,12 @@ final class D2WithdrawalReviewThreshold {
 
     static BigDecimal require(PlatformConfigFacade config) {
         BigDecimal threshold = read(config);
+        if (threshold == null) throw new BizException(503, UNAVAILABLE);
+        return threshold;
+    }
+
+    static BigDecimal require(String raw) {
+        BigDecimal threshold = read(raw);
         if (threshold == null) throw new BizException(503, UNAVAILABLE);
         return threshold;
     }

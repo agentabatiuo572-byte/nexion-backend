@@ -344,6 +344,10 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
      * device's descending task index until ten records have been found; it must not materialize
      * the user's entire task history merely to produce the App's ten-row preview.
      */
+    default List<AssignmentRow> assignmentsForDevices(Long userId, String sourceEnvironment, List<Long> deviceIds) {
+        return readAssignmentsForDevices(userId, sourceEnvironment, deviceIds, false);
+    }
+
     @Select("""
             <script>
             SELECT t.task_no AS taskNo, t.user_device_id AS deviceId, t.task_config_id AS taskId,
@@ -357,11 +361,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
               FROM (
                 <foreach collection='deviceIds' item='deviceId' separator=' UNION ALL '>
                   (
-                    SELECT t.task_no, t.user_device_id, t.task_config_id, t.task_name, t.task_type,
-                           t.model_name, t.client_name, t.status, t.reward_usdt, t.required_seconds,
-                           t.task_lock_minutes, t.started_at, t.lease_expires_at, t.completed_at,
-                           t.source_environment, t.completion_nonce, t.proof_expires_at,
-                           t.paused_at, t.paused_seconds, t.created_at, t.id
+                    SELECT t.id, t.created_at
                       FROM nx_visible_compute_task t
                       JOIN nx_user u ON u.id = t.user_id
                         AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
@@ -371,11 +371,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                        AND t.is_deleted = 0 AND t.status IN ('CLAIMED','RUNNING')
                     UNION ALL
                     (
-                      SELECT t.task_no, t.user_device_id, t.task_config_id, t.task_name, t.task_type,
-                             t.model_name, t.client_name, t.status, t.reward_usdt, t.required_seconds,
-                             t.task_lock_minutes, t.started_at, t.lease_expires_at, t.completed_at,
-                           t.source_environment, t.completion_nonce, t.proof_expires_at,
-                           t.paused_at, t.paused_seconds, t.created_at, t.id
+                      SELECT t.id, t.created_at
                         FROM nx_visible_compute_task t
                         JOIN nx_user u ON u.id = t.user_id
                           AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
@@ -388,15 +384,20 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                     )
                   )
                 </foreach>
-              ) t
+              ) picked
+              JOIN nx_compute_task t ON t.id = picked.id
+              <if test='omitCompletedSimulated'>
+                AND NOT (t.status = 'COMPLETED' AND BINARY t.task_no LIKE BINARY 'SIM-%')
+              </if>
               LEFT JOIN nx_visible_compute_receipt r ON r.task_no = t.task_no
                 AND r.source_environment = t.source_environment AND r.is_deleted = 0
              ORDER BY t.created_at DESC, t.id DESC
             </script>
             """)
-    List<AssignmentRow> assignmentsForDevices(@Param("userId") Long userId,
-                                              @Param("sourceEnvironment") String sourceEnvironment,
-                                              @Param("deviceIds") List<Long> deviceIds);
+    List<AssignmentRow> readAssignmentsForDevices(@Param("userId") Long userId,
+                                                 @Param("sourceEnvironment") String sourceEnvironment,
+                                                 @Param("deviceIds") List<Long> deviceIds,
+                                                 @Param("omitCompletedSimulated") boolean omitCompletedSimulated);
 
     @Select("""
             WITH ranked_tasks AS (

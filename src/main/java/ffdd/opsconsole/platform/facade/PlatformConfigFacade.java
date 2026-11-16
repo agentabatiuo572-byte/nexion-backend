@@ -12,6 +12,12 @@ public interface PlatformConfigFacade extends DomainFacade {
         return activeValue(configKey);
     }
 
+    default Map<String, String> activeValuesByKeys(java.util.Collection<String> keys) {
+        Map<String, String> values = new java.util.LinkedHashMap<>();
+        for (String key : keys) activeValue(key).ifPresent(value -> values.put(key, value));
+        return values;
+    }
+
     default SessionLifetimes sessionLifetimes() {
         return SessionLifetimes.from(activeValue(SessionLifetimes.ACCESS_KEY).orElse(null),
                 activeValue(SessionLifetimes.REFRESH_KEY).orElse(null),

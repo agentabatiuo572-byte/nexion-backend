@@ -677,8 +677,6 @@ public class OpsTreasuryService {
 
     private DualLedgerSnapshot readDualLedgerSnapshot(BigDecimal proposedNexPrice, boolean fullView) {
         LocalDateTime now = LocalDateTime.now(clock);
-        LocalDateTime current24hStart = now.minusHours(24);
-        LocalDateTime prev24hStart = now.minusHours(48);
         // B1 coverage needs the reserve balance, without the D3 forecast promotion used by the reserve panel.
         BigDecimal reserveUsd = treasuryReserveBalance().availableUsd();
         BigDecimal currentNexPrice = ledgerRepository.latestNexUsdtPrice().map(this::safe).orElse(BigDecimal.ZERO);
@@ -687,10 +685,7 @@ public class OpsTreasuryService {
         long thresholdVersion = fullView ? b1ThresholdVersion() : 0;
         BigDecimal redlinePct = safetyThresholdDecimal(REDLINE_CONFIG_KEY, dualLedgerProperties.getRedlinePct());
         BigDecimal healthyPct = safetyThresholdDecimal(HEALTHY_CONFIG_KEY, dualLedgerProperties.getHealthyPct());
-        BigDecimal runRiskPct = safetyThresholdDecimal(RUN_RISK_CONFIG_KEY, dualLedgerProperties.getRunRiskPct());
-        String scope = configValue(SCOPE_CONFIG_KEY, "all active liabilities");
 
-        BigDecimal queueBacklogUsd = safe(ledgerRepository.sumActiveWithdrawalQueueUsdt());
         BigDecimal nexLiabilityUnits = nexLiabilityUnits();
         boolean valuationReliable = uvtValuationReliable(nexLiabilityUnits, currentNexPrice)
                 && (proposedNexPrice == null || proposedNexPrice.signum() > 0);
@@ -711,6 +706,25 @@ public class OpsTreasuryService {
                 : reserveUsd.multiply(BigDecimal.valueOf(100)).compareTo(liabilitiesUsd.multiply(redlinePct)) < 0;
         boolean healthyForAlert = valuationReliable && liabilitiesUsd.signum() > 0
                 && reserveUsd.multiply(ONE_HUNDRED).compareTo(liabilitiesUsd.multiply(healthyPct)) >= 0;
+        Map<String, Object> snapshot = section(
+                "reserveUsd", money(reserveUsd),
+                "liabilitiesUsd", money(liabilitiesUsd),
+                "ratioReserveUsd", reserveUsd,
+                "ratioLiabilitiesUsd", liabilitiesUsd,
+                "nexUsdRate", nexUsdRate,
+                "valuationReliable", valuationReliable,
+                "coverageRatio", proposedNexPrice == null ? pctScale(coverageRatio) : coverageRatio,
+                "redlinePct", pctScale(redlinePct),
+                "healthyPct", pctScale(healthyPct),
+                "redlineBreached", redlineBreached);
+        if (!fullView) {
+            return new DualLedgerSnapshot(section("snapshot", snapshot), healthyForAlert);
+        }
+        LocalDateTime current24hStart = now.minusHours(24);
+        LocalDateTime prev24hStart = now.minusHours(48);
+        BigDecimal runRiskPct = safetyThresholdDecimal(RUN_RISK_CONFIG_KEY, dualLedgerProperties.getRunRiskPct());
+        String scope = configValue(SCOPE_CONFIG_KEY, "all active liabilities");
+        BigDecimal queueBacklogUsd = safe(ledgerRepository.sumActiveWithdrawalQueueUsdt());
         BigDecimal netFlow24hUsd = safe(ledgerRepository.sumNetUsdtFlowBetween(current24hStart, now));
         BigDecimal prevNetFlow24hUsd = safe(ledgerRepository.sumNetUsdtFlowBetween(prev24hStart, current24hStart));
         BigDecimal avgRiskScore = safe(ledgerRepository.avgActiveWithdrawalQueueRiskScore()).setScale(0, RoundingMode.HALF_UP);
@@ -732,29 +746,16 @@ public class OpsTreasuryService {
                         "nx_config_item:wallet.dual-ledger.safety-thresholds",
                         "H1 growth rhythm facade"));
         response.put("h1Rhythm", bRhythmSummary());
-        Map<String, Object> snapshot = section(
-                "reserveUsd", money(reserveUsd),
-                "liabilitiesUsd", money(liabilitiesUsd),
-                "ratioReserveUsd", reserveUsd,
-                "ratioLiabilitiesUsd", liabilitiesUsd,
-                "nexUsdRate", nexUsdRate,
-                "valuationReliable", valuationReliable,
-                "coverageRatio", proposedNexPrice == null ? pctScale(coverageRatio) : coverageRatio,
-                "redlinePct", pctScale(redlinePct),
-                "healthyPct", pctScale(healthyPct),
+        snapshot.putAll(section(
                 "runRiskPct", pctScale(runRiskPct),
-                "redlineBreached", redlineBreached,
                 "netFlow24hUsd", money(netFlow24hUsd),
                 "queueBacklogCount", ledgerRepository.countActiveWithdrawalQueue(),
                 "queueBacklogUsd", money(queueBacklogUsd),
                 "avgRiskScore", avgRiskScore.longValue(),
                 "coverageSeries", coverageSeries(now, reserveUsd, liabilitiesUsd),
                 "coverageSeriesIntervalHours", B1_COVERAGE_SERIES_INTERVAL_HOURS,
-                "scope", scope);
+                "scope", scope));
         response.put("snapshot", snapshot);
-        if (!fullView) {
-            return new DualLedgerSnapshot(response, healthyForAlert);
-        }
         snapshot.put("thresholdVersion", thresholdVersion);
         response.put("accounts", accounts.stream().map(this::scaleAccount).toList());
         response.put("maturity7d", maturity7d());

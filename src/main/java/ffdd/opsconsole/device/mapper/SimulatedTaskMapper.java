@@ -167,6 +167,11 @@ public interface SimulatedTaskMapper {
                    r.next_action_at nextActionAt,(u.status='ACTIVE' AND u.sandbox=0 AND u.is_deleted=0) activeAccount
             """+DUE_QUEUE+" ORDER BY r.next_action_at,r.user_device_id LIMIT 1 FOR UPDATE OF u SKIP LOCKED")
     DueCandidate claimDue(@Param("now")LocalDateTime now);
+    @Select("""
+            SELECT r.user_id userId,r.user_device_id deviceId,r.generation,r.current_task_no currentTaskNo,
+                   r.next_action_at nextActionAt,(u.status='ACTIVE' AND u.sandbox=0 AND u.is_deleted=0) activeAccount
+            """+DUE_QUEUE+" AND r.current_task_no IS NOT NULL ORDER BY r.next_action_at,r.user_device_id LIMIT 1 FOR UPDATE OF u SKIP LOCKED")
+    DueCandidate claimCurrentDue(@Param("now")LocalDateTime now);
     @Select("SELECT EXISTS(SELECT 1 "+DUE_QUEUE+" LIMIT 1)")
     boolean hasDue(@Param("now")LocalDateTime now);
     @Select("""
@@ -178,10 +183,13 @@ public interface SimulatedTaskMapper {
               AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL AND d.pending_deactivate=0
               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
               AND (r.user_device_id IS NULL OR (r.state IN ('STOPPED','EXPIRED') AND d.activated_at>r.interval_started_at)
-                OR (r.state='STOPPED' AND r.last_error='DEVICE_PAUSED'))
+                OR (r.state='STOPPED' AND r.last_error='DEVICE_PAUSED')
+                OR (r.state IN ('RUNNING','WAITING_CONFIG') AND r.current_task_no IS NULL
+                  AND r.stop_at IS NULL AND r.stop_after_current=0
+                  AND (r.next_action_at IS NULL OR r.next_action_at<=#{now})))
             ORDER BY d.id LIMIT #{limit}
             """)
-    List<Candidate> initialDevices(@Param("afterId")long afterId,@Param("limit")int limit);
+    List<Candidate> initialDevices(@Param("afterId")long afterId,@Param("limit")int limit,@Param("now")LocalDateTime now);
     @Select("""
             SELECT (SELECT COUNT(*) FROM nx_compute_task WHERE user_id=#{userId} AND user_device_id=#{deviceId}
               AND source_environment='PRODUCTION' AND is_deleted=0 AND status IN ('CLAIMED','RUNNING','PAUSED')
