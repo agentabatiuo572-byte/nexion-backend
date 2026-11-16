@@ -143,10 +143,12 @@ public class OpsAuditController {
 
     private String retentionHash(String actor, String reason, Integer expectedRetentionMonths) {
         try {
+            // Sorted locally so the serialised bytes, and therefore the request hash, do not depend on
+            // this JVM's Map.of iteration order. Fields are unchanged.
             var command = expectedRetentionMonths == null
-                    ? Map.of("actor", actor, "operation", "A2_AUDIT_RETENTION_RUN", "reason", reason.trim())
-                    : Map.of("actor", actor, "operation", "A2_AUDIT_RETENTION_RUN", "reason", reason.trim(),
-                            "expectedRetentionMonths", expectedRetentionMonths);
+                    ? new java.util.TreeMap<String, Object>(Map.of("actor", actor, "operation", "A2_AUDIT_RETENTION_RUN", "reason", reason.trim()))
+                    : new java.util.TreeMap<String, Object>(Map.of("actor", actor, "operation", "A2_AUDIT_RETENTION_RUN", "reason", reason.trim(),
+                            "expectedRetentionMonths", expectedRetentionMonths));
             return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(
                     objectMapper.writeValueAsBytes(command)));
         } catch (Exception ex) {
