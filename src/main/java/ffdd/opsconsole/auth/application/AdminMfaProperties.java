@@ -12,9 +12,4 @@ public class AdminMfaProperties {
     private String issuer = "UVEL Ops";
     private long challengeTtlSeconds = 300;
     private int challengeMaxAttempts = 5;
-    /**
-     * Temporary recovery switch. It is disabled by default and applies only to
-     * records whose server-side super-admin flag is active.
-     */
-    private boolean temporarySuperadminBypassEnabled = false;
 }
