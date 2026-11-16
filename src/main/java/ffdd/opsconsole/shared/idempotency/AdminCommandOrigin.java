@@ -69,6 +69,8 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (scope.startsWith("K1")) return "risk_k1_read";
         if ("J3_ALERT_CONFIG".equals(scope)) return "emergency_j3_read";
         if (j2GeoWrite(scope)) return "emergency_j2_read";
+        if (scope.startsWith("I1_COPY_")) return "content_i1_read";
+        if (scope.startsWith("I2_NOVA_")) return "content_i2_read";
         if (scope.startsWith("J1")) return "emergency_j1_read";
         if (scope.startsWith("I5")) return "content_i5_read";
         if (java.util.Set.of("I4_DISCLOSURE_PUBLISH", "I4_GATE_ADJUST").contains(scope)) return "content_i5_read";
@@ -85,6 +87,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || "D5_WITHDRAWAL_LIMITS_UPDATE".equals(scope) || "D5_WITHDRAWAL_LIMITS".equals(scope)
                 || "D6_FX_QUOTE_UPDATE".equals(scope) || "D6_FX_QUOTE".equals(scope)
                 || "FINANCE:D7:CONFIG_UPDATE".equals(scope) || "D7_PAYOUT_VND_CONFIG".equals(scope)
+                || scope.startsWith("I1_COPY_") || scope.startsWith("I2_NOVA_")
                 || "A2_COMMAND".equals(scope) || "L_BI_REPORT_CREATE".equals(scope) || scope.startsWith("L_BI_REPORT_ACTION"));
     }
 

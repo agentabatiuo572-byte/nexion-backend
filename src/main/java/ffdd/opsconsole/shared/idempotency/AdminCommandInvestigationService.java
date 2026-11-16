@@ -253,6 +253,9 @@ public class AdminCommandInvestigationService {
         if (scope.startsWith("E5_DEVICE_")) return (scope.startsWith("E5_DEVICE_BATCH_") ? "USER_DEVICE_BATCH" : "DEVICE").equals(fact.getResourceType())
                 && Set.of("ADMIN.DEVICE_ACTIVATED", "ADMIN.DEVICE_DEACTIVATION_REQUESTED",
                         "ADMIN.DEVICE_DEACTIVATED", "ADMIN.DEVICE_PAUSED", "ADMIN.DEVICE_RESUMED").contains(action);
+        if (scope.startsWith("I1_COPY_")) return i1CopyEvidence(scope, fact);
+        if (scope.startsWith("I2_NOVA_")) return "NOVA".equals(fact.getResourceType())
+                && i2NovaActions(scope).contains(action);
         if ("E6_PHONE_RISK_SETTINGS".equals(scope)) return "CONFIG".equals(fact.getResourceType())
                 && "ADMIN.PHONE_RISK_SETTINGS_UPDATED".equals(action)
                 && "E.compute.phoneRisk.settings".equals(fact.getResourceId());
@@ -292,6 +295,58 @@ public class AdminCommandInvestigationService {
                 "C2_USER_STATUS_CHANGED", "C2_USER_SESSIONS_REVOKED", "C2_ACCOUNT_LIST_UPSERTED", "C2_ACCOUNT_LIST_REMOVED",
                 "C2_USER_IMPERSONATION_TERMINATED").contains(action)
                 && action.startsWith((scope.startsWith("GROWTH:H2:") ? "H2" : scope.substring(0, 2)) + "_");
+    }
+
+    /** I1 copy/experiment writes: the resource type follows the writer's own action derivation. */
+    private boolean i1CopyEvidence(String scope, AuditLogRecord fact) {
+        String action = fact.getAction();
+        String expectedType = action.contains("VERSION_OPTION") ? "CONTENT_COPY_VERSION_OPTION"
+                : action.contains("POSITION") ? "CONTENT_COPY_POSITION"
+                : action.contains("EXPERIMENT") ? "CONTENT_EXPERIMENT"
+                : action.contains("FRAMEWORK") ? "CONTENT_EXPERIMENT_FRAMEWORK" : "CONTENT_COPY";
+        if (!expectedType.equals(fact.getResourceType())) return false;
+        return switch (scope) {
+            case "I1_COPY_CREATE" -> "I1_COPY_CREATED".equals(action);
+            case "I1_COPY_DRAFT_SAVE" -> "I1_COPY_DRAFT_SAVED".equals(action);
+            case "I1_COPY_VERSION_PUBLISH" -> "I1_COPY_VERSION_PUBLISHED".equals(action);
+            case "I1_COPY_VERSION_ROLLBACK" -> "I1_COPY_VERSION_ROLLED_BACK".equals(action);
+            case "I1_COPY_VERSION_ARCHIVE" -> "I1_COPY_VERSION_ARCHIVED".equals(action);
+            case "I1_COPY_DRAFT_VERSION_DELETE" -> "I1_COPY_DRAFT_VERSION_DELETED".equals(action);
+            case "I1_COPY_POSITION_CREATE" -> "I1_COPY_POSITION_CREATED".equals(action);
+            case "I1_COPY_POSITION_UPDATE" -> "I1_COPY_POSITION_UPDATED".equals(action);
+            case "I1_COPY_POSITION_DELETE" -> "I1_COPY_POSITION_DELETED".equals(action);
+            case "I1_COPY_VERSION_OPTION_CREATE" -> "I1_COPY_VERSION_OPTION_CREATED".equals(action);
+            case "I1_COPY_VERSION_OPTION_UPDATE" -> "I1_COPY_VERSION_OPTION_UPDATED".equals(action);
+            case "I1_COPY_VERSION_OPTION_DELETE" -> "I1_COPY_VERSION_OPTION_DELETED".equals(action);
+            case "I1_COPY_EXPERIMENT_FRAMEWORK_UPDATE" -> "I1_EXPERIMENT_FRAMEWORK_UPDATED".equals(action);
+            case "I1_COPY_EXPERIMENT_CREATE" -> "I1_EXPERIMENT_CREATED".equals(action);
+            case "I1_COPY_EXPERIMENT_START" -> "I1_EXPERIMENT_STARTED".equals(action);
+            case "I1_COPY_EXPERIMENT_STOP" -> "I1_EXPERIMENT_STOPPED".equals(action);
+            case "I1_COPY_EXPERIMENT_ADOPT" -> "I1_EXPERIMENT_WINNER_ADOPTED".equals(action);
+            case "I1_COPY_EXPERIMENT_DISCARD" -> "I1_EXPERIMENT_DISCARDED".equals(action);
+            default -> false;
+        };
+    }
+
+    /** I2 Nova writes: one resource type (NOVA), and only the actions that scope itself writes. */
+    private static java.util.Set<String> i2NovaActions(String scope) {
+        if (scope.startsWith("I2_NOVA_SOCIAL_EVENT_STATUS:")) return java.util.Set.of("I2_NOVA_SOCIAL_EVENT_STATUS_CHANGED");
+        if (scope.startsWith("I2_NOVA_SOCIAL_EVENT_DELETE:")) return java.util.Set.of("I2_NOVA_SOCIAL_EVENT_DELETED");
+        if (scope.startsWith("I2_NOVA_SOCIAL_")) return switch (scope) {
+            case "I2_NOVA_SOCIAL_SYNC" -> java.util.Set.of("I2_NOVA_SOCIAL_EVENTS_SYNCED");
+            case "I2_NOVA_SOCIAL_EXPIRE" -> java.util.Set.of("I2_NOVA_SOCIAL_EVENTS_EXPIRED");
+            case "I2_NOVA_SOCIAL_DISTRIBUTION" -> java.util.Set.of("I2_NOVA_SOCIAL_DISTRIBUTION_CHANGED");
+            default -> java.util.Set.of();
+        };
+        if (scope.startsWith("I2_NOVA_CHANNEL_STATUS:")) return java.util.Set.of("I2_NOVA_CHANNEL_RESTORED", "I2_NOVA_CHANNEL_KILLED");
+        if (scope.startsWith("I2_NOVA_CHANNEL_UPDATE:")) return java.util.Set.of("I2_NOVA_CHANNEL_UPDATED");
+        if (scope.startsWith("I2_NOVA_CHANNEL_DELETE:")) return java.util.Set.of("I2_NOVA_CHANNEL_DELETED");
+        if ("I2_NOVA_CHANNEL_CREATE".equals(scope)) return java.util.Set.of("I2_NOVA_CHANNEL_CREATED");
+        if (scope.startsWith("I2_NOVA_TEMPLATE_STATUS:")) return java.util.Set.of("I2_NOVA_TEMPLATE_STATUS_CHANGED");
+        if (scope.startsWith("I2_NOVA_TEMPLATE_UPDATE:")) return java.util.Set.of("I2_NOVA_TEMPLATE_UPDATED");
+        if (scope.startsWith("I2_NOVA_TEMPLATE_DELETE:")) return java.util.Set.of("I2_NOVA_TEMPLATE_DELETED");
+        if ("I2_NOVA_TEMPLATE_CREATE".equals(scope)) return java.util.Set.of("I2_NOVA_TEMPLATE_CREATED");
+        return java.util.Set.of();
     }
 
     private void requireFactReader(AdminIdempotencyRecordEntity original, AdminCommandInvestigationEntity entry) {
