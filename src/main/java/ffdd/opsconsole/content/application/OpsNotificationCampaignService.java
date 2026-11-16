@@ -103,7 +103,12 @@ public class OpsNotificationCampaignService {
         }
         return executeIdempotent("I3_NOTIFICATION_CAMPAIGN_CREATE", idempotencyKey,
                 requestHash("create", operator(request.operator()), request), () -> {
+                    ApiResult<NotificationCampaignRow> budgetGuard = requireBudgetPrecision(request.budget());
+                    if (budgetGuard != null) return budgetGuard;
                     NotificationCampaignCreateRequest normalized = normalizeCreate(request);
+                    if (dispatchTextTooLong(normalized)) {
+                        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_TEXT_TOO_LONG");
+                    }
                     long estimatedAudience = campaignRepository.estimateAudience(normalized.audienceTarget(), currentPhase(), now());
                     String campaignNo = nextCampaignNo(normalized.name());
                     NotificationCampaignRow created = campaignRepository.createCampaign(campaignNo, normalized, estimatedAudience, now());
@@ -133,7 +138,12 @@ public class OpsNotificationCampaignService {
                     if (expectedRevision != current.revision()) {
                         return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_STALE_VERSION");
                     }
+                    ApiResult<NotificationCampaignRow> budgetGuard = requireBudgetPrecision(request.budget());
+                    if (budgetGuard != null) return budgetGuard;
                     NotificationCampaignDraftRequest normalized = normalizeDraft(request);
+                    if (dispatchTextTooLong(normalized)) {
+                        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_TEXT_TOO_LONG");
+                    }
                     long estimatedAudience = campaignRepository.estimateAudience(normalized.audienceTarget(), currentPhase(), now());
                     if (!campaignRepository.updateDraft(current.id(), normalized, estimatedAudience, expectedRevision, now())) {
                         return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_STALE_VERSION");
@@ -166,6 +176,9 @@ public class OpsNotificationCampaignService {
                     long expectedRevision = request.expectedRevision();
                     if (expectedRevision != current.revision()) {
                         return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_STALE_VERSION");
+                    }
+                    if (dispatchTextTooLong(current)) {
+                        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_TEXT_TOO_LONG");
                     }
                     ApiResult<NotificationCampaignRow> criticalGuard = requireCriticalExecutionAuthority(current);
                     if (criticalGuard != null) {
@@ -221,6 +234,9 @@ public class OpsNotificationCampaignService {
                     long expectedRevision = request.expectedRevision();
                     if (expectedRevision != current.revision()) {
                         return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_STALE_VERSION");
+                    }
+                    if (dispatchTextTooLong(current)) {
+                        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_TEXT_TOO_LONG");
                     }
                     ApiResult<NotificationCampaignRow> criticalGuard = requireCriticalExecutionAuthority(current);
                     if (criticalGuard != null) {
@@ -430,6 +446,76 @@ public class OpsNotificationCampaignService {
                             "to", updated.cap()));
                     return ApiResult.ok(updated);
                 });
+    }
+
+    /** Delivered notification columns are 128/512 characters; validate the actual (title, body) pair. */
+    private boolean dispatchTextTooLong(NotificationCampaignCreateRequest request) {
+        if (request == null) return false;
+        if (deliveredTooLong(request.titleZh(), request.bodyZh(), request.name())
+                || deliveredTooLong(request.titleVi(), request.bodyVi(), request.name())
+                || deliveredTooLong(request.titleEn(), request.bodyEn(), "UVEL notification")) return true;
+        return translationsTooLong(request.translations());
+    }
+
+    private boolean dispatchTextTooLong(NotificationCampaignDraftRequest request) {
+        if (request == null) return false;
+        if (deliveredTooLong(request.titleZh(), request.bodyZh(), request.name())
+                || deliveredTooLong(request.titleVi(), request.bodyVi(), request.name())
+                || deliveredTooLong(request.titleEn(), request.bodyEn(), "UVEL notification")) return true;
+        return translationsTooLong(request.translations());
+    }
+
+    private boolean dispatchTextTooLong(NotificationCampaignRow row) {
+        if (row == null) return false;
+        if (combinedTooLongFromBody(row.bodyZh(), row.name())
+                || combinedTooLongFromBody(row.bodyVi(), row.name())
+                || combinedTooLongFromBody(row.bodyEn(), "UVEL notification")) return true;
+        return translationsTooLong(row.translations());
+    }
+
+    private boolean deliveredTooLong(String title, String body, String fallbackTitle) {
+        return combinedTooLongFromBody(text(title) + "\n" + text(body), fallbackTitle);
+    }
+
+    /** Mirrors Repository.localizedTitle/localizedContent: split raw before trim, then trim each part. */
+    private boolean combinedTooLongFromBody(String combined, String fallbackTitle) {
+        boolean hasContent = combined != null && !combined.trim().isEmpty();
+        if (!hasContent) return codePointLength(fallbackTitle) > 128;
+        int newline = combined.indexOf('\n');
+        String rawTitle = newline < 0 ? combined : combined.substring(0, newline);
+        String title = rawTitle.trim();
+        if (title.isEmpty()) title = fallbackTitle;
+        String body = newline < 0 ? combined.trim() : combined.substring(newline + 1).trim();
+        return codePointLength(title) > 128 || codePointLength(body) > 512;
+    }
+
+    private boolean translationsTooLong(Map<String, NotificationTranslation> translations) {
+        if (translations == null) return false;
+        for (NotificationTranslation translation : translations.values()) {
+            if (translation != null && (codePointLength(translation.title()) > 128
+                    || codePointLength(translation.body()) > 512)) return true;
+        }
+        return false;
+    }
+
+    private int codePointLength(String value) {
+        return value == null ? 0 : value.codePointCount(0, value.length());
+    }
+
+    private String text(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    /**
+     * Applies only to a new write intent after idempotency replay. DECIMAL(18,2)
+     * stores two fractional digits; trailing zeros are not a value change, but a
+     * non-zero fraction beyond two digits would be silently rounded by MySQL.
+     */
+    private ApiResult<NotificationCampaignRow> requireBudgetPrecision(BigDecimal budget) {
+        if (budget != null && budget.stripTrailingZeros().scale() > 2) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_BUDGET_INVALID");
+        }
+        return null;
     }
 
     private ApiResult<NotificationCampaignRow> requireCreate(String idempotencyKey, NotificationCampaignCreateRequest request) {
