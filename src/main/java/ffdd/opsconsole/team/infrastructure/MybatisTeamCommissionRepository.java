@@ -223,6 +223,11 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     }
 
     @Override
+    public int countEventUserSuspended(long eventId) {
+        return mapper.countEventUserSuspended(eventId);
+    }
+
+    @Override
     public List<Map<String, Object>> commissionKindSummary() {
         return mapper.commissionKindSummary();
     }

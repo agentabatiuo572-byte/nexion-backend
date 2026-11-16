@@ -618,6 +618,23 @@ public class OpsTeamService implements AuditReplayable {
                 : ApiResult.ok();
     }
 
+    /**
+     * F5 payout coverage for an unlock: the same contract the reissue path applies (reliable
+     * snapshot, coverage ratio at or above the redline), so releasing funds cannot run ahead of it.
+     */
+    private ApiResult<Void> requirePayoutCoverageForUnlock() {
+        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        if (coverage == null || !coverage.reliable()) {
+            return ApiResult.fail(503, "COVERAGE_SNAPSHOT_UNAVAILABLE");
+        }
+        if (coverage.coverageRatio() == null || coverage.redlinePct() == null
+                || coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
+            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                    OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        }
+        return ApiResult.ok();
+    }
+
     private void addAmbassadorPolicyReviewField(Map<String, Object> beforeFields, Map<String, Object> afterFields,
                                                  String field, Object before, Object after) {
         if (!Objects.equals(before, after)) {
@@ -1857,6 +1874,18 @@ public class OpsTeamService implements AuditReplayable {
             direct.changeStatus(directEventId, toCanonical, request.expectedVersion());
             if (!commissionRepository.recordCommissionOperation(eventId, fromCanonical+"_TO_"+toCanonical, idempotencyKey.trim(), request.expectedVersion(), actor(request.operator()), request.reason().trim())) throw new IllegalStateException("F5_OPERATION_AUDIT_CONFLICT");
             return ApiResult.ok(Map.of("updated", direct.eventSnapshot(directEventId)));
+        }
+        // F5: the ungrouped legacy event never read the suspension or the payout coverage that the
+        // grouped branch and the reissue path already respect, so its unlock could pay a suspended
+        // user or pay while coverage is under the redline. Both are refused before any write.
+        if ("UNLOCKED".equals(toCanonical)) {
+            if (commissionRepository.countEventUserSuspended(directEventId) > 0) {
+                return ApiResult.fail(409, "COMMISSION_USER_SUSPENDED");
+            }
+            ApiResult<Void> coverage = requirePayoutCoverageForUnlock();
+            if (coverage.getCode() != 0) {
+                return ApiResult.fail(coverage.getCode(), coverage.getMessage());
+            }
         }
         if(direct!=null)direct.lockEventSource(directEventId,"UNLOCKED".equals(toCanonical));
         if (!commissionRepository.updateCommissionStatusCas(eventId,fromCanonical,toCanonical,request.expectedVersion())) {
