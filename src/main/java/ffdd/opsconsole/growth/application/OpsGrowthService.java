@@ -196,6 +196,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             "weekly_t2_nex_swap", "H3_EXCHANGE_COMPLETED",
             "weekly_t2_ai_jobs_50", "H3_COMPUTE_COMPLETED_50",
             "weekly_t2_genesis_browse", "H3_GENESIS_SECONDARY_MARKET_VIEWED");
+    /** The three weekly staking missions the original row retired; they must never be enabled again. */
+    private static final Set<String> RETIRED_STAKING_MISSION_CODES = Set.of(
+            "weekly_t1_nex_v2_lock", "weekly_t1_stake_fallback", "weekly_t2_stake_small");
+
     private static final Set<String> WEEKLY_WITHOUT_VERIFIED_COMPLETION = Set.of(
             "weekly_t1_nex_v2_lock", "weekly_t1_buy_genesis", "weekly_t1_buy_additional_hw",
             "weekly_t1_tradein_upgrade", "weekly_t1_upgrade_s1_to_pro_v2",
@@ -1087,6 +1091,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                     && SANDBOX_DAY_ONE_MISSION_CODES.contains(code.toLowerCase(Locale.ROOT))) {
                 throw new IllegalArgumentException("MISSION_CODE_RESERVED_FOR_DAY_ONE");
             }
+            // The beginner group (DAY_ONE) has never carried a staking task and must not start now.
+            if ("DAY_ONE".equals(type) && stakingMissionCode(code)) {
+                throw new IllegalArgumentException("H3_DAY_ONE_STAKING_MISSION_REFUSED");
+            }
             String category = normalizeMissionCategory(request.category());
             String actionRoute = normalizeMissionActionRoute(request.actionRoute());
             int rewardPoints = request.rewardPoints() == null ? 0 : request.rewardPoints();
@@ -1224,6 +1232,9 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             Map<String, Object> current = lockMission(kind, code);
             if (current == null) return validation("H3_MISSION_NOT_FOUND");
             if (intValue(current.get("status"), -1) != expected) return ApiResult.fail(409, "H3_MISSION_STALE");
+            if ("MISSION".equals(kind) && target == 1 && RETIRED_STAKING_MISSION_CODES.contains(code)) {
+                return validation("H3_MISSION_RETIRED");
+            }
             if ("MISSION".equals(kind) && target == 1 && WEEKLY_WITHOUT_VERIFIED_COMPLETION.contains(code)) {
                 return validation("H3_MISSION_VERIFIED_COMPLETION_UNAVAILABLE");
             }
@@ -1337,6 +1348,14 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             throw new IllegalArgumentException("H3_MISSION_KIND_INVALID");
         }
         return kind;
+    }
+
+    /**
+     * The only staking signal this service already uses when gating publication; kept identical so the
+     * beginner-group check needs no new type framework or fuzzier matching.
+     */
+    private boolean stakingMissionCode(String code) {
+        return code != null && (code.contains("stake") || code.contains("lock"));
     }
 
     private String normalizeMissionCategory(String raw) {
