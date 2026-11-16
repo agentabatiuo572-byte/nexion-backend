@@ -394,6 +394,7 @@ public class OpsTreasuryService {
             BigDecimal net = historicalReserve.subtract(liabilityTotal);
             Map<String, Object> point = section("date", day.toString(), "reserveUsdt", money(historicalReserve),
                     "liabilitiesUsdt", money(liabilityTotal), "netExposureUsdt", money(net), "negative", net.signum() < 0);
+            point.put("backcast", offset > 0);
             point.put("valuedLiabilitiesUsdt", valuationReliable ? money(liabilityTotal) : null);
             point.put("valuedNetExposureUsdt", valuationReliable ? money(net) : null);
             series.add(0, point);
@@ -746,13 +747,15 @@ public class OpsTreasuryService {
                         "nx_config_item:wallet.dual-ledger.safety-thresholds",
                         "H1 growth rhythm facade"));
         response.put("h1Rhythm", bRhythmSummary());
+        List<Map<String, Object>> coveragePoints = coverageSeriesPoints(now, reserveUsd, liabilitiesUsd);
         snapshot.putAll(section(
                 "runRiskPct", pctScale(runRiskPct),
                 "netFlow24hUsd", money(netFlow24hUsd),
                 "queueBacklogCount", ledgerRepository.countActiveWithdrawalQueue(),
                 "queueBacklogUsd", money(queueBacklogUsd),
                 "avgRiskScore", avgRiskScore.longValue(),
-                "coverageSeries", coverageSeries(now, reserveUsd, liabilitiesUsd),
+                "coverageSeries", coveragePoints.stream().map(point -> point.get("coverageRatio")).toList(),
+                "coverageSeriesPoints", coveragePoints,
                 "coverageSeriesIntervalHours", B1_COVERAGE_SERIES_INTERVAL_HOURS,
                 "scope", scope));
         response.put("snapshot", snapshot);
@@ -2708,13 +2711,14 @@ public class OpsTreasuryService {
         return numerator.multiply(BigDecimal.valueOf(100)).divide(denominator, 6, RoundingMode.HALF_UP);
     }
 
-    private List<BigDecimal> coverageSeries(LocalDateTime now, BigDecimal reserveUsd, BigDecimal liabilitiesUsd) {
-        List<BigDecimal> series = new ArrayList<>();
+    private List<Map<String, Object>> coverageSeriesPoints(LocalDateTime now, BigDecimal reserveUsd, BigDecimal liabilitiesUsd) {
+        List<Map<String, Object>> series = new ArrayList<>();
         for (int i = 0; i < 8; i++) {
             LocalDateTime point = now.minusHours((7L - i) * B1_COVERAGE_SERIES_INTERVAL_HOURS);
             BigDecimal flowAfterPoint = safe(ledgerRepository.sumNetUsdtFlowBetween(point, now));
             BigDecimal historicalReserve = reserveUsd.subtract(flowAfterPoint).max(BigDecimal.ZERO);
-            series.add(pctScale(pct(historicalReserve, liabilitiesUsd)));
+            series.add(section("at", point, "coverageRatio", pctScale(pct(historicalReserve, liabilitiesUsd)),
+                    "backcast", i < 7));
         }
         return series;
     }

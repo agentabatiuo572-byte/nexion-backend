@@ -75,7 +75,10 @@ public class OpsPlatformPermissionDictionaryService {
     private String normalizedPermissionType(String code, String rawType) {
         if (StringUtils.hasText(rawType)) {
             String type = rawType.trim().toUpperCase(Locale.ROOT);
-            return "CRITICAL".equals(type) ? "HIGH" : type;
+            return switch (type) {
+                case "READ", "WRITE", "HIGH" -> type;
+                default -> "HIGH";
+            };
         }
         String normalizedCode = code == null ? "" : code.trim().toLowerCase(Locale.ROOT);
         if (normalizedCode.endsWith("_read")) return "READ";
