@@ -410,7 +410,9 @@ public class BehaviorAnalyticsService {
 
     public ApiResult<Map<String, Object>> pageCatalog() {
         requireProductionL6Surface();
-        List<BehaviorAnalyticsMapper.CatalogRow> pages = mapper.listCatalog();
+        // The whole deployed manifest snapshot, not just the tracked rows: an excluded list can only be
+        // reported from the rows the snapshot actually keeps out of tracking.
+        List<BehaviorAnalyticsMapper.CatalogRow> pages = mapper.listHistoricalCatalog();
         List<BehaviorAnalyticsMapper.CatalogRow> tracked = pages.stream().filter(BehaviorAnalyticsMapper.CatalogRow::tracked).toList();
         List<BehaviorAnalyticsMapper.CatalogRow> excluded = pages.stream().filter(row -> !row.tracked()).toList();
         return ApiResult.ok(linked("totalPages", pages.size(), "trackedCount", tracked.size(),
