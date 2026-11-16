@@ -45,7 +45,8 @@ public record DeviceOpsView(
         @com.fasterxml.jackson.annotation.JsonIgnore String simTaskName,
         @com.fasterxml.jackson.annotation.JsonIgnore String simTaskClass,
         @com.fasterxml.jackson.annotation.JsonIgnore LocalDateTime simTaskStartedAt,
-        @com.fasterxml.jackson.annotation.JsonIgnore LocalDateTime simTaskDueAt, MonthlyTarget monthlyTarget) {
+        @com.fasterxml.jackson.annotation.JsonIgnore LocalDateTime simTaskDueAt, MonthlyTarget monthlyTarget,
+        String ownershipStatus) {
     public DeviceOpsView(
         Long id,
         Long userId,
@@ -81,7 +82,7 @@ public record DeviceOpsView(
         Long activeDevicesForUser,
         Long userDeviceSlotNo,
         BigDecimal heartbeatAgeSeconds) {
-        this(id,userId,userNo,nickname,instanceNo,name,productTier,productCode,status,dcLocation,hashrate,dailyUsdt,dailyNex,lastSeenAt,purchasedAt,activatedAt,deactivatedAt,baseRate,currentEfficiency,pendingDeactivate,runtimeStatus,gpuUsage,gpuTempC,gpuPowerW,pausedReason,activeTaskNo,heartbeatAt,batteryLevel,isCharging,networkReachable,thermalState,activeDevicesForUser,userDeviceSlotNo,heartbeatAgeSeconds,null,null,null,null,null,null,null,null,null,null);
+        this(id,userId,userNo,nickname,instanceNo,name,productTier,productCode,status,dcLocation,hashrate,dailyUsdt,dailyNex,lastSeenAt,purchasedAt,activatedAt,deactivatedAt,baseRate,currentEfficiency,pendingDeactivate,runtimeStatus,gpuUsage,gpuTempC,gpuPowerW,pausedReason,activeTaskNo,heartbeatAt,batteryLevel,isCharging,networkReachable,thermalState,activeDevicesForUser,userDeviceSlotNo,heartbeatAgeSeconds,null,null,null,null,null,null,null,null,null,null,null);
     }
 
 
@@ -151,8 +152,8 @@ public record DeviceOpsView(
         Long userDeviceSlotNo,
         BigDecimal heartbeatAgeSeconds, String sourceChannel, String simState, String simLastError, LocalDateTime simNextActionAt,
         String simTaskNo, String simTaskName, String simTaskClass,
-        LocalDateTime simTaskStartedAt, LocalDateTime simTaskDueAt) {
-        this(id,userId,userNo,nickname,instanceNo,name,productTier,productCode,status,dcLocation,hashrate,dailyUsdt,dailyNex,lastSeenAt,purchasedAt,activatedAt,deactivatedAt,baseRate,currentEfficiency,pendingDeactivate,runtimeStatus,gpuUsage,gpuTempC,gpuPowerW,pausedReason,activeTaskNo,heartbeatAt,batteryLevel,isCharging,networkReachable,thermalState,activeDevicesForUser,userDeviceSlotNo,heartbeatAgeSeconds,sourceChannel,simState,simLastError,simNextActionAt,simTaskNo,simTaskName,simTaskClass,simTaskStartedAt,simTaskDueAt,null);
+        LocalDateTime simTaskStartedAt, LocalDateTime simTaskDueAt, String ownershipStatus) {
+        this(id,userId,userNo,nickname,instanceNo,name,productTier,productCode,status,dcLocation,hashrate,dailyUsdt,dailyNex,lastSeenAt,purchasedAt,activatedAt,deactivatedAt,baseRate,currentEfficiency,pendingDeactivate,runtimeStatus,gpuUsage,gpuTempC,gpuPowerW,pausedReason,activeTaskNo,heartbeatAt,batteryLevel,isCharging,networkReachable,thermalState,activeDevicesForUser,userDeviceSlotNo,heartbeatAgeSeconds,sourceChannel,simState,simLastError,simNextActionAt,simTaskNo,simTaskName,simTaskClass,simTaskStartedAt,simTaskDueAt,null,ownershipStatus);
     }
 
     public record MonthlyTarget(int cycleIndex,
@@ -161,6 +162,6 @@ public record DeviceOpsView(
             BigDecimal creditedUsdt, BigDecimal rangeLowUsdt, BigDecimal rangeHighUsdt, BigDecimal capacityPct,
             boolean targetActive, boolean configChangedInCycle) { }
     public DeviceOpsView withMonthlyTarget(MonthlyTarget value,BigDecimal daily,String rate) {
-        return new DeviceOpsView(id,userId,userNo,nickname,instanceNo,name,productTier,productCode,status,dcLocation,hashrate,daily,dailyNex,lastSeenAt,purchasedAt,activatedAt,deactivatedAt,rate,currentEfficiency,pendingDeactivate,runtimeStatus,gpuUsage,gpuTempC,gpuPowerW,pausedReason,activeTaskNo,heartbeatAt,batteryLevel,isCharging,networkReachable,thermalState,activeDevicesForUser,userDeviceSlotNo,heartbeatAgeSeconds,sourceChannel,simState,simLastError,simNextActionAt,simTaskNo,simTaskName,simTaskClass,simTaskStartedAt,simTaskDueAt,value);
+        return new DeviceOpsView(id,userId,userNo,nickname,instanceNo,name,productTier,productCode,status,dcLocation,hashrate,daily,dailyNex,lastSeenAt,purchasedAt,activatedAt,deactivatedAt,rate,currentEfficiency,pendingDeactivate,runtimeStatus,gpuUsage,gpuTempC,gpuPowerW,pausedReason,activeTaskNo,heartbeatAt,batteryLevel,isCharging,networkReachable,thermalState,activeDevicesForUser,userDeviceSlotNo,heartbeatAgeSeconds,sourceChannel,simState,simLastError,simNextActionAt,simTaskNo,simTaskName,simTaskClass,simTaskStartedAt,simTaskDueAt,value,ownershipStatus);
     }
 }
