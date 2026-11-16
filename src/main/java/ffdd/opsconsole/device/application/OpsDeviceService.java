@@ -131,7 +131,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor(onConstructor_ = @Autowired)
 public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditReplayable {
     private static final ObjectMapper E1_AUDIT_JSON = new ObjectMapper();
-    private static final Set<String> RESTORABLE_STATUSES = Set.of("RECYCLED", "DEACTIVATED", "INACTIVE", "RETIRED");
+    private static final Set<String> RESTORABLE_STATUSES = Set.of("RECYCLED");
     private static final Set<String> SKU_STATUSES = Set.of("on", "off", "pending");
     private static final Set<String> SKU_TIERS = Set.of("Entry", "Pro", "Flagship", "Share");
     private static final Set<String> SKU_LIFECYCLES = Set.of("active", "legacy");
@@ -3235,9 +3235,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     private boolean canRestore(DeviceOpsView device) {
         String status = device.status() == null ? "" : device.status().trim().toUpperCase(Locale.ROOT);
+        // findDevice projects ownership_status=UNBOUND into simState; recycling an already
+        // unbound device leaves raw status RECYCLED while ownership remains UNBOUND.
         return RESTORABLE_STATUSES.contains(status)
-                || Integer.valueOf(1).equals(device.pendingDeactivate())
-                || device.deactivatedAt() != null;
+                && !"UNBOUND".equalsIgnoreCase(device.simState());
     }
 
     private ApiResult<Map<String, Object>> requireCommand(String idempotencyKey, String reason) {
@@ -3275,7 +3276,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
             String status = normalizeExact(before.status()).toUpperCase(Locale.ROOT);
             Set<String> allowed = force
-                    ? Set.of("INVENTORY", "DEACTIVATED", "RECYCLED", "INACTIVE", "RETIRED", "UNBOUND")
+                    ? Set.of("INVENTORY", "DEACTIVATED", "INACTIVE", "UNBOUND")
                     : Set.of("INVENTORY");
             if (!allowed.contains(status)) {
                 return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
