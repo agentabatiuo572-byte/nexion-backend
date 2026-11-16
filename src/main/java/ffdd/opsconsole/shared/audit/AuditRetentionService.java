@@ -49,7 +49,7 @@ public class AuditRetentionService {
             throw new ffdd.opsconsole.shared.exception.BizException(409, "RETENTION_PARAMETERS_STALE");
         }
         LocalDateTime now = LocalDateTime.now();
-        LocalDateTime cutoff = now.minusMonths(months);
+        LocalDateTime cutoff = now;
         if (!Integer.valueOf(1).equals(mapper.tryAcquireRetentionLock())) {
             return new RetentionRun(months, now, cutoff, 0, 0, false);
         }
@@ -83,8 +83,8 @@ public class AuditRetentionService {
     }
 
     /**
-     * evaluatedAt is the time this run actually evaluated/executed; cutoff is the expiry boundary it
-     * applied (evaluatedAt minus the retention months). They are different facts and must not be conflated.
+     * evaluatedAt is the execution time; cutoff is the boundary applied to each row's explicit expire_at.
+     * Both are now: each row already captured its retention months when expire_at was written.
      */
     public record RetentionRun(
             int retentionMonths, LocalDateTime evaluatedAt, LocalDateTime cutoff,
