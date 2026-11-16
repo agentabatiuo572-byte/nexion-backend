@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -122,6 +123,7 @@ public class AdminIdempotencyService {
 
         boolean joinedTransaction = TransactionSynchronizationManager.isActualTransactionActive()
                 && TransactionSynchronizationManager.isSynchronizationActive();
+        AtomicReference<Object> businessRejection = new AtomicReference<>();
         if (joinedTransaction) {
             // The success marker joins the caller's transaction. Its later rollback
             // restores the independently committed claim to PROCESSING. Finalize only
@@ -131,7 +133,8 @@ public class AdminIdempotencyService {
                 public void afterCompletion(int status) {
                     if (status != STATUS_ROLLED_BACK || independentAction) return;
                     try {
-                        transactionExecutor.markFailed(claim.recordId(), "EnclosingTransactionRolledBack");
+                        transactionExecutor.markFailed(claim.recordId(), "EnclosingTransactionRolledBack",
+                                businessRejection.get());
                     } catch (RuntimeException failure) {
                         // An uncertain outcome stays fenced; never make it retryable.
                         log.error("Could not finalize rolled-back idempotency claim {}", claim.recordId(), failure);
@@ -144,9 +147,12 @@ public class AdminIdempotencyService {
                     : repeatableRead ? transactionExecutor.runClaimedRepeatableRead(claim.recordId(), action)
                     : transactionExecutor.runClaimed(claim.recordId(), action);
         } catch (RuntimeException ex) {
+            Object businessResponse = ex instanceof AdminCommandBusinessRejection rejection
+                    ? rejection.response() : null;
+            businessRejection.set(businessResponse);
             if (joinedTransaction || independentAction) throw ex;
             try {
-                transactionExecutor.markFailed(claim.recordId(), errorSummary(ex));
+                transactionExecutor.markFailed(claim.recordId(), errorSummary(ex), businessResponse);
             } catch (RuntimeException markFailedError) {
                 // Preserve the business/SQL root cause; persistence of failure metadata must never mask it.
                 ex.addSuppressed(markFailedError);

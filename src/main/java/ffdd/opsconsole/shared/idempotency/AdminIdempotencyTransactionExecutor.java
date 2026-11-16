@@ -114,7 +114,9 @@ public class AdminIdempotencyTransactionExecutor {
     private <T> Claim<T> claimInternal(String scope, String idempotencyKey, String requestHash,
                                       LocalDateTime expiresAt, Class<T> responseType, boolean retainSuccess,
                                       AdminCommandOrigin origin) {
-        retainSuccess = retainSuccess || origin != null;
+        boolean scopeUsesOriginRetention = originAddsRetention(scope);
+        boolean originRetains = origin != null && scopeUsesOriginRetention;
+        retainSuccess = retainSuccess || originRetains;
         AdminIdempotencyRecordEntity record = null;
         AdminIdempotencyRecordEntity existing = recordMapper.selectActive(scope, idempotencyKey);
         if (existing != null) {
@@ -126,7 +128,8 @@ public class AdminIdempotencyTransactionExecutor {
                 : null;
         if (current != null && current.getStatus().startsWith("CONFIRMED_")) {
             return resolveKnownRecord(current, requestHash, expiresAt, responseType, origin);
-        } else if (current != null && (retainSuccess || current.getOriginAdminId() != null)
+        } else if (current != null && (retainSuccess
+                || scopeUsesOriginRetention && current.getOriginAdminId() != null)
                 && (STATUS_SUCCEEDED.equals(current.getStatus()) || STATUS_FAILED.equals(current.getStatus()))) {
             // Never recycle a retained success; FAILED retries use a status CAS,
             // so a concurrent completion cannot be overwritten by an expiry reset.
@@ -249,7 +252,15 @@ public class AdminIdempotencyTransactionExecutor {
 
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public void markFailed(Long recordId, String errorMessage) {
-        if (recordMapper.markFailed(recordId, errorMessage) != 1) {
+        markFailed(recordId, errorMessage, null);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
+    public void markFailed(Long recordId, String errorMessage, Object response) {
+        int updated = response == null
+                ? recordMapper.markFailed(recordId, errorMessage)
+                : recordMapper.markFailedWithResponse(recordId, errorMessage, writeJson(response));
+        if (updated != 1) {
             throw conflict("IDEMPOTENCY_FAILURE_STATE_LOST");
         }
     }
@@ -337,6 +348,11 @@ public class AdminIdempotencyTransactionExecutor {
         } catch (java.security.NoSuchAlgorithmException unavailable) {
             throw new IllegalStateException("SHA256_UNAVAILABLE", unavailable);
         }
+    }
+
+    /** A1 permission and A7 menu keep their original execute(false) 24h TTL; origin is only provenance. */
+    private static boolean originAddsRetention(String scope) {
+        return !("A1_PERMISSION_REGISTER".equals(scope) || scope.startsWith("A7_MENU_"));
     }
 
     private String writeJson(Object value) {

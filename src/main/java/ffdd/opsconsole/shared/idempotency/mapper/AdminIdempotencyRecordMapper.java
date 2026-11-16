@@ -222,6 +222,20 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
             """)
     int markFailed(@Param("id") Long id, @Param("errorMessage") String errorMessage);
 
+    /** A trusted server-side business rejection keeps its result on the FAILED transaction row. */
+    @Update("""
+            UPDATE nx_admin_idempotency_record
+               SET status = 'FAILED',
+                   response_json = #{responseJson},
+                   error_message = #{errorMessage},
+                   updated_at = NOW()
+             WHERE id = #{id}
+               AND status = 'PROCESSING'
+               AND is_deleted = 0
+            """)
+    int markFailedWithResponse(@Param("id") Long id, @Param("errorMessage") String errorMessage,
+                               @Param("responseJson") String responseJson);
+
     @Update("""
             UPDATE nx_admin_idempotency_record SET rollback_confirmed=1, updated_at=NOW()
              WHERE id=#{id} AND status IN ('PROCESSING','FAILED','UNKNOWN') AND is_deleted=0
