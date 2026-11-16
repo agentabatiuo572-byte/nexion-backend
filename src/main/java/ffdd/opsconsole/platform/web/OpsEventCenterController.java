@@ -117,7 +117,7 @@ public class OpsEventCenterController {
         String actor = StringUtils.hasText(AdminActorResolver.resolve(null)) ? AdminActorResolver.resolve(null) : "unknown";
         String key = idempotencyKey.trim();
         return ApiResult.ok(idempotencyService.execute("A4_EVENT_RETENTION_RUN", key,
-                retentionHash(actor, request.reason()), RetentionExecutionView.class,
+                retentionHash(actor, request.reason(), request.expectedRetentionMonths()), RetentionExecutionView.class,
                 () -> executeRetention(actor, key, request.reason(), request.expectedRetentionMonths())));
     }
 
@@ -156,10 +156,14 @@ public class OpsEventCenterController {
         return view;
     }
 
-    private String retentionHash(String actor, String reason) {
+    private String retentionHash(String actor, String reason, Integer expectedRetentionMonths) {
         try {
+            var command = expectedRetentionMonths == null
+                    ? Map.of("actor", actor, "operation", "A4_EVENT_RETENTION_RUN", "reason", reason.trim())
+                    : Map.of("actor", actor, "operation", "A4_EVENT_RETENTION_RUN", "reason", reason.trim(),
+                            "expectedRetentionMonths", expectedRetentionMonths);
             return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(
-                    objectMapper.writeValueAsBytes(Map.of("actor", actor, "operation", "A4_EVENT_RETENTION_RUN", "reason", reason.trim()))));
+                    objectMapper.writeValueAsBytes(command)));
         } catch (Exception ex) {
             throw new BizException(422, "A4_RETENTION_HASH_FAILED");
         }
