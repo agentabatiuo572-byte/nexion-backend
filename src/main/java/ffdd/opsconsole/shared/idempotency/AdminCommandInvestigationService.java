@@ -454,6 +454,8 @@ public class AdminCommandInvestigationService {
             a2.requireProposalReader();
             return;
         }
+        // Report actions bind the report's actual domain; requireReader checks that stored authority next.
+        if (scope.startsWith("L_BI_REPORT_ACTION_")) return;
         String authority = scope.startsWith("L_BI_") ? "bi_l1_read" : AdminCommandOrigin.readAuthority(scope);
         if (authority == null || !permissions.getPermissionCodes(actor).contains(authority)) throw denied();
     }

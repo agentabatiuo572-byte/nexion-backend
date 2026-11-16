@@ -760,12 +760,21 @@ public class OpsBiService implements AuditReplayable {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "UNSUPPORTED_L_REPORT_ACTION");
         }
         BiReportView originReport = StringUtils.hasText(reportId) ? reportRepository.findReport(reportId.trim()).orElse(null) : null;
-        if (originReport != null && "KPI_SERIES".equals(normalizeText(originReport.type()))) {
+        String originDomain = originReport == null ? null : switch (normalizeText(originReport.type())) {
+            case "KPI_SERIES" -> "L1";
+            case "FUNNEL_COHORT" -> "L2";
+            case "FINANCE_AGG" -> "L3";
+            case "OPERATIONS_AGG" -> "L4";
+            case "REGULATORY" -> "L5";
+            default -> null;
+        };
+        if (originDomain != null) {
             return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.executeBoundTargets(
                     "L_BI_REPORT_ACTION_" + normalizedAction, idempotencyKey.trim(),
-                    reportActionRequestHash(reportId, normalizedAction, request), ApiResult.class, "bi_l1_read",
+                    reportActionRequestHash(reportId, normalizedAction, request), ApiResult.class,
+                    "bi_" + originDomain.toLowerCase(Locale.ROOT) + "_read",
                     List.of(new ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target(
-                            normalizedAction, "L1", "report", originReport.reportId())),
+                            normalizedAction, originDomain, "report", originReport.reportId())),
                     () -> reportActionOnce(reportId, normalizedAction, idempotencyKey.trim(), request));
         }
         return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
