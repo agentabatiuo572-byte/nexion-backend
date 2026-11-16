@@ -348,7 +348,8 @@ public class AdminCommandInvestigationService {
         if (AdminCommandOrigin.a3PlatformParamScope(scope)) {
             return "A3_PLATFORM_PARAM".equals(fact.getResourceType())
                     && "A3_PLATFORM_PARAM_CHANGED".equals(action)
-                    && scope.substring("A3_PLATFORM_PARAM:".length()).equals(fact.getResourceId());
+                    && scope.substring("A3_PLATFORM_PARAM:".length()).toLowerCase(java.util.Locale.ROOT)
+                            .equals(fact.getResourceId());
         }
         return Set.of("D2_WITHDRAWAL_CHAIN_CONFIRMED", "D2_WITHDRAWAL_REVIEW_APPROVE", "D2_WITHDRAWAL_REVIEW_REJECT",
                 "D2_WITHDRAWAL_REVIEW_REFUND", "D2_WITHDRAWAL_REVIEW_DELAY", "D2_WITHDRAWAL_REVIEW_FREEZE",
