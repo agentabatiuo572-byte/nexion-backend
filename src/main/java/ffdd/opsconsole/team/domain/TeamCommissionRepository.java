@@ -112,9 +112,9 @@ public interface TeamCommissionRepository {
             String period,
             java.time.LocalDateTime fromInclusive,
             java.time.LocalDateTime toExclusive,
-            BigDecimal minVolumeUsd,
+            BigDecimal minComputePoints,
             int limit) {
-        return leaderboardCandidates(minVolumeUsd, limit);
+        return leaderboardCandidates(minComputePoints, limit);
     }
 
     // ============================================================

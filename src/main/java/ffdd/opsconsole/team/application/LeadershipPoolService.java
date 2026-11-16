@@ -9,6 +9,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
+import ffdd.opsconsole.team.domain.LeaderboardComputePoints;
 import ffdd.opsconsole.team.mapper.TeamCommissionMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
@@ -56,7 +57,6 @@ public class LeadershipPoolService {
     private static final String CONFIG_KEY_TOP5_MAX_PCT = "team.ui.F.pool.top5MaxPct";
     private static final String CONFIG_KEY_PERIOD_PRIZE = "team.ui.F.pool.periodPrize";
     private static final String CONFIG_KEY_LEADERBOARD_POOL = "team.ui.F.leaderboard.poolUsd";
-    private static final String CONFIG_KEY_LEADERBOARD_MIN = "team.ui.F.leaderboard.minUsd";
     private static final String CONFIG_KEY_LEADERBOARD_PAUSED = "team.ui.F.leaderboard.paused";
     // Existing week codes and leaderboard settlement hashes are non-negative.
     private static final int LEADERBOARD_MAINTENANCE_MUTEX = -4;
@@ -318,15 +318,19 @@ public class LeadershipPoolService {
                         .orElseGet(() -> configuredPeriodPrize(period))
                 : configuredPeriodPrize(period);
         if (prizePool.signum() <= 0) return 0;
-        BigDecimal minVolume = configMoney(CONFIG_KEY_LEADERBOARD_MIN).orElse(BigDecimal.ZERO);
+        BigDecimal minPoints = LeaderboardComputePoints.minimum(
+                configFacade.activeValue(LeaderboardComputePoints.CONFIG_KEY).orElse(null));
         int topN = switch (period) {
             case "today" -> 20;
             case "week" -> 50;
             default -> 100;
         };
         List<Map<String, Object>> candidates = commissionRepository.leaderboardCandidates(
-                period, fromInclusive, toExclusive, minVolume, topN);
+                period, fromInclusive, toExclusive, minPoints, topN);
         if (candidates.isEmpty()) return 0;
+        for (Map<String, Object> candidate : candidates) {
+            LeaderboardComputePoints.require(asBigDecimal(candidate.get("computePoints")));
+        }
 
         BigDecimal top1Cap = prizePool.multiply(configPercent(CONFIG_KEY_TOP1_MAX_PCT, new BigDecimal("25")));
         BigDecimal top5Cap = prizePool.multiply(configPercent(CONFIG_KEY_TOP5_MAX_PCT, new BigDecimal("60")));
@@ -367,7 +371,8 @@ public class LeadershipPoolService {
                 .result("SUCCESS").riskLevel("HIGH")
                 .detail(linked("period", period, "settlementKey", settlementKey,
                         "configuredPool", prizePool, "allocated", allocated,
-                        "minUsd", minVolume, "settledUsers", settled, "reason", reason))
+                        "rankingMetric", LeaderboardComputePoints.METRIC,
+                        "minComputePoints", minPoints, "settledUsers", settled, "reason", reason))
                 .build());
         return settled;
     }

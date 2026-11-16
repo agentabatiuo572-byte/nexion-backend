@@ -11,6 +11,7 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import ffdd.opsconsole.team.mapper.AppTeamInsightsMapper;
 import ffdd.opsconsole.team.mapper.LeaderboardPauseSnapshotMapper;
+import ffdd.opsconsole.team.domain.LeaderboardComputePoints;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -53,7 +54,7 @@ public class LeaderboardPauseSnapshotService {
         envelope.put("contentHash", hash);
         String key = "pause-" + digest(operation);
         if (mapper.insert(key, write(envelope)) != 1) throw new BizException(503, "F4_LEADERBOARD_SNAPSHOT_CAPTURE_FAILED");
-        config.upsertAdminValue(POINTER_KEY, write(Map.of("key", key, "hash", hash, "schemaVersion", 1)),
+        config.upsertAdminValue(POINTER_KEY, write(Map.of("key", key, "hash", hash, "schemaVersion", 2)),
                 "JSON", "team_runtime", "F4 current immutable display pause snapshot");
         return new State(true, "FROZEN", "", key, at.toString(), hash, envelope);
     }
@@ -66,18 +67,16 @@ public class LeaderboardPauseSnapshotService {
         List<LeaderboardPauseSnapshotMapper.CaptureRow> facts = mapper.capture(parameters);
         if (facts == null) throw new BizException(503, "F4_LEADERBOARD_SNAPSHOT_CAPTURE_FAILED");
         ObjectNode envelope = json.createObjectNode();
-        envelope.put("schemaVersion", 1).put("sourceEnvironment", "PRODUCTION")
+        envelope.put("schemaVersion", 2).put("sourceEnvironment", "PRODUCTION")
+                .put("businessTimezone", ffdd.opsconsole.shared.config.BusinessCalendar.growthTeam().zoneAt(at).getId())
                 .put("pauseOperationId", operation).put("capturedAt", at.toString());
-        ObjectNode settings = null, summary = null;
-        List<ObjectNode> podium = new ArrayList<>();
+        ObjectNode settings = null;
         Map<String, List<ObjectNode>> periods = new LinkedHashMap<>();
         PERIODS.forEach(period -> periods.put(period, new ArrayList<>()));
         for (var fact : facts) {
             ObjectNode value = object(fact.payload());
             switch (fact.kind()) {
                 case "config" -> { requireCapture(configInputs(value)); settings = value; }
-                case "pcSummary" -> { requireCapture(pcSummaryValid(value)); summary = value; }
-                case "pcPodium" -> { requireCapture(pcRowValid(value) && money(value.get("volumeUsd"), true)); podium.add(value); }
                 default -> {
                     if (!periods.containsKey(fact.kind())) throw new BizException(503, "F4_LEADERBOARD_SNAPSHOT_CAPTURE_FAILED");
                     requireCapture(appRowValid(value, cap(fact.kind())));
@@ -85,22 +84,16 @@ public class LeaderboardPauseSnapshotService {
                 }
             }
         }
-        if (settings == null || summary == null) throw new BizException(503, "F4_LEADERBOARD_SNAPSHOT_CAPTURE_FAILED");
-        BigDecimal pcMinimum = minimum(settings.path("minUsd").asText(""), false);
-        BigDecimal appMinimum = minimum(settings.path("minUsd").asText(""), true);
-        podium.removeIf(row -> row.path("volumeUsd").decimalValue().compareTo(pcMinimum) < 0);
-        podium.sort(Comparator.comparingInt(row -> row.path("rank").asInt()));
-        podium.forEach(row -> row.remove("volumeUsd"));
-        ObjectNode pc = envelope.putObject("pcProjection");
-        pc.put("basis", "PC_GV_AND_MONTH_LEADERSHIP_V1");
-        pc.set("summary", summary); pc.set("podium", json.valueToTree(podium));
+        if (settings == null) throw new BizException(503, "F4_LEADERBOARD_SNAPSHOT_CAPTURE_FAILED");
+        BigDecimal appMinimum = LeaderboardComputePoints.minimum(settings.path("minComputePoints").asText(null));
         ObjectNode app = envelope.putObject("appPeriods");
         for (String period : PERIODS) {
             List<ObjectNode> rows = periods.get(period);
-            rows.removeIf(row -> row.path("earnedUsdt").decimalValue().compareTo(appMinimum) < 0);
+            rows.removeIf(row -> row.path("computePoints").decimalValue().compareTo(appMinimum) < 0);
             rows.sort(Comparator.comparingInt(row -> row.path("rank").asInt()));
             ObjectNode projection = app.putObject(period);
-            projection.put("basis", "APP_UNLOCKED_COMMISSIONS_V1").put("snapshotAt", at.toString());
+            projection.put("basis", "TEAM_PAID_ORDER_COMPUTE_POINTS_V1")
+                    .put("rankingMetric", LeaderboardComputePoints.METRIC).put("snapshotAt", at.toString());
             BigDecimal pool = prize(settings, period);
             projection.put("poolUsd", pool).put("topN", pool.signum() > 0 ? rows.size() : 0);
             projection.set("rows", json.valueToTree(rows));
@@ -125,7 +118,8 @@ public class LeaderboardPauseSnapshotService {
             ObjectNode ref = object(row.snapshotRef());
             if (row.envelope() == null || row.storedKey() == null) return State.unavailable("SNAPSHOT_MISSING");
             ObjectNode envelope = object(row.envelope());
-            if (!integer(ref.get("schemaVersion"), 1, 1) || !integer(envelope.get("schemaVersion"), 1, 1)) {
+            // Old immutable commission snapshots remain history, never relabelled or recomputed as points.
+            if (!integer(ref.get("schemaVersion"), 2, 2) || !integer(envelope.get("schemaVersion"), 2, 2)) {
                 return State.unavailable("SNAPSHOT_SCHEMA_UNSUPPORTED");
             }
             String expected = ref.path("hash").asText();
@@ -158,20 +152,24 @@ public class LeaderboardPauseSnapshotService {
             for (JsonNode row : projection.path("rows")) {
                 if (podium.size() == 3) break;
                 int rank = row.path("rank").asInt();
+                BigDecimal points = row.path("computePoints").decimalValue();
                 podium.add(Map.of("rank", rank, "memberUserId", row.path("userId").asLong(),
                         "userId", "U" + row.path("userId").asText(),
-                        "gmvLabel", "$" + row.path("earnedUsdt").decimalValue().toPlainString(),
-                        "tip", (state.paused() ? "冻结时 · " : "") + "本期已解锁 USDT 奖励",
+                        "computePoints", points, "gmvLabel", points.toPlainString() + " 点",
+                        "tip", (state.paused() ? "冻结时 · " : "") + "本期团队算力点",
                         "className", "r-" + rank));
             }
             Map<String, Object> value = new LinkedHashMap<>();
+            value.put("rankingMetric", LeaderboardComputePoints.METRIC);
+            value.put("minComputePoints", LeaderboardComputePoints.minimum(
+                    envelope.path("configInputs").path("minComputePoints").asText(null)));
             value.put("poolUsd", projection.path("poolUsd").decimalValue());
             value.put("participantCount", projection.path("rows").size());
             value.put("topN", projection.path("topN").asInt());
             value.put("podium", List.copyOf(podium));
             value.put("snapshotAt", at.toString());
             value.put("timezone", DateTimeFormatConfig.BUSINESS_ZONE.getId());
-            value.put("businessTimezone", ffdd.opsconsole.shared.config.BusinessCalendar.growthTeam().zoneAt(java.time.Instant.now()).getId());
+            value.put("businessTimezone", envelope.path("businessTimezone").asText());
             value.put("fromInclusive", bounds.get(period + "FromInclusive"));
             value.put("toExclusive", bounds.get(period + "ToExclusive"));
             result.put(period, value);
@@ -193,7 +191,7 @@ public class LeaderboardPauseSnapshotService {
         LocalDate monday = today.with(DayOfWeek.MONDAY);
         Map<String, Object> p = new LinkedHashMap<>();
         p.put("snapshotAt", LocalDateTime.ofInstant(at, DateTimeFormatConfig.BUSINESS_ZONE));
-        p.put("sandbox", 0); p.put("minVolumeUsd", BigDecimal.ZERO); p.put("pcLimit", 3);
+        p.put("sandbox", 0); p.put("minComputePoints", BigDecimal.ZERO);
         for (String period : PERIODS) {
             p.put(period + "ActionPeriod", "all".equals(period) ? "allTime" : period);
             p.put(period + "Limit", "today".equals(period) ? 20 : "week".equals(period) ? 50 : 100);
@@ -269,41 +267,37 @@ public class LeaderboardPauseSnapshotService {
         return n != null && n.isNumber() && (!nonnegative || n.decimalValue().signum() >= 0);
     }
     private static boolean configInputs(JsonNode n) {
-        return n.isObject() && nullableText(n.get("minUsd")) && nullableText(n.get("weekPoolUsd")) && nullableText(n.get("periodPrize"));
-    }
-    private static boolean pcSummaryValid(JsonNode n) {
-        return n.isObject() && money(n.get("poolUsd"), false) && integer(n.get("participantCount"), 0, Integer.MAX_VALUE)
-                && integer(n.get("fraudHitCount"), 0, Integer.MAX_VALUE) && text(n.get("periodStatus"));
-    }
-    private static boolean pcRowValid(JsonNode n) {
-        return n.isObject() && integer(n.get("rank"), 1, 3) && integer(n.get("memberUserId"), 1, Long.MAX_VALUE)
-                && text(n.get("userId")) && !n.get("userId").asText().isBlank()
-                && text(n.get("gmvLabel")) && n.get("gmvLabel").asText().matches("\\$-?\\d+(?:\\.\\d+)?")
-                && text(n.get("tip")) && text(n.get("className"));
+        return n.isObject() && nullableText(n.get("minComputePoints")) && nullableText(n.get("weekPoolUsd")) && nullableText(n.get("periodPrize"));
     }
     private static boolean appRowValid(JsonNode n, int maxRank) {
         return n.isObject() && integer(n.get("rank"), 1, maxRank) && integer(n.get("userId"), 1, Long.MAX_VALUE)
-                && nullableText(n.get("nickname")) && nullableText(n.get("vRank")) && money(n.get("earnedUsdt"), true)
+                && nullableText(n.get("nickname")) && nullableText(n.get("vRank"))
+                && integer(n.get("computePoints"), 1, LeaderboardComputePoints.MAX.longValueExact())
                 && integer(n.get("directs"), 0, Integer.MAX_VALUE) && integer(n.get("teamSize"), 0, Integer.MAX_VALUE)
                 && integer(n.get("hasDevice"), 0, 1);
     }
     private static boolean projectionsValid(JsonNode envelope) {
         try {
-            JsonNode pc = envelope.path("pcProjection");
-            if (!"PC_GV_AND_MONTH_LEADERSHIP_V1".equals(pc.path("basis").asText())
-                    || !pcSummaryValid(pc.path("summary")) || !pc.path("podium").isArray()
-                    || !configInputs(envelope.path("configInputs"))) return false;
-            for (JsonNode row : pc.path("podium")) if (!pcRowValid(row)) return false;
+            if (!text(envelope.get("businessTimezone")) || !configInputs(envelope.path("configInputs"))) return false;
             String at = envelope.path("capturedAt").asText(); Instant.parse(at);
             for (String period : PERIODS) {
                 JsonNode projection = envelope.path("appPeriods").path(period);
-                if (!"APP_UNLOCKED_COMMISSIONS_V1".equals(projection.path("basis").asText())
+                if (!"TEAM_PAID_ORDER_COMPUTE_POINTS_V1".equals(projection.path("basis").asText())
+                        || !LeaderboardComputePoints.METRIC.equals(projection.path("rankingMetric").asText())
                         || !at.equals(projection.path("snapshotAt").asText()) || !money(projection.get("poolUsd"), true)
                         || !integer(projection.get("topN"), 0, cap(period)) || !projection.path("rows").isArray()
                         || projection.path("rows").size() > cap(period)) return false;
                 int expectedRank = 1;
+                BigDecimal previousPoints = null;
+                long previousUser = 0;
                 for (JsonNode row : projection.path("rows")) {
                     if (!appRowValid(row, cap(period)) || row.path("rank").intValue() != expectedRank++) return false;
+                    BigDecimal points = row.path("computePoints").decimalValue();
+                    long user = row.path("userId").longValue();
+                    if (previousPoints != null && (points.compareTo(previousPoints) > 0
+                            || points.compareTo(previousPoints) == 0 && user <= previousUser)) return false;
+                    previousPoints = points;
+                    previousUser = user;
                 }
             }
             return true;

@@ -287,10 +287,11 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
             String period,
             java.time.LocalDateTime fromInclusive,
             java.time.LocalDateTime toExclusive,
-            BigDecimal minVolumeUsd,
+            BigDecimal minComputePoints,
             int limit) {
         return mapper.leaderboardCandidatesByPeriod(
-                period, fromInclusive, toExclusive, minVolumeUsd, Math.max(1, Math.min(limit, 100)));
+                period, fromInclusive, toExclusive, minComputePoints, Math.max(1, Math.min(limit, 100)), 0,
+                java.time.LocalDateTime.now(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE));
     }
 
     // ============================================================

@@ -1,5 +1,6 @@
 package ffdd.opsconsole.team.application;
 
+import ffdd.opsconsole.team.domain.LeaderboardComputePoints;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -32,16 +33,18 @@ public final class TeamSandboxFactGenerator {
     static Map<String, Object> leaderboard(String runId, long userId, String period, long page, long pageSize) {
         Scope scope = scope(runId, userId, period);
         List<Map<String, Object>> all = new ArrayList<>();
+        long step = 25L + number(scope.digest(), "leaderboard-step", 0, 75);
+        long base = 100L + number(scope.digest(), "leaderboard-base", 0, 900);
         for (int i = 0; i < ROW_COUNT; i++) {
             int rank = i + 1;
-            BigDecimal earned = amount(scope.digest(), "leaderboard:" + rank, 25, 275);
+            long points = base + (ROW_COUNT - rank) * step;
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("rank", rank);
             row.put("handle", "S" + scope.digest().substring(i, i + 6) + "***");
             row.put("flag", "🌐"); row.put("cc", "--");
             row.put("directs", 1 + number(scope.digest(), "directs:" + rank, 0, 6));
             row.put("teamSize", 4 + number(scope.digest(), "team:" + rank, 0, 36));
-            row.put("earnedUSDT", earned); row.put("delta", 0);
+            row.put("computePoints", points); row.put("delta", 0);
             row.put("vRank", number(scope.digest(), "rank:" + rank, 0, 6));
             row.put("hasDevice", number(scope.digest(), "device:" + rank, 0, 2) == 1);
             all.add(row);
@@ -50,9 +53,12 @@ public final class TeamSandboxFactGenerator {
         int to = (int) Math.min(all.size(), (long) from + pageSize);
         Map<String, Object> result = provenance(scope);
         result.put("period", period); result.put("rows", List.copyOf(all.subList(from, to)));
-        result.put("myRank", 1 + number(scope.digest(), "my-rank", 0, ROW_COUNT));
-        result.put("gapToNext", BigDecimal.ZERO); result.put("poolUsd", BigDecimal.ZERO);
-        result.put("topN", all.size()); result.put("page", page); result.put("pageSize", pageSize);
+        int myRank = 1 + number(scope.digest(), "my-rank", 0, ROW_COUNT);
+        result.put("myRank", myRank);
+        result.put("rankingMetric", LeaderboardComputePoints.METRIC);
+        result.put("gapToNextComputePoints", myRank == 1 ? 0L : step); result.put("poolUsd", BigDecimal.ZERO);
+        result.put("snapshotAt", scope.generatedAt()); result.put("snapshotVersion", scope.digest());
+        result.put("topN", 0); result.put("page", page); result.put("pageSize", pageSize);
         result.put("totalRows", all.size()); result.put("generatedAt", scope.generatedAt());
         return result;
     }

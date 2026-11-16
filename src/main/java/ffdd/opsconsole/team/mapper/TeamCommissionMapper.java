@@ -1082,40 +1082,16 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     List<Map<String, Object>> leaderboardCandidates(@Param("minVolumeUsd") BigDecimal minVolumeUsd,
                                                      @Param("limit") int limit);
 
-    /** F16:按周期汇总规范业务轨的活跃用户已解锁佣金，与App生产榜资格一致。 */
-    @Select("""
-            <script>
-            SELECT e.user_id AS userId,
-                   SUM(e.amount_usdt) AS volume
-              FROM nx_commission_event e
-              JOIN nx_user u ON u.id = e.user_id
-             WHERE e.is_deleted = 0
-               AND u.is_deleted = 0 AND u.status = 'ACTIVE' AND u.sandbox = 0
-               AND UPPER(e.status) = 'UNLOCKED'
-               AND LOWER(e.commission_type) IN
-                   ('unilevel','network','binary','peer','cultivation','leadership','genesis','direct_purchase','direct_device_earning')
-               <if test="fromInclusive != null">AND e.created_at &gt;= #{fromInclusive}</if>
-               <if test="toExclusive != null">AND e.created_at &lt; #{toExclusive}</if>
-               AND NOT EXISTS (
-                    SELECT 1
-                      FROM nx_team_leaderboard_action a
-                     WHERE a.is_deleted = 0
-                       AND LOWER(a.period) = LOWER(#{period})
-                       AND a.member_user_id = e.user_id
-                       AND UPPER(a.action_type) IN ('FRAUD', 'DISQUALIFIED', 'RISK')
-               )
-             GROUP BY e.user_id
-            HAVING SUM(e.amount_usdt) &gt;= #{minVolumeUsd}
-             ORDER BY SUM(e.amount_usdt) DESC, e.user_id ASC
-             LIMIT #{limit}
-            </script>
-            """)
+    /** F4 settlement uses the identical point ranking as App and frozen display snapshots. */
+    @Select(AppTeamInsightsMapper.LEADERBOARD_ELIGIBLE_SQL)
     List<Map<String, Object>> leaderboardCandidatesByPeriod(
-            @Param("period") String period,
+            @Param("actionPeriod") String period,
             @Param("fromInclusive") java.time.LocalDateTime fromInclusive,
             @Param("toExclusive") java.time.LocalDateTime toExclusive,
-            @Param("minVolumeUsd") BigDecimal minVolumeUsd,
-            @Param("limit") int limit);
+            @Param("minComputePoints") BigDecimal minComputePoints,
+            @Param("limit") int limit,
+            @Param("sandbox") int sandbox,
+            @Param("snapshotAt") java.time.LocalDateTime snapshotAt);
 
     // ============================================================
     // F1 V-Rank 晋升引擎(Sprint 1+2)

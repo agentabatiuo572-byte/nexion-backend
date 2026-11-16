@@ -24,6 +24,7 @@ import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
+import ffdd.opsconsole.team.domain.LeaderboardComputePoints;
 import ffdd.opsconsole.team.domain.TeamFulfillmentQueueRepository;
 import ffdd.opsconsole.team.domain.TeamFulfillmentQueueRow;
 import ffdd.opsconsole.team.domain.VRankConfigRow;
@@ -155,6 +156,7 @@ public class OpsTeamService implements AuditReplayable {
             Map.entry("F.quota.monthlyStock", "network_f4_write"),
             Map.entry("F.leaderboard.poolUsd", "network_f4_pool_fund"),
             Map.entry("F.leaderboard.minUsd", "network_f4_write"),
+            Map.entry("F.leaderboard.minComputePoints", "network_f4_write"),
             Map.entry("F.leaderboard.period.status", "network_f4_leaderboard_control"));
 
     /**
@@ -1421,6 +1423,9 @@ public class OpsTeamService implements AuditReplayable {
 
     private ApiResult<Map<String, Object>> updateUiConfig(
             String idempotencyKey, TeamCommissionConfigUpdateRequest request, String key) {
+        if ("F.leaderboard.minUsd".equals(key)) {
+            return ApiResult.fail(409, "F4_LEADERBOARD_MIN_USD_RETIRED_USE_COMPUTE_POINTS");
+        }
         var sevenPolicy=directPolicies==null?null:directPolicies.getIfAvailable();
         boolean affectsSeven=key.startsWith("F.unilevel.")||key.startsWith("F.influence.")||key.startsWith("F.promo.")||"F.cooldown".equals(key);
         if(affectsSeven&&sevenPolicy!=null)sevenPolicy.lockSevenLayerRevision();
@@ -1539,6 +1544,9 @@ public class OpsTeamService implements AuditReplayable {
         auditDetail.put("key", key);
         auditDetail.put("oldValue", oldValue);
         auditDetail.put("newValue", effectiveValue);
+        if ("F.leaderboard.minComputePoints".equals(key)) {
+            auditDetail.put("rankingMetric", LeaderboardComputePoints.METRIC);
+        }
         auditDetail.put("reason", request.reason().trim());
         auditDetail.put("idempotencyKey", idempotencyKey.trim());
         if (settlementConfigVersion != null) auditDetail.put("settlementConfigVersion", settlementConfigVersion);
@@ -3062,6 +3070,7 @@ public class OpsTeamService implements AuditReplayable {
 
     private void rejectSunsetKey(String key) {
         String normalized = requireText(key, "TEAM_CONFIG_KEY_REQUIRED");
+        if ("F.leaderboard.minComputePoints".equals(normalized)) return;
         String lower = normalized.toLowerCase(Locale.ROOT).replace("-", "").replace("_", "");
         if (lower.contains("premium") || lower.contains("points") || lower.contains("nexv2") || lower.contains("nex.v2")) {
             throw new IllegalArgumentException("Sunset capability is not an active F domain key");
@@ -3154,8 +3163,8 @@ public class OpsTeamService implements AuditReplayable {
                     throw new IllegalArgumentException("F_TEAM_TOGGLE_INVALID");
                 }
             }
-            case "F.leaderboard.minUsd" -> {
-                if (parseDecimal(value, BigDecimal.valueOf(-1)).signum() < 0) {
+            case "F.leaderboard.minComputePoints" -> {
+                if (!LeaderboardComputePoints.valid(parseDecimal(value, BigDecimal.valueOf(-1)))) {
                     throw new IllegalArgumentException("F_TEAM_NUMBER_INVALID");
                 }
             }
@@ -3302,6 +3311,7 @@ public class OpsTeamService implements AuditReplayable {
             String canonicalKey = uiConfigStorageKey(key);
             configFacade.activeValue(canonicalKey).ifPresent(value -> values.put(key, projectLegacyUiValue(key, value)));
         }
+        values.putIfAbsent("F.leaderboard.minComputePoints", "1");
         return values;
     }
 
@@ -3611,7 +3621,7 @@ public class OpsTeamService implements AuditReplayable {
                 // 批1b · 中风险:开关 / 数字范围 / JSON schema(配置面存储,业务逻辑消费留后续)。
                 "F.vrank.permanent",
                 "F.leaderboard.paused",
-                "F.leaderboard.minUsd",
+                "F.leaderboard.minComputePoints",
                 "F.unilevel.depth",
                 "F.unilevel.mergeExitMaxPct",
                 "F.commission.anomalyThreshold",
