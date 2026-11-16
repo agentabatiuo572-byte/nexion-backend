@@ -750,6 +750,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         response.put("wheelSignature", wheelPoolSignature());
         response.put("wheelEvUsd", wheelEvUsd());
         response.put("wheelEvByAsset", wheelEvByAsset());
+        response.put("wheelAwardsToday", wheelAwardsToday());
         response.put("wheelGuards", wheelGuards());
         response.put("trackables", trackables());
         response.put("coverage", coverage());
@@ -3806,6 +3807,33 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             totals.merge(asset, ev, BigDecimal::add);
         }
         return totals;
+    }
+
+    /**
+     * Today's awards as the wheel actually persisted them, per reward asset and at the stored precision.
+     * Basis is nx_growth_wheel_spin.spin_date (the same UTC day the wheel writes and limits on).
+     */
+    private Map<String, Object> wheelAwardsToday() {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("basis", "nx_growth_wheel_spin.spin_date");
+        if (questEventMapper.isEmpty()) {
+            result.put("available", false);
+            result.put("reason", "GROWTH_BUSINESS_TABLE_UNAVAILABLE");
+            result.put("byAsset", Map.of());
+            return result;
+        }
+        java.time.LocalDate spinDate = java.time.LocalDate.now(java.time.ZoneOffset.UTC);
+        result.put("spinDate", spinDate.toString());
+        Map<String, Object> byAsset = new LinkedHashMap<>();
+        for (Map<String, Object> row : questEventMapper.get().wheelAwardsOnDate(spinDate)) {
+            Map<String, Object> award = new LinkedHashMap<>();
+            award.put("count", row.get("awardedCount"));
+            award.put("amount", row.get("awardedAmount"));
+            byAsset.put(String.valueOf(row.get("asset")), award);
+        }
+        result.put("available", true);
+        result.put("byAsset", byAsset);
+        return result;
     }
 
     private BigDecimal wheelEvUsd() {
