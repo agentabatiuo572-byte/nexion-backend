@@ -243,6 +243,11 @@ public class MybatisNexMarketRepository implements NexMarketRepository {
     }
 
     @Override
+    public Optional<StakingPositionView> stakingPositionByNo(String positionNo, java.time.LocalDateTime now) {
+        return Optional.ofNullable(stakingMapper.findG1PositionByNo(positionNo, CANONICAL_STAKING_PRODUCT_CODES, now));
+    }
+
+    @Override
     public void ensureRepurchaseSeedData() {
         // Repurchase products and positions must come from G7 business/config writes.
     }

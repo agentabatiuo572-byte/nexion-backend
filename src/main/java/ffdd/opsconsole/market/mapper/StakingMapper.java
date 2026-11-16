@@ -345,6 +345,62 @@ public interface StakingMapper extends BaseMapper<StakingProductEntity> {
 
     @Select("""
             <script>
+            SELECT sp.id,
+                   sp.user_id AS userId,
+                   CONCAT('U', LPAD(sp.user_id, GREATEST(8, LENGTH(CAST(sp.user_id AS CHAR))), '0')) AS userNo,
+                   COALESCE(usr.nickname, CONCAT('user-', sp.user_id)) AS nickname,
+                   sp.position_no AS positionNo,
+                   sp.product_code AS productCode,
+                   sp.product_name AS productName,
+                   sp.amount_usdt AS amountUsdt,
+                   sp.apy_bps AS apyBps,
+                   sp.early_penalty_bps AS earlyPenaltyBps,
+                   sp.term_days AS termDays,
+                   sp.locked_at AS lockedAt,
+                   sp.unlock_at AS unlockAt,
+                   sp.estimated_interest_usdt AS estimatedInterestUsdt,
+                   CASE WHEN UPPER(sp.status) = 'ACTIVE' AND sp.unlock_at &lt;= #{now}
+                        THEN 'MATURE_UNCLAIMED' ELSE UPPER(sp.status) END AS status,
+                   UPPER(sp.status) AS storedStatus,
+                   CASE WHEN UPPER(sp.status) = 'ACTIVE' AND sp.unlock_at &lt;= #{now} THEN '到期未领'
+                     WHEN UPPER(sp.status) = 'PENDING_LOCK' THEN '待确认'
+                     WHEN UPPER(sp.status) = 'ACTIVE' THEN '计息中'
+                     WHEN UPPER(sp.status) = 'MATURE_UNCLAIMED' THEN '到期未领'
+                     WHEN UPPER(sp.status) = 'CLAIMED' THEN '已领取'
+                     WHEN UPPER(sp.status) = 'EARLY_WITHDRAWN' THEN '提前解锁'
+                     WHEN UPPER(sp.status) = 'SLASHED' THEN '已扣罚'
+                     WHEN UPPER(sp.status) = 'REFUNDED' THEN '已退款'
+                     ELSE UPPER(sp.status)
+                   END AS statusLabel,
+                   CASE WHEN UPPER(sp.status) = 'ACTIVE' AND sp.unlock_at &lt;= #{now} THEN 'warn'
+                     WHEN UPPER(sp.status) = 'PENDING_LOCK' THEN 'warn'
+                     WHEN UPPER(sp.status) = 'ACTIVE' THEN 'ok'
+                     WHEN UPPER(sp.status) = 'MATURE_UNCLAIMED' THEN 'warn'
+                     WHEN UPPER(sp.status) = 'CLAIMED' THEN 'dim'
+                     WHEN UPPER(sp.status) = 'EARLY_WITHDRAWN' THEN 'bad'
+                     WHEN UPPER(sp.status) = 'SLASHED' THEN 'bad'
+                     WHEN UPPER(sp.status) = 'REFUNDED' THEN 'dim'
+                     ELSE 'dim'
+                   END AS statusTone,
+                   sp.claimed_at AS claimedAt,
+                   sp.early_withdrawn_at AS earlyWithdrawnAt
+              FROM nx_staking_position sp
+              LEFT JOIN nx_user usr
+                ON usr.id = sp.user_id
+               AND usr.is_deleted = 0
+             WHERE sp.is_deleted = 0
+               AND UPPER(sp.product_code) IN
+               <foreach collection='productCodes' item='productCode' open='(' separator=',' close=')'>#{productCode}</foreach>
+               AND BINARY sp.position_no = BINARY #{positionNo}
+             LIMIT 1
+            </script>
+            """)
+    StakingPositionView findG1PositionByNo(@Param("positionNo") String positionNo,
+                                           @Param("productCodes") List<String> productCodes,
+                                           @Param("now") LocalDateTime now);
+
+    @Select("""
+            <script>
             SELECT COALESCE(SUM(CASE WHEN sp.locked_at >= #{since} THEN 1 ELSE 0 END), 0) AS ordersMonth,
                    COALESCE(SUM(CASE
                      WHEN UPPER(sp.status) IN ('PENDING_LOCK', 'ACTIVE', 'MATURE_UNCLAIMED')

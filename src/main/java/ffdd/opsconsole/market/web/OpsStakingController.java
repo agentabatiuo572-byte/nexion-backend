@@ -9,6 +9,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -22,6 +23,12 @@ public class OpsStakingController {
     @PreAuthorize("hasAuthority('finprod_g1_read')")
     public ApiResult<Map<String, Object>> overview() {
         return marketService.stakingOverview();
+    }
+
+    @GetMapping("/positions/{positionNo}")
+    @PreAuthorize("hasAuthority('finprod_g1_read')")
+    public ApiResult<Map<String, Object>> position(@PathVariable String positionNo) {
+        return marketService.stakingPosition(positionNo);
     }
 
     @PatchMapping("/visibility")
