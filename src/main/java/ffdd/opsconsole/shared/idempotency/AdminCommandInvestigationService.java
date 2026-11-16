@@ -256,6 +256,8 @@ public class AdminCommandInvestigationService {
         if ("E6_PHONE_RISK_SETTINGS".equals(scope)) return "CONFIG".equals(fact.getResourceType())
                 && "ADMIN.PHONE_RISK_SETTINGS_UPDATED".equals(action)
                 && "E.compute.phoneRisk.settings".equals(fact.getResourceId());
+        if ("J3_ALERT_CONFIG".equals(scope)) return "TAMPER_ALERT_CONFIG".equals(fact.getResourceType())
+                && "J3_TAMPER_ALERT_CONFIG_CHANGED".equals(action);
         return Set.of("D2_WITHDRAWAL_CHAIN_CONFIRMED", "D2_WITHDRAWAL_REVIEW_APPROVE", "D2_WITHDRAWAL_REVIEW_REJECT",
                 "D2_WITHDRAWAL_REVIEW_REFUND", "D2_WITHDRAWAL_REVIEW_DELAY", "D2_WITHDRAWAL_REVIEW_FREEZE",
                 "D3_FORECAST_CONFIG_CHANGED", "D3_TREASURY_RESERVE_INJECTION", "D3_RECONCILIATION_EXPORTED", "D3_LIABILITIES_EXPORTED", "D3_SENSITIVE_EXPORT_A2_AUDITED",
