@@ -360,6 +360,9 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
              ORDER BY permission_code
             </script>
             """)
+    List<String> selectExistingActivePermissionCodes(
+            @Param("permissionCodes") Collection<String> permissionCodes);
+
     /**
      * The permission codes that are not explicitly read-only, using the same classification the permission
      * catalogue already applies (CRITICAL/non-empty unknown -> HIGH, untyped falls back to the _read/_write
@@ -384,9 +387,6 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
             </script>
             """)
     List<String> selectNonReadPermissionCodes(@Param("permissionCodes") Collection<String> permissionCodes);
-
-    List<String> selectExistingActivePermissionCodes(
-            @Param("permissionCodes") Collection<String> permissionCodes);
 
     @Update("""
             <script>
