@@ -656,6 +656,11 @@ public class OpsNovaService {
         if ("PUBLISHED".equals(status) && !hasCompleteLocalizedContent(current.get())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_LOCALIZED_CONTENT_REQUIRED");
         }
+        if ("PUBLISHED".equals(status) && carriesPlaceholder(current.get())
+                && businessChannelWithoutVariables(current.get().channel())) {
+            // Drafts saved before the save-time rule existed must not go live with literal placeholders.
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
+        }
         // 退役品牌门禁:模板一旦发布就会真实推送给用户,三语正文里的旧品牌必须在这里拦住。
         // 与「三语齐全」是两件事 —— social/welcome/wrapped 三条存量模板三语都在,正文却仍是
         // 旧品牌,所以只查完整性的门放它们过去了(#147)。
@@ -985,7 +990,25 @@ public class OpsNovaService {
         if (!NovaSocialMessageRenderer.SUPPORTED_PLACEHOLDERS.containsAll(usedPlaceholders)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
         }
+        // Business/cadence channels dispatch from A4 facts and pass the stored text through unchanged:
+        // no event context exists to fill these names, so a placeholder would reach the user literally.
+        if (!usedPlaceholders.isEmpty() && businessChannelWithoutVariables(request.channel())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
+        }
         return null;
+    }
+
+    /** True when this channel runs on a server-side business adapter (non-social, no event variables). */
+    private boolean businessChannelWithoutVariables(String channelKey) {
+        return novaRepository.channel(normalizeChannelKey(channelKey))
+                .filter(channel -> NovaRuntimeAdapterCatalog.resolve(channel.key(), channel.trigger()).isPresent())
+                .isPresent();
+    }
+
+    private boolean carriesPlaceholder(NovaTemplateView template) {
+        return !placeholders(template.titleZh()).isEmpty() || !placeholders(template.bodyZh()).isEmpty()
+                || !placeholders(template.titleVi()).isEmpty() || !placeholders(template.bodyVi()).isEmpty()
+                || !placeholders(template.titleEn()).isEmpty() || !placeholders(template.bodyEn()).isEmpty();
     }
 
     private boolean hasCompleteLocalizedContent(NovaTemplateView template) {
