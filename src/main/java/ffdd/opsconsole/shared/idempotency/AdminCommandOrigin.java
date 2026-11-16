@@ -86,6 +86,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (j4PlaybookWrite(scope)) return "emergency_j4_read";
         if (scope.startsWith("J1")) return "emergency_j1_read";
         if (scope.startsWith("I5")) return "content_i5_read";
+        if ("A4_EVENT_RETENTION_RUN".equals(scope)) return "platform_a4_read";
         if (java.util.Set.of("I4_DISCLOSURE_PUBLISH", "I4_GATE_ADJUST").contains(scope)) return "content_i5_read";
         if (i4TrustWrite(scope)) return "content_i4_read";
         if (h9CommandScope(scope)) return "growth_h9_read";
@@ -107,6 +108,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || scope.startsWith("GROWTH:H2:")
                 || scope.startsWith("GROWTH:H4:WHEEL_TIER_RETIRE:")
                 || "J3_ALERT_CONFIG".equals(scope)
+                || "A4_EVENT_RETENTION_RUN".equals(scope)
                 || scope.startsWith("I3_NOTIFICATION_CAMPAIGN_") || scope.startsWith("I6_I18N_")
                 || i7CourseWrite(scope)
                 || scope.startsWith("M4_SUPPORT_FAQ_")
