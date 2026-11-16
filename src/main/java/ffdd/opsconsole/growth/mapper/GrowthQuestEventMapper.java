@@ -843,7 +843,8 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
     @Select("""
             SELECT UPPER(reward_kind) AS asset,
                    COUNT(1) AS awardedCount,
-                   COALESCE(SUM(reward_amount), 0) AS awardedAmount
+                   COALESCE(SUM(CASE WHEN real_outflow = 1 THEN 1 ELSE 0 END), 0) AS realOutflowCount,
+                   COALESCE(SUM(CASE WHEN real_outflow = 1 THEN reward_amount ELSE 0 END), 0) AS realOutflowAmount
               FROM nx_growth_wheel_spin
              WHERE spin_date = #{spinDate} AND is_deleted = 0
              GROUP BY UPPER(reward_kind)
