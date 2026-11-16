@@ -453,7 +453,14 @@ public class OpsRiskRadarService {
     }
 
     public ApiResult<Map<String, Object>> subscription() {
-        return ApiResult.ok(subscriptionView());
+        Map<String, Object> view = subscriptionView();
+        String subscriber = String.valueOf(view.get("subscriber"));
+        String displayName = auditLogService.findDisplayNamesByUsernames(List.of(subscriber)).get(subscriber);
+        // Read-only projection: keep subscriber for ownership; missing/deleted names stay null.
+        // Do not put this lookup into subscriptionView(), because that map is shared by the write
+        // path and its idempotency receipt, which must not gain a new query dependency or field.
+        view.put("subscriberDisplayName", StringUtils.hasText(displayName) ? displayName : null);
+        return ApiResult.ok(view);
     }
 
     public ApiResult<List<Map<String, Object>>> alertInbox() {
