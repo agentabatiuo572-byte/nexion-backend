@@ -5681,6 +5681,7 @@ CREATE TABLE IF NOT EXISTS nx_emergency_sop_execution (
   playbook_name VARCHAR(128) NOT NULL,
   trigger_reason VARCHAR(500) NOT NULL,
   execution_mode VARCHAR(32) NOT NULL,
+  execution_generation BIGINT NOT NULL DEFAULT 0,
   step_status_json JSON NULL,
   operator VARCHAR(64) NULL,
   role_gate VARCHAR(64) NULL,

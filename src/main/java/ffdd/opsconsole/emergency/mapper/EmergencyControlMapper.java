@@ -204,6 +204,7 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
               playbook_name VARCHAR(128) NOT NULL,
               trigger_reason VARCHAR(500) NOT NULL,
               execution_mode VARCHAR(32) NOT NULL,
+              execution_generation BIGINT NOT NULL DEFAULT 0,
               step_status_json JSON NULL,
               operator VARCHAR(64) NULL,
               role_gate VARCHAR(64) NULL,
@@ -1225,6 +1226,7 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
                    playbook_name AS name,
                    trigger_reason AS `trigger`,
                    execution_mode AS mode,
+                   execution_generation AS executionGeneration,
                    step_status_json AS stepsJson,
                    operator,
                    role_gate AS roleGate,
@@ -1250,6 +1252,7 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
                    playbook_name AS name,
                    trigger_reason AS `trigger`,
                    execution_mode AS mode,
+                   execution_generation AS executionGeneration,
                    step_status_json AS stepsJson,
                    operator,
                    role_gate AS roleGate,
@@ -1365,24 +1368,35 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
                    updated_at = NOW()
              WHERE execution_id = #{executionId}
                AND is_deleted = 0
+               AND execution_generation = #{executionGeneration}
                AND (rollback_status IS NULL OR rollback_status = '')
             """)
     int updateExecutionProgress(@Param("executionId") String executionId,
+                                @Param("executionGeneration") long executionGeneration,
                                 @Param("stepsJson") String stepsJson,
                                 @Param("notificationJson") String notificationJson,
                                 @Param("domainActionsJson") String domainActionsJson);
 
     @Update("""
             UPDATE nx_emergency_sop_execution
-               SET updated_at = NOW()
+               SET execution_generation = execution_generation + 1,
+                   updated_at = NOW()
              WHERE execution_id = #{executionId}
                AND is_deleted = 0
-               AND updated_at < #{staleBefore}
+               AND updated_at < DATE_SUB(NOW(), INTERVAL 2 MINUTE)
                AND (JSON_CONTAINS(step_status_json, JSON_QUOTE('pending'))
                     OR JSON_CONTAINS(step_status_json, JSON_QUOTE('running')))
             """)
-    int claimExecutionRecovery(@Param("executionId") String executionId,
-                               @Param("staleBefore") LocalDateTime staleBefore);
+    int claimExecutionRecovery(@Param("executionId") String executionId);
+
+    @Select("""
+            SELECT execution_generation
+              FROM nx_emergency_sop_execution
+             WHERE execution_id = #{executionId}
+               AND is_deleted = 0
+             LIMIT 1
+            """)
+    Long executionGeneration(@Param("executionId") String executionId);
 
     @Update("""
             UPDATE nx_emergency_sop_execution
