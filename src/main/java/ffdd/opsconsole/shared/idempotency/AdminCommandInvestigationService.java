@@ -48,6 +48,7 @@ public class AdminCommandInvestigationService {
     public record Receipt(long originalRecordId, String scope, String commandKey, String requestHash,
                           String originalMethod, String originalPath, String originalTarget, String originalTargets, long originalAdminId,
                           String originalStatus, boolean locked, boolean newOperationAllowed,
+                          Integer businessCode, String businessState, Map<String, Object> batch,
                           AdminCommandInvestigationEntity investigation) {}
 
     public record ReceiptStatus(String state) {}
@@ -91,7 +92,7 @@ public class AdminCommandInvestigationService {
     public ReceiptStatus status(String scope, String commandKey) {
         long actor = requireAdmin();
         ReceiptFamily family = receiptFamily(scope);
-        if (family == null) throw new BizException(422, "RECEIPT_SCOPE_INVALID");
+        if (family == null) return statusForWiredScope(scope, commandKey, actor);
         if (commandKey == null || commandKey.isBlank() || commandKey.length() > 128
                 || !commandKey.equals(commandKey.trim())) {
             throw new BizException(422, "RECEIPT_COMMAND_KEY_INVALID");
@@ -102,6 +103,26 @@ public class AdminCommandInvestigationService {
             return new ReceiptStatus("NOT_FOUND");
         }
         if (!receiptOwner(original, family, actor)) return new ReceiptStatus("UNKNOWN");
+        return new ReceiptStatus(receiptState(original));
+    }
+
+    /** Family-less scopes still answer as long as the command is wired and the caller holds its read right. */
+    private ReceiptStatus statusForWiredScope(String scope, String commandKey, long actor) {
+        String authority = AdminCommandOrigin.supported(scope) ? AdminCommandOrigin.readAuthority(scope) : null;
+        if (authority == null) throw new BizException(422, "RECEIPT_SCOPE_INVALID");
+        if (commandKey == null || commandKey.isBlank() || commandKey.length() > 128
+                || !commandKey.equals(commandKey.trim())) {
+            throw new BizException(422, "RECEIPT_COMMAND_KEY_INVALID");
+        }
+        if (!permissions.getPermissionCodes(actor).contains(authority)) throw denied();
+        var original = records.selectCurrent(scope, commandKey);
+        if (original == null || !Integer.valueOf(0).equals(original.getIsDeleted())) {
+            return new ReceiptStatus("NOT_FOUND");
+        }
+        // Only a stored origin proves who issued the command; rows without one stay unknown.
+        if (original.getOriginAdminId() == null || !Long.valueOf(actor).equals(original.getOriginAdminId())) {
+            return new ReceiptStatus("UNKNOWN");
+        }
         return new ReceiptStatus(receiptState(original));
     }
 
@@ -682,7 +703,39 @@ public class AdminCommandInvestigationService {
         boolean locked = Set.of("UNKNOWN", "PROCESSING").contains(original.getStatus());
         return new Receipt(original.getId(), original.getScope(), original.getIdempotencyKey(), original.getRequestHash(),
                 original.getOriginMethod(), original.getOriginPath(), original.getOriginTarget(), original.getOriginTargets(), original.getOriginAdminId(),
-                original.getStatus(), locked, "CONFIRMED_NOT_EXECUTED".equals(original.getStatus()), latest);
+                original.getStatus(), locked, "CONFIRMED_NOT_EXECUTED".equals(original.getStatus()),
+                businessCode(original.getResponseJson()), receiptState(original), batchSplit(original), latest);
+    }
+
+    /** Only the D2 batch split is projected: item ids plus the rejection/conflict reason codes. */
+    private Map<String, Object> batchSplit(AdminIdempotencyRecordEntity original) {
+        if (original.getScope() == null || !original.getScope().startsWith("D2_BATCH_")
+                || !StringUtils.hasText(original.getResponseJson())) {
+            return null;
+        }
+        try {
+            var data = json.readTree(original.getResponseJson()).path("data");
+            if (!data.isObject()) return null;
+            Map<String, Object> split = new java.util.LinkedHashMap<>();
+            split.put("accepted", textList(data.path("accepted")));
+            split.put("rejected", textList(data.path("rejected")));
+            java.util.List<Map<String, Object>> conflicts = new java.util.ArrayList<>();
+            for (var item : data.path("conflicts")) {
+                if (item.isObject()) conflicts.add(Map.of(
+                        "withdrawalId", item.path("withdrawalId").asText(),
+                        "reason", item.path("reason").asText()));
+            }
+            split.put("conflicts", conflicts);
+            return split;
+        } catch (JsonProcessingException invalid) {
+            return null;
+        }
+    }
+
+    private static java.util.List<String> textList(com.fasterxml.jackson.databind.JsonNode node) {
+        java.util.List<String> values = new java.util.ArrayList<>();
+        if (node.isArray()) node.forEach(item -> values.add(item.asText()));
+        return values;
     }
 
     private BizException denied() { return new BizException(403, "COMMAND_INVESTIGATION_FORBIDDEN"); }
