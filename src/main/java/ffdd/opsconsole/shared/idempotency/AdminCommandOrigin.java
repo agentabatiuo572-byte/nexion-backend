@@ -90,6 +90,8 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (i4TrustWrite(scope)) return "content_i4_read";
         if (h9CommandScope(scope)) return "growth_h9_read";
         if (a3PlatformParamScope(scope)) return null; // Bound per canonical key by executeBound.
+        if (userDetailScope(scope)) return "user_c1hub_read";
+        if (e3TradeinScope(scope)) return null; // Bound per entry (E3 or C2) by executeBound.
         if (scope.startsWith("F1_VRANK_")) return "network_f1_read";
         if ("F4_AMBASSADOR_POLICY_UPDATE".equals(scope) || scope.startsWith("F4_MATERIAL_REVIEW:")) return "network_f4_read";
         if (java.util.Set.of("F5_COMMISSION_REVERSE", "F5_COMMISSION_REISSUE", "F5_COMMISSION_SUSPENSION",
@@ -117,6 +119,8 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || j4PlaybookWrite(scope)
                 || h9CommandScope(scope)
                 || a3PlatformParamScope(scope)
+                || userDetailScope(scope)
+                || e3TradeinScope(scope)
                 || fCommandScope(scope)
                 || "A2_COMMAND".equals(scope) || "L_BI_REPORT_CREATE".equals(scope) || scope.startsWith("L_BI_REPORT_ACTION"));
     }
@@ -151,6 +155,17 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (scope == null || scope.length() > 96 || !scope.startsWith("A3_PLATFORM_PARAM:")) return false;
         String key = scope.substring("A3_PLATFORM_PARAM:".length());
         return key.matches("[A-Za-z0-9_.-]{1,80}");
+    }
+
+    /** Existing user-detail payment/nickname commands; the two payment scopes carry their environment. */
+    public static boolean userDetailScope(String scope) {
+        return scope != null && (scope.matches("USER_PAYMENT_METHOD_(?:UNBIND|REBIND_NOTICE):(?:PRODUCTION|SANDBOX)")
+                || "USER_NICKNAME_RESET".equals(scope));
+    }
+
+    /** Only the two existing E3 trade-in direct-write scopes; not the other E3 actions. */
+    public static boolean e3TradeinScope(String scope) {
+        return "E3_TRADEIN_RECYCLE".equals(scope) || "E3_TRADEIN_REPLACE".equals(scope);
     }
 
     /**

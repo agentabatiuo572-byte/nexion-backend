@@ -3104,6 +3104,23 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             String operation,
             String idempotencyKey,
             DeviceTradeinActionRequest request) {
+        return executeTradeinAction(operation, idempotencyKey, request, null);
+    }
+
+    /** Direct E3 controller entry: bind the receipt to the E3 reader without changing the writer scope. */
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<DeviceOpsView> executeTradeinActionBound(
+            String operation,
+            String idempotencyKey,
+            DeviceTradeinActionRequest request) {
+        return executeTradeinAction(operation, idempotencyKey, request, "device_e3_read");
+    }
+
+    private ApiResult<DeviceOpsView> executeTradeinAction(
+            String operation,
+            String idempotencyKey,
+            DeviceTradeinActionRequest request,
+            String readAuthority) {
         ApiResult<DeviceOpsView> guard = requireTradeinCommand(operation, idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -3113,12 +3130,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         DeviceTradeinActionRequest trusted = new DeviceTradeinActionRequest(
                 request.deviceId(), request.reason().trim(), trustedOperator);
         String scope = "E3_TRADEIN_" + normalizedOperation.toUpperCase(Locale.ROOT);
-        return idempotencyService.execute(
-                scope,
-                idempotencyKey.trim(),
-                e1RequestHash(scope, String.valueOf(request.deviceId()), trusted),
-                TradeinActionResult.class,
-                () -> {
+        java.util.function.Supplier<TradeinActionResult> action = () -> {
                     if (!A2ReplayContext.isReplaying()
                             && lockMapper.countActiveByTarget("E", "device", String.valueOf(trusted.deviceId())) > 0) {
                         return new TradeinActionResult(409, "OBJECT_LOCKED_BY_A2", null);
@@ -3160,7 +3172,23 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                                     "reason", trusted.reason(),
                                     "idempotencyKey", idempotencyKey.trim()));
                     return new TradeinActionResult(0, "success", updated);
-                });
+                };
+        if (readAuthority == null) {
+            return idempotencyService.execute(
+                    scope,
+                    idempotencyKey.trim(),
+                    e1RequestHash(scope, String.valueOf(request.deviceId()), trusted),
+                    TradeinActionResult.class,
+                    action);
+        }
+        return idempotencyService.executeBound(
+                scope,
+                idempotencyKey.trim(),
+                e1RequestHash(scope, String.valueOf(request.deviceId()), trusted),
+                TradeinActionResult.class,
+                readAuthority,
+                String.valueOf(request.deviceId()),
+                action);
     }
 
     /** Keeps the existing receipt JSON while giving Jackson the data type needed by the C2 ownership check. */
@@ -3190,7 +3218,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (!userId.equals(owned.userId())) {
             return ApiResult.fail(403, "C2_DEVICE_USER_MISMATCH");
         }
-        ApiResult<DeviceOpsView> result = executeTradeinAction(operation, idempotencyKey, request);
+        ApiResult<DeviceOpsView> result = executeTradeinAction(operation, idempotencyKey, request, "user_c2_read");
         if (result.getCode() == 0 && result.getData() != null && !userId.equals(result.getData().userId())) {
             throw new IllegalStateException("C2_DEVICE_OWNERSHIP_CHANGED");
         }
