@@ -52,8 +52,6 @@ import org.springframework.util.StringUtils;
 @Repository
 @RequiredArgsConstructor
 public class MybatisCopyAbRepository implements CopyAbRepository {
-    /** Legacy rows stored only month-day; their stored text is returned untouched. */
-    private static final DateTimeFormatter TS_LABEL = DateTimeFormatter.ofPattern("MM-dd HH:mm");
     /** New writes keep the year so a version label is never ambiguous after a year boundary. */
     private static final DateTimeFormatter TS_FULL = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
     private static final DateTimeFormatter DAY_LABEL = DateTimeFormatter.ofPattern("MM-dd");
@@ -474,7 +472,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         archivePublishedVersion(copyKey, now);
         target.setStatus("PUBLISHED");
         target.setChain(operator(operator) + " / rollback");
-        target.setTsLabel(TS_LABEL.format(now));
+        target.setTsLabel(TS_FULL.format(now));
         target.setLastOperator(operator(operator));
         target.setUpdatedAt(now);
         versionMapper.updateById(target);
