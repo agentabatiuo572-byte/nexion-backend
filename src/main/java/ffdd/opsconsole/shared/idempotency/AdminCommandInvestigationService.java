@@ -134,7 +134,7 @@ public class AdminCommandInvestigationService {
         if (request == null) throw new BizException(422, "INVESTIGATION_REQUEST_REQUIRED");
         validateIdentity(request.scope(), request.commandKey(), request.requestHash(), true);
         requireInitialReader(request.scope(), actor);
-        if (!Set.of("SUCCEEDED", "NOT_EXECUTED", "STILL_UNKNOWN").contains(String.valueOf(request.conclusion()))
+        if (!Set.of("SUCCEEDED", "NOT_EXECUTED", "STILL_UNKNOWN", "REJECTED").contains(String.valueOf(request.conclusion()))
                 || !StringUtils.hasText(request.evidenceReference()) || request.evidenceReference().trim().length() > 512
                 || request.evidenceAuditId() != null && request.evidenceAuditId() < 1)
             throw new BizException(422, "INVESTIGATION_EVIDENCE_OR_CONCLUSION_INVALID");
@@ -148,6 +148,10 @@ public class AdminCommandInvestigationService {
         boolean known = Set.of("SUCCEEDED", "FAILED").contains(original.getStatus());
         if (known && ("STILL_UNKNOWN".equals(request.conclusion())
                 || "NOT_EXECUTED".equals(request.conclusion()) && !provenNotExecuted(original)))
+            throw new BizException(409, "INVESTIGATION_KNOWN_RESULT_CONFLICT");
+        // A business rejection is only ever concluded from the stored response of this record; the caller
+        // supplies neither the code nor the body.
+        if ("REJECTED".equals(request.conclusion()) && !businessRejected(original))
             throw new BizException(409, "INVESTIGATION_KNOWN_RESULT_CONFLICT");
 
         var entry = new AdminCommandInvestigationEntity();
@@ -190,6 +194,15 @@ public class AdminCommandInvestigationService {
                     entry.setFactAction(fact.getAction());
                 }
             }
+        } else if ("REJECTED".equals(request.conclusion())) {
+            Integer rejectedCode = businessCode(original.getResponseJson());
+            // The original reply refused the command. That is not proof that nothing ran, so the
+            // conclusion keeps that wording and does not reopen the command.
+            entry.setConclusion("REJECTED");
+            entry.setEvidenceType("ORIGINAL_BUSINESS_REJECTION:" + rejectedCode);
+            entry.setFactType("ADMIN_RECEIPT");
+            entry.setFactId(original.getId().toString());
+            entry.setFactAction(original.getScope());
         } else if ("NOT_EXECUTED".equals(request.conclusion()) && provenNotExecuted(original)) {
             entry.setConclusion("NOT_EXECUTED");
             entry.setEvidenceType(original.getResponseJson() == null
@@ -204,6 +217,7 @@ public class AdminCommandInvestigationService {
         String state = switch (entry.getConclusion()) {
             case "SUCCEEDED" -> "CONFIRMED_SUCCEEDED";
             case "NOT_EXECUTED" -> "CONFIRMED_NOT_EXECUTED";
+            case "REJECTED" -> "CONFIRMED_REJECTED";
             default -> "UNKNOWN";
         };
         if (investigations.conclude(original.getId(), original.getRequestHash(), state) != 1)
@@ -680,12 +694,19 @@ public class AdminCommandInvestigationService {
         String status = original.getStatus();
         if ("PROCESSING".equals(status)) return "PROCESSING";
         if ("FAILED".equals(status)) return "FAILED";
+        if ("CONFIRMED_REJECTED".equals(status)) return "REJECTED";
         if ("SUCCEEDED".equals(status) || "CONFIRMED_SUCCEEDED".equals(status)) {
             Integer code = businessCode(original.getResponseJson());
             if (code == null) return "UNKNOWN";
             return code == 0 ? "SUCCEEDED" : "REJECTED";
         }
         return "UNKNOWN";
+    }
+
+    /** The stored reply refused the command with a non-zero business code. */
+    private boolean businessRejected(AdminIdempotencyRecordEntity original) {
+        Integer code = businessCode(original.getResponseJson());
+        return code != null && code != 0;
     }
 
     private Integer businessCode(String responseJson) {
