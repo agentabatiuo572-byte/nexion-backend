@@ -60,7 +60,8 @@ public record AuditCenterOverview(
             Integer approveDeniedCode,
             String approveDeniedMessage,
             Integer rejectDeniedCode,
-            String rejectDeniedMessage) {
+            String rejectDeniedMessage,
+            String objDisplayName) {
         public AuditOperationTicket withViewerMetadata(boolean ownedByViewer, String code, FundEffect effect,
                                                        String orderNo, boolean retired,
                                                        ffdd.opsconsole.shared.api.ApiResult<Void> approve,
@@ -73,7 +74,7 @@ public record AuditCenterOverview(
                     approve.getCode() == 0 ? null : approve.getCode(),
                     approve.getCode() == 0 ? null : approve.getMessage(),
                     reject.getCode() == 0 ? null : reject.getCode(),
-                    reject.getCode() == 0 ? null : reject.getMessage());
+                    reject.getCode() == 0 ? null : reject.getMessage(), objDisplayName);
         }
     }
 

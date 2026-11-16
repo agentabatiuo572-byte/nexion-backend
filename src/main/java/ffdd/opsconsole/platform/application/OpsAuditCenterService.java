@@ -104,6 +104,9 @@ public class OpsAuditCenterService {
     private static final String E4_ORDER_REFUND = "e4_order_refund";
     private static final String EXECUTED_DECISION_REASON = "即时执行·已生效(单人确认)";
     private static final Set<String> TERMINAL_STATUSES = Set.of(STATUS_APPROVED, STATUS_REJECTED, "withdrawn", "expired");
+    private static final Set<String> A1_ACCOUNT_OBJECT_OPS = Set.of(
+            "a1_account_update_profile", "a1_account_change_role", "a1_account_status_update",
+            "a1_account_reset_2fa", "a1_account_force_logout");
     private static final DateTimeFormatter ISO = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
 
     private static final List<OperationSeed> OPERATION_SEEDS = List.of();
@@ -142,6 +145,8 @@ public class OpsAuditCenterService {
     private final OpsI18nLearningService learning;
     @Autowired
     private OpsGrowthService growth;
+    @Autowired
+    private AdminObjectDisplayNameService adminObjectDisplayNames;
     @Autowired
     private ffdd.opsconsole.team.application.AmbassadorMaterialService ambassadorMaterials;
 
@@ -202,7 +207,8 @@ public class OpsAuditCenterService {
                 })
                 .filter(ticket -> !ownOnly || ticket.mine())
                 .toList();
-        List<AuditOperationTicket> tickets = visible.stream().map(ticket -> toTicket(ticket.row(), ticket.mine(), ticket.makerId()))
+        Map<Long, String> displayNames = objectDisplayNames(visible.stream().map(ViewerTicket::row).toList());
+        List<AuditOperationTicket> tickets = visible.stream().map(ticket -> toTicket(ticket.row(), ticket.mine(), ticket.makerId(), displayNames))
                 .sorted(Comparator.comparing(ticket -> !(STATUS_PENDING.equals(ticket.status()) && ticket.sos()
                         && OpsKillSwitchService.RESTORE_OPERATION.equals(ticket.operationCode()))))
                 .toList();
@@ -1575,10 +1581,15 @@ public class OpsAuditCenterService {
     }
 
     private AuditOperationTicket toTicket(AuditOperationTicketEntity row, boolean mine) {
-        return toTicket(row, mine, ticketMakerId(row, deserializeCommand(row.getCommandJson())));
+        return toTicket(row, mine, ticketMakerId(row, deserializeCommand(row.getCommandJson())), null);
     }
 
     private AuditOperationTicket toTicket(AuditOperationTicketEntity row, boolean mine, Long makerId) {
+        return toTicket(row, mine, makerId, null);
+    }
+
+    private AuditOperationTicket toTicket(AuditOperationTicketEntity row, boolean mine, Long makerId,
+            Map<Long, String> displayNames) {
         AuditReplayCommand command = deserializeCommand(row.getCommandJson());
         Long viewer = A2ReplayContext.authenticatedAdminId();
         var approve = decisionQualification(row, command, makerId, viewer, true);
@@ -1615,7 +1626,47 @@ public class OpsAuditCenterService {
                 ambassadorMaterials.queueProposal(command), originalAmount, refundAmount,
                 approve.getCode() == 0, reject.getCode() == 0,
                 approve.getCode() == 0 ? null : approve.getCode(), approve.getCode() == 0 ? null : approve.getMessage(),
-                reject.getCode() == 0 ? null : reject.getCode(), reject.getCode() == 0 ? null : reject.getMessage());
+                reject.getCode() == 0 ? null : reject.getCode(), reject.getCode() == 0 ? null : reject.getMessage(),
+                objectDisplayName(row, command, displayNames));
+    }
+
+    private Map<Long, String> objectDisplayNames(Collection<AuditOperationTicketEntity> rows) {
+        if (rows == null || rows.isEmpty() || adminObjectDisplayNames == null) return Map.of();
+        List<Long> ids = rows.stream()
+                .map(row -> a1AccountObjectId(row, deserializeCommand(row.getCommandJson())))
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        return adminObjectDisplayNames.byIds(ids);
+    }
+
+    private Long a1AccountObjectId(AuditOperationTicketEntity row, AuditReplayCommand command) {
+        if (command == null || command.op() == null || !"A".equalsIgnoreCase(command.domain())
+                || !A1_ACCOUNT_OBJECT_OPS.contains(command.op())) return null;
+        return positiveAccountId(row.getObjectText());
+    }
+
+    private String objectDisplayName(AuditOperationTicketEntity row, AuditReplayCommand command,
+            Map<Long, String> displayNames) {
+        if (command == null || command.op() == null || !"A".equalsIgnoreCase(command.domain())) return null;
+        if ("a1_account_create".equals(command.op())) {
+            return StringUtils.hasText(row.getObjectText()) ? row.getObjectText().trim() : null;
+        }
+        Long id = a1AccountObjectId(row, command);
+        if (id == null) return null;
+        if (displayNames != null) return displayNames.get(id);
+        if (adminObjectDisplayNames == null) return null;
+        return adminObjectDisplayNames.byIds(List.of(id)).get(id);
+    }
+
+    private static Long positiveAccountId(String value) {
+        if (!StringUtils.hasText(value)) return null;
+        try {
+            long id = Long.parseLong(value.trim());
+            return id > 0 ? id : null;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     /**
