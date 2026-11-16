@@ -264,6 +264,7 @@ public class AdminCommandInvestigationService {
         if (scope.startsWith("I4_TRUST_SECTION_")) return i4TrustSectionEvidence(scope, fact);
         if ("I4_TRUST_DOCUMENT".equals(scope)) return "TRUST_DOCUMENT".equals(fact.getResourceType())
                 && Set.of("I4_TRUST_DOCUMENT_UPLOADED", "I4_TRUST_DOCUMENT_RESTORED").contains(action);
+        if (scope.startsWith("I7_COURSE_")) return i7CourseEvidence(scope, fact);
         if (scope.startsWith("I3_NOTIFICATION_CAMPAIGN_")) return "NOTIFICATION_CAMPAIGN".equals(fact.getResourceType())
                 && i3CampaignActions(scope).contains(action);
         if (scope.startsWith("I6_I18N_")) return i6I18nEvidence(scope, fact);
@@ -423,6 +424,25 @@ public class AdminCommandInvestigationService {
             case "I4_TRUST_SECTION_DRAFT_DELETE" -> versionResource && "I4_TRUST_SECTION_DRAFT_DELETED".equals(action);
             default -> false;
         };
+    }
+
+    /** I7 course writes: the course or course-version resource, with this scope's own action. */
+    private boolean i7CourseEvidence(String scope, AuditLogRecord fact) {
+        String action = fact.getAction();
+        boolean course = "LEARNING_COURSE".equals(fact.getResourceType());
+        boolean version = "LEARNING_COURSE_VERSION".equals(fact.getResourceType());
+        if (scope.startsWith("I7_COURSE_VERSION_CREATE")) return version && "I7_LEARNING_COURSE_VERSION_CREATED".equals(action);
+        if (scope.startsWith("I7_COURSE_VERSION_UPDATE")) return version && "I7_LEARNING_COURSE_VERSION_UPDATED".equals(action);
+        if (scope.startsWith("I7_COURSE_VERSION_DELETE")) return version && "I7_LEARNING_COURSE_VERSION_DELETED".equals(action);
+        if (scope.startsWith("I7_COURSE_VERSION_PUBLISH")) return version && "I7_LEARNING_COURSE_VERSION_PUBLISHED".equals(action);
+        if (scope.startsWith("I7_COURSE_VERSION_ROLLBACK")) return version && "I7_LEARNING_COURSE_VERSION_ROLLED_BACK".equals(action);
+        if (scope.startsWith("I7_COURSE_CREATE")) return course && "I7_LEARNING_COURSE_CREATED".equals(action);
+        if (scope.startsWith("I7_COURSE_DRAFT_UPDATE")) return course && "I7_LEARNING_COURSE_DRAFT_UPDATED".equals(action);
+        if (scope.startsWith("I7_COURSE_DELETE")) return course && "I7_LEARNING_COURSE_DRAFT_DELETED".equals(action);
+        if (scope.startsWith("I7_COURSE_PUBLISH")) return course && "I7_LEARNING_COURSE_PUBLISHED".equals(action);
+        if (scope.startsWith("I7_COURSE_ARCHIVE")) return course && "I7_LEARNING_COURSE_ARCHIVED".equals(action);
+        if (scope.startsWith("I7_COURSE_FEATURED")) return course && "I7_LEARNING_FEATURED_CHANGED".equals(action);
+        return false;
     }
 
     /** I3 campaign writes: the campaign resource, and only the action that scope itself writes. */

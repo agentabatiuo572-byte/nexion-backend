@@ -74,6 +74,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if ("J3_ALERT_CONFIG".equals(scope)) return "emergency_j3_read";
         if (scope.startsWith("I3_NOTIFICATION_CAMPAIGN_")) return "content_i3_read";
         if (scope.startsWith("I6_I18N_")) return "content_i6_read";
+        if (i7CourseWrite(scope)) return "content_i7_read";
         if (j2GeoWrite(scope)) return "emergency_j2_read";
         if (scope.startsWith("I1_COPY_")) return "content_i1_read";
         if (scope.startsWith("I2_NOVA_")) return "content_i2_read";
@@ -98,6 +99,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || scope.startsWith("GROWTH:H2:")
                 || "J3_ALERT_CONFIG".equals(scope)
                 || scope.startsWith("I3_NOTIFICATION_CAMPAIGN_") || scope.startsWith("I6_I18N_")
+                || i7CourseWrite(scope)
                 || i4TrustWrite(scope)
                 || j2GeoWrite(scope)
                 || "D5_WITHDRAWAL_LIMITS_UPDATE".equals(scope) || "D5_WITHDRAWAL_LIMITS".equals(scope)
@@ -155,6 +157,27 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || scope.matches("GROWTH:H9:DEVICE_RANK_UPDATE:(?i:growth\\.device_rank\\.model|h9\\.dr\\.sb\\.[0-9a-f]{32})"));
     }
 
+    /**
+     * The I7 learning-course commands (the course service kept its old I6 class names, but the page
+     * authorities are content_i7_*). The reward command stays out: it is approval-replay only and its
+     * direct write is refused.
+     */
+    private static boolean i7CourseWrite(String scope) {
+        if (scope == null) return false;
+        return scope.startsWith("I7_COURSE_CREATE") || scope.startsWith("I7_COURSE_DRAFT_UPDATE")
+                || scope.startsWith("I7_COURSE_DELETE") || scope.startsWith("I7_COURSE_PUBLISH")
+                || scope.startsWith("I7_COURSE_ARCHIVE") || scope.startsWith("I7_COURSE_FEATURED")
+                || scope.startsWith("I7_COURSE_VERSION_");
+    }
+
+    /** Draft and version editing stay local; publish, rollback, archive and featured change the public surface. */
+    private static boolean i7CourseDraftOnly(String scope) {
+        if (scope == null) return false;
+        return scope.startsWith("I7_COURSE_CREATE") || scope.startsWith("I7_COURSE_DRAFT_UPDATE")
+                || scope.startsWith("I7_COURSE_DELETE") || scope.startsWith("I7_COURSE_VERSION_CREATE")
+                || scope.startsWith("I7_COURSE_VERSION_UPDATE") || scope.startsWith("I7_COURSE_VERSION_DELETE");
+    }
+
     /** These commands write transactional local configuration, with no provider/remote business call. */
     public static boolean localConfiguration(String scope) {
         return java.util.Set.of("I5_JURISDICTION_CREATE", "I5_JURISDICTION_UPDATE", "I5_DISCLOSURE_DRAFT_SAVE",
@@ -168,6 +191,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || j4LocalRecord(scope)
                 || h9CommandScope(scope)
                 || fLocalConfiguration(scope)
+                || i7CourseDraftOnly(scope)
                 || i4TrustDraftOnly(scope)
                 || scope != null && (scope.startsWith("E2_POOL_") || scope.startsWith("E5_DEVICE_") || scope.startsWith("E6_PHONE_"));
     }
