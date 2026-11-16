@@ -84,6 +84,11 @@ public interface NexMarketRepository {
 
     List<StakingPositionView> stakingPositionsByStatus(String status, int limit, java.time.LocalDateTime now);
 
+    /** Exact stored position key; scoped to the same canonical products and soft-delete rules as G1. */
+    default Optional<StakingPositionView> stakingPositionByNo(String positionNo, java.time.LocalDateTime now) {
+        throw new UnsupportedOperationException("STAKING_POSITION_LOOKUP_UNAVAILABLE");
+    }
+
     void ensureRepurchaseSeedData();
 
     Optional<StakingProductView> repurchaseProduct();

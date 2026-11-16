@@ -429,6 +429,20 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return ApiResult.ok(response);
     }
 
+    public ApiResult<Map<String, Object>> stakingPosition(String positionNo) {
+        String normalized = positionNo == null ? "" : positionNo.trim();
+        if (!normalized.matches("STK-[A-Za-z0-9-]{1,80}")) {
+            return ApiResult.fail(422, "STAKING_POSITION_NO_INVALID");
+        }
+        StakingPositionView position = marketRepository
+                .stakingPositionByNo(normalized, java.time.LocalDateTime.now(clock))
+                .orElse(null);
+        if (position == null) {
+            return ApiResult.fail(404, "STAKING_POSITION_NOT_FOUND");
+        }
+        return ApiResult.ok(stakingPosition(position));
+    }
+
     public ApiResult<Map<String, Object>> stakingOverview() {
         List<StakingPoolDef> poolDefs = stakingPoolDefs();
         List<Map<String, Object>> pools = poolDefs.stream().map(this::stakingPoolRow).toList();
