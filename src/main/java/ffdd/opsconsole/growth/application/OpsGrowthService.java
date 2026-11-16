@@ -1,5 +1,7 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
+
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
