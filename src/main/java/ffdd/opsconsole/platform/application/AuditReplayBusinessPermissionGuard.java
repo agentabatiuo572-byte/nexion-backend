@@ -440,6 +440,14 @@ public class AuditReplayBusinessPermissionGuard {
             if ("f_ui_config".equals(operation)) {
                 OpsTeamService.validateBinaryUiConfig(value(command.params(), "key"), value(command.params(), "value"));
             }
+            if ("f_config_batch".equals(operation) && command.params() != null
+                    && command.params().get("changes") instanceof List<?> changes) {
+                for (Object item : changes) {
+                    if (item instanceof Map<?, ?> change) {
+                        OpsTeamService.validateUnilevelRatePrecision(value(change, "key"), value(change, "value"));
+                    }
+                }
+            }
             ApiResult<Void> evidence = validateLeaderboardMemberProposal(operation, command.params());
             if (evidence.getCode() != 0) return evidence;
         }

@@ -3842,13 +3842,23 @@ public class OpsTeamService implements AuditReplayable {
         }
     }
 
-    /** F2 unilevel UI is always percentage points; accept with/without '%' but never infer a ratio. */
+    /** Batch proposals share the F2 write precision boundary before creating an approval ticket. */
+    public static void validateUnilevelRatePrecision(String key, String value) {
+        if (isUnilevelRuleKey(key) && !key.startsWith("F.unilevel.nex.")) {
+            percentPointRatio(value, BigDecimal.ZERO);
+        }
+    }
+
+    /** F2 percentage points must convert exactly to the stored DECIMAL(10,6) ratio. */
     private static BigDecimal percentPointRatio(String raw, BigDecimal fallback) {
         if (!StringUtils.hasText(raw)) {
             return BigDecimal.ZERO;
         }
-        return parseDecimal(raw, fallback)
-                .divide(new BigDecimal("100"), 6, RoundingMode.HALF_UP);
+        BigDecimal ratio = parseDecimal(raw, fallback).movePointLeft(2);
+        if (ratio.stripTrailingZeros().scale() > 6) {
+            throw new BizException(422, "F2_USDT_RATE_PRECISION_INVALID");
+        }
+        return ratio.setScale(6);
     }
 
     private static BigDecimal percentRatio(String raw, BigDecimal fallback) {
