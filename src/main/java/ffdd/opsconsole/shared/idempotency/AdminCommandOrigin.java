@@ -78,6 +78,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (scope.startsWith("I3_NOTIFICATION_CAMPAIGN_")) return "content_i3_read";
         if (scope.startsWith("I6_I18N_")) return "content_i6_read";
         if (i7CourseWrite(scope)) return "content_i7_read";
+        if (scope.startsWith("M4_SUPPORT_FAQ_")) return "service_m4_read";
         if (j2GeoWrite(scope)) return "emergency_j2_read";
         if (scope.startsWith("I1_COPY_")) return "content_i1_read";
         if (scope.startsWith("I2_NOVA_")) return "content_i2_read";
@@ -104,6 +105,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || "J3_ALERT_CONFIG".equals(scope)
                 || scope.startsWith("I3_NOTIFICATION_CAMPAIGN_") || scope.startsWith("I6_I18N_")
                 || i7CourseWrite(scope)
+                || scope.startsWith("M4_SUPPORT_FAQ_")
                 || i4TrustWrite(scope)
                 || j2GeoWrite(scope)
                 || "D5_WITHDRAWAL_LIMITS_UPDATE".equals(scope) || "D5_WITHDRAWAL_LIMITS".equals(scope)
@@ -190,6 +192,16 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || scope.startsWith("I7_COURSE_VERSION_UPDATE") || scope.startsWith("I7_COURSE_VERSION_DELETE");
     }
 
+    /**
+     * M4 support FAQ edits. Only create and update are local: a status change publishes or retires an
+     * answer on the public support surface and a delete removes it, so neither is used as
+     * not-executed evidence.
+     */
+    private static boolean m4FaqLocalEdit(String scope) {
+        if (scope == null) return false;
+        return "M4_SUPPORT_FAQ_CREATE".equals(scope) || scope.startsWith("M4_SUPPORT_FAQ_UPDATE:");
+    }
+
     /** These commands write transactional local configuration, with no provider/remote business call. */
     public static boolean localConfiguration(String scope) {
         return java.util.Set.of("I5_JURISDICTION_CREATE", "I5_JURISDICTION_UPDATE", "I5_DISCLOSURE_DRAFT_SAVE",
@@ -205,6 +217,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || a3PlatformParamScope(scope)
                 || fLocalConfiguration(scope)
                 || i7CourseDraftOnly(scope)
+                || m4FaqLocalEdit(scope)
                 || i4TrustDraftOnly(scope)
                 || scope != null && (scope.startsWith("E2_POOL_") || scope.startsWith("E5_DEVICE_") || scope.startsWith("E6_PHONE_"));
     }
