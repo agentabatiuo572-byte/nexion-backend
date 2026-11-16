@@ -4460,27 +4460,17 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     }
 
     private List<Map<String, Object>> growthRows(Function<GrowthQuestEventMapper, List<Map<String, Object>>> reader) {
-        if (questEventMapper.isEmpty()) {
-            return List.of();
-        }
-        try {
-            List<Map<String, Object>> rows = reader.apply(questEventMapper.get());
-            return rows == null ? List.of() : rows;
-        } catch (RuntimeException ex) {
-            return List.of();
-        }
+        GrowthQuestEventMapper mapper = questEventMapper.orElseThrow(
+                () -> new BizException(503, "GROWTH_BUSINESS_TABLE_UNAVAILABLE"));
+        List<Map<String, Object>> rows = reader.apply(mapper);
+        return rows == null ? List.of() : rows;
     }
 
     private Map<String, Object> growthMap(Function<GrowthQuestEventMapper, Map<String, Object>> reader) {
-        if (questEventMapper.isEmpty()) {
-            return Map.of();
-        }
-        try {
-            Map<String, Object> row = reader.apply(questEventMapper.get());
-            return row == null ? Map.of() : row;
-        } catch (RuntimeException ex) {
-            return Map.of();
-        }
+        GrowthQuestEventMapper mapper = questEventMapper.orElseThrow(
+                () -> new BizException(503, "GROWTH_BUSINESS_TABLE_UNAVAILABLE"));
+        Map<String, Object> row = reader.apply(mapper);
+        return row == null ? Map.of() : row;
     }
 
     private String trialParamValueType(String key) {
