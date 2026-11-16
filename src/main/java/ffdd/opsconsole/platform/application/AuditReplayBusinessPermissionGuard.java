@@ -420,6 +420,10 @@ public class AuditReplayBusinessPermissionGuard {
             return ApiResult.fail(422,"PROMOTION_CORRECTION_FIELDS_INVALID");
         ApiResult<Void> ordinaryPermission = validateOrdinaryProposalPermission(command, operation);
         if (ordinaryPermission.getCode() != 0) return ordinaryPermission;
+        if ("H".equalsIgnoreCase(command.domain()) && "h5_checkin_rule".equals(operation)) {
+            ApiResult<Void> stale = growth.validateCheckInRuleProposal(command.params());
+            if (stale.getCode() != 0) return stale;
+        }
         if ("H".equalsIgnoreCase(command.domain()) && "h2_trial_charge".equals(operation)) {
             return ApiResult.fail(410, "TRIAL_EXPLICIT_PURCHASE_REQUIRED");
         }

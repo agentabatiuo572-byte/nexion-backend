@@ -2648,6 +2648,44 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         return ApiResult.ok(response);
     }
 
+    /**
+     * Proposal creation uses the same persisted check-in rule value and stale comparison as approval.
+     * Missing/blank expectations keep the existing approval-time fallback; this guard never replaces the
+     * operator's expected value with the current value.
+     */
+    public ApiResult<Void> validateCheckInRuleProposal(Map<String, Object> params) {
+        if (params == null) {
+            return ApiResult.ok();
+        }
+        Object expectedValue = params.get("expectedValue");
+        Object ruleKey = params.get("ruleKey");
+        if (!(expectedValue instanceof String expected) || !StringUtils.hasText(expected)
+                || !(ruleKey instanceof String rawKey) || !StringUtils.hasText(rawKey)) {
+            return ApiResult.ok();
+        }
+        String key;
+        try {
+            key = normalizeCheckInRuleKey(rawKey);
+        } catch (RuntimeException invalid) {
+            return ApiResult.ok();
+        }
+        if (questEventMapper.isEmpty()) {
+            return ApiResult.ok();
+        }
+        String persistedValue;
+        try {
+            persistedValue = questEventMapper.get().checkInRuleValue(key);
+        } catch (RuntimeException unavailable) {
+            return ApiResult.ok();
+        }
+        if (!StringUtils.hasText(persistedValue)) {
+            return ApiResult.ok();
+        }
+        return persistedValue.equals(expected.trim())
+                ? ApiResult.ok()
+                : ApiResult.fail(409, "H5_CONFIG_STALE");
+    }
+
     @Transactional
     public ApiResult<Map<String, Object>> updateCheckInRule(
             String idempotencyKey,
