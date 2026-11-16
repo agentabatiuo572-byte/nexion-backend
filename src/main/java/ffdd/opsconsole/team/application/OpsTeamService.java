@@ -207,6 +207,24 @@ public class OpsTeamService implements AuditReplayable {
         }
         return null;
     }
+
+    /**
+     * Exact read family for a key inside the shared F_TEAM_CONFIG_UPDATE scope.
+     * Derived from the same key→write map; an unmapped key grants no broad F read.
+     */
+    private String resolveReadAuthority(String key) {
+        if (key != null && key.startsWith("F.commission.")) return "network_f5_read";
+        if (key != null && key.startsWith("F3.dailyCap.")) return "network_f3_read";
+        String write = resolvePermissionCode(key);
+        if (write == null) return null;
+        if (write.startsWith("network_f1_")) return "network_f1_read";
+        if (write.startsWith("network_f2_")) return "network_f2_read";
+        if (write.startsWith("network_f3_")) return "network_f3_read";
+        if (write.startsWith("network_f4_")) return "network_f4_read";
+        if (write.startsWith("network_f5_")) return "network_f5_read";
+        return null;
+    }
+
     private static final List<String> VRANK_LEVELS = List.of(
             "V0", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8");
     private static final Set<String> VRANK_THRESHOLD_FIELDS = Set.of("selfBuy", "directRefs", "teamGv", "legCount", "legRank");
@@ -1394,12 +1412,14 @@ public class OpsTeamService implements AuditReplayable {
         if (guard != null) {
             return guard;
         }
-        return executeIdempotent(
+        return executeBound(
                 "F_TEAM_CONFIG_UPDATE",
                 idempotencyKey,
                 request.expectedMaterialRevision() == null
                         ? requestHash("config", request.key(), request.value(), request.reason(), actor(request.operator()))
                         : requestHash("config", request.key(), request.value(), request.reason(), actor(request.operator()), request.expectedMaterialRevision()),
+                resolveReadAuthority(request.key()),
+                request.key(),
                 () -> updateConfigInternal(idempotencyKey, request));
     }
 
@@ -3107,6 +3127,24 @@ public class OpsTeamService implements AuditReplayable {
                 idempotencyKey,
                 hash,
                 ApiResult.class,
+                (Supplier) action);
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private ApiResult<Map<String, Object>> executeBound(
+            String scope,
+            String idempotencyKey,
+            String hash,
+            String readAuthority,
+            String target,
+            Supplier<ApiResult<Map<String, Object>>> action) {
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.executeBound(
+                scope,
+                idempotencyKey,
+                hash,
+                ApiResult.class,
+                readAuthority,
+                target,
                 (Supplier) action);
     }
 

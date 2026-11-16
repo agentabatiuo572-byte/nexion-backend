@@ -77,6 +77,11 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (scope.startsWith("J1")) return "emergency_j1_read";
         if (scope.startsWith("I5")) return "content_i5_read";
         if (java.util.Set.of("I4_DISCLOSURE_PUBLISH", "I4_GATE_ADJUST").contains(scope)) return "content_i5_read";
+        if (scope.startsWith("F1_VRANK_")) return "network_f1_read";
+        if ("F4_AMBASSADOR_POLICY_UPDATE".equals(scope) || scope.startsWith("F4_MATERIAL_REVIEW:")) return "network_f4_read";
+        if (java.util.Set.of("F5_COMMISSION_REVERSE", "F5_COMMISSION_REISSUE", "F5_COMMISSION_SUSPENSION",
+                "F5_COMMISSION_ANOMALY_CONFIG").contains(scope)) return "network_f5_read";
+        if ("F_TEAM_CONFIG_UPDATE".equals(scope)) return null; // Bound per business key by executeBound.
         if (scope.matches("C[1-6](?:[_:].*)?")) return "user_c1hub_read";
         return null; // A2 and L1 require the typed business caller's binding.
     }
@@ -92,7 +97,8 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || "D6_FX_QUOTE_UPDATE".equals(scope) || "D6_FX_QUOTE".equals(scope)
                 || "FINANCE:D7:CONFIG_UPDATE".equals(scope) || "D7_PAYOUT_VND_CONFIG".equals(scope)
                 || scope.startsWith("I1_COPY_") || scope.startsWith("I2_NOVA_")
-                || "J3_ALERT_CONFIG".equals(scope) || j4PlaybookWrite(scope)
+                || j4PlaybookWrite(scope)
+                || fCommandScope(scope)
                 || "A2_COMMAND".equals(scope) || "L_BI_REPORT_CREATE".equals(scope) || scope.startsWith("L_BI_REPORT_ACTION"));
     }
 
@@ -112,6 +118,15 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || scope.startsWith("J4_PLAYBOOK_ROLLBACK:");
     }
 
+    private static boolean fCommandScope(String scope) {
+        return scope != null && (scope.startsWith("F1_VRANK_")
+                || "F_TEAM_CONFIG_UPDATE".equals(scope)
+                || "F4_AMBASSADOR_POLICY_UPDATE".equals(scope)
+                || scope.startsWith("F4_MATERIAL_REVIEW:")
+                || java.util.Set.of("F5_COMMISSION_REVERSE", "F5_COMMISSION_REISSUE",
+                "F5_COMMISSION_SUSPENSION", "F5_COMMISSION_ANOMALY_CONFIG").contains(scope));
+    }
+
     /** These commands write transactional local configuration, with no provider/remote business call. */
     public static boolean localConfiguration(String scope) {
         return java.util.Set.of("I5_JURISDICTION_CREATE", "I5_JURISDICTION_UPDATE", "I5_DISCLOSURE_DRAFT_SAVE",
@@ -123,7 +138,14 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || "D6_FX_QUOTE_UPDATE".equals(scope) || "D6_FX_QUOTE".equals(scope)
                 || "FINANCE:D7:CONFIG_UPDATE".equals(scope) || "D7_PAYOUT_VND_CONFIG".equals(scope)
                 || j4LocalRecord(scope)
+                || fLocalConfiguration(scope)
                 || scope != null && (scope.startsWith("E2_POOL_") || scope.startsWith("E5_DEVICE_") || scope.startsWith("E6_PHONE_"));
+    }
+
+    private static boolean fLocalConfiguration(String scope) {
+        return java.util.Set.of("F1_VRANK_THRESHOLD_UPDATE", "F1_VRANK_REWARD_ADD",
+                "F1_VRANK_REWARD_UPDATE", "F1_VRANK_REWARD_REMOVE",
+                "F4_AMBASSADOR_POLICY_UPDATE", "F5_COMMISSION_ANOMALY_CONFIG").contains(scope);
     }
 
     /**

@@ -302,6 +302,34 @@ public class AdminCommandInvestigationService {
         // partial rejection, so that audit is not proof of a completed recovery: only a retained receipt counts.
         if (scope.startsWith("J4_PLAYBOOK_ROLLBACK:")) return "SOP_PLAYBOOK_EXECUTION".equals(fact.getResourceType())
                 && "J4_SOP_PLAYBOOK_ROLLED_BACK".equals(action);
+        if (scope.startsWith("F1_VRANK_")) {
+            return "TEAM_POLICY".equals(fact.getResourceType())
+                    && Set.of("F_TEAM_VRANK_THRESHOLD_CHANGED", "F_TEAM_VRANK_REWARD_ADDED",
+                    "F_TEAM_VRANK_REWARD_CHANGED", "F_TEAM_VRANK_REWARD_REMOVED").contains(action);
+        }
+        if ("F4_AMBASSADOR_POLICY_UPDATE".equals(scope)) {
+            return "TEAM_POLICY".equals(fact.getResourceType())
+                    && "F4_AMBASSADOR_POLICY_CHANGED".equals(action);
+        }
+        if (scope.startsWith("F4_MATERIAL_REVIEW:")) {
+            return "AMBASSADOR_APPLICATION".equals(fact.getResourceType())
+                    && "F4_AMBASSADOR_MATERIAL_REVIEWED".equals(action);
+        }
+        if ("F_TEAM_CONFIG_UPDATE".equals(scope)) {
+            return "TEAM_POLICY".equals(fact.getResourceType())
+                    && Set.of("F_TEAM_POLICY_CHANGED", "F_TEAM_UI_CONFIG_CHANGED",
+                    "F_TEAM_UNILEVEL_RULE_CHANGED", "F_TEAM_COMMISSION_STATUS_CHANGED",
+                    "F_TEAM_AMBASSADOR_REVIEWED", "F_TEAM_LEADERBOARD_CHANGED",
+                    "F_TEAM_VRANK_VOTES_CHANGED", "F_TEAM_HARDWARE_QUOTA_UPDATED",
+                    "F_TEAM_HARDWARE_QUOTA_RECYCLED", "F_TEAM_LEADERBOARD_MEMBER_DISQUALIFIED").contains(action);
+        }
+        if (Set.of("F5_COMMISSION_REVERSE", "F5_COMMISSION_REISSUE", "F5_COMMISSION_SUSPENSION",
+                "F5_COMMISSION_ANOMALY_CONFIG").contains(scope)) {
+            return "COMMISSION_EVENT".equals(fact.getResourceType())
+                    && Set.of("ADMIN_COMMISSION_REVERSED", "ADMIN_COMMISSION_REISSUED",
+                    "ADMIN_COMMISSION_USER_SUSPENDED", "ADMIN_COMMISSION_USER_RESUMED",
+                    "ADMIN_COMMISSION_ANOMALY_CONFIG_CHANGED").contains(action);
+        }
         return Set.of("D2_WITHDRAWAL_CHAIN_CONFIRMED", "D2_WITHDRAWAL_REVIEW_APPROVE", "D2_WITHDRAWAL_REVIEW_REJECT",
                 "D2_WITHDRAWAL_REVIEW_REFUND", "D2_WITHDRAWAL_REVIEW_DELAY", "D2_WITHDRAWAL_REVIEW_FREEZE",
                 "D3_FORECAST_CONFIG_CHANGED", "D3_TREASURY_RESERVE_INJECTION", "D3_RECONCILIATION_EXPORTED", "D3_LIABILITIES_EXPORTED", "D3_SENSITIVE_EXPORT_A2_AUDITED",
@@ -456,6 +484,7 @@ public class AdminCommandInvestigationService {
         }
         // Report actions bind the report's actual domain; requireReader checks that stored authority next.
         if (scope.startsWith("L_BI_REPORT_ACTION_")) return;
+        if ("F_TEAM_CONFIG_UPDATE".equals(scope)) return; // exact per-key authority is stored on the original
         String authority = scope.startsWith("L_BI_") ? "bi_l1_read" : AdminCommandOrigin.readAuthority(scope);
         if (authority == null || !permissions.getPermissionCodes(actor).contains(authority)) throw denied();
     }
