@@ -2787,6 +2787,18 @@ public class OpsTeamService implements AuditReplayable {
         pool.put("ambassadorBudgetCapLabel", moneyLabel(decimalValue(ambassador.get("requestedBudgetUsd"), BigDecimal.ZERO)));
         pool.put("ambassadorKolBudgetPct", intValue(ambassador.get("kolBudgetPct"), 0));
         pool.put("ambassadorNextQuotaReviewDate", textValue(ambassador, "nextQuotaReviewDate", ""));
+        pool.put("ambassadorMetricBasis", Map.of(
+                "source", "nx_team_ambassador_application", "period", "ALL_TIME",
+                "timeFilter", "NONE", "excludedDeleted", true,
+                "metrics", Map.of(
+                        "ambassadorPendingCount", Map.of("aggregation", "COUNT", "statusFilter", "PENDING", "unit", "APPLICATION"),
+                        "ambassadorBudgetApprovedLabel", Map.of("aggregation", "SUM", "field", "requested_budget_usdt",
+                                "statusFilter", "APPROVED", "currency", "USDT", "amountBasis", "APPLICATION_REQUESTED_BUDGET", "isPaidAmount", false),
+                        "ambassadorBudgetCapLabel", Map.of("aggregation", "SUM", "field", "requested_budget_usdt",
+                                "statusFilter", "ALL", "currency", "USDT", "amountBasis", "APPLICATION_REQUESTED_BUDGET", "isBudgetCap", false),
+                        "ambassadorKolBudgetPct", Map.of("aggregation", "MAX", "field", "kol_budget_pct", "statusFilter", "ALL"),
+                        "ambassadorNextQuotaReviewDate", Map.of("aggregation", "MIN", "field", "event_date",
+                                "statusFilter", "PENDING", "isQuarterPlan", false))));
         pool.put("leaderboardPoolLabel", pause.available() ? moneyLabel(decimalValue(displayLeaderboard.get("poolUsd"), BigDecimal.ZERO)) : null);
         pool.put("leaderboardParticipantCount", pause.available() ? intValue(displayLeaderboard.get("participantCount"), 0) : null);
         pool.put("leaderboardFraudHitCount", intValue(leaderboard.get("fraudHitCount"), 0));
