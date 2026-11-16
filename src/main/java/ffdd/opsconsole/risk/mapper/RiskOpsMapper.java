@@ -1575,6 +1575,14 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                AND s.period_type = 'week'
                AND s.period_key = DATE_FORMAT(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.WEEK_DATE + """
                    , '%Y-%m-%d')
+               AND s.snapshot_bucket = (
+                   SELECT MAX(latest.snapshot_bucket)
+                     FROM nx_risk_k2_leaderboard_snapshot latest
+                    WHERE latest.user_id = s.user_id
+                      AND latest.is_deleted = 0
+                      AND latest.period_type = s.period_type
+                      AND latest.period_key = s.period_key
+               )
              WHERE r.view_key = 'board' AND r.is_deleted = 0
              GROUP BY r.row_id
             """)
