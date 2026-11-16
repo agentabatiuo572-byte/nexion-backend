@@ -258,6 +258,17 @@ public class AdminCommandInvestigationService {
                 && "E.compute.phoneRisk.settings".equals(fact.getResourceId());
         if ("J3_ALERT_CONFIG".equals(scope)) return "TAMPER_ALERT_CONFIG".equals(fact.getResourceType())
                 && "J3_TAMPER_ALERT_CONFIG_CHANGED".equals(action);
+        // J2 geo writes each publish one success audit with its own resource type; nothing else counts.
+        if (scope.startsWith("J2_COUNTRY_LIST")) return "GEO_COUNTRY_LIST".equals(fact.getResourceType())
+                && "J2_GEO_COUNTRY_LIST_CHANGED".equals(action);
+        if (scope.startsWith("J2_COUNTRY:")) return "GEO_COUNTRY".equals(fact.getResourceType())
+                && "J2_GEO_COUNTRY_STATUS_CHANGED".equals(action);
+        if (scope.startsWith("J2_ENDPOINT:")) return "GEO_ENDPOINT".equals(fact.getResourceType())
+                && "J2_GEO_ENDPOINT_COUNTRIES_CHANGED".equals(action);
+        if ("J2_EDGE_SOURCE".equals(scope)) return "GEO_EDGE".equals(fact.getResourceType())
+                && "J2_GEO_EDGE_JUDGE_SOURCE_CHANGED".equals(action);
+        if ("J2_EMERGENCY_BLOCK".equals(scope)) return "GEO_COUNTRY_BATCH".equals(fact.getResourceType())
+                && "J2_GEO_EMERGENCY_BLOCK_CREATED".equals(action);
         return Set.of("D2_WITHDRAWAL_CHAIN_CONFIRMED", "D2_WITHDRAWAL_REVIEW_APPROVE", "D2_WITHDRAWAL_REVIEW_REJECT",
                 "D2_WITHDRAWAL_REVIEW_REFUND", "D2_WITHDRAWAL_REVIEW_DELAY", "D2_WITHDRAWAL_REVIEW_FREEZE",
                 "D3_FORECAST_CONFIG_CHANGED", "D3_TREASURY_RESERVE_INJECTION", "D3_RECONCILIATION_EXPORTED", "D3_LIABILITIES_EXPORTED", "D3_SENSITIVE_EXPORT_A2_AUDITED",
