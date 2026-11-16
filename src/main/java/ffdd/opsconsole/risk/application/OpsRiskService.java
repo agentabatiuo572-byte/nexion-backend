@@ -134,6 +134,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private static final Pattern K2_TRIAL_THRESHOLD = Pattern.compile("^(>=|>)\\s*(\\d+)\\s*次\\s*/\\s*(\\d+)\\s*天$");
     private static final Pattern K2_WELCOME_GIFT_THRESHOLD = Pattern.compile("^(>=|>)\\s*(\\d+)\\s*笔\\s*/\\s*(实体|账户簇|手机号|设备)$");
     private static final Pattern K2_LEADERBOARD_THRESHOLD = Pattern.compile("^(>=|>)\\s*(\\d+)\\s*x\\s*(基线|上周期|7日均值|同层级均值)$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern K2_LEADERBOARD_DISPLAY_CELL = Pattern.compile("^(\\d+(?:\\.\\d+)?)x 基线$");
     private static final Pattern K3_AMOUNT_RULE = Pattern.compile("^单笔\\s*(>=|>)\\s*\\$?([\\d,]+)$");
     private static final Pattern K3_VELOCITY_RULE = Pattern.compile("^24h\\s*(>=|>)\\s*(\\d+)\\s*笔\\s*或\\s*(>=|>)\\s*\\$?([\\d,]+)$", Pattern.CASE_INSENSITIVE);
     private static final Pattern K3_NEW_ACCOUNT_RULE = Pattern.compile("^注册\\s*(<|<=)\\s*(\\d+)\\s*天$");
@@ -949,6 +950,16 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         refreshK2AuthoritativeProjection(currentParams, trialBoundary);
         List<RiskArbitrageRowView> rows = riskRepository.arbitrageRows();
         Map<String, List<RiskArbitrageRowView>> byView = rows.stream()
+                .map(row -> {
+                    if (!"board".equals(row.viewKey()) || row.cells().size() < 3) return row;
+                    Matcher multiplier = K2_LEADERBOARD_DISPLAY_CELL.matcher(row.cells().get(2));
+                    if (!multiplier.matches()) return row;
+                    List<String> cells = new ArrayList<>(row.cells());
+                    cells.set(2, multiplier.group(1) + " 倍");
+                    return new RiskArbitrageRowView(
+                            row.rowId(), row.viewKey(), row.clusterId(), cells, row.level(), row.actions(),
+                            row.disposition(), row.version(), row.clusterStatus(), row.clusterVersion());
+                })
                 .collect(Collectors.groupingBy(RiskArbitrageRowView::viewKey, LinkedHashMap::new, Collectors.toList()));
         List<RiskArbitrageViewGroup> views = k2Views(trialBoundary[1]).stream()
                 .map(spec -> new RiskArbitrageViewGroup(
@@ -964,6 +975,10 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 .filter(param -> !"minHoldingMonths".equals(param.key()))
                 .filter(param -> !RETIRED_K2_PARAM_KEYS.contains(param.key()))
                 .map(this::withCanonicalOtpValue)
+                .map(param -> "leaderboardVelocityMultiplier".equals(param.key())
+                        ? new RiskArbitrageParamView(param.key(), param.name(), param.value(),
+                                "奖励增长超过比较样本中位数的设定倍数时，产生刷榜风险信号。", param.note(), param.version())
+                        : param)
                 .toList();
         response.put("serverCanonical", true);
         response.put("domain", "K2");
@@ -999,8 +1014,9 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                         List.of("簇", "实体", "已发 / 已拦", "涉及金额", "闭环特征"),
                         "K1 看同一实体重复领；K2 加看行为闭环。拦截只停发后续,不动已入账资产。"),
                 new K2ViewSpec("board", "排行榜刷榜", "· 排行榜刷榜 · 邀请/奖励增速异常的冲榜账户",
-                        List.of("账户", "本期累计奖励", "增速(对基线)", "直接邀请增长", "关联簇"),
-                        "这里只标记并发信号给「奖励池、名额与排行榜」和风险雷达。取消参榜资格和从奖池剔除在「奖励池、名额与排行榜」执行。"));
+                        List.of("账户", "本期累计奖励", "奖励增长倍数", "直接邀请增长", "关联簇"),
+                        "这里只标记并发信号给「奖励池、名额与排行榜」和风险雷达。取消参榜资格和从奖池剔除在「奖励池、名额与排行榜」执行。"
+                                + "奖励增长倍数＝该账户奖励增加额÷比较样本奖励增加额的中位数。比较样本取本周最近两次快照的正向增长记录，并排除已标记刷榜风险的账户。"));
     }
 
     private List<RiskArbitrageStatView> canonicalK2Stats(List<RiskArbitrageRowView> rows) {
