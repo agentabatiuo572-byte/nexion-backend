@@ -68,6 +68,11 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     }
 
     @Override
+    public List<Map<String, Object>> f2PayoutStatistics() {
+        return mapper.f2PayoutStatistics();
+    }
+
+    @Override
     public List<Map<String, Object>> unilevelRates() {
         return mapper.unilevelRates();
     }

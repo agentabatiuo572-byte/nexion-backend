@@ -184,6 +184,22 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
              WHERE metric.sampleCount > 0
             """)
     List<Map<String, Object>> f2Metrics();
+    @Select("""
+            SELECT UPPER(currency) AS currency,
+                   COUNT(1) AS allStatusEventCount,
+                   SUM(CASE WHEN UPPER(currency)='USDT' THEN amount_usdt ELSE amount_nex END) AS allStatusAmountRaw,
+                   SUM(CASE WHEN UPPER(status) IN ('PAID','SETTLED') THEN 1 ELSE 0 END) AS paidOrSettledEventCount,
+                   SUM(CASE WHEN UPPER(status) IN ('PAID','SETTLED')
+                            THEN CASE WHEN UPPER(currency)='USDT' THEN amount_usdt ELSE amount_nex END
+                            ELSE 0 END) AS paidOrSettledAmountRaw
+              FROM nx_commission_event
+             WHERE is_deleted = 0
+               AND UPPER(currency) IN ('USDT','UVT')
+               AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+             GROUP BY UPPER(currency)
+             ORDER BY currency
+            """)
+    List<Map<String, Object>> f2PayoutStatistics();
 
     String UNILEVEL_RATES_SQL = """
             SELECT CONCAT('L', layer_no) AS level,
