@@ -505,29 +505,38 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void updateExecutionProgressIndependent(
             String executionId,
+            long executionGeneration,
             List<String> steps,
             Map<String, Object> notificationDispatch,
             List<Map<String, Object>> domainActions) {
-        updateExecutionProgress(executionId, steps, notificationDispatch, domainActions);
+        updateExecutionProgress(executionId, executionGeneration, steps, notificationDispatch, domainActions);
     }
 
     @Override
     public void updateExecutionProgress(
             String executionId,
+            long executionGeneration,
             List<String> steps,
             Map<String, Object> notificationDispatch,
             List<Map<String, Object>> domainActions) {
         ensureTables();
         if (mapper.updateExecutionProgress(
-                executionId, toJson(steps), toJson(notificationDispatch), toJson(domainActions)) != 1) {
+                executionId, executionGeneration, toJson(steps), toJson(notificationDispatch), toJson(domainActions)) != 1) {
             throw new IllegalStateException("J4_EXECUTION_PROGRESS_NOT_FOUND");
         }
     }
 
     @Override
-    public boolean claimExecutionRecovery(String executionId, LocalDateTime staleBefore) {
+    public long claimExecutionRecovery(String executionId) {
         ensureTables();
-        return mapper.claimExecutionRecovery(executionId, staleBefore) == 1;
+        if (mapper.claimExecutionRecovery(executionId) != 1) {
+            return -1L;
+        }
+        Long generation = mapper.executionGeneration(executionId);
+        if (generation == null) {
+            throw new IllegalStateException("J4_EXECUTION_GENERATION_NOT_FOUND");
+        }
+        return generation;
     }
 
     @Override

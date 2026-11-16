@@ -261,6 +261,7 @@ public interface EmergencyControlRepository {
 
     default void updateExecutionProgressIndependent(
             String executionId,
+            long executionGeneration,
             List<String> steps,
             Map<String, Object> notificationDispatch,
             List<Map<String, Object>> domainActions) {
@@ -269,14 +270,16 @@ public interface EmergencyControlRepository {
 
     default void updateExecutionProgress(
             String executionId,
+            long executionGeneration,
             List<String> steps,
             Map<String, Object> notificationDispatch,
             List<Map<String, Object>> domainActions) {
         throw new UnsupportedOperationException("execution progress update is not implemented");
     }
 
-    default boolean claimExecutionRecovery(String executionId, LocalDateTime staleBefore) {
-        return false;
+    /** Returns the new generation after claiming recovery, or -1 when the row is not stale. */
+    default long claimExecutionRecovery(String executionId) {
+        return -1L;
     }
 
     default boolean requestExecutionCancellation(

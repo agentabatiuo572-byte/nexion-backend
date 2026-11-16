@@ -480,7 +480,9 @@ $migrations = @(
   # App must be stopped before retiring the registry; the migration records a one-time marker.
   (Join-Path $root "scripts\migrations\20261109_datacenter_retirement.sql")
   # Normalize retained H4 asset aliases without replaying the historical prize-pool seed.
-  (Join-Path $root "scripts\migrations\20261116_h4_wheel_reward_kind_uvt.sql")
+  (Join-Path $root "scripts\migrations\20261116_h4_wheel_reward_kind_uvt.sql"),
+  # Fence stale J4 execution progress writes with the generation claimed by recovery.
+  (Join-Path $root "scripts\migrations\20261116_j4_sop_execution_generation.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
