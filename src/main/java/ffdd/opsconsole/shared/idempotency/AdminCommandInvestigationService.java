@@ -261,6 +261,9 @@ public class AdminCommandInvestigationService {
                 && "E.compute.phoneRisk.settings".equals(fact.getResourceId());
         if ("J3_ALERT_CONFIG".equals(scope)) return "TAMPER_ALERT_CONFIG".equals(fact.getResourceType())
                 && "J3_TAMPER_ALERT_CONFIG_CHANGED".equals(action);
+        if (scope.startsWith("I3_NOTIFICATION_CAMPAIGN_")) return "NOTIFICATION_CAMPAIGN".equals(fact.getResourceType())
+                && i3CampaignActions(scope).contains(action);
+        if (scope.startsWith("I6_I18N_")) return i6I18nEvidence(scope, fact);
         // J2 geo writes each publish one success audit with its own resource type; nothing else counts.
         if (scope.startsWith("J2_COUNTRY_LIST")) return "GEO_COUNTRY_LIST".equals(fact.getResourceType())
                 && "J2_GEO_COUNTRY_LIST_CHANGED".equals(action);
@@ -347,6 +350,36 @@ public class AdminCommandInvestigationService {
         if (scope.startsWith("I2_NOVA_TEMPLATE_DELETE:")) return java.util.Set.of("I2_NOVA_TEMPLATE_DELETED");
         if ("I2_NOVA_TEMPLATE_CREATE".equals(scope)) return java.util.Set.of("I2_NOVA_TEMPLATE_CREATED");
         return java.util.Set.of();
+    /** I3 campaign writes: the campaign resource, and only the action that scope itself writes. */
+    private static java.util.Set<String> i3CampaignActions(String scope) {
+        return switch (scope) {
+            case "I3_NOTIFICATION_CAMPAIGN_CREATE" -> java.util.Set.of("I3_NOTIFICATION_CAMPAIGN_CREATED");
+            case "I3_NOTIFICATION_CAMPAIGN_DRAFT_UPDATE" -> java.util.Set.of("I3_NOTIFICATION_CAMPAIGN_DRAFT_SAVED");
+            case "I3_NOTIFICATION_CAMPAIGN_SCHEDULE" -> java.util.Set.of("I3_NOTIFICATION_CAMPAIGN_SCHEDULED");
+            case "I3_NOTIFICATION_CAMPAIGN_SEND_NOW" -> java.util.Set.of("I3_NOTIFICATION_CAMPAIGN_SEND_NOW");
+            case "I3_NOTIFICATION_CAMPAIGN_CANCEL" -> java.util.Set.of("I3_NOTIFICATION_CAMPAIGN_CANCELLED");
+            case "I3_NOTIFICATION_CAMPAIGN_DELETE" -> java.util.Set.of("I3_NOTIFICATION_CAMPAIGN_DELETED");
+            default -> java.util.Set.of();
+        };
+    }
+
+    /** I6 i18n writes: each action is audited under its own resource type by the writer. */
+    private boolean i6I18nEvidence(String scope, AuditLogRecord fact) {
+        String action = fact.getAction();
+        String expectedType = switch (action) {
+            case "I6_I18N_INTEGRITY_RESCANNED" -> "I18N_SCAN";
+            case "I6_I18N_INTEGRITY_FIXED" -> "I18N_INTEGRITY";
+            case "I6_I18N_DRAFT_SAVED", "I6_I18N_MESSAGE_PUBLISHED", "I6_I18N_MESSAGE_ARCHIVED",
+                 "I6_I18N_MESSAGE_ROLLED_BACK" -> "I18N_MESSAGE";
+            default -> "";
+        };
+        if (!expectedType.equals(fact.getResourceType())) return false;
+        if (scope.startsWith("I6_I18N_DRAFT:")) return "I6_I18N_DRAFT_SAVED".equals(action);
+        if (scope.startsWith("I6_I18N_PUBLISH:")) return "I6_I18N_MESSAGE_PUBLISHED".equals(action);
+        if (scope.startsWith("I6_I18N_ARCHIVE:")) return "I6_I18N_MESSAGE_ARCHIVED".equals(action);
+        if (scope.startsWith("I6_I18N_ROLLBACK:")) return "I6_I18N_MESSAGE_ROLLED_BACK".equals(action);
+        if (scope.startsWith("I6_I18N_INTEGRITY_FIX:")) return "I6_I18N_INTEGRITY_FIXED".equals(action);
+        return "I6_I18N_RESCAN".equals(scope) && "I6_I18N_INTEGRITY_RESCANNED".equals(action);
     }
 
     private void requireFactReader(AdminIdempotencyRecordEntity original, AdminCommandInvestigationEntity entry) {
