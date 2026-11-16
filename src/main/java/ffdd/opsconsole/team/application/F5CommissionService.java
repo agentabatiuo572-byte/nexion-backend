@@ -72,7 +72,7 @@ public class F5CommissionService {
         NormalizedQuery normalized = normalizeQuery(query);
         List<Map<String, Object>> rows = mapper.queryEvents(
                 normalized.kind(), normalized.currency(), normalized.userId(), normalized.status(),
-                normalized.cohort(), normalized.cursor(), normalized.limit() + 1);
+                normalized.cohort(), normalized.cursor(), normalized.limit() + 1, null);
         boolean hasNext = rows.size() > normalized.limit();
         List<Map<String, Object>> items = rows.stream().limit(normalized.limit()).map(this::eventView).toList();
         Long nextCursor = hasNext && !items.isEmpty()
@@ -165,6 +165,16 @@ public class F5CommissionService {
                 "nx_wallet_ledger",
                 "nx_event_outbox"));
         return ApiResult.ok(response);
+    }
+
+    public ApiResult<Map<String, Object>> commission(String commissionId) {
+        Long eventId = eventId(commissionId);
+        List<Map<String, Object>> rows = mapper.queryEvents(
+                null, null, null, null, null, null, 1, eventId);
+        if (rows == null || rows.isEmpty()) {
+            return ApiResult.fail(404, "COMMISSION_EVENT_NOT_FOUND");
+        }
+        return ApiResult.ok(eventView(rows.get(0)));
     }
 
     /**

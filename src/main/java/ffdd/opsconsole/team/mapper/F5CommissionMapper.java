@@ -127,6 +127,9 @@ public interface F5CommissionMapper {
              <if test="cursor != null">
                AND e.id &lt; #{cursor}
              </if>
+             <if test="eventId != null">
+               AND e.id = #{eventId}
+             </if>
              ORDER BY e.id DESC
              LIMIT #{limit}
             </script>
@@ -138,7 +141,8 @@ public interface F5CommissionMapper {
             @Param("status") String status,
             @Param("cohort") String cohort,
             @Param("cursor") Long cursor,
-            @Param("limit") int limit);
+            @Param("limit") int limit,
+            @Param("eventId") Long eventId);
 
     /**
      * Bounded export with redacted identities and canonical business source/group references.

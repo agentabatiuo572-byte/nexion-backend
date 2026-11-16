@@ -50,6 +50,12 @@ public class F5CommissionController {
                 kind, currency, userId, status, cohort, cursor, limit));
     }
 
+    @GetMapping("/commissions/{commissionId}")
+    @PreAuthorize("hasAuthority('network_f5_read')")
+    public ApiResult<Map<String, Object>> commission(@PathVariable String commissionId) {
+        return service.commission(commissionId);
+    }
+
     @PostMapping("/commissions/export")
     @PreAuthorize("hasAuthority('network_f5_export')")
     public ResponseEntity<byte[]> export(
