@@ -826,6 +826,7 @@ public class OpsTeamService implements AuditReplayable {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "F2");
         response.put("metrics", f2Metrics());
+        response.put("payoutStatistics", f2PayoutStatistics());
         response.put("unilevelRates", unilevelRates());
         var directPolicy=directPolicies==null?null:directPolicies.getIfAvailable();
         response.put("sevenLayerRevision",directPolicy==null?0L:directPolicy.sevenLayerRevision());
@@ -2343,6 +2344,50 @@ public class OpsTeamService implements AuditReplayable {
         row.put("configKey", StringUtils.hasText(rankCode) ? "F.fulfillment." + rankCode + ".queue.status" : "");
         row.put("source", "nx_v_rank_reward_fulfillment");
         return row;
+    }
+
+    private List<Map<String, Object>> f2PayoutStatistics() {
+        Map<String, Map<String, Object>> found = new LinkedHashMap<>();
+        for (Map<String, Object> raw : commissionRepository.f2PayoutStatistics()) {
+            String currency = String.valueOf(raw.get("currency") == null ? "" : raw.get("currency"))
+                    .trim().toUpperCase(Locale.ROOT);
+            if (!Set.of("USDT", "UVT").contains(currency)) continue;
+            Map<String, Object> statistic = new LinkedHashMap<>();
+            statistic.put("currency", currency);
+            statistic.put("available", true);
+            statistic.put("window", "created_at >= DB_NOW_MINUS_7_DAYS (no upper bound)");
+            statistic.put("statusScope", "ALL_EVENT_STATUSES");
+            statistic.put("allStatusAmountRaw", decimalValue(raw.get("allStatusAmountRaw"), null));
+            statistic.put("allStatusEventCount", intValue(raw.get("allStatusEventCount"), 0));
+            statistic.put("paidOrSettledStatuses", List.of("PAID", "SETTLED"));
+            statistic.put("paidOrSettledAmountRaw", decimalValue(raw.get("paidOrSettledAmountRaw"), null));
+            statistic.put("paidOrSettledEventCount", intValue(raw.get("paidOrSettledEventCount"), 0));
+            statistic.put("statusMarkerOnly", true);
+            statistic.put("cashSettlementTimeAvailable", false);
+            statistic.put("basis", "nx_commission_event.created_at; PAID/SETTLED are current status markers, not cash transfer or paid_at proof");
+            found.put(currency, statistic);
+        }
+        List<Map<String, Object>> statistics = new ArrayList<>();
+        for (String currency : List.of("USDT", "UVT")) {
+            Map<String, Object> statistic = found.get(currency);
+            if (statistic == null) {
+                statistic = new LinkedHashMap<>();
+                statistic.put("currency", currency);
+                statistic.put("available", false);
+                statistic.put("window", "created_at >= DB_NOW_MINUS_7_DAYS (no upper bound)");
+                statistic.put("statusScope", "ALL_EVENT_STATUSES");
+                statistic.put("allStatusAmountRaw", null);
+                statistic.put("allStatusEventCount", null);
+                statistic.put("paidOrSettledStatuses", List.of("PAID", "SETTLED"));
+                statistic.put("paidOrSettledAmountRaw", null);
+                statistic.put("paidOrSettledEventCount", null);
+                statistic.put("statusMarkerOnly", true);
+                statistic.put("cashSettlementTimeAvailable", false);
+                statistic.put("basis", "nx_commission_event.created_at; no rows for this currency in the rolling window");
+            }
+            statistics.add(statistic);
+        }
+        return statistics;
     }
 
     private List<Map<String, Object>> f2Metrics() {

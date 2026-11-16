@@ -18,6 +18,8 @@ public interface TeamCommissionRepository {
 
     List<Map<String, Object>> f2Metrics();
 
+    List<Map<String, Object>> f2PayoutStatistics();
+
     List<Map<String, Object>> unilevelRates();
 
     boolean updateUnilevelRule(int layerNo, String field, Object value);
