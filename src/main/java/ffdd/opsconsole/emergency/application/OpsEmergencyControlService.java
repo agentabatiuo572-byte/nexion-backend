@@ -1053,6 +1053,8 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         List<Map<String, Object>> executions = executionSeeds().stream().map(source -> {
             Map<String, Object> row = new LinkedHashMap<>(source);
             row.put("reversible", isReversibleExecution(source));
+            row.put("domainActions", impactRows(
+                    source.get("domainActions"), source.get("notificationDispatch"), null));
             return row;
         }).toList();
         long ready = playbooks.stream().filter(row -> "active".equals(row.get("state"))).count();
@@ -1148,7 +1150,10 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                         "reason", request.reason().trim(),
                         "idempotency_key", idempotencyKey.trim()));
         Map<String, Object> response = sopOverview().getData();
-        response.put("updated", row);
+        Map<String, Object> updated = new LinkedHashMap<>(row);
+        updated.put("sequence", impactRows(row.get("sequence"), null,
+                stringValue(row.get("notifyCampaignNo"), "")));
+        response.put("updated", updated);
         return ApiResult.ok(response);
     }
 
@@ -1611,7 +1616,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                 "executionId", execId,
                 "code", seed.code(),
                 "emergency", emergency,
-                "domainActions", domainActions,
+                "domainActions", impactRows(domainActions, notificationDispatch, seed.notifyCampaignNo()),
                 "notificationDispatch", notificationDispatch,
                 "rollback", seed.rollback()));
         return ApiResult.ok(response);
@@ -3361,7 +3366,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                 "readinessReason", readinessReason,
                 "owner", seed.owner(),
                 "lastDrill", seed.lastDrill(),
-                "sequence", seed.seq(),
+                "sequence", impactRows(seed.seq(), null, seed.notifyCampaignNo()),
                 "notifyCampaignNo", seed.notifyCampaignNo(),
                 "notifyTemplate", seed.notifyTemplate(),
                 "rollback", seed.rollback(),
@@ -3370,6 +3375,110 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                 "version", seed.version(),
                 "customSummary", seed.summary(),
                 "lastExecution", seed.lastExecution());
+    }
+
+    /**
+     * Adds a read-only impact contract to playbook steps and execution actions.  No J4 action has
+     * an authoritative affected-user count: scopes and the already persisted target/notification
+     * quantities are exposed as such, while unknown user counts stay null with a machine reason.
+     */
+    private List<Map<String, Object>> impactRows(Object rowsValue, Object notificationValue, String defaultCampaignNo) {
+        Long notificationCount = null;
+        String effectiveCampaignNo = defaultCampaignNo;
+        if (notificationValue instanceof Map<?, ?> notification) {
+            notificationCount = nullableLong(notification.get("notificationCount"));
+            effectiveCampaignNo = firstText(defaultCampaignNo, notification.get("campaignNo"));
+        }
+        List<Map<String, Object>> sourceRows = mapList(rowsValue);
+        long i3Steps = sourceRows.stream()
+                .filter(row -> "I3".equals(stringValue(row.get("domain"), "").toUpperCase(Locale.ROOT)))
+                .count();
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (Map<String, Object> source : sourceRows) {
+            Map<String, Object> row = new LinkedHashMap<>(source);
+            String domain = stringValue(row.get("domain"), "").toUpperCase(Locale.ROOT);
+            String action = stringValue(row.get("action"), "").replace("**", "").trim();
+            String ref = stringValue(row.get("ref"), "");
+            String configKey = stringValue(row.get("configKey"), "");
+            String campaignNo = firstText(row.get("campaignNo"), effectiveCampaignNo);
+            Long targetCount = "K1".equals(domain) ? nullableLong(row.get("affectedAccounts")) : null;
+            Long rowNotificationCount = nullableLong(row.get("notificationCount"));
+            Long actualNotifications = "I3".equals(domain)
+                    ? (rowNotificationCount != null ? rowNotificationCount
+                    : i3Steps == 1 ? notificationCount : null)
+                    : null;
+            row.put("impact", impactView(domain, action, ref, configKey, campaignNo, row, targetCount, actualNotifications));
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    private Map<String, Object> impactView(String domain, String action, String ref, String configKey,
+                                           String campaignNo, Map<String, Object> source, Long targetCount,
+                                           Long actualNotifications) {
+        String type = switch (domain) {
+            case "J1" -> "killswitch";
+            case "J2" -> "country";
+            case "C2" -> "user";
+            case "K1" -> "cluster";
+            case "I3" -> "campaign";
+            case "I5" -> "disclosure";
+            default -> "unknown";
+        };
+        String value = impactScopeValue(domain, action, ref, configKey, campaignNo, source);
+        Map<String, Object> scope = new LinkedHashMap<>();
+        scope.put("type", type);
+        scope.put("value", value);
+        if (targetCount != null) {
+            scope.put("targetUserCount", targetCount);
+        }
+        String reason = ("I3".equals(domain) && actualNotifications != null)
+                ? "NOTIFICATION_COUNT_ONLY"
+                : ("K1".equals(domain) && targetCount != null)
+                ? "TARGET_SCOPE_ONLY"
+                : "NO_AUTHORITATIVE_IMPACT_COUNT";
+        return map(
+                "available", false,
+                "reason", reason,
+                "scope", scope,
+                "estimatedUsers", null,
+                "actualAffectedUsers", null,
+                "actualNotifications", actualNotifications);
+    }
+
+    private String impactScopeValue(String domain, String action, String ref, String configKey,
+                                    String campaignNo, Map<String, Object> source) {
+        return switch (domain) {
+            case "J1" -> {
+                String gate = configKey.startsWith("killswitch.")
+                        ? configKey.substring("killswitch.".length()) : "";
+                yield firstText(gate, ref, action);
+            }
+            case "J2" -> firstText(source.get("country"), source.get("target"), afterColon(ref));
+            case "C2", "K1", "I5" -> firstText(source.get("target"), afterColon(ref));
+            case "I3" -> firstText(campaignNo, source.get("campaignNo"), ref);
+            default -> firstText(ref, source.get("target"), action);
+        };
+    }
+
+    private String afterColon(String value) {
+        String text = stringValue(value, "");
+        int colon = text.indexOf(':');
+        return colon >= 0 ? text.substring(colon + 1) : text;
+    }
+
+    private Long nullableLong(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value instanceof String text && StringUtils.hasText(text)) {
+            try {
+                return Long.parseLong(text.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
     }
 
     private Map<String, Object> playbookDraftRow(String code, SopPlaybookCreateRequest request) {
