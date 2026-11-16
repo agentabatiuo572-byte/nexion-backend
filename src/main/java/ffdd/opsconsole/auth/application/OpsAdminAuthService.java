@@ -91,18 +91,6 @@ public class OpsAdminAuthService {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_DISABLED");
         }
 
-        if (mfaProperties.isTemporarySuperadminBypassEnabled()
-                && superAdmin(admin)
-                && "superadmin".equals(normalizedUsername)) {
-            log.warn("Temporary super-admin MFA bypass used for adminId={}", admin.getId());
-            return issueAuthenticatedSession(
-                    admin,
-                    normalizedUsername,
-                    ipAddress,
-                    userAgent,
-                    "ADMIN_AUTH_UNAVAILABLE");
-        }
-
         AdminAccountStateEntity state = accountStateMapper.selectActiveByAdminId(admin.getId());
         boolean enrollment = state == null
                 || !StringUtils.hasText(state.getTfaSecretEncrypted())
