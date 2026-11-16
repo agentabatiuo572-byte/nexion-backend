@@ -45,3 +45,8 @@ nexion:
   market:
     g2-acceptance-sandbox:
       mode: DISABLED
+
+nexgrid:
+  sms:
+    itnio:
+      enabled: ${NEXGRID_SMS_ITNIO_ENABLED:true}
