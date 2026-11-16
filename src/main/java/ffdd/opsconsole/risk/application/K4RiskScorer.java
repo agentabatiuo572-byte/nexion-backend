@@ -55,25 +55,25 @@ public class K4RiskScorer {
         contributions.add(contribution(
                 "multiAccount", "多账户", multiAccountScore(input, model),
                 "关联簇账户数 " + value(input.multiAccountClusterSize())
-                        + (Boolean.TRUE.equals(input.multiAccountFraud()) ? "，已判定欺诈团伙" : ""), model));
+                        + (Boolean.TRUE.equals(input.multiAccountFraud()) ? "，已判定欺诈团伙" : ""), model, null));
         contributions.add(contribution(
                 "arbitrage", "套利与刷量", arbitrageScore(input, model),
                 "套利信号 " + value(input.arbitrageSignals()) + " 条"
-                        + (Boolean.TRUE.equals(input.severeArbitrage()) ? "，含高危处置" : ""), model));
+                        + (Boolean.TRUE.equals(input.severeArbitrage()) ? "，含高危处置" : ""), model, null));
         contributions.add(contribution(
                 "withdrawVelocity", "提现速度", withdrawalScore(input, model),
                 "24 小时 " + value(input.withdrawalCount24h()) + " 笔 / $"
                         + money(input.withdrawalAmount24h()) + "；7 天 "
                         + value(input.withdrawalCount7d()) + " 笔 / $" + money(input.withdrawalAmount7d())
                         + "；历史日均 " + decimal(input.withdrawalBaselineDailyCount()) + " 笔 / $"
-                        + money(input.withdrawalBaselineDailyAmount()), model));
+                        + money(input.withdrawalBaselineDailyAmount()), model, input.withdrawalEvidence()));
         contributions.add(contribution(
                 "accountAge", "账户年龄", accountAgeScore(input, model),
-                "账户年龄 " + value(input.accountAgeDays()) + " 天", model));
+                "账户年龄 " + value(input.accountAgeDays()) + " 天", model, null));
         contributions.add(contribution(
                 "anomalyBehavior", "异常行为", anomalyScore(input, model),
                 "异常信号 " + value(input.anomalySignals()) + " 条"
-                        + (Boolean.TRUE.equals(input.tamperDetected()) ? "，命中篡改拦截" : ""), model));
+                        + (Boolean.TRUE.equals(input.tamperDetected()) ? "，命中篡改拦截" : ""), model, null));
         int score = contributions.stream().mapToInt(value -> value.points() == null ? 0 : value.points()).sum();
         return new ScoreResult(Math.max(0, Math.min(100, score)), List.copyOf(contributions));
     }
@@ -130,7 +130,7 @@ public class K4RiskScorer {
     }
 
     private RiskScoreContributionView contribution(
-            String key, String name, int subScore, String evidence, RiskScoreModelView model) {
+            String key, String name, int subScore, String evidence, RiskScoreModelView model, Map<String, Object> structured) {
         int weight = model.weights().getOrDefault(key, 0);
         boolean enabled = model.inputSources().getOrDefault(key, false);
         int points = enabled
@@ -141,7 +141,7 @@ public class K4RiskScorer {
                 : 0;
         String sourceState = enabled ? evidence : evidence + "；该输入来源已停用，本次贡献记 0";
         return new RiskScoreContributionView(
-                key, name, subScore > 0, sourceState, subScore, weight, points);
+                key, name, subScore > 0, sourceState, subScore, weight, points, structured);
     }
 
     private int multiAccountScore(RiskScoreRawInput input, RiskScoreModelView model) {
