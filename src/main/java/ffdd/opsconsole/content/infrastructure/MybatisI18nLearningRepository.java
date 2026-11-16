@@ -1043,7 +1043,7 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         all.addAll(placeholders(zh)); all.addAll(placeholders(en)); all.addAll(placeholders(vi));
         return new I18nMessagePairView(entity.getMessageKey(), namespaceOf(entity.getMessageKey()), en, zh, vi,
                 normalizedStatus(entity.getStatus()), versionLabel(entity.getVersionNo()), List.copyOf(all),
-                MessageTranslations.read(entity.getTranslationsJson()));
+                MessageTranslations.read(entity.getTranslationsJson()), entity.getCreatedAt(), entity.getUpdatedAt());
     }
 
     private String versionLabel(Integer versionNo) {
@@ -1123,7 +1123,7 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
                 toViewCategory(entity.getCategory()),
                 toViewFormat(entity.getFormat()),
                 toViewLevel(entity.getLevel()),
-                entity.getRewardNex() == null ? BigDecimal.ZERO : entity.getRewardNex().stripTrailingZeros(),
+                entity.getRewardNex() == null ? null : entity.getRewardNex().stripTrailingZeros(),
                 entity.getFeatured() != null && entity.getFeatured() == 1,
                 value(entity.getDurationMin()) + " min",
                 "v" + Math.max(1, value(entity.getVersionNo())),
