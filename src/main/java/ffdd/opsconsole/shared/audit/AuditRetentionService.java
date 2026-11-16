@@ -27,7 +27,7 @@ public class AuditRetentionService {
     public void scheduledCleanup() {
         RetentionRun run = runNow();
         log.info("A2 audit archive completed months={} archivedRows={} removedHotRows={} evaluatedAt={}",
-                run.retentionMonths(), run.archivedRows(), run.affectedRows(), run.cutoff());
+                run.retentionMonths(), run.archivedRows(), run.affectedRows(), run.evaluatedAt());
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -49,8 +49,9 @@ public class AuditRetentionService {
             throw new ffdd.opsconsole.shared.exception.BizException(409, "RETENTION_PARAMETERS_STALE");
         }
         LocalDateTime now = LocalDateTime.now();
+        LocalDateTime cutoff = now.minusMonths(months);
         if (!Integer.valueOf(1).equals(mapper.tryAcquireRetentionLock())) {
-            return new RetentionRun(months, now, 0, 0, false);
+            return new RetentionRun(months, now, cutoff, 0, 0, false);
         }
         int archived = 0;
         int removed = 0;
@@ -75,14 +76,25 @@ public class AuditRetentionService {
                             "archivedRows", archived,
                             "removedHotRows", removed, "legacyRowsEligible", false, "idempotent", true))
                     .build());
-            return new RetentionRun(months, now, removed, archived, true);
+            return new RetentionRun(months, now, cutoff, removed, archived, true);
         } finally {
             mapper.releaseRetentionLock();
         }
     }
 
+    /**
+     * evaluatedAt is the time this run actually evaluated/executed; cutoff is the expiry boundary it
+     * applied (evaluatedAt minus the retention months). They are different facts and must not be conflated.
+     */
     public record RetentionRun(
-            int retentionMonths, LocalDateTime cutoff, int affectedRows, int archivedRows, boolean lockAcquired) {}
+            int retentionMonths, LocalDateTime evaluatedAt, LocalDateTime cutoff,
+            int affectedRows, int archivedRows, boolean lockAcquired) {
+        /** Legacy construction shape for callers that only know the cutoff. */
+        public RetentionRun(int retentionMonths, LocalDateTime cutoff, int affectedRows, int archivedRows,
+                            boolean lockAcquired) {
+            this(retentionMonths, cutoff, cutoff, affectedRows, archivedRows, lockAcquired);
+        }
+    }
 
     /**
      * 一次清理的操作前范围。与 {@link RetentionRun} 同处 shared 层:platform 的 web 层

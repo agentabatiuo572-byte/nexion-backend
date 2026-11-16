@@ -110,14 +110,15 @@ public class OpsAuditController {
             String actor, String idempotencyKey, String reason, Integer expectedRetentionMonths) {
         a2RuntimePolicy.validateReason(reason);
         AuditRetentionService.RetentionRun run = auditRetentionService.runNow(expectedRetentionMonths);
-        RetentionExecutionView view = new RetentionExecutionView(run.retentionMonths(), run.cutoff(), run.lockAcquired(),
+        RetentionExecutionView view = new RetentionExecutionView(run.retentionMonths(), run.evaluatedAt(), run.lockAcquired(),
                 run.archivedRows(), run.affectedRows(), 0, 0);
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action("A2_AUDIT_RETENTION_MANUAL_EXECUTED").resourceType("A2_AUDIT_RETENTION")
-                .resourceId(run.cutoff().toLocalDate().toString()).actorType("ADMIN").actorUsername(actor)
+                .resourceId(run.evaluatedAt().toLocalDate().toString()).actorType("ADMIN").actorUsername(actor)
                 .result(run.lockAcquired() ? "SUCCESS" : "LOCKED").riskLevel("HIGH")
                 .detail(Map.ofEntries(Map.entry("reason", reason.trim()), Map.entry("idempotencyKey", idempotencyKey),
                         Map.entry("retentionMonths", view.retentionMonths()), Map.entry("evaluatedAt", view.evaluatedAt().toString()),
+                        Map.entry("cutoff", run.cutoff().toString()),
                         Map.entry("lockAcquired", view.lockAcquired()), Map.entry("archivedRows", view.archivedRows()),
                         Map.entry("deletedRows", view.deletedRows()), Map.entry("outboxRows", 0), Map.entry("behaviorFactRows", 0),
                         Map.entry("idempotent", true), Map.entry("explicitExpireAtOnly", true), Map.entry("coldArchiveRequired", true)))
@@ -128,12 +129,19 @@ public class OpsAuditController {
     private RetentionExecutionView retentionView(AuditLogRecord record) {
         try {
             Map<?, ?> detail = objectMapper.readValue(record.getDetailJson(), Map.class);
-            return new RetentionExecutionView(number(detail.get("retentionMonths")),
-                    LocalDateTime.parse(String.valueOf(detail.get("evaluatedAt"))), Boolean.TRUE.equals(detail.get("lockAcquired")),
+            // This path always stored the real execution time in evaluatedAt; rows without it fall back to
+            // the audit row's own creation time, which is still a real record time, never the read clock.
+            LocalDateTime evaluatedAt = detail.get("evaluatedAt") == null ? null
+                    : LocalDateTime.parse(String.valueOf(detail.get("evaluatedAt")));
+            if (evaluatedAt == null) evaluatedAt = record.getCreatedAt();
+            if (evaluatedAt == null) throw new IllegalArgumentException("A2_RETENTION_EXECUTION_TIME_MISSING");
+            return new RetentionExecutionView(number(detail.get("retentionMonths")), evaluatedAt,
+                    Boolean.TRUE.equals(detail.get("lockAcquired")),
                     number(detail.get("archivedRows")), number(detail.get("deletedRows")),
                     number(detail.get("outboxRows")), number(detail.get("behaviorFactRows")));
         } catch (Exception ex) {
-            return null;
+            // A present but unreadable row is not the same as no manual run at all.
+            throw new BizException(500, "A2_RETENTION_RUN_UNREADABLE");
         }
     }
 
