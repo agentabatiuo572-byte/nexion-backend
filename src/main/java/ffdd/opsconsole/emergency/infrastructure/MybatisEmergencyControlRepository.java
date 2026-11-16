@@ -173,13 +173,11 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
     @Override
     public List<Map<String, Object>> geoBlockEventRows(
             String countryCode, String endpointKey, int pageSize, int offset) {
-        ensureTables();
         return mapper.geoBlockEventRows(countryCode, endpointKey, pageSize, offset);
     }
 
     @Override
     public long countGeoBlockEvents(String countryCode, String endpointKey) {
-        ensureTables();
         return mapper.countGeoBlockEvents(countryCode, endpointKey);
     }
 
