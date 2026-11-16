@@ -186,7 +186,8 @@ public class OpsRepurchaseAdminService {
             } catch (RuntimeException ex) { throw new BizException(422, "G7_PRESETS_INVALID"); }
         }
         BigDecimal value = decimal(raw);
-        if ("apy".equals(key) && outside(value, BigDecimal.ZERO, BigDecimal.valueOf(300)))
+        if ("apy".equals(key)
+                && (value.compareTo(BigDecimal.ZERO) <= 0 || value.compareTo(BigDecimal.valueOf(300)) > 0))
             throw new BizException(422, "G7_APY_OUT_OF_RANGE");
         if ("penalty".equals(key) && outside(value, BigDecimal.ZERO, BigDecimal.valueOf(100)))
             throw new BizException(422, "G7_PENALTY_OUT_OF_RANGE");
