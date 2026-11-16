@@ -107,7 +107,8 @@ public class A2AccessPolicy {
                         || grants.contains("finprod_g4_dividend_rate_write") || grants.contains("finprod_g4_write")
                         || grants.contains("finprod_g4_royalty_write") || grants.contains("finprod_g4_airdrop_pct_write")
                         || grants.contains("finprod_g4_emission_curve_write") || grants.contains("finprod_g4_airdrop_lock_days_write")
-                        || grants.contains(G4CatalogApproval.PRICE_AUTHORITY)) return id;
+                        || grants.contains(G4CatalogApproval.PRICE_AUTHORITY)
+                        || canReadOwnI3CapProposal(grants)) return id;
             }
         } catch (NumberFormatException ignored) { }
         throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");
@@ -183,6 +184,7 @@ public class A2AccessPolicy {
                 && grants.contains("platform_a2_proposal_create")
                 && grants.contains(AuditReplayBusinessPermissionGuard.E4_REFUND_AUTHORITY)) return true;
         if ("F".equals(domain) && replayBusinessPermissionGuard.canRecoverF5Proposal(command, grants)) return true;
+        if ("I".equals(domain) && isI3CapAdjust(command) && canReadOwnI3CapProposal(grants)) return true;
         if (!grants.contains("platform_a2_read")) {
             return grants.contains("platform_a2_proposal_create")
                     && (!StringUtils.hasText(ticket.getCommandJson()) || ("D".equals(domain)
@@ -263,6 +265,22 @@ public class A2AccessPolicy {
                     && permissions.getPermissionCodes(actorId).contains("growth_h4_read"));
         return makerId instanceof Number && Long.toString(actorId).equals(makerId.toString())
                 && authorityGranted;
+    }
+
+    /**
+     * I3 notification-cap makers: the exact cap authority plus the A2 proposal grant is the same pair
+     * that may create the proposal, so the maker can read back that one command's own result.
+     */
+    private static boolean canReadOwnI3CapProposal(Set<String> grants) {
+        return grants.contains("content_i3_cap_adjust")
+                && (grants.contains("platform_a2_write") || grants.contains("platform_a2_proposal_create"));
+    }
+
+    /** Only the real I3 cap adjustment command, never any other I-domain proposal. */
+    private static boolean isI3CapAdjust(AuditReplayCommand command) {
+        return command != null
+                && "I".equalsIgnoreCase(command.domain())
+                && "i3_cap_adjust".equalsIgnoreCase(command.op());
     }
 
     private static boolean canReadOwnCourseRewardProposal(Set<String> grants) {
