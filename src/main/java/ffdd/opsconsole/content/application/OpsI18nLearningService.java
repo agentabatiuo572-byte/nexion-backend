@@ -13,6 +13,7 @@ import ffdd.opsconsole.content.domain.MessageTranslations;
 import ffdd.opsconsole.content.domain.I18nNamespaceView;
 import ffdd.opsconsole.content.domain.LearningCourseView;
 import ffdd.opsconsole.content.domain.LearningCourseVersionView;
+import ffdd.opsconsole.content.domain.LearningCourseNextVersionView;
 import ffdd.opsconsole.content.domain.LearningQuizQuestionView;
 import ffdd.opsconsole.content.domain.LearningMetricView;
 import ffdd.opsconsole.content.domain.TutorialRewardRange;
@@ -405,6 +406,23 @@ public class OpsI18nLearningService {
             return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
         }
         return ApiResult.ok(learningRepository.listCourseVersions(courseId.trim()));
+    }
+
+    /** Read-only hint; soft-deleted labels still reserve their unique key. */
+    public ApiResult<LearningCourseNextVersionView> nextCourseVersion(String courseId) {
+        if (!StringUtils.hasText(courseId)) return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
+        LearningCourseView course = findCourse(courseId);
+        if (course == null) return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
+        int max = 0;
+        for (String label : learningRepository.listAllCourseVersionLabels(courseId.trim())) {
+            if (!StringUtils.hasText(label) || !COURSE_VERSION_PATTERN.matcher(label).matches()) continue;
+            max = Math.max(max, Integer.parseInt(label.substring(1)));
+        }
+        if (StringUtils.hasText(course.version()) && COURSE_VERSION_PATTERN.matcher(course.version()).matches()) {
+            max = Math.max(max, Integer.parseInt(course.version().substring(1)));
+        }
+        if (max >= 999_999_999) return ApiResult.fail(409, "LEARNING_COURSE_VERSION_EXHAUSTED");
+        return ApiResult.ok(new LearningCourseNextVersionView("v" + (max + 1)));
     }
 
     @Transactional

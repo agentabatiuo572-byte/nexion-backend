@@ -138,6 +138,11 @@ public interface I18nLearningRepository {
 
     default List<LearningCourseVersionView> listCourseVersions(String courseId) { return List.of(); }
 
+    /** Includes soft-deleted rows because their unique key still reserves the version label. */
+    default List<String> listAllCourseVersionLabels(String courseId) {
+        return listCourseVersions(courseId).stream().map(LearningCourseVersionView::version).toList();
+    }
+
     default Optional<LearningCourseVersionView> findCourseVersion(String courseId, String version) { return Optional.empty(); }
 
     /** A null version selects the initial draft. Hold the version rows through approval or activation. */

@@ -8,6 +8,7 @@ import ffdd.opsconsole.content.domain.I18nLearningOverview;
 import ffdd.opsconsole.content.domain.I18nMessagePairView;
 import ffdd.opsconsole.content.domain.LearningCourseView;
 import ffdd.opsconsole.content.domain.LearningCourseVersionView;
+import ffdd.opsconsole.content.domain.LearningCourseNextVersionView;
 import ffdd.opsconsole.content.dto.I18nActionRequest;
 import ffdd.opsconsole.content.dto.I18nIntegrityFixRequest;
 import ffdd.opsconsole.content.dto.I18nLocalizedCopyRequest;
@@ -140,6 +141,12 @@ public class OpsI18nLearningController {
     @PreAuthorize("hasAuthority('content_i7_read')")
     public ApiResult<java.util.List<LearningCourseVersionView>> courseVersions(@PathVariable String courseId) {
         return i18nLearningService.courseVersions(courseId);
+    }
+
+    @GetMapping("/courses/{courseId}/versions/next")
+    @PreAuthorize("hasAuthority('content_i7_read')")
+    public ApiResult<LearningCourseNextVersionView> nextCourseVersion(@PathVariable String courseId) {
+        return i18nLearningService.nextCourseVersion(courseId);
     }
 
     @PostMapping("/courses/{courseId}/versions")
