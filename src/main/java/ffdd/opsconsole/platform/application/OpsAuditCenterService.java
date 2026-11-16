@@ -1643,7 +1643,11 @@ public class OpsAuditCenterService {
     private Long a1AccountObjectId(AuditOperationTicketEntity row, AuditReplayCommand command) {
         if (command == null || command.op() == null || !"A".equalsIgnoreCase(command.domain())
                 || !A1_ACCOUNT_OBJECT_OPS.contains(command.op())) return null;
-        return positiveAccountId(row.getObjectText());
+        Object rawAccountId = command.params() == null ? null : command.params().get("accountId");
+        Long commandAccountId = positiveAccountId(rawAccountId == null ? "" : String.valueOf(rawAccountId));
+        Long objectId = positiveAccountId(row.getObjectText());
+        // Some legacy A1 ops do not bind request.obj to the command account; never label the wrong admin.
+        return commandAccountId != null && commandAccountId.equals(objectId) ? commandAccountId : null;
     }
 
     private String objectDisplayName(AuditOperationTicketEntity row, AuditReplayCommand command,
