@@ -933,6 +933,21 @@ public class OpsTeamService implements AuditReplayable {
         return new AuditLockTarget("F", "vrank_policy", rank);
     }
 
+    private ApiResult<Map<String, Object>> rejectIfVRankPolicyLocked(String rank) {
+        return !A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("F", "vrank_policy", rank) > 0
+                ? ApiResult.fail(409, "OBJECT_LOCKED_BY_A2") : null;
+    }
+
+    private void requireDirectVRankPolicyRevision(Map<String, Object> policy, String expectedRevision) {
+        if (!StringUtils.hasText(expectedRevision) || !expectedRevision.matches("[0-9a-f]{64}")) {
+            throw new BizException(422, "VRANK_POLICY_REVISION_REQUIRED");
+        }
+        if (!expectedRevision.equals(policy.get("policyRevision"))) {
+            throw new BizException(409, "VRANK_POLICY_VERSION_CONFLICT");
+        }
+    }
+
     private VRankPolicyMutation requestedVRankPolicyMutation(VRankPolicyChangeRequest request) {
         if (request == null || request.expectedRevision() == null
                 || !request.expectedRevision().matches("[0-9a-f]{64}")) {
@@ -1226,8 +1241,11 @@ public class OpsTeamService implements AuditReplayable {
         }
         String value = normalizeVRankThreshold(rankCode, normalizedField, request.value());
         Object businessValue = vRankThresholdBusinessValue(normalizedField, value);
+        ApiResult<Map<String, Object>> policyLock = rejectIfVRankPolicyLocked(rankCode);
+        if (policyLock != null) return policyLock;
         var orderedThresholds = lockOrderedVRankThresholds(normalizedField);
         Map<String, Object> before = currentVRankPolicy(rankCode);
+        requireDirectVRankPolicyRevision(before, request.expectedRevision());
         String oldValue = "legRank".equals(normalizedField) ? String.valueOf(before.get(normalizedField))
                 : decimalValue(before.get(normalizedField), BigDecimal.ZERO).toPlainString();
         Map<String, Object> after = new LinkedHashMap<>(before);
@@ -1269,7 +1287,10 @@ public class OpsTeamService implements AuditReplayable {
     private ApiResult<Map<String, Object>> addVRankRewardInternal(
             String rank, String idempotencyKey, VRankRewardRequest request) {
         VRankSeed seed = requireVRank(rank);
-        currentVRankPolicy(seed.v());
+        ApiResult<Map<String, Object>> policyLock = rejectIfVRankPolicyLocked(seed.v());
+        if (policyLock != null) return policyLock;
+        Map<String, Object> beforePolicy = currentVRankPolicy(seed.v());
+        requireDirectVRankPolicyRevision(beforePolicy, request.expectedRevision());
         Map<String, Object> item = normalizeReward(nextRewardId(seed.v()), request);
         if (isFundRewardItem(item)) return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         if (!commissionRepository.addVRankReward(seed.v(), item)) {
@@ -1304,7 +1325,11 @@ public class OpsTeamService implements AuditReplayable {
             String rank, String rewardId, String idempotencyKey, VRankRewardRequest request) {
         VRankSeed seed = requireVRank(rank);
         String id = requireText(rewardId, "TEAM_VRANK_REWARD_ID_REQUIRED");
-        Map<String, Object> before = policyRewards(currentVRankPolicy(seed.v())).stream()
+        ApiResult<Map<String, Object>> policyLock = rejectIfVRankPolicyLocked(seed.v());
+        if (policyLock != null) return policyLock;
+        Map<String, Object> policy = currentVRankPolicy(seed.v());
+        requireDirectVRankPolicyRevision(policy, request.expectedRevision());
+        Map<String, Object> before = policyRewards(policy).stream()
                 .filter(item -> id.equals(item.get("id"))).findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("F1 V-Rank reward not found"));
         Map<String, Object> item = normalizePolicyReward(id, request, before);
@@ -1341,7 +1366,11 @@ public class OpsTeamService implements AuditReplayable {
             String rank, String rewardId, String idempotencyKey, VRankRewardRequest request) {
         VRankSeed seed = requireVRank(rank);
         String id = requireText(rewardId, "TEAM_VRANK_REWARD_ID_REQUIRED");
-        boolean exists = policyRewards(currentVRankPolicy(seed.v())).stream()
+        ApiResult<Map<String, Object>> policyLock = rejectIfVRankPolicyLocked(seed.v());
+        if (policyLock != null) return policyLock;
+        Map<String, Object> policy = currentVRankPolicy(seed.v());
+        requireDirectVRankPolicyRevision(policy, request.expectedRevision());
+        boolean exists = policyRewards(policy).stream()
                 .anyMatch(item -> id.equals(String.valueOf(item.get("id"))));
         if (!exists) {
             throw new IllegalArgumentException("F1 V-Rank reward not found");
