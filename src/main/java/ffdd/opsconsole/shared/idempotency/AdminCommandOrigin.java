@@ -98,6 +98,9 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (j4PlaybookWrite(scope)) return "emergency_j4_read";
         if (scope.startsWith("J1")) return "emergency_j1_read";
         if (scope.startsWith("I5")) return "content_i5_read";
+        if ("A1_PERMISSION_REGISTER".equals(scope)) return "platform_a1_read";
+        if (scope.startsWith("A6_ROLE_")) return "platform_a6_read";
+        if (scope.startsWith("A7_MENU_")) return "platform_a7_read";
         if ("A4_EVENT_RETENTION_RUN".equals(scope)) return "platform_a4_read";
         if (java.util.Set.of("I4_DISCLOSURE_PUBLISH", "I4_GATE_ADJUST").contains(scope)) return "content_i5_read";
         if (i4TrustWrite(scope)) return "content_i4_read";
@@ -122,6 +125,9 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || scope.startsWith("GROWTH:H2:")
                 || scope.startsWith("GROWTH:H4:WHEEL_TIER_RETIRE:")
                 || "J3_ALERT_CONFIG".equals(scope)
+                || "A1_PERMISSION_REGISTER".equals(scope)
+                || scope.matches("A6_ROLE_(?:CREATE:[A-Za-z0-9_-]{1,64}|UPDATE:[1-9][0-9]{0,18})")
+                || scope.matches("A7_MENU_(?:CREATE:[A-Za-z0-9_-]{1,64}|UPDATE:[1-9][0-9]{0,18}|DELETE:[1-9][0-9]{0,18})")
                 || "A4_EVENT_RETENTION_RUN".equals(scope)
                 || scope.startsWith("I3_NOTIFICATION_CAMPAIGN_") || scope.startsWith("I6_I18N_")
                 || i7CourseWrite(scope)

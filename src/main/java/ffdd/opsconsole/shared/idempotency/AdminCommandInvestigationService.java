@@ -720,6 +720,13 @@ public class AdminCommandInvestigationService {
                 String[] parts = original.getScope().split(":");
                 yield parts.length == 3 && Long.toString(actor).equals(parts[1]);
             }
+            case A1_PERMISSION, A6, A7 -> {
+                if (original.getOriginAdminId() != null) {
+                    yield Long.valueOf(actor).equals(original.getOriginAdminId());
+                }
+                List<Long> owners = investigations.findReceiptOwners(original.getScope(), original.getIdempotencyKey());
+                yield owners != null && owners.size() == 1 && Long.valueOf(actor).equals(owners.get(0));
+            }
             default -> {
                 List<Long> owners = investigations.findReceiptOwners(original.getScope(), original.getIdempotencyKey());
                 yield owners != null && owners.size() == 1 && Long.valueOf(actor).equals(owners.get(0));
