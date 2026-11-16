@@ -1888,6 +1888,10 @@ public class OpsTeamService implements AuditReplayable {
             }
         }
         if(direct!=null)direct.lockEventSource(directEventId,"UNLOCKED".equals(toCanonical));
+        if ("FROZEN".equals(fromCanonical) && "COOLING".equals(toCanonical) && oldEvent.get("unlockAt") == null) {
+            // Historical pause cleared the deadline; never reconstruct a deadline or release it by guess.
+            return ApiResult.fail(409, "F5_COOLDOWN_DEADLINE_UNRECOVERABLE");
+        }
         if (!commissionRepository.updateCommissionStatusCas(eventId,fromCanonical,toCanonical,request.expectedVersion())) {
             return ApiResult.fail(409, "F5_COMMISSION_VERSION_CONFLICT");
         }

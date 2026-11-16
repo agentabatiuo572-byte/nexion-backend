@@ -472,8 +472,8 @@ public interface F5CommissionMapper {
 
     @Update("""
             UPDATE nx_commission_event
-               SET status = 'FROZEN',
-                   unlock_at = NULL,
+               SET frozen_from_status = status,
+                   status = 'FROZEN',
                    updated_at = NOW()
              WHERE user_id = #{userId}
                AND LOWER(commission_type) = #{kind}
