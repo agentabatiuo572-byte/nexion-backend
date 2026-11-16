@@ -172,12 +172,11 @@ public class OpsTrustDisclosureService implements AuditReplayable {
             if (!APP_PUBLISHED_TRUST_SECTION_KEYS.contains(section.key())) continue;
             if (published.putIfAbsent(section.key(), section) != null) return invalidPublishedSnapshot();
         }
-        if (!published.keySet().equals(Set.copyOf(APP_PUBLISHED_TRUST_SECTION_KEYS))) return invalidPublishedSnapshot();
-
         List<AppTrustSectionsView.Section> sections = new ArrayList<>();
         List<TrustPublishedSnapshotView.SectionStatus> statuses = new ArrayList<>();
         for (String sectionKey : APP_PUBLISHED_TRUST_SECTION_KEYS) {
             TrustSectionView section = published.get(sectionKey);
+            if (section == null) continue;
             TrustSectionVersionView version = findSectionVersion(section.key(), section.version());
             if (version == null || !"published".equalsIgnoreCase(version.status())
                     || !section.key().equals(version.sectionKey())
