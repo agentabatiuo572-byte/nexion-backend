@@ -126,8 +126,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || scope.startsWith("GROWTH:H4:WHEEL_TIER_RETIRE:")
                 || "J3_ALERT_CONFIG".equals(scope)
                 || "A1_PERMISSION_REGISTER".equals(scope)
-                || scope.matches("A6_ROLE_(?:CREATE:[A-Za-z0-9_-]{1,64}|UPDATE:[1-9][0-9]{0,18})")
-                || scope.matches("A7_MENU_(?:CREATE:[A-Za-z0-9_-]{1,64}|UPDATE:[1-9][0-9]{0,18}|DELETE:[1-9][0-9]{0,18})")
+                || platformRoleMenuWrite(scope)
                 || "A4_EVENT_RETENTION_RUN".equals(scope)
                 || scope.startsWith("I3_NOTIFICATION_CAMPAIGN_") || scope.startsWith("I6_I18N_")
                 || i7CourseWrite(scope)
@@ -281,6 +280,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 "I5_DISCLOSURE_DRAFT_DELETE", "I5_DISCLOSURE_MATRIX_CONFIGURE", "I5_DISCLOSURE_MATRIX_ARCHIVE",
                 "I5_DISCLOSURE_GATE_UPDATE").contains(scope)
                 || "J3_ALERT_CONFIG".equals(scope)
+                || platformRoleMenuWrite(scope)
                 || j2GeoWrite(scope)
                 || "D5_WITHDRAWAL_LIMITS_UPDATE".equals(scope) || "D5_WITHDRAWAL_LIMITS".equals(scope)
                 || "D6_FX_QUOTE_UPDATE".equals(scope) || "D6_FX_QUOTE".equals(scope)
@@ -293,6 +293,11 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || m4FaqLocalEdit(scope)
                 || i4TrustDraftOnly(scope)
                 || scope != null && (scope.startsWith("E2_POOL_") || scope.startsWith("E5_DEVICE_") || scope.startsWith("E6_PHONE_"));
+    }
+
+    private static boolean platformRoleMenuWrite(String scope) {
+        return scope != null && (scope.matches("A6_ROLE_(?:CREATE:[A-Za-z0-9_-]{1,64}|UPDATE:[1-9][0-9]{0,18})")
+                || scope.matches("A7_MENU_(?:CREATE:[A-Za-z0-9_-]{1,64}|UPDATE:[1-9][0-9]{0,18}|DELETE:[1-9][0-9]{0,18})"));
     }
 
     private static boolean fLocalConfiguration(String scope) {
