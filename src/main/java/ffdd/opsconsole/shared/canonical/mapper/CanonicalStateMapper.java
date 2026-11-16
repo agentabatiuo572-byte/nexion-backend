@@ -477,7 +477,8 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                AND UPPER(d.ownership_status) = 'OWNED' AND UPPER(d.status) = 'ACTIVE'
                AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL
                AND UPPER(COALESCE(d.device_type,'')) NOT IN ('PHONE','MOBILE')
-               AND BINARY r.paused_reason = BINARY 'USER_DEACTIVATED'
+               AND (BINARY r.paused_reason = BINARY 'USER_DEACTIVATED'
+                    OR BINARY r.paused_reason = BINARY 'deactivate')
             """)
     int resumeUserDeactivatedRuntime(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
 
