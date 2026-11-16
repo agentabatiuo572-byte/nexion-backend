@@ -2142,7 +2142,7 @@ public class AuditReplayBusinessPermissionGuard {
         }
         if (Set.of(
                 "F.pool.monthlyCap", "F.pool.settleCron", "F.pool.unlockVRank",
-                "F.leaderboard.minUsd").contains(key)) {
+                "F.leaderboard.minUsd", "F.leaderboard.minComputePoints").contains(key)) {
             return "network_f4_write";
         }
         if ("F.leaderboard.poolUsd".equals(key)) {

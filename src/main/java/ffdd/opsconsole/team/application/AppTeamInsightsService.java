@@ -5,6 +5,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.team.mapper.AppTeamInsightsMapper;
+import ffdd.opsconsole.team.domain.LeaderboardComputePoints;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -98,16 +99,16 @@ public class AppTeamInsightsService {
         Integer myRank = null; BigDecimal gap = BigDecimal.ZERO;
         for (int index = 0; index < source.size(); index++) {
             var row = source.get(index);
-            BigDecimal earned = zero(row.earnedUsdt());
+            BigDecimal points = LeaderboardComputePoints.require(row.computePoints());
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("rank", row.rank()); item.put("handle", mask(row.nickname(), row.userId()));
             item.put("flag", "🌐"); item.put("cc", "--"); item.put("directs", count(row.directs()));
-            item.put("teamSize", count(row.teamSize())); item.put("earnedUSDT", earned); item.put("delta", 0);
+            item.put("teamSize", count(row.teamSize())); item.put("computePoints", points); item.put("delta", 0);
             item.put("vRank", rank(row.vRank())); item.put("hasDevice", row.hasDevice() != null && row.hasDevice() == 1);
             rows.add(item);
             if (row.userId().equals(userId)) {
                 myRank = row.rank();
-                if (index > 0) gap = zero(source.get(index - 1).earnedUsdt()).subtract(earned).max(BigDecimal.ZERO);
+                if (index > 0) gap = LeaderboardComputePoints.require(source.get(index - 1).computePoints()).subtract(points).max(BigDecimal.ZERO);
             }
         }
         int from = pageStart(requestedPage, requestedPageSize, rows.size());
@@ -118,8 +119,9 @@ public class AppTeamInsightsService {
         pause.metadata(result, false);
         BigDecimal prizePool = "FROZEN".equals(pause.mode()) ? pause.envelope().path("appPeriods").path(period).path("poolUsd").decimalValue()
                 : frozen.paused() ? BigDecimal.ZERO : leaderboardPoolUsd(period);
-        result.put("gapToNext", gap); result.put("poolUsd", prizePool);
-        // A zero pool may still have a factual earned-volume ranking, but no
+        result.put("rankingMetric", LeaderboardComputePoints.METRIC);
+        result.put("gapToNextComputePoints", gap); result.put("poolUsd", prizePool);
+        // A zero pool may still have a factual compute-point ranking, but no
         // placement is represented as prize-eligible because F4 will not settle it.
         result.put("topN", prizePool.signum() > 0 ? rows.size() : 0); result.put("page", requestedPage);
         result.put("pageSize", requestedPageSize); result.put("totalRows", rows.size());
@@ -530,7 +532,7 @@ public class AppTeamInsightsService {
                     VietnamBusinessPeriod.dateAt(snapshotAt));
             candidates = List.copyOf(mapper.leaderboardEligible(
                     leaderboardActionPeriod(period), scope.sandbox(), window.fromInclusive(), window.toExclusive(),
-                    configuredMoney("team.ui.F.leaderboard.minUsd"), leaderboardTopN(period),
+                    LeaderboardComputePoints.minimum(configFacade.activeValue(LeaderboardComputePoints.CONFIG_KEY).orElse(null)), leaderboardTopN(period),
                     LocalDateTime.ofInstant(snapshotAt, BUSINESS_ZONE)));
         }
         String version = leaderboardSnapshotVersion(scope, period, snapshotAt, paused, candidates);
@@ -550,12 +552,12 @@ public class AppTeamInsightsService {
 
     private String leaderboardSnapshotVersion(Scope scope, String period, Instant snapshotAt, boolean paused,
                                               List<AppTeamInsightsMapper.LeaderboardRow> candidates) {
-        StringBuilder material = new StringBuilder("leaderboard-v1|")
+        StringBuilder material = new StringBuilder("leaderboard-compute-points-v1|")
                 .append(scope.sandbox()).append('|').append(period).append('|').append(snapshotAt).append('|').append(paused);
         for (var candidate : candidates) {
             material.append('|').append(candidate.rank()).append('|').append(candidate.userId()).append('|')
                     .append(candidate.nickname()).append('|').append(candidate.vRank()).append('|')
-                    .append(candidate.earnedUsdt()).append('|').append(candidate.directs()).append('|')
+                    .append(candidate.computePoints()).append('|').append(candidate.directs()).append('|')
                     .append(candidate.teamSize()).append('|').append(candidate.hasDevice());
         }
         try {
