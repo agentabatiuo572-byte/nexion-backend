@@ -234,7 +234,9 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
             if (previousDraft != null) {
                 if (messageVersionMapper.retireDraftCas(
                         key, value(previousDraft.getVersionNo()), now) != 1) {
-                    throw new IllegalStateException("I18N_MESSAGE_VERSION_CONFLICT");
+                    // retireDraftCas is an optimistic CAS; zero rows means another writer
+                    // changed the DRAFT between read and update, not an unknown DB result.
+                    throw new BizException(409, "I18N_MESSAGE_VERSION_CONFLICT");
                 }
                 previousDraft.setIsDeleted(1);
                 previousDraft.setUpdatedAt(now);
