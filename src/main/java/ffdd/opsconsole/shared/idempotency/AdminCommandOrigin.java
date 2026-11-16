@@ -68,6 +68,8 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (scope.startsWith("H2") || scope.startsWith("GROWTH:H2:")) return "growth_h2_read";
         if (scope.startsWith("K1")) return "risk_k1_read";
         if ("J3_ALERT_CONFIG".equals(scope)) return "emergency_j3_read";
+        if (scope.startsWith("I3_NOTIFICATION_CAMPAIGN_")) return "content_i3_read";
+        if (scope.startsWith("I6_I18N_")) return "content_i6_read";
         if (j2GeoWrite(scope)) return "emergency_j2_read";
         if (scope.startsWith("I1_COPY_")) return "content_i1_read";
         if (scope.startsWith("I2_NOVA_")) return "content_i2_read";
@@ -83,6 +85,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || scope.startsWith("E2_POOL_") || scope.startsWith("E5_DEVICE_") || scope.startsWith("E6_PHONE_")
                 || scope.startsWith("GROWTH:H2:")
                 || "J3_ALERT_CONFIG".equals(scope)
+                || scope.startsWith("I3_NOTIFICATION_CAMPAIGN_") || scope.startsWith("I6_I18N_")
                 || j2GeoWrite(scope)
                 || "D5_WITHDRAWAL_LIMITS_UPDATE".equals(scope) || "D5_WITHDRAWAL_LIMITS".equals(scope)
                 || "D6_FX_QUOTE_UPDATE".equals(scope) || "D6_FX_QUOTE".equals(scope)
