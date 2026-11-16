@@ -775,9 +775,13 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    CONCAT('U', LPAD(s.user_id, GREATEST(8, CHAR_LENGTH(CAST(s.user_id AS CHAR))), '0')) AS user,
                    DATE_FORMAT(u.created_at,'%Y-%m') AS cohort,
                    CAST(ROUND(s.left_volume, 0) AS SIGNED) AS trackA,
+                   s.left_volume AS trackARaw,
                    CAST(ROUND(s.right_volume, 0) AS SIGNED) AS trackB,
+                   s.right_volume AS trackBRaw,
                    CAST(ROUND(s.matched_volume, 0) AS SIGNED) AS matchAmount,
+                   s.matched_volume AS matchAmountRaw,
                    CAST(ROUND(s.amount_usdt, 0) AS SIGNED) AS todayPaid,
+                   s.amount_usdt AS todayPaidRaw,
                    CASE
                      WHEN UPPER(s.status) IN ('PAID', 'SETTLED', 'UNLOCKED') THEN 'paid'
                      WHEN UPPER(s.status) IN ('BLOCKED', 'REJECTED', 'FAILED', 'FROZEN') THEN 'blocked'
@@ -834,23 +838,40 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                           THEN matched_volume
                      ELSE 0
                    END), 0), 0) AS monthlyMatchedUsd,
+                   COALESCE(SUM(CASE
+                     WHEN settlement_date >= """ + VietnamBusinessPeriodSql.MONTH_DATE + """
+                          THEN matched_volume
+                     ELSE 0
+                   END), 0) AS monthlyMatchedUsdRaw,
                    COALESCE(ROUND(SUM(CASE
                      WHEN settlement_date = """ + VietnamBusinessPeriodSql.TODAY + """
                           THEN matched_volume
                      ELSE 0
                    END), 0), 0) AS dailyMatchUsd,
+                   COALESCE(SUM(CASE
+                     WHEN settlement_date = """ + VietnamBusinessPeriodSql.TODAY + """
+                          THEN matched_volume
+                     ELSE 0
+                   END), 0) AS dailyMatchUsdRaw,
                    (SELECT COUNT(1)
                       FROM nx_binary_leg_assignment a
                      WHERE """ + BinaryPlacementSourceSql.AUTOMATIC + """
                        AND a.assigned_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
                        AND a.assigned_at <= NOW()) AS autoPlacement7dCount,
                    COALESCE(ROUND(MAX(daily_cap_usdt), 0), 0) AS maxDailyCapUsd,
+                   MAX(daily_cap_usdt) AS maxDailyCapUsdRaw,
                    COALESCE(ROUND(MAX(GREATEST(left_volume, right_volume)), 0), 0) AS maxTrackGmv,
+                   MAX(GREATEST(left_volume, right_volume)) AS maxTrackGmvRaw,
                    (SELECT CASE WHEN p.policy IN ('转结','每月清零','每次对碰清零') THEN
                      (SELECT COALESCE(ROUND(SUM(GREATEST(c.track_a-COALESCE(s.matched,0),
                                                        c.track_b-COALESCE(s.matched,0),0)),0),0)
                         FROM captured c LEFT JOIN consumed s ON s.user_id=c.owner_user_id)
-                     ELSE NULL END FROM residual_settings p) AS residualPoolUsd
+                     ELSE NULL END FROM residual_settings p) AS residualPoolUsd,
+                   (SELECT CASE WHEN p.policy IN ('转结','每月清零','每次对碰清零') THEN
+                     (SELECT SUM(GREATEST(c.track_a-COALESCE(s.matched,0),
+                                           c.track_b-COALESCE(s.matched,0),0))
+                        FROM captured c LEFT JOIN consumed s ON s.user_id=c.owner_user_id)
+                     ELSE NULL END FROM residual_settings p) AS residualPoolUsdRaw
               FROM nx_binary_commission_settlement
              WHERE is_deleted = 0
             """)

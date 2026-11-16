@@ -285,14 +285,21 @@ public class OpsTeamService implements AuditReplayable {
         response.put("rateTiers", rateTiers());
         response.put("binarySettlements", binarySettlements());
         response.put("binaryMaxTrackGmv", intValue(binarySummary.get("maxTrackGmv"), 0));
+        response.put("binaryMaxTrackGmvRaw", decimalValue(binarySummary.get("maxTrackGmvRaw"), null));
         response.put("binaryParticipantCount", intValue(binarySummary.get("participantCount"), 0));
         response.put("binaryMonthlyMatchedUsd", intValue(binarySummary.get("monthlyMatchedUsd"), 0));
+        response.put("binaryMonthlyMatchedUsdRaw", decimalValue(binarySummary.get("monthlyMatchedUsdRaw"), null));
+        response.put("binaryDailyMatchUsdRaw", decimalValue(binarySummary.get("dailyMatchUsdRaw"), null));
+        response.put("binaryMaxDailyCapUsdRaw", decimalValue(binarySummary.get("maxDailyCapUsdRaw"), null));
+        response.put("binaryResidualPoolUsdRaw", decimalValue(binarySummary.get("residualPoolUsdRaw"), null));
         response.put("binaryAutoPlacement7dCount", intValue(binarySummary.get("autoPlacement7dCount"), 0));
         Map<String, Object> dailyCap = f3DailyCap();
         response.put("binaryDailyCapCurrentLabel", dailyCap.get("currentLabel"));
         response.put("binaryDailyCapWindowLabel", dailyCap.get("windowLabel"));
         response.put("binaryDailyCapNextTrigger", dailyCap.get("nextTrigger"));
         response.put("binaryDailyCapNextLabel", dailyCap.get("nextLabel"));
+        response.put("binaryDailyCapRaw", dailyCap.get("h1BinaryDailyCap"));
+        response.put("binaryStatistics", f3Statistics(dailyCap));
         response.put("leadershipPool", leadershipPoolReadModel());
         response.put("quotaPolicy", quotaPolicy());
         response.put("payoutGuardrails", guardrails());
@@ -859,12 +866,19 @@ public class OpsTeamService implements AuditReplayable {
         response.put("formula", f3Formula());
         response.put("settlements", binarySettlements());
         response.put("maxTrackGmv", intValue(summary.get("maxTrackGmv"), 0));
+        response.put("maxTrackGmvRaw", decimalValue(summary.get("maxTrackGmvRaw"), null));
+        response.put("maxDailyCapUsdRaw", decimalValue(summary.get("maxDailyCapUsdRaw"), null));
         response.put("participantCount", intValue(summary.get("participantCount"), 0));
         response.put("blockedCount", intValue(summary.get("blockedCount"), 0));
         response.put("monthlyMatchedUsd", intValue(summary.get("monthlyMatchedUsd"), 0));
+        response.put("monthlyMatchedUsdRaw", decimalValue(summary.get("monthlyMatchedUsdRaw"), null));
         response.put("autoPlacement7dCount", intValue(summary.get("autoPlacement7dCount"), 0));
         response.put("dailyMatchUsd", intValue(summary.get("dailyMatchUsd"), 0));
-        response.put("dailyCap", f3DailyCap());
+        response.put("dailyMatchUsdRaw", decimalValue(summary.get("dailyMatchUsdRaw"), null));
+        response.put("residualPoolUsdRaw", decimalValue(summary.get("residualPoolUsdRaw"), null));
+        Map<String, Object> dailyCap = f3DailyCap();
+        response.put("dailyCap", dailyCap);
+        response.put("statistics", f3Statistics(dailyCap));
         response.put("config", f3Config(summary));
         response.put("commissionPolicy", commissionPolicy());
         response.put("guardrails", guardrails());
@@ -2532,8 +2546,12 @@ public class OpsTeamService implements AuditReplayable {
         Map<String, Object> formula = new LinkedHashMap<>();
         formula.put("user", String.valueOf(settlement.getOrDefault("user", "")));
         formula.put("trackA", intValue(settlement.get("trackA"), 0));
+        formula.put("trackARaw", settlement.get("trackARaw"));
         formula.put("trackB", intValue(settlement.get("trackB"), 0));
+        formula.put("trackBRaw", settlement.get("trackBRaw"));
         formula.put("matchAmount", intValue(settlement.get("matchAmount"), 0));
+        formula.put("matchAmountRaw", settlement.get("matchAmountRaw"));
+        formula.put("todayPaidRaw", settlement.get("todayPaidRaw"));
         formula.put("matchRate", configText("F.binary.matchRate", ""));
         formula.put("threshold", configText("F.binary.threshold", ""));
         formula.put("settlePeriod", configText("F.binary.settlePeriod", ""));
@@ -2554,6 +2572,62 @@ public class OpsTeamService implements AuditReplayable {
         config.put("residualPool", f3ResidualPool(summary));
         config.put("residualSub", "未匹配体量按当前沉淀策略处理");
         return config;
+    }
+
+    private Map<String, Object> f3Statistics(Map<String, Object> dailyCap) {
+        Map<String, Object> statistics = new LinkedHashMap<>();
+        statistics.put("basis", "CURRENT_BUSINESS_TIME_SQL_PROJECTION");
+        statistics.put("participantCount", f3Statistic(
+                "nx_binary_commission_settlement", "COUNT(DISTINCT user_id)", "user_id",
+                "is_deleted=0", "ALL_NON_DELETED_SETTLEMENTS", "ALL_STATUSES", true));
+        statistics.put("blockedCount", f3Statistic(
+                "nx_binary_commission_settlement", "SUM(CASE WHEN UPPER(status) IN ('BLOCKED','REJECTED','FAILED','FROZEN') THEN 1 ELSE 0 END)", "status",
+                "is_deleted=0", "ALL_NON_DELETED_SETTLEMENTS",
+                "BLOCKED,REJECTED,FAILED,FROZEN", false));
+        statistics.put("monthlyMatchedUsd", f3Statistic(
+                "nx_binary_commission_settlement", "SUM(matched_volume)", "matched_volume",
+                "is_deleted=0", "SETTLEMENT_DATE >= CURRENT_BUSINESS_MONTH_START",
+                "ALL_STATUSES", false));
+        statistics.put("dailyMatchUsd", f3Statistic(
+                "nx_binary_commission_settlement", "SUM(matched_volume)", "matched_volume",
+                "is_deleted=0", "SETTLEMENT_DATE = CURRENT_BUSINESS_DATE", "ALL_STATUSES", false));
+        statistics.put("autoPlacement7dCount", f3Statistic(
+                "nx_binary_leg_assignment", "COUNT(1)", "assigned_at",
+                "SYSTEM_AUTO_PLACEMENT or F3_BINARY_AUTO_PLACED audit",
+                "DB_NOW_MINUS_7_DAYS_TO_DB_NOW", "N/A", false));
+        statistics.put("maxDailyCapUsd", f3Statistic(
+                "nx_binary_commission_settlement", "MAX(daily_cap_usdt)", "daily_cap_usdt",
+                "is_deleted=0", "ALL_NON_DELETED_SETTLEMENTS", "ALL_STATUSES", false));
+        statistics.put("maxTrackGmv", f3Statistic(
+                "nx_binary_commission_settlement", "MAX(GREATEST(left_volume,right_volume))",
+                "left_volume,right_volume", "is_deleted=0", "ALL_NON_DELETED_SETTLEMENTS",
+                "ALL_STATUSES", false));
+        statistics.put("residualPoolUsd", f3Statistic(
+                "nx_binary_paid_order_volume + nx_binary_commission_settlement + nx_binary_volume_cursor",
+                "SUM(GREATEST(track_a-matched, track_b-matched, 0))", "amount_usdt,matched_volume",
+                "volume status=ACTIVE; settlement status<>BLOCKED; current residualPolicy",
+                "CURRENT_RESIDUAL_POLICY", "ALL_ACTIVE_VOLUME; NON_BLOCKED_SETTLEMENTS", false));
+        statistics.put("settlements", f3Statistic(
+                "nx_binary_commission_settlement", "SELECT", "left_volume,right_volume,matched_volume,amount_usdt,status",
+                "is_deleted=0", "LATEST_100_BY_SETTLEMENT_DATE_DESC_ID_DESC", "ALL_STATUSES", false));
+        statistics.put("h1BinaryDailyCap", f3Statistic(
+                "H1 growth rhythm facade", "READ",
+                "growth.phase.month." + dailyCap.get("currentMonth") + ".binaryDailyCap",
+                "current business month/phase", "CURRENT_BUSINESS_MONTH", "N/A", false));
+        return statistics;
+    }
+
+    private Map<String, Object> f3Statistic(String source, String aggregate, String field,
+                                            String filter, String window, String status, boolean distinct) {
+        Map<String, Object> statistic = new LinkedHashMap<>();
+        statistic.put("source", source);
+        statistic.put("aggregate", aggregate);
+        statistic.put("field", field);
+        statistic.put("filter", filter);
+        statistic.put("window", window);
+        statistic.put("status", status);
+        statistic.put("distinct", distinct);
+        return statistic;
     }
 
     private Map<String, Object> f3DailyCap() {
@@ -2596,9 +2670,13 @@ public class OpsTeamService implements AuditReplayable {
         row.put("settlementDate", String.valueOf(raw.getOrDefault("settlementDate", "")));
         row.put("cohort", String.valueOf(raw.getOrDefault("cohort", "")));
         row.put("trackA", intValue(raw.get("trackA"), 0));
+        row.put("trackARaw", decimalValue(raw.get("trackARaw"), null));
         row.put("trackB", intValue(raw.get("trackB"), 0));
+        row.put("trackBRaw", decimalValue(raw.get("trackBRaw"), null));
         row.put("matchAmount", intValue(raw.get("matchAmount"), 0));
+        row.put("matchAmountRaw", decimalValue(raw.get("matchAmountRaw"), null));
         row.put("todayPaid", intValue(raw.get("todayPaid"), 0));
+        row.put("todayPaidRaw", decimalValue(raw.get("todayPaidRaw"), null));
         row.put("state", String.valueOf(raw.getOrDefault("state", "")));
         row.put("tone", String.valueOf(raw.getOrDefault("tone", "")));
         return row;
