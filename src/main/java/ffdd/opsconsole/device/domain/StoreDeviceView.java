@@ -12,7 +12,7 @@ public record StoreDeviceView(
         String baseRate, BigDecimal currentEfficiency, Integer pendingDeactivate, String pausedReason,
         Long activeDevicesForUser, Long userDeviceSlotNo, int maxDevicesPerUser,
         String simState, String simLastError, LocalDateTime simNextActionAt,
-        CurrentTask currentTask, DeviceOpsView.MonthlyTarget monthlyTarget) {
+        CurrentTask currentTask, DeviceOpsView.MonthlyTarget monthlyTarget, String ownershipStatus) {
     public record CurrentTask(String taskNo, String name, String taskClass,
                               LocalDateTime startedAt, LocalDateTime dueAt) { }
 
@@ -25,6 +25,7 @@ public record StoreDeviceView(
                 d.baseRate(), d.currentEfficiency(), d.pendingDeactivate(), d.pausedReason(),
                 d.activeDevicesForUser(), d.userDeviceSlotNo(), 6,
                 simEnabled ? legacyPending ? "LEGACY_PENDING" : d.simState() : "SIM_OFF",
-                legacyPending ? "SIMULATED_LEGACY_NOT_DRAINED" : d.simLastError(), d.simNextActionAt(), task, d.monthlyTarget());
+                legacyPending ? "SIMULATED_LEGACY_NOT_DRAINED" : d.simLastError(), d.simNextActionAt(), task,
+                d.monthlyTarget(), d.ownershipStatus());
     }
 }
