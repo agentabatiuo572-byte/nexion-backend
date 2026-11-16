@@ -51,6 +51,9 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
             target = scope.startsWith("GROWTH:H9:DEVICE_RANK_UPDATE:")
                     ? scope.substring("GROWTH:H9:DEVICE_RANK_UPDATE:".length()).toLowerCase(java.util.Locale.ROOT) : "PUBLIC_STATS";
         }
+        if (target == null && a3PlatformParamScope(scope)) {
+            target = scope.substring("A3_PLATFORM_PARAM:".length());
+        }
         // A collection route is not an object identity. It must never lock unrelated objects.
         if (target != null && target.length() > 512) target = null;
         if (targets.isEmpty() && target != null) targets = List.of(new Target(
@@ -84,6 +87,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (java.util.Set.of("I4_DISCLOSURE_PUBLISH", "I4_GATE_ADJUST").contains(scope)) return "content_i5_read";
         if (i4TrustWrite(scope)) return "content_i4_read";
         if (h9CommandScope(scope)) return "growth_h9_read";
+        if (a3PlatformParamScope(scope)) return null; // Bound per canonical key by executeBound.
         if (scope.startsWith("F1_VRANK_")) return "network_f1_read";
         if ("F4_AMBASSADOR_POLICY_UPDATE".equals(scope) || scope.startsWith("F4_MATERIAL_REVIEW:")) return "network_f4_read";
         if (java.util.Set.of("F5_COMMISSION_REVERSE", "F5_COMMISSION_REISSUE", "F5_COMMISSION_SUSPENSION",
@@ -108,6 +112,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || scope.startsWith("I1_COPY_") || scope.startsWith("I2_NOVA_")
                 || j4PlaybookWrite(scope)
                 || h9CommandScope(scope)
+                || a3PlatformParamScope(scope)
                 || fCommandScope(scope)
                 || "A2_COMMAND".equals(scope) || "L_BI_REPORT_CREATE".equals(scope) || scope.startsWith("L_BI_REPORT_ACTION"));
     }
@@ -135,6 +140,13 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || scope.startsWith("F4_MATERIAL_REVIEW:")
                 || java.util.Set.of("F5_COMMISSION_REVERSE", "F5_COMMISSION_REISSUE",
                 "F5_COMMISSION_SUSPENSION", "F5_COMMISSION_ANOMALY_CONFIG").contains(scope));
+    }
+
+    /** Existing A3 platform and K1 registration params: one scope with the exact canonical key suffix. */
+    public static boolean a3PlatformParamScope(String scope) {
+        if (scope == null || scope.length() > 96 || !scope.startsWith("A3_PLATFORM_PARAM:")) return false;
+        String key = scope.substring("A3_PLATFORM_PARAM:".length());
+        return key.matches("[A-Za-z0-9_.-]{1,80}");
     }
 
     /**
@@ -190,6 +202,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || "FINANCE:D7:CONFIG_UPDATE".equals(scope) || "D7_PAYOUT_VND_CONFIG".equals(scope)
                 || j4LocalRecord(scope)
                 || h9CommandScope(scope)
+                || a3PlatformParamScope(scope)
                 || fLocalConfiguration(scope)
                 || i7CourseDraftOnly(scope)
                 || i4TrustDraftOnly(scope)

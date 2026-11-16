@@ -211,10 +211,21 @@ public class OpsPlatformConfigService {
         String role = normalizeRole(roleResolver.resolveCode());
         if (!definition.writerRoles().contains(role)) return fail(OpsErrorCode.FORBIDDEN, "A3_PARAM_ROLE_FORBIDDEN");
         String hash = requestHash(definition.key(), String.valueOf(value), String.valueOf(expected), reason, role);
-        ApiResult result = idempotencyService.execute(
+        ApiResult result = idempotencyService.executeBound(
                 "A3_PLATFORM_PARAM:" + definition.key(), idempotencyKey.trim(), hash, ApiResult.class,
+                paramReadAuthority(definition), definition.key(),
                 () -> updateParamOnce(definition, value, expected, reason, role, idempotencyKey.trim()));
         return (ApiResult<PlatformConfigResponse>) result;
+    }
+
+    /**
+     * K1 registration params are read through the K1 overview; the other A3 params are read through
+     * the platform config overview. The authority is derived from the writer's canonical key, never
+     * from the authenticated caller or a page label.
+     */
+    private String paramReadAuthority(ParamDefinition definition) {
+        return K1_REGISTRATION_PARAM_DEFINITIONS.containsKey(definition.key())
+                ? "risk_k1_read" : "platform_a3_read";
     }
 
     private ApiResult<PlatformConfigResponse> updateParamOnce(
