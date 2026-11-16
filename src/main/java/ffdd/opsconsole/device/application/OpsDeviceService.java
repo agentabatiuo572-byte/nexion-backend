@@ -3212,6 +3212,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (device == null) {
             return ApiResult.fail(404, "DEVICE_NOT_FOUND");
         }
+        // Restore accepts a RECYCLED row, but only while it is still this user's device: a trade-in
+        // leaves ownership RECYCLED on the same row, and restoring it would make it operable again.
+        if (!"OWNED".equals(deviceRepository.ownershipStatus(deviceId).orElse(""))) {
+            return ApiResult.fail(409, "DEVICE_OWNERSHIP_NOT_OWNED");
+        }
         if (!canRestore(device)) {
             return ApiResult.fail(
                     OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
@@ -3273,6 +3278,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             DeviceOpsView before = deviceRepository.findDevice(deviceId).orElse(null);
             if (before == null) {
                 return ApiResult.fail(404, "DEVICE_NOT_FOUND");
+            }
+            // A trade-in/recycle writes ownership RECYCLED and an unbind writes UNBOUND; such a device
+            // is no longer this user's, so putting it back into service would hand back what was given up.
+            if (!"OWNED".equals(deviceRepository.ownershipStatus(deviceId).orElse(""))) {
+                return ApiResult.fail(409, "DEVICE_OWNERSHIP_NOT_OWNED");
             }
             String status = normalizeExact(before.status()).toUpperCase(Locale.ROOT);
             Set<String> allowed = force

@@ -186,6 +186,11 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
     }
 
     @Override
+    public Optional<String> ownershipStatus(Long deviceId) {
+        return Optional.ofNullable(mapper.deviceOwnershipStatus(deviceId));
+    }
+
+    @Override
     public long countActiveDevicesByUser(Long userId) {
         return mapper.countActiveDevicesByUser(userId);
     }
