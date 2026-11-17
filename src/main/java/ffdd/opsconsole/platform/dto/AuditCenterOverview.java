@@ -61,7 +61,8 @@ public record AuditCenterOverview(
             String approveDeniedMessage,
             Integer rejectDeniedCode,
             String rejectDeniedMessage,
-            String objDisplayName) {
+            String objDisplayName,
+            RoleGrantsDiff roleGrantsDiff) {
         public AuditOperationTicket withViewerMetadata(boolean ownedByViewer, String code, FundEffect effect,
                                                        String orderNo, boolean retired,
                                                        ffdd.opsconsole.shared.api.ApiResult<Void> approve,
@@ -74,8 +75,16 @@ public record AuditCenterOverview(
                     approve.getCode() == 0 ? null : approve.getCode(),
                     approve.getCode() == 0 ? null : approve.getMessage(),
                     reject.getCode() == 0 ? null : reject.getCode(),
-                    reject.getCode() == 0 ? null : reject.getMessage(), objDisplayName);
+                    reject.getCode() == 0 ? null : reject.getMessage(), objDisplayName, roleGrantsDiff);
         }
+    }
+
+    public record RoleGrantsDiff(
+            List<String> permissionCodesAdded,
+            List<String> permissionCodesRemoved,
+            List<Long> menuIdsAdded,
+            List<Long> menuIdsRemoved) {
+        public static final String FIELD = "roleGrantsDiff";
     }
 
     public enum FundEffect {

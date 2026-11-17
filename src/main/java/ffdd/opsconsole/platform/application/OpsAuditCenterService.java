@@ -23,6 +23,7 @@ import ffdd.opsconsole.platform.dto.AuditCenterOverview.AuditOperationHistory;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview.AuditOperationStats;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview.AuditOperationTicket;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview.FundEffect;
+import ffdd.opsconsole.platform.dto.AuditCenterOverview.RoleGrantsDiff;
 import ffdd.opsconsole.platform.dto.AuditMechanismParamUpdateRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationDecisionRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
@@ -453,6 +454,13 @@ public class OpsAuditCenterService {
         if (command != null) {
             try {
                 com.fasterxml.jackson.databind.node.ObjectNode stored = objectMapper.valueToTree(command);
+                if (isRoleGrantsCommand(command)) {
+                    ticket.setAmplifies(0);
+                    ticket.setOperationType("acct");
+                    ticket.setRoleGate(normalizeRoleGate("TWO_PERSON"));
+                    stored.set(RoleGrantsDiff.FIELD,
+                            objectMapper.valueToTree(replayBusinessPermissionGuard.roleGrantsDiff(command)));
+                }
                 if (A4RegistryApproval.supports(command)) {
                     stored.put(A4RegistryApproval.MAKER_FIELD, A2ReplayContext.authenticatedAdminId());
                 }
@@ -1407,6 +1415,7 @@ public class OpsAuditCenterService {
                 return objectMapper.readValue(commandJson, AuditReplayCommand.class);
             }
             stored.remove("avatarMakerAdminId");
+            stored.remove(RoleGrantsDiff.FIELD);
             stored.remove(A4RegistryApproval.MAKER_FIELD);
             stored.remove("skuReview");
             stored.remove("ambassadorPolicyReview");
@@ -1614,7 +1623,7 @@ public class OpsAuditCenterService {
                 row.getOperatorName(),
                 row.getOperatorRole(),
                 row.getOperationType(),
-                isTrue(row.getAmplifies()),
+                !isRoleGrantsCommand(command) && isTrue(row.getAmplifies()),
                 isTrue(row.getSos()),
                 row.getCreatedAt() == null ? row.getTimeLabel() : row.getCreatedAt().format(ISO),
                 mine,
@@ -1632,7 +1641,22 @@ public class OpsAuditCenterService {
                 approve.getCode() == 0, reject.getCode() == 0,
                 approve.getCode() == 0 ? null : approve.getCode(), approve.getCode() == 0 ? null : approve.getMessage(),
                 reject.getCode() == 0 ? null : reject.getCode(), reject.getCode() == 0 ? null : reject.getMessage(),
-                objectDisplayName(row, command, displayNames));
+                objectDisplayName(row, command, displayNames), roleGrantsDiff(row, command));
+    }
+
+    private boolean isRoleGrantsCommand(AuditReplayCommand command) {
+        return command != null && "A".equalsIgnoreCase(command.domain())
+                && "a6_role_grants_update".equals(command.op());
+    }
+
+    private RoleGrantsDiff roleGrantsDiff(AuditOperationTicketEntity row, AuditReplayCommand command) {
+        if (!isRoleGrantsCommand(command)) return null;
+        try {
+            var review = objectMapper.readTree(row.getCommandJson()).get(RoleGrantsDiff.FIELD);
+            return review == null || review.isNull() ? null : objectMapper.treeToValue(review, RoleGrantsDiff.class);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException invalidReview) {
+            return null;
+        }
     }
 
     private Map<Long, String> objectDisplayNames(Collection<AuditOperationTicketEntity> rows) {

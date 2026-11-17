@@ -40,6 +40,7 @@ import ffdd.opsconsole.market.facade.GenesisParamPermissions;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
+import ffdd.opsconsole.platform.dto.AuditCenterOverview.RoleGrantsDiff;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.PhoneReplacementException;
@@ -521,6 +522,10 @@ public class AuditReplayBusinessPermissionGuard {
             return validateDisclosureSnapshot(command.params());
         }
         return ApiResult.ok();
+    }
+
+    RoleGrantsDiff roleGrantsDiff(AuditReplayCommand command) {
+        return platformRoles.getObject().roleGrantsDiff(command.params());
     }
 
     /**
