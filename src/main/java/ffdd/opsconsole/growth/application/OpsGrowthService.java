@@ -5410,15 +5410,15 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             throw new IllegalArgumentException("VOUCHER_TYPE_INVALID");
         }
         BigDecimal amount = "fixed".equals(type)
-                ? bounded(voucherNumber(request.amountUSD(), BigDecimal.ZERO), BigDecimal.ONE, new BigDecimal("1000000"))
+                ? bounded(voucherMoney(request.amountUSD(), BigDecimal.ZERO), BigDecimal.ONE, new BigDecimal("1000000"))
                 : BigDecimal.ZERO;
         BigDecimal percent = "percent".equals(type) ? voucherNumber(request.percent(), BigDecimal.ZERO) : BigDecimal.ZERO;
         if ("percent".equals(type) && (percent.stripTrailingZeros().scale() > 0
                 || percent.compareTo(BigDecimal.ONE) < 0 || percent.compareTo(BigDecimal.valueOf(99)) > 0)) {
             throw new IllegalArgumentException("H7_VOUCHER_PERCENT_INVALID");
         }
-        BigDecimal minPurchase = bounded(voucherNumber(request.minPurchaseUSD(), BigDecimal.ZERO), BigDecimal.ZERO, new BigDecimal("10000000"));
-        BigDecimal maxDiscount = bounded(voucherNumber(request.maxDiscountUSD(), BigDecimal.ZERO), BigDecimal.ZERO, new BigDecimal("10000000"));
+        BigDecimal minPurchase = bounded(voucherMoney(request.minPurchaseUSD(), BigDecimal.ZERO), BigDecimal.ZERO, new BigDecimal("10000000"));
+        BigDecimal maxDiscount = bounded(voucherMoney(request.maxDiscountUSD(), BigDecimal.ZERO), BigDecimal.ZERO, new BigDecimal("10000000"));
         String audience = requireText(request.audience(), "VOUCHER_AUDIENCE_REQUIRED").toLowerCase(Locale.ROOT);
         if (!Set.of("new", "all").contains(audience)) {
             throw new IllegalArgumentException("VOUCHER_AUDIENCE_INVALID");
@@ -5496,6 +5496,17 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
 
     private BigDecimal voucherNumber(BigDecimal value, BigDecimal fallback) {
         return value == null ? fallback : value;
+    }
+
+    /** Money columns are DECIMAL(24,6); reject extra fractional digits before MySQL can round them. */
+    private BigDecimal voucherMoney(BigDecimal value, BigDecimal fallback) {
+        if (value == null) {
+            return fallback;
+        }
+        if (value.stripTrailingZeros().scale() > 6) {
+            throw new IllegalArgumentException("H7_VOUCHER_AMOUNT_PRECISION_INVALID");
+        }
+        return value;
     }
 
     private long voucherTimestamp(Long value) {
