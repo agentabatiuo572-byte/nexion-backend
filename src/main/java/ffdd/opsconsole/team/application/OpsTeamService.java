@@ -865,6 +865,7 @@ public class OpsTeamService implements AuditReplayable {
         response.put("metrics", f3Metrics(summary));
         response.put("formula", f3Formula());
         response.put("settlements", binarySettlements());
+        response.put("blockedAttempts", auditLogService.f3BlockedSettlementAttempts(100));
         response.put("maxTrackGmv", intValue(summary.get("maxTrackGmv"), 0));
         response.put("maxTrackGmvRaw", decimalValue(summary.get("maxTrackGmvRaw"), null));
         response.put("maxDailyCapUsdRaw", decimalValue(summary.get("maxDailyCapUsdRaw"), null));
@@ -2776,9 +2777,20 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     private List<Map<String, Object>> binarySettlements() {
-        return commissionRepository.binarySettlements(100).stream()
-                .map(this::normalizeBinarySettlementMap)
-                .toList();
+        var settlements = commissionRepository.binarySettlements(100);
+        var reviews = auditLogService.f3SettlementReviews(settlements.stream()
+                .map(row -> String.valueOf(row.get("settlementNo"))).toList());
+        return settlements.stream().map(raw -> {
+            Map<String, Object> row = normalizeBinarySettlementMap(raw);
+            String settlementNo = (String) raw.get("settlementNo");
+            row.put("settlementNo", settlementNo);
+            var review = reviews.getOrDefault(settlementNo, Map.of());
+            for (String key : List.of("residualTrackARaw", "residualTrackBRaw", "residualAmountUsdt",
+                    "residualPolicy", "settlementMode", "proposerName", "approverName", "a2OperationId")) {
+                row.put(key, review.get(key));
+            }
+            return row;
+        }).toList();
     }
 
     private String f3ResidualPool(Map<String, Object> summary) {

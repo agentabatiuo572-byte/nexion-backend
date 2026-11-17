@@ -7,6 +7,7 @@ import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.SuperAdminAuthorization;
 import ffdd.opsconsole.team.dto.AmbassadorPolicyUpdateRequest;
@@ -30,6 +31,7 @@ public class TeamFundApproval {
     private final SuperAdminAuthorization superAdmins;
     private final BinaryCommissionSettlementService settlements;
     private final OpsTeamService teams;
+    private final AuditLogService auditLogService;
 
     public static boolean supports(AuditReplayCommand command) {
         return command != null && "F".equals(command.domain())
@@ -60,6 +62,13 @@ public class TeamFundApproval {
 
     public AuditReplayCommand bindMaker(AuditReplayCommand command, Long adminId) {
         if (adminId == null) throw new BizException(403, "FUND_APPROVAL_MAKER_REQUIRED");
+        if (isSettlement(command)) {
+            var params = new java.util.LinkedHashMap<String, Object>();
+            params.put("values", values(command));
+            params.put("makerAdminId", adminId);
+            params.put("makerDisplayName", auditLogService.captureAdminDisplayName(adminId));
+            return new AuditReplayCommand(command.domain(), command.op(), params);
+        }
         return new AuditReplayCommand(command.domain(), command.op(),
                 Map.of("values", values(command), "makerAdminId", adminId));
     }
@@ -131,7 +140,8 @@ public class TeamFundApproval {
                 return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
             }
             var result = settlements.settleApproved(request.ownerUserId(), request.settlementDate(), reason,
-                    checkerId, context.operator(), operationId, context.idempotencyKey());
+                    checkerId, context.operator(), operationId, context.idempotencyKey(),
+                    command.params().get("makerDisplayName") instanceof String name ? name : null);
             if ("BLOCKED".equals(result.status())) {
                 throw new BizException(409, result.reason());
             }
