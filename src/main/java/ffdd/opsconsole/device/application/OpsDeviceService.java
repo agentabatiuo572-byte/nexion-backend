@@ -182,9 +182,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             "stageEarlyEnd",
             "stageMidEnd",
             "cycleMonths",
-            "taskLockS1",
-            "taskLockPro",
-            "taskLockRack",
             "eligibility",
             "promoMult",
             "promoCooldownDays",
@@ -221,7 +218,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             "earlyAccessEnabled",
             "earlyAccessLeadDays");
     private static final Set<String> E3_RETIRED_CONFIG_KEYS = Set.of(
-            "degradeEarly", "degradeMid", "degradeLate", "minEfficiency", "salvagePct", "minHoldingMonths");
+            "degradeEarly", "degradeMid", "degradeLate", "minEfficiency", "salvagePct", "minHoldingMonths",
+            "taskLockS1", "taskLockPro", "taskLockRack");
     @lombok.NonNull
     private final SupportPaymentAttributionFacade paymentAttribution;
     private final DeviceOpsRepository deviceRepository;
@@ -2954,8 +2952,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     public ApiResult<Map<String, Object>> e3Overview() {
         Map<String, Object> response = new LinkedHashMap<>();
+        Map<String, String> visibleConfig = new LinkedHashMap<>(deviceRepository.e3Config());
+        visibleConfig.keySet().removeAll(E3_RETIRED_CONFIG_KEYS);
         response.put("domain", "E3");
-        response.put("config", deviceRepository.e3Config());
+        response.put("config", visibleConfig);
         response.put("restoreEndpoint", "POST /api/admin/devices/{id}/restore");
         response.put("sources", List.of("nx_compute_e3_config", "nx_tradein_application", "nx_trade_in_order", "nx_user_device"));
         return ApiResult.ok(response);
