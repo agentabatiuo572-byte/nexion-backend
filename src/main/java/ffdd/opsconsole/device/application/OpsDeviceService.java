@@ -4821,6 +4821,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             throw new IllegalArgumentException("boolean config is invalid");
         }
         BigDecimal value = parseDecimal(raw);
+        if ("tradeinMaxDevicesPerOrder".equals(key) && value.compareTo(BigDecimal.ONE) != 0) {
+            throw new IllegalArgumentException("E3_TRADEIN_SINGLE_DEVICE_ONLY");
+        }
         if (key.startsWith("capacityBand") && key.endsWith("DeltaPct")) {
             if (value.compareTo(BigDecimal.valueOf(-100)) < 0 || value.compareTo(BigDecimal.valueOf(100)) > 0) {
                 throw new IllegalArgumentException("capacity delta config must be -100-100");
