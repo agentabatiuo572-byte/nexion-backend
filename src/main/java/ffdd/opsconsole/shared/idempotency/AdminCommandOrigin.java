@@ -84,6 +84,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if ("D6_FX_QUOTE_UPDATE".equals(scope) || "D6_FX_QUOTE".equals(scope)) return "finance_d6_read";
         if ("FINANCE:D7:CONFIG_UPDATE".equals(scope) || "D7_PAYOUT_VND_CONFIG".equals(scope)) return "finance_d7_read";
         if (scope.startsWith("E4")) return "device_e4_read";
+        if (h1CommandScope(scope)) return "growth_h1_read";
         if (scope.startsWith("H2") || scope.startsWith("GROWTH:H2:")) return "growth_h2_read";
         if (scope.startsWith("GROWTH:H4:WHEEL_TIER_RETIRE:")) return "growth_h4_read";
         if (scope.startsWith("K1")) return "risk_k1_read";
@@ -138,6 +139,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || "FINANCE:D7:CONFIG_UPDATE".equals(scope) || "D7_PAYOUT_VND_CONFIG".equals(scope)
                 || scope.startsWith("I1_COPY_") || scope.startsWith("I2_NOVA_")
                 || j4PlaybookWrite(scope)
+                || h1CommandScope(scope)
                 || h9CommandScope(scope)
                 || a3FeatureFlagScope(scope)
                 || "A3_PLATFORM_EXPERIENCE".equals(scope)
@@ -235,6 +237,15 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
 
     private static boolean i4TrustDraftOnly(String scope) {
         return scope != null && scope.startsWith("I4_TRUST_SECTION_DRAFT_");
+    }
+
+    /** The five existing H1 command-boundary operations; target suffixes also match stored uppercase scopes. */
+    public static boolean h1CommandScope(String scope) {
+        return scope != null && (scope.startsWith("GROWTH:H1:RHYTHM_PARAM_UPDATE:")
+                || scope.startsWith("GROWTH:H1:PHASE_DIAL_UPDATE:")
+                || scope.startsWith("GROWTH:H1:PHASE_MONTH_DIAL_UPDATE:")
+                || scope.startsWith("GROWTH:H1:PHASE_CONTROL_UPDATE:")
+                || scope.startsWith("GROWTH:H1:PHASE_OVERRIDE_UPDATE:"));
     }
 
     /** The two H9 writers: public-stats and the environment-scoped device-rank config. */
