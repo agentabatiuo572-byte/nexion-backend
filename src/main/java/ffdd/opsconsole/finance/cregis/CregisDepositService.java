@@ -30,7 +30,10 @@ public class CregisDepositService {
     });
     private final Object allocationScanLock = new Object();
     private final java.util.concurrent.atomic.AtomicBoolean poolMaintenanceRunning = new java.util.concurrent.atomic.AtomicBoolean();
-    @jakarta.annotation.PreDestroy public void closePoolWorkers() {poolWorkers.shutdown();}
+    private volatile boolean closing;
+    @org.springframework.context.event.EventListener(org.springframework.context.event.ContextClosedEvent.class)
+    public void stopPoolMaintenance() {closing=true;}
+    @jakarta.annotation.PreDestroy public void closePoolWorkers() {closing=true;poolWorkers.shutdown();}
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(CregisDepositService.class);
     private static final BigDecimal EXPOSURE_TRIP = new BigDecimal("500");
     private final CregisProperties config;
@@ -226,12 +229,12 @@ public class CregisDepositService {
     /** Bounded batches; the database gate coordinates creators across backend instances. */
     @Scheduled(fixedDelayString = "${NEXION_CREGIS_POOL_MAINTENANCE_MS:10000}")
     public void maintainAddressPool() {
-        if(!poolMaintenanceRunning.compareAndSet(false,true)) return;
-        try { for(var network:CregisNetwork.values()) if(config.networkConfigured(network) && depositEnabled(network)) maintainAddressPool(network); }
+        if(closing || !poolMaintenanceRunning.compareAndSet(false,true)) return;
+        try { for(var network:CregisNetwork.values()) if(!closing && config.networkConfigured(network) && depositEnabled(network)) maintainAddressPool(network); }
         finally { poolMaintenanceRunning.set(false); }
     }
     private void maintainAddressPool(CregisNetwork network) {
-        if (config.getMode() != CregisProperties.Mode.PROVIDER || !config.isDepositEnabled()
+        if (closing || config.getMode() != CregisProperties.Mode.PROVIDER || !config.isDepositEnabled()
                 || !config.isDepositCreditEnabled() || config.getDepositConfirmations() < 15) return;
         try {
             transactions.executeWithoutResult(ignored -> {
@@ -247,11 +250,12 @@ public class CregisDepositService {
             var candidates=new java.util.concurrent.ConcurrentLinkedQueue<>(db.verifyingCandidates(config.getProjectId(),network.chainId(),policy.batchSize()));
             parallelPoolWork(policy.concurrency(),()->{
                 Map<String,Object> candidate;
-                while((candidate=candidates.poll())!=null) {
+                while(!closing && (candidate=candidates.poll())!=null) {
                     try {verifyPoolCandidate(network,candidate,finalized);}
                     catch(RuntimeException failure) {log.warn("Cregis candidate verification deferred: {}",safeReason(failure));}
                 }
             });
+            if(closing) return;
             enqueuePoolAddresses(network,true);
             dispatchQueuedAddresses(network,policy);
         } catch (RuntimeException failure) {
@@ -261,7 +265,7 @@ public class CregisDepositService {
 
     private void parallelPoolWork(int concurrency,Runnable worker) {
         var work=new java.util.ArrayList<java.util.concurrent.CompletableFuture<Void>>();
-        for(int i=0;i<concurrency;i++) work.add(java.util.concurrent.CompletableFuture.runAsync(worker,poolWorkers));
+        for(int i=0;i<concurrency && !closing;i++) work.add(java.util.concurrent.CompletableFuture.runAsync(worker,poolWorkers));
         java.util.concurrent.CompletableFuture.allOf(work.toArray(java.util.concurrent.CompletableFuture[]::new)).join();
     }
 
@@ -295,7 +299,7 @@ public class CregisDepositService {
     private void dispatchQueuedAddresses(CregisNetwork network,CregisAddressPoolPolicy batchPolicy) {
         var remaining=new java.util.concurrent.atomic.AtomicInteger(batchPolicy.batchSize());
         parallelPoolWork(batchPolicy.concurrency(),()->{
-            while(remaining.getAndDecrement()>0) {
+            while(!closing && remaining.getAndDecrement()>0) {
                 try {if(!submitQueuedAddress(network)) return;}
                 catch(RuntimeException failure) {log.warn("Cregis address submission deferred: {}",safeReason(failure));return;}
             }
