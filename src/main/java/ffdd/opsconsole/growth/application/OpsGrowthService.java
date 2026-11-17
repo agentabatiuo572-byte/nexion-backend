@@ -1069,6 +1069,9 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                             "EVENT_LOCALIZED_CONTENT_INCOMPLETE", Map.of("missing", missing));
                 }
             }
+            if (!H4EventRuleService.CODES.contains(id)) {
+                return validation("EVENT_CODE_UNSUPPORTED");
+            }
             int sortOrder = Math.toIntExact(Math.min(Integer.MAX_VALUE, questEventRows().size() * 10L + 10L));
             questEventMapper.get().insertEvent(
                     id,
