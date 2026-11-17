@@ -172,6 +172,8 @@ public class SupportAnalyticsPrivateQueryService {
         if(!facts.isEmpty()) {
             var names=mapper.agentDisplayNames(c.scope,facts.stream().map(Detail::factId).distinct().toList());
             if(names!=null)for(var name:names)if(name!=null && name.factId()!=null)agentDisplayNames.put(name.factId(),name.agentDisplayName());
+            var missing=facts.stream().map(Detail::factId).filter(id->!agentDisplayNames.containsKey(id)||agentDisplayNames.get(id)==null).distinct().toList();
+            if(!missing.isEmpty())agentDisplayNames.putAll(historicalAgentDisplayNames(c.scope,missing));
         }
         BigDecimal total=BigDecimal.ZERO,visible=BigDecimal.ZERO;
         var customers=new HashSet<Long>();var visibleCustomers=new HashSet<Long>();
@@ -195,6 +197,58 @@ public class SupportAnalyticsPrivateQueryService {
             "totalAmount",decimal(total),"visibleAmount",decimal(visible),"restrictedAmount",decimal(total.subtract(visible)),
             "totalCount",(long)facts.size(),"visibleCount",(long)rows.size(),"restrictedCount",(long)facts.size()-rows.size(),
             "customerCount",(long)customers.size(),"visibleCustomerCount",(long)visibleCustomers.size(),"restrictedCustomerCount",(long)customers.size()-visibleCustomers.size());
+    }
+
+    /**
+     * Exact fallback only when a future snapshot is absent: bind the admin version in the immutable
+     * attribution witness to the profile update's post-version, derived from the original A2 ticket
+     * expectedVersion. No nearest-time/current-name guess and no source => null.
+     */
+    private Map<String,String> historicalAgentDisplayNames(ReadScope scope,List<String> factIds) {
+        record Witness(Long adminId,Long version) { }
+        var evidence=mapper.agentEvidence(scope,factIds);
+        if(evidence==null || evidence.isEmpty())return Map.of();
+        var witnesses=new LinkedHashMap<String,Witness>();
+        var json=new com.fasterxml.jackson.databind.ObjectMapper();
+        for(var row:evidence) {
+            if(row==null || row.factId()==null || row.evidenceJson()==null)continue;
+            try {
+                var root=json.readTree(row.evidenceJson());
+                long adminId=root.path("agent").path("id").asLong(0);
+                long version=-1L;
+                for(var admin:root.path("witnesses").path("admins")) {
+                    if(admin.path("id").asLong(0)==adminId && version<0 && admin.path("version").canConvertToLong())
+                        version=admin.path("version").asLong();
+                }
+                if(adminId>0 && version>=0)witnesses.put(row.factId(),new Witness(adminId,version));
+            } catch(Exception ignored) { }
+        }
+        if(witnesses.isEmpty())return Map.of();
+        var adminIds=witnesses.values().stream().map(Witness::adminId).distinct().toList();
+        var events=mapper.profileDisplayNameVersions(adminIds);
+        if(events==null || events.isEmpty())return Map.of();
+        var byAdmin=new LinkedHashMap<Long,List<SupportAnalyticsMapper.ProfileDisplayNameVersion>>();
+        for(var event:events) {
+            if(event!=null && event.adminId()!=null)
+                byAdmin.computeIfAbsent(event.adminId(), ignored->new ArrayList<>()).add(event);
+        }
+        var result=new LinkedHashMap<String,String>();
+        for(var entry:witnesses.entrySet()) {
+            var history=byAdmin.get(entry.getValue().adminId());
+            if(history==null)continue;
+            Long best=null;
+            String displayName=null;
+            for(var event:history) {
+                if(event.postVersion()==null || event.postVersion()>entry.getValue().version()
+                        || event.displayName()==null || event.displayName().isBlank())continue;
+                if(best==null || event.postVersion()>best) {
+                    best=event.postVersion();
+                    displayName=event.displayName();
+                }
+            }
+            if(displayName!=null)result.put(entry.getKey(),displayName);
+        }
+        return result;
     }
 
     private record Sources(List<Long> groups,List<PermissionStamp> grants,List<PersonStamp> people,List<RoleStamp> roles,
