@@ -9,6 +9,7 @@ import ffdd.opsconsole.auth.mapper.UserOAuthIdentityMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.UserAuthEnvironment;
+import ffdd.opsconsole.user.application.UserIds;
 import ffdd.opsconsole.user.application.UserNicknames;
 import ffdd.opsconsole.user.infrastructure.UserEntity;
 import ffdd.opsconsole.user.mapper.UserOpsMapper;
@@ -239,6 +240,7 @@ public class AppUserOAuthService {
         String digits = hashSubject(key).replaceAll("[^0-9]", "");
         String phone = "139" + (digits + "00000000").substring(0, 8);
         UserEntity user = new UserEntity();
+        user.setId(UserIds.next(userMapper::userIdTaken));
         user.setCountryCode("+86");
         user.setPhone(phone);
         user.setClientIp(StringUtils.hasText(clientAddress) ? clientAddress.trim() : null);
