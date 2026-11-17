@@ -75,6 +75,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
 
     public static String readAuthority(String scope) {
         if (scope == null) return null;
+        if (d1CommandScope(scope)) return "finance_d1_read";
         if (scope.startsWith("D2")) return "finance_d2_read";
         if (scope.startsWith("E2_POOL_")) return "device_e2_read";
         if (scope.startsWith("E5_DEVICE_")) return "device_e5_read";
@@ -122,6 +123,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
 
     public static boolean supported(String scope) {
         return scope != null && (scope.matches("(?:D2|D3|E4|H2|K1|J1|I5|C[1-6])(?:[_:].*)?")
+                || d1CommandScope(scope)
                 || scope.startsWith("E2_POOL_") || scope.startsWith("E5_DEVICE_") || scope.startsWith("E6_PHONE_")
                 || scope.startsWith("GROWTH:H2:")
                 || scope.startsWith("GROWTH:H4:WHEEL_TIER_RETIRE:")
@@ -294,6 +296,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || platformRoleMenuWrite(scope)
                 || j2GeoWrite(scope)
                 || "D5_WITHDRAWAL_LIMITS_UPDATE".equals(scope) || "D5_WITHDRAWAL_LIMITS".equals(scope)
+                || d1LocalConfiguration(scope)
                 || "D6_FX_QUOTE_UPDATE".equals(scope) || "D6_FX_QUOTE".equals(scope)
                 || "FINANCE:D7:CONFIG_UPDATE".equals(scope) || "D7_PAYOUT_VND_CONFIG".equals(scope)
                 || j4LocalRecord(scope)
@@ -304,6 +307,19 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || m4FaqLocalEdit(scope)
                 || i4TrustDraftOnly(scope)
                 || scope != null && (scope.startsWith("E2_POOL_") || scope.startsWith("E5_DEVICE_") || scope.startsWith("E6_PHONE_"));
+    }
+
+    /** D1 topup/channel switch commands and the existing D1 manual-credit command. */
+    private static boolean d1CommandScope(String scope) {
+        return scope != null && (scope.startsWith("D1_TOPUP_")
+                || "D1_HDPAY_MANUAL_CREDIT".equals(scope)
+                || "D1_VIETQR_CONFIG_UPDATE".equals(scope));
+    }
+
+    /** Only the local D1 topup/VietQR configuration commands can prove a rolled-back transaction. */
+    private static boolean d1LocalConfiguration(String scope) {
+        return scope != null && (scope.startsWith("D1_TOPUP_CHANNEL_")
+                || "D1_VIETQR_CONFIG_UPDATE".equals(scope));
     }
 
     private static boolean platformRoleMenuWrite(String scope) {
