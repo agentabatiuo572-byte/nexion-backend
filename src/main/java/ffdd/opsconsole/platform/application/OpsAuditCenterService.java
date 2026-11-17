@@ -392,7 +392,7 @@ public class OpsAuditCenterService {
             ticket.setAmplifies(descriptor.amplifies() ? 1 : 0);
             ticket.setSos(j1Restore ? 1 : 0);
             ticket.setRoleGate(H7VoucherDisposition.isOperation(command) ? "有审批和代金券操作权限的管理员"
-                    : superAdminProposal ? "超管" : "门槛者");
+                    : superAdminProposal ? "超管" : ROLE_GATE_DELEGATED_APPROVER);
             sourceDomain = descriptor.sourceDomain();
             ticket.setSourceDomain(normalizeDomain(sourceDomain));
             target = descriptor.target();
@@ -530,7 +530,7 @@ public class OpsAuditCenterService {
                     target=new AuditLockTarget("E","device_sku","phone");
                     ticket.setAction("发布手机可跑任务"); ticket.setObjectText("phone");
                     ticket.setSourceDomain("E1"); ticket.setOperationType("param"); ticket.setAmplifies(0); ticket.setSos(0);
-                    ticket.setRoleGate(normalizeRoleGate("门槛者"));
+                    ticket.setRoleGate(ROLE_GATE_DELEGATED_APPROVER);
                     ticket.setBeforeValue(review.before()); ticket.setAfterValue(review.after());
                 }
                 if("E".equals(command.domain()) && java.util.Set.of("e2_task_create","e2_task_update","e2_task_status").contains(command.op())) {
@@ -539,7 +539,7 @@ public class OpsAuditCenterService {
                         if(request.targets()!=null && !request.targets().isEmpty())return fail(OpsErrorCode.VALIDATION_FAILED,"A2_TARGET_MISMATCH");
                         target=new AuditLockTarget("E","device_task",rule.target());
                         ticket.setAction("发布规则任务"); ticket.setObjectText(rule.name()); ticket.setSourceDomain("E2");
-                        ticket.setOperationType(rule.amplifies()?"fund":"param"); ticket.setAmplifies(rule.amplifies()?1:0); ticket.setSos(0); ticket.setRoleGate(normalizeRoleGate("门槛者"));
+                        ticket.setOperationType(rule.amplifies()?"fund":"param"); ticket.setAmplifies(rule.amplifies()?1:0); ticket.setSos(0); ticket.setRoleGate(ROLE_GATE_DELEGATED_APPROVER);
                         ticket.setBeforeValue(rule.before()); ticket.setAfterValue(rule.after());
                         if(rule.statusVersion()!=null)stored.put("ruleStatusReviewVersion",rule.statusVersion());
                     }
@@ -1639,7 +1639,7 @@ public class OpsAuditCenterService {
                 isTrue(row.getSos()),
                 row.getCreatedAt() == null ? row.getTimeLabel() : row.getCreatedAt().format(ISO),
                 mine,
-                normalizeRoleGate(row.getRoleGate()),
+                roleGateText(row.getRoleGate()),
                 row.getReason(),
                 status(row.getStatus()), phoneCalibrationProposal(command),
                 OpsKillSwitchService.RESTORE_OPERATION.equals(metadata.operationCode()) && isTrue(row.getAmplifies())
@@ -2314,11 +2314,25 @@ public class OpsAuditCenterService {
         return first >= 'A' && first <= 'M' ? String.valueOf(first) : "A";
     }
 
+    /**
+     * Stored machine code for the delegation threshold gate. The ticket column keeps historical plain
+     * text, so reads fold this code back to the label that every existing response already shows.
+     */
+    private static final String ROLE_GATE_DELEGATED_APPROVER = "DELEGATED_APPROVER";
+    private static final String ROLE_GATE_DELEGATED_APPROVER_LABEL = "门槛者";
+
     private String normalizeRoleGate(String value) {
         if (!StringUtils.hasText(value) || "TWO_PERSON".equalsIgnoreCase(value.trim())) {
             return "超管";
         }
         return value.trim();
+    }
+
+    /** Ticket role gate as it is shown: the structured code and historical text render identically. */
+    private String roleGateText(String value) {
+        return ROLE_GATE_DELEGATED_APPROVER.equalsIgnoreCase(StringUtils.hasText(value) ? value.trim() : "")
+                ? ROLE_GATE_DELEGATED_APPROVER_LABEL
+                : normalizeRoleGate(value);
     }
 
     private List<AuditStatsBucket> topActions() {
