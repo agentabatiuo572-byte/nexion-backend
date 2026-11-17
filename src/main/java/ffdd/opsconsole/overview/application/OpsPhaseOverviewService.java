@@ -29,14 +29,14 @@ public class OpsPhaseOverviewService {
     private static final Pattern PHASE = Pattern.compile("P[1-6]");
     private static final Set<String> GRANULARITIES = Set.of("PHASE", "MONTH");
     private static final List<DialDefinition> DIALS = List.of(
-            dial("newUserBonusMultiplier", "新用户加成", "倍", "相关功能上线后生效", false),
-            dial("inviteRewardMultiplier", "邀请加成", "倍", "相关功能上线后生效", false),
-            dial("reinvestMultiplier", "锁定计划加成", "倍", "锁定计划上线后生效", false),
-            dial("withdrawPenaltyFeeRate", "提现惩罚费率", "%", "已生效", true),
-            dial("withdrawCooldownDays", "提现冷却", "天", "已生效", true),
-            dial("binaryDailyCap", "团队平衡奖励每日封顶", "USDT", "团队平衡奖励上线后生效", false),
-            dial("questBonusMultiplier", "任务加成", "倍", "用户任务上线后生效", false),
-            dial("complianceHoldEnabled", "增强合规审查", "", "已生效", true));
+            dial("newUserBonusMultiplier", "新用户加成", "倍", "相关功能上线后生效", false, "ACTIVE"),
+            dial("inviteRewardMultiplier", "邀请加成", "倍", "相关功能上线后生效", false, "ACTIVE"),
+            dial("reinvestMultiplier", "锁定计划加成", "倍", "锁定计划上线后生效", false, "ACTIVE"),
+            dial("withdrawPenaltyFeeRate", "提现惩罚费率", "%", "已生效", true, "RETIRED"),
+            dial("withdrawCooldownDays", "提现冷却", "天", "已生效", true, "ACTIVE"),
+            dial("binaryDailyCap", "团队平衡奖励每日封顶", "USDT", "团队平衡奖励上线后生效", false, "ACTIVE"),
+            dial("questBonusMultiplier", "任务加成", "倍", "用户任务上线后生效", false, "ACTIVE"),
+            dial("complianceHoldEnabled", "增强合规审查", "", "已生效", true, "ACTIVE"));
 
     private final OpsPhaseMapper mapper;
     private final GrowthRhythmFacade growthRhythmFacade;
@@ -208,6 +208,7 @@ public class OpsPhaseOverviewService {
                     "source", "运营阶段设置 · 第 " + current.currentMonth() + " 个月",
                     "v1Status", definition.v1Status(),
                     "v1Active", definition.v1Active(),
+                    "executionStatus", definition.executionStatus(),
                     "adjustHref", "/growth/phase?dial=" + definition.key()
                             + "&phase=" + current.currentPhase() + "&from=B4");
         }).toList();
@@ -404,11 +405,13 @@ public class OpsPhaseOverviewService {
         return result;
     }
 
-    private static DialDefinition dial(String key, String label, String unit, String v1Status, boolean v1Active) {
-        return new DialDefinition(key, label, unit, v1Status, v1Active);
+    private static DialDefinition dial(String key, String label, String unit, String v1Status, boolean v1Active,
+                                       String executionStatus) {
+        return new DialDefinition(key, label, unit, v1Status, v1Active, executionStatus);
     }
 
-    private record DialDefinition(String key, String label, String unit, String v1Status, boolean v1Active) {
+    private record DialDefinition(String key, String label, String unit, String v1Status, boolean v1Active,
+                                  String executionStatus) {
     }
 
     private record Filter(String granularity, String month, String phase) {
