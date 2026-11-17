@@ -2673,7 +2673,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
 
     private boolean stakingAppVisible() {
         return configFacade.activeValue(STAKING_VISIBILITY_KEY)
-                .map("true"::equalsIgnoreCase).orElse(true);
+                .map("true"::equalsIgnoreCase).orElse(false);
     }
 
     private boolean stakingPoolEnabled(StakingPoolDef pool) {
