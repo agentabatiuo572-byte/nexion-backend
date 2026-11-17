@@ -4543,7 +4543,13 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     }
 
     private List<Map<String, Object>> checkInRules() {
-        return growthRows(GrowthQuestEventMapper::checkInRules);
+        return growthRows(GrowthQuestEventMapper::checkInRules).stream().map(row -> {
+            if (!"interval".equals(row.get("key"))) return row;
+            Map<String, Object> retired = new LinkedHashMap<>(row);
+            retired.put("configurable", false);
+            retired.put("writeBlockedReason", OpsErrorCode.RETIRED_FEATURE.name());
+            return retired;
+        }).toList();
     }
 
     private List<Map<String, Object>> streakMilestones() {
@@ -6432,6 +6438,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             case "lucky2Pct", "p2" -> "p2";
             case "brokenHours", "broken" -> "broken";
             case "reviveCards", "saver" -> "saver";
+            case "interval" -> throw new BizException(
+                    OpsErrorCode.RETIRED_FEATURE.httpStatus(), OpsErrorCode.RETIRED_FEATURE.name());
             default -> throw new IllegalArgumentException("Unsupported H5 check-in rule");
         };
     }
