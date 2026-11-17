@@ -108,7 +108,7 @@ public class OAuthProviderClient {
     }
 
     private boolean configured(Provider provider) {
-        if (publicTest(environment) && provider != Provider.GOOGLE) return false;
+        if (publicTest(environment) && provider != Provider.GOOGLE && provider != Provider.TELEGRAM) return false;
         try {
             publicBaseUrl();
             h5Origin();

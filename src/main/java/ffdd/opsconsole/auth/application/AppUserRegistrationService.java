@@ -107,7 +107,8 @@ public class AppUserRegistrationService {
         if ("unknown".equalsIgnoreCase(ip)) throw new BizException(503, "USER_REGISTRATION_CLIENT_IP_UNAVAILABLE");
         checkRegistrationLimits(ip,0,context);
         if (context.group()==AppSessionSurface.H5 && context.installationId().isEmpty()) {
-            CaptchaScene scene = OAuthProviderClient.publicTest(environment) && "GOOGLE".equals(provider)
+            CaptchaScene scene = OAuthProviderClient.publicTest(environment)
+                    && ("GOOGLE".equals(provider) || "TELEGRAM".equals(provider))
                     ? CaptchaScene.LOGIN : CaptchaScene.REGISTER;
             var decision=captchaGate.checkAndConsume(scene,captchaTicket,ip,0,true);
             if (!decision.allowed()) throw new BizException(decision.status(),decision.code());
