@@ -42,8 +42,8 @@ public class ConversationSocketCommands {
                 default -> throw new BizException(400,"UNKNOWN_SOCKET_COMMAND");
             };
             return switch(op) {
-                case "create" -> admin.initiate(key,json.convertValue(body,ConversationInitiateRequest.class));
-                case "reply" -> admin.reply(no,key,json.convertValue(body,ConversationReplyRequest.class));
+                case "create" -> admin.initiate(key,json.convertValue(body,ConversationInitiateRequest.class),null);
+                case "reply" -> admin.reply(no,key,json.convertValue(body,ConversationReplyRequest.class),null);
                 case "read" -> reads.read(no,json.convertValue(body,AppSupportController.MarkReadRequest.class),auth);
                 default -> throw new BizException(400,"UNKNOWN_SOCKET_COMMAND");
             };
