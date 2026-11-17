@@ -49,7 +49,7 @@ public class AdminCommandInvestigationService {
                           String originalMethod, String originalPath, String originalTarget, String originalTargets, long originalAdminId,
                           String originalStatus, boolean locked, boolean newOperationAllowed,
                           Integer businessCode, String businessState, Map<String, Object> batch,
-                          AdminCommandInvestigationEntity investigation) {}
+                          AdminCommandInvestigationEntity investigation, boolean localTransactionRollbackConfirmed) {}
 
     public record ReceiptStatus(String state) {}
 
@@ -788,7 +788,8 @@ public class AdminCommandInvestigationService {
         return new Receipt(original.getId(), original.getScope(), original.getIdempotencyKey(), original.getRequestHash(),
                 original.getOriginMethod(), original.getOriginPath(), original.getOriginTarget(), original.getOriginTargets(), original.getOriginAdminId(),
                 original.getStatus(), locked, "CONFIRMED_NOT_EXECUTED".equals(original.getStatus()),
-                businessCode(original.getResponseJson()), receiptState(original), batchSplit(original), latest);
+                businessCode(original.getResponseJson()), receiptState(original), batchSplit(original), latest,
+                original.getResponseJson() == null && provenNotExecuted(original));
     }
 
     /** Only the D2 batch split is projected: item ids plus the rejection/conflict reason codes. */
