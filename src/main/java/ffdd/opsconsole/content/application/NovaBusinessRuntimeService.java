@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.application;
 
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.emergency.application.OpsKillSwitchService;
 import ffdd.opsconsole.content.domain.CopyAudiencePhaseProvider;
 import ffdd.opsconsole.content.domain.NovaBusinessEventFact;
 import ffdd.opsconsole.content.domain.NovaBusinessFanoutProgress;
@@ -24,6 +25,7 @@ import java.util.UUID;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -50,6 +52,8 @@ public class NovaBusinessRuntimeService {
     private final CopyAudiencePhaseProvider phaseProvider;
     private final EventOutboxService eventOutboxService;
     private final Clock clock;
+    @Autowired
+    private OpsKillSwitchService killSwitchService;
     private final String leaseOwner = UUID.randomUUID().toString();
 
     public List<String> channelKeys() {
@@ -76,6 +80,8 @@ public class NovaBusinessRuntimeService {
     }
 
     public NovaChannelDispatchResult dispatchChannelAt(String channelKey, LocalDateTime now) {
+        String emergency = emergencyStopReason();
+        if (emergency != null) return NovaChannelDispatchResult.skipped(safe(channelKey), emergency);
         novaRepository.ensureTables();
         runtimeRepository.ensureRuntimeTables();
         NovaChannelView channel = novaRepository.channel(safe(channelKey)).orElse(null);
@@ -229,6 +235,16 @@ public class NovaBusinessRuntimeService {
         return new NovaChannelDispatchResult(
                 true, adapter.channel(), deliveredTotal, firstSourceEventId,
                 "DELIVERED_FROM_SERVER_FACT");
+    }
+
+    private String emergencyStopReason() {
+        if (killSwitchService == null) return null;
+        try {
+            return killSwitchService.notificationEmergencyStop() ? "J1_EMERGENCY_STOP" : null;
+        } catch (RuntimeException unavailable) {
+            log.warn("Nova business dispatch skipped: J1 emergency state unavailable");
+            return "J1_EMERGENCY_STATE_UNAVAILABLE";
+        }
     }
 
     private void publishNotificationFacts(

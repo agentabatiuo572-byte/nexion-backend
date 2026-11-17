@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.application;
 
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.emergency.application.OpsKillSwitchService;
 import ffdd.opsconsole.content.domain.NovaChannelView;
 import ffdd.opsconsole.content.domain.NovaRepository;
 import ffdd.opsconsole.content.domain.NovaSocialDispatchResult;
@@ -25,6 +26,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -40,6 +42,8 @@ public class NovaSocialRuntimeService {
     private final CopyAudiencePhaseProvider phaseProvider;
     private final EventOutboxService eventOutboxService;
     private final Clock clock;
+    @Autowired
+    private OpsKillSwitchService killSwitchService;
     private final String leaseOwner = UUID.randomUUID().toString();
 
     public void runScheduledSync() {
@@ -68,6 +72,8 @@ public class NovaSocialRuntimeService {
 
     @Transactional
     public NovaSocialDispatchResult dispatchAt(LocalDateTime now) {
+        String emergency = emergencyStopReason();
+        if (emergency != null) return NovaSocialDispatchResult.skipped(emergency);
         novaRepository.ensureTables();
         runtimeRepository.ensureRuntimeTables();
         NovaChannelView channel = novaRepository.channel(SOCIAL_CHANNEL).orElse(null);
@@ -166,6 +172,16 @@ public class NovaSocialRuntimeService {
         }
         completeClaimOrThrow(slotKey, now);
         return new NovaSocialDispatchResult(true, delivered, event.id(), "DELIVERED_INTERNAL_NOTIFICATION");
+    }
+
+    private String emergencyStopReason() {
+        if (killSwitchService == null) return null;
+        try {
+            return killSwitchService.notificationEmergencyStop() ? "J1_EMERGENCY_STOP" : null;
+        } catch (RuntimeException unavailable) {
+            log.warn("Nova social dispatch skipped: J1 emergency state unavailable");
+            return "J1_EMERGENCY_STATE_UNAVAILABLE";
+        }
     }
 
     private void completeClaimOrThrow(String slotKey, LocalDateTime now) {
