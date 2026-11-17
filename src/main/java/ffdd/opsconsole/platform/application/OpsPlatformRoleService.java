@@ -11,6 +11,7 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.platform.dto.AdminAccountActionRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
+import ffdd.opsconsole.platform.dto.AuditCenterOverview.RoleGrantsDiff;
 import ffdd.opsconsole.platform.dto.PlatformRoleCreateRequest;
 import ffdd.opsconsole.platform.dto.PlatformRoleDetail;
 import ffdd.opsconsole.platform.dto.PlatformRoleGrantsUpdateRequest;
@@ -329,6 +330,7 @@ public class OpsPlatformRoleService {
             params.put("expectedMenuIds", request.expectedMenuIds());
             params.put("reason", request.reason());
             params.put("operator", authenticatedOperator);
+            // Keep the legacy inner proposal fingerprint; A2 derives the stored financial flag from the command.
             AuditOperationProposalRequest proposal = new AuditOperationProposalRequest(
                     "A6_ROLE_GRANTS_CHANGED",
                     roleCode,
@@ -433,6 +435,32 @@ public class OpsPlatformRoleService {
         } catch (NumberFormatException invalid) {
             return ApiResult.fail(422, "ROLE_GRANTS_EXPECTED_INVALID");
         }
+    }
+
+    /** Called only after the generic proposal guard has verified the expected snapshot. */
+    RoleGrantsDiff roleGrantsDiff(Map<String, Object> params) {
+        Set<String> beforePermissions = new LinkedHashSet<>(normalizePermissionCodes(
+                ((List<?>) params.get("expectedPermissionCodes")).stream().map(String::valueOf).toList()));
+        Set<Long> beforeMenus = new LinkedHashSet<>(normalizeMenuIds(
+                ((List<?>) params.get("expectedMenuIds")).stream()
+                        .map(value -> Long.valueOf(String.valueOf(value))).toList()));
+        Set<String> afterPermissions = new LinkedHashSet<>(normalizePermissionCodes(
+                params.get("permissionCodes") instanceof List<?> codes
+                        ? codes.stream().map(String::valueOf).toList() : List.of()));
+        List<Long> desiredMenus;
+        try {
+            desiredMenus = normalizeMenuIds(params.get("menuIds") instanceof List<?> menus
+                    ? menus.stream().map(value -> Long.valueOf(String.valueOf(value))).toList() : List.of());
+        } catch (NumberFormatException invalidTarget) {
+            return null;
+        }
+        if (desiredMenus == null) return null;
+        Set<Long> afterMenus = new LinkedHashSet<>(desiredMenus);
+        return new RoleGrantsDiff(
+                afterPermissions.stream().filter(code -> !beforePermissions.contains(code)).toList(),
+                beforePermissions.stream().filter(code -> !afterPermissions.contains(code)).toList(),
+                afterMenus.stream().filter(id -> !beforeMenus.contains(id)).toList(),
+                beforeMenus.stream().filter(id -> !afterMenus.contains(id)).toList());
     }
 
     private ApiResult<Void> validateAuditRolePermissions(AdminRoleEntity role, List<String> desiredPerms) {
