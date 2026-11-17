@@ -295,7 +295,8 @@ public class AdminIdempotencyTransactionExecutor {
         if (recordMapper.resetFailedById(record.getId(), requestHash, expiresAt) == 1) {
             return Claim.claimed(record.getId());
         }
-        AdminIdempotencyRecordEntity raced = recordMapper.selectActive(
+        // A lost retry CAS must reload outside the claim's REPEATABLE_READ snapshot.
+        AdminIdempotencyRecordEntity raced = expiryTransitionExecutor.loadActiveCommitted(
                 record.getScope(), record.getIdempotencyKey());
         if (raced != null) {
             return Claim.replayed(replay(raced, requestHash, responseType));
