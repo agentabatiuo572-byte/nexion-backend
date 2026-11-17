@@ -2,25 +2,30 @@ package ffdd.opsconsole.content.application;
 
 import ffdd.opsconsole.content.domain.NovaSocialEventView;
 import ffdd.opsconsole.content.domain.NovaTemplateView;
+import ffdd.opsconsole.content.domain.NotificationTranslation;
+import ffdd.opsconsole.shared.exception.BizException;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 import org.springframework.util.StringUtils;
 
 final class NovaSocialMessageRenderer {
     static final Set<String> SUPPORTED_PLACEHOLDERS = Set.of(
-            "{actor}", "{name}", "{city}", "{amount}", "{eventType}", "{sourceNote}");
+            "{actor}", "{name}", "{city}", "{amount}", "{eventType}");
 
     private NovaSocialMessageRenderer() {
     }
 
     static RenderedMessage render(NovaTemplateView template, NovaSocialEventView event, String language) {
+        if (hasRetiredSourceNote(template)) {
+            throw new BizException(422, "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
+        }
         Map<String, String> values = Map.of(
                 "actor", safe(event.actorDisplay()),
                 "name", safe(event.actorDisplay()),
                 "city", safe(event.cityDisplay()),
                 "amount", safe(event.amountDisplay()),
-                "eventType", safe(event.eventType()),
-                "sourceNote", safe(event.sourceNote()));
+                "eventType", safe(event.eventType()));
         var translated = template.translations().get(language.toLowerCase(java.util.Locale.ROOT));
         String titleTemplate = switch (language) {
             case "ZH" -> template.titleZh();
@@ -35,6 +40,18 @@ final class NovaSocialMessageRenderer {
                     : StringUtils.hasText(template.bodyEn()) ? template.bodyEn() : "Open UVEL to view the update.";
         };
         return new RenderedMessage(replace(titleTemplate, values), renderBody(bodyTemplate, values, event, language));
+    }
+
+    static boolean hasRetiredSourceNote(NovaTemplateView template) {
+        return Stream.of(template.titleZh(), template.bodyZh(), template.titleVi(), template.bodyVi(),
+                        template.titleEn(), template.bodyEn())
+                .anyMatch(text -> text != null && text.contains("{sourceNote}"))
+                || hasRetiredSourceNote(template.translations());
+    }
+
+    static boolean hasRetiredSourceNote(Map<String, NotificationTranslation> translations) {
+        return translations.values().stream().anyMatch(value ->
+                value.title().contains("{sourceNote}") || value.body().contains("{sourceNote}"));
     }
 
     private static String renderBody(String template, Map<String, String> values,
