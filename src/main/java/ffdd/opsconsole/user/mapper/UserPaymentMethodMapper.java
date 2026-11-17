@@ -247,6 +247,9 @@ public interface UserPaymentMethodMapper extends BaseMapper<Object> {
             @Param("nickname") String nickname,
             @Param("expectedNickname") String expectedNickname);
 
+    @Select("SELECT COUNT(*) > 0 FROM nx_user WHERE nickname = #{nickname}")
+    boolean nicknameTaken(@Param("nickname") String nickname);
+
     @Select("SELECT nickname FROM nx_user WHERE id = #{userId} AND is_deleted = 0 LIMIT 1")
     String currentNickname(@Param("userId") Long userId);
 

@@ -90,7 +90,7 @@ public class OpsUserPaymentMethodService {
             if (!request.expectedValue().trim().equals(before)) {
                 throw new BizException(409, "NICKNAME_VERSION_CONFLICT");
             }
-            String nickname = "UVEL-" + hash(userId + ":" + key).substring(0, 8).toUpperCase();
+            String nickname = UserNicknames.next(mapper::nicknameTaken);
             if (mapper.resetNickname(userId, nickname, request.expectedValue().trim()) != 1) {
                 throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NICKNAME_RESET_CONFLICT");
             }
