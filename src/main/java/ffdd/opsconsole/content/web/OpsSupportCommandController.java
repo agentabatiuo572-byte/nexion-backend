@@ -131,6 +131,31 @@ public class OpsSupportCommandController {
         if(receipt.getScope().startsWith("SUPPORT_RANDOM:")) return ApiResult.ok(random.recover(key));
         if(!"SUCCEEDED".equals(receipt.getStatus())) return ApiResult.ok(Map.of("status",receipt.getStatus()));
         JsonNode response=json.readTree(receipt.getResponseJson());
+        JsonNode rejection=response.path("data");
+        if((receipt.getScope().equals("M3_CONVERSATION_REPLY:"+actor)
+                || receipt.getScope().equals("M3_CONVERSATION_INITIATE:"+actor))
+                && ffdd.opsconsole.content.application.SupportSessionService.SEND_REJECTION_RECEIPT
+                    .equals(rejection.path("receiptType").asText())) {
+            JsonNode code=response.path("code");
+            long customer=rejection.path("customerId").asLong();
+            String operation=rejection.path("operation").asText();
+            if(!code.isIntegralNumber() || !code.canConvertToInt() || code.intValue()<400 || code.intValue()>=500
+                    || !response.path("message").isTextual() || !rejection.path("customerId").isIntegralNumber() || customer<=0
+                    || !rejection.path("actorId").isIntegralNumber() || rejection.path("actorId").asLong()!=actor
+                    || !receipt.getScope().equals(operation+":"+actor)
+                    || !key.trim().equals(rejection.path("idempotencyKey").asText())
+                    || !Objects.equals(receipt.getRequestHash(),rejection.path("requestHash").asText())
+                    || !rejection.path("clientMessageId").asText().matches("[A-Za-z0-9_-]{8,128}")
+                    || !rejection.path("sent").isBoolean() || rejection.path("sent").booleanValue()) {
+                throw new BizException(409,"SUPPORT_COMMAND_RESULT_INVALID");
+            }
+            ownership.lockCustomer(customer);
+            ownership.requireRead(customer);
+            return ApiResult.ok(Map.of("status","REJECTED","sent",false,"customerId",customer,
+                    "operation",operation,"idempotencyKey",key.trim(),
+                    "clientMessageId",rejection.path("clientMessageId").textValue(),
+                    "businessCode",code.intValue(),"businessReason",response.path("message").textValue()));
+        }
         Set<Long> customers=new TreeSet<>();
         collect(response.path("data"),customers);
         customers.forEach(ownership::lockCustomer);
