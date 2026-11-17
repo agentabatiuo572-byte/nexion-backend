@@ -2438,11 +2438,16 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     private static String unilevelRuleValue(TeamCommissionRepository rules, String key) {
+        return unilevelRuleValue(rules, key, false);
+    }
+
+    private static String unilevelRuleValue(TeamCommissionRepository rules, String key, boolean preserveMissing) {
         String level = "L" + unilevelLayerNo(key);
         String field = key.startsWith("F.unilevel.nex.") ? "nexReward" : "usdtPct";
         return rules.unilevelRates().stream()
                 .filter(row -> level.equals(row.get("level")))
                 .findFirst()
+                .filter(row -> !preserveMissing || row.get(field) != null)
                 .map(row -> decimalValue(row.get(field), BigDecimal.ZERO).stripTrailingZeros().toString())
                 .orElse("");
     }
@@ -3431,7 +3436,7 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     private static String unilevelProposalCurrentValue(TeamCommissionRepository rules, String key) {
-        String current = unilevelRuleValue(rules, key);
+        String current = unilevelRuleValue(rules, key, true);
         if (!StringUtils.hasText(current)) return "未知（当前值不可用）";
         return key.startsWith("F.unilevel.nex.") ? current + " UVT/USDT" : current + "%";
     }
