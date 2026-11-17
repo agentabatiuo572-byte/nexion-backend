@@ -3416,7 +3416,17 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             String status = normalizeVoucherStatus(request.value());
             long expectedVersion = expectedVoucherVersion(request.expectedValue());
             List<Map<String, Object>> rows = new ArrayList<>(voucherRows());
-            voucherIndex(rows, id);
+            int currentIndex = voucherIndex(rows, id);
+            Map<String, Object> current = rows.get(currentIndex);
+            if (longValue(current.get("version")) != expectedVersion) {
+                return ApiResult.fail(409, "H7_VOUCHER_STALE");
+            }
+            if ("active".equals(status) && !"active".equalsIgnoreCase(stringValue(current.get("status"), ""))) {
+                long endAt = longValue(current.get("endAt"));
+                if (endAt > 0 && endAt < System.currentTimeMillis()) {
+                    return ApiResult.fail(409, "H7_VOUCHER_EXPIRED");
+                }
+            }
             if (voucherMapper.isEmpty()) {
                 return validation("VOUCHER_BUSINESS_TABLE_UNAVAILABLE");
             }
