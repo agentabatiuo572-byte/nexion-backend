@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.application;
 
 import ffdd.opsconsole.content.domain.AppNotificationPage;
+import ffdd.opsconsole.content.domain.AppNotificationView;
 import ffdd.opsconsole.content.domain.NotificationActionReceipt;
 import ffdd.opsconsole.content.domain.NotificationActionResult;
 import ffdd.opsconsole.content.domain.NotificationCampaignRepository;
@@ -128,7 +129,7 @@ public class AppNotificationService {
         if (replay != null) {
             return matchesRequest(replay, userId, notificationId, normalizedAction)
                     ? ApiResult.ok(new NotificationActionResult(
-                            notificationId, normalizedAction, replay.route().trim(), false))
+                            notificationId, normalizedAction, AppNotificationView.withoutRetiredStakingHref(replay.route().trim()), false))
                     : ApiResult.fail(409, "IDEMPOTENCY_KEY_CONFLICT");
         }
         NotificationEventFact fact = repository.lockNotificationEventFact(userId, notificationId).orElse(null);
@@ -221,12 +222,11 @@ public class AppNotificationService {
 
     private String canonicalRoute(NotificationEventFact fact) {
         if (StringUtils.hasText(fact.ctaHref())) {
-            return fact.ctaHref().trim();
+            return AppNotificationView.withoutRetiredStakingHref(fact.ctaHref().trim());
         }
         return switch (fact.kind() == null ? "" : fact.kind().trim().toLowerCase(Locale.ROOT)) {
             case "commission" -> "/pages/me/wallet-repurchase";
             case "team" -> "/pages/team/team";
-            case "staking" -> "/pages/staking/staking";
             case "market" -> "/pages/market/market";
             case "genesis" -> "/pages/genesis/marketplace";
             default -> "";
