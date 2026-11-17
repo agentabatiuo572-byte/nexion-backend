@@ -11,6 +11,7 @@ import org.springframework.web.servlet.HandlerMapping;
 /** Server-derived command identity. Never accepts actor, route or target from a recovery caller. */
 public record AdminCommandOrigin(long actorId, String method, String path, String target, String readAuthority,
                                  List<Target> targets) {
+    private static final String PURCHASE_PAYMENT_POLICY_PREFIX = "D1:PURCHASE_PAYMENT_POLICY:";
     public record Target(String action, String domain, String type, String id) {}
     public static AdminCommandOrigin current(String scope) {
         return current(scope, readAuthority(scope), null);
@@ -66,6 +67,8 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         // so it wins over the raw path variable whichever alias the caller used.
         String canonicalA4Target = a4Target(scope);
         if (canonicalA4Target != null) target = canonicalA4Target;
+        // The existing fee-policy writer always updates the singleton policy row.
+        if (purchasePaymentPolicyScope(scope)) target = "1";
         // A collection route is not an object identity. It must never lock unrelated objects.
         if (target != null && target.length() > 512) target = null;
         if (targets.isEmpty() && target != null) targets = List.of(new Target(
@@ -76,6 +79,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
     public static String readAuthority(String scope) {
         if (scope == null) return null;
         if (d1CommandScope(scope)) return "finance_d1_read";
+        if (purchasePaymentPolicyScope(scope)) return "finance_d1_read";
         if (scope.startsWith("D2")) return "finance_d2_read";
         if (scope.startsWith("E2_POOL_")) return "device_e2_read";
         if (scope.startsWith("E5_DEVICE_")) return "device_e5_read";
@@ -124,6 +128,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
     public static boolean supported(String scope) {
         return scope != null && (scope.matches("(?:D2|D3|E4|H2|K1|J1|I5|C[1-6])(?:[_:].*)?")
                 || d1CommandScope(scope)
+                || purchasePaymentPolicyScope(scope)
                 || scope.startsWith("E2_POOL_") || scope.startsWith("E5_DEVICE_") || scope.startsWith("E6_PHONE_")
                 || scope.startsWith("GROWTH:H2:")
                 || scope.startsWith("GROWTH:H4:WHEEL_TIER_RETIRE:")
@@ -151,6 +156,12 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || e3TradeinScope(scope)
                 || fCommandScope(scope)
                 || "A2_COMMAND".equals(scope) || "L_BI_REPORT_CREATE".equals(scope) || scope.startsWith("L_BI_REPORT_ACTION"));
+    }
+
+    /** The suffix keeps the writer's audit display name; actorId still comes from the ADMIN principal. */
+    public static boolean purchasePaymentPolicyScope(String scope) {
+        return scope != null && scope.length() <= 96 && scope.startsWith(PURCHASE_PAYMENT_POLICY_PREFIX)
+                && !scope.substring(PURCHASE_PAYMENT_POLICY_PREFIX.length()).isBlank();
     }
 
     /**
@@ -293,6 +304,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 "I5_DISCLOSURE_DRAFT_DELETE", "I5_DISCLOSURE_MATRIX_CONFIGURE", "I5_DISCLOSURE_MATRIX_ARCHIVE",
                 "I5_DISCLOSURE_GATE_UPDATE").contains(scope)
                 || "J3_ALERT_CONFIG".equals(scope)
+                || purchasePaymentPolicyScope(scope)
                 || platformRoleMenuWrite(scope)
                 || j2GeoWrite(scope)
                 || "D5_WITHDRAWAL_LIMITS_UPDATE".equals(scope) || "D5_WITHDRAWAL_LIMITS".equals(scope)
