@@ -819,6 +819,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         Map<String, Object> configs = new LinkedHashMap<>();
         keys.forEach(key -> configs.put(key, pending.get(key)));
         response.put("pendingApprovals", configs);
+        response.put("pendingMissionCreations", pendingApprovalProjection.readH3MissionCreations());
         return response;
     }
 
