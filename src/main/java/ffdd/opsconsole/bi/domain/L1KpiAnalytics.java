@@ -142,7 +142,8 @@ public final class L1KpiAnalytics {
         }
 
         CohortTally summary = new CohortTally();
-        Predicate<EventFact> dimensions = dimensions(null, query.phase(), query.locale(), query.ref());
+        String locale = query.locale().isEmpty() ? null : normalizeLocale(query.locale());
+        Predicate<EventFact> dimensions = dimensions(null, query.phase(), locale, query.ref());
         for (CohortMember member : members.values()) {
             boolean historyCovered = !member.registeredAt().isBefore(query.historyFrom());
             addCohortMember(summary, member, dimensions, query.asOf(), end, day0WindowSeconds, historyCovered);
