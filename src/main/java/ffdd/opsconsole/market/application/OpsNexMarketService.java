@@ -213,7 +213,17 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         long gatePlatform = marketRepository.todayExchangeCountByStatus("PLATFORM_CAP");
         long gateGeo = marketRepository.todayExchangeCountByStatus("GEO_BLOCKED");
         boolean disclosureGate = disclosureGateActive("exchange");
-        boolean swapEnabled = exchangeSwapEnabled();
+        Optional<String> emergencyPrimary = controlValue(EXCHANGE_KILLSWITCH_KEY);
+        Optional<String> emergencyLegacy = controlValue(EXCHANGE_LEGACY_KILLSWITCH_KEY);
+        Optional<String> emergencyValue = emergencyPrimary.or(() -> emergencyLegacy);
+        // Valid values are the existing J1 writer's accepted true/false spellings.
+        boolean emergencyAvailable = emergencyValue.map(value -> Set.of(
+                "true", "enabled", "enable", "on", "1", "false", "disabled", "disable", "off", "0")
+                .contains(value.trim().toLowerCase(Locale.ROOT))).orElse(false);
+        Boolean emergencyEnabled = emergencyAvailable
+                ? ffdd.opsconsole.emergency.domain.KillSwitchState.parse(emergencyValue.orElseThrow()) : null;
+        boolean swapEnabled = !disclosureGate && ffdd.opsconsole.emergency.domain.KillSwitchState.enabledFailClosed(
+                emergencyPrimary, emergencyLegacy);
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "G2");
@@ -240,6 +250,12 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "blockedBy", disclosureGate ? "I5_DISCLOSURE_GATE" : null,
                 "linkedDomain", "J1"));
         response.put("disclosureGate", map("exchange", disclosureGate));
+        response.put("emergencySwitch", map("exchange", map(
+                "available", emergencyAvailable,
+                "enabled", emergencyEnabled,
+                "sourceKey", emergencyPrimary.isPresent() ? EXCHANGE_KILLSWITCH_KEY
+                        : emergencyLegacy.isPresent() ? EXCHANGE_LEGACY_KILLSWITCH_KEY : null,
+                "unavailableReason", emergencyAvailable ? null : emergencyValue.isPresent() ? "INVALID" : "MISSING")));
         response.put("geoBlocked", blockedCountryViews());
         response.put("coverage", exchangeCoverage());
         response.put("serverCanonical", true);
