@@ -1016,10 +1016,14 @@ public class OpsCopyAbService {
         }
 
         // The winner write only republishes the copy when no draft version is pending; with a draft the
-        // copy keeps its current (e.g. archived) status, so adopting would report success while the copy
-        // stays invisible to users. Refuse before any write and let the operator settle the draft first.
-        if (StringUtils.hasText(lockedCopy.draftVersion())
-                && !"PUBLISHED".equalsIgnoreCase(String.valueOf(lockedCopy.status()).trim())) {
+        // copy keeps its current status, so adopting on an unpublished copy would report success while
+        // users still see nothing. The public states are the ones the runtime predicate accepts —
+        // PUBLISHED and DRAFT_SAVED, which this view renders as "published" / "draft-saved" — so only the
+        // remaining (e.g. archived) copies are refused, before any write.
+        String copyStatus = String.valueOf(lockedCopy.status()).trim();
+        boolean publiclyVisibleCopy = "published".equalsIgnoreCase(copyStatus)
+                || "draft-saved".equalsIgnoreCase(copyStatus);
+        if (StringUtils.hasText(lockedCopy.draftVersion()) && !publiclyVisibleCopy) {
             return ApiResult.fail(409, "COPY_ADOPT_DRAFT_PENDING");
         }
         CopyExperimentRow adopted = copyAbRepository.adoptExperimentWinner(
