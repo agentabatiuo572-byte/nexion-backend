@@ -2064,7 +2064,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         Matcher promoConfig = Pattern.compile("^promoBanner\\.(baseReward|multiplier|countdownDays|countdownHours|targetDevice|targetDaily|status)$")
                 .matcher(configKey == null ? "" : configKey);
         if (promoConfig.matches()) {
-            return updatePromoBannerConfig(mapper, promoConfig.group(1), configKey, idempotencyKey, request, approved, preview);
+            // The App parses promoBanner at the API layer but no screen renders it, so these seven fields
+            // are management settings with no consumer. Refuse new values while leaving stored banners and
+            // anything already shown untouched.
+            return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), OpsErrorCode.RETIRED_FEATURE.name());
         }
         Matcher localizedContent = Pattern.compile("^content\\.mission\\.([A-Za-z0-9_-]{2,64})\\.name\\.(" + String.join("|", InterfaceLanguages.CODES) + ")$")
                 .matcher(configKey == null ? "" : configKey);
@@ -3750,7 +3753,14 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     }
 
     private Map<String, Object> promoBanner() {
-        return growthMap(GrowthQuestEventMapper::promoBanner);
+        Map<String, Object> banner = growthMap(GrowthQuestEventMapper::promoBanner);
+        if (banner.isEmpty()) {
+            return banner;
+        }
+        banner.put("promoBannerConfigurable", false);
+        banner.put("promoBannerRetired", true);
+        banner.put("promoBannerRetiredReason", OpsErrorCode.RETIRED_FEATURE.name());
+        return banner;
     }
 
     private List<Map<String, Object>> taskMonitor() {
