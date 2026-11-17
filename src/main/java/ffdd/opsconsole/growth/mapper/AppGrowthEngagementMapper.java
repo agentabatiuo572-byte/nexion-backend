@@ -839,7 +839,7 @@ public interface AppGrowthEngagementMapper {
               JOIN nx_user u ON u.id=s.user_id AND u.status='ACTIVE' AND u.is_deleted=0
                                     AND COALESCE(u.sandbox,0)=0
              WHERE s.current_streak>0 AND s.is_deleted=0
-             ORDER BY s.current_streak DESC,s.longest_streak DESC,s.user_id
+             ORDER BY s.current_streak DESC,s.longest_streak DESC,u.created_at,s.user_id
              LIMIT 5
             """)
     List<Map<String, Object>> topStreakers();
