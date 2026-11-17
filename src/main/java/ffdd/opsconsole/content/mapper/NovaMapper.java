@@ -703,20 +703,24 @@ public interface NovaMapper extends BaseMapper<Object> {
             SELECT id, event_type AS eventType, source_event_id AS sourceEventId,
                    actor_display AS actorDisplay, city_display AS cityDisplay,
                    amount_display AS amountDisplay, source_note AS sourceNote,
-                   source_system AS sourceSystem, source_table AS sourceTable, status,
+                   source_system AS sourceSystem, source_table AS sourceTable,
+                   CASE WHEN status = 'ACTIVE' AND expires_at IS NOT NULL AND expires_at &lt;= #{now}
+                        THEN 'EXPIRED' ELSE status END AS status,
                    occurred_at AS occurredAt, expires_at AS expiresAt, verified_at AS verifiedAt,
                    last_dispatched_at AS lastDispatchedAt, dispatch_count AS dispatchCount,
                    created_at AS createdAt, updated_at AS updatedAt
               FROM nx_nova_social_event
              WHERE is_deleted = 0
                <if test="eventType != null and eventType != ''">AND event_type = #{eventType}</if>
-               <if test="status != null and status != ''">AND status = #{status}</if>
+               <if test="status != null and status != ''">AND (CASE WHEN status = 'ACTIVE' AND expires_at IS NOT NULL
+                     AND expires_at &lt;= #{now} THEN 'EXPIRED' ELSE status END) = #{status}</if>
              ORDER BY occurred_at DESC, id DESC
              LIMIT #{limit} OFFSET #{offset}
             </script>
             """)
     List<NovaSocialEventView> socialEventsFiltered(@Param("eventType") String eventType,
                                                     @Param("status") String status,
+                                                    @Param("now") LocalDateTime now,
                                                     @Param("limit") int limit,
                                                     @Param("offset") int offset);
 
@@ -726,11 +730,13 @@ public interface NovaMapper extends BaseMapper<Object> {
               FROM nx_nova_social_event
              WHERE is_deleted = 0
                <if test="eventType != null and eventType != ''">AND event_type = #{eventType}</if>
-               <if test="status != null and status != ''">AND status = #{status}</if>
+               <if test="status != null and status != ''">AND (CASE WHEN status = 'ACTIVE' AND expires_at IS NOT NULL
+                     AND expires_at &lt;= #{now} THEN 'EXPIRED' ELSE status END) = #{status}</if>
             </script>
             """)
     long countSocialEventsFiltered(@Param("eventType") String eventType,
-                                   @Param("status") String status);
+                                   @Param("status") String status,
+                                   @Param("now") LocalDateTime now);
 
     @Select("""
             SELECT id, event_type AS eventType, source_event_id AS sourceEventId,
