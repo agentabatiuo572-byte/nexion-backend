@@ -684,11 +684,16 @@ public class AdminCommandInvestigationService {
 
     /**
      * The platform experience writer keeps Integer.toHexString(hashCode()) so an in-flight command can be
-     * replayed, which is one to eight lowercase hex characters; every other scope stores a 64 character
-     * digest. Accepting the real stored form here keeps the exact-match check below unchanged for all.
+     * replayed, which is one to eight lowercase hex characters. The four F5 commission writers use
+     * UUID.nameUUIDFromBytes(...).toString(), whose canonical UUID form is 8-4-4-4-12 lowercase hex.
+     * Every other scope stores a 64 character digest. Accepting these real stored forms here keeps the
+     * exact-match check below unchanged for all scopes.
      */
     private boolean hashFormatAllowed(String scope, String hash) {
         if ("A3_PLATFORM_EXPERIENCE".equals(scope) && hash.matches("[0-9a-f]{1,8}")) return true;
+        if (Set.of("F5_COMMISSION_REVERSE", "F5_COMMISSION_REISSUE", "F5_COMMISSION_SUSPENSION",
+                "F5_COMMISSION_ANOMALY_CONFIG").contains(scope)
+                && hash.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")) return true;
         return hash.matches("[a-fA-F0-9]{64}");
     }
 
