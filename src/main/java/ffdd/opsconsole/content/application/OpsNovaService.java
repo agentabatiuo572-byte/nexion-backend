@@ -112,7 +112,7 @@ public class OpsNovaService {
                 EVENT_DRIVEN_CHANNELS,
                 novaRepository.templates(),
                 novaRepository.socialDistribution(),
-                publicEvents(novaRepository.socialEvents("", "", 20, 0)),
+                publicEvents(novaRepository.socialEvents("", "", LocalDateTime.now(clock), 20, 0)),
                 SOCIAL_EVENT_TYPE_OPTIONS,
                 SOCIAL_EVENT_STATUS_OPTIONS,
                 List.copyOf(TEMPLATE_STATUSES),
@@ -147,11 +147,14 @@ public class OpsNovaService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_SOCIAL_EVENT_PAGE_INVALID");
         }
         String effectiveStatus = StringUtils.hasText(status) ? normalizedStatus : "";
+        // One instant for the page, its filter and its count, taken from the service clock that the
+        // expiry job also uses — never the repository's own system time.
+        LocalDateTime asOf = LocalDateTime.now(clock);
         List<NovaSocialEventView> rows = novaRepository
-                .socialEvents(normalizedType, effectiveStatus, pageSize, (page - 1) * pageSize).stream()
+                .socialEvents(normalizedType, effectiveStatus, asOf, pageSize, (page - 1) * pageSize).stream()
                 .map(this::publicEvent)
                 .toList();
-        long total = novaRepository.countSocialEvents(normalizedType, effectiveStatus);
+        long total = novaRepository.countSocialEvents(normalizedType, effectiveStatus, asOf);
         return ApiResult.ok(new NovaSocialEventPage(rows, page, pageSize, total));
     }
 

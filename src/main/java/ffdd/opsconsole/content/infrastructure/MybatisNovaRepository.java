@@ -218,8 +218,19 @@ public class MybatisNovaRepository implements NovaRepository {
     }
 
     @Override
+    public List<NovaSocialEventView> socialEvents(String eventType, String status, LocalDateTime asOf,
+                                                  int limit, int offset) {
+        return mapper.socialEventsFiltered(eventType, status, asOf, Math.min(Math.max(1, limit), 100), Math.max(0, offset));
+    }
+
+    @Override
     public long countSocialEvents(String eventType, String status) {
         return mapper.countSocialEventsFiltered(eventType, status, LocalDateTime.now());
+    }
+
+    @Override
+    public long countSocialEvents(String eventType, String status, LocalDateTime asOf) {
+        return mapper.countSocialEventsFiltered(eventType, status, asOf);
     }
 
     @Override
