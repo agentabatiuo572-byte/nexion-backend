@@ -576,6 +576,10 @@ public class LeadershipPoolService {
     }
 
     BigDecimal configuredPeriodPrize(String period) {
+        return configuredPeriodPrize(configFacade, period);
+    }
+
+    static BigDecimal configuredPeriodPrize(PlatformConfigFacade configFacade, String period) {
         return configFacade.activeValue(CONFIG_KEY_PERIOD_PRIZE).map(value -> {
             try {
                 JsonNode amount = JSON.readTree(value).get(period);
@@ -718,7 +722,7 @@ public class LeadershipPoolService {
         }
     }
 
-    private static BigDecimal parseMoney(String value) {
+    static BigDecimal parseMoney(String value) {
         if (value == null || value.isBlank()) return null;
         String raw = value.trim().toUpperCase().replace("$", "").replace(",", "");
         BigDecimal multiplier = BigDecimal.ONE;
