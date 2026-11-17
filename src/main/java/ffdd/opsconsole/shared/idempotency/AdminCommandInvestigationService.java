@@ -299,6 +299,16 @@ public class AdminCommandInvestigationService {
                 && "J3_TAMPER_ALERT_CONFIG_CHANGED".equals(action);
         if (scope.startsWith("GROWTH:H4:WHEEL_TIER_RETIRE")) return "WHEEL_CONFIG".equals(fact.getResourceType())
                 && "H4_WHEEL_TIER_RETIRED".equals(action);
+        if (scope.startsWith("GROWTH:H1:RHYTHM_PARAM_UPDATE:")) return "GROWTH_RHYTHM".equals(fact.getResourceType())
+                && "H1_RHYTHM_CHANGED".equals(action);
+        if (scope.startsWith("GROWTH:H1:PHASE_DIAL_UPDATE:")) return "GROWTH_PHASE_DIAL".equals(fact.getResourceType())
+                && "H1_PHASE_DIAL_CHANGED".equals(action);
+        if (scope.startsWith("GROWTH:H1:PHASE_MONTH_DIAL_UPDATE:")) return "GROWTH_PHASE_MONTH_DIAL".equals(fact.getResourceType())
+                && "H1_MONTH_DIAL_CHANGED".equals(action);
+        if (scope.startsWith("GROWTH:H1:PHASE_CONTROL_UPDATE:")) return "GROWTH_PHASE_CONTROL".equals(fact.getResourceType())
+                && "H1_PHASE_CONTROL_CHANGED".equals(action);
+        if (scope.startsWith("GROWTH:H1:PHASE_OVERRIDE_UPDATE:")) return "GROWTH_PHASE_OVERRIDE".equals(fact.getResourceType())
+                && "H1_PHASE_OVERRIDE_CHANGED".equals(action);
         if ("A4_EVENT_RETENTION_RUN".equals(scope)) {
             return "A4_EVENT_RETENTION".equals(fact.getResourceType())
                     && "A4_EVENT_RETENTION_MANUAL_EXECUTED".equals(action);
