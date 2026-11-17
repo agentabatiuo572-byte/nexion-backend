@@ -46,7 +46,7 @@ public class OpsNexMarketController {
     @GetMapping("/curve")
     @PreAuthorize("hasAuthority('finprod_g3_read')")
     public ApiResult<Map<String, Object>> curve() {
-        return marketService.overview();
+        return marketService.overviewWithObjectStates();
     }
 
     @GetMapping("/curve/history")

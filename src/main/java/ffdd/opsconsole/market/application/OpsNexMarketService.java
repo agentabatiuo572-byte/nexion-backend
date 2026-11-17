@@ -1185,6 +1185,11 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         response.put("sunsetExclusions", sunsetExclusions());
         response.put("serverCanonical", true);
         response.put("sources", List.of("nx_config_item:" + WEEKLY_CURVE_KEY, "nx_price_index:UVT_USDT", "nx_config_item:" + SUNSET_EXCLUSIONS_KEY));
+        return ApiResult.ok(response);
+    }
+
+    public ApiResult<Map<String, Object>> overviewWithObjectStates() {
+        Map<String, Object> response = overview().getData();
         response.put("objectStates", marketObjectStates());
         response.put("environmentWriteState", marketEnvironmentWriteState());
         return ApiResult.ok(response);
