@@ -6,6 +6,7 @@ import ffdd.opsconsole.content.domain.NotificationEventFact;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.exception.BizException;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -33,6 +34,9 @@ public class NotificationCampaignDispatchExecutor {
             LocalDateTime now) {
         NotificationCampaignRow campaign = repository.findCampaign(campaignNo)
                 .orElseThrow(() -> new IllegalStateException("NOTIFICATION_CAMPAIGN_NOT_FOUND"));
+        if (!OpsNotificationCampaignService.validDelivery(campaign.kind(), campaign.ctaLabel(), campaign.ctaHref())) {
+            throw new BizException(422, "NOTIFICATION_DELIVERY_CONFIG_INVALID");
+        }
         if (!repository.claimForImmediateDispatch(campaignNo, expectedRevision, now)) {
             throw new ConcurrentDispatchException();
         }
@@ -57,6 +61,9 @@ public class NotificationCampaignDispatchExecutor {
     public int dispatchScheduled(String campaignNo, String currentPhase, LocalDateTime now) {
         NotificationCampaignRow campaign = repository.findCampaign(campaignNo)
                 .orElseThrow(() -> new IllegalStateException("NOTIFICATION_CAMPAIGN_NOT_FOUND"));
+        if (!OpsNotificationCampaignService.validDelivery(campaign.kind(), campaign.ctaLabel(), campaign.ctaHref())) {
+            throw new BizException(422, "NOTIFICATION_DELIVERY_CONFIG_INVALID");
+        }
         if (!repository.claimScheduled(campaignNo, now)) {
             return 0;
         }
