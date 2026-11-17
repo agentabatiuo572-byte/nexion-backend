@@ -19,6 +19,7 @@ import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.treasury.application.BankRunThresholdPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
+import ffdd.opsconsole.treasury.facade.TreasuryEmergencySignalFacade;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -37,6 +38,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Propagation;
@@ -71,6 +73,8 @@ public class OpsRiskRadarService {
     private final B5RiskRadarMapper mapper;
     private final PlatformConfigFacade configFacade;
     private final TreasuryCoverageFacade coverageFacade;
+    @Autowired
+    private TreasuryEmergencySignalFacade emergencySignalFacade;
     private final AdminIdempotencyService idempotencyService;
     private final AuditLogService auditLogService;
     private final AdminOperatorRoleResolver roleResolver;
@@ -88,13 +92,18 @@ public class OpsRiskRadarService {
                 "withdraw24hUsdt", "reserveUsdt", "payoutUsdt", "commissionUsdt", "grossInflowUsdt"))) {
             throw new BizException(500, "B5_MONEY_SOURCE_UNAVAILABLE");
         }
-        BigDecimal withdrawal24h = decimal(money.get("withdraw24hUsdt"));
-        BigDecimal reserve = decimal(money.get("reserveUsdt"));
+        TreasuryEmergencySignalFacade.BankRunRead j1BankRun = bankRunRead();
+        BigDecimal withdrawal24h = j1BankRun == null
+                ? decimal(money.get("withdraw24hUsdt")) : j1BankRun.withdrawalRequests24hUsdt();
+        BigDecimal reserve = j1BankRun == null ? decimal(money.get("reserveUsdt")) : j1BankRun.reserveUsdt();
         BigDecimal payout = decimal(money.get("payoutUsdt"));
         BigDecimal commission = decimal(money.get("commissionUsdt"));
         BigDecimal grossInflow = decimal(money.get("grossInflowUsdt"));
-        boolean bankRunCalculable = reserve.signum() > 0;
-        BigDecimal bankRunRatio = bankRunCalculable ? ratio(withdrawal24h, reserve) : null;
+        boolean bankRunCalculable = j1BankRun != null && j1BankRun.ratioPct() != null
+                || j1BankRun == null && reserve.signum() > 0;
+        BigDecimal bankRunRatio = j1BankRun != null && j1BankRun.ratioPct() != null
+                ? j1BankRun.ratioPct().movePointLeft(2)
+                : bankRunCalculable ? ratio(withdrawal24h, reserve) : null;
         BigDecimal pressureNumerator = payout.add(commission);
         boolean pressureCalculable = grossInflow.signum() > 0;
         BigDecimal pressureRatio = pressureCalculable ? ratio(pressureNumerator, grossInflow) : null;
@@ -369,10 +378,14 @@ public class OpsRiskRadarService {
         if (money == null) {
             throw new BizException(500, "B5_MONEY_SOURCE_UNAVAILABLE");
         }
-        BigDecimal withdrawal24h = decimal(money.get("withdraw24hUsdt"));
-        BigDecimal reserve = decimal(money.get("reserveUsdt"));
-        boolean calculable = reserve.signum() > 0;
-        BigDecimal ratio = calculable ? ratio(withdrawal24h, reserve) : null;
+        TreasuryEmergencySignalFacade.BankRunRead j1BankRun = bankRunRead();
+        BigDecimal withdrawal24h = j1BankRun == null
+                ? decimal(money.get("withdraw24hUsdt")) : j1BankRun.withdrawalRequests24hUsdt();
+        BigDecimal reserve = j1BankRun == null ? decimal(money.get("reserveUsdt")) : j1BankRun.reserveUsdt();
+        boolean calculable = j1BankRun != null ? j1BankRun.ratioPct() != null : reserve.signum() > 0;
+        BigDecimal ratio = j1BankRun != null && j1BankRun.ratioPct() != null
+                ? j1BankRun.ratioPct().movePointLeft(2)
+                : calculable ? ratio(withdrawal24h, reserve) : null;
         return ApiResult.ok(section(
                 "ratio24h", ratio,
                 "ratioCalculable", calculable,
@@ -849,6 +862,15 @@ public class OpsRiskRadarService {
         BigDecimal ratio = safe(coverage.coverageRatio());
         if (ratio.compareTo(coverage.healthyPct()) < 0) return "yellow";
         return "green";
+    }
+
+    private TreasuryEmergencySignalFacade.BankRunRead bankRunRead() {
+        if (emergencySignalFacade == null) return null;
+        try {
+            return emergencySignalFacade.bankRunRead();
+        } catch (RuntimeException unavailable) {
+            throw new BizException(500, "B5_MONEY_SOURCE_UNAVAILABLE");
+        }
     }
 
     private BigDecimal ratio(BigDecimal numerator, BigDecimal denominator) {
