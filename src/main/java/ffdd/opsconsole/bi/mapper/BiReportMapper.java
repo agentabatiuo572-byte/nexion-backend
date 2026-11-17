@@ -218,6 +218,8 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
             SELECT event_name AS eventName,
                    event_ts AS eventTs,
                    JSON_UNQUOTE(JSON_EXTRACT(payload, '$.user_id')) AS actorId,
+                   aggregate_type AS trialAggregateType,
+                   aggregate_id AS trialId,
                    COALESCE(NULLIF(cohort, ''), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.cohort'))) AS cohort,
                    COALESCE(NULLIF(phase, ''), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.phase'))) AS phase,
                    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.locale')), 'und') AS locale,
@@ -231,7 +233,7 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                AND event_name IN (
                  'auth.register_completed', 'checkout.completed',
                  'wallet.reinvest', 'withdraw.submitted', 'app.dau',
-                 'trial.claim_sheet_shown', 'trial.started', 'trial.redeemed'
+                 'trial.started', 'trial.redeemed'
                )
                AND is_server_authoritative = 1
              ORDER BY event_ts ASC, id ASC
