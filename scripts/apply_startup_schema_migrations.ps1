@@ -551,6 +551,37 @@ try {
   # Repo-relative paths (Push-Location above) keep this single -e argument under the Windows command-line limit.
   $rootPrefix = $root.Path.TrimEnd('\', '/')
   $mysqlArgs = @('--default-character-set=utf8mb4', '--protocol=tcp', '-h', $databaseUri.Host, '-P', $port, '-u', $Username, $database)
+  # Refuse the nickname migration before its UPDATE when final names collide with
+  # existing names or with each other. This is read-only; the operator resolves
+  # the listed rows and retries the controlled startup.
+  $nicknameTable = & $MySql @mysqlArgs -N -B -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_user';"
+  if ($LASTEXITCODE -ne 0) { throw 'Could not inspect nx_user before nickname migration.' }
+  if ((@($nicknameTable) -join "`n").Trim() -ne '0') {
+    $nicknameSql = @'
+WITH ranked AS (
+  SELECT id, nickname AS original_nickname, is_deleted, created_at,
+         ROW_NUMBER() OVER (PARTITION BY nickname ORDER BY is_deleted, created_at, id) AS holder_rank
+    FROM nx_user
+), final_names AS (
+  SELECT id, original_nickname,
+         CONVERT(CASE WHEN holder_rank = 1 THEN original_nickname
+                      ELSE CONCAT(LEFT(original_nickname, 50), '-', CONV(id, 10, 36)) END
+                 USING utf8mb4) COLLATE utf8mb4_0900_ai_ci AS target_nickname
+    FROM ranked
+), conflicts AS (
+  SELECT target_nickname FROM final_names
+   GROUP BY target_nickname HAVING COUNT(*) > 1
+)
+SELECT f.id, f.original_nickname, f.target_nickname
+  FROM final_names f JOIN conflicts c ON f.target_nickname = c.target_nickname
+ ORDER BY f.target_nickname, f.id;
+'@
+    $nicknameConflicts = & $MySql @mysqlArgs -N -B -e $nicknameSql
+    if ($LASTEXITCODE -ne 0) { throw 'Could not inspect nickname migration conflicts.' }
+    if ((@($nicknameConflicts) -join "`n").Trim().Length -gt 0) {
+      throw "Nickname migration conflicts must be resolved manually before startup (id, original, target): $((@($nicknameConflicts) -join '; '))."
+    }
+  }
   $runMigrations = {
     param($batch)
     $sources = ($batch | ForEach-Object { "source $($_.Substring($rootPrefix.Length + 1).Replace('\', '/'));" }) -join "`n"
