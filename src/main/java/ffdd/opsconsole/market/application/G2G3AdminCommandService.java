@@ -8,6 +8,8 @@ import ffdd.opsconsole.market.dto.NexMarketAdvanceRequest;
 import ffdd.opsconsole.market.dto.NexMarketCurveUpdateRequest;
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
 import ffdd.opsconsole.market.dto.G3MarketPolicyChangeRequest;
+import ffdd.opsconsole.platform.domain.AuditLockTarget;
+import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -42,6 +44,7 @@ public class G2G3AdminCommandService {
     private final EventOutboxService outbox;
     private final G2ExchangeQueueBatchService queueBatch;
     private final AuditLogService audit;
+    private final AuditObjectLockMapper pendingLocks;
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String,Object>> exchangeParam(String key,String paramKey,ExchangeParamUpdateRequest request) {
@@ -137,6 +140,7 @@ public class G2G3AdminCommandService {
     public ApiResult<Map<String,Object>> weeklyCurve(String key,NexMarketCurveUpdateRequest request) {
         requireReason(request == null ? null : request.reason());
         return once("G3:CURVE",key,request,() -> {
+            requireG3ObjectUnlocked(G3MarketApproval.CURVE_TARGET);
             ApiResult<Map<String,Object>> result = success(market.updateWeeklyCurve(key,request));
             publishWeeklyCurve(request.frames() == null ? 0 : request.frames().size(), request.reason(), request.operator());
             return result;
@@ -168,6 +172,7 @@ public class G2G3AdminCommandService {
     public ApiResult<Map<String,Object>> override(String key,String overrideKey,NexMarketValueUpdateRequest request) {
         requireReason(request == null ? null : request.reason());
         return once("G3:OVERRIDE:" + overrideKey,key,request,() -> {
+            if ("currentPrice".equals(overrideKey)) requireG3ObjectUnlocked(G3MarketApproval.PRICE_TARGET);
             ApiResult<Map<String,Object>> result = success(market.updateOverride(key,overrideKey,request));
             publishOverride(overrideKey, request.value(), request.reason(), request.operator());
             return result;
@@ -211,6 +216,12 @@ public class G2G3AdminCommandService {
         };
         outbox.publish("NEX_MARKET", "weekly", event, linked("field", key, "value", value,
                 "reason", reason.trim(), "operator", actor(operator)));
+    }
+
+    private void requireG3ObjectUnlocked(AuditLockTarget target) {
+        if (pendingLocks.countActiveByTarget(target.domain(), target.type(), target.id()) > 0) {
+            throw new BizException(409, "OBJECT_LOCKED_BY_A2");
+        }
     }
 
     private void requireReason(String reason) {
