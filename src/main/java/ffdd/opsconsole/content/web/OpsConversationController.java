@@ -103,7 +103,7 @@ public class OpsConversationController {
             Object data=result.getData();
             if(data instanceof Map<?,?> receipt
                     && ffdd.opsconsole.content.application.SupportSessionService.SEND_REJECTION_RECEIPT.equals(receipt.get("receiptType"))) {
-                response.setStatus(result.getCode());
+                if(response!=null) response.setStatus(result.getCode());
             } else if(result.getCode()!=0) sessions.rejected(customer,scope,result.getMessage());
             return result;
         } catch (ffdd.opsconsole.shared.exception.BizException rejected) {
