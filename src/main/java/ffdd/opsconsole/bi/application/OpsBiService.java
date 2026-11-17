@@ -1607,7 +1607,7 @@ public class OpsBiService implements AuditReplayable {
 
     private String networkTreeCsv(List<Map<String, Object>> rows) {
         StringBuilder csv = new StringBuilder(csvRow(List.of(
-                "成员用户编码（部分脱敏）", "邀请人用户编码（部分脱敏）", "关系深度", "V-Rank", "团队GMV USDT", "加入时间")));
+                "成员用户编码（部分脱敏）", "根节点用户编码（部分脱敏）", "关系深度", "V-Rank", "关系表累计量 USDT", "加入时间")));
         for (Map<String, Object> row : rows) {
             csv.append(csvRow(List.of(
                     safeNetworkCsvValue(row.get("memberUserIdPartial")),
