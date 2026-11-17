@@ -216,7 +216,7 @@ public class SupportAnalyticsPrivateQueryService {
                 var root=json.readTree(row.evidenceJson());
                 long adminId=root.path("agent").path("id").asLong(0);
                 long version=-1L;
-                for(var admin:root.path("witnesses").path("admins")) {
+                for(var admin:root.path("admins")) {
                     if(admin.path("id").asLong(0)==adminId && version<0 && admin.path("version").canConvertToLong())
                         version=admin.path("version").asLong();
                 }
@@ -239,7 +239,7 @@ public class SupportAnalyticsPrivateQueryService {
             Long best=null;
             String displayName=null;
             for(var event:history) {
-                if(event.postVersion()==null || event.postVersion()>entry.getValue().version()
+                if(event.postVersion()==null || !event.postVersion().equals(entry.getValue().version())
                         || event.displayName()==null || event.displayName().isBlank())continue;
                 if(best==null || event.postVersion()>best) {
                     best=event.postVersion();
