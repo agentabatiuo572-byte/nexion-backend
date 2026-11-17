@@ -209,6 +209,7 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
                 .map(entity -> new FinancialFieldView(
                         entity.getFieldKey(),
                         entity.getFieldValue(),
+                        entity.getFieldDelta(),
                         entity.getFieldDelta()))
                 .toList();
     }
