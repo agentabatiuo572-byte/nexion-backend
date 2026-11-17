@@ -3,7 +3,6 @@ package ffdd.opsconsole.device.web;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.device.application.OpsDeviceService;
 import ffdd.opsconsole.device.dto.E2PhoneTierConfigUpdateRequest;
-import ffdd.opsconsole.device.dto.E2TaskPricingUpdateRequest;
 import ffdd.opsconsole.device.dto.E2YieldComparisonUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
@@ -27,14 +26,6 @@ public class OpsDeviceConfigController {
     @PreAuthorize("hasAuthority('device_e2_read')")
     public ApiResult<Map<String, Object>> taskPricing() {
         return deviceService.e2TaskPricingForAdmin();
-    }
-
-    @PutMapping("/task-pricing")
-    @PreAuthorize("hasAuthority('device_e2_write')")
-    public ApiResult<Map<String, Object>> updateTaskPricing(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody E2TaskPricingUpdateRequest request) {
-        return deviceService.updateE2TaskPricing(idempotencyKey, request);
     }
 
     @GetMapping("/phone-tiers")
