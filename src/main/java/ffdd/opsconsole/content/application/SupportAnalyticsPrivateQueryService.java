@@ -136,7 +136,7 @@ public class SupportAnalyticsPrivateQueryService {
 
     private Map<String,Object> financialDetails(Normalized q,SupportAnalyticsService.QueryEvaluation evaluation,Sources sources,List<Row> rows) {
         var c=evaluation.evidence();
-        record Detail(long customerId,String identity,String kind,BigDecimal amount,LocalDateTime at,Long agentId,Long groupId) {}
+        record Detail(long customerId,String identity,String kind,BigDecimal amount,LocalDateTime at,Long agentId,Long groupId,String factId) {}
         var facts=new ArrayList<Detail>();
         Money expected;
         if(q.view()==View.NET_CONTRIBUTIONS) {
@@ -146,12 +146,13 @@ public class SupportAnalyticsPrivateQueryService {
             var groups=evaluation.result().groups().stream().map(GroupAggregate::groupId).collect(java.util.stream.Collectors.toSet());
             var events=new LinkedHashMap<String,Detail>();
             for(var change:c.netRead.periodChanges(c.financialIds,q.currency(),evaluation.result().query(),c.scope,groups,null)) {
-                var attribution=c.netRead.attributions().get(c.netRead.origins().get(change.contributionId()).paymentFactId());
+                String paymentFactId=c.netRead.origins().get(change.contributionId()).paymentFactId();
+                var attribution=c.netRead.attributions().get(paymentFactId);
                 String identity=change.contributionId()+"|"+change.sourceReference();
                 events.merge(identity,new Detail(change.originCustomerId(),identity,"NET_CONTRIBUTION",
-                    change.amount(),change.succeededAt(),attribution.agentAdminId(),attribution.groupId()),
+                    change.amount(),change.succeededAt(),attribution.agentAdminId(),attribution.groupId(),paymentFactId),
                     (before,next)->new Detail(before.customerId(),identity,before.kind(),before.amount().add(next.amount()),
-                        before.at(),before.agentId(),before.groupId()));
+                        before.at(),before.agentId(),before.groupId(),before.factId()));
             }
             facts.addAll(events.values());
         } else {
@@ -164,8 +165,13 @@ public class SupportAnalyticsPrivateQueryService {
                         || history==null || history.status()!=SupportPaymentFacts.Status.READY)continue;
                 var attribution=c.validAttributions.get(fact.factId());
                 facts.add(new Detail(fact.customerId(),fact.factId(),fact.kind().name(),fact.amount(),fact.succeededAt(),
-                    attribution==null?null:attribution.agentAdminId(),attribution==null?null:attribution.groupId()));
+                    attribution==null?null:attribution.agentAdminId(),attribution==null?null:attribution.groupId(),fact.factId()));
             }
+        }
+        var agentDisplayNames=new LinkedHashMap<String,String>();
+        if(!facts.isEmpty()) {
+            var names=mapper.agentDisplayNames(c.scope,facts.stream().map(Detail::factId).distinct().toList());
+            if(names!=null)for(var name:names)if(name!=null && name.factId()!=null)agentDisplayNames.put(name.factId(),name.agentDisplayName());
         }
         BigDecimal total=BigDecimal.ZERO,visible=BigDecimal.ZERO;
         var customers=new HashSet<Long>();var visibleCustomers=new HashSet<Long>();
@@ -178,7 +184,8 @@ public class SupportAnalyticsPrivateQueryService {
             rows.add(new Row(fact.customerId(),id,q.sortKey()==Sort.AMOUNT?fact.amount():fact.at(),map("id",id,
                 "customerId",Long.toString(fact.customerId()),"customerNo",display.customerNo(),"nickname",display.nickname(),
                 "kind",fact.kind(),"currency",q.currency(),"amount",decimal(fact.amount()),"succeededAt",time(fact.at()),
-                "agentId",fact.agentId()==null?null:fact.agentId().toString(),"groupId",fact.groupId()==null?null:fact.groupId().toString())));
+                "agentId",fact.agentId()==null?null:fact.agentId().toString(),"groupId",fact.groupId()==null?null:fact.groupId().toString(),
+                "agentDisplayName",agentDisplayNames.get(fact.factId()))));
         }
         if(expected.confirmedAmount()==null)throw historyIncomplete();
         if(total.compareTo(expected.confirmedAmount())!=0)throw detailMismatch();

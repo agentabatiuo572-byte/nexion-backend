@@ -26,7 +26,7 @@ public interface SupportPaymentAttributionMapper {
     List<Member> planMembers(@Param("id") long agent);
     @Select("SELECT "+GROUP_COLUMNS+" FROM nx_support_group WHERE id=#{id}")
     Group planGroup(@Param("id") long group);
-    @Select("SELECT id,status,version,is_deleted isDeleted FROM nx_admin WHERE id=#{id} FOR SHARE")
+    @Select("SELECT id,status,version,is_deleted isDeleted,nickname,username FROM nx_admin WHERE id=#{id} FOR SHARE")
     Admin lockAdmin(@Param("id") long id);
     @Select("SELECT "+GROUP_COLUMNS+" FROM nx_support_group WHERE id=#{id} FOR SHARE")
     Group lockGroup(@Param("id") long id);
@@ -55,7 +55,11 @@ public interface SupportPaymentAttributionMapper {
     int insert(StoredRow row);
 
     record Customer(Long id,Integer sandbox,String status,Integer isDeleted) { }
-    record Admin(Long id,Integer status,Long version,Integer isDeleted) { }
+    record Admin(Long id,Integer status,Long version,Integer isDeleted,String nickname,String username) {
+        public Admin(Long id,Integer status,Long version,Integer isDeleted) {
+            this(id,status,version,isDeleted,null,null);
+        }
+    }
     record Group(Long id,Long supervisorAdminId,String status,Long version) { }
     record Binding(Long id,Long userId,Long agentAdminId,String status,LocalDateTime startsAt,LocalDateTime endsAt,
         Integer isDeleted,Long version,String source,String operationId,Long segmentRootId,Integer depth,Long parentAssignmentId,Long ruleVersion) { }

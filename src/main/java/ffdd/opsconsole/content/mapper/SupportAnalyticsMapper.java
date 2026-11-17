@@ -132,6 +132,19 @@ public interface SupportAnalyticsMapper {
         """)
     List<AttributionRow> attributions(@Param("scope") ReadScope scope,@Param("factIds") Collection<String> factIds);
 
+    @Select("""
+        <script>SELECT e.fact_id factId,
+          JSON_UNQUOTE(JSON_EXTRACT(e.attribution_evidence_json,'$.agent.displayName')) agentDisplayName
+        FROM nx_support_payment_attribution e WHERE e.fact_id IN
+        <foreach collection="factIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+        AND (
+        """+EVENT_SCOPE+"""
+          OR EXISTS(SELECT 1 FROM nx_user scope_customer WHERE scope_customer.id=e.customer_id AND scope_customer.sandbox=0
+        """+SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE+"""
+          )) ORDER BY e.fact_id</script>
+        """)
+    List<AgentDisplayName> agentDisplayNames(@Param("scope") ReadScope scope,@Param("factIds") Collection<String> factIds);
+
     /** Same authorized event/current-subject boundary as the source tuple; never public all-source material. */
     @Select("""
         <script>SELECT e.fact_id factId,e.source_partition sourcePartition,e.capture_db_utc captureDbUtc,
@@ -236,6 +249,7 @@ public interface SupportAnalyticsMapper {
                           LocalDateTime succeededAt,String sourceBusinessZone,String successTimeField,Integer fractionalSecondDigits,
                           String captureMode,String captureSchemaVersion,Long agentAdminId,Long groupId,Long ownerAdminId,
                           String agentStatus,String groupStatus,String ownerStatus) { }
+    record AgentDisplayName(String factId,String agentDisplayName) { }
 
     /** Current locking API-grant read; ordinary RR permission codes or the JWT cache are not this proof. */
     @Select("""
