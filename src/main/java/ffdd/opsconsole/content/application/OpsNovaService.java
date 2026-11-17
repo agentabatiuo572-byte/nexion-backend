@@ -587,6 +587,10 @@ public class OpsNovaService {
         if (!"DRAFT".equalsIgnoreCase(current.get().status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_TEMPLATE_NOT_DRAFT");
         }
+        if (request.translations() == null
+                && NovaSocialMessageRenderer.hasRetiredSourceNote(current.get().translations())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
+        }
         if (request.translations() == null && businessChannelWithoutVariables(normalizedChannel)
                 && carriesTranslationPlaceholder(current.get())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
@@ -653,6 +657,9 @@ public class OpsNovaService {
         }
         if (status.equals(current.get().status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+        if ("PUBLISHED".equals(status) && NovaSocialMessageRenderer.hasRetiredSourceNote(current.get())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
         }
         if ("PUBLISHED".equals(status) && !hasCompleteLocalizedContent(current.get())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_LOCALIZED_CONTENT_REQUIRED");

@@ -87,6 +87,9 @@ public class NovaSocialRuntimeService {
         if (template.carriesRetiredBrand()) {
             return NovaSocialDispatchResult.skipped(RetiredBrandGate.REASON);
         }
+        if (NovaSocialMessageRenderer.hasRetiredSourceNote(template)) {
+            return NovaSocialDispatchResult.skipped("NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
+        }
 
         Duration tick = parseDuration(channel.tick());
         Duration cooldown = parseDuration(channel.cooldown());
