@@ -47,6 +47,11 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
     }
 
     @Override
+    public List<CampaignDeliveryFacts> campaignDeliveryFacts(LocalDateTime asOf, LocalDateTime weekFrom) {
+        return campaignMapper.campaignDeliveryFacts(asOf, weekFrom);
+    }
+
+    @Override
     public Optional<NotificationCampaignRow> findCampaign(String campaignNo) {
         return Optional.ofNullable(findEntity(campaignNo)).map(this::toRow);
     }

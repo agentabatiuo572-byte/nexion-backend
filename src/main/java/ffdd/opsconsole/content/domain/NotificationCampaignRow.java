@@ -12,7 +12,7 @@ public record NotificationCampaignRow(
         String status,
         String schedule,
         String sent,
-        String read,
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) String read,
         String bodyEn,
         String bodyZh,
         String bodyVi,
@@ -22,7 +22,18 @@ public record NotificationCampaignRow(
         String ctaLabel,
         String ctaHref,
         long revision,
-        java.util.Map<String, NotificationTranslation> translations) {
+        java.util.Map<String, NotificationTranslation> translations,
+        java.util.Map<String, Object> deliveryFacts) {
+    public NotificationCampaignRow(
+            String id, String name, String kind, String tier, String audience, String reach,
+            String status, String schedule, String sent, String read, String bodyEn, String bodyZh,
+            String bodyVi, String swipeTo, BigDecimal budget, NotificationAudienceTarget audienceTarget,
+            String ctaLabel, String ctaHref, long revision,
+            java.util.Map<String, NotificationTranslation> translations) {
+        this(id, name, kind, tier, audience, reach, status, schedule, sent, read, bodyEn, bodyZh,
+                bodyVi, swipeTo, budget, audienceTarget, ctaLabel, ctaHref, revision, translations, java.util.Map.of());
+    }
+
     public NotificationCampaignRow(
             String id, String name, String kind,
             String tier, String audience, String reach,

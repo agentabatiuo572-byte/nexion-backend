@@ -5,6 +5,7 @@ import ffdd.opsconsole.content.infrastructure.NotificationCampaignEntity;
 import ffdd.opsconsole.content.domain.AppNotificationView;
 import ffdd.opsconsole.content.domain.NotificationActionReceipt;
 import ffdd.opsconsole.content.domain.NotificationEventFact;
+import ffdd.opsconsole.content.domain.NotificationCampaignRepository.CampaignDeliveryFacts;
 import java.time.LocalDateTime;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
@@ -13,6 +14,39 @@ import org.apache.ibatis.annotations.Update;
 import java.util.List;
 
 public interface NotificationCampaignMapper extends BaseMapper<NotificationCampaignEntity> {
+    @Select("""
+            WITH delivery_links AS (
+                SELECT DISTINCT JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.campaign_id')) campaign_no,
+                       CAST(o.aggregate_id AS UNSIGNED) notification_id
+                  FROM nx_event_outbox o
+                 WHERE o.event_name = 'notification.delivered'
+                   AND o.aggregate_type = 'NOTIFICATION'
+                   AND o.is_server_authoritative = 1 AND o.schema_registered = 1
+                   AND o.aggregate_id REGEXP '^[1-9][0-9]*$'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.notification_id')) = o.aggregate_id
+            )
+            SELECT c.campaign_no campaignNo, c.created_at campaignCreatedAt,
+                   COUNT(n.id) linkedNotifications,
+                   SUM(CASE WHEN n.pushed_at < #{asOf} THEN 1 ELSE 0 END) sentCount,
+                   SUM(CASE WHEN n.pushed_at < #{asOf} AND n.read_flag = 1
+                                  AND (n.read_at < #{asOf} OR n.read_at IS NULL)
+                            THEN 1 ELSE 0 END) readCount,
+                   SUM(CASE WHEN n.pushed_at < #{asOf} AND n.read_flag = 1
+                                  AND n.read_at >= #{weekFrom} AND n.read_at < #{asOf}
+                            THEN 1 ELSE 0 END) weeklyReadCount,
+                   SUM(CASE WHEN n.pushed_at < #{asOf} AND n.read_flag = 1 AND n.read_at IS NULL
+                            THEN 1 ELSE 0 END) undatedReadCount,
+                   MIN(CASE WHEN n.pushed_at < #{asOf} THEN n.pushed_at END) firstSentAt,
+                   MAX(CASE WHEN n.pushed_at < #{asOf} THEN n.pushed_at END) lastSentAt
+              FROM nx_notification_campaign c
+              LEFT JOIN delivery_links d ON d.campaign_no = c.campaign_no
+              LEFT JOIN nx_notification n ON n.id = d.notification_id
+             WHERE c.is_deleted = 0
+             GROUP BY c.id, c.campaign_no, c.created_at
+            """)
+    List<CampaignDeliveryFacts> campaignDeliveryFacts(
+            @Param("asOf") LocalDateTime asOf, @Param("weekFrom") LocalDateTime weekFrom);
+
     // App parseNotification applies JavaScript String.trim() to kind and priority.
     String APP_TEXT_TRIM_CHARACTERS = "[\\x{0009}-\\x{000D}\\x{0020}\\x{00A0}\\x{1680}\\x{2000}-\\x{200A}"
             + "\\x{2028}\\x{2029}\\x{202F}\\x{205F}\\x{3000}\\x{FEFF}]";
