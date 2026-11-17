@@ -451,13 +451,16 @@ public class OpsBiService implements AuditReplayable {
                 "reason", reason,
                 "format", created.format(),
                 "idempotencyKey", idempotencyKey,
-                "alertRecipients", List.of("SUPER_ADMIN", "GROWTH_LEAD"));
+                // Nothing is delivered to these roles for this export: record that plainly instead of
+                // naming recipients that never receive a notification.
+                "alertRecipients", List.of(),
+                "notificationDelivery", "AUDIT_ONLY");
         audit("admin.report_exported", created, currentActorUsername(), auditDetail);
         auditResource("admin.sensitive_export_alerted", "BI_EXPORT_ALERT", created.reportId(),
                 currentActorUsername(), "HIGH", linked(
                         "reportId", created.reportId(),
-                        "recipients", List.of("SUPER_ADMIN", "GROWTH_LEAD"),
-                        "delivery", "REAL_TIME_A2_HIGH_RISK_LANE",
+                        "recipients", List.of(),
+                        "delivery", "AUDIT_ONLY",
                         "reason", reason));
         reportRepository.publishReportExported(created.reportId(), linked(
                 "reportId", created.reportId(),
