@@ -134,7 +134,9 @@ public interface SupportAnalyticsMapper {
 
     @Select("""
         <script>SELECT e.fact_id factId,
-          JSON_UNQUOTE(JSON_EXTRACT(e.attribution_evidence_json,'$.agent.displayName')) agentDisplayName
+          CASE WHEN JSON_TYPE(JSON_EXTRACT(e.attribution_evidence_json,'$.agent.displayName'))='STRING'
+            THEN JSON_UNQUOTE(JSON_EXTRACT(e.attribution_evidence_json,'$.agent.displayName'))
+            ELSE NULL END agentDisplayName
         FROM nx_support_payment_attribution e WHERE e.fact_id IN
         <foreach collection="factIds" item="id" open="(" separator="," close=")">#{id}</foreach>
         AND (
