@@ -1579,7 +1579,7 @@ public class OpsTeamService implements AuditReplayable {
                 ? configFacade.activeValueForUpdate(configKey) : configFacade.activeValue(configKey)).orElse("");
         // A2 F4 提案在服务端绑定发起时原值；回放时只对本类 F4 配置键比对，
         // 不一致保持 pending 且不写业务值。历史/在途票没有 expectedValue 时维持原行为。
-        if (A2ReplayContext.isReplaying() && request.expectedValue() != null
+        if (A2ReplayContext.isReplaying() && isF4StoredUiConfigKey(key) && request.expectedValue() != null
                 && !request.expectedValue().equals(oldValue)) {
             return ApiResult.fail(409, "F4_CONFIG_STALE");
         }
