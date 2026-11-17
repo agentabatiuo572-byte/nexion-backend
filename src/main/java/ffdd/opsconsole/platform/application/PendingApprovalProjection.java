@@ -126,9 +126,10 @@ public class PendingApprovalProjection {
             String configKey = values.path("configKey").asText();
             String action = h3ConfigAction(configKey);
             if (action == null || !configKey.equals(lock.targetId())) return UNKNOWN_H3;
+            String expectedValue = values.path("expectedValue").asText();
             return new H3PendingApproval(action, lock.ticketId(), lock.operatorName(),
                     lock.createdAt().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME), configKey,
-                    values.path("expectedValue").asText(), values.path("value").asText());
+                    "__MISSING__".equals(expectedValue) ? null : expectedValue, values.path("value").asText());
         } catch (JsonProcessingException invalidHistoricCommand) {
             return UNKNOWN_H3;
         }
@@ -137,6 +138,9 @@ public class PendingApprovalProjection {
     private static String h3ConfigAction(String configKey) {
         if (configKey != null && configKey.matches("mission\\.[A-Za-z0-9_-]{2,64}\\.reward")) {
             return "调整任务奖励";
+        }
+        if (configKey != null && configKey.matches("monthly\\.[A-Za-z0-9_-]{2,64}\\.reward")) {
+            return "调整每月奖励";
         }
         return H3_CONFIG_ACTIONS.get(configKey);
     }
