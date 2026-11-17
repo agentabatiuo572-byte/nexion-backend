@@ -16,7 +16,17 @@ public record BiReportCreateRequest(
         String ref,
         String window,
         String from,
-        String to) {
+        String to,
+        String granularity,
+        String asOf) {
+
+    public BiReportCreateRequest(
+            String reason, String operator, String exportType, String timeRange,
+            String fields, String piiLevel, String maskPolicy, String recipient, String ticket,
+            String cohort, String phase, String locale, String ref, String window, String from, String to) {
+        this(reason, operator, exportType, timeRange, fields, piiLevel, maskPolicy, recipient, ticket,
+                cohort, phase, locale, ref, window, from, to, null, null);
+    }
 
     public BiReportCreateRequest(
             String reason, String operator, String exportType, String timeRange,

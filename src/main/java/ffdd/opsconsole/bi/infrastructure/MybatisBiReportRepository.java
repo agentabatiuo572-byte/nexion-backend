@@ -7,15 +7,18 @@ import ffdd.opsconsole.bi.domain.BiReportRepository;
 import ffdd.opsconsole.bi.domain.BiReportSnapshot;
 import ffdd.opsconsole.bi.domain.BiReportView;
 import ffdd.opsconsole.bi.domain.L1KpiAnalytics;
+import ffdd.opsconsole.bi.domain.L1RegistrationCohortQuery;
 import ffdd.opsconsole.bi.domain.L2FunnelAnalytics;
 import ffdd.opsconsole.bi.domain.BiSampleSuppression;
 import ffdd.opsconsole.bi.domain.L4OperationsAnalytics;
 import ffdd.opsconsole.bi.mapper.BiReportMapper;
 import ffdd.opsconsole.shared.api.PageResult;
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.platform.application.A4RuntimePolicyService;
 import jakarta.annotation.PostConstruct;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
@@ -23,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @Repository
@@ -199,6 +203,31 @@ public class MybatisBiReportRepository implements BiReportRepository {
             int kpiId, String window, String cohort, String phase, String locale, String ref) {
         return L1KpiAnalytics.trend(mapper.selectL1EventFacts(), kpiId, window, cohort, phase, locale, ref,
                 a4RuntimePolicyService.day0Seconds());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<String, Object> registrationKpis(L1RegistrationCohortQuery query) {
+        if (query.buckets().isEmpty()) {
+            return L1KpiAnalytics.calculateRegistrationCohorts(
+                    List.of(), List.of(), query, a4RuntimePolicyService.day0Seconds());
+        }
+        LocalDateTime from = LocalDateTime.ofInstant(query.selectedFrom(), BusinessCalendar.STORAGE_ZONE);
+        LocalDateTime to = LocalDateTime.ofInstant(query.selectedToExclusive(), BusinessCalendar.STORAGE_ZONE);
+        LocalDateTime firstRegistration = registrationEdge(from);
+        LocalDateTime lastRegistrationExclusive = registrationEdge(to);
+        var registrations = mapper.selectL1Registrations(firstRegistration, lastRegistrationExclusive);
+        var facts = registrations.isEmpty() ? List.<Map<String, Object>>of()
+                : mapper.selectL1RegistrationEventFacts(from.truncatedTo(ChronoUnit.MICROS),
+                        lastRegistrationExclusive, query.observationEnd().truncatedTo(ChronoUnit.MICROS));
+        return L1KpiAnalytics.calculateRegistrationCohorts(
+                facts, registrations, query, a4RuntimePolicyService.day0Seconds());
+    }
+
+    private static LocalDateTime registrationEdge(LocalDateTime value) {
+        // MySQL binds at most six fractional digits. Round half-open user boundaries upward.
+        LocalDateTime micros = value.truncatedTo(ChronoUnit.MICROS);
+        return micros.equals(value) ? micros : micros.plus(1, ChronoUnit.MICROS);
     }
 
     private Map<String, Object> funnelDashboard() {

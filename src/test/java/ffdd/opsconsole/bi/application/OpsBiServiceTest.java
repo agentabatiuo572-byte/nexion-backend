@@ -1702,6 +1702,10 @@ class OpsBiServiceTest {
     }
 
     private static final class FakeBiReportRepository implements BiReportRepository {
+        @Override
+        public Map<String, Object> registrationKpis(ffdd.opsconsole.bi.domain.L1RegistrationCohortQuery query) {
+            throw new UnsupportedOperationException();
+        }
         private BiReportView report = new BiReportView(
                 "EXP-1",
                 "KPI aggregate CSV",
