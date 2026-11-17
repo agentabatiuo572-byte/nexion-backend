@@ -238,6 +238,12 @@ public class OpsI18nLearningService {
         if (StringUtils.hasText(request.version()) && !"v1".equalsIgnoreCase(request.version().trim())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEARNING_COURSE_INITIAL_VERSION_MUST_BE_V1");
         }
+        // "Completion condition" and "reward event" never drove completion or payout: the learning flow
+        // judges by pass score only. Retiring them means refusing new values instead of storing a setting
+        // that reads like a promise.
+        if (StringUtils.hasText(request.completionCondition()) || StringUtils.hasText(request.rewardEvent())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEARNING_COURSE_OPTION_RETIRED");
+        }
         LearningCourseView created = learningRepository.createCourse(courseId.trim(), normalizeCourseRequest(request), now());
         try {
             learningRepository.saveCourseVersion(created.id(), "v1", "DRAFT", normalizeCourseRequest(request), null, now());
@@ -265,6 +271,10 @@ public class OpsI18nLearningService {
         }
         if (request.expectedRevision() != null && request.expectedRevision() != current.revision()) {
             return ApiResult.fail(409, "LEARNING_COURSE_REVISION_CONFLICT");
+        }
+        if (retiredOptionChanged(request.completionCondition(), current.completionCondition())
+                || retiredOptionChanged(request.rewardEvent(), current.rewardEvent())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEARNING_COURSE_OPTION_RETIRED");
         }
         LearningCourseVersionView snapshot = learningRepository.findCourseVersion(current.id(), current.version()).orElse(null);
         if (snapshot != null) {
@@ -901,8 +911,7 @@ public class OpsI18nLearningService {
             return null;
         }
         if (request.passScore() == null || request.passScore() < 1 || request.passScore() > 100
-                || request.retryLimit() == null || request.retryLimit() < 0 || request.retryLimit() > 10
-                || !StringUtils.hasText(request.completionCondition()) || !StringUtils.hasText(request.rewardEvent())) {
+                || request.retryLimit() == null || request.retryLimit() < 0 || request.retryLimit() > 10) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEARNING_COURSE_QUIZ_INCOMPLETE");
         }
         for (LearningQuizQuestionRequest question : questions) {
@@ -938,8 +947,7 @@ public class OpsI18nLearningService {
     private boolean hasCompleteQuiz(LearningCourseView course) {
         if (course.quizQuestions() == null || course.quizQuestions().isEmpty()
                 || course.passScore() == null || course.passScore() < 1 || course.passScore() > 100
-                || course.retryLimit() == null || course.retryLimit() < 0
-                || !StringUtils.hasText(course.completionCondition()) || !StringUtils.hasText(course.rewardEvent())) {
+                || course.retryLimit() == null || course.retryLimit() < 0) {
             return false;
         }
         for (LearningQuizQuestionView question : course.quizQuestions()) {
@@ -1107,6 +1115,14 @@ public class OpsI18nLearningService {
                 request.titleVi().trim(), request.bodyVi().trim(), trimToNull(request.version()),
                 request.titleTranslations() == null ? null : MessageTranslations.clean(request.titleTranslations()),
                 request.bodyTranslations() == null ? null : MessageTranslations.clean(request.bodyTranslations()));
+    }
+
+    /** Same value (including both blank) is an echo of the stored text, not new configuration. */
+    private boolean retiredOptionChanged(String requested, String stored) {
+        String next = requested == null ? null : requested.trim();
+        String previous = stored == null ? null : stored.trim();
+        return !java.util.Objects.equals(next == null || next.isEmpty() ? null : next,
+                previous == null || previous.isEmpty() ? null : previous);
     }
 
     private String trimToNull(String value) {
