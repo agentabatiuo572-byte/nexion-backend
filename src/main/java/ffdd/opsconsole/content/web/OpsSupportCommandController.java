@@ -96,7 +96,20 @@ public class OpsSupportCommandController {
         if("M3_CONVERSATION_TIMEOUT_POLICY".equals(receipt.getScope())) {
             if(!ownership.currentSuperAdmin() || timeoutPolicy.timeoutManageGrant(actor).isEmpty())
                 throw new BizException(403,"M3_TIMEOUT_POLICY_FORBIDDEN");
-            return ApiResult.ok(Map.of("status",receipt.getStatus()));
+            Integer businessCode = null;
+            if ("SUCCEEDED".equals(receipt.getStatus()) && receipt.getResponseJson() != null) {
+                try {
+                    JsonNode response = json.readTree(receipt.getResponseJson());
+                    JsonNode code = response == null ? null : response.get("code");
+                    if (code != null && code.isIntegralNumber() && code.canConvertToInt()) businessCode = code.intValue();
+                } catch (com.fasterxml.jackson.core.JsonProcessingException invalidReceipt) {
+                    // A missing or unreadable original reply proves no business outcome.
+                }
+            }
+            Map<String,Object> result = new LinkedHashMap<>();
+            result.put("status", receipt.getStatus());
+            result.put("businessCode", businessCode);
+            return ApiResult.ok(result);
         }
         if(receipt.getScope().startsWith("M3_SUPPORT_BULK_CREATE:")) return ApiResult.ok(bulk.recover(key));
         if(receipt.getScope().startsWith("M3_SUPPORT_BULK_CANCEL:") || receipt.getScope().startsWith("M3_SUPPORT_BULK_RETRY:")) {
