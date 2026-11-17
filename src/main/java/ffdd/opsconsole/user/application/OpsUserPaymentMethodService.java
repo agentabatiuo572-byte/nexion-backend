@@ -18,6 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.time.LocalDateTime;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -91,7 +92,16 @@ public class OpsUserPaymentMethodService {
                 throw new BizException(409, "NICKNAME_VERSION_CONFLICT");
             }
             String nickname = UserNicknames.next(mapper::nicknameTaken);
-            if (mapper.resetNickname(userId, nickname, request.expectedValue().trim()) != 1) {
+            int updated;
+            try {
+                updated = mapper.resetNickname(userId, nickname, request.expectedValue().trim());
+            } catch (DuplicateKeyException collision) {
+                if (UserUniqueConstraints.isNicknameCollision(collision)) {
+                    throw new BizException(409, "USER_NICKNAME_TAKEN");
+                }
+                throw collision;
+            }
+            if (updated != 1) {
                 throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NICKNAME_RESET_CONFLICT");
             }
             audit("USER_NICKNAME_RESET", "USER", String.valueOf(userId), userId, request, key,

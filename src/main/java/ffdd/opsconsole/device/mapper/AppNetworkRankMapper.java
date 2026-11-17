@@ -19,7 +19,7 @@ public interface AppNetworkRankMapper extends BaseMapper<Object> {
              WHERE u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=0
              GROUP BY u.id
              HAVING COALESCE(SUM(d.hashrate),0) > 0
-             ORDER BY hashrate DESC, u.id ASC
+             ORDER BY hashrate DESC, u.created_at ASC, u.id ASC
              """)
     List<RankRow> rankedUsers();
 
@@ -33,7 +33,7 @@ public interface AppNetworkRankMapper extends BaseMapper<Object> {
              WHERE u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=1
              GROUP BY u.id
              HAVING COALESCE(SUM(d.hashrate),0) > 0
-             ORDER BY hashrate DESC, u.id ASC
+             ORDER BY hashrate DESC, u.created_at ASC, u.id ASC
              """)
     List<RankRow> rankedDevelopmentUsers();
 
@@ -48,7 +48,7 @@ public interface AppNetworkRankMapper extends BaseMapper<Object> {
              WHERE u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=1
              GROUP BY u.id
              HAVING COALESCE(SUM(d.hashrate),0) > 0
-             ORDER BY hashrate DESC, u.id ASC
+             ORDER BY hashrate DESC, u.created_at ASC, u.id ASC
              """)
     List<RankRow> rankedSandboxUsers(@Param("runId") String runId);
 

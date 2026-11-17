@@ -206,11 +206,13 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
               FROM (
                     SELECT u.id FROM nx_user u
                      WHERE u.is_deleted = 0 AND UPPER(u.status) = 'ACTIVE'
+                       AND u.created_at < #{audienceCutoff}
                        AND u.id > #{afterUserId}
                      ORDER BY u.id LIMIT #{limit}
                    ) batch
             """)
-    Long fanoutBatchUpperUserId(@Param("afterUserId") long afterUserId, @Param("limit") int limit);
+    Long fanoutBatchUpperUserId(@Param("afterUserId") long afterUserId, @Param("limit") int limit,
+                                @Param("audienceCutoff") LocalDateTime audienceCutoff);
 
     @Update("""
             UPDATE nx_nova_business_event_receipt
@@ -400,6 +402,7 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
               JOIN nx_nova_channel c ON c.channel_key = #{channel} AND c.is_deleted = 0 AND c.enabled = 1
               JOIN nx_nova_template t ON t.channel_key = c.channel_key AND t.is_deleted = 0 AND t.status = 'PUBLISHED'
               WHERE u.is_deleted = 0 AND UPPER(u.status) = 'ACTIVE'
+                AND u.created_at < #{audienceCutoff}
                 AND u.id > #{afterUserId} AND NOT (u.id > #{upperUserId})
                 AND COALESCE(CASE LOWER(#{notificationType})
                     WHEN 'commission' THEN pref.notify_commission
@@ -418,6 +421,7 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
             @Param("channel") String channel, @Param("notificationType") String notificationType,
             @Param("bizNo") String bizNo, @Param("afterUserId") long afterUserId,
             @Param("upperUserId") long upperUserId,
+            @Param("audienceCutoff") LocalDateTime audienceCutoff,
             @Param("titleZh") String titleZh, @Param("bodyZh") String bodyZh,
             @Param("titleVi") String titleVi, @Param("bodyVi") String bodyVi,
             @Param("titleEn") String titleEn, @Param("bodyEn") String bodyEn,

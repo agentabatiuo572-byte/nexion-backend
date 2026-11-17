@@ -148,12 +148,12 @@ class NovaBusinessRuntimeServiceTest {
                 .thenReturn(true);
         when(runtimeRepository.businessFanoutProgress("market_event", "evt-market-1"))
                 .thenReturn(Optional.empty());
-        when(runtimeRepository.fanoutBatchUpperUserId(0, NovaBusinessRuntimeService.FANOUT_BATCH_SIZE))
+        when(runtimeRepository.fanoutBatchUpperUserId(0, NovaBusinessRuntimeService.FANOUT_BATCH_SIZE, fact.occurredAt()))
                 .thenReturn(Optional.of(250L));
-        when(runtimeRepository.fanoutBatchUpperUserId(250L, 1)).thenReturn(Optional.of(251L));
+        when(runtimeRepository.fanoutBatchUpperUserId(250L, 1, fact.occurredAt())).thenReturn(Optional.of(251L));
         when(runtimeRepository.enqueueBusinessNotificationBatch(
                 eq("market_event"), eq("NOVA_MARKET_EVENT"), eq("NOVA-market_event-evt-market-1-B250"),
-                eq(0L), eq(250L), anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
+                eq(0L), eq(250L), eq(fact.occurredAt()), anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
                 anyString(), any(), eq(now))).thenReturn(0);
         when(runtimeRepository.markNotificationsDelivered("NOVA-market_event-evt-market-1-B250", now)).thenReturn(0);
         when(runtimeRepository.notificationFacts("NOVA-market_event-evt-market-1-B250", "P3", now))
@@ -164,7 +164,7 @@ class NovaBusinessRuntimeServiceTest {
         var result = service.dispatchChannelAt("market_event", now);
 
         assertThat(result.reason()).isEqualTo("FANOUT_BATCH_COMMITTED_MORE_PENDING");
-        verify(runtimeRepository).fanoutBatchUpperUserId(0, 250);
+        verify(runtimeRepository).fanoutBatchUpperUserId(0, 250, fact.occurredAt());
         verify(runtimeRepository, never()).completeBusinessFact(
                 eq("market_event"), eq("evt-market-1"), eq("DELIVERED"), anyString(), anyInt(), eq(now));
         verify(runtimeRepository, never()).enqueueBusinessNotifications(
@@ -185,12 +185,12 @@ class NovaBusinessRuntimeServiceTest {
                 .thenReturn(false);
         when(runtimeRepository.businessFanoutProgress("market_event", "evt-market-2"))
                 .thenReturn(Optional.of(new NovaBusinessFanoutProgress(250L, 250)));
-        when(runtimeRepository.fanoutBatchUpperUserId(250L, NovaBusinessRuntimeService.FANOUT_BATCH_SIZE))
+        when(runtimeRepository.fanoutBatchUpperUserId(250L, NovaBusinessRuntimeService.FANOUT_BATCH_SIZE, fact.occurredAt()))
                 .thenReturn(Optional.of(500L));
-        when(runtimeRepository.fanoutBatchUpperUserId(500L, 1)).thenReturn(Optional.empty());
+        when(runtimeRepository.fanoutBatchUpperUserId(500L, 1, fact.occurredAt())).thenReturn(Optional.empty());
         when(runtimeRepository.enqueueBusinessNotificationBatch(
                 eq("market_event"), eq("NOVA_MARKET_EVENT"), eq("NOVA-market_event-evt-market-2-B500"),
-                eq(250L), eq(500L), anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
+                eq(250L), eq(500L), eq(fact.occurredAt()), anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
                 anyString(), any(), eq(now))).thenReturn(0);
         when(runtimeRepository.markNotificationsDelivered("NOVA-market_event-evt-market-2-B500", now)).thenReturn(0);
         when(runtimeRepository.notificationFacts("NOVA-market_event-evt-market-2-B500", "P3", now))
@@ -202,7 +202,7 @@ class NovaBusinessRuntimeServiceTest {
 
         assertThat(result.reason()).isEqualTo("FANOUT_COMPLETE");
         verify(runtimeRepository).enqueueBusinessNotificationBatch(
-                eq("market_event"), anyString(), anyString(), eq(250L), eq(500L),
+                eq("market_event"), anyString(), anyString(), eq(250L), eq(500L), eq(fact.occurredAt()),
                 anyString(), anyString(), anyString(), anyString(), anyString(), anyString(), anyString(), any(), eq(now));
         verify(runtimeRepository).completeBusinessFact(
                 "market_event", "evt-market-2", "DELIVERED", "FANOUT_COMPLETE", 250, now);

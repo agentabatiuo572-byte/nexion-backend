@@ -46,7 +46,7 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
                         WHEN """ + BinaryPlacementSourceSql.AUTOMATIC + """
                           THEN 'AUTO'
                         ELSE 'MANUAL' END assignmentSource
-            """ + ASSIGNMENT_READ_SCOPE + " ORDER BY u.id LIMIT #{limit} OFFSET #{offset}")
+            """ + ASSIGNMENT_READ_SCOPE + " ORDER BY u.created_at ASC, u.id ASC LIMIT #{limit} OFFSET #{offset}")
     List<AssignmentMemberRow> listAssignmentMembers(@Param("ownerUserId") Long ownerUserId,
                                                    @Param("memberUserId") Long memberUserId,
                                                    @Param("status") String status,
