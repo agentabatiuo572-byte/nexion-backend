@@ -986,6 +986,23 @@ public class OpsKillSwitchService {
         return KillSwitchState.enabled(activeValue(configKey(key)), activeValue(legacyConfigKey(key)));
     }
 
+    /**
+     * Existing J1 full-stop state for notification producers. The platform maintenance
+     * stop wins; otherwise all five active gates must be explicitly disabled. Missing
+     * gate rows are unknown, not a full stop.
+     */
+    public boolean notificationEmergencyStop() {
+        if (KillSwitchState.enabled(activeValue(configKey("maintenance")),
+                activeValue(legacyConfigKey("maintenance")))) return true;
+        return ACTIVE_GATES.stream().allMatch(this::gateExplicitlyDisabled);
+    }
+
+    private boolean gateExplicitlyDisabled(String key) {
+        Optional<String> primary = activeValue(configKey(key));
+        Optional<String> legacy = activeValue(legacyConfigKey(key));
+        return (primary.isPresent() || legacy.isPresent()) && !KillSwitchState.enabled(primary, legacy);
+    }
+
     private void writeGate(String key, boolean enabled, String operator) {
         emergencyRepository.upsertSetting(configKey(key), enabled ? "enabled" : "disabled", "STRING", GROUP_KILL_SWITCH, "J1 active kill switch", operator);
     }
