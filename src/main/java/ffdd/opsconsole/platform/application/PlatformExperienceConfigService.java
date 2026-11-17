@@ -79,7 +79,7 @@ public class PlatformExperienceConfigService {
                 throw new BizException(503, "PLATFORM_EXPERIENCE_LANGUAGES_INVALID");
             }
             throw new BizException(503, "PLATFORM_EXPERIENCE_LANGUAGES_INVALID");
-        }).orElse(InterfaceLanguages.CODES);
+        }).orElse(InterfaceLanguages.DEFAULT);
     }
 
     private List<String> configuredLanguages(JsonNode value) {
@@ -88,7 +88,7 @@ public class PlatformExperienceConfigService {
         for (JsonNode item : value) {
             if (!item.isTextual() || !InterfaceLanguages.CODES.contains(item.textValue()) || !selected.add(item.textValue())) return null;
         }
-        return selected.containsAll(InterfaceLanguages.BASE)
+        return selected.containsAll(InterfaceLanguages.REQUIRED)
                 ? InterfaceLanguages.CODES.stream().filter(selected::contains).toList() : null;
     }
 

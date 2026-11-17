@@ -4,8 +4,11 @@ import java.util.List;
 import java.util.Locale;
 
 public final class InterfaceLanguages {
+    /** Content storage uses dedicated columns for these three languages. */
     public static final List<String> BASE = List.of("zh", "en", "vi");
     public static final List<String> CODES = List.of("zh", "en", "vi", "id", "ms", "fil", "ru", "kk", "uz");
+    public static final List<String> REQUIRED = List.of("en");
+    public static final List<String> DEFAULT = CODES.stream().filter(code -> !"zh".equals(code)).toList();
 
     private InterfaceLanguages() {}
 
