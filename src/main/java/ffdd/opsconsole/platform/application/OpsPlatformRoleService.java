@@ -300,16 +300,8 @@ public class OpsPlatformRoleService {
         if (desiredPerms == null || desiredMenus == null) {
             return ApiResult.fail(422, "ROLE_GRANTS_INVALID");
         }
-        // The built-in AUDITOR role is read-only by its own seed contract. The request replaces the whole
-        // grant set, so refuse any non-read permission here — the single point both the proposal and the
-        // A2 replay pass through. Classification comes from perm_type/the catalogue's existing fallback,
-        // never from a name guess, and stored grants are left untouched.
-        if ("AUDITOR".equalsIgnoreCase(roleCode) && !desiredPerms.isEmpty()) {
-            List<String> nonRead = rolePermissionMapper.selectNonReadPermissionCodes(desiredPerms);
-            if (nonRead != null && !nonRead.isEmpty()) {
-                return ApiResult.fail(403, "AUDIT_ROLE_WRITE_FORBIDDEN");
-            }
-        }
+        ApiResult<Void> readOnlyRole = validateAuditRolePermissions(entity, desiredPerms);
+        if (readOnlyRole.getCode() != 0) return readOnlyRole;
         List<String> validPerms = desiredPerms.isEmpty()
                 ? List.of() : rolePermissionMapper.selectExistingActivePermissionCodes(desiredPerms);
         List<Long> validMenus = desiredMenus.isEmpty()
@@ -417,7 +409,7 @@ public class OpsPlatformRoleService {
         return roleId == null ? null : roleMapper.selectActiveForUpdate(roleId);
     }
 
-    /** Generic A2 proposals must check the same snapshot before a ticket or lock is created. */
+    /** Generic A2 proposals must check the same snapshot and read-only role before a ticket or lock. */
     public ApiResult<Void> validateRoleGrantsProposal(Map<String, Object> params) {
         if (params == null || params.get("expectedPermissionCodes") == null || params.get("expectedMenuIds") == null)
             return ApiResult.fail(422, "ROLE_GRANTS_EXPECTED_REQUIRED");
@@ -428,11 +420,31 @@ public class OpsPlatformRoleService {
         try {
             Long roleId = Long.valueOf(String.valueOf(params.get("roleId")));
             List<Long> menuIds = menus.stream().map(value -> Long.valueOf(String.valueOf(value))).toList();
-            return validateRoleGrantsSnapshot(roleId,
+            ApiResult<Void> snapshot = validateRoleGrantsSnapshot(roleId,
                     permissions.stream().map(String.class::cast).toList(), menuIds);
+            if (snapshot.getCode() != 0) return snapshot;
+            AdminRoleEntity role = loadActive(roleId);
+            if (role == null) return ApiResult.fail(404, "ROLE_NOT_FOUND");
+            // Match the existing replay's strings(...) conversion, then the dedicated save's normalization.
+            List<String> desiredPerms = normalizePermissionCodes(params.get("permissionCodes") instanceof List<?> codes
+                    ? codes.stream().map(String::valueOf).toList() : List.of());
+            if (desiredPerms == null) return ApiResult.fail(422, "ROLE_GRANTS_INVALID");
+            return validateAuditRolePermissions(role, desiredPerms);
         } catch (NumberFormatException invalid) {
             return ApiResult.fail(422, "ROLE_GRANTS_EXPECTED_INVALID");
         }
+    }
+
+    private ApiResult<Void> validateAuditRolePermissions(AdminRoleEntity role, List<String> desiredPerms) {
+        // Dedicated save/replay and generic proposals share the built-in AUDITOR's catalogue classification.
+        // The role comes from storage; stored grants are left untouched.
+        if ("AUDITOR".equalsIgnoreCase(role.getRoleCode()) && !desiredPerms.isEmpty()) {
+            List<String> nonRead = rolePermissionMapper.selectNonReadPermissionCodes(desiredPerms);
+            if (nonRead != null && !nonRead.isEmpty()) {
+                return ApiResult.fail(403, "AUDIT_ROLE_WRITE_FORBIDDEN");
+            }
+        }
+        return ApiResult.ok();
     }
 
     private ApiResult<Void> validateRoleGrantsSnapshot(Long roleId, List<String> permissions, List<Long> menus) {
