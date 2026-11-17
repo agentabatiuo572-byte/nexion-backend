@@ -4,6 +4,7 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.NotificationCampaignOverview;
 import ffdd.opsconsole.content.domain.NotificationCampaignRepository;
+import ffdd.opsconsole.content.domain.NotificationCampaignRepository.CampaignDeliveryFacts;
 import ffdd.opsconsole.content.domain.NotificationCampaignRow;
 import ffdd.opsconsole.content.domain.NotificationCampaignStats;
 import ffdd.opsconsole.content.domain.NotificationAudienceCatalog;
@@ -28,6 +29,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -81,10 +83,42 @@ public class OpsNotificationCampaignService {
     private final NotificationCampaignDispatchExecutor dispatchExecutor;
     private final AdminIdempotencyService idempotencyService;
 
+    @Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public ApiResult<NotificationCampaignOverview> overview() {
-        List<NotificationCampaignRow> campaigns = campaignRepository.listCampaigns();
+        var instant = clock.instant();
+        var calendar = BusinessCalendar.legacy();
+        LocalDateTime asOf = LocalDateTime.ofInstant(instant, BusinessCalendar.STORAGE_ZONE);
+        var date = calendar.dateAt(instant);
+        LocalDateTime monthFrom = calendar.storageStart(date.withDayOfMonth(1));
+        LocalDateTime weekFrom = calendar.storageStart(date.minusDays(date.getDayOfWeek().getValue() - 1L));
+        Map<String, CampaignDeliveryFacts> facts = new LinkedHashMap<>();
+        campaignRepository.campaignDeliveryFacts(asOf, weekFrom).forEach(row -> facts.put(row.campaignNo(), row));
+        List<NotificationCampaignRow> campaigns = campaignRepository.listCampaigns().stream().map(row -> {
+            CampaignDeliveryFacts fact = facts.get(row.id());
+            boolean complete = fact != null && fact.sentCount() > 0
+                    && fact.linkedNotifications() == fact.sentCount()
+                    && Long.toString(fact.sentCount()).equals(row.sent());
+            Map<String, Object> projection = new LinkedHashMap<>();
+            projection.put("source", "NOTIFICATION_DELIVERED_OUTBOX_TO_NOTIFICATION_ID");
+            projection.put("timeZone", BusinessCalendar.STORAGE_ZONE.getId());
+            projection.put("asOf", instant.toString());
+            projection.put("complete", complete);
+            projection.put("reason", complete ? null : "DELIVERY_FACT_COVERAGE_UNCONFIRMED");
+            projection.put("sentCount", fact == null ? null : fact.sentCount());
+            projection.put("readCount", fact == null ? null : fact.readCount());
+            projection.put("firstSentAt", fact == null || fact.firstSentAt() == null ? null
+                    : fact.firstSentAt().atZone(BusinessCalendar.STORAGE_ZONE).toOffsetDateTime().toString());
+            projection.put("lastSentAt", fact == null || fact.lastSentAt() == null ? null
+                    : fact.lastSentAt().atZone(BusinessCalendar.STORAGE_ZONE).toOffsetDateTime().toString());
+            projection.put("timeBasis", "RETAINED_LINKED_NOTIFICATION_PUSHED_AT_WINDOW");
+            return new NotificationCampaignRow(row.id(), row.name(), row.kind(), row.tier(), row.audience(),
+                    row.reach(), row.status(), row.schedule(), complete ? Long.toString(fact.sentCount()) : row.sent(),
+                    complete ? Long.toString(fact.readCount()) : null, row.bodyEn(), row.bodyZh(), row.bodyVi(),
+                    row.swipeTo(), row.budget(), row.audienceTarget(), row.ctaLabel(), row.ctaHref(),
+                    row.revision(), row.translations(), projection);
+        }).toList();
         return ApiResult.ok(new NotificationCampaignOverview(
-                stats(campaigns),
+                stats(campaigns, facts, monthFrom, weekFrom, asOf, calendar.zoneAt(instant).getId()),
                 campaigns,
                 campaignRepository.listCapRules(),
                 List.copyOf(TIERS),
@@ -708,24 +742,56 @@ public class OpsNotificationCampaignService {
         return values;
     }
 
-    private NotificationCampaignStats stats(List<NotificationCampaignRow> campaigns) {
-        int sent = (int) campaigns.stream().filter(row -> "sent".equals(row.status())).count();
-        int scheduled = (int) campaigns.stream().filter(row -> "scheduled".equals(row.status()) || "sending".equals(row.status())).count();
-        int draft = (int) campaigns.stream().filter(row -> "draft".equals(row.status())).count();
+    private NotificationCampaignStats stats(List<NotificationCampaignRow> campaigns,
+            Map<String, CampaignDeliveryFacts> facts, LocalDateTime monthFrom, LocalDateTime weekFrom,
+            LocalDateTime asOf, String timeZone) {
+        List<NotificationCampaignRow> monthly = campaigns.stream().filter(row -> {
+            CampaignDeliveryFacts fact = facts.get(row.id());
+            return fact != null && fact.campaignCreatedAt() != null
+                    && !fact.campaignCreatedAt().isBefore(monthFrom) && fact.campaignCreatedAt().isBefore(asOf);
+        }).toList();
+        int sent = (int) monthly.stream().filter(row -> "sent".equals(row.status())).count();
+        int scheduled = (int) monthly.stream().filter(row -> "scheduled".equals(row.status()) || "sending".equals(row.status())).count();
+        int draft = (int) monthly.stream().filter(row -> "draft".equals(row.status())).count();
         int criticalInflight = (int) campaigns.stream()
                 .filter(row -> "critical".equals(row.tier()))
                 .filter(row -> "scheduled".equals(row.status()) || "sending".equals(row.status()))
                 .count();
-        double delivered = campaigns.stream().filter(row -> "sent".equals(row.status())).mapToDouble(row -> quantity(row.sent())).sum();
-        double read = campaigns.stream().filter(row -> "sent".equals(row.status())).mapToDouble(row -> quantity(row.read())).sum();
+        List<CampaignDeliveryFacts> sentFacts = campaigns.stream().filter(row -> "sent".equals(row.status()))
+                .map(row -> facts.get(row.id())).filter(java.util.Objects::nonNull).toList();
+        long delivered = sentFacts.stream().mapToLong(CampaignDeliveryFacts::sentCount).sum();
+        long read = sentFacts.stream().mapToLong(CampaignDeliveryFacts::readCount).sum();
+        boolean complete = campaigns.stream().filter(row -> "sent".equals(row.status()))
+                .allMatch(row -> Boolean.TRUE.equals(row.deliveryFacts().get("complete")));
+        long weekRead = sentFacts.stream().mapToLong(CampaignDeliveryFacts::weeklyReadCount).sum();
+        long undatedRead = sentFacts.stream().mapToLong(CampaignDeliveryFacts::undatedReadCount).sum();
+        Map<String, Object> basis = new LinkedHashMap<>();
+        basis.put("asOf", asOf.toString());
+        basis.put("timeZone", timeZone);
+        basis.put("storageTimeZone", BusinessCalendar.STORAGE_ZONE.getId());
+        basis.put("monthFrom", monthFrom.toString());
+        basis.put("weekFrom", weekFrom.toString());
+        basis.put("rangeEndExclusive", asOf.toString());
+        basis.put("monthBasis", "CAMPAIGN_CREATED_AT_COHORT_WITH_CURRENT_STATUS");
+        basis.put("notificationBasis", "RETAINED_LINKED_NOTIFICATIONS_OF_CURRENT_SENT_CAMPAIGNS");
+        basis.put("deliveryFactsComplete", complete);
+        basis.put("knownSentCount", delivered);
+        basis.put("knownReadCount", read);
+        basis.put("weeklyReadCount", complete && undatedRead == 0 ? weekRead : null);
+        basis.put("weeklyReadKnownCount", weekRead);
+        basis.put("undatedReadCount", undatedRead);
+        basis.put("weeklyReadAvailable", complete && undatedRead == 0);
+        basis.put("weeklyReadBasis", "NOTIFICATION_READ_AT_WITH_READ_FLAG");
+        basis.put("weeklySwipeAvailable", false);
+        basis.put("weeklySwipeReason", "LEGACY_ESTIMATED_CONVERSION_REMOVED");
         return new NotificationCampaignStats(
-                campaigns.size(),
+                monthly.size(),
                 sent,
                 scheduled,
                 draft,
                 criticalInflight,
-                delivered <= 0 ? "0%" : String.format(Locale.ROOT, "%.1f%%", read * 100.0 / delivered),
-                compactNumber(read * 0.031));
+                complete && delivered > 0 ? String.format(Locale.ROOT, "%.1f%%", read * 100.0 / delivered) : null,
+                null, basis);
     }
 
     private NotificationAudienceCatalog audienceCatalog() {
