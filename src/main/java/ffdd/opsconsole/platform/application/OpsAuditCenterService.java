@@ -58,6 +58,7 @@ import ffdd.opsconsole.growth.application.H5GrowthApproval;
 import ffdd.opsconsole.growth.application.H3GrowthApproval;
 import ffdd.opsconsole.growth.application.H4GrowthApproval;
 import ffdd.opsconsole.growth.application.H7VoucherDisposition;
+import ffdd.opsconsole.risk.application.K1RiskApproval;
 import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.team.application.BinaryCommissionSettlementService.SettlementResult;
 import ffdd.opsconsole.team.application.TeamFundApproval;
@@ -1085,6 +1086,7 @@ public class OpsAuditCenterService {
                     : H3GrowthApproval.supports(cmd) ? H3GrowthApproval.target(cmd)
                     : H4GrowthApproval.supports(cmd) ? H4GrowthApproval.target(cmd)
                     : H8RewardParamApproval.supports(cmd) ? H8RewardParamApproval.target(cmd)
+                    : K1RiskApproval.supports(cmd) ? K1RiskApproval.target(cmd)
                     : K2OtpInitialApproval.supports(cmd) ? K2OtpInitialApproval.target(cmd)
                     : E2TaskPricingApproval.supports(cmd) ? E2TaskPricingApproval.target(cmd)
                     : TreasuryThresholdApproval.supports(cmd) ? TreasuryThresholdApproval.target(cmd)
@@ -1286,7 +1288,7 @@ public class OpsAuditCenterService {
                 || G4CatalogApproval.supports(command) || G4DividendApproval.supports(command)
                 || G4ParamApproval.supports(command) || H5GrowthApproval.supports(command)
                 || H3GrowthApproval.supports(command)
-                || H4GrowthApproval.supports(command) || K2OtpInitialApproval.supports(command);
+                || H4GrowthApproval.supports(command) || K1RiskApproval.supports(command) || K2OtpInitialApproval.supports(command);
     }
 
     private String refundOrderNo(AuditReplayCommand command) {
@@ -1330,7 +1332,8 @@ public class OpsAuditCenterService {
                 || G4CatalogApproval.supports(command) || G4DividendApproval.supports(command)
                 || G4ParamApproval.supports(command) || H5GrowthApproval.supports(command)
                 || H3GrowthApproval.supports(command)
-                || H4GrowthApproval.supports(command) || K2OtpInitialApproval.supports(command)
+                || H4GrowthApproval.supports(command) || K1RiskApproval.supports(command)
+                || K2OtpInitialApproval.supports(command)
                 ? ticket.getSourceDomain() : inferAuditDomain(ticket.getAction(), ticket.getObjectText()));
         return detail;
     }
