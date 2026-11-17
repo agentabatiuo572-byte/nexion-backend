@@ -149,7 +149,7 @@ public class OpsGrowthController {
     @GetMapping("/quest-events/tasks")
     @PreAuthorize("hasAuthority('growth_h3_read')")
     public ApiResult<Map<String, Object>> questTasks() {
-        return growthService.questTasks();
+        return growthService.questTasksWithOperatingStats();
     }
     @PostMapping("/quest-events/bindings/{bindingCode}") @PreAuthorize("hasAuthority('growth_h3_write')")
     public ApiResult<Map<String,Object>> createQuestBinding(@RequestHeader(value=OpsAdminApi.IDEMPOTENCY_KEY_HEADER,required=false) String key,@PathVariable String bindingCode,@RequestBody GrowthQuestEventBindingRequest request){return commandBoundary.execute("H3","QUEST_EVENT_BINDING_CREATE",bindingCode,key,request,()->growthService.createQuestEventBinding(key,bindingCode,request));}
