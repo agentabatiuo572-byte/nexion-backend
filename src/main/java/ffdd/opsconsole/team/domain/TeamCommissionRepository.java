@@ -24,6 +24,18 @@ public interface TeamCommissionRepository {
 
     boolean updateUnilevelRule(int layerNo, String field, Object value);
 
+    default List<Long> allUnilevelRuleIds() {
+        throw new UnsupportedOperationException("UNILEVEL_BOOTSTRAP_NOT_IMPLEMENTED");
+    }
+
+    default List<Long> lockAllUnilevelRules() {
+        throw new UnsupportedOperationException("UNILEVEL_BOOTSTRAP_NOT_IMPLEMENTED");
+    }
+
+    default boolean insertUnilevelRule(int layerNo, BigDecimal usdtRate, BigDecimal nexPerUsd) {
+        throw new UnsupportedOperationException("UNILEVEL_BOOTSTRAP_NOT_IMPLEMENTED");
+    }
+
     List<Map<String, Object>> rateTiers();
 
     List<Map<String, Object>> vRankRewards(String rank);

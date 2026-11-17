@@ -1744,6 +1744,59 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     /**
+     * The only first-configuration path for an empty F2 rule table. The operator must submit
+     * every layer and both values explicitly; no old backup or default rate is used.
+     */
+    private Map<String, Object> initializeUnilevelRules(Map<String, Object> params, AuditReplayContext context) {
+        if (!A2ReplayContext.isReplaying() || A2ReplayContext.operationId() == null) {
+            throw new BizException(403, "A2_CONFIRMATION_REQUIRED");
+        }
+        var request = TeamCommissionConfigUpdateRequest.UnilevelBootstrap.from(params);
+        // The existing rows are the initial-state proof; do not use a global F policy version.
+        if (!commissionRepository.lockAllUnilevelRules().isEmpty()) {
+            throw new BizException(409, "F2_UNILEVEL_RULES_ALREADY_CONFIGURED");
+        }
+        List<Map<String, Object>> rows = new ArrayList<>(7);
+        for (var layer : request.layers()) {
+            BigDecimal usdtPct;
+            BigDecimal nexPerUsd;
+            try {
+                usdtPct = parseDecimal(layer.usdtPct(), null);
+                percentPointRatio(layer.usdtPct(), null);
+                nexPerUsd = parseDecimal(layer.nexPerUsd(), null)
+                        .setScale(6, RoundingMode.UNNECESSARY);
+                if (nexPerUsd.precision() - nexPerUsd.scale() > 12) {
+                    throw new ArithmeticException("UVT coefficient exceeds DECIMAL(18,6)");
+                }
+            } catch (ArithmeticException | IllegalArgumentException invalid) {
+                throw new BizException(422, "F2_UNILEVEL_BOOTSTRAP_INVALID");
+            }
+            rows.add(Map.of("level", "L" + layer.layerNo(), "usdtPct", usdtPct, "nexReward", nexPerUsd));
+        }
+        // Reuse the exact L1-L7 completeness, L1=10%, USDT 0-100 and UVT >= 0 checks.
+        UnilevelCommissionService.requireCompleteLayerRates(rows);
+        for (int index = 0; index < rows.size(); index++) {
+            var row = rows.get(index);
+            BigDecimal usdtRate = percentPointRatio(request.layers().get(index).usdtPct(), null);
+            if (!commissionRepository.insertUnilevelRule(
+                    request.layers().get(index).layerNo(), usdtRate, (BigDecimal) row.get("nexReward"))) {
+                throw new BizException(409, "F2_UNILEVEL_BOOTSTRAP_WRITE_FAILED");
+            }
+        }
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("layers", request.layers());
+        detail.put("reason", context.reason());
+        detail.put("idempotencyKey", context.idempotencyKey());
+        detail.put("operationId", A2ReplayContext.operationId());
+        audit("F_TEAM_UNILEVEL_RULE_CHANGED", "unilevel_rules/current", context.operator(), detail, true);
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("initialized", true);
+        response.put("layers", request.layers());
+        response.put("source", "nx_commission_rule");
+        return response;
+    }
+
+    /**
      * A1 批2b 修复2:F4 票权(领导池权重)写业务表 nx_v_rank_config.leadership_votes。
      * F.pool.votes.V{n} → 解析 V{n} → UPDATE leadership_votes WHERE rank_code=V{n}。
      * 票权权重放大头部分润,B1 资金护栏 loosensPayoutControl 不直连(权重非比例/阈值,业务复杂度留后续);
@@ -4957,6 +5010,7 @@ public class OpsTeamService implements AuditReplayable {
             }
             // f_unilevel_rule: key 承载 layerNo + 字段(F.unilevel.L{n} usdtRate / F.unilevel.nex.L{n} nexPerUsd)。
             // 方向由服务器按当前值与拟改值同单位比较：费率调低=param，调高=fund。
+            case "f_unilevel_bootstrap" -> ApiResult.ok(initializeUnilevelRules(p, ctx));
             case "f_unilevel_rule" -> {
                 String key = str(p, "key");
                 TeamCommissionConfigUpdateRequest req = new TeamCommissionConfigUpdateRequest(key, str(p, "value"), reason, operator);

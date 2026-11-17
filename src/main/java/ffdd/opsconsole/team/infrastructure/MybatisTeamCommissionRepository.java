@@ -87,6 +87,21 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     }
 
     @Override
+    public List<Long> allUnilevelRuleIds() {
+        return mapper.allUnilevelRuleIds();
+    }
+
+    @Override
+    public List<Long> lockAllUnilevelRules() {
+        return mapper.lockAllUnilevelRuleIds();
+    }
+
+    @Override
+    public boolean insertUnilevelRule(int layerNo, BigDecimal usdtRate, BigDecimal nexPerUsd) {
+        return mapper.insertUnilevelRule(layerNo, usdtRate, nexPerUsd) > 0;
+    }
+
+    @Override
     public List<Map<String, Object>> rateTiers() {
         return mapper.rateTiers();
     }

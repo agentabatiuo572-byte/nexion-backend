@@ -50,7 +50,7 @@ public class AuditReplayDispatcher {
                     "e4_order_refund", "e4_order_cancel", "e4_order_terminal", "e4_order_state",
                     "e6_compute_config", "e6_compute_config_batch")),
             Map.entry("F", Set.of("f_vrank_bootstrap", "f_seven_layer_activation", "f_direct_referral_policy", "f_config",
-                    "f_ui_config", "f_config_batch", "f_unilevel_rule", "f_commission_status", "f5_commission_reverse",
+                    "f_ui_config", "f_config_batch", "f_unilevel_bootstrap", "f_unilevel_rule", "f_commission_status", "f5_commission_reverse",
                     "f5_commission_reissue", "f5_commission_suspension", "f_vrank_override", "f_reward_payout_action",
                     "f4_pool_settle", "f4_leaderboard_period_payout")),
             Map.entry("G", Set.of("g2_exchange_param", "g2_exchange_swap_status", "g2_exchange_cancel_queue",

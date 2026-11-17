@@ -249,6 +249,21 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             """)
     int updateUnilevelNexPerUsd(@Param("layerNo") int layerNo, @Param("value") Object value);
 
+    @Select("SELECT id FROM nx_commission_rule WHERE LOWER(commission_type) = 'unilevel'")
+    List<Long> allUnilevelRuleIds();
+
+    @Select("SELECT id FROM nx_commission_rule WHERE LOWER(commission_type) = 'unilevel' FOR UPDATE")
+    @Options(useCache = false, flushCache = Options.FlushCachePolicy.TRUE)
+    List<Long> lockAllUnilevelRuleIds();
+
+    @Insert("""
+            INSERT INTO nx_commission_rule(commission_type,layer_no,usdt_rate,nex_per_usd,status,is_deleted)
+            VALUES('unilevel',#{layerNo},#{usdtRate},#{nexPerUsd},1,0)
+            """)
+    int insertUnilevelRule(@Param("layerNo") int layerNo,
+            @Param("usdtRate") BigDecimal usdtRate,
+            @Param("nexPerUsd") BigDecimal nexPerUsd);
+
     /**
      * F2: userId 的 L1-L7 上级链(递归 CTE 上溯 member_user_id→user_id,限深 maxDepth)。
      * 返回每行 {userId(上级 id), layer(1..maxDepth), vRank(上级自循环行 v_rank,null 视为 V0)},

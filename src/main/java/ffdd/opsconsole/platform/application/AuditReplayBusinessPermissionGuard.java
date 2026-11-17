@@ -1518,6 +1518,16 @@ public class AuditReplayBusinessPermissionGuard {
                 throw new ffdd.opsconsole.shared.exception.BizException(422, "VRANK_BOOTSTRAP_INVALID");
             }
         }
+        if ("f_unilevel_bootstrap".equals(operation)) {
+            var request = ffdd.opsconsole.team.dto.TeamCommissionConfigUpdateRequest.UnilevelBootstrap.from(params);
+            if (!teamCommissionRepository.allUnilevelRuleIds().isEmpty()) {
+                throw new ffdd.opsconsole.shared.exception.BizException(409, "F2_UNILEVEL_RULES_ALREADY_CONFIGURED");
+            }
+            return new DelegatedProposalDescriptor(
+                    "首次配置 L1–L7 团队购买奖励", "unilevel_bootstrap/current",
+                    "无 UNILEVEL 规则", request.layers().toString(),
+                    "F2", "fund", true, new AuditLockTarget("F", "unilevel_rule", "bootstrap"));
+        }
         if ("f_seven_layer_activation".equals(operation)) {
             var request=ffdd.opsconsole.team.dto.SevenLayerActivationRequest.from(params);
             var state=directPolicies.getObject().activationPreview(request);
@@ -2192,6 +2202,7 @@ public class AuditReplayBusinessPermissionGuard {
             // 按 params.value 目标状态分流 freeze/release/reverse;OpsTeamService.updateCommissionEventStatus 二次校验兜底。
             case "F" -> switch (operation) {
                 case "f_vrank_bootstrap" -> "network_f1_write";
+                case "f_unilevel_bootstrap" -> "network_f2_royalty_rate";
                 case "f_seven_layer_activation" -> "network_f2_policy_amplify";
                 case "f_direct_referral_policy" -> "network_f2_royalty_rate";
                 case "f_config", "f_ui_config", "f_unilevel_rule" ->
