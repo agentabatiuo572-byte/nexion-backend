@@ -166,8 +166,7 @@ public class AppHomeOverviewService {
                     "slotCap", Math.max(1, mapper.deviceSlotCap()), "reservedSlotCount", reservedSlots, "trialSlotCount", trialSlots));
             AppHomeOverviewMapper.OnGridSummary grid = mapper.onGrid(sourceEnvironment, accountSandbox);
             Long activeJobs = grid == null ? null : grid.activeJobs();
-            boolean includeSimulatedSlots = activeJobs != null
-                    && runtimeEnvironment.getProperty("nexion.simulated-tasks.enabled", Boolean.class, false);
+            boolean includeSimulatedSlots = sharedSnapshotCache.includeRuleSlots(activeJobs);
             Map<String, Object> onGrid = linked("clients", clients(mapper.onGridClients(accountSandbox)),
                     "activeDevices", mapper.globalActiveDevices(accountSandbox),
                     "activeJobs", activeJobs,
@@ -182,12 +181,8 @@ public class AppHomeOverviewService {
                     result.put("marketBoard", marketBoard(marketTasks, safe(historySnapshot == null
                             ? mapper.marketTaskPriceHistory() : historySnapshot.marketTaskPriceHistory()), marketProducts));
                     if (includeSimulatedSlots) {
-                        HomeSharedSnapshotCache.Snapshot slotsSnapshot = snapshot != null
-                                && snapshot.validUntil() > clock.millis() ? snapshot : null;
-                        LocalDateTime publicNow = LocalDateTime.ofInstant(clock.instant(), SERVER_ZONE);
-                        onGrid.put("activeJobs", activeJobs + (slotsSnapshot == null
-                                ? mapper.activeRuleSlots(sourceEnvironment, accountSandbox, publicNow)
-                                : slotsSnapshot.activeRuleSlotsCount()));
+                        onGrid.put("activeJobs", sharedSnapshotCache.activeJobsWithRuleSlots(
+                                activeJobs, sourceEnvironment, accountSandbox, snapshot));
                     }
                     return ApiResult.ok(result);
                 } catch (DataAccessException ex) {
@@ -481,7 +476,7 @@ public class AppHomeOverviewService {
         return clients;
     }
 
-    private Set<String> uniqueTaskCodes(List<MarketTaskRow> tasks) {
+    static Set<String> uniqueTaskCodes(List<MarketTaskRow> tasks) {
         Set<String> codes = new LinkedHashSet<>();
         for (MarketTaskRow task : tasks) {
             String code = taskCode(task.taskClass());
@@ -564,13 +559,13 @@ public class AppHomeOverviewService {
         return runtimeEnvironment.getProperty("NEXION_ACCEPTANCE_RUN_ID", "").trim();
     }
 
-    private boolean validSandboxRunId(String runId) {
+    static boolean validSandboxRunId(String runId) {
         return RUN_ID.matcher(runId).matches() && !LEGACY_UNSCOPED_RUN_ID.equalsIgnoreCase(runId);
     }
 
     private <T> List<T> safe(List<T> rows) { return rows == null ? List.of() : rows; }
 
-    private String taskCode(String value) {
+    private static String taskCode(String value) {
         if (value == null) return null;
         return switch (value.trim().toUpperCase(Locale.ROOT).replace('-', '_').replace(' ', '_')) {
             case "IG", "IMAGE_GEN", "IMAGE_GENERATION" -> "IG";
