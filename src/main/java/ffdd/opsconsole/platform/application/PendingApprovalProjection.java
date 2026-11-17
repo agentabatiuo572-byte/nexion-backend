@@ -22,6 +22,15 @@ public class PendingApprovalProjection {
             "h7_voucher_delete", "删除代金券",
             "h7_voucher_revoke_available", "作废未使用的代金券");
     private static final VoucherPendingApproval UNKNOWN_VOUCHER = new VoucherPendingApproval(null, null, null, null);
+    private static final H3PendingApproval UNKNOWN_H3 = new H3PendingApproval(null, null, null, null, null, null, null);
+    private static final Map<String, String> H3_CONFIG_ACTIONS = Map.ofEntries(
+            Map.entry("dayOne.triReward", "调整首日三档奖励"),
+            Map.entry("weekly.mult.P1", "调整每周倍率 P1"),
+            Map.entry("weekly.mult.P2", "调整每周倍率 P2"),
+            Map.entry("weekly.mult.P3", "调整每周倍率 P3"),
+            Map.entry("weekly.mult.P4", "调整每周倍率 P4"),
+            Map.entry("weekly.mult.P5", "调整每周倍率 P5"),
+            Map.entry("weekly.mult.P6", "调整每周倍率 P6"));
 
     private static final Map<String, Operation> OPERATIONS = Map.ofEntries(
             Map.entry("e4_order_cancel", new Operation("E", "device_order", "orderNo", "取消订单")),
@@ -85,6 +94,48 @@ public class PendingApprovalProjection {
             approvals.put(lock.targetId(), describeVoucher(lock));
         }
         return approvals;
+    }
+
+    /** H3 task/list-only projection: active lock joined to the exact pending H3 config command. */
+    public Map<String, H3PendingApproval> readH3Configs(Collection<String> authorizedKeys) {
+        if (authorizedKeys == null || authorizedKeys.isEmpty()) return Map.of();
+        Map<String, H3PendingApproval> approvals = new TreeMap<>();
+        for (var lock : lockMapper.selectPendingLocks("H", "h3_quest_config", authorizedKeys)) {
+            approvals.put(lock.targetId(), describeH3Config(lock));
+        }
+        return approvals;
+    }
+
+    private H3PendingApproval describeH3Config(AuditObjectLockMapper.PendingLock lock) {
+        if (lock.ticketId() == null || lock.ticketId().isBlank()
+                || lock.commandJson() == null || lock.operatorName() == null || lock.operatorName().isBlank()
+                || lock.createdAt() == null) return UNKNOWN_H3;
+        try {
+            JsonNode command = objectMapper.readTree(lock.commandJson());
+            if (!"h3_quest_config".equals(command.path("op").asText())
+                    || !"H".equals(command.path("domain").asText())) return UNKNOWN_H3;
+            JsonNode values = command.path("params").path("values");
+            if (!values.isObject() || values.size() != 3
+                    || !values.has("configKey") || !values.has("value") || !values.has("expectedValue")
+                    || !values.path("configKey").isTextual()
+                    || !values.path("value").isTextual()
+                    || !values.path("expectedValue").isTextual()) return UNKNOWN_H3;
+            String configKey = values.path("configKey").asText();
+            String action = h3ConfigAction(configKey);
+            if (action == null || !configKey.equals(lock.targetId())) return UNKNOWN_H3;
+            return new H3PendingApproval(action, lock.ticketId(), lock.operatorName(),
+                    lock.createdAt().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME), configKey,
+                    values.path("expectedValue").asText(), values.path("value").asText());
+        } catch (JsonProcessingException invalidHistoricCommand) {
+            return UNKNOWN_H3;
+        }
+    }
+
+    private static String h3ConfigAction(String configKey) {
+        if (configKey != null && configKey.matches("mission\\.[A-Za-z0-9_-]{2,64}\\.reward")) {
+            return "调整任务奖励";
+        }
+        return H3_CONFIG_ACTIONS.get(configKey);
     }
 
     static Operation operation(AuditReplayCommand command) {
@@ -152,4 +203,6 @@ public class PendingApprovalProjection {
     public record PendingApproval(String action, String submittedBy, String submittedAt) {}
 
     public record VoucherPendingApproval(String action, String ticketId, String submittedBy, String submittedAt) {}
+    public record H3PendingApproval(String action, String ticketId, String submittedBy, String submittedAt,
+                                    String configKey, String currentValue, String proposedValue) {}
 }

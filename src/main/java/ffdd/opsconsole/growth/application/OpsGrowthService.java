@@ -125,6 +125,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             "/pages/learn/courses",
             "/pages/genesis/marketplace");
     private static final String LOCALIZED_CONTENT_KEY = "growth.content.localized";
+    /** H3 config objects exposed by the task read; only these keys can carry pending approval metadata. */
+    private static final List<String> H3_PENDING_CONFIG_KEYS = List.of(
+            "dayOne.triReward", "weekly.mult.P1", "weekly.mult.P2", "weekly.mult.P3",
+            "weekly.mult.P4", "weekly.mult.P5", "weekly.mult.P6");
     private static final String WHEEL_PREFIX = "growth.wheel.";
     private static final String VOUCHER_SKUS_KEY = "growth.voucher.sku_options";
     private static final String SUNSET_EXCLUSIONS_KEY = "growth.sunset.exclusions";
@@ -781,6 +785,53 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         response.put("domain", "H3");
         response.put("eventBindings", growthRows(GrowthQuestEventMapper::questEventBindings));
         return ApiResult.ok(response);
+    }
+
+    /** GET-only task read: attaches pending H3 config approvals without changing mutation receipts. */
+    public ApiResult<Map<String, Object>> questTasksForRead() {
+        return ApiResult.ok(withPendingH3Approvals(questTasksWithOperatingStats().getData()));
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> withPendingH3Approvals(Map<String, Object> response) {
+        if (pendingApprovalProjection == null) {
+            throw new IllegalStateException("PENDING_APPROVAL_PROJECTION_UNAVAILABLE");
+        }
+        List<Map<String, Object>> dayOne = (List<Map<String, Object>>) response.get("dayOneTasks");
+        List<Map<String, Object>> weeklyTier1 = (List<Map<String, Object>>) response.get("weeklyTier1");
+        List<Map<String, Object>> weeklyTier2 = (List<Map<String, Object>>) response.get("weeklyTier2");
+        List<Map<String, Object>> taskContracts = (List<Map<String, Object>>) response.get("taskContracts");
+        Set<String> keys = new LinkedHashSet<>(H3_PENDING_CONFIG_KEYS);
+        for (List<Map<String, Object>> rows : List.of(dayOne, weeklyTier1, weeklyTier2, taskContracts)) {
+            for (Map<String, Object> row : rows) {
+                Object code = row.get("taskCode") == null ? row.get("missionCode") : row.get("taskCode");
+                if (code instanceof String text && text.matches("[A-Za-z0-9_-]{2,64}")) {
+                    keys.add("mission." + text + ".reward");
+                }
+            }
+        }
+        Map<String, PendingApprovalProjection.H3PendingApproval> pending =
+                pendingApprovalProjection.readH3Configs(keys);
+        response.put("dayOneTasks", withH3TaskPending(dayOne, "taskCode", pending));
+        response.put("weeklyTier1", withH3TaskPending(weeklyTier1, "taskCode", pending));
+        response.put("weeklyTier2", withH3TaskPending(weeklyTier2, "taskCode", pending));
+        response.put("taskContracts", withH3TaskPending(taskContracts, "missionCode", pending));
+        Map<String, Object> configs = new LinkedHashMap<>();
+        keys.forEach(key -> configs.put(key, pending.get(key)));
+        response.put("pendingApprovals", configs);
+        return response;
+    }
+
+    private List<Map<String, Object>> withH3TaskPending(
+            List<Map<String, Object>> rows, String codeField,
+            Map<String, PendingApprovalProjection.H3PendingApproval> pending) {
+        return rows.stream().map(row -> {
+            Map<String, Object> projected = new LinkedHashMap<>(row);
+            Object code = row.get(codeField);
+            projected.put("pendingApproval", code instanceof String text
+                    ? pending.get("mission." + text + ".reward") : null);
+            return projected;
+        }).toList();
     }
 
     /** Operating aggregates belong to the H3 GET, not to the existing mutation receipts. */
