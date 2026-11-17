@@ -46,6 +46,7 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.platform.dto.PlatformConfigChangedEvent;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
@@ -778,6 +779,70 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         response.put("domain", "H3");
         response.put("eventBindings", growthRows(GrowthQuestEventMapper::questEventBindings));
         return ApiResult.ok(response);
+    }
+
+    /** Operating aggregates belong to the H3 GET, not to the existing mutation receipts. */
+    @SuppressWarnings("unchecked")
+    public ApiResult<Map<String, Object>> questTasksWithOperatingStats() {
+        Map<String, Object> response = questTasks().getData();
+        Map<String, Object> stats = new LinkedHashMap<>((Map<String, Object>) response.get("h3Stats"));
+        response.put("h3Stats", stats);
+        List.of("dayOneRate24h", "dayOneRateGrace", "weeklyDone", "t1Done", "t2Done",
+                "weeklyNex", "monthlyInflight").forEach(key -> stats.put(key, null));
+        stats.put("operatingStatsComplete", false);
+        stats.put("monthlyInflightAvailable", false);
+        stats.put("monthlyInflightReason", "MONTHLY_PROGRESS_WRITER_UNAVAILABLE");
+        stats.put("dayOneRateBasis", "CLOSED_REGISTERED_V1_COHORT_POSTED_UVT_CLAIM");
+        stats.put("dayOneRateUnit", "PERCENT");
+        stats.put("weeklyNexAsset", "UVT");
+        stats.put("userScope", "RECORDED_NON_SANDBOX_USERS");
+        if (questEventMapper.isEmpty()) {
+            stats.put("operatingStatsAvailable", false);
+            stats.put("operatingStatsReason", "MAPPER_UNAVAILABLE");
+            return ApiResult.ok(response);
+        }
+        Instant asOf = Instant.now();
+        var calendar = BusinessCalendar.growthTeam();
+        var businessDate = calendar.dateAt(asOf);
+        LocalDateTime through = LocalDateTime.ofInstant(asOf, BusinessCalendar.STORAGE_ZONE);
+        LocalDateTime from = calendar.storageStart(businessDate.minusDays(businessDate.getDayOfWeek().getValue() - 1L));
+        var mapper = questEventMapper.get();
+        var claims = mapper.h3ClaimCounts(through);
+        var completions = mapper.h3CompletionCounts(from, through, calendar.weekKey(through));
+        var paid = mapper.h3PaidAssets(from, through);
+        stats.put("asOf", asOf);
+        stats.put("weekTimeZone", calendar.zoneAt(asOf).getId());
+        stats.put("storageTimeZone", BusinessCalendar.STORAGE_ZONE.getId());
+        stats.put("weekFromStorage", from);
+        stats.put("weekUntilExclusiveStorage", through);
+        stats.put("dayOneClaimTimeSource", "nx_wallet_ledger.created_at");
+        stats.put("dayOneWindowSource", "nx_growth_day_one_instance");
+        stats.put("dayOneClaimCounts", claims);
+        stats.put("dayOneRate24h", h3ClaimPercent(claims.fullClaimed(), claims.fullEligible()));
+        stats.put("dayOneRateGrace", h3ClaimPercent(claims.graceClaimed(), claims.graceEligible()));
+        stats.put("dayOneRate24hAvailable", claims.fullEligible() > 0);
+        stats.put("dayOneRateGraceAvailable", claims.graceEligible() > 0);
+        stats.put("weeklyDone", completions.undatedCount() == 0 ? completions.completedCount() : null);
+        stats.put("weeklyDoneAvailable", completions.undatedCount() == 0);
+        stats.put("weeklyKnownDone", completions.completedCount());
+        stats.put("weeklyUndatedCount", completions.undatedCount());
+        boolean tiersAvailable = completions.undatedCount() == 0 && completions.unknownTierCount() == 0;
+        stats.put("t1Done", tiersAvailable ? completions.tier1Count() : null);
+        stats.put("t2Done", tiersAvailable ? completions.tier2Count() : null);
+        stats.put("weeklyUnknownTierCount", completions.unknownTierCount());
+        stats.put("weeklyCompletionTimeSource", "nx_user_mission.completed_at");
+        stats.put("weeklyTierSource", "nx_growth_weekly_definition_item.layer");
+        stats.put("weeklyPaidByAsset", paid);
+        stats.put("weeklyNex", paid.stream().filter(row -> "UVT".equals(row.asset()))
+                .map(GrowthQuestEventMapper.H3PaidAsset::amount).reduce(BigDecimal.ZERO, BigDecimal::add));
+        stats.put("weeklyPaidSource", "nx_wallet_ledger.QUEST_REWARD.IN.POSTED");
+        stats.put("operatingStatsAvailable", true);
+        return ApiResult.ok(response);
+    }
+
+    private BigDecimal h3ClaimPercent(long claimed, long eligible) {
+        return eligible == 0 ? null : BigDecimal.valueOf(claimed).multiply(BigDecimal.valueOf(100))
+                .divide(BigDecimal.valueOf(eligible), 2, RoundingMode.HALF_UP);
     }
 
     @Transactional(rollbackFor = Exception.class)

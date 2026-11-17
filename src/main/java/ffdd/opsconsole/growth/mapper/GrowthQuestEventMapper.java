@@ -1468,4 +1468,78 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             @Param("eventId") String eventId,
             @Param("badgeAchievementCode") String badgeAchievementCode,
             @Param("now") LocalDateTime now);
+
+    @Select("""
+            WITH instance_windows AS (
+              SELECT i.user_id,i.instance_key,
+                     DATE_ADD(i.entered_at,INTERVAL i.full_reward_hours HOUR) fullEnd,
+                     LEAST(i.eligible_until,DATE_ADD(i.entered_at,INTERVAL i.eligibility_hours HOUR)) eligibleEnd
+                FROM nx_growth_day_one_instance i
+                JOIN nx_user u ON u.id=i.user_id AND COALESCE(u.sandbox,0)=0
+               WHERE i.is_deleted=0 AND i.snapshot_status='SNAPSHOT'
+                 AND i.snapshot_source='REGISTERED_V1' AND i.required_task_count>0
+                 AND i.full_reward_hours=24 AND i.eligibility_hours>=i.full_reward_hours
+                 AND i.entered_at IS NOT NULL AND i.eligible_until IS NOT NULL
+                 AND i.quest_bonus_multiplier>0 AND i.rhythm_month>0
+            ), posted_claims AS (
+              SELECT user_id,biz_no,MIN(created_at) postedAt
+                FROM nx_wallet_ledger
+               WHERE is_deleted=0 AND biz_type='QUEST_REWARD' AND asset='UVT'
+                 AND direction='IN' AND status='POSTED' AND biz_no LIKE 'QUEST:DAY_ONE:%'
+                 AND created_at<#{asOf}
+               GROUP BY user_id,biz_no
+            )
+            SELECT COUNT(DISTINCT w.user_id,w.instance_key) fullEligible,
+                   COUNT(DISTINCT CASE WHEN p.postedAt<w.fullEnd AND p.postedAt<w.eligibleEnd
+                                       THEN w.user_id END,w.instance_key) fullClaimed,
+                   COUNT(DISTINCT CASE WHEN w.eligibleEnd>w.fullEnd
+                                       THEN w.user_id END,w.instance_key) graceEligible,
+                   COUNT(DISTINCT CASE WHEN p.postedAt>=w.fullEnd AND p.postedAt<w.eligibleEnd
+                                       THEN w.user_id END,w.instance_key) graceClaimed
+              FROM instance_windows w LEFT JOIN posted_claims p
+                ON p.user_id=w.user_id
+               AND BINARY p.biz_no=BINARY CONCAT('QUEST:DAY_ONE:',w.user_id,':',w.instance_key)
+             WHERE w.eligibleEnd<=#{asOf}
+            """)
+    H3ClaimCounts h3ClaimCounts(@Param("asOf") LocalDateTime asOf);
+
+    @Select("""
+            SELECT COUNT(DISTINCT CASE WHEN um.completed_at IS NOT NULL THEN um.user_id END,
+                                  um.mission_id,um.instance_key) completedCount,
+                   COUNT(DISTINCT CASE WHEN um.completed_at IS NOT NULL AND wi.layer='WEEKLY_T1'
+                                       THEN um.user_id END,um.mission_id,um.instance_key) tier1Count,
+                   COUNT(DISTINCT CASE WHEN um.completed_at IS NOT NULL AND wi.layer='WEEKLY_T2'
+                                       THEN um.user_id END,um.mission_id,um.instance_key) tier2Count,
+                   COUNT(DISTINCT CASE WHEN um.completed_at IS NOT NULL
+                                       AND COALESCE(wi.layer,'') NOT IN ('WEEKLY_T1','WEEKLY_T2')
+                                       THEN um.user_id END,um.mission_id,um.instance_key) unknownTierCount,
+                   COUNT(DISTINCT CASE WHEN um.completed_at IS NULL THEN um.user_id END,
+                                  um.mission_id,um.instance_key) undatedCount
+              FROM nx_user_mission um
+              JOIN nx_user u ON u.id=um.user_id AND COALESCE(u.sandbox,0)=0
+              LEFT JOIN nx_growth_weekly_definition_item wi
+                ON wi.instance_key=um.instance_key AND wi.source_mission_id=um.mission_id
+             WHERE um.is_deleted=0 AND um.instance_key LIKE 'WEEK:%'
+               AND UPPER(um.mission_status) IN ('COMPLETED','CLAIMABLE','CLAIMED')
+               AND ((um.completed_at>=#{from} AND um.completed_at<#{asOf})
+                    OR (um.completed_at IS NULL AND um.instance_key=#{weekKey}))
+            """)
+    H3CompletionCounts h3CompletionCounts(@Param("from") LocalDateTime from,
+            @Param("asOf") LocalDateTime asOf, @Param("weekKey") String weekKey);
+
+    @Select("""
+            SELECT l.asset,SUM(l.amount) amount,COUNT(DISTINCT l.id) ledgerCount
+              FROM nx_wallet_ledger l
+              JOIN nx_user u ON u.id=l.user_id AND COALESCE(u.sandbox,0)=0
+             WHERE l.is_deleted=0 AND l.biz_type='QUEST_REWARD' AND l.biz_no LIKE 'QUEST:%'
+               AND l.direction='IN' AND l.status='POSTED'
+               AND l.created_at>=#{from} AND l.created_at<#{asOf}
+             GROUP BY l.asset ORDER BY l.asset
+            """)
+    List<H3PaidAsset> h3PaidAssets(@Param("from") LocalDateTime from, @Param("asOf") LocalDateTime asOf);
+
+    record H3ClaimCounts(long fullEligible, long fullClaimed, long graceEligible, long graceClaimed) { }
+    record H3CompletionCounts(long completedCount, long tier1Count, long tier2Count,
+                              long unknownTierCount, long undatedCount) { }
+    record H3PaidAsset(String asset, BigDecimal amount, long ledgerCount) { }
 }
