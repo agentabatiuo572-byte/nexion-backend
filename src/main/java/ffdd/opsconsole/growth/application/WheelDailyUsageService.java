@@ -36,6 +36,14 @@ public class WheelDailyUsageService {
             row.put("usedToday", usedByTier.getOrDefault(tier.tierId(), 0L));
             tiers.add(row);
         }
+        for (AppGrowthWheelMapper.RetiredTierDailyUsage retired : mapper.retiredTierDailyUsage(serverDate)) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("tierId", retired.tierId());
+            row.put("tierName", retired.tierName());
+            row.put("dailyStock", null);
+            row.put("usedToday", retired.usedToday());
+            tiers.add(row);
+        }
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("serverDate", serverDate.toString());
         response.put("timeZone", "UTC");

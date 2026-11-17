@@ -171,6 +171,18 @@ public interface AppGrowthWheelMapper {
             """)
     List<TierDailyUsage> currentDailyTierUsage(@Param("spinDate") LocalDate spinDate);
 
+    /** Today's real spins whose tier no longer has an active configuration; name is the frozen spin value. */
+    @Select("""
+            SELECT s.tier_id tierId, MAX(s.tier_name) tierName, COUNT(1) usedToday
+              FROM nx_growth_wheel_spin s
+              LEFT JOIN nx_growth_wheel_tier t ON t.id=s.tier_id AND t.status=1 AND t.is_deleted=0
+             WHERE s.spin_date=#{spinDate} AND s.is_deleted=0 AND s.tier_id IS NOT NULL
+               AND t.id IS NULL
+             GROUP BY s.tier_id
+             ORDER BY s.tier_id
+            """)
+    List<RetiredTierDailyUsage> retiredTierDailyUsage(@Param("spinDate") LocalDate spinDate);
+
     @Insert("""
             INSERT IGNORE INTO nx_growth_wheel_spin
               (spin_no,event_id,event_code,user_id,spin_date,source_type,source_id,
@@ -269,6 +281,8 @@ public interface AppGrowthWheelMapper {
     }
 
     record TierDailyUsage(Long tierId, long usedToday) { }
+
+    record RetiredTierDailyUsage(Long tierId, String tierName, long usedToday) { }
 
     record Attribution(String phase, Integer accountAgeMonths, String cohort) {
     }
