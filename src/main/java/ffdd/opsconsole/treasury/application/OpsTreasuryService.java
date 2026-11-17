@@ -56,6 +56,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -1121,6 +1122,15 @@ public class OpsTreasuryService {
             Long expectedVersion,
             String operator,
             String approvalOperationId) {
+        if (approvalOperationId == null) {
+            var authentication = SecurityContextHolder.getContext().getAuthentication();
+            if (((values.redlinePct() != null || values.healthyPct() != null)
+                    && !TreasuryThresholdApproval.hasAuthority(authentication, "overview_b1_redline_write"))
+                    || (values.runRiskPct() != null
+                    && !TreasuryThresholdApproval.hasAuthority(authentication, "overview_b1_runrisk_write"))) {
+                return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), OpsErrorCode.FORBIDDEN.name());
+            }
+        }
         if (!A2ReplayContext.isReplaying()
                 && (values.redlinePct() != null || values.healthyPct() != null)
                 && lockMapper.countActiveByTarget("B", "coverage_thresholds", "current") > 0) {
