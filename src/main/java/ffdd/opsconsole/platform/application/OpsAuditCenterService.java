@@ -365,7 +365,12 @@ public class OpsAuditCenterService {
                     || superAdminProposalCommand(command) || A4RegistryApproval.supports(command)
                     || AuditReplayBusinessPermissionGuard.isE4Refund(command);
             ticket.setAction(descriptor.action());
-            ticket.setObjectText(descriptor.objectId());
+            String descriptorObjectId = descriptor.objectId();
+            if ("F".equalsIgnoreCase(command.domain()) && "f_config_batch".equalsIgnoreCase(command.op())
+                    && descriptorObjectId.length() > 255) {
+                descriptorObjectId = "F.batch:" + sha256(descriptorObjectId);
+            }
+            ticket.setObjectText(descriptorObjectId);
             ticket.setBeforeValue(H4GrowthApproval.supports(command) ? "H4 original configuration: " + descriptor.objectId() : descriptor.beforeValue());
             ticket.setAfterValue(H4GrowthApproval.supports(command) ? "H4 proposed configuration: " + command.op() : descriptor.afterValue());
             if (j1Restore) {
