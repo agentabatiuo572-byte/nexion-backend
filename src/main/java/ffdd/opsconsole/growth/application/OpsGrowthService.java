@@ -802,6 +802,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         List<Map<String, Object>> weeklyTier1 = (List<Map<String, Object>>) response.get("weeklyTier1");
         List<Map<String, Object>> weeklyTier2 = (List<Map<String, Object>>) response.get("weeklyTier2");
         List<Map<String, Object>> taskContracts = (List<Map<String, Object>>) response.get("taskContracts");
+        List<Map<String, Object>> monthlyMissions = (List<Map<String, Object>>) response.get("monthlyMissions");
         Set<String> keys = new LinkedHashSet<>(H3_PENDING_CONFIG_KEYS);
         for (List<Map<String, Object>> rows : List.of(dayOne, weeklyTier1, weeklyTier2, taskContracts)) {
             for (Map<String, Object> row : rows) {
@@ -809,6 +810,12 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 if (code instanceof String text && text.matches("[A-Za-z0-9_-]{2,64}")) {
                     keys.add("mission." + text + ".reward");
                 }
+            }
+        }
+        for (Map<String, Object> row : monthlyMissions) {
+            Object code = row.get("taskCode");
+            if (code instanceof String text && text.matches("[A-Za-z0-9_-]{2,64}")) {
+                keys.add("monthly." + text + ".reward");
             }
         }
         Map<String, PendingApprovalProjection.H3PendingApproval> pending =
