@@ -7,8 +7,11 @@ import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -138,6 +141,66 @@ public class PendingApprovalProjection {
         return H3_CONFIG_ACTIONS.get(configKey);
     }
 
+    /** H3 task read: active create locks in this module, with only their exact pending create summary. */
+    public List<H3PendingMissionCreation> readH3MissionCreations() {
+        List<String> targetIds = lockMapper.selectActiveTargetIds("H", "h3_mission");
+        if (targetIds == null || targetIds.isEmpty()) return List.of();
+        List<H3PendingMissionCreation> approvals = new ArrayList<>();
+        for (var lock : lockMapper.selectPendingLocks("H", "h3_mission", targetIds)) {
+            approvals.add(describeH3MissionCreation(lock));
+        }
+        return approvals;
+    }
+
+    private H3PendingMissionCreation describeH3MissionCreation(AuditObjectLockMapper.PendingLock lock) {
+        String code = safeH3MissionCode(lock.targetId());
+        if (lock.ticketId() == null || lock.ticketId().isBlank()
+                || lock.commandJson() == null || lock.operatorName() == null || lock.operatorName().isBlank()
+                || lock.createdAt() == null) return unknownH3Mission(code);
+        try {
+            JsonNode command = objectMapper.readTree(lock.commandJson());
+            if (!"h3_mission_create".equals(command.path("op").asText())
+                    || !"H".equals(command.path("domain").asText())) return unknownH3Mission(code);
+            JsonNode values = command.path("params").path("values");
+            if (!values.isObject() || values.size() != 6
+                    || !values.has("missionCode") || !values.has("missionName") || !values.has("missionType")
+                    || !values.has("rewardPoints") || !values.has("category") || !values.has("actionRoute")
+                    || !values.path("missionCode").isTextual()
+                    || !values.path("missionName").isTextual()
+                    || !values.path("missionType").isTextual()
+                    || !values.path("rewardPoints").isIntegralNumber()
+                    || !values.path("rewardPoints").canConvertToInt()
+                    || values.path("rewardPoints").intValue() < 0
+                    || !values.path("category").isTextual()
+                    || !values.path("actionRoute").isTextual()) return unknownH3Mission(code);
+            String missionCode = values.path("missionCode").asText();
+            String missionName = values.path("missionName").asText();
+            String missionType = values.path("missionType").asText();
+            String category = values.path("category").asText();
+            String actionRoute = values.path("actionRoute").asText();
+            if (!missionCode.matches("[A-Za-z0-9_-]{2,64}") || !missionCode.equals(lock.targetId())
+                    || !validCreateText(missionName) || !Set.of("DAY_ONE", "WEEKLY_T1", "WEEKLY_T2").contains(missionType)
+                    || !validCreateText(category) || !validCreateText(actionRoute)) return unknownH3Mission(code);
+            return new H3PendingMissionCreation("新建任务", lock.ticketId(), lock.operatorName(),
+                    lock.createdAt().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME), missionCode,
+                    missionName, missionType, values.path("rewardPoints").intValue(), category, actionRoute);
+        } catch (JsonProcessingException invalidHistoricCommand) {
+            return unknownH3Mission(code);
+        }
+    }
+
+    private static H3PendingMissionCreation unknownH3Mission(String code) {
+        return new H3PendingMissionCreation(null, null, null, null, code, null, null, null, null, null);
+    }
+
+    private static String safeH3MissionCode(String code) {
+        return code != null && code.matches("[A-Za-z0-9_-]{2,64}") ? code : null;
+    }
+
+    private static boolean validCreateText(String value) {
+        return value != null && !value.isBlank() && value.equals(value.trim());
+    }
+
     static Operation operation(AuditReplayCommand command) {
         if (command == null || command.op() == null) return null;
         Operation operation = OPERATIONS.get(command.op());
@@ -205,4 +268,8 @@ public class PendingApprovalProjection {
     public record VoucherPendingApproval(String action, String ticketId, String submittedBy, String submittedAt) {}
     public record H3PendingApproval(String action, String ticketId, String submittedBy, String submittedAt,
                                     String configKey, String currentValue, String proposedValue) {}
+    public record H3PendingMissionCreation(String action, String ticketId, String submittedBy,
+                                            String submittedAt, String missionCode, String missionName,
+                                            String missionType, Integer rewardPoints, String category,
+                                            String actionRoute) {}
 }
