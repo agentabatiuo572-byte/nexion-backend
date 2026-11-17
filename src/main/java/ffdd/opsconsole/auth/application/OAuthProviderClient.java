@@ -83,7 +83,7 @@ public class OAuthProviderClient {
                 ? environment.getProperty("oauth.test-provider-enabled", Boolean.class, false) : enabled(environment);
     }
 
-    private static boolean publicTest(Environment environment) {
+    static boolean publicTest(Environment environment) {
         return UserAuthEnvironment.hasSingleActiveProfile(environment, "dev")
                 && environment.getProperty("nexion.deployment.public-test", Boolean.class, false);
     }
