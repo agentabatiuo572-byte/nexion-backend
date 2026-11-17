@@ -1723,14 +1723,17 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return overview();
     }
 
-    void advanceScheduledFrame() {
+    String advanceScheduledFrame() {
         ensureNexMarketSeedData();
-        if (enginePaused() || pinnedDayIndex().isPresent()) {
-            return;
+        if (enginePaused()) {
+            return "G3_ENGINE_PAUSED";
+        }
+        if (pinnedDayIndex().isPresent()) {
+            return "G3_FRAME_PINNED";
         }
         List<NexMarketCurveFrame> frames = loadCurve();
         if (frames.isEmpty()) {
-            return;
+            return "G3_WEEKLY_CURVE_NOT_CONFIGURED";
         }
         NexMarketCurveFrame activeFrame = frameFor(frames, nextAdvanceDayIndex());
         if (activeFrame.targetPrice().compareTo(currentPrice()) > 0) {
@@ -1748,6 +1751,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "volatilityPct", activeFrame.volatilityPct(),
                 "schedule", currentSchedule().displayValue(),
                 "serverScheduled", true));
+        return null;
     }
 
     NexMarketSchedule currentSchedule() {
