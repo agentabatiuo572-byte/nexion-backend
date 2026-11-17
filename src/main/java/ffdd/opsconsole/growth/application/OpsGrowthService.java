@@ -3322,7 +3322,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                     Boolean.TRUE.equals(next.get("popupCadenceEnabled")),
                     Boolean.TRUE.equals(next.get("stackWithTrial")),
                     Boolean.TRUE.equals(next.get("stackWithOthers")),
-                    Boolean.TRUE.equals(next.get("splittable")),
+                    request.splittable() == null && truthy(current.get("splittable")),
                     longValue(next.get("issuanceLimit")),
                     stringValue(next.get("status"), ""),
                     expectedVersion,
@@ -5323,6 +5323,9 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         voucher.put("stackWithTrial", truthy(row.get("stackWithTrial")));
         voucher.put("stackWithOthers", truthy(row.get("stackWithOthers")));
         voucher.put("splittable", truthy(row.get("splittable")));
+        voucher.put("splittableConfigurable", false);
+        voucher.put("splittableRetired", true);
+        voucher.put("splittableWriteBlockedReason", OpsErrorCode.RETIRED_FEATURE.name());
         voucher.put("issuanceLimit", longValue(row.get("issuanceLimit")));
         voucher.put("version", longValue(row.get("version")));
         voucher.put("issuedCount", longValue(row.get("issuedCount")));
@@ -5450,7 +5453,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         voucher.put("popupCadenceEnabled", request.popupCadenceEnabled() == null || request.popupCadenceEnabled());
         voucher.put("stackWithTrial", Boolean.TRUE.equals(request.stackWithTrial()));
         voucher.put("stackWithOthers", Boolean.TRUE.equals(request.stackWithOthers()));
-        voucher.put("splittable", Boolean.TRUE.equals(request.splittable()));
+        if (Boolean.TRUE.equals(request.splittable())) {
+            throw new IllegalArgumentException("H7_VOUCHER_SPLITTABLE_RETIRED");
+        }
+        voucher.put("splittable", false);
         long issuanceLimit = request.issuanceLimit() == null ? 0L : request.issuanceLimit();
         if (issuanceLimit < 0L || issuanceLimit > 10_000_000L) {
             throw new IllegalArgumentException("VOUCHER_ISSUANCE_LIMIT_INVALID");
