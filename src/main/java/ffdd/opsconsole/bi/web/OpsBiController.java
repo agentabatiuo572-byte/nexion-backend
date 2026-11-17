@@ -60,7 +60,12 @@ public class OpsBiController {
             @RequestParam(value = "cohort", required = false) String cohort,
             @RequestParam(value = "phase", required = false) String phase,
             @RequestParam(value = "locale", required = false) String locale,
-            @RequestParam(value = "ref", required = false) String ref) {
+            @RequestParam(value = "ref", required = false) String ref,
+            @RequestParam(value = "granularity", required = false) String granularity,
+            @RequestParam(value = "asOf", required = false) String asOf) {
+        if (granularity != null || asOf != null) {
+            return biService.registrationKpis(null, null, window, from, to, cohort, phase, locale, ref, granularity, asOf);
+        }
         return biService.kpiOverview(l1Window(window, from, to), cohort, phase, locale, ref);
     }
 
@@ -74,7 +79,13 @@ public class OpsBiController {
             @RequestParam(value = "cohort", required = false) String cohort,
             @RequestParam(value = "phase", required = false) String phase,
             @RequestParam(value = "locale", required = false) String locale,
-            @RequestParam(value = "ref", required = false) String ref) {
+            @RequestParam(value = "ref", required = false) String ref,
+            @RequestParam(value = "granularity", required = false) String granularity,
+            @RequestParam(value = "asOf", required = false) String asOf,
+            @RequestParam(value = "bucketKey", required = false) String bucketKey) {
+        if (granularity != null || asOf != null || bucketKey != null) {
+            return biService.registrationKpis(kpiId, bucketKey, window, from, to, cohort, phase, locale, ref, granularity, asOf);
+        }
         return biService.kpiDrilldown(kpiId, l1Window(window, from, to), cohort, phase, locale, ref);
     }
 
@@ -88,7 +99,12 @@ public class OpsBiController {
             @RequestParam(value = "cohort", required = false) String cohort,
             @RequestParam(value = "phase", required = false) String phase,
             @RequestParam(value = "locale", required = false) String locale,
-            @RequestParam(value = "ref", required = false) String ref) {
+            @RequestParam(value = "ref", required = false) String ref,
+            @RequestParam(value = "granularity", required = false) String granularity,
+            @RequestParam(value = "asOf", required = false) String asOf) {
+        if (granularity != null || asOf != null) {
+            return biService.registrationKpis(kpiId, null, window, from, to, cohort, phase, locale, ref, granularity, asOf);
+        }
         return biService.kpiTrend(kpiId, l1Window(window, from, to), cohort, phase, locale, ref);
     }
 
