@@ -106,6 +106,16 @@ public interface NovaRepository {
                 .toList();
     }
 
+    /** Same as the default above, evaluated against a caller-supplied instant instead of the system clock. */
+    default List<NovaSocialEventView> socialEvents(String eventType, String status, java.time.LocalDateTime asOf,
+                                                   int limit, int offset) {
+        return socialEvents(eventType, status, limit, offset);
+    }
+
+    default long countSocialEvents(String eventType, String status, java.time.LocalDateTime asOf) {
+        return countSocialEvents(eventType, status);
+    }
+
     default long countSocialEvents(String eventType, String status) {
         return socialEvents().stream()
                 .filter(event -> eventType == null || eventType.isBlank() || eventType.equals(event.eventType()))
