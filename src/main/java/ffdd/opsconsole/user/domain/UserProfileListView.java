@@ -1,6 +1,8 @@
 package ffdd.opsconsole.user.domain;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Locale;
@@ -17,8 +19,8 @@ public record UserProfileListView(
         String userLevel,
         String vRank,
         Boolean twoFactorEnabled,
-        BigDecimal walletUsdt,
-        BigDecimal walletNex,
+        @JsonSerialize(using = ToStringSerializer.class) BigDecimal walletUsdt,
+        @JsonSerialize(using = ToStringSerializer.class) BigDecimal walletNex,
         Integer riskScore,
         String riskBand,
         Long deviceCount,
