@@ -1743,6 +1743,36 @@ public class OpsTeamService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
+    /** Shared input boundary for the A2 proposal and its eventual execution. */
+    public static List<Map<String, Object>> unilevelBootstrapLayerRates(
+            TeamCommissionConfigUpdateRequest.UnilevelBootstrap request) {
+        List<Map<String, Object>> rows = new ArrayList<>(7);
+        for (var layer : request.layers()) {
+            BigDecimal usdtPct;
+            BigDecimal usdtRate;
+            BigDecimal nexPerUsd;
+            try {
+                usdtPct = parseDecimal(layer.usdtPct(), null);
+                usdtRate = percentPointRatio(layer.usdtPct(), null);
+                nexPerUsd = parseDecimal(layer.nexPerUsd(), null)
+                        .setScale(6, RoundingMode.UNNECESSARY);
+                if (nexPerUsd.precision() - nexPerUsd.scale() > 12) {
+                    throw new ArithmeticException("UVT coefficient exceeds DECIMAL(18,6)");
+                }
+            } catch (ArithmeticException | IllegalArgumentException invalid) {
+                throw new BizException(422, "F2_UNILEVEL_BOOTSTRAP_INVALID");
+            }
+            rows.add(Map.of("level", "L" + layer.layerNo(), "usdtPct", usdtPct, "nexReward", nexPerUsd, "usdtRate", usdtRate));
+        }
+        // Reuse the exact L1-L7 completeness, L1=10%, USDT 0-100 and UVT >= 0 checks.
+        try {
+            UnilevelCommissionService.requireCompleteLayerRates(rows);
+        } catch (BizException invalid) {
+            throw new BizException(422, invalid.getMessage());
+        }
+        return rows;
+    }
+
     /**
      * The only first-configuration path for an empty F2 rule table. The operator must submit
      * every layer and both values explicitly; no old backup or default rate is used.
@@ -1756,28 +1786,10 @@ public class OpsTeamService implements AuditReplayable {
         if (!commissionRepository.lockAllUnilevelRules().isEmpty()) {
             throw new BizException(409, "F2_UNILEVEL_RULES_ALREADY_CONFIGURED");
         }
-        List<Map<String, Object>> rows = new ArrayList<>(7);
-        for (var layer : request.layers()) {
-            BigDecimal usdtPct;
-            BigDecimal nexPerUsd;
-            try {
-                usdtPct = parseDecimal(layer.usdtPct(), null);
-                percentPointRatio(layer.usdtPct(), null);
-                nexPerUsd = parseDecimal(layer.nexPerUsd(), null)
-                        .setScale(6, RoundingMode.UNNECESSARY);
-                if (nexPerUsd.precision() - nexPerUsd.scale() > 12) {
-                    throw new ArithmeticException("UVT coefficient exceeds DECIMAL(18,6)");
-                }
-            } catch (ArithmeticException | IllegalArgumentException invalid) {
-                throw new BizException(422, "F2_UNILEVEL_BOOTSTRAP_INVALID");
-            }
-            rows.add(Map.of("level", "L" + layer.layerNo(), "usdtPct", usdtPct, "nexReward", nexPerUsd));
-        }
-        // Reuse the exact L1-L7 completeness, L1=10%, USDT 0-100 and UVT >= 0 checks.
-        UnilevelCommissionService.requireCompleteLayerRates(rows);
+        List<Map<String, Object>> rows = unilevelBootstrapLayerRates(request);
         for (int index = 0; index < rows.size(); index++) {
             var row = rows.get(index);
-            BigDecimal usdtRate = percentPointRatio(request.layers().get(index).usdtPct(), null);
+            BigDecimal usdtRate = (BigDecimal) row.get("usdtRate");
             if (!commissionRepository.insertUnilevelRule(
                     request.layers().get(index).layerNo(), usdtRate, (BigDecimal) row.get("nexReward"))) {
                 throw new BizException(409, "F2_UNILEVEL_BOOTSTRAP_WRITE_FAILED");

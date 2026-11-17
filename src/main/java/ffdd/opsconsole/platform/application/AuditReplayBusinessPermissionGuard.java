@@ -1520,6 +1520,7 @@ public class AuditReplayBusinessPermissionGuard {
         }
         if ("f_unilevel_bootstrap".equals(operation)) {
             var request = ffdd.opsconsole.team.dto.TeamCommissionConfigUpdateRequest.UnilevelBootstrap.from(params);
+            OpsTeamService.unilevelBootstrapLayerRates(request);
             if (!teamCommissionRepository.allUnilevelRuleIds().isEmpty()) {
                 throw new ffdd.opsconsole.shared.exception.BizException(409, "F2_UNILEVEL_RULES_ALREADY_CONFIGURED");
             }
