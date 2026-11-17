@@ -97,11 +97,17 @@ public class OpsSupportCommandController {
             if(!ownership.currentSuperAdmin() || timeoutPolicy.timeoutManageGrant(actor).isEmpty())
                 throw new BizException(403,"M3_TIMEOUT_POLICY_FORBIDDEN");
             Integer businessCode = null;
+            String businessReason = null;
             if ("SUCCEEDED".equals(receipt.getStatus()) && receipt.getResponseJson() != null) {
                 try {
                     JsonNode response = json.readTree(receipt.getResponseJson());
                     JsonNode code = response == null ? null : response.get("code");
                     if (code != null && code.isIntegralNumber() && code.canConvertToInt()) businessCode = code.intValue();
+                    JsonNode message = response == null ? null : response.get("message");
+                    if (message != null && message.isTextual()
+                            && Set.of("M3_TIMEOUT_POLICY_STALE", "M3_TIMEOUT_POLICY_UNCHANGED").contains(message.textValue())) {
+                        businessReason = message.textValue();
+                    }
                 } catch (com.fasterxml.jackson.core.JsonProcessingException invalidReceipt) {
                     // A missing or unreadable original reply proves no business outcome.
                 }
@@ -109,6 +115,7 @@ public class OpsSupportCommandController {
             Map<String,Object> result = new LinkedHashMap<>();
             result.put("status", receipt.getStatus());
             result.put("businessCode", businessCode);
+            result.put("businessReason", businessReason);
             return ApiResult.ok(result);
         }
         if(receipt.getScope().startsWith("M3_SUPPORT_BULK_CREATE:")) return ApiResult.ok(bulk.recover(key));

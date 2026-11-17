@@ -18,6 +18,14 @@
 
 沿原请求编号/查询范围、当前客服查看范围及超管身份与 `timeoutManageGrant` 检查，不增加其它 support scope 的字段，不更改原 owner、业务 writer、幂等 hash/TTL/完成状态、历史回包或异常事务政策。仅 Java 读取投影与必要跳测构建；未执行 E2E、HTTP、SQL、数据库业务或部署，未推送或核销原行。
 
+## M3-BE-02 超时策略的原请求业务原因（2026-11-17）
+
+同一原请求查询仅对精确 `M3_CONVERSATION_TIMEOUT_POLICY` 追加 `data.businessReason`。在原 `status=SUCCEEDED` 的已保存回复中，复用现有 JSON 解析读取顶层 `message`，只返回当前超时策略真实生产的 `M3_TIMEOUT_POLICY_STALE` 或 `M3_TIMEOUT_POLICY_UNCHANGED`。两种原业务码同为 409，现在可由此区分；不缩写机器码、不读取当前配置来推测原次原因。
+
+历史回复缺失、不可解析、没有文本 `message`、不是这两个允许原因或非正常完成状态时，该字段为 `null`；不会把任意错误正文、SQL、个人数据或整份业务回复下发。原 `status`、`businessCode` 的值及提取条件保持，新增字段不参与成功、失败、未知或受控核查解锁判定。
+
+原 timeout 仍为既有全局 scope，查询沿客服读取资格、当前超管及 `timeoutManageGrant` 复核，其它命令的 actor scope/owner 与原请求摘要不变；不新增权限或扩大回执范围，不改写入、保存、恢复及租约规则。不修改客户端或下发页面说明，本轮未实际启动、E2E、HTTP、数据库、业务保存或部署。
+
 ## M3 会话列表与 M1 最近会话
 
 客服或客户发送无正文图片时，列表返回 `lastMessageKind=IMAGE`。PC 可据此显示「[图片]」。公开消息按写入的消息 ID 定序，摘要类型与 `lastPublicMessageId` 指向同一条消息，即使两次发送的时间相同或时间戳先后倒置。老消息按已保存的消息类型或人工消息记录识别，普通历史文本使用 `TEXT`。商品和页面推荐分别返回 `SKU`、`LINK`，保留原正文。
