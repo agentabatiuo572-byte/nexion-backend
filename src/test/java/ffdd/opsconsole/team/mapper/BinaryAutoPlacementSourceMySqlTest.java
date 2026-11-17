@@ -41,7 +41,7 @@ class BinaryAutoPlacementSourceMySqlTest {
             }
         };
         jdbc=new JdbcTemplate(ds);
-        jdbc.execute("CREATE TABLE nx_user(id BIGINT PRIMARY KEY,status VARCHAR(20),is_deleted INT)");
+        jdbc.execute("CREATE TABLE nx_user(id BIGINT PRIMARY KEY,status VARCHAR(20),is_deleted INT,created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)");
         jdbc.execute("CREATE TABLE nx_team_member(user_id BIGINT,member_user_id BIGINT,level INT,is_deleted INT)");
         jdbc.execute("CREATE TABLE nx_binary_leg_assignment(id BIGINT AUTO_INCREMENT PRIMARY KEY,owner_user_id BIGINT,member_user_id BIGINT,leg VARCHAR(1),assigned_by_admin_id BIGINT,assigned_by VARCHAR(80),assigned_at DATETIME,UNIQUE(owner_user_id,member_user_id))");
         jdbc.execute("CREATE TABLE nx_audit_log(id BIGINT AUTO_INCREMENT PRIMARY KEY,action VARCHAR(80),resource_type VARCHAR(80),resource_id VARCHAR(80),biz_no VARCHAR(80),user_id BIGINT,actor_id BIGINT,actor_type VARCHAR(20),actor_username VARCHAR(80),result VARCHAR(20),created_at DATETIME,is_deleted INT)");
@@ -53,7 +53,7 @@ class BinaryAutoPlacementSourceMySqlTest {
     }
     @BeforeEach void reset(){
         for(String t:List.of("nx_audit_log","nx_binary_leg_assignment","nx_team_member","nx_user","nx_binary_commission_settlement"))jdbc.execute("DELETE FROM "+t);
-        jdbc.update("INSERT INTO nx_user VALUES(7,'ACTIVE',0),(8,'ACTIVE',0),(11,'ACTIVE',0),(12,'ACTIVE',0),(13,'ACTIVE',0),(14,'ACTIVE',0),(15,'ACTIVE',0)");
+        jdbc.update("INSERT INTO nx_user(id,status,is_deleted) VALUES(7,'ACTIVE',0),(8,'ACTIVE',0),(11,'ACTIVE',0),(12,'ACTIVE',0),(13,'ACTIVE',0),(14,'ACTIVE',0),(15,'ACTIVE',0)");
         jdbc.update("INSERT INTO nx_team_member VALUES(7,11,1,0),(7,12,1,0),(7,13,1,0),(7,14,1,0),(7,15,1,0),(8,11,1,0)");
     }
     @AfterAll void cleanup() throws Exception {

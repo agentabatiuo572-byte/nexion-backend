@@ -488,7 +488,15 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
 
     @Select("<script>" + PROFILE_SELECT + SCOPED_PROFILE_FROM + PROFILE_FILTER
             + ffdd.opsconsole.content.mapper.SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE
-            + " ORDER BY u.created_at DESC, u.id DESC LIMIT #{pageSize} OFFSET #{offset}</script>")
+            + """
+             ORDER BY
+             <if test='query.keyword != null and query.keyword.matches("[Uu]?[0-9]+")'>
+               (CAST(u.id AS CHAR) = #{query.keyword}
+                OR CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0'))
+                   IN (UPPER(#{query.keyword}), CONCAT('U', #{query.keyword}))) DESC,
+             </if>
+             u.created_at DESC, u.id DESC LIMIT #{pageSize} OFFSET #{offset}</script>
+            """)
     List<UserAccountView> pageScopedUsers(@Param("query") UserQueryRequest query, @Param("statuses") List<String> statuses,
                                          @Param("offset") long offset, @Param("pageSize") int pageSize,
                                          @Param("phoneKeyword") String phoneKeyword, @Param("scope") ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope);
