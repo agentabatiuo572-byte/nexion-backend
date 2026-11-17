@@ -25,14 +25,14 @@ public record TeamCommissionConfigUpdateRequest(
         public static UnilevelBootstrap from(Map<String, Object> params) {
             if (params == null) throw invalid();
             Object version = params.get("expectedVersion");
-            if (!(version instanceof Number number) || number.doubleValue() != 0d) throw invalid();
+            if (!(version instanceof Number versionNumber) || versionNumber.doubleValue() != 0d) throw invalid();
             if (!(params.get("layers") instanceof List<?> raw) || raw.size() != 7) throw invalid();
             List<Layer> layers = new ArrayList<>(7);
             for (int index = 0; index < raw.size(); index++) {
                 if (!(raw.get(index) instanceof Map<?, ?> item)) throw invalid();
                 Object layerNo = item.get("layerNo");
-                if (!(layerNo instanceof Number number) || number.intValue() != index + 1
-                        || number.doubleValue() != index + 1) throw invalid();
+                if (!(layerNo instanceof Number layerNumber) || layerNumber.intValue() != index + 1
+                        || layerNumber.doubleValue() != index + 1) throw invalid();
                 String usdtPct = text(item.get("usdtPct"));
                 String nexPerUsd = text(item.get("nexPerUsd"));
                 if (usdtPct == null || nexPerUsd == null) throw invalid();
