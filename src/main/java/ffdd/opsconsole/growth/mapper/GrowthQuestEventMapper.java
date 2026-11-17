@@ -463,6 +463,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                    mission_name AS cond,
                    CONCAT(reward_points, ' UVT') AS reward,
                    CASE status WHEN 1 THEN 'active' WHEN 2 THEN 'archived' ELSE 'paused' END AS status,
+                   m.content_state AS contentState,
                    CASE WHEN EXISTS(
                          SELECT 1 FROM nx_growth_quest_event_binding b
                           WHERE b.quest_code=m.mission_code AND b.status=1 AND b.is_deleted=0
