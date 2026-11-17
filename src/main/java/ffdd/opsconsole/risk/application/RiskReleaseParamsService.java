@@ -1,5 +1,6 @@
 package ffdd.opsconsole.risk.application;
 
+import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.dto.RiskReleaseParamUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -94,13 +95,81 @@ public class RiskReleaseParamsService {
         try{version=Long.parseLong(config.activeValueForUpdate(VERSION_KEY).orElseThrow());}catch(Exception e){throw new BizException(503,"K1_RELEASE_CONFIG_UNAVAILABLE");}
         if(version!=request.expectedVersion())throw new BizException(409,"K1_RELEASE_VERSION_CONFLICT");
         Map<String,String> before=values();Map<String,String> after=new LinkedHashMap<>(before);after.put(key,value);validateCross(after);
-        TreasuryCoverageSnapshot coverageAtSubmit=isLoosening(key,before.get(key),value)?requireCoverageGate():null;
+        boolean loosening=isLoosening(key,before.get(key),value);
+        if(loosening&&!A2ReplayContext.isReplaying())throw new BizException(409,"K1_RELEASE_PARAM_APPROVAL_REQUIRED");
+        TreasuryCoverageSnapshot coverageAtSubmit=loosening?requireCoverageGate():null;
         config.upsertAdminValue(PREFIX+key,value,type(key),"risk","K1 earnings release parameter");
         config.upsertAdminValue(VERSION_KEY,String.valueOf(version+1),"NUMBER","risk","K1 earnings release aggregate version");
         Map<String,Object> detail=new LinkedHashMap<>();detail.put("before",before.get(key));detail.put("after",value);detail.put("versionBefore",version);detail.put("versionAfter",version+1);detail.put("reason",request.reason().trim());
         if(coverageAtSubmit!=null){detail.put("coverageAtSubmit",coverageAtSubmit.coverageRatio());detail.put("coverageRedline",coverageAtSubmit.redlinePct());}
         audit.recordRequired(AuditLogWriteRequest.builder().action("K1_RELEASE_PARAM_UPDATED").resourceType("RISK_RELEASE_PARAM").resourceId(key).actorUsername(AdminActorResolver.resolve(request.operator())).riskLevel("HIGH").detail(detail).build());
         return ApiResult.ok(Map.of("releaseParams",rows()));
+    }
+
+    public record ApprovalReview(String action, String before, String after) {}
+
+    /** Server-only snapshot bound into an A2 proposal; no business write. */
+    public Map<String,Object> approvalBefore(String key, Long expectedVersion) {
+        String normalizedKey = approvalKey(key);
+        if (expectedVersion == null) throw new BizException(422, "EXPECTED_VERSION_REQUIRED");
+        Map<String,String> current = values();
+        long version = number(VERSION_KEY);
+        if (version != expectedVersion) throw new BizException(409, "K1_RELEASE_PARAM_STALE");
+        Map<String,Object> before = new LinkedHashMap<>();
+        before.put("key", normalizedKey);
+        before.put("value", current.get(normalizedKey));
+        before.put("version", String.valueOf(version));
+        before.put("values", new LinkedHashMap<>(current));
+        return before;
+    }
+
+    /** Proposal-time preview; checks direction and current exact B1 but writes nothing. */
+    @Transactional(readOnly = true)
+    public ApprovalReview previewApproval(String key, String value, Long expectedVersion) {
+        String normalizedKey = approvalKey(key);
+        if (expectedVersion == null) throw new BizException(422, "EXPECTED_VERSION_REQUIRED");
+        Map<String,String> before = values();
+        long version = number(VERSION_KEY);
+        if (version != expectedVersion) throw new BizException(409, "K1_RELEASE_PARAM_STALE");
+        String normalizedValue = normalize(normalizedKey, value);
+        Map<String,String> after = new LinkedHashMap<>(before);
+        after.put(normalizedKey, normalizedValue);
+        validateCross(after);
+        if (!isLoosening(normalizedKey, before.get(normalizedKey), normalizedValue)) {
+            throw new BizException(422, "K1_APPROVAL_NOT_REQUIRED");
+        }
+        requireCoverageGate();
+        return new ApprovalReview("放宽收益审核规则",
+                normalizedKey + " = " + before.get(normalizedKey) + "；版本 " + version,
+                normalizedKey + " = " + normalizedValue + "；版本 " + (version + 1));
+    }
+
+    /** A2-approved path: compare the complete bound snapshot, then reuse the official write. */
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String,Object>> applyApproved(
+            String key, String value, Long expectedVersion, String reason, String operator,
+            Map<?,?> expectedBefore) {
+        if (!A2ReplayContext.isReplaying()) throw new BizException(403, "K1_APPROVAL_FORBIDDEN");
+        String normalizedKey = approvalKey(key);
+        Map<String,Object> current = approvalBefore(normalizedKey, expectedVersion);
+        if (expectedBefore == null || !current.equals(expectedBefore)) {
+            throw new BizException(409, "K1_RELEASE_PARAM_STALE");
+        }
+        return updateOnce(normalizedKey, normalize(normalizedKey, value),
+                new RiskReleaseParamUpdateRequest(value, expectedVersion, reason, operator));
+    }
+
+    private String approvalKey(String key) {
+        if (!StringUtils.hasText(key)) throw new BizException(422, "K1_RELEASE_PARAM_REQUEST_INVALID");
+        String normalized = key.trim();
+        if ("appAttestationReleaseHours".equals(normalized)) {
+            throw new BizException(410, "K1_TRUSTED_ATTESTATION_RETIRED");
+        }
+        if (RETIRED_KEYS.contains(normalized)) throw new BizException(410, "K1_RELEASE_PARAM_RETIRED");
+        if (!Set.of("duplicateAccountPendingFrom", "duplicateAccountFreezeFrom").contains(normalized)) {
+            throw new BizException(422, "K1_RELEASE_PARAM_APPROVAL_KEY_UNSUPPORTED");
+        }
+        return normalized;
     }
 
     public boolean manualOnly(){return true;}

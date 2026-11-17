@@ -53,6 +53,8 @@ public interface EarningsReleaseMapper {
     RecoveryWallet lockRecoveryWallet(@Param("userId") Long userId, @Param("expectedSandbox") int expectedSandbox);
     @Select("SELECT entry_no entryNo,user_id userId,source_type sourceType,source_ref sourceRef,asset,amount,bucket,status,source_environment sourceEnvironment,is_deleted isDeleted,recovered_amount recoveredAmount,source_debit_baseline debitBaseline,source_wallet_id sourceWalletId FROM nx_earnings_release_entry WHERE entry_no=#{entryNo} FOR UPDATE")
     RecoveryEntry lockRecoveryEntry(@Param("entryNo") String entryNo);
+    @Select("SELECT entry_no entryNo,user_id userId,source_type sourceType,source_ref sourceRef,asset,amount,bucket,status,source_environment sourceEnvironment,is_deleted isDeleted,recovered_amount recoveredAmount,source_debit_baseline debitBaseline,source_wallet_id sourceWalletId FROM nx_earnings_release_entry WHERE entry_no=#{entryNo}")
+    RecoveryEntry recoveryEntry(@Param("entryNo") String entryNo);
     @Update("""
             UPDATE nx_user_wallet SET
                 usdt_available=usdt_available-CASE WHEN #{asset}='USDT' THEN #{amount} ELSE 0 END,
@@ -164,7 +166,9 @@ public interface EarningsReleaseMapper {
             SELECT e.entry_no entryNo,e.user_id userId,
                    CONCAT('U',LPAD(u.id,GREATEST(8,LENGTH(CAST(u.id AS CHAR))),'0')) AS userNo,
                    e.cluster_id clusterId,e.source_type sourceType,e.source_ref sourceRef,
-                   e.asset,e.amount-e.recovered_amount AS amount,e.bucket,e.created_at createdAt
+                   e.asset,e.amount-e.recovered_amount AS amount,e.bucket,e.created_at createdAt,
+                   e.amount grossAmount,e.recovered_amount recoveredAmount,
+                   e.source_environment sourceEnvironment,e.status
               FROM nx_earnings_release_entry e
               LEFT JOIN nx_user u ON u.id=e.user_id AND u.is_deleted=0
              WHERE e.bucket IN ('pending_review','bonus_locked') AND e.status='ACTIVE'
@@ -191,7 +195,8 @@ public interface EarningsReleaseMapper {
     record BucketAmount(String asset,String bucket,BigDecimal amount){}
     record ProtectedEntry(String entryNo,Long userId,String clusterId,String asset,BigDecimal amount,String bucket){}
     record ProtectedEntryView(String entryNo,Long userId,String userNo,String clusterId,String sourceType,String sourceRef,
-                              String asset,BigDecimal amount,String bucket,LocalDateTime createdAt){}
+                              String asset,BigDecimal amount,String bucket,LocalDateTime createdAt,
+                              BigDecimal grossAmount,BigDecimal recoveredAmount,String sourceEnvironment,String status){}
     record RiskCluster(String clusterId,Integer accountCount,String status){}
     record RecoveryWallet(Long walletId,BigDecimal usdtAvailable,BigDecimal nexAvailable,BigDecimal usdtDebited,BigDecimal nexDebited){}
     record RecoveryEntry(String entryNo,Long userId,String sourceType,String sourceRef,String asset,BigDecimal amount,
