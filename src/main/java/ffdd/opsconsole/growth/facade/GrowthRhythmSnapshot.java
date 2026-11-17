@@ -245,13 +245,14 @@ public record GrowthRhythmSnapshot(
         if (currentPhase == null || !currentPhase.matches("P[1-6]")) errors.add(CURRENT_PHASE_KEY);
         validateDecimal(configValues, RHYTHM_PHASE_PROGRESS_KEY, BigDecimal.ZERO, new BigDecimal("100"), errors);
         String prefix = "growth.phase.month." + currentMonth + ".";
-        validateDecimal(configValues, prefix + "newUserBonusMultiplier", new BigDecimal("0.01"), new BigDecimal("10"), errors);
-        validateDecimal(configValues, prefix + "inviteRewardMultiplier", new BigDecimal("0.01"), new BigDecimal("10"), errors);
-        validateDecimal(configValues, prefix + "reinvestMultiplier", new BigDecimal("0.01"), new BigDecimal("10"), errors);
+        // Persisted H1 limits come from OpsGrowthService.normalizePhaseDialValue; reject rather than clamp.
+        validateDecimal(configValues, prefix + "newUserBonusMultiplier", BigDecimal.ONE, new BigDecimal("4"), errors);
+        validateDecimal(configValues, prefix + "inviteRewardMultiplier", BigDecimal.ONE, new BigDecimal("4"), errors);
+        validateDecimal(configValues, prefix + "reinvestMultiplier", BigDecimal.ONE, new BigDecimal("4"), errors);
         validateDecimal(configValues, prefix + "withdrawPenaltyFeeRate", BigDecimal.ZERO, BigDecimal.ONE, errors);
-        validateInteger(configValues, prefix + "withdrawCooldownDays", 0, 365, errors);
-        validateDecimal(configValues, prefix + "binaryDailyCap", BigDecimal.ZERO, new BigDecimal("1000000000"), errors);
-        validateDecimal(configValues, prefix + "questBonusMultiplier", new BigDecimal("0.01"), new BigDecimal("10"), errors);
+        validateInteger(configValues, prefix + "withdrawCooldownDays", 0, 90, errors);
+        validateDecimal(configValues, prefix + "binaryDailyCap", BigDecimal.ZERO, new BigDecimal("50000"), errors);
+        validateDecimal(configValues, prefix + "questBonusMultiplier", BigDecimal.ONE, new BigDecimal("4"), errors);
         validateInteger(configValues, prefix + "complianceHoldEnabled", 0, 1, errors);
         return List.copyOf(errors);
     }
