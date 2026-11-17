@@ -1694,9 +1694,9 @@ public class AuditReplayBusinessPermissionGuard {
             case "e3_config" -> e3ConfigDescriptor(params);
             case "e3_config_batch" -> e3ConfigBatchDescriptor(params);
             case "e5_device_force_activate" -> deviceDescriptor(
-                    "强制激活设备", deviceId, "ACTIVATED");
+                    "强制激活设备", deviceId, "e5_device_force_activate");
             case "e5_device_unbind" -> deviceDescriptor(
-                    "解绑设备资产", deviceId, "UNBOUND");
+                    "解绑设备资产", deviceId, "e5_device_unbind");
             case "e6_compute_config" -> computeConfigDescriptor(params);
             case "e6_phone_calibration" -> phoneCalibrationDescriptor(params);
             case "e6_compute_config_batch" -> computeConfigBatchDescriptor(params);
@@ -1943,15 +1943,16 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     private DelegatedProposalDescriptor deviceDescriptor(
-            String action, String deviceId, String afterValue) {
+            String action, String deviceId, String operation) {
         if (deviceId == null || deviceId.isBlank()) {
             return null;
         }
+        var snapshot = devices.e5ProposalSnapshot(operation, Long.valueOf(deviceId));
         return new DelegatedProposalDescriptor(
                 action + " · " + deviceId,
                 deviceId,
-                "以服务器执行时状态为准",
-                afterValue,
+                snapshot.beforeStatus(),
+                snapshot.afterStatus(),
                 "E5",
                 "sos",
                 false,

@@ -3312,6 +3312,31 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return null;
     }
 
+    /** Server-read snapshot for E5 proposal display; no client-supplied before value is trusted. */
+    public E5ProposalSnapshot e5ProposalSnapshot(String operation, Long deviceId) {
+        if (deviceId == null || deviceId <= 0) {
+            throw new BizException(422, "DEVICE_ID_REQUIRED");
+        }
+        DeviceOpsView device = deviceRepository.findDevice(deviceId).orElse(null);
+        if (device == null) {
+            throw new BizException(404, "DEVICE_NOT_FOUND");
+        }
+        String after;
+        if ("e5_device_unbind".equals(operation)) {
+            after = "UNBOUND";
+        } else if ("e5_device_force_activate".equals(operation)) {
+            after = deviceRepository.e5ActivationTargetStatus(deviceId);
+        } else {
+            throw new BizException(422, "E5_PROPOSAL_OPERATION_INVALID");
+        }
+        if (after == null) {
+            throw new BizException(404, "DEVICE_NOT_FOUND");
+        }
+        return new E5ProposalSnapshot(device.status(), after);
+    }
+
+    public record E5ProposalSnapshot(String beforeStatus, String afterStatus) { }
+
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<DeviceOpsView> activateE5Device(
             Long deviceId, boolean force, String idempotencyKey, DeviceE5ActionRequest request) {

@@ -331,6 +331,16 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             """)
     int activateE5Device(@Param("deviceId") Long deviceId, @Param("now") LocalDateTime now, @Param("simEnabled") boolean simEnabled);
 
+    /** Same status CASE as activateE5Device, read-only for the proposal snapshot. */
+    @Select("""
+            SELECT CASE WHEN #{simEnabled} AND NOT """ + PHONE_IDENTITY + """
+                   THEN 'ACTIVE' ELSE 'OFFLINE' END
+              FROM nx_user_device d
+             WHERE d.id = #{deviceId} AND d.is_deleted = 0
+            """)
+    String e5ActivationTargetStatus(@Param("deviceId") Long deviceId,
+                                    @Param("simEnabled") boolean simEnabled);
+
     @Update("""
             UPDATE nx_user_device
                SET status = CASE
