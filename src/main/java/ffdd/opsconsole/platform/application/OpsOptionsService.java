@@ -75,12 +75,9 @@ public class OpsOptionsService {
             case "nova-template-status", "nova-template-statuses" -> ApiResult.ok(options("草稿", "DRAFT", "已发布", "PUBLISHED", "已归档", "ARCHIVED"));
             case "nova-template-cta", "nova-template-ctas" -> ApiResult.ok(options(
                     "无跳转", "NONE",
-                    "每周回顾", "/me/weekly",
-                    "设备商城", "/devices",
                     "质押产品", "/staking",
                     "团队中心", "/team",
-                    "收益任务", "/earn",
-                    "客服中心", "/support"));
+                    "收益任务", "/earn"));
             case "nova-social-event", "nova-social-events" -> ApiResult.ok(options("提现到账", "withdrawal", "V 等级晋升", "vrank", "创世节点成交", "genesis", "AI 客户消费", "aiClient", "每小时新增用户", "newUsers"));
             case "nova-social-pool", "nova-social-pools" -> ApiResult.ok(options("人名池", "SOCIAL_NAMES", "城市池", "CITIES", "AI 客户池", "AI_CLIENTS"));
             case "sku-status" -> ApiResult.ok(options("草稿", "DRAFT", "在售", "ON_SALE", "售罄", "SOLD_OUT", "下架", "OFFLINE"));
