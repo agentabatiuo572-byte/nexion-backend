@@ -102,8 +102,12 @@ public class OAuthProviderFlowService {
         String browserKey = OAuthProviderClient.random();
         if (flows.openBrowser(flow.getId(), OAuthProviderClient.hash(browserKey)) != 1)
             throw new BizException(401, "OAUTH_FLOW_EXPIRED");
-        return new BrowserStart(providers.authorizationUrl(providers.provider(flow.getProvider()),
-                flow.getState(), flow.getNonce(), flow.getVerifier()), browserKey);
+        var provider = providers.provider(flow.getProvider());
+        String location = providers.authorizationUrl(provider, flow.getState(), flow.getNonce(), flow.getVerifier());
+        if (provider == OAuthProviderClient.Provider.GOOGLE && flow.getLinkUserId() == null) {
+            location += "&prompt=select_account";
+        }
+        return new BrowserStart(location, browserKey);
     }
 
     public Callback callback(String providerName, String state, String browserKey, String code, String error) {
