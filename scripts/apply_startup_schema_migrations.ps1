@@ -359,6 +359,9 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261019_phone_replacement_domain.sql")
   (Join-Path $root "scripts\migrations\20261019_phone_replacement_ops.sql")
   (Join-Path $root "scripts\migrations\20261021_g1_staking_app_visibility.sql")
+  # STK-BE-01 closes the same persisted visibility/gate key after the historical seed;
+  # the Java read default is already false and the old migration bytes stay unchanged.
+  (Join-Path $root "scripts\migrations\20261118_stk_be01_staking_visibility_off.sql")
   (Join-Path $root "scripts\migrations\20261021_g1_staking_visibility_event.sql")
   (Join-Path $root "scripts\migrations\20261021_oauth_provider_first_login.sql")
   (Join-Path $root "scripts\migrations\20261027_app_conversation_user_clear.sql")
