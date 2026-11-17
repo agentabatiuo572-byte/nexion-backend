@@ -3,6 +3,7 @@ package ffdd.opsconsole.bi.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.bi.domain.BiReportView;
 import ffdd.opsconsole.bi.infrastructure.BiReportEntity;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
@@ -166,7 +167,7 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
             """)
     long countA4FamilyEvents(@Param("familyKey") String familyKey);
 
-    @Select("""
+    String L1_FACT_PROJECTION = """
             SELECT event_id AS eventId,
                    event_name AS eventName,
                    COALESCE(event_ts, created_at) AS eventTs,
@@ -195,6 +196,9 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                    ) AS refCode,
                    JSON_UNQUOTE(JSON_EXTRACT(payload, '$.latency_sec')) AS latencySec,
                    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.quantity')), '1') AS quantity
+            """;
+
+    String L1_FACT_FILTER = """
               FROM nx_event_outbox
              WHERE is_deleted = 0
                AND analytics_event = 1
@@ -209,10 +213,51 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                  is_server_authoritative = 1
                  OR event_name IN ('store.viewed', 'nova.push_clicked')
                )
+            """;
+
+    @Select(L1_FACT_PROJECTION + L1_FACT_FILTER + """
                AND COALESCE(event_ts, created_at) >= DATE_SUB(NOW(), INTERVAL 13 MONTH)
              ORDER BY COALESCE(event_ts, created_at) ASC, id ASC
             """)
     List<Map<String, Object>> selectL1EventFacts();
+
+    String L1_REGISTRATION_WINDOW = """
+             WHERE sandbox = 0 AND created_at >= #{registrationFrom} AND created_at < #{registrationToExclusive}
+            """;
+
+    @Select("SELECT id AS userId, created_at AS registeredAt FROM nx_user " + L1_REGISTRATION_WINDOW)
+    List<Map<String, Object>> selectL1Registrations(
+            @Param("registrationFrom") LocalDateTime registrationFrom,
+            @Param("registrationToExclusive") LocalDateTime registrationToExclusive);
+
+    @Select("""
+            WITH members AS (
+                SELECT id FROM nx_user
+            """ + L1_REGISTRATION_WINDOW + """
+            ), facts AS (
+            """ + L1_FACT_PROJECTION + """
+                   , id AS factOrder,
+                   COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.user_id')), ''),
+                            NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.userId')), '')) AS registeredActorId
+            """ + L1_FACT_FILTER + """
+               AND event_name <> 'genesis.purchased'
+               AND (
+                 event_ts BETWEEN #{registrationFrom} AND #{observationEnd}
+                 OR (event_ts IS NULL AND created_at BETWEEN #{registrationFrom} AND #{observationEnd})
+               )
+            )
+            SELECT f.* FROM facts f
+              LEFT JOIN members actor ON actor.id =
+                CASE WHEN f.registeredActorId REGEXP '^[1-9][0-9]{0,18}$' THEN CAST(f.registeredActorId AS UNSIGNED) END
+              LEFT JOIN members related ON f.eventName = 'commission.paid' AND related.id =
+                CASE WHEN f.sourceActorId REGEXP '^[1-9][0-9]{0,18}$' THEN CAST(f.sourceActorId AS UNSIGNED) END
+             WHERE actor.id IS NOT NULL OR related.id IS NOT NULL
+             ORDER BY f.eventTs, f.factOrder
+            """)
+    List<Map<String, Object>> selectL1RegistrationEventFacts(
+            @Param("registrationFrom") LocalDateTime registrationFrom,
+            @Param("registrationToExclusive") LocalDateTime registrationToExclusive,
+            @Param("observationEnd") LocalDateTime observationEnd);
 
     @Select("""
             SELECT event_name AS eventName,
