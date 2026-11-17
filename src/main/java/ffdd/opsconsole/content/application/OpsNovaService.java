@@ -852,13 +852,20 @@ public class OpsNovaService {
 
     private NovaStats novaStats(Map<String, Object> stats) {
         Map<String, Object> row = stats == null ? Map.of() : stats;
+        // One mapping feeds both the legacy labels and the explicit machine fields below.
+        long socialRecordsToday = longValue(row.get("todayDelivered"));
+        String channelCtrAverage = formatPercent(decimalValue(row.get("avgCtr")));
+        long recentSocialCumulativeDispatch = longValue(row.get("weeklySocial"));
         return new NovaStats(
-                formatLong(row.get("todayDelivered")),
-                formatPercent(decimalValue(row.get("avgCtr"))),
+                String.valueOf(socialRecordsToday),
+                channelCtrAverage,
                 intValue(row.get("ctrTarget")),
                 intValue(row.get("onlineChannels")),
                 intValue(row.get("totalChannels")),
-                formatLong(row.get("weeklySocial")));
+                String.valueOf(recentSocialCumulativeDispatch),
+                socialRecordsToday,
+                channelCtrAverage,
+                recentSocialCumulativeDispatch);
     }
 
     private String formatPercent(BigDecimal value) {
