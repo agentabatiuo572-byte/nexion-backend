@@ -22,6 +22,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.UserAuthEnvironment;
+import ffdd.opsconsole.user.application.UserNicknames;
 import ffdd.opsconsole.user.infrastructure.UserEntity;
 import ffdd.opsconsole.user.mapper.UserOpsMapper;
 import jakarta.annotation.PostConstruct;
@@ -111,13 +112,11 @@ public class AppUserRegistrationService {
         }
         String code = suppliedCode(sponsorCode);
         UserEntity sponsor = resolveSponsor(code,0);
-        String name = StringUtils.hasText(displayName) ? displayName.trim() : "UVEL User";
-        name = name.substring(0, Math.min(name.length(), 64));
         String referralCode = nextReferralCode();
         AuthNewAccountCreator.BirthHandle birth = accountCreator.insertNew(
                 new ffdd.opsconsole.user.facade.UserRegistrationWriteFacade.NewAccountCommand(
                         null, null, ip, passwordEncoder.encode(UUID.randomUUID().toString()),
-                        name, referralCode, sponsor == null ? null : sponsor.getId(),
+                        UserNicknames.next(userMapper::nicknameTaken), referralCode, sponsor == null ? null : sponsor.getId(),
                         sponsor == null ? null : sponsor.getReferralCode(), "L1", "V0", "ACTIVE", 0, "en-US"));
         long userId = birth.customerId();
         var identity = new UserOAuthIdentityEntity();
@@ -385,7 +384,7 @@ public class AppUserRegistrationService {
         user.setPhone(phone);
         user.setClientIp(registrationIp.trim());
         user.setPasswordHash(passwordEncoder.encode(request.password()));
-        user.setNickname("UVEL " + phone.substring(Math.max(0, phone.length() - 4)));
+        user.setNickname(UserNicknames.next(userMapper::nicknameTaken));
         user.setReferralCode(nextReferralCode());
         user.setSponsorUserId(sponsor == null ? null : sponsor.getId());
         user.setSponsorCode(sponsor == null ? null : sponsor.getReferralCode());

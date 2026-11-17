@@ -25,6 +25,9 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface UserOpsMapper extends BaseMapper<UserEntity> {
+    @Select("SELECT COUNT(*) > 0 FROM nx_user WHERE nickname = #{nickname}")
+    boolean nicknameTaken(@Param("nickname") String nickname);
+
     @Select("SELECT NULLIF(COUNT(*), 0) FROM nx_user_daily_active WHERE biz_date=#{date}")
     Long dailyActiveUsers(@Param("date") LocalDate date);
 
