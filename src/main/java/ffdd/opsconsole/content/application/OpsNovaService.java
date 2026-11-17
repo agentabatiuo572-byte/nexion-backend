@@ -101,7 +101,6 @@ public class OpsNovaService {
     private final Clock clock;
 
     public ApiResult<NovaOverview> overview() {
-        novaRepository.ensureTables();
         String currentPhase = normalizePhase(audiencePhaseProvider.currentPhase());
         List<NovaChannelView> channels = novaRepository.channels().stream()
                 .map(channel -> phaseAwareChannel(channel, currentPhase))
@@ -136,8 +135,6 @@ public class OpsNovaService {
     }
 
     public ApiResult<NovaSocialEventPage> socialEventPage(String eventType, String status, int page, int pageSize) {
-        novaRepository.ensureTables();
-        expireDueEvents();
         String normalizedType = trimToEmpty(eventType);
         String normalizedStatus = normalizeStatus(status);
         if (StringUtils.hasText(normalizedType) && !DISTRIBUTION_OPTIONS.containsKey(normalizedType)) {
@@ -349,8 +346,6 @@ public class OpsNovaService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_SOCIAL_EVENT_LANGUAGE_UNSUPPORTED");
         }
         String normalizedLanguage = base.toUpperCase(Locale.ROOT);
-        novaRepository.ensureTables();
-        expireDueEvents();
         NovaChannelView channel = novaRepository.channel("social").orElse(null);
         if (channel == null || !channel.enabled()) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_SOCIAL_CHANNEL_DISABLED");
@@ -737,6 +732,11 @@ public class OpsNovaService {
         List<NovaSocialDistributionItem> updated = novaRepository.socialDistribution();
         audit("I2_NOVA_SOCIAL_DISTRIBUTION_CHANGED", "social", operator(request.operator()), idempotencyKey, request.reason(), Map.of("total", total));
         return ApiResult.ok(updated);
+    }
+
+    /** Scheduled maintenance entry: expiry is a write and no longer runs inside a GET. */
+    public void expireOverdueSocialEvents() {
+        expireDueEvents();
     }
 
     private void expireDueEvents() {
