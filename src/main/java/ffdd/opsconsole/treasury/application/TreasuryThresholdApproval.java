@@ -120,7 +120,7 @@ public class TreasuryThresholdApproval {
         }
     }
 
-    private static boolean hasAuthority(Authentication authentication, String authority) {
+    static boolean hasAuthority(Authentication authentication, String authority) {
         return authentication != null && authentication.isAuthenticated()
                 && authentication.getAuthorities().stream().anyMatch(grant -> authority.equals(grant.getAuthority()));
     }
