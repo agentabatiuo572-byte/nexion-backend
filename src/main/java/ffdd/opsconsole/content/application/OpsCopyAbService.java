@@ -931,7 +931,8 @@ public class OpsCopyAbService {
         if (observed == null) {
             return ApiResult.fail(404, "COPY_EXPERIMENT_NOT_FOUND");
         }
-        if (copyAbRepository.findCopyForUpdate(observed.copyKey()).isEmpty()) {
+        CopyContentRow lockedCopy = copyAbRepository.findCopyForUpdate(observed.copyKey()).orElse(null);
+        if (lockedCopy == null) {
             return ApiResult.fail(404, "COPY_NOT_FOUND");
         }
         CopyExperimentRow current = copyAbRepository.findExperimentForUpdate(observed.id()).orElse(null);
@@ -1014,6 +1015,13 @@ public class OpsCopyAbService {
             return positionConflict;
         }
 
+        // The winner write only republishes the copy when no draft version is pending; with a draft the
+        // copy keeps its current (e.g. archived) status, so adopting would report success while the copy
+        // stays invisible to users. Refuse before any write and let the operator settle the draft first.
+        if (StringUtils.hasText(lockedCopy.draftVersion())
+                && !"PUBLISHED".equalsIgnoreCase(String.valueOf(lockedCopy.status()).trim())) {
+            return ApiResult.fail(409, "COPY_ADOPT_DRAFT_PENDING");
+        }
         CopyExperimentRow adopted = copyAbRepository.adoptExperimentWinner(
                 current.id(), current.copyKey(), winner.version().trim(), operator(request.operator()), now());
         if (adopted == null) {
