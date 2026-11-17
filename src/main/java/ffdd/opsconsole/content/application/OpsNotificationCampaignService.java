@@ -104,8 +104,8 @@ public class OpsNotificationCampaignService {
             projection.put("asOf", instant.toString());
             projection.put("complete", complete);
             projection.put("reason", complete ? null : "DELIVERY_FACT_COVERAGE_UNCONFIRMED");
-            projection.put("sentCount", fact == null ? null : fact.sentCount());
-            projection.put("readCount", fact == null ? null : fact.readCount());
+            projection.put("sentCount", fact == null || fact.sentCount() == 0 ? null : fact.sentCount());
+            projection.put("readCount", fact == null || fact.sentCount() == 0 ? null : fact.readCount());
             projection.put("firstSentAt", fact == null || fact.firstSentAt() == null ? null
                     : fact.firstSentAt().atZone(BusinessCalendar.STORAGE_ZONE).toOffsetDateTime().toString());
             projection.put("lastSentAt", fact == null || fact.lastSentAt() == null ? null
