@@ -12,6 +12,7 @@ logging:
 oauth:
   # Credentials can be provisioned independently; no provider is enabled by default.
   enabled: ${OAUTH_ENABLED:false}
+  test-provider-enabled: ${OAUTH_TEST_PROVIDER_ENABLED:false}
 
 spring:
   application:

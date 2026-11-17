@@ -526,7 +526,8 @@ public class AppUserAuthService {
                 && context.authReference() != null
                 && java.util.Set.of("GOOGLE", "APPLE", "TELEGRAM").contains(
                         context.authReference().split(":", 2)[0].trim().toUpperCase(java.util.Locale.ROOT))
-                && !OAuthProviderClient.enabled(environment)) {
+                && !(context.authReference().contains(":OIDC-")
+                        ? OAuthProviderClient.providerFlowEnabled(environment) : OAuthProviderClient.enabled(environment))) {
             throw new BizException(503, "OAUTH_DISABLED");
         }
         var issued = singleSessions.recover(context);
@@ -578,7 +579,7 @@ public class AppUserAuthService {
     /** Called only after the provider flow verifies the browser proof and resolves its linked account. */
     ApiResult<UserLoginResponse> issueProviderSession(Long userId, String clientAddress, AppLoginContext context,
             String challengeNo, String code, String captchaTicket) {
-        if (!OAuthProviderClient.enabled(environment)) return ApiResult.fail(503, "OAUTH_DISABLED");
+        if (!OAuthProviderClient.providerFlowEnabled(environment)) return ApiResult.fail(503, "OAUTH_DISABLED");
         ApiResult<UserLoginResponse> recovered = recoverCompletedLogin(context);
         if (recovered != null) return recovered;
         LocalDateTime now = LocalDateTime.now();

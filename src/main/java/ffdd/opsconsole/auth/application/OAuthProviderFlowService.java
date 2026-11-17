@@ -47,14 +47,14 @@ public class OAuthProviderFlowService {
     @PostConstruct void ensureSchema() { flows.createTable(); }
 
     private void requireEnvironment() {
-        if (!OAuthProviderClient.enabled(environment))
+        if (!OAuthProviderClient.providerFlowEnabled(environment))
             throw new BizException(503, "OAUTH_DISABLED");
         if (UserAuthEnvironment.resolve(environment).orElse(null) != UserAuthEnvironment.PRODUCTION)
             throw new BizException(503, "OAUTH_PROFILE_FORBIDDEN");
     }
 
     public List<String> available() {
-        return OAuthProviderClient.enabled(environment)
+        return OAuthProviderClient.providerFlowEnabled(environment)
                 && UserAuthEnvironment.resolve(environment).orElse(null) == UserAuthEnvironment.PRODUCTION
                 ? providers.available() : List.of();
     }
