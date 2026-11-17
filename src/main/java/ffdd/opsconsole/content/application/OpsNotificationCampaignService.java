@@ -217,6 +217,9 @@ public class OpsNotificationCampaignService {
                     if (criticalGuard != null) {
                         return criticalGuard;
                     }
+                    if (!validDelivery(current.kind(), current.ctaLabel(), current.ctaHref())) {
+                        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_DELIVERY_CONFIG_INVALID");
+                    }
                     String phase = currentPhase();
                     if (!PHASES.contains(phase)) {
                         return ApiResult.fail(503, "NOTIFICATION_CURRENT_PHASE_UNAVAILABLE");
@@ -274,6 +277,9 @@ public class OpsNotificationCampaignService {
                     ApiResult<NotificationCampaignRow> criticalGuard = requireCriticalExecutionAuthority(current);
                     if (criticalGuard != null) {
                         return criticalGuard;
+                    }
+                    if (!validDelivery(current.kind(), current.ctaLabel(), current.ctaHref())) {
+                        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_DELIVERY_CONFIG_INVALID");
                     }
                     String phase = currentPhase();
                     if (!PHASES.contains(phase)) {
@@ -728,7 +734,7 @@ public class OpsNotificationCampaignService {
         return authorized ? null : ApiResult.fail(403, "NOTIFICATION_CRITICAL_EXECUTION_FORBIDDEN");
     }
 
-    private String trimToEmpty(String value) {
+    private static String trimToEmpty(String value) {
         return value == null ? "" : value.trim();
     }
 
@@ -822,7 +828,7 @@ public class OpsNotificationCampaignService {
                 CTA_ROUTES);
     }
 
-    private boolean validDelivery(String kind, String ctaLabel, String ctaHref) {
+    static boolean validDelivery(String kind, String ctaLabel, String ctaHref) {
         String normalizedKind = normalizeKind(kind);
         String normalizedHref = trimToEmpty(ctaHref);
         if (!KINDS.contains(normalizedKind) || trimToEmpty(ctaLabel).length() > 64) return false;
@@ -837,7 +843,7 @@ public class OpsNotificationCampaignService {
         return length >= 8 && length <= 200;
     }
 
-    private String normalizeKind(String kind) {
+    private static String normalizeKind(String kind) {
         return StringUtils.hasText(kind) ? kind.trim().toLowerCase(Locale.ROOT) : "system";
     }
 

@@ -6,6 +6,7 @@ import ffdd.opsconsole.content.facade.ContentNotificationDispatchFacade;
 import ffdd.opsconsole.content.facade.NotificationEmergencyDispatchResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import java.time.Clock;
 import java.time.LocalDateTime;
@@ -68,6 +69,9 @@ public class ContentNotificationDispatchFacadeAdapter implements ContentNotifica
         NotificationCampaignRow current = campaignRepository.findCampaign(campaignNo.trim()).orElse(null);
         if (current == null || !"scheduled".equalsIgnoreCase(current.status())) {
             return Optional.empty();
+        }
+        if (!OpsNotificationCampaignService.validDelivery(current.kind(), current.ctaLabel(), current.ctaHref())) {
+            throw new BizException(422, "NOTIFICATION_DELIVERY_CONFIG_INVALID");
         }
         LocalDateTime now = LocalDateTime.now(clock);
         if (!campaignRepository.claimScheduled(current.id(), now)) {
