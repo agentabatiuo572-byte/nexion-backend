@@ -17,6 +17,7 @@ public class UserRegistrationWriteAdapter implements UserRegistrationWriteFacade
         if (c == null || c.sandbox() < 0 || c.sandbox() > 1) throw new IllegalArgumentException("Invalid new account");
         // No ID exists in this command: callers cannot turn an existing account into a birth.
         UserEntity user = new UserEntity();
+        user.setId(UserIds.next(mapper::userIdTaken));
         user.setCountryCode(c.countryCode()); user.setPhone(c.phone()); user.setClientIp(c.clientIp());
         user.setPasswordHash(c.passwordHash()); user.setNickname(c.nickname()); user.setReferralCode(c.referralCode());
         user.setSponsorUserId(c.sponsorUserId()); user.setSponsorCode(c.sponsorCode());
