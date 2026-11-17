@@ -220,6 +220,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private static final Set<String> E3_RETIRED_CONFIG_KEYS = Set.of(
             "degradeEarly", "degradeMid", "degradeLate", "minEfficiency", "salvagePct", "minHoldingMonths",
             "taskLockS1", "taskLockPro", "taskLockRack");
+    private static final Set<String> E3_RETIRED_HINT_KEYS = Set.of(
+            "taskLockS1", "taskLockPro", "taskLockRack");
     @lombok.NonNull
     private final SupportPaymentAttributionFacade paymentAttribution;
     private final DeviceOpsRepository deviceRepository;
@@ -3006,7 +3008,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         String key;
         try {
-            key = normalizeE3Key(request.key());
+            key = normalizeE3KeyForIdentity(request.key());
         } catch (IllegalArgumentException ex) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
         }
@@ -3014,6 +3016,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         E3ConfigUpdateRequest trusted = new E3ConfigUpdateRequest(
                 key, request.value(), request.reason().trim(), trustedOperator);
         return deviceIdempotent("E3_CONFIG_UPDATE", idempotencyKey, key, trusted, () -> {
+            if (E3_RETIRED_CONFIG_KEYS.contains(key)) {
+                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E3_CONFIG_KEY_RETIRED");
+            }
             if (!A2ReplayContext.isReplaying()
                     && lockMapper.countActiveByTarget("E", "device_e3_config", key) > 0) {
                 return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
@@ -4739,6 +4744,15 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     private String normalizeE3Key(String key) {
+        return normalizeE3Key(key, false);
+    }
+
+    /** Identity-only normalization for the three retired hint keys; never used by a new write. */
+    private String normalizeE3KeyForIdentity(String key) {
+        return normalizeE3Key(key, true);
+    }
+
+    private String normalizeE3Key(String key, boolean allowRetiredHintKey) {
         String normalized = key == null ? "" : key.trim();
         if (normalized.startsWith("E.device.")) {
             normalized = normalized.substring("E.device.".length());
@@ -4786,9 +4800,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             default -> normalized;
         };
         if (E3_RETIRED_CONFIG_KEYS.contains(normalized)) {
-            throw new IllegalArgumentException("E3_CONFIG_KEY_RETIRED");
+            if (!allowRetiredHintKey || !E3_RETIRED_HINT_KEYS.contains(normalized)) {
+                throw new IllegalArgumentException("E3_CONFIG_KEY_RETIRED");
+            }
         }
-        if (!E3_CONFIG_KEYS.contains(normalized)) {
+        if (!E3_CONFIG_KEYS.contains(normalized)
+                && !(allowRetiredHintKey && E3_RETIRED_HINT_KEYS.contains(normalized))) {
             throw new IllegalArgumentException("Unsupported E3 config key");
         }
         return normalized;
