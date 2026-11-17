@@ -114,7 +114,9 @@ public class BinaryCommissionSettlementService {
 
     @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
     public SettlementResult settle(Long ownerUserId, LocalDate settlementDate) {
-        return settleTrusted(ownerUserId, settlementDate, null, "SYSTEM", "SYSTEM", "系统周期结算", null);
+        SettlementResult result = settleTrusted(ownerUserId, settlementDate, null, "SYSTEM", "SYSTEM", "系统周期结算", null);
+        if ("BLOCKED".equals(result.status())) recordBlockedDecision(result, null, null, "SYSTEM");
+        return result;
     }
 
     /** Legacy clients can recover a committed receipt without claiming another write. */
@@ -149,16 +151,41 @@ public class BinaryCommissionSettlementService {
     @Transactional(propagation = Propagation.MANDATORY, rollbackFor = Exception.class)
     public SettlementResult settleApproved(
             Long ownerUserId, LocalDate settlementDate, String makerReason,
-            Long checkerId, String checkerUsername, String operationId, String decisionKey) {
+            Long checkerId, String checkerUsername, String operationId, String decisionKey,
+            String makerDisplayName) {
         if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(operationId)
                 || !operationId.equals(A2ReplayContext.operationId())) {
             throw new BizException(409, "A2_CONFIRMATION_REQUIRED");
         }
         requireClosedSettlementDate(settlementDate);
         requirePositive(checkerId, "BINARY_ADMIN_ACTOR_REQUIRED");
-        return settleTrusted(ownerUserId, settlementDate, checkerId,
+        ManualApproval approval = new ManualApproval(operationId, decisionKey, makerDisplayName,
+                auditLogService.captureAdminDisplayName(checkerId));
+        SettlementResult result = settleTrusted(ownerUserId, settlementDate, checkerId,
                 text(checkerUsername, "BINARY_ADMIN_ACTOR_REQUIRED"), "ADMIN", makerReason,
-                new ManualApproval(operationId, decisionKey));
+                approval);
+        if ("BLOCKED".equals(result.status())) recordBlockedDecision(result, approval, checkerId, checkerUsername);
+        return result;
+    }
+
+    private void recordBlockedDecision(SettlementResult result, ManualApproval approval,
+                                       Long checkerId, String checkerUsername) {
+        Map<String, Object> detail = linked("ownerUserId", result.ownerUserId(),
+                "settlementDate", result.settlementDate().toString(), "reason", result.reason(),
+                "settlementMode", approval == null ? "AUTOMATIC" : "MANUAL");
+        if (approval != null) {
+            detail.put("a2OperationId", approval.operationId());
+            detail.put("proposerName", approval.makerDisplayName());
+            detail.put("approverName", approval.checkerDisplayName());
+        }
+        // A2 converts BLOCKED to a failed decision and rolls the money transaction back.
+        // Keep only the decision fact in the existing independent audit transaction.
+        auditLogService.recordRequiredInNewTransaction(AuditLogWriteRequest.builder()
+                .action("F3_BINARY_SETTLED").resourceType("BINARY_SETTLEMENT")
+                .resourceId(settlementNo(result.ownerUserId(), result.settlementDate()))
+                .userId(result.ownerUserId()).actorId(checkerId)
+                .actorType(approval == null ? "SYSTEM" : "ADMIN").actorUsername(checkerUsername)
+                .result("BLOCKED").riskLevel("HIGH").detail(detail).build());
     }
 
     private void requireClosedSettlementDate(LocalDate settlementDate) {
@@ -326,9 +353,17 @@ public class BinaryCommissionSettlementService {
                 "residualPolicy", policy.residualPolicy(),
                 "commissionEventId", eventId,
                 "reason", reason);
+        var residual = AuditLogService.f3ResidualSnapshot(policy.residualPolicy(), left, right,
+                consumedBefore, consumedMatched);
+        auditDetail.put("residualTrackARaw", residual.left());
+        auditDetail.put("residualTrackBRaw", residual.right());
+        auditDetail.put("residualAmountUsdt", residual.amount());
+        auditDetail.put("settlementMode", approval == null ? "AUTOMATIC" : "MANUAL");
         if (approval != null) {
             auditDetail.put("a2OperationId", approval.operationId());
             auditDetail.put("idempotencyKey", approval.decisionKey());
+            auditDetail.put("proposerName", approval.makerDisplayName());
+            auditDetail.put("approverName", approval.checkerDisplayName());
         }
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action("F3_BINARY_SETTLED").resourceType("BINARY_SETTLEMENT")
@@ -580,7 +615,8 @@ public class BinaryCommissionSettlementService {
             long fromVolumeId,
             long throughVolumeId) { }
 
-    private record ManualApproval(String operationId, String decisionKey) { }
+    private record ManualApproval(String operationId, String decisionKey,
+                                  String makerDisplayName, String checkerDisplayName) { }
 
     public record AssignmentResult(Long ownerUserId, Long memberUserId, String leg, boolean replayed) { }
 

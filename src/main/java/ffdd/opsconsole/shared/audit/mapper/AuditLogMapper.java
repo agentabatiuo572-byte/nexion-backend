@@ -829,6 +829,58 @@ public interface AuditLogMapper extends BaseMapper<AuditLogEntity> {
             """)
     List<A2SettlementProposal> findA2SettlementProposals(@Param("operationIds") Collection<String> operationIds);
 
+    @Select("""
+            <script>
+            SELECT settlementNo, actorType, actorUsername, detailJson, recordedAt FROM (
+              SELECT resource_id AS settlementNo, actor_type AS actorType, actor_username AS actorUsername,
+                     detail_json AS detailJson, DATE_FORMAT(created_at,'%Y-%m-%dT%H:%i:%s.%f') AS recordedAt, id AS seq
+                FROM nx_audit_log
+               WHERE is_deleted=0 AND resource_type='BINARY_SETTLEMENT'
+                 AND action='F3_BINARY_SETTLED' AND result='SUCCESS' AND resource_id IN
+                 <foreach collection="settlementNos" item="no" open="(" separator="," close=")">#{no}</foreach>
+              UNION ALL
+              SELECT JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) AS settlementNo,
+                     JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorType')) AS actorType,
+                     JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorUsername')) AS actorUsername,
+                     JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.detail')) AS detailJson,
+                     DATE_FORMAT(original_created_at,'%Y-%m-%dT%H:%i:%s.%f') AS recordedAt, original_audit_id AS seq
+                FROM nx_audit_log_archive
+               WHERE content_sha256 IS NOT NULL
+                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceType'))='BINARY_SETTLEMENT'
+                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))='F3_BINARY_SETTLED'
+                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.result'))='SUCCESS'
+                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) IN
+                 <foreach collection="settlementNos" item="no" open="(" separator="," close=")">#{no}</foreach>
+            ) f3_rows ORDER BY seq DESC
+            </script>
+            """)
+    List<F3SettlementAudit> findF3SettlementAudits(@Param("settlementNos") Collection<String> settlementNos);
+
+    @Select("""
+            SELECT settlementNo, actorType, actorUsername, detailJson, recordedAt FROM (
+              SELECT resource_id AS settlementNo, actor_type AS actorType, actor_username AS actorUsername,
+                     detail_json AS detailJson, DATE_FORMAT(created_at,'%Y-%m-%dT%H:%i:%s.%f') AS recordedAt, id AS seq
+                FROM nx_audit_log
+               WHERE is_deleted=0 AND resource_type='BINARY_SETTLEMENT'
+                 AND action='F3_BINARY_SETTLED' AND result='BLOCKED'
+              UNION ALL
+              SELECT JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) AS settlementNo,
+                     JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorType')) AS actorType,
+                     JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorUsername')) AS actorUsername,
+                     JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.detail')) AS detailJson,
+                     DATE_FORMAT(original_created_at,'%Y-%m-%dT%H:%i:%s.%f') AS recordedAt, original_audit_id AS seq
+                FROM nx_audit_log_archive
+               WHERE content_sha256 IS NOT NULL
+                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceType'))='BINARY_SETTLEMENT'
+                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))='F3_BINARY_SETTLED'
+                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.result'))='BLOCKED'
+            ) f3_rows ORDER BY seq DESC LIMIT #{limit}
+            """)
+    List<F3SettlementAudit> findF3BlockedSettlementAttempts(@Param("limit") int limit);
+
+    record F3SettlementAudit(String settlementNo, String actorType, String actorUsername,
+                             String detailJson, String recordedAt) { }
+
     record H8SettlementAudit(String settlementNo, String traceId, String actorUsername) { }
     record H8SettlementBatchAudit(String traceId, String settled) { }
     record H8A2Approval(String traceId, String operationId, String actorUsername) { }

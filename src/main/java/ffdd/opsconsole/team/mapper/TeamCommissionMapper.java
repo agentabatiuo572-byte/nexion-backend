@@ -791,6 +791,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT s.user_id AS ownerUserId,
+                   CONCAT('BINARY-',s.user_id,'-',DATE_FORMAT(s.settlement_date,'%Y%m%d')) AS settlementNo,
                    CONCAT('U', LPAD(s.user_id, GREATEST(8, CHAR_LENGTH(CAST(s.user_id AS CHAR))), '0')) AS user,
                    DATE_FORMAT(u.created_at,'%Y-%m') AS cohort,
                    CAST(ROUND(s.left_volume, 0) AS SIGNED) AS trackA,

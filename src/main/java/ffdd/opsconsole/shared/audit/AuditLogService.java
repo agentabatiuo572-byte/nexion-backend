@@ -1,5 +1,9 @@
 package ffdd.opsconsole.shared.audit;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.auth.infrastructure.AdminEntity;
 import ffdd.opsconsole.auth.mapper.AdminMapper;
 import ffdd.opsconsole.platform.application.A2RuntimePolicy;
@@ -42,6 +46,119 @@ public class AuditLogService {
     private final AuditProperties auditProperties;
     private final AdminMapper adminMapper;
     private final A2RuntimePolicy a2RuntimePolicy;
+    private final ObjectMapper objectMapper;
+
+    /** Called at the authenticated proposal/decision time, never while reading old history. */
+    public String captureAdminDisplayName(Long adminId) {
+        AdminEntity admin = adminMapper.selectById(adminId);
+        if (admin == null) return null;
+        String actor = AdminActorResolver.resolve(null);
+        if (actor != null && (actor.startsWith("admin:") || actor.startsWith("user:"))) actor = null;
+        return firstText(admin.getNickname(), actor);
+    }
+
+    public record F3Residual(BigDecimal left, BigDecimal right, BigDecimal amount) { }
+
+    /** Same per-owner maximum-leg remainder as F3's existing residual-pool query. */
+    public static F3Residual f3ResidualSnapshot(String policy, BigDecimal left, BigDecimal right,
+                                               BigDecimal consumedBefore, BigDecimal consumedNow) {
+        if (policy == null || left == null || right == null || consumedBefore == null || consumedNow == null
+                || left.signum() < 0 || right.signum() < 0 || consumedBefore.signum() < 0 || consumedNow.signum() < 0) return null;
+        if ("每次对碰清零".equals(policy)) return new F3Residual(BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
+        if (!"转结".equals(policy) && !"每月清零".equals(policy)) return null;
+        BigDecimal consumed = consumedBefore.add(consumedNow);
+        if (consumed.compareTo(left.min(right)) > 0) return null;
+        BigDecimal remainderA = left.subtract(consumed).max(BigDecimal.ZERO);
+        BigDecimal remainderB = right.subtract(consumed).max(BigDecimal.ZERO);
+        return new F3Residual(remainderA, remainderB, remainderA.max(remainderB));
+    }
+
+    public Map<String, Map<String, Object>> f3SettlementReviews(Collection<String> settlementNos) {
+        if (settlementNos.isEmpty()) return Map.of();
+        Map<String, Map<String, Object>> result = new LinkedHashMap<>();
+        Map<String, String> operations = new LinkedHashMap<>();
+        for (var audit : auditLogMapper.findF3SettlementAudits(settlementNos)) {
+            if (result.containsKey(audit.settlementNo())) continue;
+            JsonNode detail = f3AuditDetail(audit.detailJson());
+            if (detail == null) continue;
+            Map<String, Object> row = new LinkedHashMap<>();
+            String operationId = clean(detail.path("a2OperationId").asText(null));
+            String mode = clean(detail.path("settlementMode").asText(null));
+            row.put("settlementMode", mode != null ? mode : "ADMIN".equals(audit.actorType()) ? "MANUAL"
+                    : "SYSTEM".equals(audit.actorType()) ? "AUTOMATIC" : null);
+            String policy = clean(detail.path("residualPolicy").asText(null));
+            row.put("residualPolicy", policy);
+            var residual = f3ResidualSnapshot(policy, f3AuditDecimal(detail.get("leftVolume")),
+                    f3AuditDecimal(detail.get("rightVolume")), f3AuditDecimal(detail.get("consumedBefore")),
+                    f3AuditDecimal(detail.get("consumedMatched")));
+            if (detail.hasNonNull("residualTrackARaw") && detail.hasNonNull("residualTrackBRaw")
+                    && detail.hasNonNull("residualAmountUsdt")) {
+                BigDecimal left = f3AuditDecimal(detail.get("residualTrackARaw"));
+                BigDecimal right = f3AuditDecimal(detail.get("residualTrackBRaw"));
+                BigDecimal amount = f3AuditDecimal(detail.get("residualAmountUsdt"));
+                residual = left == null || right == null || amount == null ? null : new F3Residual(left, right, amount);
+            }
+            row.put("residualTrackARaw", residual == null ? null : residual.left());
+            row.put("residualTrackBRaw", residual == null ? null : residual.right());
+            row.put("residualAmountUsdt", residual == null ? null : residual.amount());
+            row.put("proposerName", clean(detail.path("proposerName").asText(null)));
+            row.put("approverName", operationId == null ? null
+                    : firstText(detail.path("approverName").asText(null), f3HistoricalActorName(audit.actorUsername())));
+            row.put("a2OperationId", operationId);
+            if (operationId != null) operations.put(audit.settlementNo(), operationId);
+            result.put(audit.settlementNo(), row);
+        }
+        if (!operations.isEmpty()) {
+            Map<String, String> proposers = new LinkedHashMap<>();
+            auditLogMapper.findA2SettlementProposals(operations.values().stream().distinct().toList())
+                    .forEach(row -> proposers.putIfAbsent(row.operationId(), row.actorUsername()));
+            operations.forEach((settlementNo, operationId) -> {
+                var review = result.get(settlementNo);
+                if (review.get("proposerName") == null) review.put("proposerName", f3HistoricalActorName(proposers.get(operationId)));
+            });
+        }
+        return result;
+    }
+
+    public List<Map<String, Object>> f3BlockedSettlementAttempts(int limit) {
+        return auditLogMapper.findF3BlockedSettlementAttempts(Math.max(1, Math.min(100, limit))).stream()
+                .map(audit -> {
+                    JsonNode detail = f3AuditDetail(audit.detailJson());
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("settlementNo", audit.settlementNo());
+                    row.put("blockedAt", audit.recordedAt());
+                    row.put("ownerUserId", detail == null ? null : detail.path("ownerUserId").asText(null));
+                    for (String key : List.of("settlementDate", "reason", "settlementMode", "a2OperationId", "proposerName", "approverName")) {
+                        row.put(key, detail == null ? null : detail.path(key).asText(null));
+                    }
+                    return row;
+                }).toList();
+    }
+
+    private String f3HistoricalActorName(String actor) {
+        String name = clean(actor);
+        return name == null || name.startsWith("admin:") || name.startsWith("user:")
+                || "SYSTEM".equalsIgnoreCase(name) ? null : name;
+    }
+
+    private JsonNode f3AuditDetail(String detail) {
+        if (!StringUtils.hasText(detail)) return null;
+        try {
+            return objectMapper.reader().with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).readTree(detail);
+        } catch (JsonProcessingException ex) {
+            // Malformed legacy audit metadata is unavailable, never a zero amount or a current value.
+            return null;
+        }
+    }
+
+    private BigDecimal f3AuditDecimal(JsonNode value) {
+        if (value == null || value.isNull()) return null;
+        try {
+            return new BigDecimal(value.asText());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
 
     public void record(AuditLogWriteRequest request) {
         if (!auditProperties.isEnabled() || request == null || !StringUtils.hasText(request.getAction())) {
