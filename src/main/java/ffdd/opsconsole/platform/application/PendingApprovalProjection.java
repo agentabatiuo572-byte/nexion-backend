@@ -179,7 +179,7 @@ public class PendingApprovalProjection {
             String category = values.path("category").asText();
             String actionRoute = values.path("actionRoute").asText();
             if (!missionCode.matches("[A-Za-z0-9_-]{2,64}") || !missionCode.equals(lock.targetId())
-                    || !validCreateText(missionName) || !Set.of("DAY_ONE", "WEEKLY_T1", "WEEKLY_T2").contains(missionType)
+                    || !validCreateText(missionName) || !Set.of("DAY_ONE", "WEEKLY_T1", "WEEKLY_T2").contains(missionType.toUpperCase(java.util.Locale.ROOT))
                     || !validCreateText(category) || !validCreateText(actionRoute)) return unknownH3Mission(code);
             return new H3PendingMissionCreation("新建任务", lock.ticketId(), lock.operatorName(),
                     lock.createdAt().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME), missionCode,
