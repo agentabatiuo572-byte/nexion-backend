@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.growth.dto.GrowthPublicStatsUpdateRequest;
 import ffdd.opsconsole.growth.dto.GlobeDisplayConfig;
+import ffdd.opsconsole.home.application.HomeSharedSnapshotCache;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -23,6 +24,7 @@ import java.util.Optional;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.env.Environment;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -45,6 +47,7 @@ public class GrowthPublicStatsService {
     private static final List<String> MEMBER_ESTIMATE_FIELDS = List.of(
             "registeredUsersBase", "registeredUsersAnchorAt", TICK_INTERVAL, TICK_STEP_MIN, TICK_STEP_MAX);
     private static final long MAX_SAFE_INTEGER = 9_007_199_254_740_991L;
+    private static final List<String> GLOBE_CENTER_ORDER = List.of("sg", "jp", "vn", "uk", "fr", "de", "us-ny", "us-sj");
     private static final String DAILY_USD_KEY = "dailyUsdtPerBaseline";
     private static final BigDecimal SANDBOX_DAILY_USD = new BigDecimal("0.06");
     private static final Set<String> SANDBOX_PROFILES = Set.of("test");
@@ -60,6 +63,7 @@ public class GrowthPublicStatsService {
     private final Environment environment;
 
     private final Optional<HomeDisplayService> homeDisplay;
+    private final HomeSharedSnapshotCache homeSnapshots;
 
     private record RuntimeScope(boolean sandbox, String runId, String versionKey, String valuesKey) { }
 
@@ -155,11 +159,34 @@ public class GrowthPublicStatsService {
         long sampleNow = batch == null ? clock.millis() : longValue(batch.get("serverNow"));
         Long registeredUsers = estimatedMembers(values, sampleNow);
         Map<String, Object> display = homeDisplayAt(batch);
+        Long activeJobsActual;
+        try {
+            activeJobsActual = scope.sandbox() ? homeSnapshots.sandboxActiveJobs(scope.runId())
+                    : homeSnapshots.productionActiveJobs();
+        } catch (DataAccessException unavailable) {
+            return ApiResult.fail(503, "APP_HOME_OVERVIEW_UNAVAILABLE");
+        }
+        double base = values.get("activeJobsBase") == null ? 0 : ((Number) values.get("activeJobsBase")).doubleValue();
+        double jobsWithBase = activeJobsActual == null ? Double.NaN : activeJobsActual.doubleValue() + base;
+        Long activeJobsDisplay = Double.isFinite(jobsWithBase) && Math.rint(jobsWithBase) == jobsWithBase
+                && Math.abs(jobsWithBase) <= MAX_SAFE_INTEGER ? (long) jobsWithBase : null;
+        GlobeDisplayConfig globe = (GlobeDisplayConfig) values.get("globeDisplay");
+        Long onlineDevices = display == null ? null : (Long) display.get("onlineDevices");
+        List<Map<String, Object>> centers = centerNodes(globe, onlineDevices);
         List<Map<String, Object>> unavailable = new ArrayList<>();
-        unavailable.add(Map.of("field", "activeJobsDisplay",
-                "reason", "NO_SERVER_PUBLIC_ACTIVE_JOBS_PROJECTION"));
-        unavailable.add(Map.of("field", "centers[].onlineNodes",
-                "reason", "APP_CLIENT_SIMULATION_NOT_SERVER_AUTHORITATIVE"));
+        if (activeJobsActual == null) {
+            unavailable.add(Map.of("field", "activeJobsActual", "reason", scope.sandbox()
+                    ? "APP_HOME_SANDBOX_RUN_ID_REQUIRED" : "APP_HOME_ON_GRID_UNAVAILABLE"));
+            unavailable.add(Map.of("field", "activeJobsDisplay", "reason", scope.sandbox()
+                    ? "APP_HOME_SANDBOX_RUN_ID_REQUIRED" : "APP_FLEET_REALIZED_TODAY_CONTEXT_REQUIRED"));
+        } else if (activeJobsDisplay == null) {
+            unavailable.add(Map.of("field", "activeJobsDisplay", "reason", "APP_ACTIVE_JOBS_DISPLAY_NOT_SAFE_INTEGER"));
+        }
+        if (centers == null || onlineDevices == null) {
+            unavailable.add(Map.of("field", "centerNodes[].onlineNodes", "reason", centers == null
+                    ? "APP_GLOBE_DISPLAY_UNAVAILABLE" : scope.sandbox()
+                    ? "HOME_DISPLAY_SANDBOX_UNAVAILABLE" : "HOME_DISPLAY_SNAPSHOT_UNAVAILABLE"));
+        }
         if (registeredUsers == null) {
             unavailable.add(Map.of("field", "registeredUsers",
                     "reason", "H9_MEMBER_ESTIMATE_UNAVAILABLE"));
@@ -176,11 +203,58 @@ public class GrowthPublicStatsService {
         response.put("homeDisplay", display);
         response.put("registeredUsers", registeredUsers);
         response.put("activeJobsBase", values.get("activeJobsBase"));
-        response.put("activeJobsActual", null);
+        response.put("activeJobsActual", activeJobsActual);
+        response.put("activeJobsDisplay", activeJobsDisplay);
+        response.put("activeJobsSource", activeJobsActual == null ? null
+                : scope.sandbox() ? "APP_HOME_SANDBOX_TASK_CATALOG" : "APP_HOME_ON_GRID");
         response.put("globeDisplay", values.get("globeDisplay"));
-        response.put("centerNodes", null);
+        response.put("centerNodes", centers);
+        response.put("centerNodesSource", centers == null ? null : "APP_DISPLAY_SIMULATION");
+        response.put("centerNodesStep", centers == null ? null : sampleNow / globe.intervalMs());
         response.put("unavailable", unavailable);
         return ApiResult.ok(response);
+    }
+
+    /** Same fixed order, binary64 weights and largest-remainder split as App globeSimulation.onlineNodes. */
+    private List<Map<String, Object>> centerNodes(GlobeDisplayConfig config, Long onlineTotal) {
+        Map<String, GlobeDisplayConfig.Center> byId = new LinkedHashMap<>();
+        config.centers().forEach(center -> byId.put(center.id(), center));
+        double[] weights = new double[GLOBE_CENTER_ORDER.size()];
+        double sum = 0;
+        for (int i = 0; i < weights.length; i++) {
+            GlobeDisplayConfig.Center center = byId.get(GLOBE_CENTER_ORDER.get(i));
+            weights[i] = center.sharePct() == null ? center.nodes().doubleValue() : center.sharePct().doubleValue();
+            sum += weights[i];
+        }
+        // The App parser rejects a legacy configuration whose eight node weights are all zero.
+        if (sum == 0) return null;
+        long[] nodes = null;
+        if (onlineTotal != null) {
+            nodes = new long[weights.length];
+            double[] remainder = new double[weights.length];
+            Integer[] order = new Integer[weights.length];
+            long allocated = 0;
+            for (int i = 0; i < weights.length; i++) {
+                double exact = onlineTotal.doubleValue() * weights[i] / sum;
+                nodes[i] = (long) Math.floor(exact);
+                remainder[i] = exact - nodes[i];
+                allocated += nodes[i];
+                order[i] = i;
+            }
+            java.util.Arrays.sort(order, (a, b) -> {
+                int compared = Double.compare(remainder[b], remainder[a]);
+                return compared != 0 ? compared : Integer.compare(a, b);
+            });
+            for (int i = 0; i < onlineTotal - allocated; i++) nodes[order[i]]++;
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (int i = 0; i < weights.length; i++) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", GLOBE_CENTER_ORDER.get(i));
+            row.put("onlineNodes", nodes == null ? null : nodes[i]);
+            result.add(row);
+        }
+        return result;
     }
 
     private Map<String, Object> networkPulse(RuntimeScope scope, Map<String, Object> overview) {
