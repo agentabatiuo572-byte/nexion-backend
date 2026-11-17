@@ -154,7 +154,8 @@ public class AppUserAuthService {
             loginGuardMapper.bindUser(loginKey, user.getId());
         }
         if (guard != null && guard.getLockedUntil() != null && guard.getLockedUntil().isAfter(now)) {
-            return lockedFailure(user, guard);
+            return ApiResult.fail(429, "USER_LOGIN_TEMPORARILY_LOCKED",
+                    user == null ? null : UserLoginResponse.locked(guard.getLockedUntil().toString()));
         }
         boolean passwordMatches = safePasswordMatches(request.password(),
                 user != null && StringUtils.hasText(user.getPasswordHash()) ? user.getPasswordHash() : DUMMY_PASSWORD_HASH);
@@ -212,7 +213,9 @@ public class AppUserAuthService {
         UserEntity user = lockLoginUser(findUser(countryCode, phone));
         if (user != null) loginGuardMapper.bindUser(loginKey, user.getId());
         if (guard != null && guard.getLockedUntil() != null && guard.getLockedUntil().isAfter(now)) {
-            return lockedFailure(user, guard);
+            return ApiResult.fail(429, "USER_LOGIN_TEMPORARILY_LOCKED",
+                    user == null ? null : new UserOtpLoginChallengeResponse(
+                            null, 0, null, guard.getLockedUntil().toString()));
         }
         AppOtpPolicy policy = AppOtpPolicy.load(configFacade);
         OtpSendRateDecision otpRate = consumeOtpSendRate(otpSendKey, now, policy,
@@ -918,14 +921,6 @@ public class AppUserAuthService {
     private String normalizeCountryCode(String value) {
         String normalized = value == null ? "" : value.trim().replace(" ", "");
         return normalized.startsWith("+") ? normalized : "+" + normalized;
-    }
-
-    private ApiResult<UserLoginResponse> lockedFailure(UserEntity user, UserLoginGuardRecord guard) {
-        if (user == null || guard == null || guard.getLockedUntil() == null) {
-            return ApiResult.fail(429, "USER_LOGIN_TEMPORARILY_LOCKED");
-        }
-        return ApiResult.fail(429, "USER_LOGIN_TEMPORARILY_LOCKED",
-                UserLoginResponse.locked(guard.getLockedUntil().toString()));
     }
 
     private void recordFailure(String loginKey, Long userId, UserLoginGuardRecord guard, LocalDateTime now) {
