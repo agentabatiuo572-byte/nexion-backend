@@ -187,15 +187,7 @@ public class OpsTreasuryService {
         Map<String, Object> snapshot = (Map<String, Object>) dualLedger.getOrDefault("snapshot", Map.of());
         BigDecimal reserve = money(decimal(snapshot.get("reserveUsd")));
         BigDecimal liabilities = money(decimal(snapshot.get("liabilitiesUsd")));
-        List<BigDecimal> ratios = (List<BigDecimal>) snapshot.getOrDefault("coverageSeries", List.of());
         LocalDateTime asOf = LocalDateTime.now(clock);
-        List<Map<String, Object>> series = new ArrayList<>();
-        for (int index = 0; index < ratios.size(); index++) {
-            int hoursAgo = (ratios.size() - index - 1) * B1_COVERAGE_SERIES_INTERVAL_HOURS;
-            series.add(section(
-                    "period", asOf.minusHours(hoursAgo).toString(),
-                    "coverageRatio", pctScale(ratios.get(index))));
-        }
         BigDecimal coverageRatio = pctScale(decimal(snapshot.get("coverageRatio")));
         BigDecimal netExposure = money(reserve.subtract(liabilities));
         boolean valuationReliable = Boolean.TRUE.equals(snapshot.get("valuationReliable"));
@@ -207,8 +199,6 @@ public class OpsTreasuryService {
                 "redLine", pctScale(decimal(snapshot.get("redlinePct"))),
                 "yellowLine", pctScale(decimal(snapshot.get("healthyPct"))),
                 "redlineBreached", Boolean.TRUE.equals(snapshot.get("redlineBreached")),
-                "series", series,
-                "breaches", List.of(),
                 "asOf", asOf,
                 // Provenance marker, not display copy: the PC L3 contract requires a B1 source.
                 "source", "B1 双账本");
