@@ -175,14 +175,14 @@ public class TrustDocumentService {
                 .getBytes(StandardCharsets.UTF_8));
         String legacyHash = sha256(String.join("\u0000", slot, sha256, text(version), text(language), text(referenceNo),
                 text(verifyUrl), fileName, reason, text(request.expectedSha256()), text(actor)).getBytes(StandardCharsets.UTF_8));
-        // A stable subject id, not the masked display name, owns the receipt. An active success for this exact
-        // command may replay despite the old expectedSha; a new execution still validates the current SHA below.
-        var active = idempotency.activeReceipt(IDEMPOTENCY_SCOPE, key);
-        boolean replaySucceeded = active != null && requestHash.equals(active.requestHash());
-        if (!replaySucceeded) {
-            rejectLegacyReceipt(key, legacyHash, requestHash);
-            requireCurrent(slot, mapper.find(slot), request.expectedSha256());
+        // The stable-subject hash binds the same actor and request, including a retained success past its lease.
+        // Recover before checking the slot SHA or writing storage; new executions retain both SHA checks below.
+        var recovered = idempotency.recoveryResult(IDEMPOTENCY_SCOPE, key, requestHash, TrustDocumentsView.Document.class);
+        if (recovered.status() == AdminIdempotencyService.RecoveryStatus.SUCCEEDED) {
+            return recovered.response();
         }
+        rejectLegacyReceipt(key, legacyHash, requestHash);
+        requireCurrent(slot, mapper.find(slot), request.expectedSha256());
         // Stored before the transaction so a slow transfer holds no connection or row. The key is the content hash,
         // so a retry reuses the object; replaced files stay in storage as the audit trail's history.
         String objectKey = "admin/content/trust-documents/%s/%s.pdf".formatted(slot, sha256);
