@@ -1782,11 +1782,25 @@ public class OpsTeamService implements AuditReplayable {
             throw new BizException(403, "A2_CONFIRMATION_REQUIRED");
         }
         var request = TeamCommissionConfigUpdateRequest.UnilevelBootstrap.from(params);
+        var sevenPolicy = directPolicies == null ? null : directPolicies.getIfAvailable();
+        if (sevenPolicy != null) {
+            sevenPolicy.lockSevenLayerRevision();
+            var policyTime = sevenPolicy.now();
+            if (sevenPolicy.sevenLayerActive(policyTime)
+                    && sevenPolicy.at(policyTime).schemaVersion() == 2
+                    && sevenPolicy.at(policyTime).purchase().enabled()) {
+                throw new BizException(409, "L1_LEGACY_NEX_READ_ONLY_DURING_SPLIT");
+            }
+        }
         // The existing rows are the initial-state proof; do not use a global F policy version.
         if (!commissionRepository.lockAllUnilevelRules().isEmpty()) {
             throw new BizException(409, "F2_UNILEVEL_RULES_ALREADY_CONFIGURED");
         }
         List<Map<String, Object>> rows = unilevelBootstrapLayerRates(request);
+        if (coverageBelowRedline()) {
+            throw new BizException(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                    OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        }
         for (int index = 0; index < rows.size(); index++) {
             var row = rows.get(index);
             BigDecimal usdtRate = (BigDecimal) row.get("usdtRate");
@@ -1794,6 +1808,9 @@ public class OpsTeamService implements AuditReplayable {
                     request.layers().get(index).layerNo(), usdtRate, (BigDecimal) row.get("nexReward"))) {
                 throw new BizException(409, "F2_UNILEVEL_BOOTSTRAP_WRITE_FAILED");
             }
+        }
+        if (sevenPolicy != null) {
+            sevenPolicy.bumpSevenLayerRevision();
         }
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("layers", request.layers());
