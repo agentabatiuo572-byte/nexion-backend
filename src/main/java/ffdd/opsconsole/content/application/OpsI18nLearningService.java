@@ -455,6 +455,11 @@ public class OpsI18nLearningService {
         if (!"draft".equals(normalizeStatus(request.publishState()))) {
             return ApiResult.fail(422, "LEARNING_COURSE_VERSION_MUST_START_AS_DRAFT");
         }
+        // A new version may carry the stored retired text forward, but must not introduce or change it.
+        if (retiredOptionChanged(request.completionCondition(), current.completionCondition())
+                || retiredOptionChanged(request.rewardEvent(), current.rewardEvent())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEARNING_COURSE_OPTION_RETIRED");
+        }
         if (versions.stream().anyMatch(version -> version.version().equalsIgnoreCase(request.version().trim()))) {
             return ApiResult.fail(409, "LEARNING_COURSE_VERSION_ALREADY_EXISTS");
         }
@@ -492,6 +497,12 @@ public class OpsI18nLearningService {
         LearningCourseVersionView current = learningRepository.findCourseVersion(courseId, version).orElse(null);
         if (current == null) return ApiResult.fail(404, "LEARNING_COURSE_VERSION_NOT_FOUND");
         if (!"DRAFT".equals(current.status())) return ApiResult.fail(409, "LEARNING_COURSE_VERSION_NOT_DRAFT");
+        LearningCourseView versionCourse = findCourse(courseId);
+        if (versionCourse == null) return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
+        if (retiredOptionChanged(request.completionCondition(), versionCourse.completionCondition())
+                || retiredOptionChanged(request.rewardEvent(), versionCourse.rewardEvent())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEARNING_COURSE_OPTION_RETIRED");
+        }
         request = request.withPreviousTranslations(current.payload());
         guard = requireCoursePayload(courseId, idempotencyKey, request);
         if (guard != null) return fail(guard);
