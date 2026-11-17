@@ -594,7 +594,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT mission_code AS taskCode, mission_name AS taskName, 'MISSION' AS taskKind, status,
-                   mission_category AS category, action_route AS actionRoute
+                   content_state AS contentState, mission_category AS category, action_route AS actionRoute
               FROM nx_mission
              WHERE mission_code = #{taskCode} AND is_deleted = 0
              LIMIT 1 FOR UPDATE
@@ -625,7 +625,10 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                                      @Param("actionRoute") String actionRoute);
 
     @Update("""
-            UPDATE nx_mission SET status=#{targetStatus}, updated_at=NOW()
+            UPDATE nx_mission
+               SET status=#{targetStatus},
+                   content_state=CASE WHEN #{targetStatus}=1 THEN 'OPENED' ELSE content_state END,
+                   updated_at=NOW()
              WHERE mission_code=#{taskCode} AND status=#{expectedStatus} AND is_deleted=0
             """)
     int transitionMissionStatusCas(@Param("taskCode") String taskCode,
@@ -1255,10 +1258,10 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
     @Insert("""
             INSERT INTO nx_mission (
                 mission_code, mission_name, mission_type, mission_category, action_route,
-                reward_points, status, created_at, updated_at, is_deleted
+                reward_points, status, content_state, created_at, updated_at, is_deleted
             ) VALUES (
                 #{missionCode}, #{missionName}, #{missionType}, #{category}, #{actionRoute},
-                #{rewardPoints}, #{status}, #{now}, #{now}, 0
+                #{rewardPoints}, #{status}, 'DRAFT', #{now}, #{now}, 0
             )
             """)
     int insertMission(

@@ -2078,9 +2078,11 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 return validation("MISSION_NOT_FOUND");
             }
             if (intValue(mission.get("status"), -1) == 2) return invalidMissionTransition();
+            boolean neverOpenedDraft = "DRAFT".equals(String.valueOf(mission.get("contentState")))
+                    && intValue(mission.get("status"), -1) == 0;
             if (weeklySnapshots != null) weeklySnapshots.beforeConfigurationChange();
             return updateLocalizedContent("mission", missionCode, "name",
-                    localizedContent.group(2), configKey, idempotencyKey, request);
+                    localizedContent.group(2), configKey, idempotencyKey, request, neverOpenedDraft);
         }
         String normalizedKey;
         try {
@@ -4216,7 +4218,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         ensureQuestEventSeedData();
         if (mapper.countById(eventCode) != 1L) return validation("EVENT_NOT_FOUND");
         return updateLocalizedContent("event", eventCode, field, locale,
-                "content.event." + eventCode + "." + field + "." + locale, idempotencyKey, request);
+                "content.event." + eventCode + "." + field + "." + locale, idempotencyKey, request, false);
     }
 
     private List<Map<String, Object>> trialProductOptions() {
@@ -6425,10 +6427,12 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
 
     private ApiResult<Map<String, Object>> updateLocalizedContent(
             String entity, String code, String field, String locale,
-            String configKey, String idempotencyKey, GrowthConfigUpdateRequest request) {
+            String configKey, String idempotencyKey, GrowthConfigUpdateRequest request,
+            boolean allowBaseClear) {
         String value;
         try {
-            value = InterfaceLanguages.isAdditional(locale) && request.value() != null && request.value().isBlank()
+            boolean blank = request.value() != null && request.value().isBlank();
+            value = blank && (InterfaceLanguages.isAdditional(locale) || allowBaseClear)
                     ? "" : normalizePlainText(request.value(), 512);
         } catch (IllegalArgumentException ex) {
             return validation(ex.getMessage());

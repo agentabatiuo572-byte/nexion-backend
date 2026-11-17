@@ -149,6 +149,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260831_globe_task_read_index.sql"),
   # H3 mission category and direct App route are configured in PC and persisted by Java.
   (Join-Path $root "scripts\migrations\20260901_h3_mission_presentation_config.sql"),
+  # Never-opened mission drafts need a durable lifecycle marker; existing rows stay UNKNOWN.
+  (Join-Path $root "scripts\migrations\20261117_h3_mission_content_state.sql"),
   (Join-Path $root "scripts\migrations\20260901_genesis_showcase_authority.sql"),
   # Store bundle prices and App checkout read the same operator-owned E1 ladder.
   (Join-Path $root "scripts\migrations\20260902_bundle_discount_authority.sql"),
