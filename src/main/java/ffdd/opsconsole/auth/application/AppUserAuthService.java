@@ -155,7 +155,7 @@ public class AppUserAuthService {
         }
         if (guard != null && guard.getLockedUntil() != null && guard.getLockedUntil().isAfter(now)) {
             return ApiResult.fail(429, "USER_LOGIN_TEMPORARILY_LOCKED",
-                    user == null ? null : UserLoginResponse.locked(guard.getLockedUntil().toString()));
+                    UserLoginResponse.locked(guard.getLockedUntil().toString()));
         }
         boolean passwordMatches = safePasswordMatches(request.password(),
                 user != null && StringUtils.hasText(user.getPasswordHash()) ? user.getPasswordHash() : DUMMY_PASSWORD_HASH);
@@ -214,7 +214,7 @@ public class AppUserAuthService {
         if (user != null) loginGuardMapper.bindUser(loginKey, user.getId());
         if (guard != null && guard.getLockedUntil() != null && guard.getLockedUntil().isAfter(now)) {
             return ApiResult.fail(429, "USER_LOGIN_TEMPORARILY_LOCKED",
-                    user == null ? null : new UserOtpLoginChallengeResponse(
+                    new UserOtpLoginChallengeResponse(
                             null, 0, null, guard.getLockedUntil().toString()));
         }
         AppOtpPolicy policy = AppOtpPolicy.load(configFacade);
