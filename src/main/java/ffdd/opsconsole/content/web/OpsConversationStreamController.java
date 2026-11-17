@@ -230,7 +230,18 @@ public class OpsConversationStreamController {
 
     @PreDestroy
     public void shutdown() {
-        heartbeat.shutdownNow();
+        // Stop accepting new schedules and drain: a heartbeat already running keeps its own
+        // blocking/network timeouts, and the registry and emitters below are only torn down once
+        // it has returned. No separate shutdown deadline or interrupt policy is introduced here.
+        heartbeat.shutdown();
+        try {
+            heartbeat.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+        } catch (InterruptedException interrupted) {
+            // Keep the interrupt status and do not pretend the drain completed: a task may still be
+            // using the registry and emitters, so leave them intact for the rest of the shutdown.
+            Thread.currentThread().interrupt();
+            return;
+        }
         registry.values().forEach(list -> list.forEach(b -> {
             try {
                 b.emitter.complete();
