@@ -62,7 +62,6 @@ public class OpsNotificationCampaignService {
             new NotificationAudienceOption("", "无跳转"),
             new NotificationAudienceOption("/pages/me/wallet-repurchase", "我的 · 锁定计划"),
             new NotificationAudienceOption("/pages/team/team", "赚取 · 团队"),
-            new NotificationAudienceOption("/pages/staking/staking", "赚取 · 质押"),
             new NotificationAudienceOption("/pages/market/market", "商城 · 市场"),
             new NotificationAudienceOption("/pages/genesis/marketplace", "商城 · Genesis"));
     private static final List<NotificationSwipeRouteView> SWIPE_ROUTES = List.of(
