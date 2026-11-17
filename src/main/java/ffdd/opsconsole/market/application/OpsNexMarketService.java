@@ -127,7 +127,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private static final List<String> CONTROL_KEYS = List.of("schedule", "pin", "loop");
     private static final List<String> EXCHANGE_QUEUE_STATUSES = List.of("QUEUED");
     private static final List<String> OVERRIDE_KEYS = List.of(
-            "currentPrice", "volatilityPct", "oracle", "deviationPct", "costBasis", "paused");
+            "currentPrice", "costBasis", "paused");
     /** updateExchangeParam paramKey→精确权限码(service 层二次校验,path variable 多态)。
      *  对照 OpsExchangeController updateParam 的 @PreAuthorize hasAnyAuthority。 */
     private static final Map<String, String> EXCHANGE_PARAM_PERMISSION = Map.ofEntries(
@@ -1643,6 +1643,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 return permissionGuard;
             }
         }
+        if (Set.of("oracle", "deviationPct", "volatilityPct").contains(overrideKey)) {
+            return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), OpsErrorCode.RETIRED_FEATURE.name());
+        }
         if (!"currentPrice".equals(overrideKey) && !A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("G", "nex_market_override", overrideKey) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
@@ -2330,10 +2333,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private Map<String, Object> overrides(NexMarketCurveFrame activeFrame, BigDecimal activePrice) {
         Map<String, Object> overrides = new LinkedHashMap<>();
         overrides.put("currentPrice", activePrice);
-        String volatilityFallback = activeFrame == null ? "" : activeFrame.volatilityPct().stripTrailingZeros().toPlainString();
-        overrides.put("volatilityPct", readText(VOLATILITY_KEY, volatilityFallback));
-        overrides.put("oracle", readText(ORACLE_KEY, "内部做市"));
-        overrides.put("deviationPct", readText(DEVIATION_KEY, "5"));
         overrides.put("costBasis", readText(COST_BASIS_KEY, "0.085"));
         overrides.put("paused", enginePaused());
         return overrides;
