@@ -997,6 +997,12 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         response.put("params", params);
         response.put("welcomeGiftScopeSupported", Map.of(
                 "实体", true, "账户簇", true, "手机号", false, "设备", false));
+        Map<String, Object> paramScopeStatus = new LinkedHashMap<>();
+        params.stream().filter(param -> retiredWelcomeGiftScope(param.key(), param.value())).forEach(param ->
+                paramScopeStatus.put(param.key(), Map.of(
+                        "retired", true, "requiresScopeChange", true,
+                        "reason", "K2_WELCOME_GIFT_SCOPE_RETIRED")));
+        response.put("paramScopeStatus", paramScopeStatus);
         Map<String, Boolean> otpInitializationRequired = new LinkedHashMap<>();
         OTP_CANONICAL_CONFIG_KEYS.forEach((key, canonicalKey) -> otpInitializationRequired.put(key,
                 !activeOtpSource(riskMapper.otpCanonicalSource(canonicalKey, false))));
@@ -1192,8 +1198,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     if (before.version() != request.expectedVersion()) {
                         return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K2_PARAM_CONCURRENT_UPDATE");
                     }
-                    if ("welcomeGiftAnomalyThreshold".equals(normalizedKey)
-                            && (normalizedValue.endsWith(" / 手机号") || normalizedValue.endsWith(" / 设备"))) {
+                    if (retiredWelcomeGiftScope(normalizedKey, normalizedValue)) {
                         return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), "K2_WELCOME_GIFT_SCOPE_RETIRED");
                     }
                     RiskArbitrageParamView updated = riskRepository.updateArbitrageParam(
@@ -2538,6 +2543,12 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             return "";
         }
         return matcher.group(1) + " " + count + " 次 / " + days + " 天";
+    }
+
+    private boolean retiredWelcomeGiftScope(String key, String value) {
+        if (!"welcomeGiftAnomalyThreshold".equals(key)) return false;
+        Matcher matcher = K2_WELCOME_GIFT_THRESHOLD.matcher(value.trim());
+        return matcher.matches() && Set.of("手机号", "设备").contains(matcher.group(3));
     }
 
     private String normalizeWelcomeGiftThreshold(String value) {
