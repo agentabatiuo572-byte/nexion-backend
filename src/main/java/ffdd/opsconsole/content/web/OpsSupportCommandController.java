@@ -149,8 +149,10 @@ public class OpsSupportCommandController {
                     || !rejection.path("sent").isBoolean() || rejection.path("sent").booleanValue()) {
                 throw new BizException(409,"SUPPORT_COMMAND_RESULT_INVALID");
             }
-            ownership.lockCustomer(customer);
-            ownership.requireRead(customer);
+            // The original sender reads their own rejected send. The receipt already proves who acted and
+            // which request it was, so the current holder of the customer is deliberately not consulted:
+            // a customer that moved away must not hide the fact that nothing was sent. No message body,
+            // attachment, customer profile or current holder is returned here.
             return ApiResult.ok(Map.of("status","REJECTED","sent",false,"customerId",customer,
                     "operation",operation,"idempotencyKey",key.trim(),
                     "clientMessageId",rejection.path("clientMessageId").textValue(),
