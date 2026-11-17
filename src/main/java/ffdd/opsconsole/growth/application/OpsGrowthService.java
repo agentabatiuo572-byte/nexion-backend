@@ -3753,7 +3753,27 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     }
 
     private List<Map<String, Object>> taskContracts() {
-        return growthRows(GrowthQuestEventMapper::taskContracts);
+        return growthRows(GrowthQuestEventMapper::taskContracts).stream().map(row -> {
+            Map<String, Object> contract = new LinkedHashMap<>(row);
+            contract.put("missionCode", row.get("taskKey"));
+            contract.put("completed24h", row.get("sample24h"));
+            contract.put("b3Default", row.get("b3"));
+            contract.put("retentionOnlyDefault", row.get("retentionOnly"));
+            contract.put("attributionAvailable", false);
+            contract.put("fieldSemantics", Map.of(
+                    "serverEvent", "MISSION_CODE_COMPATIBILITY_ALIAS",
+                    "b3", "STATIC_DEFAULT_COMPATIBILITY_ALIAS",
+                    "retentionOnly", "STATIC_DEFAULT_COMPATIBILITY_ALIAS",
+                    "sample24h", "TIMESTAMPED_COMPLETED_MISSION_INSTANCES",
+                    "anomalyPct", "CREATED_INSTANCE_CURRENT_STATUS_RATIO"));
+            contract.put("completionBasis", Map.of(
+                    "source", "nx_user_mission",
+                    "timestamp", "completed_at",
+                    "states", List.of("COMPLETED", "CLAIMABLE", "CLAIMED"),
+                    "window", "DB_NOW_MINUS_1_DAY_TO_DB_NOW_INCLUSIVE",
+                    "deduplication", "UNIQUE_USER_MISSION_INSTANCE"));
+            return contract;
+        }).toList();
     }
 
     private Map<String, Object> phaseMultiplierReadonly() {
