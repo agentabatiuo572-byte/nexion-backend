@@ -4546,7 +4546,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
 
     private List<Map<String, Object>> checkInRules() {
         return growthRows(GrowthQuestEventMapper::checkInRules).stream().map(row -> {
-            if (!"interval".equals(row.get("key"))) return row;
+            if (!"interval".equals(row.get("key")) && !"broken".equals(row.get("key"))
+                    && !"saver".equals(row.get("key"))) return row;
             Map<String, Object> retired = new LinkedHashMap<>(row);
             retired.put("configurable", false);
             retired.put("writeBlockedReason", OpsErrorCode.RETIRED_FEATURE.name());
@@ -6441,9 +6442,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             case "streakBonusNex", "bonus7" -> "bonus7";
             case "lucky15Pct", "p15" -> "p15";
             case "lucky2Pct", "p2" -> "p2";
-            case "brokenHours", "broken" -> "broken";
-            case "reviveCards", "saver" -> "saver";
-            case "interval" -> throw new BizException(
+            case "interval", "brokenHours", "broken", "reviveCards", "saver" -> throw new BizException(
                     OpsErrorCode.RETIRED_FEATURE.httpStatus(), OpsErrorCode.RETIRED_FEATURE.name());
             default -> throw new IllegalArgumentException("Unsupported H5 check-in rule");
         };
