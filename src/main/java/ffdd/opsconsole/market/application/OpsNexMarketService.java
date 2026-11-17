@@ -1282,13 +1282,17 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     void validateLegacyMarketProposal(AuditReplayCommand command) {
-        if (manualTuningAllowed) return;
+        if (manualTuningAllowed && !"g3_curve_update".equals(command.op())) return;
         Map<String, Object> params = command.params();
         if (params == null) throw new BizException(422, "G3_POLICY_PROPOSAL_INVALID");
         boolean forbidden = "g3_override".equals(command.op())
                 ? "currentPrice".equals(str(params, "overrideKey"))
                 : curveFieldChanged(loadCurve(), normalizeFrames(replayMarketFrames(params.get("frames"))), "pumpProbability");
-        if (forbidden) throw new BizException(422, MANUAL_TUNING_FORBIDDEN);
+        if (forbidden && !manualTuningAllowed) throw new BizException(422, MANUAL_TUNING_FORBIDDEN);
+        if ("g3_curve_update".equals(command.op())
+                && curveFieldChanged(loadCurve(), normalizeFrames(replayMarketFrames(params.get("frames"))), "volatilityPct")) {
+            throw new BizException(OpsErrorCode.RETIRED_FEATURE.httpStatus(), OpsErrorCode.RETIRED_FEATURE.name());
+        }
     }
 
     ApiResult<Map<String, Object>> applyApprovedMarketPolicy(String idempotencyKey, G3MarketPolicyChangeRequest request,
@@ -1496,6 +1500,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (curveFieldChanged(before, frames, "volatilityPct")) {
             ApiResult<Map<String, Object>> permission = requirePermission("finprod_g3_write");
             if (permission != null) return permission;
+            return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), OpsErrorCode.RETIRED_FEATURE.name());
         }
         if (curveRaisesLiability(before, frames)) {
             return ApiResult.fail(409, "G3_POLICY_APPROVAL_REQUIRED");
