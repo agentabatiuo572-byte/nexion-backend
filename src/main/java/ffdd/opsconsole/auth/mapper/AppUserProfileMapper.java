@@ -11,6 +11,9 @@ public interface AppUserProfileMapper extends BaseMapper<UserEntity> {
     @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
     Long activeUser(@Param("userId") Long userId);
 
+    @Select("SELECT COUNT(*) > 0 FROM nx_user WHERE nickname=#{nickname}")
+    boolean nicknameTaken(@Param("nickname") String nickname);
+
     @Select("SELECT nickname FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1 FOR UPDATE")
     String currentNicknameForUpdate(@Param("userId") Long userId);
 

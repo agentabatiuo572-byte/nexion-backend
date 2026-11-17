@@ -25,6 +25,12 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface UserOpsMapper extends BaseMapper<UserEntity> {
+    @Select("SELECT COUNT(*) > 0 FROM nx_user WHERE nickname = #{nickname}")
+    boolean nicknameTaken(@Param("nickname") String nickname);
+
+    @Select("SELECT COUNT(*) > 0 FROM nx_user WHERE id = #{id}")
+    boolean userIdTaken(@Param("id") long id);
+
     @Select("SELECT NULLIF(COUNT(*), 0) FROM nx_user_daily_active WHERE biz_date=#{date}")
     Long dailyActiveUsers(@Param("date") LocalDate date);
 
@@ -470,7 +476,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     long countUsersByQuery(@Param("query") UserQueryRequest query, @Param("statuses") List<String> statuses,
                           @Param("phoneKeyword") String phoneKeyword);
 
-    @Select("<script>" + PROFILE_SELECT + PROFILE_FROM + PROFILE_FILTER + " ORDER BY u.id DESC LIMIT #{pageSize} OFFSET #{offset}</script>")
+    @Select("<script>" + PROFILE_SELECT + PROFILE_FROM + PROFILE_FILTER + " ORDER BY u.created_at DESC, u.id DESC LIMIT #{pageSize} OFFSET #{offset}</script>")
     List<UserAccountView> pageUsers(@Param("query") UserQueryRequest query, @Param("statuses") List<String> statuses,
                                     @Param("offset") int offset, @Param("pageSize") int pageSize,
                                     @Param("phoneKeyword") String phoneKeyword);
@@ -482,7 +488,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
 
     @Select("<script>" + PROFILE_SELECT + SCOPED_PROFILE_FROM + PROFILE_FILTER
             + ffdd.opsconsole.content.mapper.SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE
-            + " ORDER BY u.id DESC LIMIT #{pageSize} OFFSET #{offset}</script>")
+            + " ORDER BY u.created_at DESC, u.id DESC LIMIT #{pageSize} OFFSET #{offset}</script>")
     List<UserAccountView> pageScopedUsers(@Param("query") UserQueryRequest query, @Param("statuses") List<String> statuses,
                                          @Param("offset") long offset, @Param("pageSize") int pageSize,
                                          @Param("phoneKeyword") String phoneKeyword, @Param("scope") ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope);
