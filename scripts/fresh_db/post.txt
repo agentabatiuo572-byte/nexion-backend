@@ -52,3 +52,7 @@ migrations/20261109_datacenter_retirement.sql
 
 # PHONE features moved to E6; reassert menu-only reachability after fresh seeds.
 migrations/20261109_phone_menu_visibility.sql
+
+# Restore the H4 wheel award event registration that a DDL-only fresh install misses.
+# The migration inserts only when the registry row, lifecycle row and domain extension are absent.
+migrations/20261118_h4_wheel_award_event_registry.sql

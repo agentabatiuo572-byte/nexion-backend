@@ -492,7 +492,10 @@ $migrations = @(
   # Fence stale J4 execution progress writes with the generation claimed by recovery.
   (Join-Path $root "scripts\migrations\20261116_j4_sop_execution_generation.sql"),
   # Generated nicknames are unique: rename existing duplicates, then add uk_user_nickname.
-  (Join-Path $root "scripts\migrations\20261117_user_nickname_unique.sql")
+  (Join-Path $root "scripts\migrations\20261117_user_nickname_unique.sql"),
+  # The H4 wheel award event registration is lost in DDL-only installs.
+  # Restore it after the event governance structure and lifecycle closure above.
+  (Join-Path $root "scripts\migrations\20261118_h4_wheel_award_event_registry.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
