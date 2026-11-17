@@ -2246,8 +2246,8 @@ public class AuditReplayBusinessPermissionGuard {
         if (Set.of(
                 "F.influence.clampMin", "F.influence.clampMax",
                 "F.cooldown", "F.partner.tiers", "F.royalty.minPayout",
-                "F.unilevel.depthGate", "F.unilevel.nexCap", "F.unilevel.backfill",
-                "F.unilevel.depth", "F.sunset.exclusions").contains(key)
+                "F.unilevel.depthGate", "F.unilevel.depthGateRank", "F.unilevel.nexCap", "F.unilevel.backfill",
+                "F.unilevel.depth", "F.unilevel.mergeExitMaxPct", "F.sunset.exclusions").contains(key)
                 || key.matches("^F\\.unilevel\\.L[1-7]\\.paused$")) {
             return "network_f2_policy_amplify";
         }
