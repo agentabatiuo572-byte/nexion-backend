@@ -878,8 +878,20 @@ public interface AuditLogMapper extends BaseMapper<AuditLogEntity> {
             """)
     List<F3SettlementAudit> findF3BlockedSettlementAttempts(@Param("limit") int limit);
 
+    @Select("""
+            <script>SELECT id AS userId,
+                   CONCAT('U', LPAD(id, GREATEST(8, CHAR_LENGTH(CAST(id AS CHAR))), '0')) AS user
+              FROM nx_user
+             WHERE is_deleted = 0
+               AND id IN
+               <foreach collection="userIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+            </script>
+            """)
+    List<UserCode> findUserCodes(@Param("userIds") Collection<Long> userIds);
+
     record F3SettlementAudit(String settlementNo, String actorType, String actorUsername,
                              String detailJson, String recordedAt) { }
+    record UserCode(Long userId, String user) { }
 
     record H8SettlementAudit(String settlementNo, String traceId, String actorUsername) { }
     record H8SettlementBatchAudit(String traceId, String settled) { }

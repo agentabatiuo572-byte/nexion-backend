@@ -121,18 +121,39 @@ public class AuditLogService {
     }
 
     public List<Map<String, Object>> f3BlockedSettlementAttempts(int limit) {
-        return auditLogMapper.findF3BlockedSettlementAttempts(Math.max(1, Math.min(100, limit))).stream()
-                .map(audit -> {
-                    JsonNode detail = f3AuditDetail(audit.detailJson());
-                    Map<String, Object> row = new LinkedHashMap<>();
-                    row.put("settlementNo", audit.settlementNo());
-                    row.put("blockedAt", audit.recordedAt());
-                    row.put("ownerUserId", detail == null ? null : detail.path("ownerUserId").asText(null));
-                    for (String key : List.of("settlementDate", "reason", "settlementMode", "a2OperationId", "proposerName", "approverName")) {
-                        row.put(key, detail == null ? null : detail.path(key).asText(null));
-                    }
-                    return row;
-                }).toList();
+        var attempts=auditLogMapper.findF3BlockedSettlementAttempts(Math.max(1, Math.min(100, limit)));
+        var rows=new java.util.ArrayList<Map<String, Object>>();
+        var ownerIds=new java.util.LinkedHashSet<Long>();
+        for(var audit:attempts) {
+            JsonNode detail = f3AuditDetail(audit.detailJson());
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("settlementNo", audit.settlementNo());
+            row.put("blockedAt", audit.recordedAt());
+            String ownerUserId = detail == null ? null : detail.path("ownerUserId").asText(null);
+            row.put("ownerUserId", ownerUserId);
+            if (StringUtils.hasText(ownerUserId)) {
+                try {
+                    long ownerId = Long.parseLong(ownerUserId.trim());
+                    if (ownerId > 0) ownerIds.add(ownerId);
+                } catch (NumberFormatException ignored) { }
+            }
+            for (String key : List.of("settlementDate", "reason", "settlementMode", "a2OperationId", "proposerName", "approverName")) {
+                row.put(key, detail == null ? null : detail.path(key).asText(null));
+            }
+            rows.add(row);
+        }
+        Map<Long,String> users = ownerIds.isEmpty() ? Map.of()
+                : auditLogMapper.findUserCodes(ownerIds).stream()
+                    .collect(java.util.stream.Collectors.toMap(AuditLogMapper.UserCode::userId, AuditLogMapper.UserCode::user));
+        for (var row : rows) {
+            String ownerUserId = (String) row.get("ownerUserId");
+            Long ownerId = null;
+            if (StringUtils.hasText(ownerUserId)) {
+                try { ownerId = Long.valueOf(ownerUserId.trim()); } catch (NumberFormatException ignored) { }
+            }
+            row.put("user", ownerId == null ? null : users.get(ownerId));
+        }
+        return rows;
     }
 
     private String f3HistoricalActorName(String actor) {
