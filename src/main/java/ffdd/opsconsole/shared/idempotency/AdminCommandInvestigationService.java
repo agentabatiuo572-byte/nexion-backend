@@ -276,6 +276,8 @@ public class AdminCommandInvestigationService {
         String scope = original.getScope();
         if (fact == null || !StringUtils.hasText(fact.getResourceId()) || !StringUtils.hasText(fact.getResourceType())) return false;
         String action = fact.getAction();
+        if (AdminCommandOrigin.purchasePaymentPolicyScope(scope)) return "PURCHASE_PAYMENT_POLICY".equals(fact.getResourceType())
+                && "1".equals(fact.getResourceId()) && "PURCHASE_PAYMENT_POLICY_UPDATE".equals(action);
         if ("A2_COMMAND".equals(scope)) return "A2_OPERATION".equals(fact.getResourceType())
                 && Set.of("A2_OPERATION_PROPOSED", "A2_OPERATION_EXECUTED", "A2_OPERATION_APPROVED",
                         "A2_OPERATION_REJECTED", "A2_OPERATION_WITHDRAWN").contains(action);
