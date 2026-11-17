@@ -1938,13 +1938,18 @@ public class OpsTeamService implements AuditReplayable {
         }
         var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
         if (direct != null && direct.groupForEvent(directEventId) != null) {
+            if ("UNLOCKED".equals(toCanonical)) {
+                ApiResult<Void> coverage = requirePayoutCoverageForUnlock();
+                if (coverage.getCode() != 0) {
+                    return ApiResult.fail(coverage.getCode(), coverage.getMessage());
+                }
+            }
             direct.changeStatus(directEventId, toCanonical, request.expectedVersion());
             if (!commissionRepository.recordCommissionOperation(eventId, fromCanonical+"_TO_"+toCanonical, idempotencyKey.trim(), request.expectedVersion(), actor(request.operator()), request.reason().trim())) throw new IllegalStateException("F5_OPERATION_AUDIT_CONFLICT");
             return ApiResult.ok(Map.of("updated", direct.eventSnapshot(directEventId)));
         }
-        // F5: the ungrouped legacy event never read the suspension or the payout coverage that the
-        // grouped branch and the reissue path already respect, so its unlock could pay a suspended
-        // user or pay while coverage is under the redline. Both are refused before any write.
+        // The grouped writer checks suspension itself; legacy events need the explicit check here.
+        // Both manual unlock branches apply the same payout coverage gate before any write.
         if ("UNLOCKED".equals(toCanonical)) {
             if (commissionRepository.countEventUserSuspended(directEventId) > 0) {
                 return ApiResult.fail(409, "COMMISSION_USER_SUSPENDED");
