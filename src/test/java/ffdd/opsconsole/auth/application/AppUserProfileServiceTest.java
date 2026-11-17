@@ -24,7 +24,7 @@ class AppUserProfileServiceTest {
     @Test
     void unsupportedLegacyLocaleReadsAsEnglishAndCannotBeSavedAgain() {
         when(mapper.activeUser(42L)).thenReturn(42L);
-        when(mapper.profile(42L)).thenReturn(Map.of("language", "ja", "nickname", "Nova Rover 42"));
+        when(mapper.profile(42L)).thenReturn(Map.of("language", "ja", "nickname", "Azure Rover 4R"));
         assertThat(service.profile(42L)).containsEntry("language", "en");
         assertThatThrownBy(() -> service.updateLanguage(42L, "ja")).hasMessage("USER_LANGUAGE_INVALID");
         verify(mapper, never()).updateLanguage(42L, "ja");
@@ -64,7 +64,7 @@ class AppUserProfileServiceTest {
         when(mapper.currentNicknameForUpdate(42L)).thenReturn("Nexion 0042");
         when(mapper.nicknameChangedAt(42L)).thenReturn(storageNowMinus(java.time.Duration.ofDays(3)));
         assertThatThrownBy(() -> service.updateNickname(42L, "too-soon",
-                new AppUserProfileService.UpdateNicknameRequest("Nexion 0042", "Swift Pilot 43")))
+                new AppUserProfileService.UpdateNicknameRequest("Nexion 0042", "Swift Pilot K7")))
                 .hasMessage("USER_NICKNAME_CHANGE_TOO_SOON");
         verify(mapper, never()).updateNickname(any(), any(), any());
         org.mockito.Mockito.verifyNoInteractions(audit, facts);
@@ -74,9 +74,9 @@ class AppUserProfileServiceTest {
     void nicknameMayChangeAgainOnceSevenDaysHavePassed() {
         when(mapper.currentNicknameForUpdate(42L)).thenReturn("Nexion 0042");
         when(mapper.nicknameChangedAt(42L)).thenReturn(storageNowMinus(java.time.Duration.ofDays(7).plusMinutes(1)));
-        when(mapper.updateNickname(42L, "Swift Pilot 43", "Nexion 0042")).thenReturn(1);
+        when(mapper.updateNickname(42L, "Swift Pilot K7", "Nexion 0042")).thenReturn(1);
         assertThat(service.updateNickname(42L, "after-interval",
-                new AppUserProfileService.UpdateNicknameRequest("Nexion 0042", "Swift Pilot 43")))
+                new AppUserProfileService.UpdateNicknameRequest("Nexion 0042", "Swift Pilot K7")))
                 .containsEntry("status", "UPDATED");
     }
 
@@ -95,7 +95,7 @@ class AppUserProfileServiceTest {
     @Test
     void profileReportsWhenEachFieldCanChangeNext() {
         java.time.LocalDateTime changed = storageNowMinus(java.time.Duration.ofDays(2));
-        var row = new java.util.HashMap<String, Object>(Map.of("nickname", "Nova Rover 42", "language", "en"));
+        var row = new java.util.HashMap<String, Object>(Map.of("nickname", "Azure Rover 4R", "language", "en"));
         row.put("nicknameChangedAt", changed);
         row.put("avatarChangedAt", storageNowMinus(java.time.Duration.ofDays(9)));
         when(mapper.profile(42L)).thenReturn(row);
@@ -111,7 +111,7 @@ class AppUserProfileServiceTest {
         var candidates = service.nicknameCandidates(42L);
 
         assertThat(candidates).hasSize(6).doesNotHaveDuplicates()
-                .allMatch(name -> name.matches("[A-Za-z]+ [A-Za-z]+ [1-9][0-9]"));
+                .allMatch(name -> name.matches("[A-Za-z]+ [A-Za-z]+ [A-Z2-9]{2,3}"));
         verify(mapper).activeUser(42L);
     }
 
@@ -132,34 +132,34 @@ class AppUserProfileServiceTest {
     void updateUsesExpectedNicknameCasAndReturnsAuthoritativeProjection() {
         when(mapper.activeUser(42L)).thenReturn(1L);
         when(mapper.currentNicknameForUpdate(42L)).thenReturn("Nexion 0042");
-        when(mapper.updateNickname(42L, "Nova Rover 42", "Nexion 0042")).thenReturn(1);
+        when(mapper.updateNickname(42L, "Azure Rover 4R", "Nexion 0042")).thenReturn(1);
 
         Map<String, Object> result = service.updateNickname(
-                42L, "profile-key", new AppUserProfileService.UpdateNicknameRequest("Nexion 0042", "Nova Rover 42"));
+                42L, "profile-key", new AppUserProfileService.UpdateNicknameRequest("Nexion 0042", "Azure Rover 4R"));
 
-        assertThat(result).containsEntry("nickname", "Nova Rover 42").containsEntry("status", "UPDATED");
-        verify(mapper).updateNickname(42L, "Nova Rover 42", "Nexion 0042");
+        assertThat(result).containsEntry("nickname", "Azure Rover 4R").containsEntry("status", "UPDATED");
+        verify(mapper).updateNickname(42L, "Azure Rover 4R", "Nexion 0042");
         verify(facts).record(42L, ffdd.opsconsole.growth.application.H3DayOneBusinessFactContract.PROFILE_SAVED);
         verify(audit).recordRequired(any());
     }
 
     @Test
     void unchangedOrStaleNicknameDoesNotCreateACompletionFact() {
-        when(mapper.currentNicknameForUpdate(42L)).thenReturn("Nova Rover 42");
+        when(mapper.currentNicknameForUpdate(42L)).thenReturn("Azure Rover 4R");
         assertThat(service.updateNickname(42L, "same", new AppUserProfileService.UpdateNicknameRequest(
-                "wrong old nickname", "Nova Rover 42"))).containsEntry("status", "UNCHANGED");
+                "wrong old nickname", "Azure Rover 4R"))).containsEntry("status", "UNCHANGED");
         assertThatThrownBy(() -> service.updateNickname(42L, "stale", new AppUserProfileService.UpdateNicknameRequest(
-                "wrong old nickname", "Swift Pilot 43"))).hasMessage("USER_PROFILE_VERSION_CONFLICT");
+                "wrong old nickname", "Swift Pilot K7"))).hasMessage("USER_PROFILE_VERSION_CONFLICT");
         org.mockito.Mockito.verifyNoInteractions(facts);
     }
 
     @Test
     void failedNicknameWriteNeverCreatesACompletionFact() {
         when(mapper.currentNicknameForUpdate(42L)).thenReturn("Nexion 0042");
-        when(mapper.updateNickname(42L, "Swift Pilot 43", "Nexion 0042")).thenReturn(0);
+        when(mapper.updateNickname(42L, "Swift Pilot K7", "Nexion 0042")).thenReturn(0);
 
         assertThatThrownBy(() -> service.updateNickname(42L, "failed-write",
-                new AppUserProfileService.UpdateNicknameRequest("Nexion 0042", "Swift Pilot 43")))
+                new AppUserProfileService.UpdateNicknameRequest("Nexion 0042", "Swift Pilot K7")))
                 .hasMessage("USER_PROFILE_VERSION_CONFLICT");
 
         verify(facts, never()).record(any(), any());
@@ -168,13 +168,13 @@ class AppUserProfileServiceTest {
     @Test
     void canonicalFactFailureDoesNotReturnAFalseProfileSuccess() {
         when(mapper.currentNicknameForUpdate(42L)).thenReturn("Nexion 0042");
-        when(mapper.updateNickname(42L, "Swift Pilot 43", "Nexion 0042")).thenReturn(1);
+        when(mapper.updateNickname(42L, "Swift Pilot K7", "Nexion 0042")).thenReturn(1);
         org.mockito.Mockito.doThrow(new IllegalStateException("outbox unavailable"))
                 .when(facts).record(42L,
                         ffdd.opsconsole.growth.application.H3DayOneBusinessFactContract.PROFILE_SAVED);
 
         assertThatThrownBy(() -> service.updateNickname(42L, "fact-failed",
-                new AppUserProfileService.UpdateNicknameRequest("Nexion 0042", "Swift Pilot 43")))
+                new AppUserProfileService.UpdateNicknameRequest("Nexion 0042", "Swift Pilot K7")))
                 .hasMessage("outbox unavailable");
     }
 
@@ -210,7 +210,7 @@ class AppUserProfileServiceTest {
     @Test
     void avatarReadAndUploadMustUseThePublicApiOrigin() {
         String key = "users/42/avatar/a76f323e5177470f86471a42bb8fcb62.png";
-        when(mapper.profile(42L)).thenReturn(Map.of("nickname", "Nova Rover 42",
+        when(mapper.profile(42L)).thenReturn(Map.of("nickname", "Azure Rover 4R",
                 "avatarObjectKey", key, "language", "en"));
         when(storage.presignGet(any(), any())).thenReturn("http://127.0.0.1:9000/nexion/" + key);
 

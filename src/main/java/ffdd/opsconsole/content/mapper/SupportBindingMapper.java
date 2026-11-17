@@ -108,7 +108,7 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
     String CUSTOMER_FILTER="FROM nx_user u JOIN nx_support_agent_user_assignment a ON a.user_id=u.id AND a.status='ACTIVE' AND a.is_deleted=0 WHERE u.is_deleted=0 AND a.agent_admin_id=#{actor} <if test='keyword != null'>AND (u.nickname LIKE CONCAT('%',#{keyword},'%') OR CAST(u.id AS CHAR)=#{keyword})</if> <if test='status != null'>AND u.status=#{status}</if> <if test='id != null'>AND u.id=#{id}</if>";
     @Select("<script>SELECT COUNT(*) " + CUSTOMER_FILTER + "</script>")
     long ownedCustomerCount(@Param("actor") Long actor,@Param("keyword") String keyword,@Param("status") String status,@Param("id") Long id);
-    @Select("<script>SELECT u.id " + CUSTOMER_FILTER + " ORDER BY u.id LIMIT #{limit} OFFSET #{offset}</script>")
+    @Select("<script>SELECT u.id " + CUSTOMER_FILTER + " ORDER BY u.created_at, u.id LIMIT #{limit} OFFSET #{offset}</script>")
     List<Long> ownedCustomers(@Param("actor") Long actor,@Param("keyword") String keyword,@Param("status") String status,@Param("id") Long id,@Param("limit") int limit,@Param("offset") long offset);
     @Select("SELECT COUNT(*) FROM nx_conversation_message m LEFT JOIN nx_support_reply_cursor r ON r.conversation_no=m.conversation_no WHERE m.conversation_no=#{no} AND m.is_deleted=0 AND m.sender_type='user' AND m.id>COALESCE(r.through_message_id,0)")
     long pendingReplies(String no);

@@ -485,7 +485,9 @@ $migrations = @(
   # or rewrite published content versions and historical evidence.
   (Join-Path $root "scripts\migrations\20261116_bug426_current_uvt_display_names.sql"),
   # Fence stale J4 execution progress writes with the generation claimed by recovery.
-  (Join-Path $root "scripts\migrations\20261116_j4_sop_execution_generation.sql")
+  (Join-Path $root "scripts\migrations\20261116_j4_sop_execution_generation.sql"),
+  # Generated nicknames are unique: rename existing duplicates, then add uk_user_nickname.
+  (Join-Path $root "scripts\migrations\20261117_user_nickname_unique.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
