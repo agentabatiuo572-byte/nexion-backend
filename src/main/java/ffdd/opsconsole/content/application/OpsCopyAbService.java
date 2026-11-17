@@ -1665,13 +1665,17 @@ public class OpsCopyAbService {
     private CopyAbStats stats(List<CopyContentRow> copies, List<CopyExperimentRow> experiments) {
         int running = (int) experiments.stream().filter(row -> "running".equals(row.state())).count();
         double exposure = experiments.stream().mapToDouble(row -> quantity(row.impressions())).sum();
-        BigDecimal best = experiments.stream()
+        long cumulativeImpressions = experiments.stream()
+                .mapToLong(row -> Math.round(quantity(row.impressions())))
+                .sum();
+        java.util.Optional<BigDecimal> best = experiments.stream()
                 .flatMap(row -> row.variants().stream())
                 .map(CopyExperimentVariantView::cvr)
                 .filter(value -> value != null)
-                .max(BigDecimal::compareTo)
-                .orElse(BigDecimal.ZERO);
-        return new CopyAbStats(copies.size(), running, compactNumber(exposure), "+" + best.toPlainString() + "%");
+                .max(BigDecimal::compareTo);
+        BigDecimal top = best.orElse(BigDecimal.ZERO);
+        return new CopyAbStats(copies.size(), running, compactNumber(exposure), "+" + top.toPlainString() + "%",
+                cumulativeImpressions, best.orElse(null));
     }
 
     private Set<String> placeholders(String text) {
