@@ -107,7 +107,7 @@ public interface GrowthVoucherMapper extends BaseMapper<Object> {
     long countByVoucherId(@Param("voucherId") String voucherId);
 
     @Select("""
-            SELECT voucher_type AS type, version FROM nx_growth_voucher
+            SELECT voucher_type AS type, version, splittable FROM nx_growth_voucher
              WHERE voucher_id = #{voucherId} AND is_deleted = 0
              FOR UPDATE
             """)
