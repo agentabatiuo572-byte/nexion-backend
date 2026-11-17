@@ -232,6 +232,14 @@ public class OpsTreasuryService {
         return ApiResult.ok(response);
     }
 
+    /**
+     * Pure reserve aggregate for read-only emergency-signal consumers. Same balance as reserve()
+     * but deliberately does not enter waterLevel or promote a due D3 forecast configuration.
+     */
+    public BigDecimal currentReserveTotalUsdt() {
+        return money(treasuryReserveBalance().availableUsd());
+    }
+
     /** D3 canonical nine-category liability breakdown used as B1/B2 input. */
     public ApiResult<Map<String, Object>> liabilities(boolean breakdown) {
         BigDecimal nexRate = ledgerRepository.latestNexUsdtPrice().map(this::safe).orElse(BigDecimal.ZERO);
