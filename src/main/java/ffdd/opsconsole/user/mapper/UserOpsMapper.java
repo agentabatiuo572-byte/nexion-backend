@@ -353,6 +353,15 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             """)
     UserAccountControlFactView findAccountControlFact(@Param("userId") Long userId);
 
+    @Select("""
+            SELECT CONCAT('U', LPAD(id, GREATEST(8, LENGTH(CAST(id AS CHAR))), '0'))
+              FROM nx_user
+             WHERE id = #{userId}
+               AND status = 'ACTIVE'
+               AND is_deleted = 0
+            """)
+    String activeUserNo(@Param("userId") Long userId);
+
     String PROFILE_SELECT = """
             SELECT u.id,
                    CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0')) AS userNo,

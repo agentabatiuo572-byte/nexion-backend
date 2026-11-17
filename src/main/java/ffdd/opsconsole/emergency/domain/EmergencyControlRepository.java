@@ -80,6 +80,11 @@ public interface EmergencyControlRepository {
 
     default void recordGeoBlockEvent(
             String countryCode, String countryName, String endpointKey, String source) {
+        recordGeoBlockEvent(countryCode, countryName, endpointKey, source, null);
+    }
+
+    default void recordGeoBlockEvent(
+            String countryCode, String countryName, String endpointKey, String source, String userNo) {
         // In-memory test repositories may ignore runtime request metrics.
     }
 

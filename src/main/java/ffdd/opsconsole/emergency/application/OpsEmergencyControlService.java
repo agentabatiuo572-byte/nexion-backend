@@ -3200,8 +3200,9 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
 
     /**
      * One row per request the edge actually refused, read from the same event table the summary sums.
-     * The edge filter rejects before authentication, so a refused request carries no user identity:
-     * this read never fills that in.
+     * New rows may carry the business user number resolved from a valid, read-only session at block
+     * time; anonymous and historical rows stay null. The read applies the existing account masking
+     * rule and never reconstructs an identity from a row id.
      */
     public ApiResult<PageResult<Map<String, Object>>> geoBlockHitDetail(
             String countryCode, String endpointKey, Integer pageNum, Integer pageSize) {
@@ -3216,8 +3217,20 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         if (offset > Integer.MAX_VALUE) throw new BizException(422, "J2_GEO_HIT_PAGE_INVALID");
         long total = emergencyRepository.countGeoBlockEvents(country, endpoint);
         List<Map<String, Object>> records = emergencyRepository
-                .geoBlockEventRows(country, endpoint, (int) safeSize, (int) offset);
+                .geoBlockEventRows(country, endpoint, (int) safeSize, (int) offset)
+                .stream()
+                .map(this::maskGeoBlockUserNo)
+                .toList();
         return ApiResult.ok(new PageResult<>(total, safePage, safeSize, records));
+    }
+
+    private Map<String, Object> maskGeoBlockUserNo(Map<String, Object> row) {
+        Map<String, Object> masked = new LinkedHashMap<>(row);
+        Object raw = row.get("userNo");
+        masked.put("userNo", StringUtils.hasText(raw == null ? null : String.valueOf(raw))
+                ? maskUserCode(String.valueOf(raw))
+                : null);
+        return masked;
     }
 
     /** Dedicated management read: all-country SUM over the same rolling 24h event table, no country LIMIT. */
