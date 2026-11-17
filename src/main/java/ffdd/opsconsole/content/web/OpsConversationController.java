@@ -60,12 +60,17 @@ public class OpsConversationController {
     private final ApplicationEventPublisher eventPublisher;
     private final AdminIdempotencyService idempotencyService;
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
     private <T> ApiResult<T> executeCommand(String scope, String idempotencyKey, String requestHash, java.util.function.Supplier<ApiResult<T>> action) {
+        productionPathGuard.requireOpsWriteAllowed();
+        if (idempotencyKey == null || idempotencyKey.trim().length()<8 || idempotencyKey.trim().length()>128)
+            return ApiResult.fail(422,"IDEMPOTENCY_KEY_INVALID");
+        return executeRegisteredCommand(scope,idempotencyKey,requestHash,action);
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private <T> ApiResult<T> executeRegisteredCommand(String scope,String idempotencyKey,String requestHash,
+            java.util.function.Supplier<ApiResult<T>> action) {
         try {
-            productionPathGuard.requireOpsWriteAllowed();
-            if (idempotencyKey == null || idempotencyKey.trim().length()<8 || idempotencyKey.trim().length()>128)
-                return ApiResult.fail(422,"IDEMPOTENCY_KEY_INVALID");
             return (ApiResult<T>) idempotencyService.executeRetained(scope + ":" + ownership.actorId(), idempotencyKey.trim(), requestHash, ApiResult.class, (java.util.function.Supplier) action);
         } catch (OpsConversationService.ConversationStateConflictException ignored) {
             return ApiResult.fail(ffdd.opsconsole.common.api.OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
@@ -74,11 +79,32 @@ public class OpsConversationController {
     }
 
     private ApiResult<ContentConversationView> sendCommand(Long customer,String scope,String key,String hash,
+            String clientMessageId,jakarta.servlet.http.HttpServletResponse response,
             java.util.function.Supplier<ApiResult<ContentConversationView>> action) {
         try {
             ownership.requireMessageWriter(customer);
-            var result=executeCommand(scope,key,hash,action);
-            if(result.getCode()!=0) sessions.rejected(customer,scope,result.getMessage());
+            productionPathGuard.requireOpsWriteAllowed();
+        } catch (ffdd.opsconsole.shared.exception.BizException rejected) {
+            if(customer!=null && customer>0 && key!=null && key.trim().length()>=8 && key.trim().length()<=128
+                    && clientMessageId!=null && clientMessageId.matches("[A-Za-z0-9_-]{8,128}")
+                    && rejected.getCode()>=400 && rejected.getCode()<500) {
+                sessions.rejectedSend(customer,scope,key.trim(),clientMessageId,hash,rejected);
+            } else {
+                sessions.rejected(customer,scope,rejected.getMessage());
+            }
+            throw rejected;
+        }
+        if(key==null || key.trim().length()<8 || key.trim().length()>128) {
+            sessions.rejected(customer,scope,"IDEMPOTENCY_KEY_INVALID");
+            return ApiResult.fail(422,"IDEMPOTENCY_KEY_INVALID");
+        }
+        try {
+            var result=executeRegisteredCommand(scope,key,hash,action);
+            Object data=result.getData();
+            if(data instanceof Map<?,?> receipt
+                    && ffdd.opsconsole.content.application.SupportSessionService.SEND_REJECTION_RECEIPT.equals(receipt.get("receiptType"))) {
+                response.setStatus(result.getCode());
+            } else if(result.getCode()!=0) sessions.rejected(customer,scope,result.getMessage());
             return result;
         } catch (ffdd.opsconsole.shared.exception.BizException rejected) {
             sessions.rejected(customer,scope,rejected.getMessage());
@@ -146,9 +172,10 @@ public class OpsConversationController {
     @PostMapping
     public ApiResult<ContentConversationView> initiate(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody ConversationInitiateRequest request) {
+            @RequestBody ConversationInitiateRequest request,jakarta.servlet.http.HttpServletResponse response) {
         Long customer=request==null ? null : request.userId();
-        return sendCommand(customer,"M3_CONVERSATION_INITIATE", idempotencyKey, requestHash(String.valueOf(request)), () -> {
+        return sendCommand(customer,"M3_CONVERSATION_INITIATE", idempotencyKey, requestHash(String.valueOf(request)),
+                request==null?null:request.clientMessageId(),response, () -> {
             OpsConversationService.MessageCommandResult command = conversationService.initiateWithMessageId(idempotencyKey, request);
             ApiResult<ContentConversationView> result = command.result();
             publishMessage(result.getData(), command.messageId(), ConversationMessageEvent.EventType.INITIATE, "AGENT", null);
@@ -206,8 +233,9 @@ public class OpsConversationController {
     public ApiResult<ContentConversationView> reply(
             @PathVariable String conversationNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody ConversationReplyRequest request) {
-        return sendCommand(ownership.conversationCustomer(conversationNo),"M3_CONVERSATION_REPLY", idempotencyKey, requestHash(conversationNo, String.valueOf(request)), () -> {
+            @RequestBody ConversationReplyRequest request,jakarta.servlet.http.HttpServletResponse response) {
+        return sendCommand(ownership.conversationCustomer(conversationNo),"M3_CONVERSATION_REPLY", idempotencyKey, requestHash(conversationNo, String.valueOf(request)),
+                request==null?null:request.clientMessageId(),response, () -> {
             OpsConversationService.MessageCommandResult command = conversationService.replyWithMessageId(conversationNo, idempotencyKey, request);
             ApiResult<ContentConversationView> result = command.result();
             publishMessage(result.getData(), command.messageId(), ConversationMessageEvent.EventType.MESSAGE, "AGENT", null);

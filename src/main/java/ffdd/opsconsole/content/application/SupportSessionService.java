@@ -10,6 +10,9 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyRecordEntity;
+import ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.Collection;
@@ -21,6 +24,8 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.support.TransactionTemplate;
 
 @ApplicationService
@@ -35,6 +40,10 @@ public class SupportSessionService {
     private final Clock clock;
     private final PlatformTransactionManager transactions;
     private final ProductionSupportPathGuard production;
+    private final AdminIdempotencyRecordMapper commandRecords;
+    private final ObjectMapper json;
+
+    public static final String SEND_REJECTION_RECEIPT = "M3_SEND_PREFLIGHT_REJECTED_V1";
 
     public record Holder(Long adminId,String name,String role) {}
     /** sessionRef identifies one reception instance, not just "this administrator + this customer". */
@@ -147,14 +156,53 @@ public class SupportSessionService {
     }
 
     public void rejected(Long customer,String operation,String error) {
+        audit.recordRequiredInNewTransaction(rejectionAudit(customer,operation,error,Map.of()));
+    }
+
+    /** Only a new, identified preflight rejection may create this retained receipt. */
+    @Transactional(propagation=Propagation.REQUIRES_NEW,rollbackFor=Exception.class)
+    public void rejectedSend(long customer,String operation,String key,String clientMessageId,String requestHash,
+                             BizException failure) {
+        long actor=ownership.actorId();
+        Map<String,Object> detail=new LinkedHashMap<>();
+        detail.put("receiptType",SEND_REJECTION_RECEIPT);
+        detail.put("actorId",actor);
+        detail.put("customerId",customer);
+        detail.put("operation",operation);
+        detail.put("idempotencyKey",key);
+        detail.put("clientMessageId",clientMessageId);
+        detail.put("requestHash",requestHash);
+        detail.put("sent",false);
+        AdminIdempotencyRecordEntity record=new AdminIdempotencyRecordEntity();
+        record.setScope(operation+":"+actor);
+        record.setIdempotencyKey(key);
+        record.setRequestHash(requestHash);
+        // SUCCEEDED describes the retained response, whose nonzero business code is an explicit rejection.
+        // The original executeRetained path therefore replays it instead of retrying a FAILED claim.
+        record.setStatus("SUCCEEDED");
+        record.setResponseJson(json.valueToTree(ApiResult.fail(failure.getCode(),failure.getMessage(),detail)).toString());
+        record.setExpiresAt(LocalDateTime.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS).plusHours(24));
+        record.setIsDeleted(0);
+        try {
+            if(commandRecords.insert(record)!=1) throw new IllegalStateException("SUPPORT_REJECTION_RECEIPT_NOT_SAVED");
+        } catch (DuplicateKeyException priorCommand) {
+            // The same unique scope/key protects normal claims. Never replace even a failed or expired old record.
+            detail.remove("receiptType");
+            detail.remove("sent");
+        }
+        audit.recordRequired(rejectionAudit(customer,operation,failure.getMessage(),detail));
+    }
+
+    private AuditLogWriteRequest rejectionAudit(Long customer,String operation,String error,Map<String,Object> command) {
         Hold hold=customer==null?null:sessions.hold(customer);
         Map<String,Object> detail=new LinkedHashMap<>();
+        detail.putAll(command);
         detail.put("operation",operation);
         detail.put("code",error);
         if(hold!=null && hold.active()) detail.put("holder",holder(hold));
-        audit.recordRequiredInNewTransaction(AuditLogWriteRequest.builder().action("SUPPORT_SESSION_REJECTED")
+        return AuditLogWriteRequest.builder().action("SUPPORT_SESSION_REJECTED")
                 .resourceType("SUPPORT_SESSION").resourceId(String.valueOf(customer)).actorType("ADMIN")
-                .actorUsername("admin:"+ownership.actorId()).result("REJECTED").detail(detail).build());
+                .actorUsername("admin:"+ownership.actorId()).result("REJECTED").detail(detail).build();
     }
 
     @Transactional(readOnly=true)
