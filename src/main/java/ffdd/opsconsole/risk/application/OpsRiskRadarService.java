@@ -374,24 +374,15 @@ public class OpsRiskRadarService {
         long currentVersion = BankRunThresholdPolicy.version(configFacade);
         Thresholds thresholds = resolveThresholds(parseThresholds(request.yellowPct(), request.redPct()));
         requireExpectedVersion(request.expectedVersion(), currentVersion);
-        Map<String, Object> money = mapper.moneySnapshot();
-        if (money == null) {
+        TreasuryEmergencySignalFacade.BankRunRead j1BankRun = bankRunRead();
+        if (j1BankRun == null || j1BankRun.ratioPct() == null) {
             throw new BizException(500, "B5_MONEY_SOURCE_UNAVAILABLE");
         }
-        TreasuryEmergencySignalFacade.BankRunRead j1BankRun = bankRunRead();
-        BigDecimal withdrawal24h = j1BankRun == null
-                ? decimal(money.get("withdraw24hUsdt")) : j1BankRun.withdrawalRequests24hUsdt();
-        BigDecimal reserve = j1BankRun == null ? decimal(money.get("reserveUsdt")) : j1BankRun.reserveUsdt();
-        boolean calculable = j1BankRun != null ? j1BankRun.ratioPct() != null : reserve.signum() > 0;
-        BigDecimal ratio = j1BankRun != null && j1BankRun.ratioPct() != null
-                ? j1BankRun.ratioPct().movePointLeft(2)
-                : calculable ? ratio(withdrawal24h, reserve) : null;
+        BigDecimal ratio = j1BankRun.ratioPct().movePointLeft(2);
         return ApiResult.ok(section(
                 "ratio24h", ratio,
-                "ratioCalculable", calculable,
-                "light", calculable
-                        ? thresholdLight(ratio, thresholds.yellow(), thresholds.red())
-                        : withdrawal24h.signum() > 0 ? "red" : "unavailable",
+                "ratioCalculable", true,
+                "light", thresholdLight(ratio, thresholds.yellow(), thresholds.red()),
                 "yellowPct", thresholds.yellow(),
                 "redPct", thresholds.red(),
                 "expectedVersion", currentVersion));
