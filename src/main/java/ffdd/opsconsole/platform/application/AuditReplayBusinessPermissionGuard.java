@@ -564,11 +564,63 @@ public class AuditReplayBusinessPermissionGuard {
         if (e2TaskPricingApproval.shouldBindLifecycle(command)) {
             return ApiResult.ok(e2TaskPricingApproval.bindLifecycle(request, A2ReplayContext.authenticatedAdminId()));
         }
+        if (isF4StoredUiConfigProposal(command)) {
+            ApiResult<AuditReplayCommand> canonical = canonicalizeProposalCommand(command);
+            return canonical.getCode() == 0
+                    ? ApiResult.ok(bindF4ProposalSnapshot(canonical.getData()))
+                    : canonical;
+        }
         if (!LearningCourseActivationApproval.isOperation(command)) return canonicalizeProposalCommand(command);
         if (!LearningCourseActivationApproval.supports(command)) {
             return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
         }
         return ApiResult.ok(learningCourseActivationApproval.prepare(request, A2ReplayContext.authenticatedAdminId()));
+    }
+
+    private boolean isF4StoredUiConfigProposal(AuditReplayCommand command) {
+        if (command == null || !"F".equalsIgnoreCase(command.domain())) {
+            return false;
+        }
+        if ("f_ui_config".equalsIgnoreCase(command.op())) {
+            return OpsTeamService.isF4StoredUiConfigKey(value(command.params(), "key"));
+        }
+        if (!"f_config_batch".equalsIgnoreCase(command.op())
+                || command.params() == null
+                || !(command.params().get("changes") instanceof List<?> changes)) {
+            return false;
+        }
+        return changes.stream().anyMatch(item -> item instanceof Map<?, ?> change
+                && OpsTeamService.isF4StoredUiConfigKey(value(change, "key")));
+    }
+
+    /**
+     * Binds the authoritative F4 stored value at proposal time. The command snapshot is what
+     * the replay compares against; the human-readable ticket beforeValue is still produced by
+     * delegatedFDescriptor from the same source. Historical/in-flight tickets without this
+     * parameter keep the legacy path and are not invalidated.
+     */
+    private AuditReplayCommand bindF4ProposalSnapshot(AuditReplayCommand command) {
+        Map<String, Object> params = new LinkedHashMap<>(command.params() == null ? Map.of() : command.params());
+        if ("f_config_batch".equalsIgnoreCase(command.op())
+                && params.get("changes") instanceof List<?> changes) {
+            List<Map<String, Object>> bound = new ArrayList<>(changes.size());
+            for (Object item : changes) {
+                Map<String, Object> change = new LinkedHashMap<>();
+                if (item instanceof Map<?, ?> raw) {
+                    raw.forEach((key, value) -> change.put(String.valueOf(key), value));
+                }
+                String key = value(change, "key");
+                if (OpsTeamService.isF4StoredUiConfigKey(key)) {
+                    change.put("expectedValue", OpsTeamService.proposalUiConfigValue(configFacade, key));
+                }
+                bound.add(change);
+            }
+            params.put("changes", bound);
+            return new AuditReplayCommand(command.domain(), command.op(), params);
+        }
+        String key = value(params, "key");
+        params.put("expectedValue", OpsTeamService.proposalUiConfigValue(configFacade, key));
+        return new AuditReplayCommand(command.domain(), command.op(), params);
     }
 
     public ApiResult<AuditReplayCommand> canonicalizeProposalCommand(AuditReplayCommand command) {
@@ -2203,7 +2255,12 @@ public class AuditReplayBusinessPermissionGuard {
             if (key.isBlank() || next.isBlank()) {
                 throw new ffdd.opsconsole.shared.exception.BizException(422, "F_CONFIG_BATCH_ITEM_INVALID");
             }
-            Map<String, Object> values = Map.of("key", key, "value", next);
+            Map<String, Object> values = new LinkedHashMap<>();
+            values.put("key", key);
+            values.put("value", next);
+            if (change.get("expectedValue") instanceof String expected) {
+                values.put("expectedValue", expected);
+            }
             String operation = fConfigAuthority("f_config", values) != null ? "f_config" : "f_ui_config";
             if (fConfigAuthority(operation, values) == null) {
                 throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_BUSINESS_PERMISSION_UNMAPPED");
