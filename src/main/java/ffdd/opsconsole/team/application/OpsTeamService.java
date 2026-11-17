@@ -1592,7 +1592,7 @@ public class OpsTeamService implements AuditReplayable {
         }
         // A1 批1a 修复2:全域 B1 资金护栏接线(原 UI keys 路径完全跳过 loosensPayoutControl + coverageBelowRedline)。
         // 资金放大类 UI key(费率/比例上调、门槛下调)在 B1 红线下阻断,范式同 updateConfig:434-436。
-        if (loosensPayoutControlUiKey(key, effectiveOldValue, value) && coverageBelowRedline()) {
+        if (loosensPayoutControlUiKey(configFacade, key, effectiveOldValue, value) && coverageBelowRedline()) {
             return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
         }
         String persistedValue;
@@ -1717,7 +1717,7 @@ public class OpsTeamService implements AuditReplayable {
                 : parseDecimal(value, BigDecimal.ZERO);
         String oldValue = unilevelRuleValue(commissionRepository, key);
         // A1 批1a 修复2:unilevel 版税费率上调放大佣金流出,B1 红线下阻断(usdtRate / nexPerUsd 上调 = 放大)。
-        if (loosensPayoutControlUiKey(key, unilevelComparisonValue(key, oldValue), value) && coverageBelowRedline()) {
+        if (loosensPayoutControlUiKey(configFacade, key, unilevelComparisonValue(key, oldValue), value) && coverageBelowRedline()) {
             return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
         }
         if (!commissionRepository.updateUnilevelRule(layerNo, field, businessValue)) {
@@ -2076,7 +2076,7 @@ public class OpsTeamService implements AuditReplayable {
         String currentValue = isUnilevelRuleKey(key) && rules != null
                 ? unilevelComparisonValue(key, unilevelRuleValue(rules, key))
                 : configs.activeValue(uiConfigStorageKey(key)).orElse("");
-        return loosensPayoutControlUiKey(key, currentValue, proposedValue);
+        return loosensPayoutControlUiKey(configs, key, currentValue, proposedValue);
     }
 
     /**
@@ -2087,7 +2087,7 @@ public class OpsTeamService implements AuditReplayable {
      *   F4 pool.ratio/top1MaxPct/top5MaxPct/periodPrize 上调
      * 新值解析失败由 validateUiConfig 上层报错；F2 旧门槛缺失或非法值修复会恢复结算，按放宽预检。
      */
-    private static boolean loosensPayoutControlUiKey(String key, String oldValue, String newValue) {
+    private static boolean loosensPayoutControlUiKey(PlatformConfigFacade configs, String key, String oldValue, String newValue) {
         if (key == null) {
             return false;
         }
@@ -2107,6 +2107,25 @@ public class OpsTeamService implements AuditReplayable {
                 case "F.promo.weekMultiplier", "F.peer.rate" ->
                         parseDecimal(newValue, BigDecimal.ZERO).compareTo(parseDecimal(oldValue, BigDecimal.ZERO)) > 0;
                 case "F.pool.periodPrize" -> periodPrizeIncreases(oldValue, newValue);
+                case "F.pool.monthlyCap" -> {
+                    BigDecimal proposed = LeadershipPoolConfigGuard.parseConfiguredMoney(newValue);
+                    if (!StringUtils.hasText(oldValue)) yield proposed.signum() > 0;
+                    try {
+                        yield proposed.compareTo(LeadershipPoolConfigGuard.parseConfiguredMoney(oldValue)) > 0;
+                    } catch (IllegalArgumentException blockedCurrent) {
+                        // The settlement guard blocks an invalid current cap; a positive repair restores capacity.
+                        yield proposed.signum() > 0;
+                    }
+                }
+                case "F.leaderboard.poolUsd" -> {
+                    BigDecimal current = LeadershipPoolService.parseMoney(oldValue);
+                    BigDecimal proposed = LeadershipPoolService.parseMoney(newValue);
+                    boolean currentOverride = current != null && current.signum() > 0;
+                    boolean proposedOverride = proposed != null && proposed.signum() > 0;
+                    BigDecimal fallback = currentOverride && proposedOverride ? BigDecimal.ZERO
+                            : LeadershipPoolService.configuredPeriodPrize(configs, "week");
+                    yield (proposedOverride ? proposed : fallback).compareTo(currentOverride ? current : fallback) > 0;
+                }
                 case "F.pool.ratio" -> LeadershipPoolConfigGuard.isConfiguredRateIncrease(oldValue, newValue);
                 case "F.binary.matchRate" -> BinarySettlementPolicyProvider.normalizeMatchRate(newValue)
                         .compareTo(currentBinaryMatchRate(oldValue)) > 0;
