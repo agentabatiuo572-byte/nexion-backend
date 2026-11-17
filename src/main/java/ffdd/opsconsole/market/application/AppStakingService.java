@@ -370,7 +370,7 @@ public class AppStakingService {
         boolean killed = config.activeValue(STAKING_PREFIX + tier + ".killed").map(this::switchEnabled).orElse(false);
         boolean enabled = config.activeValue(STAKING_PREFIX + "enabled." + tier)
                 .map(this::switchEnabled).orElse("ACTIVE".equalsIgnoreCase(product.status()));
-        boolean visible = config.activeValue("G.staking.app_visible").map("true"::equalsIgnoreCase).orElse(true);
+        boolean visible = config.activeValue("G.staking.app_visible").map("true"::equalsIgnoreCase).orElse(false);
         return new PoolPolicy(apyPct, penaltyPct, minAmount, visible && enabled && !killed && globalGateEnabled(), killed);
     }
 
