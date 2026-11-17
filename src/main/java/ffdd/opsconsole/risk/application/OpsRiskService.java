@@ -539,6 +539,16 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         response.put("hits", riskRepository.pageWithdrawRuleHits(hitAction, hitPageNum, hitPageSize));
         response.put("stateMachine", List.of("draft", "active", "paused", "archived"));
         response.put("redlines", List.of("archived rules are terminal", "rule changes require reason and A2 audit", "rule relaxation triggers B1 coverage precheck"));
+        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        boolean coverageReliable = coverage != null && coverage.reliable()
+                && coverage.coverageRatio() != null && coverage.redlinePct() != null
+                && coverage.coverageRatio().signum() >= 0 && coverage.redlinePct().signum() > 0;
+        Map<String, Object> coverageView = new LinkedHashMap<>();
+        coverageView.put("coverageRatio", coverageReliable ? coverage.coverageRatio() : null);
+        coverageView.put("redlinePct", coverageReliable ? coverage.redlinePct() : null);
+        coverageView.put("reliable", coverageReliable);
+        coverageView.put("redlineBreached", coverageReliable ? coverage.redlineBreached() : null);
+        response.put("coverage", coverageView);
         return ApiResult.ok(response);
     }
 
