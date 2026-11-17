@@ -1520,13 +1520,17 @@ public class AuditReplayBusinessPermissionGuard {
         }
         if ("f_unilevel_bootstrap".equals(operation)) {
             var request = ffdd.opsconsole.team.dto.TeamCommissionConfigUpdateRequest.UnilevelBootstrap.from(params);
-            OpsTeamService.unilevelBootstrapLayerRates(request);
+            var unilevelRows = OpsTeamService.unilevelBootstrapLayerRates(request);
+            String unilevelAfter = unilevelRows.stream().map(row -> row.get("level")
+                    + ": usdtPct=" + ((java.math.BigDecimal) row.get("usdtPct")).stripTrailingZeros().toPlainString()
+                    + ", nexPerUsd=" + ((java.math.BigDecimal) row.get("nexReward")).stripTrailingZeros().toPlainString())
+                    .collect(java.util.stream.Collectors.joining("; "));
             if (!teamCommissionRepository.allUnilevelRuleIds().isEmpty()) {
                 throw new ffdd.opsconsole.shared.exception.BizException(409, "F2_UNILEVEL_RULES_ALREADY_CONFIGURED");
             }
             return new DelegatedProposalDescriptor(
                     "首次配置 L1–L7 团队购买奖励", "unilevel_bootstrap/current",
-                    "无 UNILEVEL 规则", request.layers().toString(),
+                    "无 UNILEVEL 规则", unilevelAfter,
                     "F2", "fund", true, new AuditLockTarget("F", "unilevel_rule", "bootstrap"));
         }
         if ("f_seven_layer_activation".equals(operation)) {
