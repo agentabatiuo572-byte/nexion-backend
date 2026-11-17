@@ -49,6 +49,11 @@ public interface DeviceOpsRepository {
         return Optional.empty();
     }
 
+    /** Writer target status for a force activation; adapter computes the same CASE as activateE5Device. */
+    default String e5ActivationTargetStatus(Long deviceId) {
+        return null;
+    }
+
     default Optional<DeviceOpsView> deactivateE5Device(Long deviceId, boolean unbind, LocalDateTime now) {
         return Optional.empty();
     }

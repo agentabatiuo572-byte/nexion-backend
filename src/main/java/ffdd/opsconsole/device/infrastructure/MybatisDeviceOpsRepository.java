@@ -217,6 +217,11 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
     }
 
     @Override
+    public String e5ActivationTargetStatus(Long deviceId) {
+        return mapper.e5ActivationTargetStatus(deviceId, simEnabled);
+    }
+
+    @Override
     public Optional<DeviceOpsView> deactivateE5Device(Long deviceId, boolean unbind, LocalDateTime now) {
         if(computeV2Lifecycle!=null && computeV2Lifecycle.manages(deviceId)){
             var original=findDevice(deviceId).orElse(null);
