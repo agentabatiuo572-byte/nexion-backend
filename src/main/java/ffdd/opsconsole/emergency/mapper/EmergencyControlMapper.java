@@ -75,6 +75,7 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
               country_name VARCHAR(128) NULL,
               endpoint_key VARCHAR(64) NULL,
               source VARCHAR(64) NULL,
+              user_no VARCHAR(32) NULL,
               event_count INT NOT NULL DEFAULT 1,
               recorded_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -85,6 +86,21 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createGeoBlockEventTable();
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'nx_emergency_geo_block_event'
+               AND COLUMN_NAME = 'user_no'
+            """)
+    int geoBlockEventUserNoColumnCount();
+
+    @Update("""
+            ALTER TABLE nx_emergency_geo_block_event
+              ADD COLUMN user_no VARCHAR(32) NULL AFTER source
+            """)
+    int addGeoBlockEventUserNoColumn();
 
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_emergency_tamper_event (
@@ -518,6 +534,7 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
                    COALESCE(country_name, country_code) AS countryName,
                    endpoint_key AS endpointKey,
                    source,
+                   user_no AS userNo,
                    event_count AS eventCount
               FROM nx_emergency_geo_block_event
              WHERE is_deleted = 0
@@ -543,17 +560,18 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
 
     @Insert("""
             INSERT INTO nx_emergency_geo_block_event (
-                country_code, country_name, endpoint_key, source, event_count,
+                country_code, country_name, endpoint_key, source, user_no, event_count,
                 recorded_at, created_at, updated_at, is_deleted
             ) VALUES (
-                #{countryCode}, #{countryName}, #{endpointKey}, #{source}, 1,
+                #{countryCode}, #{countryName}, #{endpointKey}, #{source}, #{userNo}, 1,
                 NOW(), NOW(), NOW(), 0
             )
             """)
     int insertGeoBlockEvent(@Param("countryCode") String countryCode,
                             @Param("countryName") String countryName,
                             @Param("endpointKey") String endpointKey,
-                            @Param("source") String source);
+                            @Param("source") String source,
+                            @Param("userNo") String userNo);
 
     @Select("""
             SELECT setting_value

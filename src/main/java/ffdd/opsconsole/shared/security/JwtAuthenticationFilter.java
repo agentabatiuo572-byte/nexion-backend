@@ -187,6 +187,26 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         return authorization.substring(7);
     }
 
+    /**
+     * Resolve a business user number for a request that is being rejected before the security
+     * chain runs. This reuses the exact signed Bearer + current session/user checks but uses only
+     * their read-only branch: it never touches the session, refreshes a token, writes activity,
+     * revokes anything, or sets the SecurityContext. Anonymous, admin, impersonation, stale or
+     * malformed credentials return null; no header/body identity is consulted.
+     */
+    public String readOnlyUserNo(HttpServletRequest request) {
+        String token = resolveToken(request);
+        if (token == null) return null;
+        try {
+            Claims claims = tokenProvider.parse(token);
+            if (!"USER".equals(String.valueOf(claims.getOrDefault("subjectType", "USER")))) return null;
+            if (!isSessionActive(claims, false)) return null;
+            return userMapper.activeUserNo(Long.valueOf(claims.getSubject()));
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
     private boolean isSessionActive(Claims claims, boolean recordActivity) {
         Object subjectTypeClaim = claims.get("subjectType");
         String subjectType = subjectTypeClaim == null ? "USER" : String.valueOf(subjectTypeClaim);

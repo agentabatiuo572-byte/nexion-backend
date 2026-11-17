@@ -36,10 +36,12 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
     private final EmergencyControlMapper mapper;
     private final ObjectMapper objectMapper;
     private final AtomicBoolean tablesEnsured = new AtomicBoolean(false);
+    private final AtomicBoolean geoBlockUserColumnEnsured = new AtomicBoolean(false);
 
     @PostConstruct
     void initializeSchema() {
         ensureTables();
+        ensureGeoBlockEventUserNoColumn();
     }
 
     @Override
@@ -62,6 +64,26 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
             mapper.createSopActionTable();
             mapper.createSopExecutionTable();
             tablesEnsured.set(true);
+        }
+    }
+
+    private void ensureGeoBlockEventUserNoColumn() {
+        if (geoBlockUserColumnEnsured.get()) {
+            return;
+        }
+        synchronized (geoBlockUserColumnEnsured) {
+            if (geoBlockUserColumnEnsured.get()) {
+                return;
+            }
+            if (mapper.geoBlockEventUserNoColumnCount() == 0) {
+                try {
+                    mapper.addGeoBlockEventUserNoColumn();
+                } catch (RuntimeException failed) {
+                    // Another instance may have added it between the count and ALTER.
+                    if (mapper.geoBlockEventUserNoColumnCount() == 0) throw failed;
+                }
+            }
+            geoBlockUserColumnEnsured.set(true);
         }
     }
 
@@ -182,9 +204,10 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
     }
 
     @Override
-    public void recordGeoBlockEvent(String countryCode, String countryName, String endpointKey, String source) {
+    public void recordGeoBlockEvent(String countryCode, String countryName, String endpointKey, String source, String userNo) {
         ensureTables();
-        mapper.insertGeoBlockEvent(countryCode, countryName, endpointKey, source);
+        ensureGeoBlockEventUserNoColumn();
+        mapper.insertGeoBlockEvent(countryCode, countryName, endpointKey, source, userNo);
     }
 
     @Override
