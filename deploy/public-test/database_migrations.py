@@ -39,6 +39,27 @@ RETIRED_H4_SHA256 = '921d9f1e3567dfbd049da78ba878ab2187f9c6b15ed449a748be3e21186
 RETIRED_H4_NOTE = 'RETIRED_H4_TRIGGER_SKIPPED'
 EARNINGS_FILE = '20261007_earnings_source_recovery.sql'
 EARNINGS_SHA256 = 'f443722d71d6a9da77759e55142ddd12e15b71c8af356a5dc9cd73dd03a410e9'
+NICKNAME_FILE = '20261117_user_nickname_unique.sql'
+NICKNAME_PREFLIGHT_SQL = """
+WITH ranked AS (
+  SELECT id, nickname AS original_nickname, is_deleted, created_at,
+         ROW_NUMBER() OVER (PARTITION BY nickname ORDER BY is_deleted, created_at, id) AS holder_rank
+    FROM nx_user
+), final_names AS (
+  SELECT id, original_nickname,
+         CONVERT(
+           CASE WHEN holder_rank = 1 THEN original_nickname
+                ELSE CONCAT(LEFT(original_nickname, 50), '-', CONV(id, 10, 36)) END
+           USING utf8mb4) COLLATE utf8mb4_0900_ai_ci AS target_nickname
+    FROM ranked
+), conflicts AS (
+  SELECT target_nickname FROM final_names
+   GROUP BY target_nickname HAVING COUNT(*) > 1
+)
+SELECT f.id, f.original_nickname, f.target_nickname
+  FROM final_names f JOIN conflicts c ON f.target_nickname = c.target_nickname
+ ORDER BY f.target_nickname, f.id
+"""
 EARNINGS_TRIGGER = 'nx_wallet_earnings_debit_counter_v1'
 EARNINGS_BODY = ('SET NEW.earnings_usdt_debited=OLD.earnings_usdt_debited+'
                  'GREATEST(OLD.usdt_available-NEW.usdt_available,0),'
@@ -321,6 +342,18 @@ def retired_h4_prefix(data):
     return data.split(b'DELIMITER $$\n', 1)[0]
 
 
+def nickname_preflight(user, password):
+    """Read-only collision check before the nickname UPDATE/DDL is allowed to run."""
+    table = probe(user, password,
+                  "SELECT COUNT(*) FROM information_schema.TABLES "
+                  "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_user';", as_json=False)
+    if not table or table[0].strip() == '0':
+        return
+    rows = probe(user, password, NICKNAME_PREFLIGHT_SQL, as_json=False)
+    if rows:
+        raise MigrationError('USER_NICKNAME_MIGRATION_CONFLICT: ' + ' | '.join(rows))
+
+
 def migration_preflight(pending, user, password, root_password):
     """Check the entire pending batch before creating a journal, hold or any DDL."""
     special = False
@@ -337,6 +370,8 @@ def migration_preflight(pending, user, password, root_password):
                 scanned = stored_program_text(text, backslash_escapes=backslash_escapes)
                 require(not re.search(r'\bCREATE\b[^;]*\b(?:TRIGGER|FUNCTION)\b', scanned, re.I),
                         'MIGRATION_UNREVIEWED_STORED_PROGRAM')
+    if any(name == NICKNAME_FILE for name, _ in pending):
+        nickname_preflight(user, password)
     if not special:
         return None
     context = server_context(user, password)

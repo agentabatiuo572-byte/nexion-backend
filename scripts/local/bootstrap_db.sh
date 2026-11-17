@@ -60,6 +60,35 @@ files=()
 while IFS= read -r f; do files+=("$f"); done < <(awk '/^\$migrations = @\(/{on=1; next} on && /^\)/{exit} on && $0 !~ /^[[:space:]]*#/' \
   "$BACKEND/scripts/apply_startup_schema_migrations.ps1" | grep -oE 'scripts\\((migrations|local)\\[^"]+|seed_e2_task_pricing)\.sql' | tr '\\' '/')
 echo "Startup migrations: ${#files[@]}"
+nickname_preflight() {
+  local table rows
+  table=$(mysql_nexion -N -B nexion -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_user';")
+  [[ "$table" == "0" ]] && return 0
+  rows=$(mysql_nexion -N -B nexion -e "
+WITH ranked AS (
+  SELECT id, nickname AS original_nickname, is_deleted, created_at,
+         ROW_NUMBER() OVER (PARTITION BY nickname ORDER BY is_deleted, created_at, id) AS holder_rank
+    FROM nx_user
+), final_names AS (
+  SELECT id, original_nickname,
+         CONVERT(CASE WHEN holder_rank = 1 THEN original_nickname
+                      ELSE CONCAT(LEFT(original_nickname, 50), '-', CONV(id, 10, 36)) END
+                 USING utf8mb4) COLLATE utf8mb4_0900_ai_ci AS target_nickname
+    FROM ranked
+), conflicts AS (
+  SELECT target_nickname FROM final_names
+   GROUP BY target_nickname HAVING COUNT(*) > 1
+)
+SELECT f.id, f.original_nickname, f.target_nickname
+  FROM final_names f JOIN conflicts c ON f.target_nickname = c.target_nickname
+ ORDER BY f.target_nickname, f.id;")
+  if [[ -n "$rows" ]]; then
+    echo "FAILED: nickname migration conflicts must be resolved manually (id, original, target):" >&2
+    printf '%s\n' "$rows" >&2
+    exit 1
+  fi
+}
+nickname_preflight
 i=0
 for path in "${files[@]}"; do
   f=${path##*/}
