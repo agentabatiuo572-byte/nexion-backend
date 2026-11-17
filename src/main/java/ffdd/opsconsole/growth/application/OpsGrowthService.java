@@ -5699,7 +5699,11 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                     throw new IllegalArgumentException("Review days must be a whole number");
                 yield wholeDays(value, 0, 90);
             }
-            case "binaryDailyCap" -> bounded(value, BigDecimal.ZERO, new BigDecimal("50000"));
+            case "binaryDailyCap" -> {
+                BigDecimal cap = bounded(value, BigDecimal.ZERO, new BigDecimal("50000"));
+                if (cap.signum() == 0) throw new IllegalArgumentException("H1_BINARY_DAILY_CAP_INVALID");
+                yield cap;
+            }
             default -> throw new IllegalArgumentException("Unsupported H1 phase dial");
         };
     }
