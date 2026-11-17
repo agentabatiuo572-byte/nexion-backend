@@ -132,7 +132,7 @@ public class OpsEventCenterController {
     }
 
     @GetMapping("/outbox/{eventId}/redrive-preview")
-    @PreAuthorize("hasAuthority('platform_a4_write') && hasAuthority('platform_a2_write')")
+    @PreAuthorize("hasAuthority('platform_a4_read') || (hasAuthority('platform_a4_write') && hasAuthority('platform_a2_write'))")
     public ApiResult<H3OutboxRedriveView> h3DeadLetterRedrivePreview(@PathVariable String eventId) {
         return ApiResult.ok(h3DeadLetterRedriveService.preview(eventId));
     }

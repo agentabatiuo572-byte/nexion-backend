@@ -116,20 +116,29 @@ public class A2AccessPolicy {
     }
 
     /**
-     * H4 page-read fallback for the original-key lookup only. Callers must still
-     * require the loaded ticket command to be H4 before returning it.
+     * Page-read fallback for the original-key lookup only. The caller must still
+     * verify the ticket maker and match its command to the corresponding current page-read grant.
      */
-    public long requireH4ProposalReader() {
+    public long requirePageProposalReader() {
         var auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth == null || !auth.isAuthenticated() || !(auth.getDetails() instanceof Map<?, ?> details)
                 || !"ADMIN".equals(details.get("subjectType")))
             throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");
         try {
             long id = Long.parseLong(auth.getName());
-            if (roleResolver.isActiveAdministrator(id)
-                    && permissions.getPermissionCodes(id).contains("growth_h4_read")) return id;
+            if (roleResolver.isActiveAdministrator(id)) {
+                Set<String> grants = permissions.getPermissionCodes(id);
+                if (grants.contains("growth_h4_read") || grants.contains("platform_a4_read")) return id;
+            }
         } catch (NumberFormatException ignored) { }
         throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");
+    }
+
+    /** Only the original-key GET calls this after verifying the original ticket maker. */
+    boolean canReadPageProposal(AuditReplayCommand command, long actorId) {
+        Set<String> grants = permissions.getPermissionCodes(actorId);
+        return H4GrowthApproval.supports(command) && grants.contains("growth_h4_read")
+                || A4RegistryApproval.supports(command) && grants.contains("platform_a4_read");
     }
 
     boolean canDecide(Long actorId) {
