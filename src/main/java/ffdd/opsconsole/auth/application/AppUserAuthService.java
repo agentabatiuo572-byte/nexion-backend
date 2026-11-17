@@ -937,9 +937,12 @@ public class AppUserAuthService {
         loginGuardMapper.recordFailure(loginKey, failedCount, windowStartedAt, lockedUntil);
         if (userId != null) {
             userMapper.syncLoginFailure(userId, failedCount);
-            boolean newlyLocked = lockedUntil != null && (guard == null || guard.getLockedUntil() == null
-                    || !guard.getLockedUntil().isAfter(now));
-            if (newlyLocked) {
+            boolean alreadyLocked = guard != null && guard.getLockedUntil() != null
+                    && guard.getLockedUntil().isAfter(now);
+            boolean newlyLocked = lockedUntil != null && !alreadyLocked;
+            boolean upgradedToLong = lockedUntil != null && alreadyLocked
+                    && failedCount >= longThreshold && guard.getFailedCount() < longThreshold;
+            if (newlyLocked || upgradedToLong) {
                 String lockType = failedCount >= longThreshold ? "LONG" : "SHORT";
                 outboxService.publish("USER_SECURITY", String.valueOf(userId), "auth.login_locked", Map.of(
                         "targetUserId", userId,
