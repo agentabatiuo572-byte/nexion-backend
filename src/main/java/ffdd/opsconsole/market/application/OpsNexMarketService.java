@@ -42,6 +42,7 @@ import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.PendingLock;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
@@ -1184,7 +1185,47 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         response.put("sunsetExclusions", sunsetExclusions());
         response.put("serverCanonical", true);
         response.put("sources", List.of("nx_config_item:" + WEEKLY_CURVE_KEY, "nx_price_index:UVT_USDT", "nx_config_item:" + SUNSET_EXCLUSIONS_KEY));
+        response.put("objectStates", marketObjectStates());
+        response.put("environmentWriteState", marketEnvironmentWriteState());
         return ApiResult.ok(response);
+    }
+
+    private List<Map<String, Object>> marketObjectStates() {
+        List<Map<String, Object>> states = new ArrayList<>(marketObjectStates(
+                G3MarketApproval.CURVE_TARGET, List.of(G3MarketApproval.CURVE_TARGET.id())));
+        states.addAll(marketObjectStates(G3MarketApproval.SCHEDULE_TARGET, CONTROL_KEYS));
+        states.addAll(marketObjectStates(G3MarketApproval.PRICE_TARGET, OVERRIDE_KEYS));
+        return states;
+    }
+
+    private List<Map<String, Object>> marketObjectStates(AuditLockTarget family, List<String> keys) {
+        Map<String, PendingLock> byTarget = new LinkedHashMap<>();
+        for (PendingLock lock : lockMapper.selectPendingLocks(family.domain(), family.type(), keys)) {
+            byTarget.put(lock.targetId(), lock);
+        }
+        return keys.stream().map(key -> {
+            PendingLock lock = byTarget.get(key);
+            boolean pending = lock != null && StringUtils.hasText(lock.ticketId());
+            return map("target", new AuditLockTarget(family.domain(), family.type(), key),
+                    "locked", lock != null, "pendingApproval", pending,
+                    "pendingOperationId", pending ? lock.ticketId() : null,
+                    "pendingOperator", pending ? lock.operatorName() : null,
+                    "pendingCreatedAt", pending ? lock.createdAt() : null);
+        }).toList();
+    }
+
+    private Map<String, Object> marketEnvironmentWriteState() {
+        boolean disabled = !manualTuningAllowed;
+        String reason = disabled ? MANUAL_TUNING_FORBIDDEN : null;
+        return map("manualTuningAllowedByEnvironment", manualTuningAllowed, "entries", List.of(
+                map("operation", "g3_curve_update", "field", "pumpProbability", "condition", "FIELD_CHANGED",
+                        "environmentDisabled", disabled, "reasonCode", reason),
+                map("operation", "g3_override", "overrideKey", "currentPrice", "condition", "KEY_MATCHED",
+                        "environmentDisabled", disabled, "reasonCode", reason),
+                map("operation", G3MarketApproval.OP, "action", "curve-cell", "field", "pumpProbability",
+                        "environmentDisabled", disabled, "reasonCode", reason),
+                map("operation", G3MarketApproval.OP, "action", "current-price",
+                        "environmentDisabled", disabled, "reasonCode", reason)));
     }
 
     public ApiResult<Map<String, Object>> curveHistory() {
