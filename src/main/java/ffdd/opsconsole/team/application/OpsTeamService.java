@@ -3537,6 +3537,7 @@ public class OpsTeamService implements AuditReplayable {
                     throw new IllegalArgumentException("F_TEAM_PCT_OUT_OF_RANGE");
                 }
             }
+            case "F.pool.monthlyCap", "F.leaderboard.poolUsd" -> LeadershipPoolConfigGuard.parseConfiguredMoney(value);
             case "F.pool.ratio" -> LeadershipPoolConfigGuard.parseConfiguredRate(value);
             case "F.pool.unlockVRank" -> LeadershipPoolConfigGuard.parseConfiguredUnlockRank(value);
             case "F.pool.periodPrize" -> validatePeriodPrize(value);
