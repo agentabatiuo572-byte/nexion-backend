@@ -89,6 +89,7 @@ public class OpsCopyAbService {
     private static final String IDEMPOTENCY_SCOPE_EXPERIMENT_ADOPT = "I1_COPY_EXPERIMENT_ADOPT";
     private static final String IDEMPOTENCY_SCOPE_EXPERIMENT_DISCARD = "I1_COPY_EXPERIMENT_DISCARD";
     private static final long EXPERIMENT_MIN_IMPRESSIONS_PER_VARIANT = 100L;
+    private static final Set<String> RETIRED_EXPERIMENT_FRAMEWORK_KEYS = Set.of("split", "aud", "sample", "maxrun");
     private static final int IDEMPOTENCY_KEY_MAX_LENGTH = 128;
     private static final List<String> SURFACES = List.of("home", "store", "earn", "me");
     private static final List<String> AUDIENCES = List.of("全量", "P3 · 全语言", "zh · 注册>30天", "注册 ≤14 天", "P2-P3");
@@ -120,7 +121,9 @@ public class OpsCopyAbService {
                 copies,
                 copyAbRepository.listVersions(null),
                 experiments,
-                copyAbRepository.listFrameworkParams(),
+                copyAbRepository.listFrameworkParams().stream()
+                        .filter(param -> !RETIRED_EXPERIMENT_FRAMEWORK_KEYS.contains(param.key().toLowerCase(Locale.ROOT)))
+                        .toList(),
                 copyAbRepository.listPositions(),
                 SURFACES,
                 AUDIENCES,
@@ -770,6 +773,9 @@ public class OpsCopyAbService {
         CopyFrameworkParamView current = copyAbRepository.findFrameworkParamForUpdate(paramKey).orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "COPY_FRAMEWORK_PARAM_NOT_FOUND");
+        }
+        if (RETIRED_EXPERIMENT_FRAMEWORK_KEYS.contains(current.key().toLowerCase(Locale.ROOT))) {
+            return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), OpsErrorCode.RETIRED_FEATURE.name());
         }
         if (!current.current().equals(request.expectedValue().trim())) {
             return ApiResult.fail(409, "COPY_FRAMEWORK_VALUE_CONFLICT");
