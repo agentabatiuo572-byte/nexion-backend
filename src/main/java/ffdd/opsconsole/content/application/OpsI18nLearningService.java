@@ -497,10 +497,10 @@ public class OpsI18nLearningService {
         LearningCourseVersionView current = learningRepository.findCourseVersion(courseId, version).orElse(null);
         if (current == null) return ApiResult.fail(404, "LEARNING_COURSE_VERSION_NOT_FOUND");
         if (!"DRAFT".equals(current.status())) return ApiResult.fail(409, "LEARNING_COURSE_VERSION_NOT_DRAFT");
-        LearningCourseView versionCourse = findCourse(courseId);
-        if (versionCourse == null) return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
-        if (retiredOptionChanged(request.completionCondition(), versionCourse.completionCondition())
-                || retiredOptionChanged(request.rewardEvent(), versionCourse.rewardEvent())) {
+        // This method saves the version snapshot, so the baseline is that snapshot's own payload —
+        // not the course main record, which is an independent persistent object that may differ.
+        if (retiredOptionChanged(request.completionCondition(), current.payload().completionCondition())
+                || retiredOptionChanged(request.rewardEvent(), current.payload().rewardEvent())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEARNING_COURSE_OPTION_RETIRED");
         }
         request = request.withPreviousTranslations(current.payload());
