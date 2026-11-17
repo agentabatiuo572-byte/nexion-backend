@@ -26,7 +26,10 @@ import java.util.Map;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Clock;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.HexFormat;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -45,6 +48,7 @@ public class OpsPlatformMenuService {
     private final AdminPermissionMapper permissionMapper;
     private final AuditLogService auditLogService;
     private final AdminIdempotencyService idempotencyService;
+    private final Clock clock;
 
     public ApiResult<PlatformMenuTreeOverview> overview() {
         List<AdminMenuEntity> all = menuMapper.selectAllActive();
@@ -180,7 +184,20 @@ public class OpsPlatformMenuService {
             }
             entity.setStatus(request.status());
         }
-        menuMapper.updateById(entity);
+        // A7 uses updatedAt as an opaque logical version, stored at whole-second precision.
+        LocalDateTime nextVersion = LocalDateTime.now(clock).truncatedTo(ChronoUnit.SECONDS);
+        LocalDateTime previousVersion = entity.getUpdatedAt();
+        if (previousVersion != null) {
+            LocalDateTime afterPrevious = previousVersion.truncatedTo(ChronoUnit.SECONDS).plusSeconds(1);
+            if (afterPrevious.isAfter(nextVersion)) {
+                nextVersion = afterPrevious;
+            }
+        }
+        entity.setUpdatedAt(nextVersion);
+        if (menuMapper.updateById(entity) != 1) {
+            return rejectMutation(entity, "UPDATE", 409, "MENU_VERSION_STALE",
+                    request.reason(), request.operator(), idempotencyKey, Map.of());
+        }
         audit("A7_MENU_NODE_UPDATED", menuId.toString(), request.reason(), request.operator(), idempotencyKey,
                 Map.of("menuCode", entity.getMenuCode()));
         return ApiResult.ok(toView(entity));
