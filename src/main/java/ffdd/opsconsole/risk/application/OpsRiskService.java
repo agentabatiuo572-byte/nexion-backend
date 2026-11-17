@@ -995,6 +995,8 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         response.put("domain", "K2");
         response.put("stats", canonicalK2Stats(rows));
         response.put("params", params);
+        response.put("welcomeGiftScopeSupported", Map.of(
+                "实体", true, "账户簇", true, "手机号", false, "设备", false));
         Map<String, Boolean> otpInitializationRequired = new LinkedHashMap<>();
         OTP_CANONICAL_CONFIG_KEYS.forEach((key, canonicalKey) -> otpInitializationRequired.put(key,
                 !activeOtpSource(riskMapper.otpCanonicalSource(canonicalKey, false))));
@@ -1189,6 +1191,10 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     }
                     if (before.version() != request.expectedVersion()) {
                         return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K2_PARAM_CONCURRENT_UPDATE");
+                    }
+                    if ("welcomeGiftAnomalyThreshold".equals(normalizedKey)
+                            && (normalizedValue.endsWith(" / 手机号") || normalizedValue.endsWith(" / 设备"))) {
+                        return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), "K2_WELCOME_GIFT_SCOPE_RETIRED");
                     }
                     RiskArbitrageParamView updated = riskRepository.updateArbitrageParam(
                             normalizedKey, request.expectedVersion(), normalizedValue).orElse(null);
