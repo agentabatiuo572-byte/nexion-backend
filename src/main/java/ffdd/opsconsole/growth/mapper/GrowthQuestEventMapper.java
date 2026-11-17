@@ -776,7 +776,9 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                        FROM nx_user_mission u
                       WHERE u.is_deleted = 0
                         AND u.mission_id = m.id
-                        AND u.created_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+                        AND UPPER(u.mission_status) IN ('COMPLETED', 'CLAIMABLE', 'CLAIMED')
+                        AND u.completed_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+                        AND u.completed_at <= NOW()
                    ) AS sample24h,
                    (
                      SELECT CASE
