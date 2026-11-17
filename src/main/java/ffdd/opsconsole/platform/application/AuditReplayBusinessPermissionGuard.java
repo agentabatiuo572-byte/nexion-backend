@@ -1620,6 +1620,7 @@ public class AuditReplayBusinessPermissionGuard {
             }
             case "e1_legacy_unknown_zero_credit_cancel" -> legacyUnknownDescriptor(params);
             case "e3_config" -> e3ConfigDescriptor(params);
+            case "e3_config_batch" -> e3ConfigBatchDescriptor(params);
             case "e5_device_force_activate" -> deviceDescriptor(
                     "强制激活设备", deviceId, "ACTIVATED");
             case "e5_device_unbind" -> deviceDescriptor(
@@ -1650,6 +1651,32 @@ public class AuditReplayBusinessPermissionGuard {
                 c.taskNo()+" / "+c.caseId()+" / 未确认 COMPLETE generation 1",
                 "CANCELLED / ZERO CREDIT / proof "+proofSha+" / epoch "+ffdd.opsconsole.device.application.LegacyUnknownZeroCreditService.proofEpoch(command),
                 "E5","acct",false,new AuditLockTarget("E","legacy_unknown",c.taskNo()));
+    }
+
+    private TreeMap<String, Object> canonicalE3BatchValues(Map<String, Object> params) {
+        Object raw = params == null ? null : params.get("values");
+        if (!(raw instanceof Map<?, ?> input) || input.isEmpty()) {
+            throw new ffdd.opsconsole.shared.exception.BizException(422, "E3_CONFIG_VALUES_REQUIRED");
+        }
+        TreeMap<String, Object> values = new TreeMap<>();
+        for (Map.Entry<?, ?> entry : input.entrySet()) {
+            if (!(entry.getKey() instanceof String key) || !E3_CONFIG_TARGET_IDS.containsKey(key)) {
+                throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_BUSINESS_CONTEXT_UNMAPPED");
+            }
+            values.put(key, entry.getValue());
+        }
+        return values;
+    }
+
+    private DelegatedProposalDescriptor e3ConfigBatchDescriptor(Map<String, Object> params) {
+        TreeMap<String, Object> values = canonicalE3BatchValues(params);
+        boolean amplifies = devices.e3ConfigBatchAmplifies(values);
+        return new DelegatedProposalDescriptor(
+                "批量更新升级置换设置", String.join(",", values.keySet()),
+                "以服务器执行时状态为准",
+                values.entrySet().stream().map(entry -> entry.getKey() + "=" + entry.getValue())
+                        .collect(java.util.stream.Collectors.joining(" / ")),
+                "E3", "param", amplifies, null);
     }
 
     private DelegatedProposalDescriptor e3ConfigDescriptor(Map<String, Object> params) {
@@ -1777,6 +1804,12 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     private List<AuditLockTarget> delegatedTargets(AuditReplayCommand command) {
+        if (command != null && "E".equalsIgnoreCase(text(command.domain()))
+                && "e3_config_batch".equalsIgnoreCase(text(command.op()))) {
+            return canonicalE3BatchValues(command.params()).keySet().stream()
+                    .map(key -> new AuditLockTarget("E", "device_e3_config", E3_CONFIG_TARGET_IDS.get(key)))
+                    .toList();
+        }
         if (command != null && "F".equalsIgnoreCase(text(command.domain()))
                 && "f_config_batch".equalsIgnoreCase(text(command.op()))) {
             return fConfigBatchCommands(command.params()).stream()
@@ -2087,7 +2120,7 @@ public class AuditReplayBusinessPermissionGuard {
                 case "e1_sku_create", "e1_sku_update", "e1_sku_status", "e1_sku_delete", "e1_phone_task_policy" -> "device_e1_write";
                 case "e2_task_create", "e2_task_update", "e2_task_price", "e2_task_status", "e2_task_delete" -> "device_e2_write";
                 case "e1_legacy_unknown_zero_credit_cancel" -> "device_e5_write";
-                case "e3_config" -> "device_e3_write";
+                case "e3_config", "e3_config_batch" -> "device_e3_write";
                 case "e4_order_refund" -> E4_REFUND_AUTHORITY;
                 case "e4_order_cancel", "e4_order_terminal", "e4_order_state" -> "device_e4_write";
                 case "e5_device_force_activate" -> "device_e5_device_force_activate";
@@ -2143,7 +2176,7 @@ public class AuditReplayBusinessPermissionGuard {
             return null;
         }
         return switch (operation) {
-            case "e3_config" -> "device_e3_read";
+            case "e3_config", "e3_config_batch" -> "device_e3_read";
             case "e6_compute_config", "e6_compute_config_batch", "e6_phone_calibration" -> "device_e6_read";
             default -> null;
         };

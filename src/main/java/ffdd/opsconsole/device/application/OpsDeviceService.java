@@ -2961,6 +2961,29 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return ApiResult.ok(response);
     }
 
+    /** Classifies the complete normalized batch, including dependent fields, without writing it. */
+    public boolean e3ConfigBatchAmplifies(Map<String, Object> rawValues) {
+        try {
+            Map<String, String> before = new LinkedHashMap<>(deviceRepository.e3Config());
+            Map<String, String> candidate = new LinkedHashMap<>(before);
+            Map<String, String> normalized = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> entry : rawValues.entrySet()) {
+                String key = normalizeE3Key(entry.getKey());
+                String value = normalizeE3Value(key, entry.getValue() == null ? null : String.valueOf(entry.getValue())).value();
+                normalized.put(key, value);
+                candidate.put(key, value);
+            }
+            validateE3Candidate(candidate);
+            Set<String> changedKeys = new java.util.LinkedHashSet<>();
+            normalized.forEach((key, value) -> {
+                if (!value.equals(before.get(key))) changedKeys.add(key);
+            });
+            return e3AmplifiesFinancialOutflow(before, candidate, changedKeys);
+        } catch (IllegalArgumentException invalid) {
+            throw new ffdd.opsconsole.shared.exception.BizException(422, invalid.getMessage());
+        }
+    }
+
     /** A2 classifies the same normalized candidate that the E3 writer checks at execution. */
     public boolean e3ConfigAmplifies(String rawKey, String rawValue) {
         try {
