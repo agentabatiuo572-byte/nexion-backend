@@ -73,12 +73,9 @@ public class OpsNovaService {
             new NovaOptionView("EXPIRED", "已过期"));
     private static final List<NovaOptionView> TEMPLATE_CTA_OPTIONS = List.of(
             new NovaOptionView("NONE", "无跳转"),
-            new NovaOptionView("/me/weekly", "每周回顾"),
-            new NovaOptionView("/devices", "设备商城"),
             new NovaOptionView("/staking", "质押产品"),
             new NovaOptionView("/team", "团队"),
-            new NovaOptionView("/earn", "收益任务"),
-            new NovaOptionView("/support", "客服中心"));
+            new NovaOptionView("/earn", "收益任务"));
     private static final List<NovaEventDrivenView> EVENT_DRIVEN_CHANNELS = List.of(
             new NovaEventDrivenView("risk-alert", "设备掉线或任务失败时立即推送。",
                     "设备运行与风控异常", "warn", "事件触发"),
