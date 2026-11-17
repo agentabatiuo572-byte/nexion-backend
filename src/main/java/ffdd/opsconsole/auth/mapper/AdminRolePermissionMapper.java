@@ -383,7 +383,7 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
                      WHEN RIGHT(LOWER(TRIM(p.permission_code)), 5) = '_read' THEN 'READ'
                      WHEN RIGHT(LOWER(TRIM(p.permission_code)), 6) = '_write' THEN 'WRITE'
                      ELSE 'HIGH'
-                   END <> 'READ'
+                   END &lt;&gt; 'READ'
             </script>
             """)
     List<String> selectNonReadPermissionCodes(@Param("permissionCodes") Collection<String> permissionCodes);
