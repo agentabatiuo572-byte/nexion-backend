@@ -733,6 +733,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         response.put("h3Stats", questStats());
         response.put("h4Stats", eventStats());
         response.put("dayOneWindow", dayOneWindow());
+        response.put("dayOneWindowConfig", Map.of("key", "dayOne.windowMs", "readOnly", true,
+                "retired", true, "valueKind", "DISPLAY_TEXT_ONLY"));
         response.put("dayOneEligibilityHours", questConfig("dayOne.eligibilityHours"));
         response.put("dayOneTriReward", questConfig("dayOne.triReward"));
         response.put("dayOneTasks", dayOneTasks());
@@ -977,7 +979,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
 
     public ApiResult<Map<String, Object>> questEventOverview() {
         Map<String, Object> response = new LinkedHashMap<>(questEvents().getData());
-        List.of("h3Stats", "dayOneWindow", "dayOneTriReward", "dayOneTasks", "dayOneStates",
+        List.of("h3Stats", "dayOneWindow", "dayOneWindowConfig", "dayOneTriReward", "dayOneTasks", "dayOneStates",
                         "weeklyTier1", "weeklyTier2", "weeklyChampionBonus", "weeklyMultipliers",
                         "monthlyMissions", "taskMonitor", "taskContracts", "promoBanner", "phaseMultiplierReadonly")
                 .forEach(response::remove);
@@ -5823,6 +5825,9 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     }
 
     private String normalizeQuestValue(String key, String raw) {
+        if ("dayOne.windowMs".equals(key)) {
+            throw new IllegalArgumentException("H3_DAY_ONE_WINDOW_RETIRED");
+        }
         String value = normalizePlainText(raw, key.startsWith("wheel.") ? 300 : 160);
         if ("dayOne.eligibilityHours".equals(key)) {
             int hours;
