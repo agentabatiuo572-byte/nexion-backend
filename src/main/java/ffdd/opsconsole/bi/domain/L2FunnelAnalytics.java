@@ -36,6 +36,7 @@ public final class L2FunnelAnalytics {
             "wallet.reinvest",
             "withdraw.submitted");
     private static final List<Integer> CURVE_DAYS = List.of(0, 1, 3, 7, 14, 21, 30, 60);
+    private static final List<String> TRIAL_EVENTS = List.of("trial.started", "trial.redeemed");
 
     private L2FunnelAnalytics() {
     }
@@ -142,8 +143,11 @@ public final class L2FunnelAnalytics {
         Map<String, Object> curves = cohortCurves(selectedEvents, registered, cohorts, false);
         List<Map<String, Object>> monthlyCohorts = cohortRows(selectedEvents, registered, true);
         Map<String, Object> monthlyCurves = cohortCurves(selectedEvents, registered, monthlyCohorts, true);
-        List<Map<String, Object>> trial = trialRows(selectedEvents);
-        Map<String, Object> cross = crossAnalysis(selectedEvents, registered, firstPurchase);
+        long totalTrial = rawRows == null ? 0 : rawRows.stream()
+                .filter(row -> TRIAL_EVENTS.contains(text(row, "eventName", "event_name"))).count();
+        TrialFunnel trial = trialFunnel(selectedEvents,
+                totalTrial == events.stream().filter(event -> TRIAL_EVENTS.contains(event.name())).count());
+        Map<String, Object> cross = crossAnalysis(selectedEvents, registered, firstPurchase, trial);
         Map<String, Object> latestMature = cohorts.stream()
                 .filter(row -> row.get("d7") instanceof Number)
                 .reduce((left, right) -> right)
@@ -158,7 +162,7 @@ public final class L2FunnelAnalytics {
                 "available", true,
                 "funnel", funnel,
                 "funnelExt", funnelExt,
-                "trialSteps", trial,
+                "trialSteps", trialRows(trial),
                 "cohorts", cohorts,
                 "curves", curves,
                 "monthlyCohorts", monthlyCohorts,
@@ -174,6 +178,17 @@ public final class L2FunnelAnalytics {
                         "retentionEvent", "app.dau",
                         "incompleteRatesAreNull", true,
                         "businessTimeZone", ffdd.opsconsole.shared.config.BusinessCalendar.legacy().offsetLabel(),
+                        "trialBasis", linked(
+                                "available", trial.available(),
+                                "reason", trial.available() ? null : "TRIAL_EVENT_LINKAGE_INCOMPLETE",
+                                "stages", TRIAL_EVENTS,
+                                "association", "USER_ID_AND_TRIAL_AGGREGATE_ID",
+                                "deduplication", "DISTINCT_ACTOR_PER_STAGE",
+                                "conversion", "REDEEMED_STRICTLY_AFTER_SAME_TRIAL_START",
+                                "window", "LEGACY_DAY_START_MINUS_400_DAYS",
+                                "cohort", "SELECTED_REGISTRATION_ACTORS",
+                                "exposureAvailable", false,
+                                "legacyExposureRowIncludedInFunnel", false),
                         "lateArrivals", "included_on_next_query"),
                 "sources", List.of("nx_event_outbox", "nx_event_schema_registry"));
     }
@@ -310,23 +325,42 @@ public final class L2FunnelAnalytics {
         return percent(active, actors.size());
     }
 
-    private static List<Map<String, Object>> trialRows(List<EventFact> events) {
-        List<String> names = List.of("trial.claim_sheet_shown", "trial.started", "trial.redeemed");
-        Map<String, List<EventFact>> byActor = events.stream()
-                .collect(Collectors.groupingBy(EventFact::actor, LinkedHashMap::new, Collectors.toList()));
-        Map<String, EventFact> claimed = firstByActor(named(events, names.get(0)));
-        Map<String, EventFact> started = nextStage(byActor, claimed, names.get(1));
-        Map<String, EventFact> redeemed = nextStage(byActor, started, names.get(2));
-        List<Map<String, EventFact>> stages = List.of(claimed, started, redeemed);
+    private static TrialFunnel trialFunnel(List<EventFact> events, boolean actorCoverageComplete) {
+        boolean available = actorCoverageComplete && events.stream()
+                .filter(event -> TRIAL_EVENTS.contains(event.name()))
+                .allMatch(event -> !event.trialId().isBlank());
+        Map<List<String>, EventFact> startsByTrial = new LinkedHashMap<>();
+        for (EventFact event : named(events, "trial.started")) {
+            if (!event.trialId().isBlank()) {
+                startsByTrial.putIfAbsent(List.of(event.actor(), event.trialId()), event);
+            }
+        }
+        Map<String, EventFact> started = firstByActor(new ArrayList<>(startsByTrial.values()));
+        Map<String, EventFact> redeemed = new LinkedHashMap<>();
+        for (EventFact event : named(events, "trial.redeemed")) {
+            EventFact start = startsByTrial.get(List.of(event.actor(), event.trialId()));
+            if (start != null && event.at().isAfter(start.at())) redeemed.putIfAbsent(event.actor(), event);
+        }
+        return new TrialFunnel(started, redeemed, available);
+    }
+
+    private static List<Map<String, Object>> trialRows(TrialFunnel trial) {
+        List<Map<String, EventFact>> stages = List.of(trial.started(), trial.redeemed());
         List<Map<String, Object>> result = new ArrayList<>();
+        // Preserve the old row positions without inventing an exposure count or stage.
+        result.add(linked("e", "trial.claim_sheet_shown", "n", null, "available", false,
+                "includedInFunnel", false, "reason", "EVENT_NOT_PRODUCED"));
         long previous = 0;
-        for (int index = 0; index < names.size(); index++) {
-            String name = names.get(index);
+        for (int index = 0; index < TRIAL_EVENTS.size(); index++) {
             long count = stages.get(index).size();
-            Map<String, Object> row = linked("e", name, "n", count);
-            if (index > 0) {
-                row.put("arr", previous == 0 ? null : percent(count, previous) + "%");
-                row.put("arrLb", previous == 0 ? "上一步数据不足" : " 上一步转化");
+            Map<String, Object> row = linked("e", TRIAL_EVENTS.get(index),
+                    "n", trial.available() ? count : null,
+                    "available", trial.available(), "includedInFunnel", true);
+            row.put("arr", !trial.available() || previous == 0 ? null : percent(count, previous) + "%");
+            row.put("arrLb", previous == 0 ? "上一步数据不足" : " 上一步转化");
+            if (!trial.available()) {
+                row.put("arrLb", null);
+                row.put("reason", "TRIAL_EVENT_LINKAGE_INCOMPLETE");
             }
             result.add(protect(row, belowThreshold(count) || (index > 0 && belowThreshold(previous)), "n", "arr", "arrLb"));
             previous = count;
@@ -337,7 +371,8 @@ public final class L2FunnelAnalytics {
     private static Map<String, Object> crossAnalysis(
             List<EventFact> events,
             Map<String, EventFact> registered,
-            Map<String, EventFact> purchased) {
+            Map<String, EventFact> purchased,
+            TrialFunnel trial) {
         List<String> locales = registered.values().stream()
                 .map(EventFact::locale)
                 .filter(value -> !value.equals("und"))
@@ -345,23 +380,23 @@ public final class L2FunnelAnalytics {
                 .sorted()
                 .toList();
         if (locales.isEmpty()) locales = InterfaceLanguages.CODES;
-        Map<String, List<EventFact>> byActor = events.stream()
-                .collect(Collectors.groupingBy(EventFact::actor, LinkedHashMap::new, Collectors.toList()));
-        Map<String, EventFact> claimedTrial = firstByActor(named(events, "trial.claim_sheet_shown"));
-        Map<String, EventFact> startedTrial = nextStage(byActor, claimedTrial, "trial.started");
-        Map<String, EventFact> redeemedTrial = nextStage(byActor, startedTrial, "trial.redeemed");
         List<String> groups = registered.values().stream()
                 .map(event -> event.ref() + " · " + event.phase())
                 .distinct()
                 .sorted()
                 .toList();
         List<String> safeGroups = groups.isEmpty() ? List.of("direct · unknown") : groups;
+        Map<String, Object> trialMetric = crossMetric(safeGroups, locales, registered,
+                trial.available() ? trial.started() : Map.of(),
+                trial.available() ? trial.redeemed() : Map.of(),
+                "trial 兑换 ÷ trial 启动；与主漏斗独立计量");
+        trialMetric.put("available", trial.available());
+        if (!trial.available()) trialMetric.put("reason", "TRIAL_EVENT_LINKAGE_INCOMPLETE");
         return linked(
                 "cvr", crossMetric(safeGroups, locales, registered, registered, purchased,
                         "同用户首购 ÷ 注册；分母不足显示为空"),
                 "ret", retentionCrossMetric(safeGroups, locales, events, registered),
-                "trial", crossMetric(safeGroups, locales, registered, startedTrial, redeemedTrial,
-                        "trial 兑换 ÷ trial 启动；与主漏斗独立计量"));
+                "trial", trialMetric);
     }
 
     private static Map<String, Object> crossMetric(
@@ -472,7 +507,8 @@ public final class L2FunnelAnalytics {
                 text(row, "cohort"),
                 defaultText(text(row, "phase"), "unknown"),
                 normalizeLocale(text(row, "locale")),
-                defaultText(text(row, "refCode", "ref_code", "ref"), "direct"));
+                defaultText(text(row, "refCode", "ref_code", "ref"), "direct"),
+                "TRIAL".equals(text(row, "trialAggregateType")) ? text(row, "trialId") : "");
     }
 
     private static LocalDateTime dateTime(Object value) {
@@ -565,6 +601,10 @@ public final class L2FunnelAnalytics {
             String cohort,
             String phase,
             String locale,
-            String ref) {
+            String ref,
+            String trialId) {
+    }
+
+    private record TrialFunnel(Map<String, EventFact> started, Map<String, EventFact> redeemed, boolean available) {
     }
 }
