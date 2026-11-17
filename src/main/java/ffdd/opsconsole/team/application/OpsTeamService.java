@@ -1577,6 +1577,12 @@ public class OpsTeamService implements AuditReplayable {
         String configKey = uiConfigStorageKey(key);
         String oldValue = ("F.leaderboard.paused".equals(key)
                 ? configFacade.activeValueForUpdate(configKey) : configFacade.activeValue(configKey)).orElse("");
+        // A2 F4 提案在服务端绑定发起时原值；回放时只对本类 F4 配置键比对，
+        // 不一致保持 pending 且不写业务值。历史/在途票没有 expectedValue 时维持原行为。
+        if (A2ReplayContext.isReplaying() && request.expectedValue() != null
+                && !request.expectedValue().equals(oldValue)) {
+            return ApiResult.fail(409, "F4_CONFIG_STALE");
+        }
         String effectiveOldValue = projectLegacyUiValue(key, oldValue);
         LeaderboardPauseSnapshotService.State pauseChange = null;
         if ("F.leaderboard.paused".equals(key)) {
@@ -3414,10 +3420,23 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     /**
-     * Current value shown on an A2 F configuration proposal. Reads through the
-     * same authoritative keys as the write path and preserves the stored unit;
-     * an absent source is reported as unknown rather than a zero/default DTO.
+     * F4 配置面键中，哪些走 updateUiConfig 的通用键值写入。动态业务键（票权、配额档、
+     * 大使状态、榜单期状态）由各自 writer 的 CAS/修订校验处理，不能在这里绑定。
      */
+    public static boolean isF4StoredUiConfigKey(String key) {
+        if (key == null) {
+            return false;
+        }
+        return (key.startsWith("F.pool.") || key.startsWith("F.quota.")
+                || key.startsWith("F.ambassador.") || key.startsWith("F.leaderboard."))
+                && UI_CONFIG_KEYS.contains(key);
+    }
+
+    /** Raw value of an F4 stored UI key, read from the same source as the write path. */
+    public static String proposalUiConfigValue(PlatformConfigFacade configs, String key) {
+        return configs.activeValue(uiConfigStorageKey(key)).orElse("");
+    }
+
     public static String proposalCurrentValue(
             PlatformConfigFacade configs, TeamCommissionRepository rules, String operation, String key) {
         if ("f_config".equals(operation)) {
@@ -4906,7 +4925,8 @@ public class OpsTeamService implements AuditReplayable {
                         key, str(p, "value"), reason, operator,
                         parseLongFromMap(p.containsKey("expectedMonthlyQuota")
                                 ? p.get("expectedMonthlyQuota") : p.get("expectedVersion")),
-                        parseLongFromMap(p.get("expectedMaterialRevision")));
+                        parseLongFromMap(p.get("expectedMaterialRevision")), null,
+                        p.get("expectedValue") instanceof String expected ? expected : null);
                 return updateUiConfig(idem, req, key);
             }
             case "f_config_batch" -> {
@@ -4922,7 +4942,8 @@ public class OpsTeamService implements AuditReplayable {
                     String key = raw.get("key") == null ? "" : String.valueOf(raw.get("key")).trim();
                     String value = raw.get("value") == null ? "" : String.valueOf(raw.get("value")).trim();
                     TeamCommissionConfigUpdateRequest req =
-                            new TeamCommissionConfigUpdateRequest(key, value, reason, operator);
+                            new TeamCommissionConfigUpdateRequest(key, value, reason, operator, null, null, null,
+                                    raw.get("expectedValue") instanceof String expected ? expected : null);
                     ApiResult<Map<String, Object>> result = updateConfigInternal(idem + ":" + applied.size(), req);
                     if (result.getCode() != 0) {
                         throw new BizException(result.getCode(), result.getMessage());
