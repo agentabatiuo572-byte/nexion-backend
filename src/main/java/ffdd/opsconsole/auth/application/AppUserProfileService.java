@@ -3,6 +3,7 @@ package ffdd.opsconsole.auth.application;
 import ffdd.opsconsole.growth.application.H3DayOneBusinessFactService;
 import ffdd.opsconsole.growth.application.H3DayOneBusinessFactContract;
 import ffdd.opsconsole.auth.mapper.AppUserProfileMapper;
+import ffdd.opsconsole.platform.application.PlatformExperienceConfigService;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -39,6 +40,7 @@ public class AppUserProfileService {
     private final ObjectStorageService objectStorage;
     private final H3DayOneBusinessFactService dayOneFacts;
     private final AppUserAvatarImageService avatarImages;
+    private final PlatformExperienceConfigService experienceConfigService;
 
     @Transactional(readOnly = true)
     public Map<String, Object> profile(Long userId) {
@@ -84,7 +86,8 @@ public class AppUserProfileService {
         if (!InterfaceLanguages.CODES.contains(normalized)) {
             throw new BizException(422, "USER_LANGUAGE_INVALID");
         }
-        if (mapper.updateLanguage(userId, normalized) != 1) {
+        String effectiveLanguage = experienceConfigService.interfaceLanguages().contains(normalized) ? normalized : "en";
+        if (mapper.updateLanguage(userId, effectiveLanguage) != 1) {
             throw new BizException(404, "USER_NOT_FOUND_OR_INACTIVE");
         }
         audit.recordRequired(AuditLogWriteRequest.builder()
@@ -97,9 +100,9 @@ public class AppUserProfileService {
                 .actorUsername("user:" + userId)
                 .result("SUCCESS")
                 .riskLevel("LOW")
-                .detail(Map.of("language", normalized))
+                .detail(Map.of("language", effectiveLanguage))
                 .build());
-        return Map.of("language", normalized, "status", "UPDATED");
+        return Map.of("language", effectiveLanguage, "status", "UPDATED");
     }
 
     @Transactional(rollbackFor = Exception.class)

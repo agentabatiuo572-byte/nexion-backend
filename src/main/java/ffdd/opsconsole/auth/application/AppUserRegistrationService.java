@@ -1,6 +1,7 @@
 package ffdd.opsconsole.auth.application;
 
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.platform.application.PlatformExperienceConfigService;
 import ffdd.opsconsole.auth.captcha.CaptchaOtpGate;
 import ffdd.opsconsole.auth.captcha.CaptchaScene;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -68,7 +69,7 @@ public class AppUserRegistrationService {
             DayOneInstanceFacade dayOneInstanceFacade,
             ffdd.opsconsole.content.facade.SupportRegistrationFacade supportBindingService,
             AuthNewAccountCreator accountCreator) {
-        this(null,mapper,userMapper,passwordEncoder,otpDeliveryService,authService,outboxService,transactionExecutor,environment,referralRewardService,configFacade,loginGuardMapper,captchaGate,dayOneInstanceFacade,supportBindingService,accountCreator);
+        this(null,mapper,userMapper,passwordEncoder,otpDeliveryService,authService,outboxService,transactionExecutor,environment,referralRewardService,configFacade,loginGuardMapper,captchaGate,dayOneInstanceFacade,supportBindingService,accountCreator,null);
     }
     private static final String K1_MAX_SIGNUP_PER_IP_24H = "maxSignupPerIp24h";
     private static final Set<String> WEAK_PASSWORDS = Set.of(
@@ -90,6 +91,7 @@ public class AppUserRegistrationService {
     private final DayOneInstanceFacade dayOneInstanceFacade;
     private final ffdd.opsconsole.content.facade.SupportRegistrationFacade supportBindingService;
     private final AuthNewAccountCreator accountCreator;
+    private final PlatformExperienceConfigService experienceConfigService;
 
     @Transactional(propagation = Propagation.MANDATORY)
     public ApiResult<UserLoginResponse> registerProvider(String provider, String subject, String displayName,
@@ -346,6 +348,10 @@ public class AppUserRegistrationService {
                 || !validPassword(request.password(), request.phone())) {
             return ApiResult.fail(422, "USER_REGISTRATION_REQUEST_INVALID");
         }
+        String requestedLanguage = StringUtils.hasText(request.language())
+                ? request.language().trim().toLowerCase(Locale.ROOT) : "en-US";
+        String effectiveLanguage = experienceConfigService.interfaceLanguages()
+                .contains(InterfaceLanguages.baseCode(requestedLanguage)) ? requestedLanguage : "en";
         String countryCode = normalizeCountryCode(request.countryCode());
         String phone = request.phone().trim();
         String challengeNo = request.challengeNo().trim();
@@ -395,8 +401,7 @@ public class AppUserRegistrationService {
         user.setVRank("V0");
         user.setStatus("ACTIVE");
         user.setSandbox(sandbox);
-        user.setLanguage(StringUtils.hasText(request.language())
-                ? request.language().trim().toLowerCase(java.util.Locale.ROOT) : "en-US");
+        user.setLanguage(effectiveLanguage);
         user.setIsDeleted(0);
         AuthNewAccountCreator.BirthHandle birth;
         try {
