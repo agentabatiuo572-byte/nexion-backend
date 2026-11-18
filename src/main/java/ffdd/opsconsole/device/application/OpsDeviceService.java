@@ -2065,6 +2065,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         phaseComparison.put("h1CurrentPhase", rhythm.currentPhase());
         phaseComparison.put("same", java.util.Objects.equals(currentPhase, rhythm.currentPhase()));
         phaseComparison.put("gateSource", "E1_CONFIGURED_RELEASE_PHASE");
+        phaseComparison.put("h1PhaseCatalog", GrowthRhythmSnapshot.phaseNames());
+        boolean mapped = rhythm.reliable() && rhythm.currentPhase() != null && phaseOrder.contains(rhythm.currentPhase());
+        phaseComparison.put("mappingStatus", mapped ? "EXACT_ID_PRESENT" : "UNMAPPED");
+        phaseComparison.put("mappedH1Phase", mapped ? rhythm.currentPhase() : null);
         response.put("phaseComparison", phaseComparison);
         response.put("releases", e1GenerationReleases(gates));
         response.put("configValues", configValues);
