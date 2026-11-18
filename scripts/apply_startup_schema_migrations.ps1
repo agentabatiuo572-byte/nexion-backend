@@ -495,7 +495,9 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261117_user_nickname_unique.sql"),
   # The H4 wheel award event registration is lost in DDL-only installs.
   # Restore it after the event governance structure and lifecycle closure above.
-  (Join-Path $root "scripts\migrations\20261118_h4_wheel_award_event_registry.sql")
+  (Join-Path $root "scripts\migrations\20261118_h4_wheel_award_event_registry.sql"),
+  (Join-Path $root "scripts\migrations\20261118_bug456_legacy_spring_spin_status.sql"),
+  (Join-Path $root "scripts\migrations\20261118_bug457_nova_social_wrapped_uvel_titles.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

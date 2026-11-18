@@ -529,6 +529,19 @@ public class AuditReplayBusinessPermissionGuard {
                 && Set.of("i4_disclosure_publish", "i5_disclosure_publish").contains(operation)) {
             return validateDisclosureSnapshot(command.params());
         }
+        if ("I".equalsIgnoreCase(command.domain()) && "i5_matrix_configure".equals(operation)) {
+            var params = command.params();
+            String jurisdiction = value(params, "jurisdictionCode");
+            if (jurisdiction.isBlank()) jurisdiction = value(params, "jurisdiction");
+            DisclosureDraftView target = trustDisclosureRepository
+                    .findDisclosureVersion(jurisdiction, value(params, "version")).orElse(null);
+            if (target != null && ("published".equalsIgnoreCase(target.status())
+                    || "superseded".equalsIgnoreCase(target.status()))
+                    && !OpsTrustDisclosureService.hasStoredDisclosureEnglish(target,
+                    trustDisclosureRepository.listChapters(jurisdiction, target.version()))) {
+                return ApiResult.fail(422, "DISCLOSURE_EN_REQUIRED_FOR_SCOPE");
+            }
+        }
         return ApiResult.ok();
     }
 

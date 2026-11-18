@@ -1231,6 +1231,9 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             """)
     long countById(@Param("eventId") String eventId);
 
+    @Select("SELECT COUNT(1) FROM nx_event_quest WHERE quest_code = #{eventId}")
+    long countReservedEventId(@Param("eventId") String eventId);
+
     @Insert("""
             INSERT INTO nx_event_quest (
                 quest_code, quest_name, description, geo_scope, cta_href, starts_at, ends_at, target_type, target_value,

@@ -1721,7 +1721,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         }
         Set<String> keys = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
         for (TrustSectionVersionView.Field field : fields) {
-            if (field != null && trustFieldValueTooLong(field.key(), field.value())) {
+            if (field != null && trustFieldValueTooLong(field.value())) {
                 return ApiResult.fail(422, "TRUST_SECTION_FIELD_VALUE_TOO_LONG");
             }
             if (field == null || !StringUtils.hasText(field.key())
@@ -1805,7 +1805,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                     || !keys.add(field.key().trim()) || containsUnsafeText(field.key(), field.label())) {
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_STRUCTURED_FIELDS_INVALID");
             }
-            if (trustFieldValueTooLong(field.key(), field.value())) {
+            if (trustFieldValueTooLong(field.value())) {
                 return ApiResult.fail(422, "TRUST_SECTION_FIELD_VALUE_TOO_LONG");
             }
             if (linkField) {
@@ -1877,8 +1877,8 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         return matcher.matches() && OPTIONAL_BASE_LANGUAGES.contains(matcher.group(2).toLowerCase(Locale.ROOT));
     }
 
-    private boolean trustFieldValueTooLong(String key, String value) {
-        return value != null && !isLinkField(key) && value.codePointCount(0, value.length()) > 500;
+    private boolean trustFieldValueTooLong(String value) {
+        return value != null && value.codePointCount(0, value.length()) > 500;
     }
 
     private boolean isLinkField(String key) {

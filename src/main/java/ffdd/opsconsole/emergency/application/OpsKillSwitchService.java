@@ -74,21 +74,21 @@ public class OpsKillSwitchService {
 
     private static final List<EmergencySlaSeed> EMERGENCY_SLA_SEEDS = List.of(
             new EmergencySlaSeed("autoConfirmMins", "自动关停补录时限", "R1/R2 自动关停后，值班人员要在这个时间内补填处理原因", "30", "分钟", "number", true),
-            new EmergencySlaSeed("recoverGate", "恢复业务的备付金门槛", "备付金覆盖率达到这条线,才允许恢复会往外付钱的业务", "", "%", "number", false));
+            new EmergencySlaSeed("recoverGate", "恢复业务的备付金门槛", "备付金覆盖率达到这条线，才允许恢复会往外付钱的业务", "", "%", "number", false));
 
     private static final List<AutoRuleSeed> AUTO_RULE_SEEDS = List.of(
             new AutoRuleSeed("withdrawSurge", "提现激增 / 挤兑", "资金安全 · R1", "surge",
                     List.of("24 小时提现申请额 ÷ 真实储备 ≥ ", "40%", "（挤兑红线）→ 自动暂停 ", "提现", ""),
                     "触发阈值", "40", "number", "%", "automatic", false, "与「风险提醒」的挤兑红线相同", "这个阈值在「风险提醒」设置（默认 40%），这里只引用"),
             new AutoRuleSeed("maturityGap", "对账缺口", "资金安全 · R2", "gap",
-                    List.of("钱包余额与最新账本余额相差 > ", "50,000 USDT", " → 自动暂停 ", "兑换", "（对账恢复正常后再开放）"),
+                    List.of("钱包余额与最新账本余额相差 > ", "50,000 USDT", " → 自动暂停 ", "兑换", "（不会自动恢复，需人工操作）"),
                     "触发阈值", "50000", "number", "USDT", "automatic", true, "", ""),
             new AutoRuleSeed("tamperCluster", "篡改告警激增", "风控 · R3", "shield",
-                    List.of("单账户超过 ", "告警阈值", " 或全平台环比突增 → ", "只自动告警，人工判断后再手动暂停", "（「篡改防御监控」只告警，不自动处理）"),
+                    List.of("单账户拦截次数达到 ", "告警阈值", " → ", "纳入告警监控，由人工判断是否停用", "（不以全平台环比触发）"),
                     "触发阈值", "10", "number", "次 / 24 小时", "advisory", false, "与「篡改防御监控」的告警阈值相同", "这个阈值在「篡改防御监控」页面顶部调整"),
             new AutoRuleSeed("regulatoryDirective", "监管指令", "合规 · R4", "clock",
-                    List.of("监管点名或法务事件（必须填写原因）→ ", "由人工通过应急快速通道发起", "（系统不自动判断）", "", ""),
-                    "触发方式", "人工 · 应急快速通道", "text", "", "manual", false, "", ""));
+                    List.of("监管点名或法务事件（必须填写原因）→ ", "由有权限的管理员手动紧急停用", "（系统不自动判断）", "", ""),
+                    "触发方式", "人工 · 紧急停用", "text", "", "manual", false, "", ""));
 
     private final EmergencyControlRepository emergencyRepository;
     private final TreasuryCoverageFacade coverageFacade;
@@ -1123,7 +1123,11 @@ public class OpsKillSwitchService {
             } else if ("maturityGap".equals(seed.id())) {
                 row.put("metric", "reconciliationGapUsdt");
                 row.put("comparator", ">");
-                row.put("actualThreshold", maturityGapThresholdUsdt(threshold).stripTrailingZeros());
+                BigDecimal actualThreshold = maturityGapThresholdUsdt(threshold).stripTrailingZeros();
+                row.put("actualThreshold", actualThreshold);
+                List<String> condition = new ArrayList<>(seed.condition());
+                condition.set(1, actualThreshold.toPlainString() + " USDT");
+                row.put("cond", condition);
                 row.put("target", "exchange");
                 row.put("action", "autoDisable");
             } else if ("tamperCluster".equals(seed.id())) {
