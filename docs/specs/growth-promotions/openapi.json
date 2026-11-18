@@ -1978,7 +1978,7 @@
       "post": {
         "operationId": "simulate",
         "summary": "simulate",
-        "description": "See operations.md for transactional preconditions, transitions and recovery.",
+        "description": "Apply the submission language rules to an in-memory copy of the draft before simulation. configHash identifies the submitted draft. Simulation does not update the stored draft, revision or content hash.",
         "tags": [
           "ADMIN"
         ],
