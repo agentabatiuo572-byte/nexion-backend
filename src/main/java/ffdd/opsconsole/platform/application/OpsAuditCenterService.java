@@ -1492,10 +1492,26 @@ public class OpsAuditCenterService {
         }
         if (H4GrowthApproval.supports(command)) {
             try {
+                if ("h4_legacy_event_reward_update".equals(command.op())) {
+                    String change = H4TicketReviewText.legacyRewardChange(objectMapper,
+                            command.params().get("expectedState"), command.params().get("values"), "before".equals(side));
+                    if (change != null) return change;
+                }
+                if ("h4_wheel_tier_update".equals(command.op())) {
+                    String changes = H4TicketReviewText.wheelTierChanges(objectMapper,
+                            command.params().get("expectedState"), command.params().get("values"), "before".equals(side));
+                    if (changes != null) return changes;
+                }
                 if ("h4_wheel_probabilities_update".equals(command.op())) {
                     String changes = H4TicketReviewText.probabilityChanges(objectMapper,
                             command.params().get("expectedState"), command.params().get("values"), "before".equals(side));
                     if (changes != null) return changes;
+                }
+                String operationChanges = H4TicketReviewText.remainingOperationChanges(objectMapper, command.op(),
+                        command.params().get("expectedState"), command.params().get("values"), "before".equals(side));
+                if (operationChanges != null) return operationChanges;
+                if (!command.params().containsKey("expectedState") || !command.params().containsKey("values")) {
+                    return "原票缺少冻结快照，无法核对变更";
                 }
                 if ("before".equals(side)) {
                     Object state = command.params().get("expectedState");
@@ -1512,7 +1528,7 @@ public class OpsAuditCenterService {
                 }
                 return H4TicketReviewText.render(objectMapper, objectMapper.writeValueAsString(values));
             } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
-                throw new BizException(422, "H4_PROPOSAL_INVALID");
+                return "原票冻结快照格式不可核对";
             }
         }
         String reviewKey = isSkuReviewCommand(command) ? "skuReview"

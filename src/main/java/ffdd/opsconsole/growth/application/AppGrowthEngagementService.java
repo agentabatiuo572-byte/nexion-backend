@@ -325,7 +325,7 @@ public class AppGrowthEngagementService {
                 : "nx_mission + nx_user_mission + nx_growth_day_one_instance + nx_growth_day_one_instance_item + day_one_snapshot_only";
         return ApiResult.ok(productionResponse(linked(
                 "quests", quests,
-                "dayOneRewardNex", dayOneReward,
+                "dayOneRewardNex", dayOneReward, "dayOneRewardTierBasis", "CLAIM_TIME",
                 "dayOneRequiredTaskCount", dayOneRequiredTaskCount,
                 "dayOneSnapshotStatus", dayOneSnapshotStatus,
                 "promoBanner", projectPromoBanner(promo),
@@ -618,11 +618,11 @@ public class AppGrowthEngagementService {
         Map<String, Object> detail = linked(
                 "layer", "DAY_ONE", "rewardNex", amount, "multiplier", multiplier,
                 "rhythmMonth", snapshot.rhythmMonth(), "instanceKey", instanceKey,
-                "requiredTaskCount", snapshot.requiredTaskCount());
+                "requiredTaskCount", snapshot.requiredTaskCount(), "rewardTierBasis", "CLAIM_TIME");
         audit("H3_QUEST_CLAIMED", "USER_MISSION", code, code, userId, detail);
         publish("MISSION", code, "quest.claimed", userId, attribution(userId), detail);
         return ApiResult.ok(linked("questId", code, "rewardNex", amount, "status", "CLAIMED",
-                "instanceKey", instanceKey,
+                "rewardTierBasis", "CLAIM_TIME", "instanceKey", instanceKey,
                 "serverCanonical", true, "sourceEnvironment", "PRODUCTION", "runId", ""));
     }
 
