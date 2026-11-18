@@ -127,8 +127,8 @@ public class OpsEventCenterService {
     private static final List<EventCommonField> COMMON_FIELDS = List.of(
             new EventCommonField("event_id", "event_id", "系统生成的唯一编号，用于去重", "必带"),
             new EventCommonField("event_name", "event_name", "domain.object_action,动作使用过去式", "必带"),
-            new EventCommonField("ts", "ts", "事件记录的发生时间（毫秒）；不等同于系统接收时间", "以系统为准"),
-            new EventCommonField("identity", "user_id / anon_id", "按原事件记录的用户或匿名标识读取，不推断历史关联", "字段必带,值可空"),
+            new EventCommonField("ts", "ts", "事件发生时间（毫秒）：可来自已校验的客户端时间或服务端业务时间，不等同于接收时间", "以系统为准"),
+            new EventCommonField("identity", "user_id / anon_id", "按原事件标识读取；通用 App 行为仅在登录后采集，不按注册前设备编号自动关联", "字段必带,值可空"),
             new EventCommonField("session_id", "session_id", "单次会话 ID", "字段必带,值可空"),
             new EventCommonField("phase", "phase + 账户月龄", "事件发生时用户所在的运营阶段，用于分析阶段效果", "必带"),
             new EventCommonField("cohort", "cohort", "注册周(按周分群)", "必带"),
@@ -143,7 +143,7 @@ public class OpsEventCenterService {
             new EventKpiFormula(3, "逛商城", "看过商城的人 ÷ 注册数"),
             new EventKpiFormula(4, "下单转化", "完成支付的人 ÷ 看过商城的人"),
             new EventKpiFormula(5, "持有者推广", "发过邀请的设备持有者 ÷ 持有者总数"),
-            new EventKpiFormula(6, "Nova 点击率", "推送点击 ÷ 推送送达（以系统确认送达为准）"),
+            new EventKpiFormula(6, "站内通知点击率", "发送后有点击的去重用户数 ÷ 发送的去重用户数；按用户匹配，不是系统推送送达率"),
             new EventKpiFormula(7, "奖励触发", "直接邀请的好友下首单并产生奖励的人数 ÷ 直接邀请总人数"),
             new EventKpiFormula(8, "创世节点售罄天数", "从开售到卖完所用的天数"));
 
@@ -361,7 +361,7 @@ public class OpsEventCenterService {
                             "V4 内容批",
                             "inprogress",
                             "内容域(I1/I3/I5/I7)",
-                            "四类事件暂记 admin 占位 + 临时编号",
+                            "内容、通知、披露和课程的登记核对；工单状态不是报表启用条件",
                             domains("content", "notification", "disclosure", "learn"),
                             List.of(
                                     row("content.variant_exposed / converted", "A4 已注册 · I1 服务端稳定分桶、首曝与已支付/完成订单转化"),
@@ -1044,10 +1044,10 @@ public class OpsEventCenterService {
 
     private List<String> guardrails() {
         return List.of(
-                "资金和关键指标只统计由系统记录的事件",
+                "事件中心今日总量不筛权威标记。L1 允许非权威的商城浏览与站内通知点击；B3 允许非权威的商城浏览，其余按各自查询的权威事件规则",
                 "事件名和字段要先登记再使用，字段里不能有明文个人敏感信息",
-                "目录登记不代表生产者已接入；查询仅统计已有记录，不自动回填历史事件",
-                "Premium、积分系统、UVT v2 已下线，只保留历史数据和到期兑付");
+                "登记工单不控制 BI 启用；新增登记不自动改写或重新归类历史事件",
+                "B3 按注册、购买、复购、提现阶段查看，支持注册周、阶段和推荐来源筛选；不提供绑卡或锁定计划步骤；Premium、积分系统、UVT v2 仅保留历史数据和到期兑付");
     }
 
     private static EventFamily family(
