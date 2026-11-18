@@ -804,16 +804,22 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
     List<Map<String, Object>> taskContracts();
 
     @Select("""
-            SELECT base_reward AS baseReward,
-                   multiplier,
-                   countdown_days AS countdownDays,
-                   countdown_hours AS countdownHours,
-                   target_device AS targetDevice,
-                   target_daily AS targetDaily,
-                   status
-              FROM nx_growth_promo_banner
-             WHERE is_deleted = 0
-             ORDER BY sort_order ASC, id ASC
+            SELECT b.base_reward AS baseReward,
+                   b.multiplier,
+                   b.countdown_days AS countdownDays,
+                   b.countdown_hours AS countdownHours,
+                   b.target_device AS targetDevice,
+                   b.target_daily AS targetDaily,
+                   b.status,
+                   (SELECT p.product_type
+                      FROM nx_product p
+                     WHERE p.is_deleted = 0
+                       AND (p.product_no = b.target_device OR p.name = b.target_device)
+                     ORDER BY p.id
+                     LIMIT 1) AS productType
+              FROM nx_growth_promo_banner b
+             WHERE b.is_deleted = 0
+             ORDER BY b.sort_order ASC, b.id ASC
              LIMIT 1
             """)
     Map<String, Object> promoBanner();
