@@ -126,7 +126,7 @@ INSERT INTO nx_admin_menu (menu_code, menu_name, menu_name_zh, parent_id, route_
 SELECT v.code, v.name, v.name, p.id, v.path, v.sort, 1, 0
 FROM nx_admin_menu p JOIN (SELECT 'I' d) x ON p.menu_code='I'
 JOIN (SELECT 'I1' code,'转化文案 A/B' name,'/content/copy-ab' path,1 sort UNION ALL
-      SELECT 'I2','Nova 推送运营','/content/nova',2 UNION ALL
+      SELECT 'I2','消息推送','/content/nova',2 UNION ALL
       SELECT 'I3','通知 Campaign','/content/notifications',3 UNION ALL
       SELECT 'I4','信任中心 CMS','/content/trust',4 UNION ALL
       SELECT 'I5','法律条款与风险披露','/content/disclosures',5 UNION ALL
