@@ -1067,8 +1067,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 return validation("H4_EVENT_MUTEX_UNAVAILABLE");
             }
             String id = normalizeNewEventId(request.id());
-            if (questEventMapper.get().countById(id) > 0) {
-                return validation("EVENT_ALREADY_EXISTS");
+            if (questEventMapper.get().countReservedEventId(id) > 0) {
+                return ApiResult.fail(409, "EVENT_ALREADY_EXISTS");
             }
             String name = normalizePlainText(request.name(), 128);
             String kind = normalizePlainText(StringUtils.hasText(request.kind()) ? request.kind() : "discount", 64)
@@ -2972,8 +2972,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         if (!streakRewardAmplifies(oldReward, newReward)) return ApiResult.fail(422, "H5_APPROVAL_NOT_REQUIRED");
         requireH5Coverage();
         return ApiResult.ok(new H5ConfigReview(new AuditLockTarget("H", "h5_streak_milestone", String.valueOf(milestoneId)),
-                "放宽连签里程碑奖励", streakRewardSummary(before, oldReward, String.valueOf(before.get("reward"))),
-                streakRewardSummary(before, newReward, reward) + "；批准后尚未领取者按新配置领取，已领取者不补发"));
+                "放宽连签里程碑奖励", streakRewardSummary(before, oldReward),
+                streakRewardSummary(before, newReward) + "；批准后尚未领取者按新配置领取，已领取者不补发"));
     }
 
     private Map<String, Object> lockStreakMilestoneState(int milestoneId) {
@@ -3056,9 +3056,14 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 before.type().equals(after.type()) ? before.amount() : BigDecimal.ZERO) > 0;
     }
 
-    private String streakRewardSummary(Map<String, Object> before, StreakReward reward, String name) {
-        return "连签 " + before.get("day") + " 天；" + reward.type() + " " + reward.amount().stripTrailingZeros().toPlainString()
-                + "；名称：" + name + "；固定徽章编码：" + before.get("badgeCode");
+    private String streakRewardSummary(Map<String, Object> before, StreakReward reward) {
+        String amount = reward.amount().stripTrailingZeros().toPlainString();
+        String display = switch (reward.type()) {
+            case "SPIN" -> "抽奖 " + amount + " 次";
+            case "BADGE" -> "徽章：" + before.get("badgeCode");
+            default -> amount + " " + reward.type();
+        };
+        return "连签 " + before.get("day") + " 天；" + display;
     }
 
     @Transactional

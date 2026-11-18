@@ -74,7 +74,7 @@ public class OpsKillSwitchService {
 
     private static final List<EmergencySlaSeed> EMERGENCY_SLA_SEEDS = List.of(
             new EmergencySlaSeed("autoConfirmMins", "自动关停补录时限", "R1/R2 自动关停后，值班人员要在这个时间内补填处理原因", "30", "分钟", "number", true),
-            new EmergencySlaSeed("recoverGate", "恢复业务的备付金门槛", "备付金覆盖率达到这条线,才允许恢复会往外付钱的业务", "", "%", "number", false));
+            new EmergencySlaSeed("recoverGate", "恢复业务的备付金门槛", "备付金覆盖率达到这条线，才允许恢复会往外付钱的业务", "", "%", "number", false));
 
     private static final List<AutoRuleSeed> AUTO_RULE_SEEDS = List.of(
             new AutoRuleSeed("withdrawSurge", "提现激增 / 挤兑", "资金安全 · R1", "surge",
