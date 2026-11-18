@@ -15,6 +15,8 @@ public interface NovaRepository {
 
     Optional<NovaChannelView> channel(String key);
 
+    List<Map<String, Object>> channelPushSentCounts(LocalDateTime fromAt, LocalDateTime toAt);
+
     int nextChannelOrder();
 
     void createChannel(String key, String name, String trigger, String tick, String cooldown,

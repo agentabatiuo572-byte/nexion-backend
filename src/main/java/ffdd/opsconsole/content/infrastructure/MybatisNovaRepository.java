@@ -56,6 +56,11 @@ public class MybatisNovaRepository implements NovaRepository {
     }
 
     @Override
+    public List<Map<String, Object>> channelPushSentCounts(LocalDateTime fromAt, LocalDateTime toAt) {
+        return mapper.channelPushSentCounts(fromAt, toAt);
+    }
+
+    @Override
     public int nextChannelOrder() {
         return mapper.maxChannelOrder() + 10;
     }
