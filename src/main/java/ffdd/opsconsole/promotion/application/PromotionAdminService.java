@@ -211,6 +211,7 @@ public class PromotionAdminService {
     }
     public Map<String,Object> create(Map<String,Object> request){validator.validate("CreatePromotion",request);return createDraft(map(request.get("draft")));}
     private Map<String,Object> createDraft(Map<String,Object> draft){
+        draft=validator.completeAuthoredCopy(draft,"title","terms");
         validator.validate("Draft",draft);validateWindow(draft);banners.validateAsset(draft.get("bannerAssetId"));String id=id("PROMO");
         changed(db.write("INSERT INTO nx_promotion(activity_id,event_code,category,template,draft_version) VALUES(?,?,?,?,1)",id,id,draft.get("category"),draft.get("template")));
         insertVersion(id,1,draft);return resource("PROMOTION",id,1L);
@@ -228,7 +229,10 @@ public class PromotionAdminService {
         require(request.get("expectedVersion")!=null,"PROMOTION_CONCURRENT_CHANGE");
         require(number(v.get("version"))==number(request.get("expectedVersion")),"PROMOTION_CONCURRENT_CHANGE");
         require(number(v.get("revision"))==number(request.get("expectedRevision")),"PROMOTION_CONCURRENT_CHANGE");require("DRAFT".equals(v.get("status")),"PROMOTION_VERSION_READ_ONLY");
-        var draft=mergeDraft(parse(v.get("contract_json")),map(request.get("draft")));validator.validate("Draft",draft);validateWindow(draft);banners.validateAsset(draft.get("bannerAssetId"));identities(id,draft,false);
+        var previous=parse(v.get("contract_json"));
+        var patch=map(request.get("draft"));
+        var draft=validator.completeAuthoredCopy(mergeDraft(previous,patch),previous,patch.keySet(),"title","terms");
+        validator.validate("Draft",draft);validateWindow(draft);banners.validateAsset(draft.get("bannerAssetId"));identities(id,draft,false);
         changed(db.write("UPDATE nx_promotion_version SET contract_json=?,content_hash=?,starts_at=?,ends_at=?,status='DRAFT',approved_by=NULL,approved_at=NULL,approval_ref=NULL,resolved_policies_json=NULL,revision=revision+1 WHERE activity_id=? AND version=? AND revision=?",
             json(draft),hash(draft),ts(draft.get("startsAt")),ts(draft.get("endsAt")),id,v.get("version"),v.get("revision")));
         changed(db.write("UPDATE nx_promotion SET updated_at=NOW(6) WHERE activity_id=?",id));return resource("VERSION",id+":"+v.get("version"),number(v.get("revision"))+1);
@@ -258,6 +262,7 @@ public class PromotionAdminService {
         var draft=parse(sourceRow.get("contract_json"));
         if(copy)return createDraft(draft);
         require(!Set.of("ENDED","ARCHIVED").contains(commandState(p))&&p.get("draft_version")==null,"PROMOTION_DRAFT_EXISTS_OR_READ_ONLY");
+        draft=validator.completeAuthoredCopy(draft,"title","terms");
         long version=db.count("SELECT COALESCE(MAX(version),0)+1 FROM nx_promotion_version WHERE activity_id=?",id);insertVersion(id,version,draft);
         changed(db.write("UPDATE nx_promotion SET draft_version=?,revision=revision+1,updated_at=NOW(6) WHERE activity_id=?",version,id));return resource("VERSION",id+":"+version,1L);
     }

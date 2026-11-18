@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.growth.dto.GenesisRaffleRequest;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
@@ -58,6 +59,10 @@ public class H4GrowthApproval {
                 && command.op() != null && OPERATIONS.contains(command.op());
     }
 
+    public static boolean isRaffleOpen(AuditReplayCommand command) {
+        return supports(command) && RAFFLE.equals(command.op());
+    }
+
     public static String makerAuthority(AuditReplayCommand command) {
         return switch (command.op()) {
             case GUARD_CREATE, GUARD_UPDATE, TIER_CREATE, TIER_UPDATE, TIER_DELETE, PROBABILITIES_UPDATE -> GUARD_AUTHORITY;
@@ -98,6 +103,15 @@ public class H4GrowthApproval {
             } else {
                 values.put("rewardType", expectedState.get("rewardType"));
                 values.put("rewardAmount", expectedState.get("rewardAmount"));
+            }
+        }
+        if (RAFFLE.equals(command.op())) {
+            // Freeze the proposed save before A2 reviews or hashes the command.
+            var submitted = raffle(command, null);
+            var completed = raffles.completeAuthoredCopy(submitted);
+            if (completed != submitted) {
+                values = json.convertValue(completed, new TypeReference<LinkedHashMap<String, Object>>() {});
+                values.remove("reason");
             }
         }
         return new AuditReplayCommand("H", command.op(), Map.of("values", values, "makerAdminId", adminId,
@@ -261,7 +275,7 @@ public class H4GrowthApproval {
             throw new BizException(422, "H4_PROPOSAL_INVALID");
         Set<String> required = switch (command.op()) {
             case RULE -> Set.of("eventCode", "expectedRevision", "enabled", "startsAt", "endsAt", "rules");
-            case RAFFLE -> Set.of("id", "expectedRevision", "enabled", "titleZh", "titleEn", "titleVi", "startsAt", "drawAt", "prizes");
+            case RAFFLE -> Set.of("id", "expectedRevision", "enabled", "titleEn", "startsAt", "drawAt", "prizes");
             case LEGACY_REWARD, LEGACY_OPEN -> Set.of("eventCode", "value", "expectedValue");
             case GUARD_CREATE -> Set.of("guardKey", "guardLabel", "guardValue", "note");
             case GUARD_UPDATE -> Set.of("guardKey", "value", "expectedValue");
@@ -271,7 +285,7 @@ public class H4GrowthApproval {
             default -> throw new BizException(422, "H4_PROPOSAL_INVALID");
         };
         var allowed = new HashSet<>(required);
-        if (RAFFLE.equals(command.op())) allowed.add("titleTranslations");
+        if (RAFFLE.equals(command.op())) allowed.addAll(Set.of("titleZh", "titleVi", "titleTranslations"));
         if (LEGACY_EVENT_OPERATIONS.contains(command.op()) && command.params().containsKey("makerAdminId"))
             allowed.addAll(Set.of("rewardType", "rewardAmount"));
         if (TIER_CREATE.equals(command.op()) || TIER_UPDATE.equals(command.op()))
