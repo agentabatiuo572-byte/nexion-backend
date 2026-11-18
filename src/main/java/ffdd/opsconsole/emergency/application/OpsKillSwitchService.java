@@ -1116,6 +1116,19 @@ public class OpsKillSwitchService {
             row.put("adjustable", seed.adjustable());
             row.put("refNote", seed.refNote());
             row.put("refTitle", seed.refTitle());
+            if ("withdrawSurge".equals(seed.id())) {
+                row.put("metric", "bankRunRatioPct");
+                row.put("comparator", ">=");
+                row.put("actualThreshold", new BigDecimal(threshold).stripTrailingZeros());
+                row.put("target", "withdraw");
+                row.put("action", "autoDisable");
+            } else if ("maturityGap".equals(seed.id())) {
+                row.put("metric", "reconciliationGapUsdt");
+                row.put("comparator", ">");
+                row.put("actualThreshold", maturityGapThresholdUsdt(threshold).stripTrailingZeros());
+                row.put("target", "exchange");
+                row.put("action", "autoDisable");
+            }
             row.put("configKey", switch (seed.id()) {
                 case "withdrawSurge" -> TreasuryEmergencySignalFacadeAdapter.BANK_RUN_REDLINE_CONFIG_KEY;
                 case "tamperCluster" -> TAMPER_ALERT_THRESHOLD_CONFIG_KEY;
@@ -1200,7 +1213,10 @@ public class OpsKillSwitchService {
     }
 
     BigDecimal maturityGapThresholdUsdt() {
-        String configured = activeValue(autoRuleConfigKey("maturityGap")).orElse("50000");
+        return maturityGapThresholdUsdt(activeValue(autoRuleConfigKey("maturityGap")).orElse("50000"));
+    }
+
+    private BigDecimal maturityGapThresholdUsdt(String configured) {
         try {
             String normalized = configured.trim().replace(",", "").replace("$", "").toUpperCase(Locale.ROOT);
             BigDecimal multiplier = BigDecimal.ONE;
