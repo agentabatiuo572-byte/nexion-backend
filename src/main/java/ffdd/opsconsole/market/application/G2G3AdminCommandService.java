@@ -207,6 +207,8 @@ public class G2G3AdminCommandService {
                 case "curve-cell" -> publishWeeklyCurve(7, reason, operator);
                 case "current-price" -> publishOverride("currentPrice", request.value(), reason, operator);
                 case "initial-schedule" -> publishControl("schedule", request.value(), reason, operator);
+                case "pin" -> publishControl("pin", request.value(), reason, operator);
+                case "resume" -> publishOverride("paused", request.value(), reason, operator);
                 default -> throw new BizException(422, "G3_POLICY_PROPOSAL_INVALID");
             }
             return result;

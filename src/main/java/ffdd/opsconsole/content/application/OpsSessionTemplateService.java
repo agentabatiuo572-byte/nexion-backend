@@ -54,7 +54,7 @@ public class OpsSessionTemplateService {
     private static final List<SessionCategorySeed> CATEGORY_SEEDS = List.of(
             new SessionCategorySeed("advisor", "专属客服", "conversations.roleAdvisor", true, "增长 / 客服坐席", false),
             new SessionCategorySeed("support", "专属客服历史兼容", "conversations.roleSupport", false, "历史兼容", true),
-            new SessionCategorySeed("ai", "Nova AI 顾问", "conversations.roleAi", true, "Nova 自动(配置见 I2)", true));
+            new SessionCategorySeed("ai", "Nova AI 顾问（已下线）", "conversations.roleAi", true, "Nova 自动(配置见 I2)", true));
     private static final List<SessionSegmentField> SEGMENT_FIELDS = List.of(
             new SessionSegmentField("vrank", "V 等级", List.of(">=", "<=", "="), List.of("V0", "V1", "V2", "V3", "V4", "V5"), null),
             new SessionSegmentField("balance", "账户余额", List.of(">=", "<="), List.of(), "USDT"),
@@ -486,7 +486,8 @@ public class OpsSessionTemplateService {
     }
 
     private SessionCategoryView categoryView(SessionCategorySeed seed) {
-        boolean enabled = !"support".equals(seed.type()) && ConversationCategoryPolicy.enabled(configFacade, seed.type());
+        boolean enabled = !"support".equals(seed.type()) && !"ai".equals(seed.type())
+                && ConversationCategoryPolicy.enabled(configFacade, seed.type());
         return new SessionCategoryView(seed.type(), seed.name(), seed.roleKey(), enabled, seed.managedBy(), seed.readOnly());
     }
 
