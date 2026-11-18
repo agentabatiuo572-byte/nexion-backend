@@ -8,6 +8,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.i18n.AppDisplayText;
 import ffdd.opsconsole.shared.i18n.AuthoringWhitespace;
 import java.math.BigDecimal;
 import java.sql.Timestamp;
@@ -185,6 +186,14 @@ public class H4EventRuleService {
         boolean enabled=number(current.get("enabled")).intValue()==1;
         boolean changed=!rules(current).equals(rules)||!Objects.equals(date(current.get("starts_at")),start)
                 ||!Objects.equals(date(current.get("ends_at")),end);
+        boolean stoppingOnly = enabled && !request.enabled() && !changed;
+        if (!stoppingOnly && "regional".equals(current.get("kind")) && rules.get("regions") instanceof List<?> regions) {
+            for (int i = 0; i < regions.size(); i++) {
+                if (regions.get(i) instanceof Map<?, ?> region) {
+                    AppDisplayText.requireNoHan("regions[" + i + "].name", text(region.get("name")));
+                }
+            }
+        }
         if(changed&&(current.get("activated_at")!=null||enabled))
             throw new BizException(409,"EVENT_RULES_ALREADY_IN_USE");
         var missing=missing(code,rules,start,end);

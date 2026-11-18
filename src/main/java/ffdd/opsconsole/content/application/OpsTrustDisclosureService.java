@@ -4,6 +4,7 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.DisclosureChapterView;
 import ffdd.opsconsole.content.domain.MessageTranslations;
+import ffdd.opsconsole.shared.i18n.AppDisplayText;
 import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import ffdd.opsconsole.content.domain.AppTrustSectionsView;
 import ffdd.opsconsole.content.domain.DisclosureCountryOption;
@@ -1444,6 +1445,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 return ApiResult.fail(409, "DISCLOSURE_JURISDICTION_REVISION_REQUIRED");
             }
         }
+        AppDisplayText.requireNoHan("name", request.name());
         return null;
     }
 

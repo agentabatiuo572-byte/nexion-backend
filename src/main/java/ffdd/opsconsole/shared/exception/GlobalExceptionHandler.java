@@ -67,6 +67,13 @@ public class GlobalExceptionHandler {
         return ApiResult.fail(ex.getCode(), ex.getMessage(), ex.errorData());
     }
 
+    @ExceptionHandler(AppTextChineseNotAllowedException.class)
+    public ApiResult<Map<String, String>> handleAppTextChineseNotAllowed(
+            AppTextChineseNotAllowedException ex, HttpServletResponse response) {
+        response.setStatus(ex.getCode());
+        return ApiResult.fail(ex.getCode(), ex.getMessage(), ex.errorData());
+    }
+
     @ExceptionHandler(BizException.class)
     public ApiResult<Void> handleBiz(BizException ex, HttpServletResponse response) {
         response.setStatus(normalizeHttpStatus(ex.getCode()));

@@ -13,6 +13,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.i18n.AppDisplayText;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.common.api.OpsErrorCode;
@@ -386,6 +387,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     @Transactional
     public ApiResult<DeviceSkuView> createSku(String idempotencyKey, DeviceSkuUpsertRequest request) {
+        requireSkuDisplayText(request);
         // Sales is maintained exclusively by the order state machine. A new
         // SKU always starts at zero; tolerate the legacy E1 round-trip field
         // but never let it create a hand-entered sales history.
@@ -447,6 +449,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     @Transactional
     public ApiResult<DeviceSkuView> updateSku(
             String skuId, String expectedUpdatedAt, String idempotencyKey, DeviceSkuUpsertRequest request) {
+        requireSkuDisplayText(request);
         DeviceSkuUpsertRequest incomingRequest=request;
         request = monthlyTargetRequest(request, catalogRepository.findSku(normalizeId(skuId)).orElse(null), true);
         ApiResult<DeviceSkuView> guard = requireSkuCommand(idempotencyKey, request);
@@ -3605,6 +3608,19 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return request.withMonthlyTarget(target,band);
     }
 
+    private static void requireSkuDisplayText(DeviceSkuUpsertRequest request) {
+        if (request == null) return;
+        AppDisplayText.requireNoHan("name", request.name());
+        AppDisplayText.requireNoHan("badge", request.badge());
+        AppDisplayText.requireNoHan("tagline", request.tagline());
+        AppDisplayText.requireNoHan("gpu", request.gpu());
+        AppDisplayText.requireNoHan("power", request.power());
+        AppDisplayText.requireNoHan("datacenter", request.datacenter());
+        AppDisplayText.requireNoHan("uptime", request.uptime());
+        AppDisplayText.requireNoHan("warranty", request.warranty());
+        AppDisplayText.requireNoHan("specDocumentTitle", request.specDocumentTitle());
+    }
+
     private ApiResult<DeviceSkuView> requireSkuCommand(String idempotencyKey, DeviceSkuUpsertRequest request) {
         ApiResult<Map<String, Object>> command = requireE1Command(idempotencyKey, request == null ? null : request.reason());
         if (command != null) {
@@ -3854,6 +3870,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (request == null || !StringUtils.hasText(request.name())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TASK_NAME_REQUIRED");
         }
+        AppDisplayText.requireNoHan("name", request.name());
         if(request.simulation()!=null) {
             if (!review && !A2ReplayContext.isReplaying()) return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
             simulationPolicies.validateType(request.simulation());
@@ -5796,6 +5813,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         Map<String, Object> params = command.params();
         boolean create = "e1_sku_create".equals(command.op());
         DeviceSkuUpsertRequest input = buildSkuUpsertRequest(params, null, null);
+        requireSkuDisplayText(input);
         String skuId = create ? normalizeSkuId(input.skuId(), input.name()) : hardwarePolicyTarget(input.skuId());
         DeviceSkuView before = catalogRepository.findSku(skuId).orElse(null);
         if (create && before != null) throw new BizException(422, "SKU_ALREADY_EXISTS");
@@ -5858,6 +5876,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         var settings=raw.simulation();
         simulationPolicies.validateType(settings);
         if(!StringUtils.hasText(raw.name()))throw new BizException(422,"TASK_NAME_REQUIRED");
+        AppDisplayText.requireNoHan("name", raw.name());
         if(StringUtils.hasText(raw.status()) && normalizeTaskStatus(raw.status())==null)throw new BizException(422,"TASK_STATUS_INVALID");
         if(settings.expectedVersion()!=(current==null?0:current.version()))throw new BizException(409,"SIMULATED_TASK_POLICY_VERSION_CONFLICT");
         var next=trustedTaskRequest(raw,create?"active":old.status());
