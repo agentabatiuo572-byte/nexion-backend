@@ -22,6 +22,8 @@ public class G3MarketApproval {
     static final AuditLockTarget CURVE_TARGET = new AuditLockTarget("G", "nex_market_curve", "weekly");
     static final AuditLockTarget PRICE_TARGET = new AuditLockTarget("G", "nex_market_override", "currentPrice");
     static final AuditLockTarget SCHEDULE_TARGET = new AuditLockTarget("G", "nex_market_control", "schedule");
+    static final AuditLockTarget PIN_TARGET = new AuditLockTarget("G", "nex_market_control", "pin");
+    static final AuditLockTarget RESUME_TARGET = new AuditLockTarget("G", "nex_market_override", "paused");
     private final OpsNexMarketService market;
     private final G2G3AdminCommandService commands;
     private final SuperAdminAuthorization superAdmins;
@@ -44,7 +46,8 @@ public class G3MarketApproval {
                 default -> null;
             };
             case "current-price" -> "finprod_g3_override_price_write";
-            case "initial-schedule" -> "finprod_g3_write";
+            case "initial-schedule", "pin" -> "finprod_g3_write";
+            case "resume" -> "finprod_g3_engine_pause_toggle";
             default -> null;
         };
     }
@@ -92,6 +95,8 @@ public class G3MarketApproval {
             case "curve-cell" -> CURVE_TARGET;
             case "current-price" -> PRICE_TARGET;
             case "initial-schedule" -> SCHEDULE_TARGET;
+            case "pin" -> PIN_TARGET;
+            case "resume" -> RESUME_TARGET;
             default -> null;
         };
     }
@@ -132,7 +137,7 @@ public class G3MarketApproval {
             }
             return new G3MarketPolicyChangeRequest(action, day, field, value.trim(), revision);
         }
-        if (!Set.of("current-price", "initial-schedule").contains(action)
+        if (!Set.of("current-price", "initial-schedule", "pin", "resume").contains(action)
                 || !values.keySet().equals(Set.of("action", "value", "expectedRevision"))) {
             throw new BizException(422, "G3_POLICY_PROPOSAL_INVALID");
         }
