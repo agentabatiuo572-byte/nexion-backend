@@ -923,7 +923,8 @@ public class OpsAuditCenterService {
                 return proposalByIdempotencyKey(idempotencyKey);
             }
             return ApiResult.ok(receipt);
-        } catch (MonthlyTargetPoolException | MonthlyTargetRewardOutOfRangeException ex) {
+        } catch (MonthlyTargetPoolException | MonthlyTargetRewardOutOfRangeException
+                | ffdd.opsconsole.shared.exception.H4EventRuleIncompleteException ex) {
             throw ex; // Idempotency has rolled back; preserve the structured approval rejection.
         } catch (ffdd.opsconsole.shared.exception.PhoneReplacementException ex) {
             // Preserve the phone command conflict contract through A2 and roll back its approval transaction.
