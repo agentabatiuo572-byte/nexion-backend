@@ -3,15 +3,19 @@ package ffdd.opsconsole.growth.application;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.growth.dto.H4EventRuleRequest;
+import ffdd.opsconsole.platform.application.PlatformExperienceConfigService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.i18n.AuthoringWhitespace;
 import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.*;
 import java.util.*;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,14 +29,17 @@ public class H4EventRuleService {
     private final H4EventCommerceService commerce;
     private final ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade coverage;
     private final ffdd.opsconsole.platform.application.A2RuntimePolicy a2;
+    @Autowired @Lazy
+    private PlatformExperienceConfigService experience;
     public static final Set<String> CODES=Set.of("evt-pro-upgrade-7d","evt-refer-5-get-pro",
             "evt-weekend-double-nex","evt-regional-pk","evt-spring-spin","evt-reinvest-bonus",
             "evt-onboarding-7d","evt-black-friday","evt-anniversary-spin");
 
     public static final Set<String> KINDS=Set.of("discount","referral","wheel","regional","boost","seasonal","onboarding");
     public static final String ACTIVE_KINDS_SQL="('discount','referral','wheel','regional','boost','seasonal','onboarding')";
-    static final List<String> REQUIRED_EVENT_LOCALES=List.of("zh","vi","en");
     static final List<String> REQUIRED_EVENT_FIELDS=List.of("name","description","rewardName");
+    private static final List<String> BASE_LANGUAGES=List.of("en","zh","vi");
+    static final String LOCALIZED_CONTENT_KEY="growth.content.localized";
 
     public Map<String,Object> find(String code,boolean lock) {
         return db.row("SELECT * FROM nx_growth_event_rule WHERE kind IN "+ACTIVE_KINDS_SQL+" AND event_code=?"+(lock?" FOR UPDATE":""),code);
@@ -141,13 +148,19 @@ public class H4EventRuleService {
         var missing=missing(text(row.get("event_code")),r,date(row.get("starts_at")),date(row.get("ends_at")));
         missing=new ArrayList<>(missing);
         if(!"evt-anniversary-spin".equals(row.get("event_code"))&&date(row.get("ends_at"))!=null&&!date(row.get("ends_at")).isAfter(LocalDateTime.now(ZoneOffset.UTC)))missing.add("endsAt");
-        missing.addAll(localizedMissing(code,!enabled));
-        if(missing.isEmpty())missing.addAll(commerce.readiness(text(row.get("event_code")),r,date(row.get("starts_at")),date(row.get("ends_at"))));
-        return values("eventCode",row.get("event_code"),"kind",row.get("kind"),"revision",row.get("revision"),
+        var fields=publicationFields(text(row.get("kind")),true,null,null);
+        var localized=localizedGaps(readEventContent(code),enabled?List.of("zh","vi"):operatingLanguages(),fields);
+        missing.addAll(localized.missing().stream().map(ContentGap::path).toList());
+        if(missing.isEmpty()&&localized.incomplete().isEmpty())missing.addAll(commerce.readiness(text(row.get("event_code")),r,date(row.get("starts_at")),date(row.get("ends_at"))));
+        Map<String,Object> readiness=values("ready",missing.isEmpty()&&localized.incomplete().isEmpty(),"missing",missing);
+        if(!localized.incomplete().isEmpty())readiness.put("incomplete",localized.incomplete().stream().map(ContentGap::path).toList());
+        var result=values("eventCode",row.get("event_code"),"kind",row.get("kind"),"revision",row.get("revision"),
                 "enabled",enabled,"startsAt",iso(row.get("starts_at")),
                 "endsAt",iso(row.get("ends_at")),"rules",r,"rulesLocked",row.get("activated_at")!=null,
-                "readiness",Map.of("ready",missing.isEmpty(),"missing",missing),
+                "readiness",readiness,
                 "supported",supported,"rewardCopyOnly",supported);
+        result.putAll(appRewardPresentation(code,row,localized.content()));
+        return result;
     }
     @Transactional(rollbackFor=Exception.class,isolation=org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public ApiResult<Map<String,Object>> update(String code,H4EventRuleRequest request) {
@@ -176,9 +189,13 @@ public class H4EventRuleService {
             throw new BizException(409,"EVENT_RULES_ALREADY_IN_USE");
         var missing=missing(code,rules,start,end);
         if(request.enabled()&&!missing.isEmpty())return ApiResult.fail(422,"EVENT_RULE_INCOMPLETE",Map.of("missing",missing));
+        boolean firstEnable=request.enabled()&&!enabled&&current.get("activated_at")==null;
+        if(firstEnable) {
+            var fields=publicationFields(text(current.get("kind")),true,null,null);
+            var localized=approved&&!preview?savedLocalizedContent(code,fields):checkLocalizedContent(code,fields);
+            if(!localized.complete())return ApiResult.fail(422,"EVENT_RULE_INCOMPLETE",localized.details());
+        }
         if(request.enabled()) {
-            var localizedMissing=localizedMissing(code,!enabled);
-            if(!localizedMissing.isEmpty())return ApiResult.fail(422,"EVENT_RULE_INCOMPLETE",Map.of("missing",localizedMissing));
             var domainMissing=commerce.readiness(code,rules,start,end);
             if(!domainMissing.isEmpty())return ApiResult.fail(422,"EVENT_RULE_INCOMPLETE",Map.of("missing",domainMissing));
             var snapshot=coverage.snapshot();
@@ -188,7 +205,6 @@ public class H4EventRuleService {
                 throw new BizException(409,"EVENT_RULE_REOPEN_NOT_ALLOWED");
         }
         if(request.enabled()&&!"evt-anniversary-spin".equals(code)&&end!=null&&!end.isAfter(LocalDateTime.now(ZoneOffset.UTC)))throw new BizException(422,"EVENT_WINDOW_ENDED");
-        boolean firstEnable=request.enabled()&&!enabled&&current.get("activated_at")==null;
         if(preview)return firstEnable?ApiResult.ok(Map.of("before",view(current),"after",request))
                 :ApiResult.fail(422,"H4_APPROVAL_NOT_REQUIRED");
         if(firstEnable&&!approved)throw new BizException(409,"H4_APPROVAL_REQUIRED");
@@ -207,18 +223,87 @@ public class H4EventRuleService {
                 .detail(values("reason",request.reason(),"enabled",request.enabled(),"revision",request.expectedRevision()+1)).build());
         return ApiResult.ok(view(find(code,false)));
     }
-    @SuppressWarnings("unchecked")
-    private List<String> localizedMissing(String code,boolean requireEnglish){
-        Map<String,Object> root=Map.of();var value=db.row("SELECT config_value FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1");
-        if(value!=null)try{root=json.readValue(text(value.get("config_value")),new TypeReference<>(){});}catch(Exception ignored){ }
-        var event=root.get("event") instanceof Map<?,?> all&&all.get(code) instanceof Map<?,?> entry?entry:Map.of();
-        List<String> missing=new ArrayList<>();
-        for(String lang:REQUIRED_EVENT_LOCALES){
-            if(!requireEnglish&&"en".equals(lang))continue;
-            for(String field:REQUIRED_EVENT_FIELDS)
-                if(!(event.get(lang) instanceof Map<?,?> translated)||text(translated.get(field)).isBlank())missing.add("localized."+lang+"."+field);
+    record ContentGap(String locale,String field) {
+        String path() { return "localized."+locale+"."+field; }
+    }
+
+    record LocalizedReadiness(List<ContentGap> missing,List<ContentGap> incomplete,Map<String,Object> content) {
+        boolean complete() { return missing.isEmpty()&&incomplete.isEmpty(); }
+        Map<String,Object> details() {
+            var result=values("missing",missing.stream().map(ContentGap::path).toList());
+            if(!incomplete.isEmpty())result.put("incomplete",incomplete.stream().map(ContentGap::path).toList());
+            return result;
         }
-        return missing;
+    }
+
+    List<String> operatingLanguages() {
+        return experience==null?List.of("en"):experience.operatingLanguages();
+    }
+
+    static List<String> publicationFields(String kind,boolean hasRule,Object asset,Object amount){
+        return H4EventEngine.usesAuthoredRewardName(kind,hasRule,asset,amount)
+                ?REQUIRED_EVENT_FIELDS:List.of("name","description");
+    }
+
+    LocalizedReadiness checkLocalizedContent(String code,List<String> fields) {
+        return localizedGaps(readEventContent(code),operatingLanguages(),fields);
+    }
+
+    LocalizedReadiness savedLocalizedContent(String code,List<String> fields) {
+        return localizedGaps(readEventContent(code),BASE_LANGUAGES,fields);
+    }
+
+    Map<String,Object> readEventContent(String code) {
+        Map<String,Object> root=Map.of();
+        var value=db.row("SELECT config_value FROM nx_config_item WHERE config_key='"+LOCALIZED_CONTENT_KEY+"' AND status=1 AND is_deleted=0 LIMIT 1");
+        if(value!=null) {
+            try {
+                root=json.readValue(text(value.get("config_value")),new TypeReference<>(){});
+            } catch(com.fasterxml.jackson.core.JsonProcessingException ignored) { }
+        }
+        return copyBranch(copyBranch(root,"event"),code);
+    }
+
+    Map<String,Object> appRewardPresentation(String code,Map<String,Object> rule,Map<String,Object> authored){
+        Map<String,Object> quest=Map.of();
+        if(rule==null||H4EventEngine.usesAuthoredRewardName(text(rule.get("kind")),true,null,null)){
+            quest=db.row("SELECT LOWER(target_type) kind,UPPER(reward_type) asset,reward_amount amount,reward_name name FROM nx_event_quest WHERE quest_code=?",code);
+            if(quest==null)quest=Map.of();
+        }
+        String kind=text(rule==null?quest.get("kind"):rule.get("kind"));
+        Object asset=quest.get("asset"),amount=quest.get("amount");
+        boolean authoredName=H4EventEngine.usesAuthoredRewardName(kind,rule!=null,asset,amount);
+        Map<String,Object> facts=rule==null?null:rules(rule);
+        String english=text(copyBranch(authored,"en").get("rewardName"));
+        if(english.isEmpty())english=text(quest.get("name"));
+        Map<String,String> labels=new LinkedHashMap<>();
+        for(String locale:BASE_LANGUAGES){
+            String name=text(copyBranch(authored,locale).get("rewardName"));
+            labels.put(locale,H4EventEngine.displayRewardName(kind,facts,asset,amount,name.isEmpty()?english:name,locale));
+        }
+        return values("appUsesAuthoredRewardName",authoredName,"appRewardNames",labels);
+    }
+
+    static LocalizedReadiness localizedGaps(Map<String,Object> event,List<String> required,List<String> fields) {
+        List<ContentGap> missing=new ArrayList<>(),incomplete=new ArrayList<>();
+        for(String locale:BASE_LANGUAGES) {
+            if("en".equals(locale)&&!required.contains(locale))continue;
+            var translation=copyBranch(event,locale);
+            var gaps=fields.stream().filter(field->!hasCopy(translation.get(field)))
+                    .map(field->new ContentGap(locale,field)).toList();
+            if(required.contains(locale))missing.addAll(gaps);
+            else if(gaps.size()<fields.size())incomplete.addAll(gaps);
+        }
+        return new LocalizedReadiness(missing,incomplete,event);
+    }
+
+    static boolean hasCopy(Object value) {
+        return value instanceof String text&&!AuthoringWhitespace.isBlank(text);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String,Object> copyBranch(Map<String,Object> root,String key) {
+        return root.get(key) instanceof Map<?,?> branch?new LinkedHashMap<>((Map<String,Object>)branch):new LinkedHashMap<>();
     }
     public static List<String> missing(String code,Map<String,Object> r,LocalDateTime start,LocalDateTime end) {
         List<String> missing=new ArrayList<>();

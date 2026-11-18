@@ -148,7 +148,8 @@ public class PromotionAdminService {
     public Map<String,Object> simulate(String id,Map<String,Object> request){
         if(request.get("sampleAccountId")!=null&&!has("user_c1_read"))throw new BizException(403,"PROMOTION_ACCOUNT_SAMPLE_FORBIDDEN");
         if(request.get("sampleAccountId")!=null)accountSamples.requireReadable(number(request.get("sampleAccountId")));
-        validator.validate("SimulateInput",request);var p=visibleActivity(id,false);var c=map(request.get("draft"));
+        validator.validate("SimulateInput",request);var p=visibleActivity(id,false);
+        var c=validator.completeAuthoredCopy(map(request.get("draft")),"title","terms");
         validator.validate("PromotionContract",c);validateWindow(c);validateConfiguration(c);
         if(request.get("sampleAccountId")!=null&&("DIRECT_REFERRAL".equals(c.get("template"))||c.get("inviterAudience")!=null)){
             var buyer=db.user(number(request.get("sampleAccountId")),false);
@@ -228,7 +229,8 @@ public class PromotionAdminService {
         require(request.get("expectedVersion")!=null,"PROMOTION_CONCURRENT_CHANGE");
         require(number(v.get("version"))==number(request.get("expectedVersion")),"PROMOTION_CONCURRENT_CHANGE");
         require(number(v.get("revision"))==number(request.get("expectedRevision")),"PROMOTION_CONCURRENT_CHANGE");require("DRAFT".equals(v.get("status")),"PROMOTION_VERSION_READ_ONLY");
-        var draft=mergeDraft(parse(v.get("contract_json")),map(request.get("draft")));validator.validate("Draft",draft);validateWindow(draft);banners.validateAsset(draft.get("bannerAssetId"));identities(id,draft,false);
+        var draft=mergeDraft(parse(v.get("contract_json")),map(request.get("draft")));
+        validator.validate("Draft",draft);validateWindow(draft);banners.validateAsset(draft.get("bannerAssetId"));identities(id,draft,false);
         changed(db.write("UPDATE nx_promotion_version SET contract_json=?,content_hash=?,starts_at=?,ends_at=?,status='DRAFT',approved_by=NULL,approved_at=NULL,approval_ref=NULL,resolved_policies_json=NULL,revision=revision+1 WHERE activity_id=? AND version=? AND revision=?",
             json(draft),hash(draft),ts(draft.get("startsAt")),ts(draft.get("endsAt")),id,v.get("version"),v.get("revision")));
         changed(db.write("UPDATE nx_promotion SET updated_at=NOW(6) WHERE activity_id=?",id));return resource("VERSION",id+":"+v.get("version"),number(v.get("revision"))+1);
@@ -268,6 +270,7 @@ public class PromotionAdminService {
         require(p.get("draft_version")!=null&&number(p.get("draft_version"))==ver&&!Set.of("ENDED","ARCHIVED").contains(lifecycle),"PROMOTION_VERSION_NOT_CURRENT");
         String current=text(v.get("status"));String expected=switch(action){case "submit"->"DRAFT";case "approve","reject"->"PENDING_APPROVAL";case "publish"->"APPROVED";case "withdraw"->current;default->throw new BizException(422,"PROMOTION_ACTION_INVALID");};require(expected.equals(current)&&(!"withdraw".equals(action)||Set.of("PENDING_APPROVAL","APPROVED").contains(current)),"PROMOTION_VERSION_STATE_INVALID");
         var draft=parse(v.get("contract_json"));Map<String,Object> resolved=Map.of();
+        if("submit".equals(action))draft=validator.completeAuthoredCopy(draft,"title","terms");
         if(!Set.of("reject","withdraw").contains(action)){validator.validate("PromotionContract",draft);validateWindow(draft);banners.validateAsset(draft.get("bannerAssetId"));natives.fixtureAllowed(p.get("fixture_run_id"));resolved=governancePolicies(draft,true);semantic(id,draft,resolved);}
         long actor=actor();
         if("approve".equals(action)||"publish".equals(action)){
@@ -285,7 +288,12 @@ public class PromotionAdminService {
             changed(db.write("UPDATE nx_promotion_version SET status='PUBLISHED',published_by=?,published_at=NOW(6),resolved_policies_json=?,revision=revision+1 WHERE activity_id=? AND version=?",actor,json(resolved),id,ver));
             changed(db.write("UPDATE nx_promotion SET category=?,template=?,active_version=?,draft_version=NULL,status=?,revision=revision+1,updated_at=NOW(6) WHERE activity_id=?",draft.get("category"),draft.get("template"),ver,publicationState(lifecycle,instant(draft.get("startsAt"))),id));
         }else if("approve".equals(action))changed(db.write("UPDATE nx_promotion_version SET status='APPROVED',approved_by=?,approved_at=NOW(6),approval_ref=?,revision=revision+1 WHERE activity_id=? AND version=?",actor,id("PA"),id,ver));
-        else changed(db.write("UPDATE nx_promotion_version SET status=?,approved_by=NULL,approved_at=NULL,approval_ref=NULL,resolved_policies_json=NULL,revision=revision+1 WHERE activity_id=? AND version=?","submit".equals(action)?"PENDING_APPROVAL":"DRAFT",id,ver));
+        else if("submit".equals(action))changed(db.write("""
+            UPDATE nx_promotion_version SET contract_json=?,content_hash=?,status='PENDING_APPROVAL',
+                approved_by=NULL,approved_at=NULL,approval_ref=NULL,resolved_policies_json=NULL,revision=revision+1
+            WHERE activity_id=? AND version=? AND revision=?
+            """,json(draft),hash(draft),id,ver,v.get("revision")));
+        else changed(db.write("UPDATE nx_promotion_version SET status='DRAFT',approved_by=NULL,approved_at=NULL,approval_ref=NULL,resolved_policies_json=NULL,revision=revision+1 WHERE activity_id=? AND version=?",id,ver));
         return resource("VERSION",id+":"+ver,number(v.get("revision"))+1);
     }
     public static String publicationState(String old,Instant starts){return "PAUSED".equals(old)?"PAUSED":starts.isAfter(Instant.now())?"SCHEDULED":"ACTIVE";}

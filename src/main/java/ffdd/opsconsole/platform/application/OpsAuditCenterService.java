@@ -457,6 +457,10 @@ public class OpsAuditCenterService {
             ticket.setAfterValue(rewardReview.version() + " · "
                     + proposedReward.setScale(6, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString() + " UVT");
         }
+        if (H4GrowthApproval.supports(command)) {
+            command = replayBusinessPermissionGuard.bindH4EventCopy(command, operator, reason,
+                    idempotencyKey, ticket.getOperationId());
+        }
         if (command != null) {
             try {
                 com.fasterxml.jackson.databind.node.ObjectNode stored = objectMapper.valueToTree(command);
@@ -1479,7 +1483,20 @@ public class OpsAuditCenterService {
         }
         if (H4GrowthApproval.supports(command)) {
             try {
-                return objectMapper.writeValueAsString(command.params().get("before".equals(side) ? "expectedState" : "values"));
+                if ("before".equals(side)) {
+                    Object state = command.params().get("expectedState");
+                    if (command.params().get("eventCopyBefore") instanceof String originalCopy) {
+                        var original = objectMapper.<com.fasterxml.jackson.databind.node.ObjectNode>valueToTree(state);
+                        original.put("localized", originalCopy);
+                        state = original;
+                    }
+                    return objectMapper.writeValueAsString(state);
+                }
+                var values = objectMapper.<com.fasterxml.jackson.databind.node.ObjectNode>valueToTree(command.params().get("values"));
+                if (command.params().containsKey("eventCopy")) {
+                    values.set("localized", objectMapper.valueToTree(command.params().get("eventCopy")));
+                }
+                return objectMapper.writeValueAsString(values);
             } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
                 throw new BizException(422, "H4_PROPOSAL_INVALID");
             }

@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.growth.dto.GenesisRaffleRequest;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
@@ -14,6 +15,7 @@ import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.exception.H4EventRuleIncompleteException;
 import ffdd.opsconsole.shared.security.SuperAdminAuthorization;
 import java.math.BigDecimal;
 import java.util.*;
@@ -58,6 +60,10 @@ public class H4GrowthApproval {
                 && command.op() != null && OPERATIONS.contains(command.op());
     }
 
+    public static boolean isRaffleOpen(AuditReplayCommand command) {
+        return supports(command) && RAFFLE.equals(command.op());
+    }
+
     public static String makerAuthority(AuditReplayCommand command) {
         return switch (command.op()) {
             case GUARD_CREATE, GUARD_UPDATE, TIER_CREATE, TIER_UPDATE, TIER_DELETE, PROBABILITIES_UPDATE -> GUARD_AUTHORITY;
@@ -100,8 +106,41 @@ public class H4GrowthApproval {
                 values.put("rewardAmount", expectedState.get("rewardAmount"));
             }
         }
+        if (RAFFLE.equals(command.op()) && "DRAFT".equals(expectedState.get("status"))) {
+            // Freeze the proposed save before A2 reviews or hashes the command.
+            var submitted = raffle(command, null);
+            var completed = raffles.completeAuthoredCopy(submitted);
+            if (completed != submitted) {
+                values = json.convertValue(completed, new TypeReference<LinkedHashMap<String, Object>>() {});
+                values.remove("reason");
+            }
+        }
         return new AuditReplayCommand("H", command.op(), Map.of("values", values, "makerAdminId", adminId,
                 "expectedState", expectedState));
+    }
+
+    /** Freeze copy in the proposal transaction after the existing preview checks. */
+    public AuditReplayCommand bindEventCopy(AuditReplayCommand command, String operator,
+            String reason, String idempotencyKey, String operationId) {
+        if (!supports(command) || !Set.of(RULE, LEGACY_OPEN).contains(command.op())) return command;
+        AuditLockTarget target = target(command);
+        boolean legacy = LEGACY_OPEN.equals(command.op());
+        var published = growth.saveEventPublicationCopy(target.id(), operator, Map.of(
+                "reason", reason, "idempotencyKey", idempotencyKey.trim(),
+                "operation", command.op(), "operationId", operationId, "sourceLocale", "en"));
+        if (!published.complete()) {
+            throw new H4EventRuleIncompleteException(422,
+                    legacy ? "EVENT_LOCALIZED_CONTENT_INCOMPLETE" : "EVENT_RULE_INCOMPLETE",
+                    legacy ? growth.eventPublicationDetails(target.id(), published) : published.details());
+        }
+        var params = new LinkedHashMap<>(command.params());
+        params.put("eventCopy", published.content());
+        if (legacy) {
+            var before = (Map<?, ?>) params.get("expectedState");
+            params.put("eventCopyBefore", before.get("localized"));
+            params.put("expectedState", state(target, command.op()));
+        }
+        return new AuditReplayCommand(command.domain(), command.op(), params);
     }
 
     public ApiResult<Void> validateChecker(AuditReplayCommand command, Long checkerId) {
@@ -169,6 +208,10 @@ public class H4GrowthApproval {
                 new AuditLockTarget(locks.get(0).getTargetDomain(), locks.get(0).getTargetType(), locks.get(0).getTargetId())))
             return ApiResult.fail(403, "H4_APPROVAL_FORBIDDEN");
         if (!state(target, command.op()).equals(command.params().get("expectedState"))) return ApiResult.fail(409, "H4_CONFIG_STALE");
+        if (command.params().get("eventCopy") instanceof Map<?, ?> copy
+                && !rules.readEventContent(target.id()).equals(copy)) {
+            return ApiResult.fail(409, "H4_CONFIG_STALE");
+        }
         if (!(command.params().get("proposalReason") instanceof String reason)) return ApiResult.fail(422, "H4_PROPOSAL_INVALID");
         return switch (command.op()) {
             case RULE -> {
@@ -233,6 +276,7 @@ public class H4GrowthApproval {
         }
         Map<String, Object> row;
         if ("h4_event_rule".equals(target.type())) {
+            if (!growth.lockH4Event()) throw new BizException(409, "H4_EVENT_MUTEX_UNAVAILABLE");
             row = db.row("""
                 SELECT r.*,q.status q_status,q.is_deleted q_deleted,q.starts_at q_starts_at,q.ends_at q_ends_at
                 FROM nx_growth_event_rule r JOIN nx_event_quest q ON q.quest_code=r.event_code
@@ -261,7 +305,7 @@ public class H4GrowthApproval {
             throw new BizException(422, "H4_PROPOSAL_INVALID");
         Set<String> required = switch (command.op()) {
             case RULE -> Set.of("eventCode", "expectedRevision", "enabled", "startsAt", "endsAt", "rules");
-            case RAFFLE -> Set.of("id", "expectedRevision", "enabled", "titleZh", "titleEn", "titleVi", "startsAt", "drawAt", "prizes");
+            case RAFFLE -> Set.of("id", "expectedRevision", "enabled", "titleEn", "startsAt", "drawAt", "prizes");
             case LEGACY_REWARD, LEGACY_OPEN -> Set.of("eventCode", "value", "expectedValue");
             case GUARD_CREATE -> Set.of("guardKey", "guardLabel", "guardValue", "note");
             case GUARD_UPDATE -> Set.of("guardKey", "value", "expectedValue");
@@ -271,7 +315,7 @@ public class H4GrowthApproval {
             default -> throw new BizException(422, "H4_PROPOSAL_INVALID");
         };
         var allowed = new HashSet<>(required);
-        if (RAFFLE.equals(command.op())) allowed.add("titleTranslations");
+        if (RAFFLE.equals(command.op())) allowed.addAll(Set.of("titleZh", "titleVi", "titleTranslations"));
         if (LEGACY_EVENT_OPERATIONS.contains(command.op()) && command.params().containsKey("makerAdminId"))
             allowed.addAll(Set.of("rewardType", "rewardAmount"));
         if (TIER_CREATE.equals(command.op()) || TIER_UPDATE.equals(command.op()))
