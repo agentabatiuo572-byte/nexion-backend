@@ -458,7 +458,8 @@ public class OpsAuditCenterService {
                     + proposedReward.setScale(6, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString() + " UVT");
         }
         if (H4GrowthApproval.supports(command)) {
-            command = replayBusinessPermissionGuard.bindH4EventCopy(command);
+            command = replayBusinessPermissionGuard.bindH4EventCopy(command, operator, reason,
+                    idempotencyKey, ticket.getOperationId());
         }
         if (command != null) {
             try {
@@ -1483,7 +1484,13 @@ public class OpsAuditCenterService {
         if (H4GrowthApproval.supports(command)) {
             try {
                 if ("before".equals(side)) {
-                    return objectMapper.writeValueAsString(command.params().get("expectedState"));
+                    Object state = command.params().get("expectedState");
+                    if (command.params().get("eventCopyBefore") instanceof String originalCopy) {
+                        var original = objectMapper.<com.fasterxml.jackson.databind.node.ObjectNode>valueToTree(state);
+                        original.put("localized", originalCopy);
+                        state = original;
+                    }
+                    return objectMapper.writeValueAsString(state);
                 }
                 var values = objectMapper.<com.fasterxml.jackson.databind.node.ObjectNode>valueToTree(command.params().get("values"));
                 if (command.params().containsKey("eventCopy")) {

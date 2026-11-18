@@ -63,12 +63,14 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.stream.Stream;
 import org.springframework.util.StringUtils;
 import org.springframework.context.ApplicationEventPublisher;
@@ -753,9 +755,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         response.put("taskMonitor", taskMonitor());
         response.put("taskContracts", taskContracts());
         response.put("promoBanner", promoBanner());
-        response.put("contentLocales", localizedContent());
+        var localized = localizedContent();
+        response.put("contentLocales", localized);
         response.put("phaseMultiplierReadonly", phaseMultiplierReadonly());
-        response.put("events", questEventsList());
+        response.put("events", questEventsList(localizedBranch(localized, "event")));
         response.put("eventStates", eventStateLegend());
         response.put("wheelTiers", wheelTiers());
         response.put("wheelSignature", wheelPoolSignature());
@@ -1124,7 +1127,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             }
             // Direct creation as ongoing is publication too; use the same gate as a status transition.
             if ("ongoing".equals(state)) {
-                var localized = eventPublicationContent(id, false);
+                var localized = eventPublicationContent(id, false,
+                        H4EventRuleService.publicationFields(kind, false, rewardType, rewardAmount));
                 if (localized != null) return localized;
             }
             if (!H4EventRuleService.CODES.contains(id)) {
@@ -2613,7 +2617,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         }
         String id = requireText(eventId, "Event id is required");
         // Rule updates lock the rule before the quest. Closing keeps the same order.
-        boolean hasRule = hasEventRule(id, true);
+        var rule = h4EventRules == null ? null : h4EventRules.find(id, true);
+        boolean hasRule = rule != null;
         var current = requireEventForMutation(id);
         String status = requireText(request.value(), "Event status is required").toLowerCase(Locale.ROOT);
         if (!EVENT_STATES.contains(status)) {
@@ -2640,7 +2645,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             return validation("EVENT_STATUS_TRANSITION_INVALID");
         }
         if ("ongoing".equals(status)) {
-            var localized = eventPublicationContent(id, false, approved && !preview);
+            var localized = eventPublicationContent(id, approved && !preview, eventPublicationFields(current, rule));
             if (localized != null) return localized;
         }
         BigDecimal openingReward = "ongoing".equals(status) && !hasRule && legacyEventRewardWindow(id, current)
@@ -2661,8 +2666,11 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             return coverageRedline();
         }
         if ("ongoing".equals(status) && !approved) {
-            var localized = eventPublicationContent(id, true);
-            if (localized != null) return localized;
+            var localized = saveEventPublicationCopy(id, request.operator(), Map.of(
+                    "reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim(),
+                    "operation", "EVENT_STATUS_UPDATE", "sourceLocale", "en"));
+            if (!localized.complete()) return ApiResult.fail(422, "EVENT_LOCALIZED_CONTENT_INCOMPLETE",
+                    eventPublicationDetails(id, localized));
         }
         if (!"ongoing".equals(status) && hasRule) h4EventRules.stop(id);
         if (!updateBusinessEventStatus(id, status)) {
@@ -3922,6 +3930,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     }
 
     private List<Map<String, Object>> questEventsList() {
+        return questEventsList(null);
+    }
+
+    private List<Map<String, Object>> questEventsList(Map<String, Object> localized) {
         return questEventRows().stream()
                 .map(row -> {
                     Map<String, Object> copy = new LinkedHashMap<>(row);
@@ -3943,6 +3955,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                             // A confirmed missing active rule follows the real write branch:
                             // supports && hasRule is false. Null means the rule row was not read.
                             copy.put("rewardCopyOnly",hasRule instanceof Boolean present?present:null);
+                        }
+                        if (localized != null) {
+                            copy.putAll(h4EventRules.appRewardPresentation(id, h4EventRules.find(id, false),
+                                    localizedBranch(localized, id)));
                         }
                     }
                     return copy;
@@ -6507,14 +6523,16 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         return new LinkedHashMap<>();
     }
 
-    private ApiResult<Map<String, Object>> eventPublicationContent(String eventCode, boolean persist) {
-        return eventPublicationContent(eventCode, persist, false);
+    private static List<String> eventPublicationFields(Map<String, Object> event, Map<String, Object> rule) {
+        String kind = String.valueOf(rule == null ? event.get("targetType") : rule.get("kind")).toLowerCase(Locale.ROOT);
+        String asset = Objects.toString(event.get("rewardType"), "").toUpperCase(Locale.ROOT);
+        return H4EventRuleService.publicationFields(kind, rule != null, asset, event.get("rewardAmount"));
     }
 
-    private ApiResult<Map<String, Object>> eventPublicationContent(String eventCode, boolean persist, boolean approved) {
+    private ApiResult<Map<String, Object>> eventPublicationContent(String eventCode, boolean approved, List<String> fields) {
         var localized = h4EventRules == null
-                ? H4EventRuleService.localizedGaps(eventLocalizedContent(eventCode), List.of("en"))
-                : approved ? h4EventRules.savedLocalizedContent(eventCode) : h4EventRules.checkLocalizedContent(eventCode, persist);
+                ? H4EventRuleService.localizedGaps(eventLocalizedContent(eventCode), List.of("en"), fields)
+                : approved ? h4EventRules.savedLocalizedContent(eventCode, fields) : h4EventRules.checkLocalizedContent(eventCode, fields);
         if (localized.complete()) return null;
         return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "EVENT_LOCALIZED_CONTENT_INCOMPLETE",
                 eventPublicationDetails(eventCode, localized));
@@ -6534,13 +6552,50 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         return localizedBranch(localizedBranch(localizedContent(), "event"), eventCode);
     }
 
+    H4EventRuleService.LocalizedReadiness saveEventPublicationCopy(
+            String eventCode, String operator, Map<String, Object> operation) {
+        // The caller holds the H4 mutex and event row lock. H3 shares the localized config row.
+        var rule = h4EventRules == null ? null : h4EventRules.find(eventCode, false);
+        var fields = eventPublicationFields(requireEventForMutation(eventCode), rule);
+        var mapper = questEventMapper.orElseThrow();
+        mapper.ensureH3ConfigMutex();
+        if (!"H3_CONFIG".equals(mapper.lockH3ConfigMutex())) throw new BizException(409, "H3_CONFIG_LOCK_UNAVAILABLE");
+        var root = lockLocalizedContent();
+        var event = localizedBranch(localizedBranch(root, "event"), eventCode);
+        var required = h4EventRules == null ? List.of("en") : h4EventRules.operatingLanguages();
+        var readiness = H4EventRuleService.localizedGaps(event, required, fields);
+        if (!readiness.complete()) return readiness;
+        var english = localizedBranch(event, "en");
+        for (String locale : List.of("zh", "vi")) {
+            if (required.contains(locale)) continue;
+            var translation = localizedBranch(event, locale);
+            if (fields.stream().anyMatch(field -> H4EventRuleService.hasCopy(translation.get(field)))) continue;
+            for (String field : fields) {
+                String expected = String.valueOf(translation.getOrDefault(field, ""));
+                writeDerivedEventCell(root, eventCode, field, locale, (String) english.get(field), expected, operator, operation);
+            }
+        }
+        return H4EventRuleService.localizedGaps(localizedBranch(localizedBranch(root, "event"), eventCode), required, fields);
+    }
+
+    private Map<String, Object> lockLocalizedContent() {
+        try {
+            return objectMapper.readValue(configFacade.activeValueForUpdate(LOCALIZED_CONTENT_KEY).orElse("{}"),
+                    new TypeReference<LinkedHashMap<String, Object>>() {});
+        } catch (JsonProcessingException ex) {
+            throw new BizException(503, "EVENT_RULE_INVALID");
+        }
+    }
+
+    private record LocalizedCell(String entity, String code, String field, String locale, String key) {}
+
     private ApiResult<Map<String, Object>> updateLocalizedContent(
             String entity, String code, String field, String locale,
             String configKey, String idempotencyKey, GrowthConfigUpdateRequest request,
             boolean allowBaseClear) {
+        boolean eventCopy = "event".equals(entity);
         String value;
         try {
-            boolean eventCopy = "event".equals(entity);
             boolean blank = request.value() != null && (eventCopy
                     ? AuthoringWhitespace.isBlank(request.value()) : request.value().isBlank());
             if (eventCopy && blank && !InterfaceLanguages.isAdditional(locale) && !allowBaseClear) {
@@ -6551,25 +6606,86 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         } catch (IllegalArgumentException ex) {
             return validation(ex.getMessage());
         }
-        Map<String, Object> root = new LinkedHashMap<>(localizedContent());
-        Map<String, Object> entities = localizedBranch(root, entity);
-        Map<String, Object> item = localizedBranch(entities, code);
-        Map<String, Object> languages = localizedBranch(item, locale);
-        String oldValue = String.valueOf(languages.getOrDefault(field, ""));
-        if (!expectedTextMatches(request.expectedValue(), oldValue)) return validation("CONTENT_LOCALE_STALE");
-        if (oldValue.equals(value)) return validation("CONTENT_LOCALE_NO_CHANGE");
-        if (value.isEmpty()) languages.remove(field); else languages.put(field, value);
-        if (languages.isEmpty()) item.remove(locale); else item.put(locale, languages);
-        entities.put(code, item);
-        root.put(entity, entities);
-        writeJsonConfig(LOCALIZED_CONTENT_KEY, root, "H3/H4 operator-authored localized content", "growth");
-        audit("H3_H4_LOCALIZED_CONTENT_CHANGED", "GROWTH_CONTENT", entity + ":" + code, request.operator(), Map.of(
-                "key", configKey, "locale", locale, "field", field, "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
+        var cell = new LocalizedCell(entity, code, field, locale, configKey);
+        var root = eventCopy ? lockLocalizedContent() : new LinkedHashMap<>(localizedContent());
+        var operation = Map.<String, Object>of("reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim());
+        var previousEvent = eventCopy ? localizedBranch(localizedBranch(root, "event"), code) : Map.<String, Object>of();
+        String failure = writeLocalizedCell(root, cell, value,
+                previous -> expectedTextMatches(request.expectedValue(), previous), request.operator(), operation);
+        if (failure != null) return validation(failure);
+        if (eventCopy && "en".equals(locale)) {
+            followEventEnglish(root, previousEvent, cell, value, request.operator(), operation);
+        }
+        if (eventCopy && allowBaseClear && value.isEmpty() && List.of("zh", "vi").contains(locale)) {
+            clearEventCopyGroup(root, cell, request.operator(), operation);
+        }
         Map<String, Object> response = "event".equals(entity)
                 ? questEventOverview().getData() : questTasks().getData();
         response.put("updated", Map.of("key", configKey, "locale", locale, "field", field));
         return ApiResult.ok(response);
+    }
+
+    private void followEventEnglish(Map<String, Object> root, Map<String, Object> previousEvent,
+            LocalizedCell englishCell, String value, String operator, Map<String, Object> operation) {
+        var english = localizedBranch(previousEvent, "en");
+        var follow = new LinkedHashMap<>(operation);
+        follow.put("copyAction", "FOLLOW_ENGLISH");
+        follow.put("sourceLocale", "en");
+        for (String locale : List.of("zh", "vi")) {
+            var translation = localizedBranch(previousEvent, locale);
+            String field = englishCell.field();
+            String previous = Objects.toString(translation.get(field), "");
+            if (AuthoringWhitespace.isBlank(previous) || previous.equals(value) || !isEnglishCopy(english, translation)) continue;
+            writeDerivedEventCell(root, englishCell.code(), field, locale, value, previous, operator, follow);
+        }
+    }
+
+    private void clearEventCopyGroup(Map<String, Object> root, LocalizedCell cleared,
+            String operator, Map<String, Object> operation) {
+        var event = localizedBranch(localizedBranch(root, "event"), cleared.code());
+        var translation = localizedBranch(event, cleared.locale());
+        if (!isEnglishCopy(localizedBranch(event, "en"), translation)) return;
+        var clear = new LinkedHashMap<>(operation);
+        clear.put("copyAction", "CLEAR_DRAFT_COPY");
+        for (String field : H4EventRuleService.REQUIRED_EVENT_FIELDS) {
+            if (translation.containsKey(field)) {
+                writeDerivedEventCell(root, cleared.code(), field, cleared.locale(), "",
+                        String.valueOf(translation.get(field)), operator, clear);
+            }
+        }
+    }
+
+    private static boolean isEnglishCopy(Map<String, Object> english, Map<String, Object> translation) {
+        return H4EventRuleService.REQUIRED_EVENT_FIELDS.stream().allMatch(field -> {
+            String copy = AuthoringWhitespace.trim(Objects.toString(translation.get(field), ""));
+            return copy.isEmpty() || copy.equals(AuthoringWhitespace.trim(Objects.toString(english.get(field), "")));
+        });
+    }
+
+    private void writeDerivedEventCell(Map<String, Object> root, String code, String field, String locale,
+            String value, String expected, String operator, Map<String, Object> operation) {
+        var cell = new LocalizedCell("event", code, field, locale, "content.event." + code + "." + field + "." + locale);
+        String failure = writeLocalizedCell(root, cell, value, expected::equals, operator, operation);
+        if (failure != null) throw new BizException(422, failure);
+    }
+
+    private String writeLocalizedCell(Map<String, Object> root, LocalizedCell cell, String value,
+            Predicate<String> expected, String operator, Map<String, Object> operation) {
+        var entities = localizedBranch(root, cell.entity());
+        var item = localizedBranch(entities, cell.code());
+        var languages = localizedBranch(item, cell.locale());
+        String oldValue = String.valueOf(languages.getOrDefault(cell.field(), ""));
+        if (!expected.test(oldValue)) return "CONTENT_LOCALE_STALE";
+        if (oldValue.equals(value) && !(value.isEmpty() && languages.containsKey(cell.field()))) return "CONTENT_LOCALE_NO_CHANGE";
+        if (value.isEmpty()) languages.remove(cell.field()); else languages.put(cell.field(), value);
+        if (languages.isEmpty()) item.remove(cell.locale()); else item.put(cell.locale(), languages);
+        entities.put(cell.code(), item);
+        root.put(cell.entity(), entities);
+        writeJsonConfig(LOCALIZED_CONTENT_KEY, root, "H3/H4 operator-authored localized content", "growth");
+        var detail = row("key", cell.key(), "locale", cell.locale(), "field", cell.field());
+        detail.putAll(operation);
+        audit("H3_H4_LOCALIZED_CONTENT_CHANGED", "GROWTH_CONTENT", cell.entity() + ":" + cell.code(), operator, detail);
+        return null;
     }
 
     private BigDecimal percent(BigDecimal ratio) {
