@@ -39,6 +39,10 @@ public class PlatformExperienceConfigService {
     public static final String CHANNELS_KEY = "platform.experience.share.channels";
     public static final String APP_DOWNLOAD_KEY = "platform.experience.app_download";
     private static final String LANGUAGES_KEY = "platform.experience.interface_languages";
+    private static final String OPERATING_LANGUAGES_KEY = "platform.experience.operating_languages";
+    private static final String OPERATING_LANGUAGES_INVALID = "PLATFORM_OPERATING_LANGUAGES_INVALID";
+    private static final List<String> OPERATING_LANGUAGE_CODES = List.of("en", "zh", "vi");
+    private static final List<String> DEFAULT_OPERATING_LANGUAGES = List.of("en");
     private static final String GROUP = "platform_app_experience";
     private static final Set<String> CHANNEL_KEYS = Set.of(
             "zalo", "telegram", "whatsapp", "messenger", "sms", "x", "copy", "poster", "system");
@@ -67,29 +71,39 @@ public class PlatformExperienceConfigService {
                 share.map(value -> List.of("nx_config_item:" + BASE_URL_KEY,
                         "nx_config_item:" + CHANNELS_KEY,
                         "nx_config_item:" + APP_DOWNLOAD_KEY)).orElse(List.of()),
-                LocalDateTime.now().toString(), interfaceLanguages()));
+                LocalDateTime.now().toString(), interfaceLanguages(), operatingLanguages()));
     }
 
     public List<String> interfaceLanguages() {
-        return config.activeValue(LANGUAGES_KEY).map(value -> {
-            try {
-                List<String> languages = configuredLanguages(objectMapper.readTree(value));
-                if (languages != null) return languages;
-            } catch (JsonProcessingException ex) {
-                throw new BizException(503, "PLATFORM_EXPERIENCE_LANGUAGES_INVALID");
-            }
-            throw new BizException(503, "PLATFORM_EXPERIENCE_LANGUAGES_INVALID");
-        }).orElse(InterfaceLanguages.DEFAULT);
+        return readLanguages(LANGUAGES_KEY, InterfaceLanguages.CODES, InterfaceLanguages.REQUIRED,
+                InterfaceLanguages.DEFAULT, "PLATFORM_EXPERIENCE_LANGUAGES_INVALID");
     }
 
-    private List<String> configuredLanguages(JsonNode value) {
+    public List<String> operatingLanguages() {
+        return readLanguages(OPERATING_LANGUAGES_KEY, OPERATING_LANGUAGE_CODES, DEFAULT_OPERATING_LANGUAGES,
+                DEFAULT_OPERATING_LANGUAGES, OPERATING_LANGUAGES_INVALID);
+    }
+
+    private List<String> readLanguages(String key, List<String> codes, List<String> required,
+            List<String> defaults, String error) {
+        return config.activeValue(key).map(value -> {
+            try {
+                List<String> languages = configuredLanguages(objectMapper.readTree(value), codes, required);
+                if (languages != null) return languages;
+            } catch (JsonProcessingException ex) {
+                throw new BizException(503, error);
+            }
+            throw new BizException(503, error);
+        }).orElse(defaults);
+    }
+
+    private List<String> configuredLanguages(JsonNode value, List<String> codes, List<String> required) {
         if (value == null || !value.isArray()) return null;
         Set<String> selected = new HashSet<>();
         for (JsonNode item : value) {
-            if (!item.isTextual() || !InterfaceLanguages.CODES.contains(item.textValue()) || !selected.add(item.textValue())) return null;
+            if (!item.isTextual() || !codes.contains(item.textValue()) || !selected.add(item.textValue())) return null;
         }
-        return selected.containsAll(InterfaceLanguages.REQUIRED)
-                ? InterfaceLanguages.CODES.stream().filter(selected::contains).toList() : null;
+        return selected.containsAll(required) ? codes.stream().filter(selected::contains).toList() : null;
     }
 
     public ApiResult<PlatformComputeConfigView.ShareConfig> publicConfig(boolean officialLinkFragments) {
@@ -119,19 +133,25 @@ public class PlatformExperienceConfigService {
         }
         String validation = validate(request);
         if (validation != null) return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), validation);
-        List<String> languages = configuredLanguages(request.interfaceLanguages());
+        List<String> languages = configuredLanguages(request.interfaceLanguages(), InterfaceLanguages.CODES, InterfaceLanguages.REQUIRED);
         if (request.interfaceLanguages() != null && languages == null) {
             return ApiResult.fail(422, "PLATFORM_EXPERIENCE_LANGUAGES_INVALID");
+        }
+        List<String> operatingLanguages = configuredLanguages(request.operatingLanguages(),
+                OPERATING_LANGUAGE_CODES, DEFAULT_OPERATING_LANGUAGES);
+        if (request.operatingLanguages() != null && operatingLanguages == null) {
+            return ApiResult.fail(422, OPERATING_LANGUAGES_INVALID);
         }
         String hash = requestHash(request);
         ApiResult result = idempotencyService.execute(
                 "A3_PLATFORM_EXPERIENCE", idempotencyKey.trim(), hash, ApiResult.class,
-                () -> updateOnce(idempotencyKey.trim(), request, languages));
+                () -> updateOnce(idempotencyKey.trim(), request, languages, operatingLanguages));
         return (ApiResult<PlatformExperienceConfigView>) result;
     }
 
     private ApiResult<PlatformExperienceConfigView> updateOnce(
-            String idempotencyKey, PlatformExperienceConfigUpdateRequest request, List<String> languages) {
+            String idempotencyKey, PlatformExperienceConfigUpdateRequest request, List<String> languages,
+            List<String> operatingLanguages) {
         long current = readVersion(true).orElse(0L);
         if (request.expectedVersion() == null || request.expectedVersion() != current) {
             return ApiResult.fail(409, "PLATFORM_EXPERIENCE_VERSION_CONFLICT");
@@ -144,15 +164,21 @@ public class PlatformExperienceConfigService {
         Optional<PlatformComputeConfigView.ShareConfig> previousShare = readShare(true);
         List<String> previousLanguages = interfaceLanguages();
         List<String> nextLanguages = languages == null ? previousLanguages : languages;
+        List<String> previousOperatingLanguages = operatingLanguages();
+        List<String> nextOperatingLanguages = operatingLanguages == null ? previousOperatingLanguages : operatingLanguages;
         config.upsertAdminValue(BASE_URL_KEY, next.baseUrl(), "STRING", GROUP, "A3 App experience base URL");
         config.upsertAdminValue(CHANNELS_KEY, json(next.channels()), "JSON", GROUP, "A3 App share channels");
         config.upsertAdminValue(APP_DOWNLOAD_KEY, json(next.appDownload()), "JSON", GROUP, "A3 App installer metadata");
         if (languages != null) {
             config.upsertAdminValue(LANGUAGES_KEY, json(languages), "JSON", GROUP, "A3 enabled interface languages");
         }
+        if (operatingLanguages != null) {
+            config.upsertAdminValue(OPERATING_LANGUAGES_KEY, json(operatingLanguages), "JSON", GROUP, "A3 operating region languages");
+        }
         config.upsertAdminValue(VERSION_KEY, String.valueOf(current + 1), "NUMBER", GROUP, "A3 App experience CAS version");
         boolean languagesChanged = !previousLanguages.equals(nextLanguages);
-        if (!languagesChanged || previousShare.filter(next::equals).isEmpty()) {
+        boolean operatingLanguagesChanged = !previousOperatingLanguages.equals(nextOperatingLanguages);
+        if ((!languagesChanged && !operatingLanguagesChanged) || previousShare.filter(next::equals).isEmpty()) {
             auditChange(BASE_URL_KEY, Map.of(
                     "before", previousShare.map(this::json).orElse("<unavailable>"), "after", json(next),
                     "expectedVersion", current, "version", current + 1,
@@ -165,6 +191,12 @@ public class PlatformExperienceConfigService {
                     "expectedVersion", current, "version", current + 1,
                     "reason", request.reason().trim(), "idempotencyKey", idempotencyKey));
         }
+        if (operatingLanguagesChanged) {
+            auditChange(OPERATING_LANGUAGES_KEY, Map.of(
+                    "previousOperatingLanguages", previousOperatingLanguages, "operatingLanguages", nextOperatingLanguages,
+                    "expectedVersion", current, "version", current + 1,
+                    "reason", request.reason().trim(), "idempotencyKey", idempotencyKey));
+        }
         return ApiResult.ok(new PlatformExperienceConfigView(
                 current + 1, next, true,
                 homeFlags.getData().homeNewcomerTasksEnabled(),
@@ -172,7 +204,7 @@ public class PlatformExperienceConfigService {
                 List.of("nx_config_item:" + BASE_URL_KEY,
                         "nx_config_item:" + CHANNELS_KEY,
                         "nx_config_item:" + APP_DOWNLOAD_KEY),
-                LocalDateTime.now().toString(), nextLanguages));
+                LocalDateTime.now().toString(), nextLanguages, nextOperatingLanguages));
     }
 
     private void auditChange(String key, Map<String, Object> detail) {
@@ -365,7 +397,12 @@ public class PlatformExperienceConfigService {
     private String requestHash(PlatformExperienceConfigUpdateRequest request) {
         String fields = request.toString();
         // Keep the original fingerprint for old clients replaying an in-flight A3 command.
-        if (request.interfaceLanguages() == null) fields = fields.substring(0, fields.length() - ", interfaceLanguages=null]".length()) + "]";
+        if (request.operatingLanguages() == null) {
+            fields = fields.substring(0, fields.length() - ", operatingLanguages=null]".length()) + "]";
+            if (request.interfaceLanguages() == null) {
+                fields = fields.substring(0, fields.length() - ", interfaceLanguages=null]".length()) + "]";
+            }
+        }
         return Integer.toHexString(fields.hashCode());
     }
 
