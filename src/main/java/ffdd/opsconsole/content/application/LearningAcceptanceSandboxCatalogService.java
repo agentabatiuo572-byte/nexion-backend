@@ -1,17 +1,24 @@
 package ffdd.opsconsole.content.application;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.content.domain.LearningSandboxCourseRow;
 import ffdd.opsconsole.content.domain.LearningSandboxIdempotencyRow;
 import ffdd.opsconsole.content.dto.LearningCourseUpsertRequest;
+import ffdd.opsconsole.content.dto.LearningQuizQuestionRequest;
 import ffdd.opsconsole.content.mapper.AppLearningMapper;
+import ffdd.opsconsole.platform.application.PlatformExperienceConfigService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -25,6 +32,12 @@ public class LearningAcceptanceSandboxCatalogService {
     private final LearningAcceptanceSandboxGate gate;
     private final AppLearningMapper mapper;
     @Value("${nexion.learning.acceptance-run-id:}") private final String configuredRunId;
+    private Supplier<List<String>> operatingLanguages = () -> List.of("en");
+
+    @Autowired
+    void setPlatformExperienceConfigService(PlatformExperienceConfigService service) {
+        operatingLanguages = service::operatingLanguages;
+    }
 
     public ApiResult<List<LearningSandboxCourseRow>> list(String runId) {
         requireRun(runId);
@@ -54,14 +67,28 @@ public class LearningAcceptanceSandboxCatalogService {
     @Transactional
     public ApiResult<LearningSandboxCourseRow> saveDraft(String runId, String courseId, LearningCourseUpsertRequest request, String idempotencyKey) {
         requireRun(runId);
-        if (!validCourseId(courseId) || request == null || !StringUtils.hasText(request.titleZh())
-                || !StringUtils.hasText(request.bodyZh()) || request.rewardNex() == null || request.rewardNex().signum() < 0) {
+        if (!validCourseId(courseId) || request == null || request.rewardNex() == null || request.rewardNex().signum() < 0) {
             return ApiResult.fail(422, "LEARNING_SANDBOX_COURSE_INVALID");
         }
         String scope = "LEARNING_SANDBOX_COURSE_SAVE:" + courseId.trim();
         String replay = claim(runId, scope, idempotencyKey, request);
         if (replay != null) return replayCourse(replay);
-        LearningSandboxCourseRow row = toRow(courseId.trim(), request);
+        LearningCourseUpsertRequest completed = LearningCourseCopy.complete(request, operatingLanguages.get());
+        ApiResult<Void> validation = LearningCourseCopy.validateBase(completed);
+        if (validation == null && !LearningCourseCopy.validEnums(completed)) {
+            validation = ApiResult.fail(422, "LEARNING_COURSE_ENUM_UNSUPPORTED");
+        }
+        if (validation == null && Stream.of(completed.titleEn().trim(), completed.titleVi().trim())
+                .anyMatch(title -> title.codePointCount(0, title.length()) > 255)) {
+            validation = ApiResult.fail(422, "LEARNING_COURSE_COPY_TOO_LONG");
+        }
+        if (validation == null) validation = LearningCourseCopy.validateContent(completed);
+        if (validation != null) {
+            ApiResult<LearningSandboxCourseRow> rejected = ApiResult.fail(validation.getCode(), validation.getMessage());
+            complete(runId, scope, idempotencyKey, rejected);
+            return rejected;
+        }
+        LearningSandboxCourseRow row = toRow(courseId.trim(), completed);
         int updated = mapper.updateSandboxCourseDraft(runId.trim(), row);
         ApiResult<LearningSandboxCourseRow> result;
         if (updated != 0) {
@@ -83,8 +110,13 @@ public class LearningAcceptanceSandboxCatalogService {
         String scope = "LEARNING_SANDBOX_COURSE_PUBLISH:" + courseId.trim() + ":" + version.trim();
         String replay = claim(runId, scope, idempotencyKey, Map.of("command", "publish", "expectedRevision", expectedRevision));
         if (replay != null) return replayVoid(replay);
-        ApiResult<Void> result = mapper.publishSandboxCourse(runId.trim(), courseId.trim(), version.trim(), expectedRevision) == 1
-                ? ApiResult.ok(null) : ApiResult.fail(409, "LEARNING_SANDBOX_COURSE_REVISION_OR_AUTHORITY_CONFLICT");
+        LearningSandboxCourseRow draft = mapper.findSandboxCourseDraft(runId.trim(), courseId.trim(), version.trim(), expectedRevision);
+        ApiResult<Void> result = draft == null ? ApiResult.fail(409, "LEARNING_SANDBOX_COURSE_REVISION_OR_AUTHORITY_CONFLICT")
+                : validatePublication(draft);
+        if (result == null) {
+            result = mapper.publishSandboxCourse(runId.trim(), courseId.trim(), version.trim(), expectedRevision) == 1
+                    ? ApiResult.ok(null) : ApiResult.fail(409, "LEARNING_SANDBOX_COURSE_REVISION_OR_AUTHORITY_CONFLICT");
+        }
         complete(runId, scope, idempotencyKey, result);
         return result;
     }
@@ -102,6 +134,27 @@ public class LearningAcceptanceSandboxCatalogService {
         return result;
     }
 
+    private ApiResult<Void> validatePublication(LearningSandboxCourseRow draft) {
+        List<LearningQuizQuestionRequest> questions = List.of();
+        if (StringUtils.hasText(draft.quizJson())) {
+            try {
+                questions = JSON.readValue(draft.quizJson(), new TypeReference<>() {});
+            } catch (JsonProcessingException ex) {
+                return ApiResult.fail(422, "LEARNING_COURSE_QUIZ_INCOMPLETE");
+            }
+        }
+        LearningCourseUpsertRequest stored = new LearningCourseUpsertRequest(
+                draft.titleZh(), draft.titleEn(), draft.bodyZh(), draft.bodyEn(), draft.category(), draft.format(),
+                draft.level(), draft.rewardNex(), draft.duration(), draft.status(), null, null, questions,
+                draft.passScore(), draft.retryLimit(), draft.completionCondition(), draft.rewardEvent(),
+                draft.revision(), draft.titleVi(), draft.bodyVi(), draft.version());
+        if (questions == null || questions.isEmpty()) return ApiResult.fail(422, "LEARNING_COURSE_QUIZ_INCOMPLETE");
+        ApiResult<Void> validation = LearningCourseCopy.validateBase(stored);
+        if (validation != null) return validation;
+        validation = LearningCourseCopy.validateContent(stored);
+        return validation != null ? validation : LearningCourseCopy.requirePublishable(stored);
+    }
+
     private LearningSandboxCourseRow toRow(String courseId, LearningCourseUpsertRequest request) {
         try {
             String version = StringUtils.hasText(request.version()) ? request.version().trim() : "v1";
@@ -109,7 +162,7 @@ public class LearningAcceptanceSandboxCatalogService {
             return new LearningSandboxCourseRow(courseId, version, "DRAFT", request.titleZh().trim(), text(request.titleEn()), text(request.titleVi()),
                     request.bodyZh().trim(), text(request.bodyEn()), text(request.bodyVi()), text(request.category()), text(request.format()),
                     text(request.difficulty()), request.rewardNex(), text(request.duration()), false,
-                    JSON.writeValueAsString(request.quizQuestions() == null ? List.of() : request.quizQuestions()), request.passScore(), request.retryLimit(),
+                    JSON.writeValueAsString(LearningCourseCopy.normalizeQuestions(request.quizQuestions())), request.passScore(), request.retryLimit(),
                     text(request.completionCondition()), text(request.rewardEvent()), request.expectedRevision() == null ? 0L : request.expectedRevision());
         } catch (Exception ex) {
             throw new IllegalArgumentException("LEARNING_SANDBOX_COURSE_INVALID", ex);
