@@ -414,7 +414,7 @@ public class OpsCopyAbService {
         if (positionGuard != null) {
             return positionGuard;
         }
-        CopyText text = completeCopyText(current.i18nKey(), request.zh(), request.en(), request.vi());
+        CopyText text = completeCopyText(request.zh(), request.en(), request.vi());
         if (!text.complete()) return ApiResult.fail(422, "COPY_FIELDS_REQUIRED");
         copyAbRepository.saveDraft(current.key(), normalizeDraft(request, version, text), now());
         CopyContentRow updated = findCopy(current.key());
@@ -481,7 +481,7 @@ public class OpsCopyAbService {
         }
         boolean publishSavedDraft = target != null && matchesDraft(request, target);
         CopyText text = publishSavedDraft ? new CopyText(target.zh(), target.en(), target.vi())
-                : completeCopyText(current.i18nKey(), request.zh(), request.en(), request.vi());
+                : completeCopyText(request.zh(), request.en(), request.vi());
         if (!text.complete()) return ApiResult.fail(422, "COPY_FIELDS_REQUIRED");
         CopyVersionPublishRequest publication = normalizePublish(request, version, text);
         LocalDateTime publishedAt = now();
@@ -526,9 +526,6 @@ public class OpsCopyAbService {
         if (audienceGuard != null) {
             return audienceGuard;
         }
-        if (I18nCopyQuality.requiresChineseSource(request.i18nKey()) && !hasCopyText(request.zh())) {
-            return ApiResult.fail(422, "COPY_FIELDS_REQUIRED");
-        }
         ApiResult<CopyContentRow> payloadGuard = validateCopyPayload(
                 request.surface(), request.trafficSplit(), request.zh(), request.en(), request.vi(), request.translations(), request.reason());
         if (payloadGuard != null) return payloadGuard;
@@ -541,7 +538,7 @@ public class OpsCopyAbService {
     }
 
     private ApiResult<CopyContentRow> createCopyOnce(String idempotencyKey, CopyCreateRequest request) {
-        CopyText text = completeCopyText(request.i18nKey(), request.zh(), request.en(), request.vi());
+        CopyText text = completeCopyText(request.zh(), request.en(), request.vi());
         if (!text.complete()) return ApiResult.fail(422, "COPY_FIELDS_REQUIRED");
         ApiResult<CopyContentRow> positionGuard = validatePositionReference(request.copyPosition(), request.surface());
         if (positionGuard != null) {
@@ -1503,9 +1500,9 @@ public class OpsCopyAbService {
         }
     }
 
-    private CopyText completeCopyText(String i18nKey, String zh, String en, String vi) {
+    private CopyText completeCopyText(String zh, String en, String vi) {
         List<String> required = operatingLanguages.get();
-        return new CopyText(!hasCopyText(zh) && !required.contains("zh") && !I18nCopyQuality.requiresChineseSource(i18nKey) ? en : zh,
+        return new CopyText(!hasCopyText(zh) && !required.contains("zh") ? en : zh,
                 en, !hasCopyText(vi) && !required.contains("vi") ? en : vi);
     }
 

@@ -60,18 +60,12 @@ public final class I18nCopyQuality {
         return false;
     }
 
-    public static boolean requiresChineseSource(String messageKey) {
-        if (!StringUtils.hasText(messageKey)) return false;
-        String key = messageKey.trim().toLowerCase(Locale.ROOT);
-        return key.startsWith("conversation.script.") || key.startsWith("conversation.template.");
-    }
-
     public static List<String> integrityIssueCodes(I18nMessagePairView message, List<String> requiredLanguages) {
         var issues = new ArrayList<String>();
         boolean hasZh = hasCopyText(message.zh());
         boolean hasEn = hasCopyText(message.en());
         boolean hasVi = hasCopyText(message.vi());
-        if (!hasZh && (requiredLanguages.contains("zh") || requiresChineseSource(message.messageKey()))) {
+        if (!hasZh && requiredLanguages.contains("zh")) {
             issues.add("missing-zh");
         }
         if (!hasEn) issues.add("missing-en");
