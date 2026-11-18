@@ -64,6 +64,14 @@ public class AdminIdempotencyService {
                 AdminCommandOrigin.current(scope, readAuthority, null, targets));
     }
 
+    /** A2 decision commands store their authenticated submitter even though A2 has no read authority. */
+    public <T> T executeOwned(String scope, String key, String requestHash, Class<T> responseType,
+                              long actorId, java.util.List<AdminCommandOrigin.Target> targets,
+                              Supplier<T> action) {
+        AdminCommandOrigin origin = new AdminCommandOrigin(actorId, null, null, null, null, targets);
+        return execute(scope, key, requestHash, responseType, action, true, false, origin, false);
+    }
+
     /** Read-only recovery information. Callers must derive the scope from the authenticated actor. */
     public RecoveryStatus recoveryStatus(String scope, String idempotencyKey, String requestHash) {
         return transactionExecutor.recoveryStatus(normalizeScope(scope), normalizeIdempotencyKey(idempotencyKey),

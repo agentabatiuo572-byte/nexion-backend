@@ -935,8 +935,11 @@ public class OpsAuditCenterService {
                             "A2_" + verb, "A2", "operation", operationId));
                 }
             }
-            var receipt = idempotencyService.executeBoundTargets(A2_COMMAND, idempotencyKey, requestHash,
-                    AuditOperationTicket.class, originAuthority, originTargets, () -> requireSuccess(action.get()));
+            var receipt = proposal
+                    ? idempotencyService.executeBoundTargets(A2_COMMAND, idempotencyKey, requestHash,
+                            AuditOperationTicket.class, originAuthority, originTargets, () -> requireSuccess(action.get()))
+                    : idempotencyService.executeOwned(A2_COMMAND, idempotencyKey, requestHash,
+                            AuditOperationTicket.class, actorId, List.of(), () -> requireSuccess(action.get()));
             if (catalogProposal) {
                 return proposalByIdempotencyKey(idempotencyKey);
             }
@@ -1151,8 +1154,9 @@ public class OpsAuditCenterService {
         if (result == null || result.getCode() != 0) {
             if(result!=null && "MONTHLY_TARGET_POOL_INELIGIBLE".equals(result.getMessage()))throw MonthlyTargetPoolException.fromResult(result);
             if(result!=null && "MONTHLY_TARGET_REWARD_OUT_OF_RANGE".equals(result.getMessage()))throw MonthlyTargetRewardOutOfRangeException.fromResult(result);
-            throw new BizException(result == null ? 500 : result.getCode(),
-                    result == null ? "A2_COMMAND_FAILED" : result.getMessage());
+            throw new ffdd.opsconsole.shared.idempotency.AdminCommandBusinessRejection(
+                    result == null ? 500 : result.getCode(),
+                    result == null ? "A2_COMMAND_FAILED" : result.getMessage(), result);
         }
         return result.getData();
     }

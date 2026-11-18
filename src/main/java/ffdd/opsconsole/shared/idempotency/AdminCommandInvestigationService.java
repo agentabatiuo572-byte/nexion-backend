@@ -758,12 +758,20 @@ public class AdminCommandInvestigationService {
                 String[] parts = original.getScope().split(":");
                 yield parts.length == 3 && Long.toString(actor).equals(parts[1]);
             }
-            case A1_PERMISSION, A6, A7, A2_COMMAND -> {
+            case A1_PERMISSION, A6, A7 -> {
                 if (original.getOriginAdminId() != null) {
                     yield Long.valueOf(actor).equals(original.getOriginAdminId());
                 }
                 List<Long> owners = investigations.findReceiptOwners(original.getScope(), original.getIdempotencyKey());
                 yield owners != null && owners.size() == 1 && Long.valueOf(actor).equals(owners.get(0));
+            }
+            case A2_COMMAND -> {
+                if (original.getOriginAdminId() != null) {
+                    yield Long.valueOf(actor).equals(original.getOriginAdminId());
+                }
+                yield audit.findA2CommandAudit(actor, original.getIdempotencyKey(), "A2_OPERATION_APPROVED", null) != null
+                        || audit.findA2CommandAudit(actor, original.getIdempotencyKey(), "A2_OPERATION_REJECTED", null) != null
+                        || audit.findA2CommandAudit(actor, original.getIdempotencyKey(), "A2_OPERATION_WITHDRAWN", null) != null;
             }
             default -> {
                 List<Long> owners = investigations.findReceiptOwners(original.getScope(), original.getIdempotencyKey());
@@ -798,7 +806,8 @@ public class AdminCommandInvestigationService {
         if ("FAILED".equals(status)) {
             // Only the origin-backed failure path persists a trusted business reply; a bare
             // FAILED row (or a legacy row without provenance) still proves no business result.
-            Integer code = original.getOriginAdminId() == null ? null : businessCode(original.getResponseJson());
+            boolean trustedFailureReply = original.getOriginAdminId() != null || "A2_COMMAND".equals(original.getScope());
+            Integer code = trustedFailureReply ? businessCode(original.getResponseJson()) : null;
             if (code != null && code != 0) return "REJECTED";
             return AdminCommandOrigin.h4DirectScope(original.getScope())
                     || AdminCommandOrigin.g2ParameterKey(original.getScope()) != null ? "UNKNOWN" : "FAILED";
