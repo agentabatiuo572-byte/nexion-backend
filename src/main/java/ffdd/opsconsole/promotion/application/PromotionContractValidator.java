@@ -49,7 +49,7 @@ public class PromotionContractValidator {
             result.put(field, localized);
         }
         if (texts.isEmpty()) return result;
-        var required = experience == null ? List.of("en") : experience.operatingLanguages();
+        var required = requiredAuthoredLanguages();
         for (String locale : List.of("en","zh","vi")) {
             boolean useTranslation = required.contains(locale) || texts.values().stream().anyMatch(localized -> localized.containsKey(locale));
             for (var field : texts.entrySet()) {
@@ -63,6 +63,22 @@ public class PromotionContractValidator {
         }
         return result;
     }
+
+    /** Check a schema-validated frozen contract without changing the recorded copy. */
+    void validateRecordedAuthoredCopy(Map<String,Object> content, String... fields) {
+        var required = requiredAuthoredLanguages();
+        for (String field : fields) {
+            var localized = map(content.get(field));
+            for (String locale : required) {
+                if (AuthoringWhitespace.isBlank((String) localized.get(locale))) fail("$." + field + "." + locale);
+            }
+        }
+    }
+
+    private List<String> requiredAuthoredLanguages() {
+        return experience == null ? List.of("en") : experience.operatingLanguages();
+    }
+
     private void fail(String field) {throw new BizException(422,"PROMOTION_FIELD_INVALID:"+field);}
     private boolean matches(JsonNode value,JsonNode schema,String path) {
         try{check(value,schema,path);return true;}catch(BizException rejected){return false;}

@@ -149,7 +149,7 @@ public class H4EventRuleService {
         missing=new ArrayList<>(missing);
         if(!"evt-anniversary-spin".equals(row.get("event_code"))&&date(row.get("ends_at"))!=null&&!date(row.get("ends_at")).isAfter(LocalDateTime.now(ZoneOffset.UTC)))missing.add("endsAt");
         var fields=publicationFields(text(row.get("kind")),true,null,null);
-        var localized=localizedGaps(readEventContent(code),enabled?List.of("zh","vi"):operatingLanguages(),fields);
+        var localized=checkLocalizedContent(code,fields);
         missing.addAll(localized.missing().stream().map(ContentGap::path).toList());
         if(missing.isEmpty()&&localized.incomplete().isEmpty())missing.addAll(commerce.readiness(text(row.get("event_code")),r,date(row.get("starts_at")),date(row.get("ends_at"))));
         Map<String,Object> readiness=values("ready",missing.isEmpty()&&localized.incomplete().isEmpty(),"missing",missing);
