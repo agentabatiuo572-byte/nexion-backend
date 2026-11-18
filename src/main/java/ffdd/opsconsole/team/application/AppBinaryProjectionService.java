@@ -133,6 +133,9 @@ public class AppBinaryProjectionService {
         result.put("trackB", trackB);
         result.put("trackAMembers", trackAMembers);
         result.put("trackBMembers", trackBMembers);
+        var totals = mapper.countWholeLegMembers(userId);
+        result.put("trackATotalMembers", totals.trackATotalMembers());
+        result.put("trackBTotalMembers", totals.trackBTotalMembers());
         result.put("autoPlacedMembers", mapper.countAutoPlacedMembers(userId));
         result.put("matchRate", matchRate);
         result.put("threshold", threshold);

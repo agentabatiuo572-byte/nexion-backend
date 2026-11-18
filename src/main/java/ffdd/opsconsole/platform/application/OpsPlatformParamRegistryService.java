@@ -150,7 +150,14 @@ public class OpsPlatformParamRegistryService {
         String description = h5Retired ? "已退役，值固定为 0，历史数据也不再生效。"
                 : retired ? "已退役，仅兼容读取，不参与收益计算。" : secret
                 ? "这个敏感参数在「" + owner.label() + "」设置；这里只显示是否已配置，不显示具体值。"
-                : "这个参数在「" + owner.label() + "」设置；这里只显示当前值。";
+                : switch (canonicalKey) {
+                    case "growth.quest.day_one.eligibility_hours" -> "新手任务完成期限（小时）；由新手任务配置读取。";
+                    case "wallet.exchange.queue_mode" -> "额度不足的订单按该策略进入人工处理队列或拒绝。";
+                    case "wallet.exchange.queue_eta_hours" -> "用户排队的预计处理时长（小时），不是自动成交或到账时间。";
+                    case "wallet.exchange.queue_eta_copy", "wallet.exchange.queue_eta_copy_zh", "wallet.exchange.queue_eta_copy_vi" ->
+                            "排队预计时间文案，使用 {hours} 引用已配置的预计时长。";
+                    default -> "这个参数在「" + owner.label() + "」设置；这里只显示当前值。";
+                };
         String valueType = secret
                 ? "SECRET"
                 : StringUtils.hasText(item.valueType()) ? item.valueType().trim().toUpperCase(Locale.ROOT) : "STRING";

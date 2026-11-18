@@ -139,7 +139,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             Map.entry("feeMin", "finprod_g2_fee_rate_write"),
             Map.entry("queueMode", "finprod_g2_write"),
             Map.entry("queueEtaHours", "finprod_g2_write"),
-            Map.entry("queueEtaCopy", "finprod_g2_write"));
+            Map.entry("queueEtaCopy", "finprod_g2_write"),
+            Map.entry("queueEtaCopyZh", "finprod_g2_write"),
+            Map.entry("queueEtaCopyVi", "finprod_g2_write"));
     /** updateStakingPoolParam paramKey→精确权限码。对照 OpsStakingController updatePoolParam。 */
     private static final Map<String, String> STAKING_PARAM_PERMISSION = Map.ofEntries(
             Map.entry("apy", "finprod_g1_apy_write"),
@@ -246,7 +248,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         response.put("queue", marketRepository.exchangeOrdersByStatuses(EXCHANGE_QUEUE_STATUSES, 50).stream()
                 .map(order -> order.withQueueEstimate(estimatedTime)).toList());
         response.put("queueEstimate", map("hours", readText(EXCHANGE_QUEUE_ETA_HOURS_KEY, ""),
-                "copy", readText(EXCHANGE_QUEUE_ETA_COPY_KEY, "")));
+                "copy", readText(EXCHANGE_QUEUE_ETA_COPY_KEY, ""),
+                "copyZh", readText(EXCHANGE_QUEUE_ETA_COPY_KEY + "_zh", ""),
+                "copyVi", readText(EXCHANGE_QUEUE_ETA_COPY_KEY + "_vi", "")));
         response.put("gateDetails", map(
                 "user", gate("user", "单用户日额度拦截", "超过单用户日额度后，按配置转人工处理或拒绝。", "USER_CAP", gateUser),
                 "platform", gate("platform", "平台日额度拦截", "QUEUE".equalsIgnoreCase(readText(EXCHANGE_QUEUE_MODE_KEY, "QUEUE"))
@@ -3655,7 +3659,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return copy.replace("{hours}", hours);
     }
 
-    private boolean validQueueEtaCopy(String value) {
+    static boolean validQueueEtaCopy(String value) {
         return StringUtils.hasText(value) && value.codePointCount(0, value.length()) <= 240
                 && value.contains("{hours}") && value.codePoints().noneMatch(Character::isISOControl);
     }
@@ -3685,7 +3689,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             case "queueEtaHours" -> new ExchangeParamDef(key, EXCHANGE_QUEUE_ETA_HOURS_KEY, "NUMBER", "",
                     "G2 estimated manual handling time in hours", ExchangeParamKind.ETA_HOURS);
             case "queueEtaCopy" -> new ExchangeParamDef(key, EXCHANGE_QUEUE_ETA_COPY_KEY, "STRING", "",
-                    "G2 non-binding queue estimate using {hours}", ExchangeParamKind.ETA_COPY);
+                    "G2 non-binding English queue estimate using {hours}", ExchangeParamKind.ETA_COPY);
+            case "queueEtaCopyZh", "queueEtaCopyVi" -> new ExchangeParamDef(key,
+                    EXCHANGE_QUEUE_ETA_COPY_KEY + (key.endsWith("Zh") ? "_zh" : "_vi"), "STRING", "",
+                    "G2 localized non-binding queue estimate using {hours}", ExchangeParamKind.ETA_COPY);
             default -> null;
         };
     }

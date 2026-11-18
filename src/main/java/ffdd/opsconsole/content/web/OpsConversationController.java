@@ -100,7 +100,22 @@ public class OpsConversationController {
         }
         try {
             var result=this.<Object>executeRegisteredCommand(scope,key,hash,() -> {
-                var command=action.get();
+                OpsConversationService.MessageCommandResult command;
+                try {
+                    command=action.get();
+                } catch (ffdd.opsconsole.shared.exception.BizException rejected) {
+                    if (customer != null && customer > 0 && clientMessageId != null
+                            && clientMessageId.matches("[A-Za-z0-9_-]{8,128}")
+                            && rejected.getCode() == 409
+                            && java.util.Set.of("SUPPORT_SKU_UNAVAILABLE", "CONVERSATION_CATEGORY_DISABLED",
+                                    "SUPPORT_ASSIGNMENT_CHANGED", "SUPPORT_RECEPTION_ASSIGNMENT_STALE").contains(rejected.getMessage())) {
+                        var detail = ffdd.opsconsole.content.application.SupportSessionService.sendRejectionDetails(
+                                ownership.actorId(), customer, scope, key.trim(), clientMessageId, hash);
+                        throw new ffdd.opsconsole.shared.idempotency.AdminCommandBusinessRejection(
+                                rejected.getCode(), rejected.getMessage(), ApiResult.fail(rejected.getCode(), rejected.getMessage(), detail));
+                    }
+                    throw rejected;
+                }
                 var reply=command.result();
                 if (command.messageId()==null && reply.getCode()>=400 && reply.getCode()<500
                         && customer!=null && customer>0 && clientMessageId!=null

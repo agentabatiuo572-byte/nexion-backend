@@ -379,7 +379,18 @@ public interface AppExchangeMapper {
     List<QueuedAmountRow> queuedAmounts();
 
     record ExchangeRow(String exchangeNo,String fromAsset,String toAsset,BigDecimal fromAmount,
-                       BigDecimal toAmount,BigDecimal rate,String status,LocalDateTime createdAt) {}
+                       BigDecimal toAmount,BigDecimal rate,String status,LocalDateTime createdAt,
+                       @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.ALWAYS)
+                       java.util.Map<String,Object> queueEstimate) {
+        @org.apache.ibatis.annotations.AutomapConstructor
+        public ExchangeRow(String exchangeNo,String fromAsset,String toAsset,BigDecimal fromAmount,
+                           BigDecimal toAmount,BigDecimal rate,String status,LocalDateTime createdAt) {
+            this(exchangeNo,fromAsset,toAsset,fromAmount,toAmount,rate,status,createdAt,null);
+        }
+        public ExchangeRow withQueueEstimate(java.util.Map<String,Object> estimate) {
+            return new ExchangeRow(exchangeNo,fromAsset,toAsset,fromAmount,toAmount,rate,status,createdAt,estimate);
+        }
+    }
     record QueuedRow(Long userId,String exchangeNo,String fromAsset,BigDecimal fromAmount) {}
     record QueuedAmountRow(String fromAsset,BigDecimal fromAmount) {}
     record UserAttribution(String phase,Integer accountAgeMonths,String cohort) {}

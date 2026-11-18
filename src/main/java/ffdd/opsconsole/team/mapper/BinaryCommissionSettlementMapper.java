@@ -133,6 +133,27 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
             @Param("leg") String leg);
 
     @Select("""
+            WITH RECURSIVE assigned_tree AS (
+              SELECT a.leg, a.member_user_id AS node_user_id
+                FROM nx_binary_leg_assignment a
+                JOIN nx_team_member m ON m.user_id=a.owner_user_id AND m.member_user_id=a.member_user_id
+                 AND m.level=1 AND m.is_deleted=0
+               WHERE a.owner_user_id=#{ownerUserId} AND a.member_user_id<>#{ownerUserId}
+              UNION DISTINCT
+              SELECT t.leg, m.member_user_id
+                FROM assigned_tree t
+                JOIN nx_team_member m ON m.user_id=t.node_user_id AND m.level=1 AND m.is_deleted=0
+               WHERE m.member_user_id<>#{ownerUserId}
+            )
+            SELECT COUNT(CASE WHEN leg='A' THEN 1 END) AS trackATotalMembers,
+                   COUNT(CASE WHEN leg='B' THEN 1 END) AS trackBTotalMembers
+              FROM assigned_tree
+            """)
+    BinaryLegMemberTotals countWholeLegMembers(@Param("ownerUserId") Long ownerUserId);
+
+    record BinaryLegMemberTotals(long trackATotalMembers, long trackBTotalMembers) {}
+
+    @Select("""
             SELECT COUNT(1)
               FROM nx_binary_leg_assignment a
              WHERE a.owner_user_id=#{ownerUserId}

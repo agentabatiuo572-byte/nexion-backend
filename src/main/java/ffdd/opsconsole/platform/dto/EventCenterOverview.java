@@ -129,6 +129,11 @@ public record EventCenterOverview(
                     serverAuthoritative, samplingPolicy, version, updatedAt, lifecycleState, lifecycleVersion, configured);
         }
 
+        @JsonProperty(value = "displayNameAvailable", access = JsonProperty.Access.READ_ONLY)
+        public boolean displayNameAvailable() {
+            return displayName != null && !displayName.isBlank();
+        }
+
         @JsonProperty(value = "ownerDisplayName", access = JsonProperty.Access.READ_ONLY)
         public String ownerDisplayName() {
             return ownerDomain == null ? null : DOMAIN_LABELS.get(ownerDomain);
