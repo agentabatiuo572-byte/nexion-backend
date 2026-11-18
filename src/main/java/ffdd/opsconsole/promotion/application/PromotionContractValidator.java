@@ -66,10 +66,10 @@ public class PromotionContractValidator {
 
     /** Check a schema-validated frozen contract without changing the recorded copy. */
     void validateRecordedAuthoredCopy(Map<String,Object> content, String... fields) {
-        var required = requiredAuthoredLanguages();
+        // Submit fills every base language, and the App rejects a promotion with any blank base text.
         for (String field : fields) {
             var localized = map(content.get(field));
-            for (String locale : required) {
+            for (String locale : List.of("en","zh","vi")) {
                 if (AuthoringWhitespace.isBlank((String) localized.get(locale))) fail("$." + field + "." + locale);
             }
         }
