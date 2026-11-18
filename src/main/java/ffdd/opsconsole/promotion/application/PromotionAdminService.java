@@ -148,7 +148,8 @@ public class PromotionAdminService {
     public Map<String,Object> simulate(String id,Map<String,Object> request){
         if(request.get("sampleAccountId")!=null&&!has("user_c1_read"))throw new BizException(403,"PROMOTION_ACCOUNT_SAMPLE_FORBIDDEN");
         if(request.get("sampleAccountId")!=null)accountSamples.requireReadable(number(request.get("sampleAccountId")));
-        validator.validate("SimulateInput",request);var p=visibleActivity(id,false);var c=map(request.get("draft"));
+        validator.validate("SimulateInput",request);var p=visibleActivity(id,false);
+        var c=validator.completeAuthoredCopy(map(request.get("draft")),"title","terms");
         validator.validate("PromotionContract",c);validateWindow(c);validateConfiguration(c);
         if(request.get("sampleAccountId")!=null&&("DIRECT_REFERRAL".equals(c.get("template"))||c.get("inviterAudience")!=null)){
             var buyer=db.user(number(request.get("sampleAccountId")),false);
