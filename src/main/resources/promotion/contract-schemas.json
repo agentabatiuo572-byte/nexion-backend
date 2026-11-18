@@ -273,7 +273,75 @@
           "en",
           "vi"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "Stored and delivered copy has all three base language values."
+      },
+      "AuthoredLocalizedText": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/DraftLocalizedText"
+          },
+          {
+            "required": [
+              "en"
+            ]
+          }
+        ]
+      },
+      "StoredPolicyContent": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/PolicyContent"
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "DEVICE_RIGHTS"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "rightsDescription": {
+                  "$ref": "#/components/schemas/LocalizedText"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "ASSET"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "availabilityDescription": {
+                  "$ref": "#/components/schemas/LocalizedText"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "REFUND"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "terms": {
+                  "$ref": "#/components/schemas/LocalizedText"
+                }
+              }
+            }
+          }
+        ]
       },
       "PolicyContent": {
         "oneOf": [
@@ -378,7 +446,7 @@
                 ]
               },
               "rightsDescription": {
-                "$ref": "#/components/schemas/LocalizedText"
+                "$ref": "#/components/schemas/AuthoredLocalizedText"
               }
             },
             "required": [
@@ -414,7 +482,7 @@
                 "const": true
               },
               "availabilityDescription": {
-                "$ref": "#/components/schemas/LocalizedText"
+                "$ref": "#/components/schemas/AuthoredLocalizedText"
               }
             },
             "required": [
@@ -542,7 +610,7 @@
                 "$ref": "#/components/schemas/Id"
               },
               "terms": {
-                "$ref": "#/components/schemas/LocalizedText"
+                "$ref": "#/components/schemas/AuthoredLocalizedText"
               }
             },
             "required": [
@@ -672,7 +740,7 @@
             ]
           },
           "content": {
-            "$ref": "#/components/schemas/PolicyContent"
+            "$ref": "#/components/schemas/StoredPolicyContent"
           },
           "approvalRef": {
             "anyOf": [
@@ -4749,7 +4817,7 @@
         "properties": {
           "zh": {
             "type": "string",
-            "minLength": 1,
+            "minLength": 0,
             "maxLength": 4000
           },
           "en": {
@@ -4759,7 +4827,7 @@
           },
           "vi": {
             "type": "string",
-            "minLength": 1,
+            "minLength": 0,
             "maxLength": 4000
           },
           "id": {
@@ -4794,7 +4862,8 @@
           }
         },
         "required": [],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "When copy is supplied, English and the configured operating languages are required. Blank optional languages fall back to English only when the complete language group is blank."
       },
       "DraftAudience": {
         "type": "object",

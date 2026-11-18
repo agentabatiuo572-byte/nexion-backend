@@ -680,6 +680,12 @@ function check(doc, fixture, sql) {
   assert.deepEqual(uniqueColumns(sql, 'uk_promotion_reversal'), ['obligation_id','refund_no']);
   assert.deepEqual(uniqueColumns(sql, 'uk_promotion_disposition'), ['obligation_id','basis_type','basis_ref']);
   assert(doc.components.schemas.PromotionContract.required.includes('activityLimit'), 'Published activity-wide order capacity is mandatory');
+  const englishOnly = {en: 'English copy'};
+  validate(englishOnly, doc.components.schemas.DraftLocalizedText, doc, fixture);
+  validate(englishOnly, doc.components.schemas.AuthoredLocalizedText, doc, fixture);
+  assert.throws(() => validate(englishOnly, doc.components.schemas.LocalizedText, doc, fixture),
+    undefined, 'Stored and delivered text still has three values');
+  assert.equal(doc.components.schemas.Policy.properties.content.$ref, '#/components/schemas/StoredPolicyContent');
   assert(sql.includes('reserved_orders BIGINT NOT NULL DEFAULT 0') && sql.includes('used_orders BIGINT NOT NULL DEFAULT 0'));
   assert(sql.includes('chk_promotion_activity_count'), 'Activity count persists independently of beneficiary usage');
   for (const shape of doc.components.schemas.PublicRewardSpec.oneOf) {

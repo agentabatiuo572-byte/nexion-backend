@@ -7,6 +7,7 @@ import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.growth.dto.GenesisRaffleRequest;
 import ffdd.opsconsole.growth.dto.GenesisRaffleRequest.Prize;
 import ffdd.opsconsole.platform.application.A2RuntimePolicy;
+import ffdd.opsconsole.platform.application.PlatformExperienceConfigService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import ffdd.opsconsole.content.domain.MessageTranslations;
@@ -23,6 +24,8 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.*;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -43,6 +46,8 @@ public class GenesisRaffleService {
     private final A2RuntimePolicy a2;
     @lombok.NonNull
     private final TestCloudActivationAdmission testCloudAdmission;
+    @Autowired @Lazy
+    private PlatformExperienceConfigService experience;
     private final SecureRandom random = new SecureRandom();
     private static final String DRAW_WITH_TRANSLATIONS = "SELECT d.*, t.title_translations_json FROM nx_genesis_raffle_draw d "
             + "LEFT JOIN nx_genesis_raffle_translation t ON t.draw_id=d.draw_id ";
@@ -139,6 +144,22 @@ public class GenesisRaffleService {
     }
     public ApiResult<Map<String,Object>> admin(){return ApiResult.ok(Map.of("draws",db.rows(DRAW_WITH_TRANSLATIONS + "ORDER BY d.created_at DESC LIMIT 50").stream().map(row->view(row,null,null)).toList()));}
 
+    GenesisRaffleRequest completeAuthoredCopy(GenesisRaffleRequest request) {
+        if(request==null||request.prizes()==null||request.prizes().stream().anyMatch(Objects::isNull))return request;
+        var required=experience==null?List.of("en"):experience.operatingLanguages();
+        boolean copyZh=!required.contains("zh")&&text(request.titleZh()).isBlank()
+                &&request.prizes().stream().allMatch(prize->text(prize.nameZh()).isBlank());
+        boolean copyVi=!required.contains("vi")&&text(request.titleVi()).isBlank()
+                &&request.prizes().stream().allMatch(prize->text(prize.nameVi()).isBlank());
+        if(!copyZh&&!copyVi)return request;
+        var completed=request.prizes().stream().map(prize->new Prize(prize.id(),
+                copyZh?prize.nameEn():prize.nameZh(),prize.nameEn(),copyVi?prize.nameEn():prize.nameVi(),
+                prize.rewardType(),prize.amount(),prize.quantity(),prize.productNo(),prize.nameTranslations())).toList();
+        return new GenesisRaffleRequest(request.id(),request.expectedRevision(),request.enabled(),
+                copyZh?request.titleEn():request.titleZh(),request.titleEn(),copyVi?request.titleEn():request.titleVi(),
+                request.startsAt(),request.drawAt(),completed,request.reason(),request.titleTranslations());
+    }
+
     static void validate(GenesisRaffleRequest request) {
         if(request==null||request.id()==null||!request.id().matches("[A-Za-z0-9_-]{1,64}"))throw new BizException(422,"RAFFLE_ID_INVALID");
         for(String title:Arrays.asList(request.titleZh(),request.titleEn(),request.titleVi()))
@@ -176,7 +197,7 @@ public class GenesisRaffleService {
     }
     @Transactional(rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> save(String id,GenesisRaffleRequest request,boolean create){
-        return save(id,request,create,false,false);
+        return save(id,completeAuthoredCopy(request),create,false,false);
     }
     @Transactional(rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> previewOpen(String id,GenesisRaffleRequest request){

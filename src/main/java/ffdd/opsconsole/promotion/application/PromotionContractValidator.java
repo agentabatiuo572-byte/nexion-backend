@@ -2,16 +2,23 @@ package ffdd.opsconsole.promotion.application;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ffdd.opsconsole.platform.application.PlatformExperienceConfigService;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.*;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
+import static ffdd.opsconsole.promotion.domain.PromotionValues.map;
+import static ffdd.opsconsole.promotion.domain.PromotionValues.text;
 
 @Component
 public class PromotionContractValidator {
     private final ObjectMapper json;
     private final JsonNode schemas;
+    @Autowired @Lazy
+    private PlatformExperienceConfigService experience;
     public PromotionContractValidator(ObjectMapper json) {
         this.json=json;
         try(var stream=getClass().getResourceAsStream("/promotion/contract-schemas.json")) {
@@ -26,6 +33,50 @@ public class PromotionContractValidator {
     /** Read compatibility only; write commands continue to call the strict current schema above. */
     public void validateRecorded(String schema,Object original) {
         validate(schema,ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView.validationView(original));
+    }
+
+    /** Draft fields can be saved incrementally. Check each language across the fields in this save. */
+    Map<String,Object> completeAuthoredCopy(Map<String,Object> content, String... fields) {
+        return completeAuthoredCopy(content, Map.of(), Set.of(), fields);
+    }
+
+    Map<String,Object> completeAuthoredCopy(Map<String,Object> content, Map<String,Object> previous,
+            Set<String> submitted, String... fields) {
+        var result = new LinkedHashMap<>(content);
+        Map<String,Map<String,Object>> texts = new LinkedHashMap<>();
+        for (String field : fields) {
+            if (content.get(field) == null) continue;
+            var localized = map(content.get(field));
+            if (localized.isEmpty()) continue;
+            for (String locale : List.of("en","zh","vi")) {
+                if (localized.get(locale) instanceof String text && text.isBlank()) localized.remove(locale);
+            }
+            if (!localized.isEmpty()) texts.put(field, localized);
+            result.put(field, localized);
+        }
+        if (texts.isEmpty()) return result;
+        var required = experience == null ? List.of("en") : experience.operatingLanguages();
+        for (String locale : List.of("en","zh","vi")) {
+            if (!required.contains(locale) && !Collections.disjoint(submitted, texts.keySet())
+                    && Arrays.stream(fields).filter(field -> previous.get(field) instanceof Map)
+                        .map(field -> map(previous.get(field)))
+                        .allMatch(prior -> text(prior.get(locale)).strip().equals(text(prior.get("en")).strip()))) {
+                // An untouched English copy is not a submitted translation in a partial draft update.
+                texts.forEach((field, localized) -> {
+                    if (!submitted.contains(field)) localized.remove(locale);
+                });
+            }
+            boolean useTranslation = required.contains(locale) || texts.values().stream().anyMatch(localized -> localized.containsKey(locale));
+            for (var field : texts.entrySet()) {
+                var localized = field.getValue();
+                if (useTranslation) {
+                    if (!localized.containsKey(locale)) fail("$." + field.getKey() + "." + locale);
+                } else {
+                    localized.put(locale, localized.get("en"));
+                }
+            }
+        }
+        return result;
     }
     private void fail(String field) {throw new BizException(422,"PROMOTION_FIELD_INVALID:"+field);}
     private boolean matches(JsonNode value,JsonNode schema,String path) {

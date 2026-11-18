@@ -125,7 +125,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             "/pages/team/commissions",
             "/pages/learn/courses",
             "/pages/genesis/marketplace");
-    private static final String LOCALIZED_CONTENT_KEY = "growth.content.localized";
+    private static final String LOCALIZED_CONTENT_KEY = H4EventRuleService.LOCALIZED_CONTENT_KEY;
     /** H3 config objects exposed by the task read; only these keys can carry pending approval metadata. */
     private static final List<String> H3_PENDING_CONFIG_KEYS = List.of(
             "dayOne.triReward", "weekly.mult.P1", "weekly.mult.P2", "weekly.mult.P3",
@@ -1123,11 +1123,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             }
             // Direct creation as ongoing is publication too; use the same gate as a status transition.
             if ("ongoing".equals(state)) {
-                List<Map<String, Object>> missing = eventLocalizedContentGaps(id);
-                if (!missing.isEmpty()) {
-                    return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(),
-                            "EVENT_LOCALIZED_CONTENT_INCOMPLETE", Map.of("missing", missing));
-                }
+                var localized = eventPublicationContent(id, false);
+                if (localized != null) return localized;
             }
             if (!H4EventRuleService.CODES.contains(id)) {
                 return validation("EVENT_CODE_UNSUPPORTED");
@@ -2641,13 +2638,9 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         if (!validTransition) {
             return validation("EVENT_STATUS_TRANSITION_INVALID");
         }
-        // 转入 ongoing 对用户发布，三语文案必须显式配置在 growth.content.localized。
         if ("ongoing".equals(status)) {
-            List<Map<String, Object>> missing = eventLocalizedContentGaps(id);
-            if (!missing.isEmpty()) {
-                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(),
-                        "EVENT_LOCALIZED_CONTENT_INCOMPLETE", Map.of("missing", missing));
-            }
+            var localized = eventPublicationContent(id, false);
+            if (localized != null) return localized;
         }
         BigDecimal openingReward = "ongoing".equals(status) && !hasRule && legacyEventRewardWindow(id, current)
                 ? legacyEventCashAmount(current) : BigDecimal.ZERO;
@@ -2666,8 +2659,15 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 && coverageBelowRedline()) {
             return coverageRedline();
         }
+        if ("ongoing".equals(status)) {
+            var localized = eventPublicationContent(id, true);
+            if (localized != null) return localized;
+        }
         if (!"ongoing".equals(status) && hasRule) h4EventRules.stop(id);
         if (!updateBusinessEventStatus(id, status)) {
+            if ("ongoing".equals(status)) {
+                throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "QUEST_EVENT_BUSINESS_TABLE_UPDATE_FAILED");
+            }
             return validation("QUEST_EVENT_BUSINESS_TABLE_UPDATE_FAILED");
         }
         if (!"ongoing".equals(status) && eventFeatured(id)) {
@@ -4320,12 +4320,15 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         }
         GrowthQuestEventMapper mapper = questEventMapper.get();
         if (!"H4_EVENT".equals(mapper.lockGrowthMutation("H4_EVENT"))) return validation("H4_EVENT_MUTEX_UNAVAILABLE");
+        ensureQuestEventSeedData();
+        var event = mapper.lockEventForMutation(eventCode);
+        if (event == null || truthy(event.get("deleted"))) return validation("EVENT_NOT_FOUND");
         mapper.ensureH3ConfigMutex();
         if (!"H3_CONFIG".equals(mapper.lockH3ConfigMutex())) return validation("H3_CONFIG_LOCK_UNAVAILABLE");
-        ensureQuestEventSeedData();
-        if (mapper.countById(eventCode) != 1L) return validation("EVENT_NOT_FOUND");
+        boolean allowClear = intValue(event.get("status"), 0) == 0
+                && !(h4EventRules == null ? List.of("en") : h4EventRules.operatingLanguages()).contains(locale);
         return updateLocalizedContent("event", eventCode, field, locale,
-                "content.event." + eventCode + "." + field + "." + locale, idempotencyKey, request, false);
+                "content.event." + eventCode + "." + field + "." + locale, idempotencyKey, request, allowClear);
     }
 
     private List<Map<String, Object>> trialProductOptions() {
@@ -6503,20 +6506,18 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         return new LinkedHashMap<>();
     }
 
-    /** 活动发布前缺少的语言文案。 */
-    private List<Map<String, Object>> eventLocalizedContentGaps(String eventCode) {
-        Map<String, Object> item = eventLocalizedContent(eventCode);
-        List<Map<String, Object>> missing = new ArrayList<>();
-        for (String locale : H4EventRuleService.REQUIRED_EVENT_LOCALES) {
-            Map<String, Object> languages = localizedBranch(item, locale);
-            for (String field : H4EventRuleService.REQUIRED_EVENT_FIELDS) {
-                Object translated = languages.get(field);
-                if (!(translated instanceof String value) || !StringUtils.hasText(value)) {
-                    missing.add(row("eventCode", eventCode, "field", field, "locale", locale));
-                }
-            }
+    private ApiResult<Map<String, Object>> eventPublicationContent(String eventCode, boolean persist) {
+        var localized = h4EventRules == null
+                ? H4EventRuleService.localizedGaps(eventLocalizedContent(eventCode), List.of("en"))
+                : h4EventRules.checkLocalizedContent(eventCode, persist);
+        if (localized.complete()) return null;
+        var details = row("missing", localized.missing().stream()
+                .map(gap -> row("eventCode", eventCode, "field", gap.field(), "locale", gap.locale())).toList());
+        if (!localized.incomplete().isEmpty()) {
+            details.put("incomplete", localized.incomplete().stream()
+                    .map(gap -> row("eventCode", eventCode, "field", gap.field(), "locale", gap.locale())).toList());
         }
-        return missing;
+        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "EVENT_LOCALIZED_CONTENT_INCOMPLETE", details);
     }
 
     private Map<String, Object> eventLocalizedContent(String eventCode) {
