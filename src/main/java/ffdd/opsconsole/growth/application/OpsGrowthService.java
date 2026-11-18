@@ -2645,7 +2645,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             return validation("EVENT_STATUS_TRANSITION_INVALID");
         }
         if ("ongoing".equals(status)) {
-            var localized = eventPublicationContent(id, approved && !preview, eventPublicationFields(current, rule));
+            var localized = eventPublicationContent(id, approved && !preview,
+                    eventPublicationFields(current.get("targetType"), current.get("rewardType"), current.get("rewardAmount"), rule));
             if (localized != null) return localized;
         }
         BigDecimal openingReward = "ongoing".equals(status) && !hasRule && legacyEventRewardWindow(id, current)
@@ -3939,9 +3940,12 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     }
 
     private List<Map<String, Object>> questEventsList(Map<String, Object> localized) {
+        var required = localized == null || h4EventRules == null ? List.of("en") : h4EventRules.operatingLanguages();
         return questEventRows().stream()
                 .map(row -> {
                     Map<String, Object> copy = new LinkedHashMap<>(row);
+                    copy.remove("rewardType");
+                    copy.remove("rewardAmount");
                     String id = copy.get("id").toString();
                     copy.put("state", eventStatus(id));
                     copy.put("reward", eventReward(id));
@@ -3961,10 +3965,18 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                             // supports && hasRule is false. Null means the rule row was not read.
                             copy.put("rewardCopyOnly",hasRule instanceof Boolean present?present:null);
                         }
-                        if (localized != null) {
-                            copy.putAll(h4EventRules.appRewardPresentation(id, h4EventRules.find(id, false),
-                                    localizedBranch(localized, id)));
+                    }
+                    if (localized != null) {
+                        var rule = h4EventRules == null ? null : h4EventRules.find(id, false);
+                        var authored = localizedBranch(localized, id);
+                        if (h4EventRules != null) {
+                            copy.putAll(h4EventRules.appRewardPresentation(id, rule, authored));
                         }
+                        var fields = eventPublicationFields(row.get("kind"), row.get("rewardType"), row.get("rewardAmount"), rule);
+                        var readiness = H4EventRuleService.localizedGaps(authored, required, fields);
+                        copy.put("copyReadiness", Map.of(
+                                "missing", readiness.missing().stream().map(H4EventRuleService.ContentGap::path).toList(),
+                                "incomplete", readiness.incomplete().stream().map(H4EventRuleService.ContentGap::path).toList()));
                     }
                     return copy;
                 })
@@ -3988,6 +4000,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                     event.put("state", stringValue(row.get("state"), "ongoing"));
                     event.put("reward", stringValue(row.get("reward"), "0 UVT"));
                     event.put("rewardName", stringValue(row.get("rewardName"), ""));
+                    event.put("rewardType", row.get("rewardType"));
+                    event.put("rewardAmount", row.get("rewardAmount"));
                     event.put("description", stringValue(row.get("description"), ""));
                     event.put("featured", truthy(row.get("featured")));
                     event.put("trackable", truthy(row.get("trackable")));
@@ -6528,10 +6542,11 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         return new LinkedHashMap<>();
     }
 
-    private static List<String> eventPublicationFields(Map<String, Object> event, Map<String, Object> rule) {
-        String kind = String.valueOf(rule == null ? event.get("targetType") : rule.get("kind")).toLowerCase(Locale.ROOT);
-        String asset = Objects.toString(event.get("rewardType"), "").toUpperCase(Locale.ROOT);
-        return H4EventRuleService.publicationFields(kind, rule != null, asset, event.get("rewardAmount"));
+    private static List<String> eventPublicationFields(Object targetType, Object rewardType, Object rewardAmount,
+            Map<String, Object> rule) {
+        String kind = String.valueOf(rule == null ? targetType : rule.get("kind")).toLowerCase(Locale.ROOT);
+        String asset = Objects.toString(rewardType, "").toUpperCase(Locale.ROOT);
+        return H4EventRuleService.publicationFields(kind, rule != null, asset, rewardAmount);
     }
 
     private ApiResult<Map<String, Object>> eventPublicationContent(String eventCode, boolean approved, List<String> fields) {
@@ -6561,7 +6576,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             String eventCode, String operator, Map<String, Object> operation) {
         // The caller holds the H4 mutex and event row lock. H3 shares the localized config row.
         var rule = h4EventRules == null ? null : h4EventRules.find(eventCode, false);
-        var fields = eventPublicationFields(requireEventForMutation(eventCode), rule);
+        var current = requireEventForMutation(eventCode);
+        var fields = eventPublicationFields(current.get("targetType"), current.get("rewardType"), current.get("rewardAmount"), rule);
         var mapper = questEventMapper.orElseThrow();
         mapper.ensureH3ConfigMutex();
         if (!"H3_CONFIG".equals(mapper.lockH3ConfigMutex())) throw new BizException(409, "H3_CONFIG_LOCK_UNAVAILABLE");
@@ -6576,7 +6592,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             var translation = localizedBranch(event, locale);
             if (fields.stream().anyMatch(field -> H4EventRuleService.hasCopy(translation.get(field)))) continue;
             for (String field : fields) {
-                String expected = String.valueOf(translation.getOrDefault(field, ""));
+                String expected = Objects.toString(translation.get(field), null);
                 writeDerivedEventCell(root, eventCode, field, locale, (String) english.get(field), expected, operator, operation);
             }
         }
@@ -6615,8 +6631,13 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         var root = eventCopy ? lockLocalizedContent() : new LinkedHashMap<>(localizedContent());
         var operation = Map.<String, Object>of("reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim());
         var previousEvent = eventCopy ? localizedBranch(localizedBranch(root, "event"), code) : Map.<String, Object>of();
-        String failure = writeLocalizedCell(root, cell, value,
-                previous -> expectedTextMatches(request.expectedValue(), previous), request.operator(), operation);
+        String expectedValue = request.expectedValue();
+        Predicate<String> expected = eventCopy
+                ? previous -> "__MISSING__".equals(expectedValue) ? AuthoringWhitespace.isBlank(previous)
+                        : expectedValue != null && expectedValue.equals(previous)
+                : previous -> expectedTextMatches(expectedValue, previous);
+        String failure = writeLocalizedCell(root, cell, value, expected, request.operator(), operation);
+        if (eventCopy && "CONTENT_LOCALE_STALE".equals(failure)) return ApiResult.fail(409, failure);
         if (failure != null) return validation(failure);
         if (eventCopy && "en".equals(locale)) {
             followEventEnglish(root, previousEvent, cell, value, request.operator(), operation);
@@ -6655,7 +6676,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         for (String field : H4EventRuleService.REQUIRED_EVENT_FIELDS) {
             if (translation.containsKey(field)) {
                 writeDerivedEventCell(root, cleared.code(), field, cleared.locale(), "",
-                        String.valueOf(translation.get(field)), operator, clear);
+                        Objects.toString(translation.get(field), null), operator, clear);
             }
         }
     }
@@ -6670,7 +6691,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     private void writeDerivedEventCell(Map<String, Object> root, String code, String field, String locale,
             String value, String expected, String operator, Map<String, Object> operation) {
         var cell = new LocalizedCell("event", code, field, locale, "content.event." + code + "." + field + "." + locale);
-        String failure = writeLocalizedCell(root, cell, value, expected::equals, operator, operation);
+        String failure = writeLocalizedCell(root, cell, value, previous -> Objects.equals(expected, previous), operator, operation);
         if (failure != null) throw new BizException(422, failure);
     }
 
@@ -6679,9 +6700,11 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         var entities = localizedBranch(root, cell.entity());
         var item = localizedBranch(entities, cell.code());
         var languages = localizedBranch(item, cell.locale());
-        String oldValue = String.valueOf(languages.getOrDefault(cell.field(), ""));
+        String oldValue = "event".equals(cell.entity())
+                ? Objects.toString(languages.get(cell.field()), null)
+                : String.valueOf(languages.getOrDefault(cell.field(), ""));
         if (!expected.test(oldValue)) return "CONTENT_LOCALE_STALE";
-        if (oldValue.equals(value) && !(value.isEmpty() && languages.containsKey(cell.field()))) return "CONTENT_LOCALE_NO_CHANGE";
+        if (value.isEmpty() ? !languages.containsKey(cell.field()) : value.equals(oldValue)) return "CONTENT_LOCALE_NO_CHANGE";
         if (value.isEmpty()) languages.remove(cell.field()); else languages.put(cell.field(), value);
         if (languages.isEmpty()) item.remove(cell.locale()); else item.put(cell.locale(), languages);
         entities.put(cell.code(), item);
