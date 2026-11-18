@@ -71,6 +71,21 @@ final class H4TicketReviewText {
         return changes.isEmpty() ? null : String.join("；", changes);
     }
 
+    static String legacyRewardChange(ObjectMapper mapper, Object previous, Object proposed, boolean before) {
+        JsonNode oldState = mapper.valueToTree(previous);
+        JsonNode newState = mapper.valueToTree(proposed);
+        if (oldState == null || newState == null) return null;
+        String oldAsset = oldState.path("rewardType").asText("").toUpperCase(java.util.Locale.ROOT);
+        String newAsset = newState.path("rewardType").asText("").toUpperCase(java.util.Locale.ROOT);
+        Set<String> assets = Set.of("USDT", "UVT", "NEX");
+        if (!assets.contains(oldAsset) || !assets.contains(newAsset)) return null;
+        var oldAmount = decimal(oldState.path("rewardAmount"));
+        var newAmount = decimal(newState.path("rewardAmount"));
+        if (oldAmount == null || newAmount == null) return null;
+        return "活动奖励：" + (before ? oldAmount : newAmount).stripTrailingZeros().toPlainString()
+                + " " + (before ? oldAsset : newAsset);
+    }
+
     private static java.math.BigDecimal decimal(JsonNode value) {
         if (!value.isNumber() && !value.isTextual()) return null;
         try {

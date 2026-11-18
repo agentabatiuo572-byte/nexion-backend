@@ -498,7 +498,9 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             SELECT binding_code bindingCode, producer, event_type eventType, quest_code questCode,
                    user_id_field userIdField, status,
                    EXISTS (SELECT 1 FROM nx_mission m WHERE m.mission_code=b.quest_code
-                       AND m.status IN (0,1) AND m.is_deleted=0) AS targetInTaskCatalog
+                       AND m.status IN (0,1) AND m.is_deleted=0) AS targetInTaskCatalog,
+                   EXISTS (SELECT 1 FROM nx_mission m WHERE m.mission_code=b.quest_code
+                       AND m.status=1 AND m.is_deleted=0) AS targetActiveInTaskCatalog
               FROM nx_growth_quest_event_binding b WHERE b.is_deleted=0 ORDER BY b.id
             """)
     List<Map<String, Object>> questEventBindings();

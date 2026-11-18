@@ -413,12 +413,14 @@ public class OpsReferralRewardService {
                         long nextVersion = Math.addExact(currentVersion, 1L);
                         boolean startsNewRewardPolicy = ("enabled".equals(paramKey) && !Boolean.parseBoolean(before)
                                 && Boolean.parseBoolean(value)) || !"enabled".equals(paramKey);
+                        Instant policyChangeAt = clock.instant();
                         Long pendingBeforePolicyChange = null;
                         if (startsNewRewardPolicy && config.activeValue(EFFECTIVE_AT_KEY).isPresent()) {
-                            pendingBeforePolicyChange = mapper.totalPending(effectiveAtRequired(), 0, "risk_bucket".equals(lockMode()));
+                            pendingBeforePolicyChange = mapper.totalPendingBefore(effectiveAtRequired(),
+                                    LocalDateTime.ofInstant(policyChangeAt, DATABASE_ZONE), 0, "risk_bucket".equals(lockMode()));
                         }
                         if (startsNewRewardPolicy) {
-                            config.upsertAdminValue(EFFECTIVE_AT_KEY, clock.instant().toString(), "DATETIME", "GROWTH_REFERRAL",
+                            config.upsertAdminValue(EFFECTIVE_AT_KEY, policyChangeAt.toString(), "DATETIME", "GROWTH_REFERRAL",
                                     "H8 reward policy version " + nextVersion
                                             + " effective time; earlier pending referrals are never repriced");
                         } else if (config.activeValue(EFFECTIVE_AT_KEY).isEmpty()) {

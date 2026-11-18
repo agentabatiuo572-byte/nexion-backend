@@ -152,6 +152,10 @@ public class OpsPlatformParamRegistryService {
                 ? "这个敏感参数在「" + owner.label() + "」设置；这里只显示是否已配置，不显示具体值。"
                 : switch (canonicalKey) {
                     case "growth.quest.day_one.eligibility_hours" -> "新手任务完成期限（小时）；由新手任务配置读取。";
+                    case "growth.quest.day_one.window_ms" -> "新手任务窗口的说明文字，不改变完成期限。";
+                    case "wallet.exchange.min_usdt" -> "以 USDT 为来源资产时的最小兑换额。";
+                    case "wallet.exchange.min_nex" -> "以 UVT 为来源资产时的最小兑换额。";
+                    case "platform.experience.interface_languages" -> "公开界面可选语言；与运营内容必填语言范围分别配置。";
                     case "wallet.exchange.queue_mode" -> "额度不足的订单按该策略进入人工处理队列或拒绝。";
                     case "wallet.exchange.user_daily_cap_usdt" -> "单用户日兑换额度，单位 USDT；按当前兑换业务日累计。";
                     case "wallet.exchange.platform_daily_cap_usdt" -> "全平台日兑换额度，单位 USDT；用完后按超额策略处理。";
