@@ -21,7 +21,7 @@ Legacy distributed service directories, the old `nexion-common` module, and the 
 ```
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_ops_console_monolith.ps1
+powershell -ExecutionPolicy Bypass -File D:\workspace\uvel\nexion-backend\scripts\start_ops_console_monolith.ps1
 ```
 
 The local monolith launcher enables Nova's local RAG adapter by default only for the `dev`
@@ -31,8 +31,8 @@ from Qdrant and answers with local Ollama/Gemma. No cloud AI account or API key 
 Override the model or disable the adapter explicitly:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_ops_console_monolith.ps1 -NovaAiModel '<installed-model>'
-powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_ops_console_monolith.ps1 -EnableLocalNovaAi $false
+powershell -ExecutionPolicy Bypass -File D:\workspace\uvel\nexion-backend\scripts\start_ops_console_monolith.ps1 -NovaAiModel '<installed-model>'
+powershell -ExecutionPolicy Bypass -File D:\workspace\uvel\nexion-backend\scripts\start_ops_console_monolith.ps1 -EnableLocalNovaAi $false
 ```
 
 Direct Maven launches remain fail-closed (`NEXION_NOVA_AI_MODE=DISABLED`) unless the local
@@ -51,7 +51,7 @@ or system properties.
 For a controlled pre-deployment step (including `-WhatIf`), run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\apply_startup_schema_migrations.ps1
+powershell -ExecutionPolicy Bypass -File D:\workspace\uvel\nexion-backend\scripts\apply_startup_schema_migrations.ps1
 ```
 
 Direct Maven run:
@@ -95,7 +95,7 @@ Initialize or refresh local schema and system baseline data with:
 
 ```powershell
 if ([string]::IsNullOrWhiteSpace($env:MYSQL_PWD)) { throw 'Set MYSQL_PWD in the deployment environment before running mysql.' }
-& '<mysql-bin>\mysql.exe' -h 127.0.0.1 -P 3306 -u <mysql-user> -e "source D:/workspace/nexion-backend/scripts/schema.sql; source D:/workspace/nexion-backend/scripts/seed.sql;"
+& '<mysql-bin>\mysql.exe' -h 127.0.0.1 -P 3306 -u <mysql-user> -e "source D:/workspace/uvel/nexion-backend/scripts/schema.sql; source D:/workspace/uvel/nexion-backend/scripts/seed.sql;"
 ```
 
 `scripts/schema.sql is only the baseline schema`; it intentionally does not replace
@@ -130,7 +130,7 @@ For an existing database, run dated migrations in order before deploying the mat
 
 ```powershell
 if ([string]::IsNullOrWhiteSpace($env:MYSQL_PWD)) { throw 'Set MYSQL_PWD in the deployment environment before running mysql.' }
-& '<mysql-bin>\mysql.exe' --default-character-set=utf8mb4 -h 127.0.0.1 -P 3306 -u <mysql-user> <database-name> -e "source D:/workspace/nexion-backend/scripts/migrations/20260711_rhythm_configurable.sql; source D:/workspace/nexion-backend/scripts/migrations/20260712_i1_copy_schema.sql; source D:/workspace/nexion-backend/scripts/migrations/20260712_rbac_classic.sql;"
+& '<mysql-bin>\mysql.exe' --default-character-set=utf8mb4 -h 127.0.0.1 -P 3306 -u <mysql-user> <database-name> -e "source D:/workspace/uvel/nexion-backend/scripts/migrations/20260711_rhythm_configurable.sql; source D:/workspace/uvel/nexion-backend/scripts/migrations/20260712_i1_copy_schema.sql; source D:/workspace/uvel/nexion-backend/scripts/migrations/20260712_rbac_classic.sql;"
 ```
 
 ## Module Boundaries

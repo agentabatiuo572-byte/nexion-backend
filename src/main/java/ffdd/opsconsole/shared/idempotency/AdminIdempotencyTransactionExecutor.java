@@ -281,6 +281,12 @@ public class AdminIdempotencyTransactionExecutor {
                 return Claim.replayed(readJson(record.getResponseJson(), responseType));
             }
         }
+        if (m3ConversationSendScope(record.getScope()) && STATUS_FAILED.equals(record.getStatus())
+                && StringUtils.hasText(record.getResponseJson())) {
+            if (!requestHash.equals(record.getRequestHash())) throw conflict("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+            // An M3 conversation send that was rejected before any message write must never execute again under the same key.
+            return Claim.replayed(readJson(record.getResponseJson(), responseType));
+        }
         if (!STATUS_FAILED.equals(record.getStatus())) {
             return Claim.replayed(replay(record, requestHash, responseType));
         }
@@ -364,6 +370,11 @@ public class AdminIdempotencyTransactionExecutor {
     /** A1 permission and A7 menu keep their original execute(false) 24h TTL; origin is only provenance. */
     private static boolean originAddsRetention(String scope) {
         return !("A1_PERMISSION_REGISTER".equals(scope) || scope.startsWith("A7_MENU_"));
+    }
+
+    private static boolean m3ConversationSendScope(String scope) {
+        return scope != null && (scope.startsWith("M3_CONVERSATION_REPLY:")
+                || scope.startsWith("M3_CONVERSATION_INITIATE:"));
     }
 
     private String writeJson(Object value) {
