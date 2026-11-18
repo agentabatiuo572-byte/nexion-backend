@@ -493,7 +493,8 @@ public class OpsNovaService {
             return ApiResult.fail(404, "NOVA_CHANNEL_NOT_FOUND");
         }
         if (!NovaRuntimeAdapterCatalog.fixedSources().containsKey(normalizedKey)
-                && !NovaRuntimeAdapterCatalog.isControlledDynamicSource(request.trigger())) {
+                && !NovaRuntimeAdapterCatalog.isControlledDynamicSource(request.trigger())
+                && !isUnchangedSocialRuntimeTrigger(normalizedKey, current.get().trigger(), request.trigger())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_CHANNEL_RUNTIME_SOURCE_UNSUPPORTED");
         }
         boolean enabled = request.enabled() == null ? current.get().enabled() : request.enabled();
@@ -521,6 +522,20 @@ public class OpsNovaService {
                 "toCtr", updated.ctr(),
                 "enabled", updated.enabled()));
         return ApiResult.ok(updated);
+    }
+
+    /**
+     * The canonical social channel is dispatched by NovaSocialRuntimeService from its real pool and is
+     * intentionally absent from NovaRuntimeAdapterCatalog. Only an existing social channel whose saved
+     * trigger is unchanged may bypass the catalog check for name/cadence edits; blank values never match.
+     */
+    private static boolean isUnchangedSocialRuntimeTrigger(String key, String savedTrigger, String requestedTrigger) {
+        if (!NovaSocialRuntimeService.SOCIAL_CHANNEL.equals(key)
+                || !StringUtils.hasText(savedTrigger)
+                || !StringUtils.hasText(requestedTrigger)) {
+            return false;
+        }
+        return savedTrigger.trim().equals(requestedTrigger.trim());
     }
 
     @Transactional
