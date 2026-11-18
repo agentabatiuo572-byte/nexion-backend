@@ -35,6 +35,7 @@ import ffdd.opsconsole.content.domain.DisclosureDraftView;
 import ffdd.opsconsole.content.application.DisclosureContentHash;
 import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
 import ffdd.opsconsole.content.application.OpsI18nLearningService;
+import ffdd.opsconsole.content.application.OpsTrustDisclosureService;
 import ffdd.opsconsole.device.domain.ComputeConfigRegistry;
 import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.market.facade.GenesisParamPermissions;
@@ -2471,10 +2472,15 @@ public class AuditReplayBusinessPermissionGuard {
                 .findDisclosureVersion(jurisdiction, version).orElse(null);
         if (draft == null || !"draft".equalsIgnoreCase(draft.status())
                 || expectedRevision == null || expectedRevision != draft.revision()
-                || expectedHash.isBlank() || !expectedHash.equals(draft.contentHash())
-                || !expectedHash.equals(DisclosureContentHash.from(
-                        draft, trustDisclosureRepository.listChapters(jurisdiction, version)))) {
+                || expectedHash.isBlank() || !expectedHash.equals(draft.contentHash())) {
             return ApiResult.fail(409, "A2_DISCLOSURE_SNAPSHOT_CHANGED");
+        }
+        var chapters = trustDisclosureRepository.listChapters(jurisdiction, version);
+        if (!expectedHash.equals(DisclosureContentHash.from(draft, chapters))) {
+            return ApiResult.fail(409, "A2_DISCLOSURE_SNAPSHOT_CHANGED");
+        }
+        if (!OpsTrustDisclosureService.hasStoredDisclosureEnglish(draft, chapters)) {
+            return ApiResult.fail(422, "DISCLOSURE_EN_REQUIRED_FOR_SCOPE");
         }
         return ApiResult.ok();
     }

@@ -1550,7 +1550,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                     && !containsUnsafeText(entry.getValue()) && placeholders(english).equals(placeholders(entry.getValue()))));
     }
 
-    private boolean hasStoredDisclosureEnglish(DisclosureDraftView draft, List<DisclosureChapterView> chapters) {
+    public static boolean hasStoredDisclosureEnglish(DisclosureDraftView draft, List<DisclosureChapterView> chapters) {
         return List.of(draft.languageScope().split("\\+")).contains("en") && !isLocalizedBlank(draft.en())
                 && chapters.size() == DISCLOSURE_CHAPTER_NUMBERS.size()
                 && chapters.stream().allMatch(chapter -> DISCLOSURE_CHAPTER_NUMBERS.contains(chapter.no())
@@ -1739,7 +1739,8 @@ public class OpsTrustDisclosureService implements AuditReplayable {
             if (field == null || !StringUtils.hasText(field.key())
                     || !TRUST_FIELD_KEY_PATTERN.matcher(field.key().trim()).matches()
                     || !StringUtils.hasText(field.label()) || field.value() == null
-                    || (!linkField && isLocalizedBlank(field.value()) && !isOptionalBaseLocaleField(field.key()))
+                    || (!linkField && isLocalizedBlank(field.value())
+                        && !LOCALIZED_TRUST_FIELD_PATTERN.matcher(field.key().trim()).matches())
                     || !keys.add(field.key().trim()) || containsUnsafeText(field.key(), field.label())) {
                 return false;
             }
@@ -2110,7 +2111,8 @@ public class OpsTrustDisclosureService implements AuditReplayable {
     }
 
     private static boolean isLocalizedBlank(String value) {
-        return value == null || LOCALIZED_WHITESPACE.matcher(value).matches();
+        // The persisted text is trimmed before it reaches the client.
+        return value == null || LOCALIZED_WHITESPACE.matcher(value.trim()).matches();
     }
 
     private boolean containsUnsafeText(String... values) {
