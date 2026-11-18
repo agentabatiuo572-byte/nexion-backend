@@ -12,6 +12,13 @@ import org.springframework.web.servlet.HandlerMapping;
 public record AdminCommandOrigin(long actorId, String method, String path, String target, String readAuthority,
                                  List<Target> targets) {
     private static final String PURCHASE_PAYMENT_POLICY_PREFIX = "D1:PURCHASE_PAYMENT_POLICY:";
+    private static final String H4_PREFIX = "GROWTH:H4:";
+    private static final java.util.Set<String> H4_DIRECT_OPERATIONS = java.util.Set.of(
+            "EVENT_CREATE", "EVENT_RULE_UPDATE", "EVENT_LOCALIZED_CONTENT_UPDATE", "EVENT_DELETE",
+            "EVENT_REWARD_UPDATE", "EVENT_STATUS_UPDATE", "EVENT_FEATURED_UPDATE",
+            "GENESIS_RAFFLE_CREATE", "GENESIS_RAFFLE_UPDATE", "WHEEL_GUARD_CREATE", "WHEEL_GUARD_UPDATE",
+            "WHEEL_TIER_CREATE", "WHEEL_TIER_UPDATE", "WHEEL_TIER_DELETE", "WHEEL_TIER_RETIRE",
+            "WHEEL_PROBABILITIES_UPDATE");
     public record Target(String action, String domain, String type, String id) {}
     public static AdminCommandOrigin current(String scope) {
         return current(scope, readAuthority(scope), null);
@@ -48,6 +55,9 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (target == null && (scope.startsWith("GROWTH:H2:") || scope.startsWith("K1_WHITELIST_")
                 || scope.startsWith("D3_SENSITIVE_EXPORT_") || scope.startsWith("C2_ACCOUNT_LIST_UPSERT:")
                 || "D3_FORECAST_CONFIG_UPDATE".equals(scope) || "I5_DISCLOSURE_GATE_UPDATE".equals(scope))) target = scope;
+        if (target == null && h4DirectScope(scope)) {
+            target = scope.substring(scope.indexOf(':', H4_PREFIX.length()) + 1);
+        }
         if (target == null && h9CommandScope(scope)) {
             target = scope.startsWith("GROWTH:H9:DEVICE_RANK_UPDATE:")
                     ? scope.substring("GROWTH:H9:DEVICE_RANK_UPDATE:".length()).toLowerCase(java.util.Locale.ROOT) : "PUBLIC_STATS";
@@ -91,7 +101,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (scope.startsWith("E4")) return "device_e4_read";
         if (h1CommandScope(scope)) return "growth_h1_read";
         if (scope.startsWith("H2") || scope.startsWith("GROWTH:H2:")) return "growth_h2_read";
-        if (scope.startsWith("GROWTH:H4:WHEEL_TIER_RETIRE:")) return "growth_h4_read";
+        if (h4DirectScope(scope)) return "growth_h4_read";
         if (scope.startsWith("K1")) return "risk_k1_read";
         if ("J3_ALERT_CONFIG".equals(scope)) return "emergency_j3_read";
         if (scope.startsWith("I3_NOTIFICATION_CAMPAIGN_")) return "content_i3_read";
@@ -131,7 +141,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || purchasePaymentPolicyScope(scope)
                 || scope.startsWith("E2_POOL_") || scope.startsWith("E5_DEVICE_") || scope.startsWith("E6_PHONE_")
                 || scope.startsWith("GROWTH:H2:")
-                || scope.startsWith("GROWTH:H4:WHEEL_TIER_RETIRE:")
+                || h4DirectScope(scope)
                 || "J3_ALERT_CONFIG".equals(scope)
                 || "A1_PERMISSION_REGISTER".equals(scope)
                 || platformRoleMenuWrite(scope)
@@ -156,6 +166,13 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || e3TradeinScope(scope)
                 || fCommandScope(scope)
                 || "A2_COMMAND".equals(scope) || "L_BI_REPORT_CREATE".equals(scope) || scope.startsWith("L_BI_REPORT_ACTION"));
+    }
+
+    static boolean h4DirectScope(String scope) {
+        if (scope == null || !scope.startsWith(H4_PREFIX)) return false;
+        int end = scope.indexOf(':', H4_PREFIX.length());
+        return end > H4_PREFIX.length() && end < scope.length() - 1
+                && H4_DIRECT_OPERATIONS.contains(scope.substring(H4_PREFIX.length(), end));
     }
 
     /** The suffix keeps the writer's audit display name; actorId still comes from the ADMIN principal. */

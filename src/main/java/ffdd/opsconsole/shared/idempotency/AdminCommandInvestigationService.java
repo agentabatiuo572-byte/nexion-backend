@@ -299,6 +299,9 @@ public class AdminCommandInvestigationService {
                 && "E.compute.phoneRisk.settings".equals(fact.getResourceId());
         if ("J3_ALERT_CONFIG".equals(scope)) return "TAMPER_ALERT_CONFIG".equals(fact.getResourceType())
                 && "J3_TAMPER_ALERT_CONFIG_CHANGED".equals(action);
+        if (scope.startsWith("GROWTH:H4:EVENT_CREATE:")) return "GROWTH_EVENT".equals(fact.getResourceType())
+                && "H4_EVENT_CREATED".equals(action)
+                && fact.getResourceId().equalsIgnoreCase(original.getOriginTarget());
         if (scope.startsWith("GROWTH:H4:WHEEL_TIER_RETIRE")) return "WHEEL_CONFIG".equals(fact.getResourceType())
                 && "H4_WHEEL_TIER_RETIRED".equals(action);
         if (scope.startsWith("GROWTH:H1:RHYTHM_PARAM_UPDATE:")) return "GROWTH_RHYTHM".equals(fact.getResourceType())
@@ -759,7 +762,11 @@ public class AdminCommandInvestigationService {
             // Only the origin-backed failure path persists a trusted business reply; a bare
             // FAILED row (or a legacy row without provenance) still proves no business result.
             Integer code = original.getOriginAdminId() == null ? null : businessCode(original.getResponseJson());
-            return code != null && code != 0 ? "REJECTED" : "FAILED";
+            if (code != null && code != 0) return "REJECTED";
+            return AdminCommandOrigin.h4DirectScope(original.getScope()) ? "UNKNOWN" : "FAILED";
+        }
+        if ("CONFIRMED_NOT_EXECUTED".equals(status) && AdminCommandOrigin.h4DirectScope(original.getScope())) {
+            return "NOT_EXECUTED";
         }
         if ("CONFIRMED_REJECTED".equals(status)) return "REJECTED";
         if ("SUCCEEDED".equals(status) || "CONFIRMED_SUCCEEDED".equals(status)) {
