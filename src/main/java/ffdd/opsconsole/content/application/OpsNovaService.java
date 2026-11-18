@@ -123,7 +123,22 @@ public class OpsNovaService {
                         "nx_nova_template",
                         "nx_nova_social_distribution",
                         "nx_nova_social_event",
-                        "nx_notification")));
+                        "nx_notification"),
+                channelRuntimeSources(channels)));
+    }
+
+    /**
+     * Projects only channels this business catalog can resolve. The catalog does not evaluate
+     * social category, retirement or enabled state; absence means only that it did not resolve here.
+     */
+    private List<NovaOverview.ChannelRuntimeSource> channelRuntimeSources(List<NovaChannelView> channels) {
+        return channels.stream()
+                .map(channel -> NovaRuntimeAdapterCatalog.resolve(channel.key(), channel.trigger())
+                        .map(source -> new NovaOverview.ChannelRuntimeSource(
+                                channel.key(), source.eventNames(), source.targeted()))
+                        .orElse(null))
+                .filter(source -> source != null)
+                .toList();
     }
 
     public ApiResult<List<NovaSocialEventView>> socialEvents(String eventType, String status) {
