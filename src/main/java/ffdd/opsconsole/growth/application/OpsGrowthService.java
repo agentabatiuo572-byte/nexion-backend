@@ -3846,6 +3846,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         banner.put("promoBannerConfigurable", false);
         banner.put("promoBannerRetired", true);
         banner.put("promoBannerRetiredReason", OpsErrorCode.RETIRED_FEATURE.name());
+        banner.put("promoBannerConfigNote", "备用卡配置入口已退役；这里仅展示存量，不表示 App 停止显示已有活动。");
         // Same banner row, same daily amount the weekly promo projection turns into product.dailyUsdt.
         banner.put("targetDailyAsset", promoBannerTargetDailyAsset(banner));
         // productType only feeds the judgement above; it is not part of this read and must not leak.

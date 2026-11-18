@@ -99,7 +99,21 @@ public class SupportSessionService {
             throw new BizException(422,"SUPPORT_SESSION_MAINTENANCE_NOT_ALLOWED");
         Hold row=active(assignment.customerId());
         if(row!=null && row.adminId()!=actor) throw new Busy(view(actor,row));
-        if(row!=null && !row.assignmentId().equals(assignment.id())) throw new BizException(409,"SUPPORT_ASSIGNMENT_CHANGED");
+        if(row!=null && !row.assignmentId().equals(assignment.id())) throw new BizException(409,"SUPPORT_RECEPTION_ASSIGNMENT_STALE");
+    }
+
+    @org.springframework.context.event.EventListener
+    public void assignmentChanged(SupportBindingService.SupportAssignmentChanged event) {
+        if (event.current() == null) return;
+        Hold row = active(event.customerId());
+        if (row == null || row.assignmentId().equals(event.current().id())) return;
+        if (row.adminId().equals(event.current().agentAdminId())) {
+            if (sessions.moveToAssignment(event.customerId(), row.assignmentId(), event.current().id(), row.adminId()) != 1) {
+                throw new BizException(409, "SUPPORT_RECEPTION_ASSIGNMENT_STALE");
+            }
+        } else if (sessions.end(event.customerId(), null, "REASSIGNED") == 1) {
+            ended(row, "REASSIGNED");
+        }
     }
 
     public void sent(SupportAssignment assignment,long actor,String name,String role,String no) {

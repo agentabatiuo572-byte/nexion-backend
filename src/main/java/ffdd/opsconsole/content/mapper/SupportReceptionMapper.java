@@ -43,6 +43,14 @@ public interface SupportReceptionMapper {
     void receive(@Param("customer") long customer,@Param("assignment") long assignment,@Param("actor") long actor,
                  @Param("name") String name,@Param("role") String role,@Param("no") String no);
 
+    @Update("""
+        UPDATE nx_support_session_hold SET assignment_id=#{assignment},version=version+1
+         WHERE customer_id=#{customer} AND assignment_id=#{previous} AND holder_admin_id=#{actor}
+           AND ended_at IS NULL
+        """)
+    int moveToAssignment(@Param("customer") long customer,@Param("previous") long previous,
+                         @Param("assignment") long assignment,@Param("actor") long actor);
+
     @Update("UPDATE nx_support_session_hold SET ended_at=COALESCE(#{at},UTC_TIMESTAMP(6)),end_reason=#{reason},version=version+1 WHERE customer_id=#{customer} AND ended_at IS NULL")
     int end(@Param("customer") long customer,@Param("at") LocalDateTime at,@Param("reason") String reason);
 

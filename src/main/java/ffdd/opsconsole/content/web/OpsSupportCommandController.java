@@ -129,12 +129,13 @@ public class OpsSupportCommandController {
         String permission=receipt.getScope().startsWith("M3_")?"service_m3_read":"service_m1_read";
         if(!SupportOwnershipService.hasAuthority(permission)) throw new BizException(403,"SUPPORT_COMMAND_READ_FORBIDDEN");
         if(receipt.getScope().startsWith("SUPPORT_RANDOM:")) return ApiResult.ok(random.recover(key));
-        if(!"SUCCEEDED".equals(receipt.getStatus())) return ApiResult.ok(Map.of("status",receipt.getStatus()));
+        boolean send = receipt.getScope().equals("M3_CONVERSATION_REPLY:"+actor)
+                || receipt.getScope().equals("M3_CONVERSATION_INITIATE:"+actor);
+        boolean rolledBackSend = send && "FAILED".equals(receipt.getStatus()) && receipt.getResponseJson()!=null;
+        if(!"SUCCEEDED".equals(receipt.getStatus()) && !rolledBackSend) return ApiResult.ok(Map.of("status",receipt.getStatus()));
         JsonNode response=json.readTree(receipt.getResponseJson());
         JsonNode rejection=response.path("data");
-        if((receipt.getScope().equals("M3_CONVERSATION_REPLY:"+actor)
-                || receipt.getScope().equals("M3_CONVERSATION_INITIATE:"+actor))
-                && ffdd.opsconsole.content.application.SupportSessionService.SEND_REJECTION_RECEIPT
+        if(send && ffdd.opsconsole.content.application.SupportSessionService.SEND_REJECTION_RECEIPT
                     .equals(rejection.path("receiptType").asText())) {
             JsonNode code=response.path("code");
             long customer=rejection.path("customerId").asLong();
@@ -158,6 +159,7 @@ public class OpsSupportCommandController {
                     "clientMessageId",rejection.path("clientMessageId").textValue(),
                     "businessCode",code.intValue(),"businessReason",response.path("message").textValue()));
         }
+        if (rolledBackSend) return ApiResult.ok(Map.of("status", receipt.getStatus()));
         Set<Long> customers=new TreeSet<>();
         collect(response.path("data"),customers);
         customers.forEach(ownership::lockCustomer);

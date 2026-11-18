@@ -92,7 +92,7 @@ public class AppExchangeService {
                 "platformDailyCapUsdt", number(PLATFORM_CAP, "20000"),
                 "feePct", number(FEE_PCT, "0"), "feeMinUsdt", number(FEE_MIN, "0.50"),
                 "minUsdt", number(MIN_USDT, "1"), "minNex", number(MIN_NEX, "10"),
-                "queueMode", text(QUEUE_MODE, "QUEUE"),
+                "queueMode", text(QUEUE_MODE, "QUEUE"), "queueEstimate", queueEstimate(),
                 "swapEnabled", swapEnabled(), "serverCanonical", true,
                 "source", "G2/G3 server configuration", "sourceEnvironment", "PRODUCTION", "runId", ""));
     }
@@ -419,12 +419,14 @@ public class AppExchangeService {
         int pageSize = Math.max(1, Math.min(requestedPageSize, 100));
         long total = Math.max(0L, mapper.countUserOrdersAt(userId, snapshotId));
         long offset = (long) (pageNum - 1) * pageSize;
+        Map<String, Object> estimate = queueEstimate();
         return linked("caps", caps().getData(), "wallet", linked("usdtAvailable", money(wallet.usdtAvailable()),
                         "nexAvailable", money(wallet.nexAvailable())),
                 "todayUserUsedUsdt", money(mapper.userTodayUsdt(userId)),
                 "todayPlatformUsedUsdt", money(mapper.platformTodayUsdt()),
                 "lifetimeExchangedUsdt", money(mapper.userLifetimeUsdt(userId)),
-                "orders", mapper.userOrdersAt(userId, offset, pageSize, snapshotId),
+                "orders", mapper.userOrdersAt(userId, offset, pageSize, snapshotId).stream().map(row ->
+                        row.withQueueEstimate("QUEUED".equalsIgnoreCase(row.status()) ? estimate : null)).toList(),
                 "ordersPage", linked("total", total, "pageNum", pageNum, "pageSize", pageSize,
                         "snapshotId", Long.toString(snapshotId)),
                 "serverCanonical", true,
@@ -457,7 +459,37 @@ public class AppExchangeService {
 
     private Map<String, Object> orderMap(AppExchangeMapper.ExchangeWrite row) {
         return linked("exchangeNo", row.exchangeNo(), "fromAsset", row.fromAsset(), "toAsset", row.toAsset(),
-                "fromAmount", row.fromAmount(), "toAmount", row.toAmount(), "rate", row.rate(), "status", row.status());
+                "fromAmount", row.fromAmount(), "toAmount", row.toAmount(), "rate", row.rate(), "status", row.status(),
+                "queueEstimate", "QUEUED".equals(row.status()) ? queueEstimate() : null);
+    }
+
+    private Map<String, Object> queueEstimate() {
+        String hours = text("wallet.exchange.queue_eta_hours", "");
+        String english = text("wallet.exchange.queue_eta_copy", "");
+        if (!hours.matches("[1-9][0-9]{0,2}") || !OpsNexMarketService.validQueueEtaCopy(english)) return null;
+        String locale = ffdd.opsconsole.shared.i18n.InterfaceLanguages.baseCode(
+                org.springframework.context.i18n.LocaleContextHolder.getLocale().toLanguageTag());
+        try {
+            var configured = objectMapper.reader()
+                    .with(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                    .readTree(text("platform.experience.operating_languages", "[\"en\"]"));
+            if (configured == null || !configured.isArray()) return null;
+            Set<String> enabled = new java.util.HashSet<>();
+            for (var code : configured) {
+                if (!code.isTextual() || !Set.of("en", "zh", "vi").contains(code.asText()) || !enabled.add(code.asText())) return null;
+            }
+            if (!enabled.contains("en")) return null;
+            String copy = english;
+            for (String language : enabled) {
+                if ("en".equals(language)) continue;
+                String translation = text("wallet.exchange.queue_eta_copy_" + language, "");
+                if (!OpsNexMarketService.validQueueEtaCopy(translation)) return null;
+                if (language.equals(locale)) copy = translation;
+            }
+            return linked("hours", Integer.parseInt(hours), "copy", copy.replace("{hours}", hours));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException invalid) {
+            return null;
+        }
     }
 
     private NormalizedSwap normalize(SwapRequest request) {
