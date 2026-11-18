@@ -118,8 +118,10 @@ public class G4ParamApproval {
         BigDecimal delta = market.genesisParamLiabilityIncrease(paramKey, candidate);
         market.requireCoverageRedline(delta);
         Map<String, Object> review = new LinkedHashMap<>();
-        review.put("before", series + " · " + paramKey + " = " + current);
-        review.put("after", series + " · " + paramKey + " = " + candidate
+        String displayName = OpsNexMarketService.genesisParamDisplayName(paramKey);
+        review.put("displayName", displayName);
+        review.put("before", series + " · " + displayName + " = " + current);
+        review.put("after", series + " · " + displayName + " = " + candidate
                 + " · 确定新增应付 Δ " + delta.toPlainString() + " USDT");
         return review;
     }

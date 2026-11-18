@@ -1711,6 +1711,15 @@ public class OpsAuditCenterService {
 
     private String objectDisplayName(AuditOperationTicketEntity row, AuditReplayCommand command,
             Map<Long, String> displayNames) {
+        if (G4ParamApproval.supports(command)) {
+            var target = G4ParamApproval.target(command);
+            if (target != null && target.id().equals(row.getObjectText())) {
+                String label = ffdd.opsconsole.market.application.OpsNexMarketService.genesisParamDisplayName(target.id());
+                // Only the new ticket format exposes this name; historical snapshots remain unchanged.
+                if (label != null && ("调整创世参数 · " + label).equals(row.getAction())) return label;
+            }
+            return null;
+        }
         if (command == null || command.op() == null || !"A".equalsIgnoreCase(command.domain())) return null;
         if ("a1_account_create".equals(command.op())) {
             return StringUtils.hasText(row.getObjectText()) ? row.getObjectText().trim() : null;
