@@ -181,6 +181,8 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         // Every signed-in console cuts and labels time by the business calendar; only changing it needs platform grants.
         boolean businessCalendarRead = HttpMethod.GET.matches(request.getMethod())
                 && "/api/admin/platform/business-calendar".equals(path);
+        boolean operatingLanguagesRead = HttpMethod.GET.matches(request.getMethod())
+                && "/api/admin/platform/config/operating-languages".equals(path);
         boolean selfAvatarRequest = isSelfAvatarRequest(path, request.getMethod());
         boolean selfInviteRequest = path.equals("/api/admin/content/support-agents/self/invite-code")
                 && (HttpMethod.GET.matches(request.getMethod()) || HttpMethod.POST.matches(request.getMethod()));
@@ -192,7 +194,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
                 && (COMMAND_DISCOVER_PATH.equals(path) || COMMAND_READ_PATH.equals(path));
         boolean dashboardExportRequest = HttpMethod.POST.matches(request.getMethod())
                 && "/api/admin/ops-dashboard/exports".equals(path);
-        if ((reasonPolicyRead || businessCalendarRead || selfAvatarRequest || selfInviteRequest || supportCommandRead
+        if ((reasonPolicyRead || businessCalendarRead || operatingLanguagesRead || selfAvatarRequest || selfInviteRequest || supportCommandRead
                 || commandReceiptStatusRead || commandInvestigationRead || dashboardExportRequest
                 || "/api/admin/auth/activity".equals(path))
                 && !isTrustedAuthenticatedAdmin(authentication)) {
@@ -205,7 +207,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_PASSWORD_CHANGE_REQUIRED");
             return;
         }
-        if (reasonPolicyRead || businessCalendarRead || selfAvatarRequest || selfInviteRequest
+        if (reasonPolicyRead || businessCalendarRead || operatingLanguagesRead || selfAvatarRequest || selfInviteRequest
                 || supportCommandRead || commandReceiptStatusRead || commandInvestigationRead) {
             filterChain.doFilter(request, response);
             return;

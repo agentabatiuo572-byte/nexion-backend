@@ -10,6 +10,8 @@ import ffdd.opsconsole.platform.dto.PlatformConfigResponse;
 import ffdd.opsconsole.platform.dto.PlatformConfigUpdateRequest;
 import ffdd.opsconsole.platform.dto.PlatformExperienceConfigUpdateRequest;
 import ffdd.opsconsole.platform.dto.PlatformExperienceConfigView;
+import java.util.List;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -44,6 +46,12 @@ public class OpsPlatformConfigController {
     @PreAuthorize("hasAuthority('platform_a3_read')")
     public ApiResult<PlatformExperienceConfigView> experience() {
         return experienceConfigService.overview();
+    }
+
+    @GetMapping("/operating-languages")
+    @PreAuthorize("isAuthenticated()")
+    public ApiResult<Map<String, List<String>>> operatingLanguages() {
+        return ApiResult.ok(Map.of("operatingLanguages", experienceConfigService.operatingLanguages()));
     }
 
     @PutMapping("/experience")

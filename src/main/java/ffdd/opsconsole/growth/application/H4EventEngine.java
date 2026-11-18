@@ -77,8 +77,8 @@ public class H4EventEngine {
         if(!"wheel".equals(rule.get("kind"))){
             row.put("rewardType","COMPOSITE");row.put("rewardAmount",0);
             String translated=text(source.get("authoredRewardName"));
-            boolean prefersAuthoredName = "en".equals(locale) || InterfaceLanguages.isAdditional(locale);
-            row.put("rewardName", prefersAuthoredName && !translated.isBlank() ? translated : rewardSummary(r,locale));
+            // Every language shows the reward name ops published for it; the computed summary covers a missing one.
+            row.put("rewardName", !translated.isBlank() ? translated : rewardSummary(r,locale));
         }
         row.remove("authoredRewardName");
         boolean claimed=db.row("SELECT 1 FROM nx_growth_event_claim WHERE event_code=? AND user_id=? AND claim_key='ONCE' AND status='CLAIMED'",code,id)!=null;
