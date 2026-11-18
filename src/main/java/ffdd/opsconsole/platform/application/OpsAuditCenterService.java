@@ -1490,13 +1490,13 @@ public class OpsAuditCenterService {
                         original.put("localized", originalCopy);
                         state = original;
                     }
-                    return objectMapper.writeValueAsString(state);
+                    return H4TicketReviewText.render(objectMapper, objectMapper.writeValueAsString(state));
                 }
                 var values = objectMapper.<com.fasterxml.jackson.databind.node.ObjectNode>valueToTree(command.params().get("values"));
                 if (command.params().containsKey("eventCopy")) {
                     values.set("localized", objectMapper.valueToTree(command.params().get("eventCopy")));
                 }
-                return objectMapper.writeValueAsString(values);
+                return H4TicketReviewText.render(objectMapper, objectMapper.writeValueAsString(values));
             } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
                 throw new BizException(422, "H4_PROPOSAL_INVALID");
             }

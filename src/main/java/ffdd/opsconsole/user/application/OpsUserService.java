@@ -240,7 +240,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                     "lock",
                     "lockShort",
                     "短锁",
-                    "密码或两步验证连错触发，锁定期间一切登录和验证码都拒绝",
+                    "达到短锁阈值后，密码登录和登录验证码发起入口按当前锁状态拒绝；不代表注册或找回密码验证码一律停用",
                     "auth.risk.login_lock_threshold",
                     "次",
                     3,
@@ -256,7 +256,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                     "lock",
                     "lockLong",
                     "长锁",
-                    "连错升级，触发后强制走密码重置",
+                    "累计失败达到长锁阈值时触发；长锁与人工要求重置密码是不同状态",
                     "auth.risk.login_long_lock_threshold",
                     "次",
                     5,
@@ -786,7 +786,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             default -> "未锁定";
         };
         String lockReason = switch (lockKind) {
-            case "LONG" -> "连续失败达到长锁阈值或已挂强制重置";
+            case "LONG" -> passwordResetRequired ? "账户处于长锁，且有独立的密码重置要求" : "账户处于长锁";
             case "SHORT" -> "连续登录/两步验证失败达到短锁阈值";
             default -> "当前无锁定";
         };

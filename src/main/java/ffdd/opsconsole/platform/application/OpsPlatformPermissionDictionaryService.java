@@ -63,7 +63,7 @@ public class OpsPlatformPermissionDictionaryService {
         Integer amplifies = view.amplifies() == null ? 1 : view.amplifies();
         return new PermissionDictionaryView(
                 code,
-                permissionDisplayName(view, type),
+                permissionDisplayName(view),
                 type,
                 view.menuId() != null && view.menuId() == 0 ? null : view.menuId(),
                 StringUtils.hasText(view.menuCodePath()) ? view.menuCodePath().trim() : "未归类",
@@ -72,7 +72,7 @@ public class OpsPlatformPermissionDictionaryService {
                 view.resourcePath() == null ? "" : view.resourcePath().trim());
     }
 
-    private String permissionDisplayName(PermissionDictionaryView view, String type) {
+    private String permissionDisplayName(PermissionDictionaryView view) {
         String raw = StringUtils.hasText(view.permissionName()) ? view.permissionName().trim() : view.permissionCode();
         if (raw == null) return null;
         String name = raw.replaceFirst("(?i)^[A-Z][0-9]{1,2}(?=[^A-Z0-9_])[ :：·_-]*", "");
@@ -80,7 +80,8 @@ public class OpsPlatformPermissionDictionaryService {
         if (!StringUtils.hasText(name)) return raw;
         if (!name.equals(raw) && StringUtils.hasText(view.menuCodePath()) && !"未归类".equals(view.menuCodePath())) {
             String path = view.menuCodePath();
-            String page = path.substring(path.lastIndexOf('/') + 1).trim();
+            String page = ffdd.opsconsole.platform.domain.AdminMenuDisplayNames.resolveUniqueStockLabel(
+                    path.substring(path.lastIndexOf('/') + 1).trim());
             if (StringUtils.hasText(page) && !name.startsWith(page)) return page + " · " + name;
         }
         return name;

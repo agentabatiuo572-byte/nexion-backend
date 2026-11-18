@@ -153,6 +153,13 @@ public class OpsPlatformParamRegistryService {
                 : switch (canonicalKey) {
                     case "growth.quest.day_one.eligibility_hours" -> "新手任务完成期限（小时）；由新手任务配置读取。";
                     case "wallet.exchange.queue_mode" -> "额度不足的订单按该策略进入人工处理队列或拒绝。";
+                    case "wallet.exchange.user_daily_cap_usdt" -> "单用户日兑换额度，单位 USDT；按当前兑换业务日累计。";
+                    case "wallet.exchange.platform_daily_cap_usdt" -> "全平台日兑换额度，单位 USDT；用完后按超额策略处理。";
+                    case "wallet.exchange.fee_pct" -> "兑换的百分比手续费率。";
+                    case "wallet.exchange.fee_min_usdt" -> "启用手续费时的小额兑换最低费用，单位 USDT。";
+                    case "platform.experience.operating_languages" -> "运营内容必填语言范围；英文固定，其他语言按选中的运营区域语言。";
+                    case "auth.risk.login_lock_threshold" -> "累计失败触发短锁的阈值；不代表所有验证码入口共用同一规则。";
+                    case "auth.risk.login_long_lock_threshold" -> "累计失败触发长锁的阈值，不等同于强制重置密码。";
                     case "wallet.exchange.queue_eta_hours" -> "用户排队的预计处理时长（小时），不是自动成交或到账时间。";
                     case "wallet.exchange.queue_eta_copy", "wallet.exchange.queue_eta_copy_zh", "wallet.exchange.queue_eta_copy_vi" ->
                             "排队预计时间文案，使用 {hours} 引用已配置的预计时长。";
