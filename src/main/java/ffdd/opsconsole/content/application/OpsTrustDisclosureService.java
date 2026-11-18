@@ -33,6 +33,7 @@ import ffdd.opsconsole.content.dto.LearningRewardUpdateRequest;
 import ffdd.opsconsole.content.dto.NotificationCapUpdateRequest;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.application.PlatformExperienceConfigService;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayable;
@@ -51,6 +52,7 @@ import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -72,6 +74,7 @@ import org.springframework.core.env.Environment;
 public class OpsTrustDisclosureService implements AuditReplayable {
     private static final List<String> ROLE_GATES = List.of("内容", "合规 / 超管", "风控 / 超管");
     private static final List<String> LANGUAGE_SCOPES = List.of("zh+vi", "zh+vi+en", "zh+vi+en+id+ms+fil+ru+kk+uz");
+    private static final List<String> OPTIONAL_BASE_LANGUAGES = List.of("zh", "vi");
     private static final Set<String> DISCLOSURE_CHAPTER_NUMBERS =
             Set.of("01", "02", "03", "04", "05", "06", "07");
     private static final List<DisclosureCountryOption> COUNTRY_OPTIONS = List.of(
@@ -101,6 +104,11 @@ public class OpsTrustDisclosureService implements AuditReplayable {
     private static final Pattern TRUST_FIELD_KEY_PATTERN = Pattern.compile("^[A-Za-z][A-Za-z0-9._-]{0,63}$");
     private static final Pattern APP_TRUST_FIELD_KEY_PATTERN = Pattern.compile("^[A-Za-z][A-Za-z0-9]*(?:[._-][A-Za-z0-9]+)*$");
     private static final Pattern LOCALIZED_TRUST_FIELD_PATTERN = Pattern.compile("^(.+?)[._-](" + String.join("|", InterfaceLanguages.CODES) + ")$", Pattern.CASE_INSENSITIVE);
+    private static final Map<String, Set<String>> LEGACY_LOCALIZABLE_TRUST_FIELDS = Map.of(
+            "leadership", Set.of("leader1Role", "leader1Previous"),
+            "complianceBadges", Set.of("badge1Label", "badge1Body"),
+            "auditsReserves", Set.of("document1Primary", "document1Secondary"),
+            "listings", Set.of("listing1State"));
     private static final Pattern ACCEPTANCE_RUN_ID_PATTERN = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9._-]{7,95}$");
     private static final Pattern LINK_LIKE_PATTERN = Pattern.compile(
             "^\\s*(?:[A-Za-z][A-Za-z0-9+.-]*:|/)|href\\s*=", Pattern.CASE_INSENSITIVE);
@@ -131,6 +139,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
 
     private final TrustDisclosureRepository trustDisclosureRepository;
     private final PlatformConfigFacade configFacade;
+    private final PlatformExperienceConfigService experienceConfigService;
     private final AuditLogService auditLogService;
     private final Clock clock;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
@@ -403,10 +412,15 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (request.expectedRevision() == null || request.expectedRevision() != version.revision()) {
             return ApiResult.fail(409, "TRUST_SECTION_REVISION_CONFLICT");
         }
-        ApiResult<Void> schemaGuard = requireFixedSectionFieldSchema(current, version.fields() == null ? null
-                : version.fields().stream().map(TrustSectionVersionView.Field::key).toList());
+        TrustSectionVersionView published = findSectionVersion(current.key(), current.version());
+        ApiResult<Void> schemaGuard = requireFixedSectionFieldSchema(current.key(),
+                published == null ? null : published.fields(),
+                version.fields() == null ? null : version.fields().stream().map(TrustSectionVersionView.Field::key).toList(),
+                version.fields() == null ? Set.of() : version.fields().stream()
+                        .filter(field -> field != null && StringUtils.hasText(field.key()) && StringUtils.hasText(field.value()))
+                        .map(field -> field.key().trim()).collect(Collectors.toSet()));
         if (schemaGuard != null) return fail(schemaGuard);
-        if (!hasCompleteLocalizedFields(version.fields())) {
+        if (!hasEnglishLocalizedFields(version.fields())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_TRILINGUAL_FIELDS_REQUIRED");
         }
         ApiResult<Void> appFieldGuard = requireAppPublicFields(version.fields());
@@ -470,6 +484,9 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         }
         ApiResult<Void> appFieldGuard = requireAppPublicFields(target.fields());
         if (appFieldGuard != null) return fail(appFieldGuard);
+        if (!hasEnglishLocalizedFields(target.fields())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_TRILINGUAL_FIELDS_REQUIRED");
+        }
         String actor = authenticatedOperator();
         TrustSectionView updated = trustDisclosureRepository.publishTrustSectionVersion(current.key(), target.version(), actor, now());
         requiredAudit("I4_TRUST_SECTION_ROLLED_BACK", "TRUST_SECTION", current.key(), actor, idempotencyKey, request.reason(), Map.of(
@@ -499,12 +516,9 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         TrustSectionView section = findSection(sectionKey);
         if (section == null) return ApiResult.fail(404, "TRUST_SECTION_NOT_FOUND");
         TrustSectionVersionView published = findSectionVersion(section.key(), section.version());
-        TrustSectionDraftRequest normalized = withTrustSectionFields(request,
-                preserveOmittedAdditionalLocales(request.fields(),
-                        published == null ? List.of() : published.fields(), List.of()));
-        ApiResult<Void> schemaGuard = requireFixedSectionFieldSchema(section,
-                normalized.fields().stream().map(TrustSectionFieldInput::key).toList());
-        if (schemaGuard != null) return fail(schemaGuard);
+        var normalized = completeTrustSectionDraft(section, request,
+                published == null ? List.of() : published.fields(), List.of());
+        if (normalized.getCode() != 0) return ApiResult.fail(normalized.getCode(), normalized.getMessage());
         if (findSectionVersion(sectionKey, request.version()) != null) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "TRUST_SECTION_VERSION_ALREADY_EXISTS");
         }
@@ -513,7 +527,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (snapshotGuard != null) return fail(snapshotGuard);
         String actor = authenticatedOperator();
         TrustSectionVersionView saved = trustDisclosureRepository.saveTrustSectionDraft(
-                sectionKey.trim(), withTrustSectionOperator(normalized, actor), now());
+                sectionKey.trim(), withTrustSectionOperator(normalized.getData(), actor), now());
         audit("I4_TRUST_SECTION_DRAFT_CREATED", "TRUST_SECTION_VERSION", sectionKey + ":" + saved.version(), actor, idempotencyKey, request.reason(), Map.of(
                 "fieldCount", saved.fields().size(), "revision", saved.revision()));
         return ApiResult.ok(saved);
@@ -552,18 +566,15 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         TrustSectionView section = findSection(sectionKey);
         if (section == null) return ApiResult.fail(404, "TRUST_SECTION_NOT_FOUND");
         TrustSectionVersionView published = findSectionVersion(section.key(), section.version());
-        TrustSectionDraftRequest normalized = withTrustSectionFields(request,
-                preserveOmittedAdditionalLocales(request.fields(),
-                        published == null ? List.of() : published.fields(), current.fields()));
         ApiResult<Void> snapshotGuard = requireTrustSectionSnapshot(
                 section, request.expectedSectionVersion(), request.expectedSectionStatus());
         if (snapshotGuard != null) return fail(snapshotGuard);
-        ApiResult<Void> schemaGuard = requireFixedSectionFieldSchema(section,
-                normalized.fields().stream().map(TrustSectionFieldInput::key).toList());
-        if (schemaGuard != null) return fail(schemaGuard);
+        var normalized = completeTrustSectionDraft(section, request,
+                published == null ? List.of() : published.fields(), current.fields());
+        if (normalized.getCode() != 0) return ApiResult.fail(normalized.getCode(), normalized.getMessage());
         String actor = authenticatedOperator();
         TrustSectionVersionView saved = trustDisclosureRepository.saveTrustSectionDraft(
-                sectionKey.trim(), withTrustSectionOperator(normalized, actor), now());
+                sectionKey.trim(), withTrustSectionOperator(normalized.getData(), actor), now());
         audit("I4_TRUST_SECTION_DRAFT_UPDATED", "TRUST_SECTION_VERSION", sectionKey + ":" + version, actor, idempotencyKey, request.reason(), Map.of(
                 "fromRevision", current.revision(), "toRevision", saved.revision()));
         return ApiResult.ok(saved);
@@ -810,7 +821,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
 
     @Transactional
     public ApiResult<DisclosureDraftView> saveDisclosureDraft(String jurisdiction, String idempotencyKey, DisclosureDraftRequest request) {
-        ApiResult<Void> guard = requireDisclosurePayload(jurisdiction, idempotencyKey, request);
+        ApiResult<Void> guard = requireDisclosureRequest(jurisdiction, idempotencyKey, request);
         if (guard != null) {
             return fail(guard);
         }
@@ -824,6 +835,9 @@ public class OpsTrustDisclosureService implements AuditReplayable {
 
     private ApiResult<DisclosureDraftView> doSaveDisclosureDraft(
             String jurisdiction, String idempotencyKey, DisclosureDraftRequest request) {
+        request = completeDisclosureLanguages(request);
+        ApiResult<Void> payloadGuard = requireDisclosurePayload(request);
+        if (payloadGuard != null) return fail(payloadGuard);
         if (isDisclosureJurisdictionLocked(jurisdiction)) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
@@ -847,7 +861,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         DisclosureDraftRequest normalized = normalizeDisclosureRequest(jurisdiction, request,
                 requestedDraft == null ? expectedVersion : requestedDraft.version(), requestedDraft);
         if (requestedDraft != null) {
-            var mergedGuard = requireDisclosurePayload(jurisdiction, idempotencyKey, normalized);
+            var mergedGuard = requireDisclosurePayload(normalized);
             if (mergedGuard != null) return fail(mergedGuard);
         }
         DisclosureDraftView existing = trustDisclosureRepository.findDisclosureVersion(normalized.jurisdiction(), normalized.version()).orElse(null);
@@ -932,7 +946,9 @@ public class OpsTrustDisclosureService implements AuditReplayable {
 
     @Transactional
     public ApiResult<DisclosureDraftView> publishDisclosure(String jurisdiction, String idempotencyKey, DisclosureDraftRequest request) {
-        ApiResult<Void> guard = requireDisclosurePayload(jurisdiction, idempotencyKey, request);
+        ApiResult<Void> guard = requireDisclosureRequest(jurisdiction, idempotencyKey, request);
+        if (guard != null) return fail(guard);
+        guard = requireDisclosurePayload(request);
         if (guard != null) {
             return fail(guard);
         }
@@ -1426,50 +1442,83 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         return null;
     }
 
-    private ApiResult<Void> requireDisclosurePayload(String jurisdiction, String idempotencyKey, DisclosureDraftRequest request) {
+    private ApiResult<Void> requireDisclosureRequest(String jurisdiction, String idempotencyKey, DisclosureDraftRequest request) {
         ApiResult<Void> action = requireIdempotencyAndReason(idempotencyKey, request == null ? null : request.reason());
         if (action != null) {
             return action;
         }
         if (!StringUtils.hasText(jurisdiction) || request == null
-                || !StringUtils.hasText(request.languageScope()) || !StringUtils.hasText(request.effectiveDate())
-                || !StringUtils.hasText(request.zh()) || !StringUtils.hasText(request.vi())) {
+                || !StringUtils.hasText(request.languageScope()) || !StringUtils.hasText(request.effectiveDate())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_FIELDS_REQUIRED");
         }
         List<String> scope = List.of(request.languageScope().trim().split("\\+", -1));
-        if (!LANGUAGE_SCOPES.contains(request.languageScope().trim())
+        if (!"en".equals(request.languageScope().trim()) && !LANGUAGE_SCOPES.contains(request.languageScope().trim())
                 && !(scope.size() > 3 && scope.subList(0, 3).equals(List.of("zh", "vi", "en"))
                 && scope.stream().distinct().count() == scope.size()
                 && scope.subList(3, scope.size()).stream().allMatch(InterfaceLanguages::isAdditional))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_LANGUAGE_SCOPE_UNSUPPORTED");
-        }
-        if (request.languageScope().trim().contains("en") && !StringUtils.hasText(request.en())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_EN_REQUIRED_FOR_SCOPE");
         }
         try {
             LocalDate.parse(request.effectiveDate().trim());
         } catch (DateTimeParseException ex) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_EFFECTIVE_DATE_INVALID");
         }
-        if (containsUnsafeText(request.version(), request.zh(), request.vi(), request.en())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_RAW_JSON_OR_URL_NOT_ALLOWED");
-        }
-        Set<String> expected = placeholders(request.zh());
-        if (!expected.equals(placeholders(request.vi())) || (StringUtils.hasText(request.en()) && !expected.equals(placeholders(request.en())))) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_PLACEHOLDERS_MISMATCH");
-        }
-        if (!validDisclosureTranslations(request.translations(), request.en(), 65535)) {
-            return ApiResult.fail(422, "DISCLOSURE_TRANSLATION_INVALID");
-        }
         if (request.chapters() == null || request.chapters().size() != 7) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_SEVEN_CHAPTERS_REQUIRED");
         }
         Set<String> chapterNumbers = new TreeSet<>();
         for (DisclosureChapterInput chapter : request.chapters()) {
-            if (chapter == null || !StringUtils.hasText(chapter.no()) || !chapterNumbers.add(chapter.no().trim())
-                    || !StringUtils.hasText(chapter.zhTitle()) || !StringUtils.hasText(chapter.viTitle())
+            if (chapter == null || !StringUtils.hasText(chapter.no()) || !chapterNumbers.add(chapter.no().trim())) {
+                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_CHAPTER_FIELDS_REQUIRED");
+            }
+        }
+        if (!chapterNumbers.equals(DISCLOSURE_CHAPTER_NUMBERS)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_CHAPTER_NUMBERS_INVALID");
+        }
+        return null;
+    }
+
+    private DisclosureDraftRequest completeDisclosureLanguages(DisclosureDraftRequest request) {
+        List<String> required = experienceConfigService.operatingLanguages();
+        boolean copyZh = !required.contains("zh") && !StringUtils.hasText(request.zh())
+                && request.chapters().stream().noneMatch(chapter ->
+                        StringUtils.hasText(chapter.zhTitle()) || StringUtils.hasText(chapter.zhBody()));
+        boolean copyVi = !required.contains("vi") && !StringUtils.hasText(request.vi())
+                && request.chapters().stream().noneMatch(chapter ->
+                        StringUtils.hasText(chapter.viTitle()) || StringUtils.hasText(chapter.viBody()));
+        List<DisclosureChapterInput> chapters = request.chapters().stream().map(chapter -> new DisclosureChapterInput(
+                chapter.no(), copyZh ? chapter.enTitle() : chapter.zhTitle(), copyVi ? chapter.enTitle() : chapter.viTitle(),
+                chapter.enTitle(), copyZh ? chapter.enBody() : chapter.zhBody(), copyVi ? chapter.enBody() : chapter.viBody(),
+                chapter.enBody(), chapter.titleTranslations(), chapter.bodyTranslations())).toList();
+        String scope = request.languageScope().trim();
+        return new DisclosureDraftRequest(request.version(), request.jurisdiction(), scope.startsWith("zh+vi+en") ? scope : "zh+vi+en",
+                request.effectiveDate(), request.requiresReack(), copyZh ? request.en() : request.zh(),
+                copyVi ? request.en() : request.vi(), request.en(), chapters, request.expectedRevision(),
+                request.expectedContentHash(), request.operator(), request.reason(), request.translations());
+    }
+
+    private ApiResult<Void> requireDisclosurePayload(DisclosureDraftRequest request) {
+        boolean requiresEnglish = request.languageScope().trim().contains("en");
+        if (requiresEnglish && !StringUtils.hasText(request.en())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_EN_REQUIRED_FOR_SCOPE");
+        }
+        if (!StringUtils.hasText(request.zh()) || !StringUtils.hasText(request.vi())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_FIELDS_REQUIRED");
+        }
+        if (containsUnsafeText(request.version(), request.zh(), request.vi(), request.en())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_RAW_JSON_OR_URL_NOT_ALLOWED");
+        }
+        Set<String> expected = placeholders(StringUtils.hasText(request.en()) ? request.en() : request.zh());
+        if (!expected.equals(placeholders(request.zh())) || !expected.equals(placeholders(request.vi()))) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_PLACEHOLDERS_MISMATCH");
+        }
+        if (!validDisclosureTranslations(request.translations(), request.en(), 65535)) {
+            return ApiResult.fail(422, "DISCLOSURE_TRANSLATION_INVALID");
+        }
+        for (DisclosureChapterInput chapter : request.chapters()) {
+            if (!StringUtils.hasText(chapter.zhTitle()) || !StringUtils.hasText(chapter.viTitle())
                     || !StringUtils.hasText(chapter.zhBody()) || !StringUtils.hasText(chapter.viBody())
-                    || (request.languageScope().contains("en") && (!StringUtils.hasText(chapter.enTitle()) || !StringUtils.hasText(chapter.enBody())))) {
+                    || (requiresEnglish && (!StringUtils.hasText(chapter.enTitle()) || !StringUtils.hasText(chapter.enBody())))) {
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_CHAPTER_FIELDS_REQUIRED");
             }
             if (containsUnsafeText(chapter.zhTitle(), chapter.viTitle(), chapter.enTitle(), chapter.zhBody(), chapter.viBody(), chapter.enBody())) {
@@ -1479,14 +1528,12 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                     || !validDisclosureTranslations(chapter.bodyTranslations(), chapter.enBody(), 65535)) {
                 return ApiResult.fail(422, "DISCLOSURE_CHAPTER_TRANSLATION_INVALID");
             }
-            Set<String> chapterExpected = placeholders(chapter.zhTitle() + chapter.zhBody());
-            if (!chapterExpected.equals(placeholders(chapter.viTitle() + chapter.viBody()))
-                    || (request.languageScope().contains("en") && !chapterExpected.equals(placeholders(chapter.enTitle() + chapter.enBody())))) {
+            String chinese = chapter.zhTitle() + chapter.zhBody();
+            Set<String> chapterExpected = placeholders(requiresEnglish ? chapter.enTitle() + chapter.enBody() : chinese);
+            if (!chapterExpected.equals(placeholders(chinese))
+                    || !chapterExpected.equals(placeholders(chapter.viTitle() + chapter.viBody()))) {
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_CHAPTER_PLACEHOLDERS_MISMATCH");
             }
-        }
-        if (!chapterNumbers.equals(DISCLOSURE_CHAPTER_NUMBERS)) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_CHAPTER_NUMBERS_INVALID");
         }
         return null;
     }
@@ -1513,22 +1560,89 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                         "I", "disclosure_jurisdiction", trimToEmpty(jurisdiction)) > 0;
     }
 
-    private boolean hasCompleteLocalizedFields(List<TrustSectionVersionView.Field> fields) {
-        Map<String, Set<String>> languagesByFamily = new LinkedHashMap<>();
+    private boolean hasEnglishLocalizedFields(List<TrustSectionVersionView.Field> fields) {
+        Set<String> families = new TreeSet<>();
+        Set<String> english = new TreeSet<>();
         for (TrustSectionVersionView.Field field : fields) {
             if (field == null || !StringUtils.hasText(field.key())) continue;
             Matcher matcher = LOCALIZED_TRUST_FIELD_PATTERN.matcher(field.key().trim());
             if (!matcher.matches()) continue;
             String family = matcher.group(1).toLowerCase(Locale.ROOT);
-            if (StringUtils.hasText(field.value())) {
-                languagesByFamily.computeIfAbsent(family, ignored -> new TreeSet<>())
-                        .add(matcher.group(2).toLowerCase(Locale.ROOT));
-            } else {
-                languagesByFamily.computeIfAbsent(family, ignored -> new TreeSet<>());
+            families.add(family);
+            if ("en".equalsIgnoreCase(matcher.group(2)) && StringUtils.hasText(field.value())) english.add(family);
+        }
+        return !families.isEmpty() && english.containsAll(families);
+    }
+
+    private ApiResult<TrustSectionDraftRequest> completeTrustSectionDraft(
+            TrustSectionView section, TrustSectionDraftRequest request,
+            List<TrustSectionVersionView.Field> publishedFields, List<TrustSectionVersionView.Field> draftFields) {
+        Map<String, TrustSectionFieldInput> fields = new LinkedHashMap<>();
+        Map<String, Map<String, TrustSectionFieldInput>> families = new LinkedHashMap<>();
+        Set<String> filledLanguages = new TreeSet<>();
+        Set<String> suppliedTextKeys = new TreeSet<>();
+        for (TrustSectionFieldInput field : request.fields()) {
+            fields.put(field.key().trim(), field);
+            if (StringUtils.hasText(field.value())) suppliedTextKeys.add(field.key().trim());
+            Matcher matcher = LOCALIZED_TRUST_FIELD_PATTERN.matcher(field.key().trim());
+            if (!matcher.matches()) continue;
+            String language = matcher.group(2).toLowerCase(Locale.ROOT);
+            String family = matcher.group(1);
+            Map<String, TrustSectionFieldInput> localized = families.computeIfAbsent(family, ignored -> new LinkedHashMap<>());
+            if (localized.putIfAbsent(language, field) != null) {
+                return ApiResult.fail(422, "TRUST_SECTION_STRUCTURED_FIELDS_INVALID");
+            }
+            if (StringUtils.hasText(field.value())) filledLanguages.add(language);
+        }
+        if (!families.isEmpty()) {
+            List<String> required = experienceConfigService.operatingLanguages();
+            Map<String, TrustSectionVersionView.Field> templateLocales = new LinkedHashMap<>();
+            for (TrustSectionVersionView.Field field : publishedFields) {
+                if (field == null || !StringUtils.hasText(field.key())) continue;
+                Matcher matcher = LOCALIZED_TRUST_FIELD_PATTERN.matcher(field.key().trim());
+                if (matcher.matches()) {
+                    templateLocales.put(matcher.group(1) + "." + matcher.group(2).toLowerCase(Locale.ROOT), field);
+                }
+            }
+            Map<String, TrustSectionVersionView.Field> draftMetadata = new LinkedHashMap<>();
+            for (TrustSectionVersionView.Field field : draftFields) {
+                if (field != null && StringUtils.hasText(field.key())) draftMetadata.put(field.key().trim(), field);
+            }
+            for (var family : families.entrySet()) {
+                var localized = family.getValue();
+                TrustSectionFieldInput english = localized.get("en");
+                if (english == null || !StringUtils.hasText(english.value())) {
+                    return ApiResult.fail(422, "TRUST_SECTION_TRILINGUAL_FIELDS_REQUIRED");
+                }
+                String englishKey = english.key().trim();
+                for (String language : OPTIONAL_BASE_LANGUAGES) {
+                    TrustSectionFieldInput field = localized.get(language);
+                    if (field != null && StringUtils.hasText(field.value())) continue;
+                    if (required.contains(language) || filledLanguages.contains(language)) {
+                        return ApiResult.fail(422, "TRUST_SECTION_TRILINGUAL_FIELDS_REQUIRED");
+                    }
+                    if (field == null) {
+                        var template = templateLocales.get(family.getKey() + "." + language);
+                        String key = template == null ? englishKey.substring(0, englishKey.length() - 2) + language
+                                : template.key().trim();
+                        var metadata = draftMetadata.getOrDefault(key, template);
+                        field = new TrustSectionFieldInput(key, metadata == null ? english.label() : metadata.label(), english.value());
+                    } else {
+                        field = new TrustSectionFieldInput(field.key(), field.label(), english.value());
+                    }
+                    fields.put(field.key().trim(), field);
+                }
             }
         }
-        return !languagesByFamily.isEmpty()
-                && languagesByFamily.values().stream().allMatch(languages -> languages.containsAll(Set.of("zh", "vi", "en")));
+        List<TrustSectionFieldInput> completed = preserveOmittedAdditionalLocales(
+                List.copyOf(fields.values()), publishedFields, draftFields);
+        if (completed.size() > MAX_TRUST_SECTION_FIELDS) {
+            return ApiResult.fail(422, "TRUST_SECTION_DRAFT_FIELDS_REQUIRED");
+        }
+        ApiResult<Void> schemaGuard = requireFixedSectionFieldSchema(section.key(), publishedFields,
+                completed.stream().map(TrustSectionFieldInput::key).toList(), suppliedTextKeys);
+        if (schemaGuard != null) return fail(schemaGuard);
+        return ApiResult.ok(withTrustSectionFields(request, completed));
     }
 
     /**
@@ -1613,7 +1727,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
             if (field == null || !StringUtils.hasText(field.key())
                     || !TRUST_FIELD_KEY_PATTERN.matcher(field.key().trim()).matches()
                     || !StringUtils.hasText(field.label()) || field.value() == null
-                    || (!linkField && !StringUtils.hasText(field.value()))
+                    || (!linkField && !StringUtils.hasText(field.value()) && !isOptionalBaseLocaleField(field.key()))
                     || !keys.add(field.key().trim()) || containsUnsafeText(field.key(), field.label())) {
                 return false;
             }
@@ -1623,7 +1737,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 return false;
             }
         }
-        return hasCompleteLocalizedFields(fields);
+        return hasEnglishLocalizedFields(fields);
     }
 
     private boolean isSensitivePublishSection(TrustSectionView section) {
@@ -1669,8 +1783,9 @@ public class OpsTrustDisclosureService implements AuditReplayable {
             boolean linkField = field != null && isLinkField(field.key());
             if (field == null || !StringUtils.hasText(field.key())
                     || !TRUST_FIELD_KEY_PATTERN.matcher(field.key().trim()).matches()
-                    || !StringUtils.hasText(field.label()) || field.value() == null
-                    || (!linkField && !StringUtils.hasText(field.value()))
+                    || !StringUtils.hasText(field.label())
+                    || (!StringUtils.hasText(field.value())
+                    && !(linkField ? field.value() != null : isOptionalBaseLocaleField(field.key())))
                     || !keys.add(field.key().trim()) || containsUnsafeText(field.key(), field.label())) {
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_STRUCTURED_FIELDS_INVALID");
             }
@@ -1678,7 +1793,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 if (!field.value().isEmpty() && !isSafeTrustSectionLink(field.value())) {
                     return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_LINK_INVALID");
                 }
-            } else if (containsUnsafeText(field.value()) || LINK_LIKE_PATTERN.matcher(field.value()).find()) {
+            } else if (containsUnsafeText(field.value()) || LINK_LIKE_PATTERN.matcher(trimToEmpty(field.value())).find()) {
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_STRUCTURED_FIELDS_INVALID");
             }
         }
@@ -1688,45 +1803,59 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         return null;
     }
 
-    private ApiResult<Void> requireFixedSectionFieldSchema(TrustSectionView section, List<String> fieldKeys) {
-        TrustSectionVersionView published = findSectionVersion(section.key(), section.version());
-        if (published == null || published.fields() == null || published.fields().isEmpty()
-                || published.fields().stream().anyMatch(field -> field == null || !StringUtils.hasText(field.key()))) {
+    private ApiResult<Void> requireFixedSectionFieldSchema(
+            String sectionKey, List<TrustSectionVersionView.Field> publishedFields, List<String> fieldKeys,
+            Set<String> suppliedTextKeys) {
+        if (publishedFields == null || publishedFields.isEmpty()
+                || publishedFields.stream().anyMatch(field -> field == null || !StringUtils.hasText(field.key()))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_FIELD_SCHEMA_UNAVAILABLE");
         }
-        Set<String> expectedKeys = new TreeSet<>();
-        published.fields().forEach(field -> expectedKeys.add(field.key().trim()));
+        Set<String> expectedKeys = publishedFields.stream().map(field -> field.key().trim()).collect(Collectors.toSet());
         if (fieldKeys == null || fieldKeys.stream().anyMatch(key -> !StringUtils.hasText(key))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_FIELD_SCHEMA_MISMATCH");
         }
-        Set<String> actualKeys = new TreeSet<>();
-        fieldKeys.forEach(key -> actualKeys.add(key.trim()));
-        // A single-language field may be replaced by its complete zh/vi/en set, so sections first
-        // published without translations can still reach the trilingual snapshot the App requires.
-        for (String key : List.copyOf(expectedKeys)) {
+        Set<String> actualKeys = fieldKeys.stream().map(String::trim).collect(Collectors.toSet());
+        // Historical text fields can be upgraded only when all three translations were supplied.
+        for (String key : LEGACY_LOCALIZABLE_TRUST_FIELDS.getOrDefault(sectionKey, Set.of())) {
             List<String> localized = List.of(key + ".zh", key + ".vi", key + ".en");
-            if (!LOCALIZED_TRUST_FIELD_PATTERN.matcher(key).matches() && !actualKeys.contains(key)
-                    && actualKeys.containsAll(localized)) {
+            if (expectedKeys.contains(key) && !actualKeys.contains(key) && suppliedTextKeys.containsAll(localized)) {
                 expectedKeys.remove(key);
                 expectedKeys.addAll(localized);
             }
         }
-        // Additional text is optional, and can only extend an existing, translated field family.
-        Set<String> optional = new TreeSet<>();
-        for (String key : actualKeys) {
-            Matcher matcher = LOCALIZED_TRUST_FIELD_PATTERN.matcher(key);
-            if (matcher.matches() && InterfaceLanguages.isAdditional(matcher.group(2).toLowerCase(Locale.ROOT))
-                    && expectedKeys.contains(key.substring(0, matcher.start(2)) + "en")) optional.add(key);
-        }
+        Map<String, String> familyPrefixes = new LinkedHashMap<>();
+        Set<String> templateLocales = new TreeSet<>();
         expectedKeys.removeIf(key -> {
             Matcher matcher = LOCALIZED_TRUST_FIELD_PATTERN.matcher(key);
-            return matcher.matches() && InterfaceLanguages.isAdditional(matcher.group(2).toLowerCase(Locale.ROOT));
+            if (!matcher.matches()) return false;
+            String language = matcher.group(2).toLowerCase(Locale.ROOT);
+            if (InterfaceLanguages.isAdditional(language)) return true;
+            String family = matcher.group(1);
+            String prefix = key.substring(0, matcher.start(2));
+            if ("en".equals(language)) familyPrefixes.put(family, prefix);
+            else familyPrefixes.putIfAbsent(family, prefix);
+            templateLocales.add(family + "." + language);
+            return false;
         });
-        actualKeys.removeAll(optional);
+        actualKeys.removeIf(key -> {
+            Matcher matcher = LOCALIZED_TRUST_FIELD_PATTERN.matcher(key);
+            if (!matcher.matches()) return false;
+            String family = matcher.group(1);
+            String prefix = familyPrefixes.get(family);
+            if (prefix == null) return false;
+            String language = matcher.group(2).toLowerCase(Locale.ROOT);
+            return InterfaceLanguages.isAdditional(language)
+                    || (!templateLocales.contains(family + "." + language) && key.equals(prefix + language));
+        });
         if (!expectedKeys.equals(actualKeys)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_FIELD_SCHEMA_MISMATCH");
         }
         return null;
+    }
+
+    private boolean isOptionalBaseLocaleField(String key) {
+        Matcher matcher = LOCALIZED_TRUST_FIELD_PATTERN.matcher(key.trim());
+        return matcher.matches() && OPTIONAL_BASE_LANGUAGES.contains(matcher.group(2).toLowerCase(Locale.ROOT));
     }
 
     private boolean isLinkField(String key) {
@@ -1865,9 +1994,19 @@ public class OpsTrustDisclosureService implements AuditReplayable {
 
     private DisclosureDraftRequest normalizeDisclosureRequest(String jurisdiction, DisclosureDraftRequest request,
             String version, DisclosureDraftView previous) {
+        String languageScope = request.languageScope().trim();
         Map<String, DisclosureChapterView> previousChapters = new LinkedHashMap<>();
-        if (previous != null) trustDisclosureRepository.listChapters(jurisdiction, version)
-                .forEach(chapter -> previousChapters.put(chapter.no(), chapter));
+        if (previous != null) {
+            Set<String> languages = new LinkedHashSet<>(List.of("zh", "vi", "en"));
+            for (String scope : List.of(previous.languageScope(), languageScope)) {
+                for (String language : scope.split("\\+")) {
+                    if (InterfaceLanguages.isAdditional(language)) languages.add(language);
+                }
+            }
+            languageScope = String.join("+", languages);
+            trustDisclosureRepository.listChapters(jurisdiction, version)
+                    .forEach(chapter -> previousChapters.put(chapter.no(), chapter));
+        }
         List<DisclosureChapterInput> chapters = request.chapters().stream().map(chapter -> {
             var prior = previousChapters.get(chapter.no().trim());
             var titles = chapter.titleTranslations() == null && prior != null ? prior.titleTranslations() : chapter.titleTranslations();
@@ -1879,7 +2018,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         return new DisclosureDraftRequest(
                 version.trim(),
                 jurisdiction.trim().toUpperCase(Locale.ROOT),
-                request.languageScope().trim(),
+                languageScope,
                 request.effectiveDate().trim(),
                 Boolean.TRUE.equals(request.requiresReack()),
                 request.zh().trim(),
