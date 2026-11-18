@@ -61,11 +61,20 @@ public class H4EventEngine {
     public List<Map<String,Object>> project(Long id,List<Map<String,Object>> rows,String locale){
         List<Map<String,Object>> projected=new ArrayList<>();
         for(var row:rows){String code=text(row.get("eventCode"));var rule=policies.find(code,false);
-            if(rule==null){var legacy=new LinkedHashMap<>(row);legacy.remove("authoredRewardName");projected.add(legacy);continue;}
+            if(rule==null){projected.add(legacyRewardDisplay(row));continue;}
             var value=project(id,row,rule,locale);
             if(!enabled(code)&&!Set.of("JOINED","CLAIMABLE","CLAIMED").contains(text(value.get("userStatus"))))continue;
             projected.add(value);
         }return projected;
+    }
+    private Map<String,Object> legacyRewardDisplay(Map<String,Object> source){
+        var row=new LinkedHashMap<>(source);
+        String asset=text(row.get("rewardType"));
+        if(!"wheel".equals(row.get("kind"))&&("UVT".equals(asset)||"USDT".equals(asset))){
+            BigDecimal amount=number(row.get("rewardAmount"));
+            if(amount.signum()>0)row.put("rewardName",amount.stripTrailingZeros().toPlainString()+" "+asset);
+        }
+        return row;
     }
     private Map<String,Object> project(Long id,Map<String,Object> source,Map<String,Object> rule,String locale){
         var row=new LinkedHashMap<>(source);String code=text(rule.get("event_code")),phase=phase(rule);
@@ -76,11 +85,8 @@ public class H4EventEngine {
         row.put("trackable",trackable);
         if(!"wheel".equals(rule.get("kind"))){
             row.put("rewardType","COMPOSITE");row.put("rewardAmount",0);
-            String translated=text(source.get("authoredRewardName"));
-            // Every language shows the reward name ops published for it; the computed summary covers a missing one.
-            row.put("rewardName", !translated.isBlank() ? translated : rewardSummary(r,locale));
+            row.put("rewardName",rewardSummary(r,locale));
         }
-        row.remove("authoredRewardName");
         boolean claimed=db.row("SELECT 1 FROM nx_growth_event_claim WHERE event_code=? AND user_id=? AND claim_key='ONCE' AND status='CLAIMED'",code,id)!=null;
         Object previousStatus="CLAIMABLE".equals(source.get("userStatus"))?"JOINED":source.get("userStatus");
         row.put("userStatus",claimed?"CLAIMED":trackable&&Boolean.TRUE.equals(progress.get("eligible"))?"CLAIMABLE":previousStatus);
@@ -99,8 +105,7 @@ public class H4EventEngine {
         if(deleted){source=new LinkedHashMap<>(source);source.put("deleted",true);source.put("href","");}
         if(deleted&&rule==null&&!Set.of("JOINED","CLAIMABLE","CLAIMED").contains(text(source.get("userStatus"))))throw new BizException(404,"EVENT_NOT_FOUND");
         if (rule == null) {
-            source = new LinkedHashMap<>(source);
-            source.remove("authoredRewardName");
+            source = legacyRewardDisplay(source);
             String status = text(source.get("userStatus"));
             String state = text(source.get("state"));
             var reward = !deleted && "CLAIMABLE".equals(status) ? events.findClaimableLegacyEvent(id, code) : null;
