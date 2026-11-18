@@ -271,7 +271,15 @@ public class PromotionAdminService {
         String current=text(v.get("status"));String expected=switch(action){case "submit"->"DRAFT";case "approve","reject"->"PENDING_APPROVAL";case "publish"->"APPROVED";case "withdraw"->current;default->throw new BizException(422,"PROMOTION_ACTION_INVALID");};require(expected.equals(current)&&(!"withdraw".equals(action)||Set.of("PENDING_APPROVAL","APPROVED").contains(current)),"PROMOTION_VERSION_STATE_INVALID");
         var draft=parse(v.get("contract_json"));Map<String,Object> resolved=Map.of();
         if("submit".equals(action))draft=validator.completeAuthoredCopy(draft,"title","terms");
-        if(!Set.of("reject","withdraw").contains(action)){validator.validate("PromotionContract",draft);validateWindow(draft);banners.validateAsset(draft.get("bannerAssetId"));natives.fixtureAllowed(p.get("fixture_run_id"));resolved=governancePolicies(draft,true);semantic(id,draft,resolved);}
+        if(!Set.of("reject","withdraw").contains(action)){
+            validator.validate("PromotionContract",draft);
+            if("approve".equals(action)||"publish".equals(action))validator.validateRecordedAuthoredCopy(draft,"title","terms");
+            validateWindow(draft);
+            banners.validateAsset(draft.get("bannerAssetId"));
+            natives.fixtureAllowed(p.get("fixture_run_id"));
+            resolved=governancePolicies(draft,true);
+            semantic(id,draft,resolved);
+        }
         long actor=actor();
         if("approve".equals(action)||"publish".equals(action)){
             var auth=PromotionPolicyResolver.content(resolved,"authorization");
