@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.ContentConversationDetail;
+import ffdd.opsconsole.content.domain.ContentConversationDetail.AppWriteState;
 import ffdd.opsconsole.content.domain.ContentConversationMessageView;
 import ffdd.opsconsole.content.domain.ContentConversationView;
 import ffdd.opsconsole.content.domain.ConversationRepository;
@@ -231,7 +232,7 @@ public class AppSupportService {
         boolean truncated=fetched.size()>APP_MESSAGE_WINDOW;
         var page=fetched.stream().skip(truncated?1:0).toList();
         return ApiResult.ok(new ContentConversationDetail(appConversation(conversation,true),page,null,truncated,
-                truncated && !page.isEmpty()?page.get(0).id():null));
+                truncated && !page.isEmpty()?page.get(0).id():null, appWriteState(conversation)));
     }
 
     private ContentConversationDetail conversationDetail(ContentConversationView conversation, Long beforeMessageId) {
@@ -242,7 +243,16 @@ public class AppSupportService {
         boolean truncated = fetched.size() > APP_MESSAGE_WINDOW;
         List<ContentConversationMessageView> page = fetched.stream().skip(truncated ? 1 : 0).toList();
         Long nextCursor = truncated && !page.isEmpty() ? page.get(0).id() : null;
-        return new ContentConversationDetail(appConversation(conversation), page, null, truncated, nextCursor);
+        return new ContentConversationDetail(appConversation(conversation), page, null, truncated, nextCursor,
+                appWriteState(conversation));
+    }
+
+    private AppWriteState appWriteState(ContentConversationView conversation) {
+        if (!CONVERSATION_TYPES.contains(normalizeUpper(conversation.conversationType()))) return null;
+        // The unprojected row carries the active assignment, as it does for Ops detail.
+        String writableConversationNo = conversationRepository.currentCustomerConversationForRead(
+                conversation.userId(), conversation.ownerAgentId());
+        return new AppWriteState(conversation.conversationNo().equals(writableConversationNo), writableConversationNo);
     }
 
     public ApiResult<List<SupportFaqView>> faqs(Long userId, String language, String category) {
