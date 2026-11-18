@@ -12,6 +12,10 @@ import org.springframework.web.servlet.HandlerMapping;
 public record AdminCommandOrigin(long actorId, String method, String path, String target, String readAuthority,
                                  List<Target> targets) {
     private static final String PURCHASE_PAYMENT_POLICY_PREFIX = "D1:PURCHASE_PAYMENT_POLICY:";
+    private static final String G2_PARAM_PREFIX = "ADMIN:G2:PARAM:";
+    private static final String G2_PARAM_PATH = "/api/admin/market/exchange/params/";
+    private static final List<String> G2_PARAMETERS = List.of("userDailyCap", "platformDailyCap", "fee", "feeMin",
+            "queueMode", "queueEtaHours", "queueEtaCopy", "queueEtaCopyZh", "queueEtaCopyVi");
     private static final String H4_PREFIX = "GROWTH:H4:";
     private static final java.util.Set<String> H4_DIRECT_OPERATIONS = java.util.Set.of(
             "EVENT_CREATE", "EVENT_RULE_UPDATE", "EVENT_LOCALIZED_CONTENT_UPDATE", "EVENT_DELETE",
@@ -40,6 +44,11 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (actor < 1 || !request.getRequestURI().startsWith("/api/admin/") || request.getRequestURI().length() > 512) return null;
         Object variables = request.getAttribute(HandlerMapping.URI_TEMPLATE_VARIABLES_ATTRIBUTE);
         String target = boundTarget;
+        String g2Param = g2ParameterKey(scope);
+        if (g2Param != null) {
+            if (!"PATCH".equals(request.getMethod()) || !(G2_PARAM_PATH + g2Param).equals(request.getRequestURI())) return null;
+            target = g2Param;
+        }
         if (target == null && variables instanceof Map<?, ?> map && !map.isEmpty()) {
             var canonical = new TreeMap<String, String>();
             map.forEach((name, value) -> {
@@ -88,6 +97,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
 
     public static String readAuthority(String scope) {
         if (scope == null) return null;
+        if (g2ParameterKey(scope) != null) return "finprod_g2_read";
         if (d1CommandScope(scope)) return "finance_d1_read";
         if (purchasePaymentPolicyScope(scope)) return "finance_d1_read";
         if (scope.startsWith("D2")) return "finance_d2_read";
@@ -137,6 +147,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
 
     public static boolean supported(String scope) {
         return scope != null && (scope.matches("(?:D2|D3|E4|H2|K1|J1|I5|C[1-6])(?:[_:].*)?")
+                || g2ParameterKey(scope) != null
                 || d1CommandScope(scope)
                 || purchasePaymentPolicyScope(scope)
                 || scope.startsWith("E2_POOL_") || scope.startsWith("E5_DEVICE_") || scope.startsWith("E6_PHONE_")
@@ -166,6 +177,13 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || e3TradeinScope(scope)
                 || fCommandScope(scope)
                 || "A2_COMMAND".equals(scope) || "L_BI_REPORT_CREATE".equals(scope) || scope.startsWith("L_BI_REPORT_ACTION"));
+    }
+
+    public static String g2ParameterKey(String scope) {
+        if (scope == null || !scope.startsWith(G2_PARAM_PREFIX)) return null;
+        String suffix = scope.substring(G2_PARAM_PREFIX.length());
+        return G2_PARAMETERS.stream().filter(key -> key.equals(suffix) || key.toUpperCase(java.util.Locale.ROOT).equals(suffix))
+                .findFirst().orElse(null);
     }
 
     static boolean h4DirectScope(String scope) {
