@@ -887,22 +887,29 @@ public class OpsTreasuryService {
             throw new BizException(400, "VOUCHER_NO_REQUIRED");
         }
         String voucherNo = request.voucherNo().trim();
-        if (!voucherNo.matches("[A-Za-z0-9][A-Za-z0-9:_./-]{5,95}")
-                || voucherNo.matches("(?i)^D3-\\d+$")
-                || voucherNo.matches("(?i).*(bootstrap|fixture).*")) {
-            throw new BizException(400, "VOUCHER_NO_INVALID");
-        }
         String reason = request.reason().trim();
         String operator = AdminActorResolver.resolve(request.operator());
         if (!StringUtils.hasText(operator)) {
             throw new BizException(400, OpsErrorCode.OPERATOR_REQUIRED.name());
         }
+        // Replay the original receipt before the voucher format rules below so that a
+        // tightened rule never re-judges an already booked injection retried under the same key.
         return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.executeBound(
                 D3_RESERVE_INJECTION_IDEMPOTENCY_SCOPE,
                 idempotencyKey,
                 reserveInjectionRequestHash(amount, voucherNo, reason, operator),
                 ApiResult.class, "finance_d3_read", voucherNo.toUpperCase(Locale.ROOT),
-                () -> createInjectionNew(idempotencyKey.trim(), amount, voucherNo, reason, operator));
+                () -> createInjectionValidated(idempotencyKey.trim(), amount, voucherNo, reason, operator));
+    }
+
+    private ApiResult<Map<String, Object>> createInjectionValidated(
+            String idempotencyKey, BigDecimal amount, String voucherNo, String reason, String operator) {
+        if (!voucherNo.matches("[A-Za-z0-9][A-Za-z0-9:_./-]{5,95}")
+                || voucherNo.matches("(?i)^D3-\\d+$")
+                || voucherNo.matches("(?i).*(bootstrap|fixture).*")) {
+            throw new BizException(400, "VOUCHER_NO_INVALID");
+        }
+        return createInjectionNew(idempotencyKey, amount, voucherNo, reason, operator);
     }
 
     /**
