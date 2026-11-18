@@ -108,11 +108,11 @@ public class OAuthProviderClient {
     }
 
     private boolean configured(Provider provider) {
-        if (publicTest(environment) && provider != Provider.GOOGLE && provider != Provider.TELEGRAM) return false;
         try {
             publicBaseUrl();
             h5Origin();
-            if (provider == Provider.APPLE && AppleClientSecret.usesSigningKey(environment))
+            if (provider == Provider.APPLE
+                    && (publicTest(environment) || AppleClientSecret.usesSigningKey(environment)))
                 return AppleClientSecret.configured(environment);
             return !property(provider, "client-id").isEmpty() && !property(provider, "client-secret").isEmpty();
         } catch (BizException exception) { return false; }
@@ -129,6 +129,18 @@ public class OAuthProviderClient {
                 throw new IllegalArgumentException();
             return value;
         } catch (RuntimeException exception) { throw new BizException(503, "OAUTH_PROVIDER_NOT_CONFIGURED"); }
+    }
+
+    public boolean allowsAppleOnRequest(String serverName, String origin) {
+        if (!publicTest(environment)) return true;
+        try {
+            String appOrigin = h5Origin();
+            boolean testHost = URI.create(publicBaseUrl()).getHost().equalsIgnoreCase(serverName)
+                    || URI.create(appOrigin).getHost().equalsIgnoreCase(serverName);
+            return testHost && (origin == null || appOrigin.equals(origin));
+        } catch (BizException exception) {
+            return false;
+        }
     }
 
     public void requireConfigured(Provider provider) {
