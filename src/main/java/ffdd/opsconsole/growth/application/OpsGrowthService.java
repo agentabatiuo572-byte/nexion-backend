@@ -3832,7 +3832,47 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         banner.put("promoBannerConfigurable", false);
         banner.put("promoBannerRetired", true);
         banner.put("promoBannerRetiredReason", OpsErrorCode.RETIRED_FEATURE.name());
+        // Same banner row, same daily amount the weekly promo projection turns into product.dailyUsdt.
+        banner.put("targetDailyAsset", promoBannerTargetDailyAsset(banner));
+        // productType only feeds the judgement above; it is not part of this read and must not leak.
+        banner.remove("productType");
         return banner;
+    }
+
+    /**
+     * Currency of the banner's target daily amount under the existing weekly-promo contract: the App
+     * projection yields a USDT daily amount only when the banner is not a share product, so a share
+     * banner, a missing value or an unparsable/negative one stays unknown instead of being labelled.
+     */
+    private String promoBannerTargetDailyAsset(Map<String, Object> banner) {
+        Object raw = banner.get("targetDaily");
+        BigDecimal daily;
+        try {
+            daily = raw == null ? null : new BigDecimal(String.valueOf(raw).trim());
+        } catch (NumberFormatException ex) {
+            daily = null;
+        }
+        if (daily == null || daily.signum() < 0) {
+            return null;
+        }
+        Object typeRaw = banner.get("productType");
+        String productType = typeRaw == null || String.valueOf(typeRaw).isBlank()
+                ? null : String.valueOf(typeRaw).trim();
+        boolean share = (productType != null && "SHARE".equalsIgnoreCase(productType))
+                || (productType == null && isCloudShareDeviceName(String.valueOf(banner.getOrDefault("targetDevice", ""))));
+        return share ? null : "USDT";
+    }
+
+    /** Mirrors only the home projection's cloud-share fallback, used when no product row matches. */
+    private boolean isCloudShareDeviceName(String value) {
+        if (!StringUtils.hasText(value)) {
+            return false;
+        }
+        String name = value.trim().toUpperCase(Locale.ROOT).replace('_', '-');
+        if (name.contains("PHONE")) {
+            return false;
+        }
+        return name.contains("CLOUD") || name.contains("SHARE");
     }
 
     private List<Map<String, Object>> taskMonitor() {
