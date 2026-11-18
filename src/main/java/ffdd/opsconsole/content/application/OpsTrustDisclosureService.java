@@ -171,8 +171,14 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (isTrustSandboxRuntime()) {
             String runId = trustSandboxRunId();
             if (runId == null) return failedPublishedSnapshot("TRUST_SECTION_SANDBOX_RUN_ID_REQUIRED", "SANDBOX", null);
-            AppTrustSectionsView view = sandboxPublishedTrustSections(runId);
-            return successfulPublishedSnapshot(view, sandboxSectionStatuses(view));
+            AppTrustSectionsView fixture = sandboxPublishedTrustSections(runId);
+            List<AppTrustSectionsView.Section> sections = new ArrayList<>();
+            List<TrustPublishedSnapshotView.SectionStatus> statuses = new ArrayList<>();
+            for (AppTrustSectionsView.Section section : fixture.sections()) {
+                appendPublicSection(section, false, sections, statuses);
+            }
+            return successfulPublishedSnapshot(new AppTrustSectionsView(
+                    true, "mock", "SANDBOX", runId, sections), statuses);
         }
 
         Map<String, TrustSectionView> published = new LinkedHashMap<>();
@@ -194,29 +200,10 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                     || !validPublishedTrustFields(version.fields())) {
                 return invalidPublishedSnapshot();
             }
-            // Editor content cannot supply measured finance, compliance, reserve ratio
-            // AI-client counts or exchange-listing proof. Keep published versions
-            // for audit/history while withholding unsupported public claims.
-            boolean unsupportedClaim = Set.of("financials", "complianceBadges", "listings").contains(section.key())
-                    || (trimToEmpty(version.operator()).startsWith("migration")
-                    && Set.of("leadership", "auditsReserves").contains(section.key()));
-            boolean missingAudit = "auditsReserves".equals(section.key()) && version.fields().stream()
-                    .noneMatch(field -> "document1Url".equals(field.key()) && isSafeTrustSectionLink(field.value()));
-            boolean unsupportedSubhero = version.fields().stream().anyMatch(field ->
-                    "subhero.en".equals(field.key()) && UNSUPPORTED_NEX_SUBHERO_CLAIMS.contains(field.value()));
-            List<AppTrustSectionsView.Field> fields = new ArrayList<>();
-            List<TrustPublishedSnapshotView.FieldStatus> fieldStatuses = new ArrayList<>();
-            for (TrustSectionVersionView.Field field : version.fields()) {
-                String withheldReason = withheldFieldReason(section.key(), field, unsupportedClaim, missingAudit, unsupportedSubhero);
-                fields.add(new AppTrustSectionsView.Field(field.key(), field.label(),
-                        withheldReason == null ? field.value() : ""));
-                fieldStatuses.add(new TrustPublishedSnapshotView.FieldStatus(field.key(),
-                        withheldReason != null && StringUtils.hasText(field.value()), withheldReason));
-            }
-            sections.add(new AppTrustSectionsView.Section(
-                    section.key(), version.version(), version.description(), version.structure(), fields));
-            statuses.add(new TrustPublishedSnapshotView.SectionStatus(
-                    section.key(), version.version(), true, null, fieldStatuses));
+            appendPublicSection(new AppTrustSectionsView.Section(section.key(), version.version(),
+                    version.description(), version.structure(), version.fields().stream()
+                            .map(field -> new AppTrustSectionsView.Field(field.key(), field.label(), field.value()))
+                            .toList()), trimToEmpty(version.operator()).startsWith("migration"), sections, statuses);
         }
 
         AppTrustSectionsView view = new AppTrustSectionsView(
@@ -224,7 +211,29 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         return successfulPublishedSnapshot(view, statuses);
     }
 
-    private String withheldFieldReason(String sectionKey, TrustSectionVersionView.Field field,
+    private void appendPublicSection(AppTrustSectionsView.Section section, boolean migrated,
+            List<AppTrustSectionsView.Section> sections, List<TrustPublishedSnapshotView.SectionStatus> statuses) {
+        String key = section.sectionKey();
+        // Editor content alone is not evidence for these claims, in either runtime.
+        boolean unsupportedClaim = Set.of("financials", "complianceBadges", "listings").contains(key)
+                || migrated && Set.of("leadership", "auditsReserves").contains(key);
+        boolean missingAudit = "auditsReserves".equals(key) && section.fields().stream()
+                .noneMatch(field -> "document1Url".equals(field.key()) && isSafeTrustSectionLink(field.value()));
+        boolean unsupportedSubhero = section.fields().stream().anyMatch(field ->
+                "subhero.en".equals(field.key()) && UNSUPPORTED_NEX_SUBHERO_CLAIMS.contains(field.value()));
+        List<AppTrustSectionsView.Field> fields = new ArrayList<>();
+        List<TrustPublishedSnapshotView.FieldStatus> fieldStatuses = new ArrayList<>();
+        for (AppTrustSectionsView.Field field : section.fields()) {
+            String reason = withheldFieldReason(key, field, unsupportedClaim, missingAudit, unsupportedSubhero);
+            fields.add(new AppTrustSectionsView.Field(field.key(), field.label(), reason == null ? field.value() : ""));
+            fieldStatuses.add(new TrustPublishedSnapshotView.FieldStatus(field.key(),
+                    reason != null && StringUtils.hasText(field.value()), reason));
+        }
+        sections.add(new AppTrustSectionsView.Section(key, section.version(), section.description(), section.structure(), fields));
+        statuses.add(new TrustPublishedSnapshotView.SectionStatus(key, section.version(), true, null, fieldStatuses));
+    }
+
+    private String withheldFieldReason(String sectionKey, AppTrustSectionsView.Field field,
                                        boolean unsupportedClaim, boolean missingAudit,
                                        boolean unsupportedSubhero) {
         if (unsupportedClaim) return "UNSUPPORTED_SECTION_CLAIM";
@@ -245,15 +254,6 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         return null;
     }
 
-    private List<TrustPublishedSnapshotView.SectionStatus> sandboxSectionStatuses(AppTrustSectionsView view) {
-        return view.sections().stream()
-                .map(section -> new TrustPublishedSnapshotView.SectionStatus(
-                        section.sectionKey(), section.version(), true, null,
-                        section.fields().stream()
-                                .map(field -> new TrustPublishedSnapshotView.FieldStatus(field.key(), false, null))
-                                .toList()))
-                .toList();
-    }
 
     private PublishedBuild successfulPublishedSnapshot(AppTrustSectionsView view,
                                                        List<TrustPublishedSnapshotView.SectionStatus> sections) {
@@ -1707,6 +1707,9 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         }
         Set<String> keys = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
         for (TrustSectionVersionView.Field field : fields) {
+            if (field != null && trustFieldValueTooLong(field.key(), field.value())) {
+                return ApiResult.fail(422, "TRUST_SECTION_FIELD_VALUE_TOO_LONG");
+            }
             if (field == null || !StringUtils.hasText(field.key())
                     || !APP_TRUST_FIELD_KEY_PATTERN.matcher(field.key().trim()).matches()
                     || !StringUtils.hasText(field.label()) || field.value() == null
@@ -1787,6 +1790,9 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                     || !keys.add(field.key().trim()) || containsUnsafeText(field.key(), field.label())) {
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_STRUCTURED_FIELDS_INVALID");
             }
+            if (trustFieldValueTooLong(field.key(), field.value())) {
+                return ApiResult.fail(422, "TRUST_SECTION_FIELD_VALUE_TOO_LONG");
+            }
             if (linkField) {
                 if (!field.value().isEmpty() && !isSafeTrustSectionLink(field.value())) {
                     return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_LINK_INVALID");
@@ -1854,6 +1860,10 @@ public class OpsTrustDisclosureService implements AuditReplayable {
     private boolean isOptionalBaseLocaleField(String key) {
         Matcher matcher = LOCALIZED_TRUST_FIELD_PATTERN.matcher(key.trim());
         return matcher.matches() && OPTIONAL_BASE_LANGUAGES.contains(matcher.group(2).toLowerCase(Locale.ROOT));
+    }
+
+    private boolean trustFieldValueTooLong(String key, String value) {
+        return value != null && !isLinkField(key) && value.codePointCount(0, value.length()) > 500;
     }
 
     private boolean isLinkField(String key) {
