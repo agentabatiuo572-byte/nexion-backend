@@ -246,7 +246,7 @@ public class OpsSessionTemplateService {
         String scriptId = uniqueContentId("AS", now);
         SessionScriptView created = templateRepository.createScript(scriptId, normalizeScriptRequest(request), now);
         i18nLearningRepository.saveMessagePair("conversation.script." + created.id().toLowerCase(Locale.ROOT),
-                created.text(), "", "", "draft", now);
+                "", created.text(), "", "draft", now);
         audit("M5_SESSION_SCRIPT_CREATED", created.id(), request.operator(), detail(
                 "scriptGroup", created.scriptGroup(),
                 "ctaPath", created.ctaPath(),
@@ -359,7 +359,7 @@ public class OpsSessionTemplateService {
         String templateId = uniqueContentId("RT", now);
         SessionReplyTemplateView created = templateRepository.createReplyTemplate(templateId, normalizeReplyTemplateRequest(request), now);
         i18nLearningRepository.saveMessagePair("conversation.template." + created.id().toLowerCase(Locale.ROOT),
-                created.text(), "", "", "draft", now);
+                "", created.text(), "", "draft", now);
         audit("M5_SESSION_REPLY_TEMPLATE_CREATED", created.id(), request.operator(), detail(
                 "type", created.type(),
                 "status", created.status(),
@@ -429,15 +429,16 @@ public class OpsSessionTemplateService {
     }
 
     /**
-     * The Chinese source may be published on its own; missing translations fall back to it.
-     * Translations that do exist must still match the source, so a stale one never reaches customers.
+     * The body sent by the workbench is the English original; optional translations must preserve its variables.
      */
-    private String requirePublishedLocalizedCopy(String kind, String contentId, String canonicalZh) {
+    private String requirePublishedLocalizedCopy(String kind, String contentId, String canonicalEn) {
         String messageKey = "conversation." + kind + "." + contentId.toLowerCase(Locale.ROOT);
         I18nMessagePairView localized = i18nLearningRepository.findPublishedMessagePair(messageKey).orElse(null);
-        if (localized == null || !"published".equalsIgnoreCase(localized.status())) return null;
-        Set<String> canonicalPlaceholders = placeholders(canonicalZh);
-        if (StringUtils.hasText(localized.zh()) && !canonicalZh.trim().equals(localized.zh().trim())) {
+        if (localized == null || !"published".equalsIgnoreCase(localized.status())) {
+            return "SESSION_TEMPLATE_I18N_ENGLISH_PUBLICATION_REQUIRED";
+        }
+        Set<String> canonicalPlaceholders = placeholders(canonicalEn);
+        if (!StringUtils.hasText(localized.en()) || !canonicalEn.trim().equals(localized.en().trim())) {
             return "SESSION_TEMPLATE_I18N_MISMATCH";
         }
         for (String copy : new String[] {localized.en(), localized.zh(), localized.vi()}) {

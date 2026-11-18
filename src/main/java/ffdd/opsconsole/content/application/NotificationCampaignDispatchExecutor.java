@@ -37,6 +37,9 @@ public class NotificationCampaignDispatchExecutor {
         if (!OpsNotificationCampaignService.validDelivery(campaign.kind(), campaign.ctaLabel(), campaign.ctaHref())) {
             throw new BizException(422, "NOTIFICATION_DELIVERY_CONFIG_INVALID");
         }
+        if (OpsNotificationCampaignService.translatedCtaTooLong(campaign.translations())) {
+            throw new BizException(422, "NOTIFICATION_CAMPAIGN_TEXT_TOO_LONG");
+        }
         if (!repository.claimForImmediateDispatch(campaignNo, expectedRevision, now)) {
             throw new ConcurrentDispatchException();
         }
@@ -65,6 +68,13 @@ public class NotificationCampaignDispatchExecutor {
             throw new BizException(422, "NOTIFICATION_DELIVERY_CONFIG_INVALID");
         }
         if (!repository.claimScheduled(campaignNo, now)) {
+            return 0;
+        }
+        if (OpsNotificationCampaignService.translatedCtaTooLong(campaign.translations())) {
+            repository.completeDispatch(campaignNo, "FAILED", 0, "按钮文字过长（最多 64 字），请先修改", "system", now);
+            audit("I3_NOTIFICATION_CAMPAIGN_SCHEDULE_FAILED", campaignNo, "system",
+                    "i3:schedule:" + campaignNo, "按钮文字超过投递上限",
+                    Map.of("failure", "NOTIFICATION_CAMPAIGN_TEXT_TOO_LONG"));
             return 0;
         }
         long audience = repository.estimateAudience(campaign.audienceTarget(), currentPhase, now);

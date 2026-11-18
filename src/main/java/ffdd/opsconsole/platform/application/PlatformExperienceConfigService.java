@@ -102,7 +102,10 @@ public class PlatformExperienceConfigService {
         Optional<String> value = config.activeValue(key);
         if (value.isEmpty()) return defaults;
         try {
-            return configuredLanguages(objectMapper.readTree(value.get()), codes, required);
+            JsonNode root = objectMapper.reader()
+                    .with(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                    .readTree(value.get());
+            return configuredLanguages(root, codes, required);
         } catch (JsonProcessingException ex) {
             return null;
         }
