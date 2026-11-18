@@ -2641,10 +2641,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         if (!validTransition) {
             return validation("EVENT_STATUS_TRANSITION_INVALID");
         }
-        // 转入 ongoing = 对用户发布。App 的三语文案来自 growth.content.localized,
-        // 缺 zh/vi 时 AppGrowthEngagementMapper.eventState 会静默回退事件原文
-        // (中文 App 显示 "Daily Lucky Spin")。发布前必须填全,否则不该发布。
-        // en 允许回退原文,不校验。
+        // 转入 ongoing 对用户发布，三语文案必须显式配置在 growth.content.localized。
         if ("ongoing".equals(status)) {
             List<Map<String, Object>> missing = eventLocalizedContentGaps(id);
             if (!missing.isEmpty()) {
@@ -6506,22 +6503,13 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         return new LinkedHashMap<>();
     }
 
-    /** H4 事件必须显式配置的语言:en 允许回退事件原文,zh/vi 必须人工填写。 */
-    private static final List<String> REQUIRED_EVENT_LOCALES = List.of("zh", "vi");
-    private static final List<String> REQUIRED_EVENT_FIELDS = List.of("name", "description", "rewardName");
-
-    /**
-     * 该事件缺哪些 locale/field,是"能否发布"的唯一判定来源。
-     *
-     * <p>PC 从同一响应的 contentLocales 派生同一份清单;这里给出发布门的判定,
-     * 两侧读同一份 growth.content.localized,不存在第二套真相。</p>
-     */
+    /** 活动发布前缺少的语言文案。 */
     private List<Map<String, Object>> eventLocalizedContentGaps(String eventCode) {
         Map<String, Object> item = eventLocalizedContent(eventCode);
         List<Map<String, Object>> missing = new ArrayList<>();
-        for (String locale : REQUIRED_EVENT_LOCALES) {
+        for (String locale : H4EventRuleService.REQUIRED_EVENT_LOCALES) {
             Map<String, Object> languages = localizedBranch(item, locale);
-            for (String field : REQUIRED_EVENT_FIELDS) {
+            for (String field : H4EventRuleService.REQUIRED_EVENT_FIELDS) {
                 Object translated = languages.get(field);
                 if (!(translated instanceof String value) || !StringUtils.hasText(value)) {
                     missing.add(row("eventCode", eventCode, "field", field, "locale", locale));

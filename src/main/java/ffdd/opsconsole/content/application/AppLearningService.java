@@ -436,7 +436,7 @@ public class AppLearningService {
             case "en" -> question.optionsEn();
             default -> question.optionsZh();
         };
-        if (values == null || values.isEmpty()) values = question.optionsZh();
+        if ("vi".equals(locale) && (values == null || values.isEmpty())) values = question.optionsEn();
         return values == null ? List.of() : values;
     }
 
@@ -451,7 +451,6 @@ public class AppLearningService {
             default -> zh;
         };
         if (StringUtils.hasText(selected)) return selected;
-        if (StringUtils.hasText(zh)) return zh;
         return StringUtils.hasText(en) ? en : "";
     }
 

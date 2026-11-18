@@ -285,10 +285,12 @@ public class AppSupportService {
         long safeSize = Math.max(1L, Math.min(50L, pageSize == null ? 20L : pageSize));
         long requestedCount = knowledgeRepository.countPublishedFaqs(
                 normalizedLanguage, normalizedSurface, normalizedCategory);
-        String effectiveLanguage = requestedCount > 0L || InterfaceLanguages.isAdditional(normalizedLanguage)
-                ? normalizedLanguage : "zh-CN";
-        long total = effectiveLanguage.equalsIgnoreCase(normalizedLanguage) ? requestedCount
-                : knowledgeRepository.countPublishedFaqs(effectiveLanguage, normalizedSurface, normalizedCategory);
+        String effectiveLanguage = normalizedLanguage;
+        long total = requestedCount;
+        if (requestedCount == 0L && "vi-VN".equals(normalizedLanguage)) {
+            effectiveLanguage = "en-US";
+            total = knowledgeRepository.countPublishedFaqs(effectiveLanguage, normalizedSurface, normalizedCategory);
+        }
         long offset;
         try {
             offset = Math.multiplyExact(safePage - 1L, safeSize);
