@@ -18,13 +18,17 @@ public final class I18nCopyQuality {
     public static boolean isComplete(I18nMessagePairView message) {
         return message != null && "published".equals(message.status())
                 && publishError(message.zh(), message.en(), message.vi()) == null
-                && placeholders(message.zh()).equals(placeholders(message.en()))
-                && placeholders(message.zh()).equals(placeholders(message.vi()));
+                && placeholdersMatch(message.en(), message.zh(), message.vi());
     }
 
     public static boolean placeholdersMatch(String english, java.util.Map<String, String> translations) {
         var expected = placeholders(english);
         return translations.values().stream().allMatch(value -> expected.equals(placeholders(value)));
+    }
+
+    public static boolean placeholdersMatch(String english, String zh, String vi) {
+        var expected = placeholders(english);
+        return expected.equals(placeholders(zh)) && expected.equals(placeholders(vi));
     }
 
     public static List<String> integrityIssueCodes(I18nMessagePairView message) {
@@ -35,11 +39,8 @@ public final class I18nCopyQuality {
         if (!hasZh) issues.add("missing-zh");
         if (!hasEn) issues.add("missing-en");
         if (!hasVi) issues.add("missing-vi");
-        if (hasZh && hasEn && hasVi) {
-            Set<String> zh = placeholders(message.zh());
-            if (!zh.equals(placeholders(message.en())) || !zh.equals(placeholders(message.vi()))) {
-                issues.add("placeholder");
-            }
+        if (hasZh && hasEn && hasVi && !placeholdersMatch(message.en(), message.zh(), message.vi())) {
+            issues.add("placeholder");
         }
         if (isPlaceholderText(message.zh()) || isPlaceholderText(message.en()) || isPlaceholderText(message.vi())) {
             issues.add("placeholder-text");
@@ -77,7 +78,7 @@ public final class I18nCopyQuality {
         return RetiredBrandGate.anyCarriesRetiredBrand(zh, en, vi) ? RetiredBrandGate.REASON : null;
     }
 
-    private static boolean hasCopyText(String value) {
+    public static boolean hasCopyText(String value) {
         return value != null && !value.matches("[\\p{javaWhitespace}\\p{Z}\\uFEFF]*");
     }
 }
