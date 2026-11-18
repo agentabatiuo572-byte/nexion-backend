@@ -72,7 +72,8 @@ public class H4EventEngine {
         String asset=text(row.get("rewardType"));
         if(!"wheel".equals(row.get("kind"))&&("UVT".equals(asset)||"USDT".equals(asset))){
             BigDecimal amount=number(row.get("rewardAmount"));
-            if(amount.signum()>0)row.put("rewardName",amount.stripTrailingZeros().toPlainString()+" "+asset);
+            // App and Lite prepend rewardAmount to the cash reward label.
+            if(amount.signum()>0)row.put("rewardName",asset);
         }
         return row;
     }
