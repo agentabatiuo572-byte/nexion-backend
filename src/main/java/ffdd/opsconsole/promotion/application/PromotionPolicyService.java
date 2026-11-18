@@ -99,7 +99,9 @@ public class PromotionPolicyService {
 
     public Map<String,Object> create(String id,Map<String,Object> request){
         validator.validate(id==null?"PolicyDraft":"PolicyVersionInput",request);
-        var content=map(request.get("content"));long version=1;
+        var content=validator.completeAuthoredCopy(map(request.get("content")),"rightsDescription","availabilityDescription","terms");
+        validator.validate("StoredPolicyContent",content);
+        long version=1;
         if(id!=null){
             var last=db.requiredRow("SELECT * FROM nx_promotion_policy WHERE policy_id=? ORDER BY version DESC LIMIT 1 FOR UPDATE",id);
             require(number(last.get("revision"))==number(request.get("expectedRevision")),"PROMOTION_CONCURRENT_CHANGE");
@@ -144,7 +146,7 @@ public class PromotionPolicyService {
             require(maker!=actor,"PROMOTION_MAKER_CHECKER_REQUIRED");
             natives.fixtureAllowed(row.get("fixture_run_id"));
             evidence(evidence.get("evidenceRefs"),actor);
-            var content=parse(row.get("content_json"));validator.validate("PolicyContent",content);
+            var content=parse(row.get("content_json"));validator.validate("StoredPolicyContent",content);
             var resolved=natives.resolve(content);evidence.putAll(resolved);
             changed(db.write("UPDATE nx_promotion_policy SET status='APPROVED',approval_ref=?,approved_by=?,approved_at=NOW(6),evidence_json=?,revision=revision+1 WHERE policy_id=? AND version=? AND revision=?",
                 id("PPA"),actor,json(evidence),id,version,row.get("revision")));
