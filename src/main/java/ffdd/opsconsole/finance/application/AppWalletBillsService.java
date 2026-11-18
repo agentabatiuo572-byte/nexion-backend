@@ -285,7 +285,8 @@ public class AppWalletBillsService {
             case "DAILY_CHECK_IN" -> "dailyCheckIn";
             case "TRIAL_CHARGE" -> "trialCharge";
             case "TRIAL_BONUS" -> "trialBonus";
-            case "QUEST_REWARD" -> "questReward";
+            case "QUEST_REWARD" -> bizNo != null && bizNo.matches("QUEST:DAY_ONE:[1-9][0-9]*:DAY_ONE:[0-9]{8}T[0-9]{6}")
+                    ? "newcomerTaskReward" : "questReward";
             case "PURCHASE_REWARD" -> "purchaseReward";
             // 课程奖励此前落进通用 bonus 码,三笔同日 +10 UVT 在奖励账本里完全同名
             // 且无来源,用户与客服无法逐笔追溯(zentao #219)。给这一族自己的码位。

@@ -183,7 +183,7 @@ public class OpsEventCenterService {
                 COMMON_FIELDS,
                 dimensionParams(),
                 kpiFormulas(),
-                governanceMapper.listSchemas(50),
+                namedSchemas(governanceMapper.listSchemas(50)),
                 batches,
                 recentLogs(),
                 auditLogService.topActions(statsQuery(7, 10)),
@@ -199,7 +199,18 @@ public class OpsEventCenterService {
             return fail(OpsErrorCode.VALIDATION_FAILED, "A4_SCHEMA_EVENT_NAME_INVALID");
         }
         EventCenterOverview.EventSchemaRegistration schema = governanceMapper.findSchemaRegistration(normalized);
-        return schema == null ? ApiResult.fail(404, "A4_EVENT_SCHEMA_NOT_FOUND") : ApiResult.ok(schema);
+        return schema == null ? ApiResult.fail(404, "A4_EVENT_SCHEMA_NOT_FOUND")
+                : ApiResult.ok(schema.withDisplayName(configFacade.activeValue(eventDisplayNameKey(normalized)).orElse(null)));
+    }
+
+    private List<EventCenterOverview.EventSchemaRegistration> namedSchemas(List<EventCenterOverview.EventSchemaRegistration> schemas) {
+        var names = configFacade.activeValuesByKeys(schemas.stream()
+                .map(schema -> eventDisplayNameKey(schema.eventName())).toList());
+        return schemas.stream().map(schema -> schema.withDisplayName(names.get(eventDisplayNameKey(schema.eventName())))).toList();
+    }
+
+    private String eventDisplayNameKey(String eventName) {
+        return "a4.event_label." + requestHash(eventName);
     }
 
     @Transactional
@@ -251,6 +262,7 @@ public class OpsEventCenterService {
                 normalized.eventName(), normalized.ownerDomain(), normalized.producer(), normalized.consumer(),
                 normalized.propertyName(), normalized.propertyType(), String.valueOf(normalized.serverAuthoritative()),
                 normalized.samplingPolicy(), normalized.expectedVersion(), normalized.reason());
+        if (normalized.displayName() != null) hash = requestHash(hash, normalized.displayName());
         return (ApiResult<EventCenterOverview>) idempotencyService.execute(
                 "A4_SCHEMA:" + normalized.eventName(), idempotencyKey.trim(), hash, ApiResult.class,
                 () -> registerSchemaOnce(normalized, idempotencyKey.trim()));
@@ -648,6 +660,10 @@ public class OpsEventCenterService {
                 }
             }
             governanceMapper.insertProperty(schemaId, schema.propertyName(), schema.propertyType(), nextRevision);
+            if (schema.displayName() != null) {
+                configFacade.upsertAdminValue(eventDisplayNameKey(schema.eventName()), schema.displayName(),
+                        "STRING", "a4_event_labels", "运营事件名称");
+            }
             if (schema.extensionDomain()
                     && governanceMapper.completeDomainExtension(schema.ownerDomain(), schema.eventName()) != 1) {
                 throw new IllegalStateException("A4_DOMAIN_EXTENSION_CLOSE_FAILED");
@@ -904,8 +920,14 @@ public class OpsEventCenterService {
             throw new IllegalArgumentException("A4_SERVER_AUTHORITY_REQUIRED");
         }
         String sampling = normalizeSampling(lowerRequired(request.samplingPolicy(), "A4_SCHEMA_SAMPLING_REQUIRED"), protectedFamily);
+        String displayName = StringUtils.hasText(request.displayName()) ? request.displayName().trim() : null;
+        if (displayName != null && (displayName.codePointCount(0, displayName.length()) > 64
+                || displayName.codePoints().anyMatch(Character::isISOControl)
+                || containsPiiTerm(displayName) || containsSunsetTerm(displayName))) {
+            throw new IllegalArgumentException("A4_EVENT_DISPLAY_NAME_INVALID");
+        }
         return new NormalizedSchema(eventName, ownerDomain, familyKey, producer, consumer, propertyName,
-                propertyType, authoritative, sampling, expectedVersion, reason, extensionDomain);
+                propertyType, authoritative, sampling, expectedVersion, reason, extensionDomain, displayName);
     }
 
     NormalizedSchemaProperty normalizeSchemaProperty(ExistingSchemaPropertyRequest request) {
@@ -1164,7 +1186,8 @@ public class OpsEventCenterService {
             String samplingPolicy,
             String expectedVersion,
             String reason,
-            boolean extensionDomain) {
+            boolean extensionDomain,
+            String displayName) {
     }
 
     record NormalizedSchemaProperty(

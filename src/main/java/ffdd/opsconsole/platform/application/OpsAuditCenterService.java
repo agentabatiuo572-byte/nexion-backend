@@ -1711,6 +1711,10 @@ public class OpsAuditCenterService {
 
     private String objectDisplayName(AuditOperationTicketEntity row, AuditReplayCommand command,
             Map<Long, String> displayNames) {
+        if (H3GrowthApproval.supports(command) && command.params() != null
+                && command.params().get("values") instanceof Map<?, ?> values
+                && "dayOne.triReward".equals(values.get("configKey"))
+                && "dayOne.triReward".equals(row.getObjectText())) return "新手任务奖励";
         if (G4ParamApproval.supports(command)) {
             var target = G4ParamApproval.target(command);
             if (target != null && target.id().equals(row.getObjectText())) {
