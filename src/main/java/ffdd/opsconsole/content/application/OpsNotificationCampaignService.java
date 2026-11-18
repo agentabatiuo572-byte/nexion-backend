@@ -187,6 +187,10 @@ public class OpsNotificationCampaignService {
                     if (expectedRevision != current.revision()) {
                         return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_STALE_VERSION");
                     }
+                    if (request.translations() == null
+                            && !validTranslations(current.translations(), copy.titleEn(), copy.bodyEn())) {
+                        return ApiResult.fail(422, "NOTIFICATION_TRANSLATIONS_INVALID");
+                    }
                     ApiResult<NotificationCampaignRow> budgetGuard = requireBudgetPrecision(request.budget());
                     if (budgetGuard != null) return budgetGuard;
                     NotificationCampaignDraftRequest normalized = normalizeDraft(request, copy);
@@ -544,8 +548,14 @@ public class OpsNotificationCampaignService {
         return codePointLength(title) > 128 || codePointLength(body) > 512;
     }
 
+    static boolean translatedCtaTooLong(Map<String, NotificationTranslation> translations) {
+        return translations != null && translations.values().stream()
+                .anyMatch(value -> value != null && codePointLength(value.ctaLabel()) > 64);
+    }
+
     private boolean translationsTooLong(Map<String, NotificationTranslation> translations) {
         if (translations == null) return false;
+        if (translatedCtaTooLong(translations)) return true;
         for (NotificationTranslation translation : translations.values()) {
             if (translation != null && (codePointLength(translation.title()) > 128
                     || codePointLength(translation.body()) > 512)) return true;
@@ -553,7 +563,7 @@ public class OpsNotificationCampaignService {
         return false;
     }
 
-    private int codePointLength(String value) {
+    private static int codePointLength(String value) {
         return value == null ? 0 : value.codePointCount(0, value.length());
     }
 
@@ -668,9 +678,9 @@ public class OpsNotificationCampaignService {
         return translations.entrySet().stream().allMatch(entry -> {
             NotificationTranslation value = entry.getValue();
             if ("en".equals(entry.getKey())) return value != null && value.title().isEmpty()
-                    && value.body().isEmpty() && value.ctaLabel().length() <= 80;
+                    && value.body().isEmpty() && codePointLength(value.ctaLabel()) <= 64;
             return InterfaceLanguages.isAdditional(entry.getKey()) && value != null
-                    && value.title().length() <= 160 && value.body().length() <= 4000 && value.ctaLabel().length() <= 80
+                    && value.title().length() <= 160 && value.body().length() <= 4000 && codePointLength(value.ctaLabel()) <= 64
                     && !JSON_LIKE_PATTERN.matcher(value.body()).find()
                     && (value.title().isEmpty() || placeholders(title).equals(placeholders(value.title())))
                     && (value.body().isEmpty() || placeholders(body).equals(placeholders(value.body())));
@@ -857,7 +867,7 @@ public class OpsNotificationCampaignService {
     static boolean validDelivery(String kind, String ctaLabel, String ctaHref) {
         String normalizedKind = normalizeKind(kind);
         String normalizedHref = trimToEmpty(ctaHref);
-        if (!KINDS.contains(normalizedKind) || trimToEmpty(ctaLabel).length() > 64) return false;
+        if (!KINDS.contains(normalizedKind) || codePointLength(trimToEmpty(ctaLabel)) > 64) return false;
         if (normalizedHref.length() > 255 || CTA_ROUTES.stream().noneMatch(route -> route.value().equals(normalizedHref))) {
             return false;
         }
