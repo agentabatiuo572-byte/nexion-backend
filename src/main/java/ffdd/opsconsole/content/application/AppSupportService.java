@@ -33,6 +33,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
@@ -254,7 +255,9 @@ public class AppSupportService {
     private AppWriteState appWriteState(ContentConversationView conversation, String currentAdvisorId) {
         if (!CONVERSATION_TYPES.contains(normalizeUpper(conversation.conversationType()))) return null;
         String storedAdvisorId = conversation.ownerAgentId();
-        boolean canReply = storedAdvisorId == null || storedAdvisorId.equals(currentAdvisorId);
+        boolean canReply = Objects.equals(storedAdvisorId, currentAdvisorId)
+                || (storedAdvisorId == null && conversationRepository.canClaimUnassignedPeerForRead(
+                        conversation.conversationNo(), currentAdvisorId));
         String writableConversationNo = canReply ? conversation.conversationNo()
                 : conversationRepository.currentCustomerConversationForRead(conversation.userId(), currentAdvisorId);
         return new AppWriteState(canReply, writableConversationNo);
