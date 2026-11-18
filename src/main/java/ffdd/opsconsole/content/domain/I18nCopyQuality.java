@@ -78,10 +78,13 @@ public final class I18nCopyQuality {
                     .anyMatch(translation -> !expected.equals(placeholders(translation)));
             if (mismatch) issues.add("placeholder");
         }
-        if (isPlaceholderText(message.zh()) || isPlaceholderText(message.en()) || isPlaceholderText(message.vi())) {
+        String[] copies = Stream.concat(Stream.of(message.zh(), message.en(), message.vi()),
+                        message.translations().values().stream())
+                .filter(I18nCopyQuality::hasCopyText).toArray(String[]::new);
+        if (Stream.of(copies).anyMatch(I18nCopyQuality::isPlaceholderText)) {
             issues.add("placeholder-text");
         }
-        if (RetiredBrandGate.anyCarriesRetiredBrand(message.zh(), message.en(), message.vi())) {
+        if (RetiredBrandGate.anyCarriesRetiredBrand(copies)) {
             issues.add("retired-brand");
         }
         return issues;
