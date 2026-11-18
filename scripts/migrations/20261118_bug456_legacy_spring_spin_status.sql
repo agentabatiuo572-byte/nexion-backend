@@ -1,8 +1,7 @@
 -- The old wheel seed published this quest before H4 created its disabled rule.
 -- A pristine rule is still at revision 1 and has no activation or closure dates.
 -- A matching pending A2 lock protects the quest status captured by the proposal.
--- On a fresh local database the rule table is created after the startup list;
--- that later seed already inserts the quest as upcoming.
+-- Local startup also runs this file after the H4 rule table is created in post.
 SET @spring_spin_repair_sql = IF(
   EXISTS (SELECT 1 FROM information_schema.tables
            WHERE table_schema = DATABASE() AND table_name = 'nx_growth_event_rule'),
@@ -12,6 +11,7 @@ SET @spring_spin_repair_sql = IF(
     WHERE q.quest_code = ''evt-spring-spin''
       AND q.is_deleted = 0 AND q.status = 1
       AND q.starts_at IS NULL AND q.ends_at IS NULL
+      AND q.badge_achievement_code IS NULL
       AND r.enabled = 0 AND r.revision = 1
       AND r.activated_at IS NULL AND r.disabled_at IS NULL
       AND NOT EXISTS (
