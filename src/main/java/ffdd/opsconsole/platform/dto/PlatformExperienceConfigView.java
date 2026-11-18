@@ -11,5 +11,6 @@ public record PlatformExperienceConfigView(
         boolean homeWeeklyPromoEnabled,
         List<String> sources,
         String updatedAt,
-        List<String> interfaceLanguages) {
+        List<String> interfaceLanguages,
+        List<String> operatingLanguages) {
 }
