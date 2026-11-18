@@ -457,6 +457,9 @@ public class OpsAuditCenterService {
             ticket.setAfterValue(rewardReview.version() + " · "
                     + proposedReward.setScale(6, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString() + " UVT");
         }
+        if (H4GrowthApproval.supports(command)) {
+            command = replayBusinessPermissionGuard.bindH4EventCopy(command);
+        }
         if (command != null) {
             try {
                 com.fasterxml.jackson.databind.node.ObjectNode stored = objectMapper.valueToTree(command);
@@ -923,7 +926,8 @@ public class OpsAuditCenterService {
                 return proposalByIdempotencyKey(idempotencyKey);
             }
             return ApiResult.ok(receipt);
-        } catch (MonthlyTargetPoolException | MonthlyTargetRewardOutOfRangeException ex) {
+        } catch (MonthlyTargetPoolException | MonthlyTargetRewardOutOfRangeException
+                | ffdd.opsconsole.shared.exception.H4EventRuleIncompleteException ex) {
             throw ex; // Idempotency has rolled back; preserve the structured approval rejection.
         } catch (ffdd.opsconsole.shared.exception.PhoneReplacementException ex) {
             // Preserve the phone command conflict contract through A2 and roll back its approval transaction.
@@ -1478,7 +1482,14 @@ public class OpsAuditCenterService {
         }
         if (H4GrowthApproval.supports(command)) {
             try {
-                return objectMapper.writeValueAsString(command.params().get("before".equals(side) ? "expectedState" : "values"));
+                if ("before".equals(side)) {
+                    return objectMapper.writeValueAsString(command.params().get("expectedState"));
+                }
+                var values = objectMapper.<com.fasterxml.jackson.databind.node.ObjectNode>valueToTree(command.params().get("values"));
+                if (command.params().containsKey("eventCopy")) {
+                    values.set("localized", objectMapper.valueToTree(command.params().get("eventCopy")));
+                }
+                return objectMapper.writeValueAsString(values);
             } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
                 throw new BizException(422, "H4_PROPOSAL_INVALID");
             }

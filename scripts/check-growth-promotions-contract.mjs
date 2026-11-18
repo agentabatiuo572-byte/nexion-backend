@@ -682,7 +682,11 @@ function check(doc, fixture, sql) {
   assert(doc.components.schemas.PromotionContract.required.includes('activityLimit'), 'Published activity-wide order capacity is mandatory');
   const englishOnly = {en: 'English copy'};
   validate(englishOnly, doc.components.schemas.DraftLocalizedText, doc, fixture);
+  validate({vi: 'Vietnamese draft'}, doc.components.schemas.DraftLocalizedText, doc, fixture);
+  assert.throws(() => validate({en: 'English copy', vi: ''}, doc.components.schemas.DraftLocalizedText, doc, fixture),
+    undefined, 'A supplied draft translation must have at least one character');
   validate(englishOnly, doc.components.schemas.AuthoredLocalizedText, doc, fixture);
+  validate({en: 'English copy', vi: ''}, doc.components.schemas.AuthoredLocalizedText, doc, fixture);
   assert.throws(() => validate(englishOnly, doc.components.schemas.LocalizedText, doc, fixture),
     undefined, 'Stored and delivered text still has three values');
   assert.equal(doc.components.schemas.Policy.properties.content.$ref, '#/components/schemas/StoredPolicyContent');

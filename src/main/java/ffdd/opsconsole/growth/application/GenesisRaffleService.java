@@ -10,6 +10,7 @@ import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.platform.application.PlatformExperienceConfigService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
+import ffdd.opsconsole.shared.i18n.AuthoringWhitespace;
 import ffdd.opsconsole.content.domain.MessageTranslations;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -147,10 +148,10 @@ public class GenesisRaffleService {
     GenesisRaffleRequest completeAuthoredCopy(GenesisRaffleRequest request) {
         if(request==null||request.prizes()==null||request.prizes().stream().anyMatch(Objects::isNull))return request;
         var required=experience==null?List.of("en"):experience.operatingLanguages();
-        boolean copyZh=!required.contains("zh")&&text(request.titleZh()).isBlank()
-                &&request.prizes().stream().allMatch(prize->text(prize.nameZh()).isBlank());
-        boolean copyVi=!required.contains("vi")&&text(request.titleVi()).isBlank()
-                &&request.prizes().stream().allMatch(prize->text(prize.nameVi()).isBlank());
+        boolean copyZh=!required.contains("zh")&&AuthoringWhitespace.isBlank(request.titleZh())
+                &&request.prizes().stream().allMatch(prize->AuthoringWhitespace.isBlank(prize.nameZh()));
+        boolean copyVi=!required.contains("vi")&&AuthoringWhitespace.isBlank(request.titleVi())
+                &&request.prizes().stream().allMatch(prize->AuthoringWhitespace.isBlank(prize.nameVi()));
         if(!copyZh&&!copyVi)return request;
         var completed=request.prizes().stream().map(prize->new Prize(prize.id(),
                 copyZh?prize.nameEn():prize.nameZh(),prize.nameEn(),copyVi?prize.nameEn():prize.nameVi(),
@@ -163,7 +164,7 @@ public class GenesisRaffleService {
     static void validate(GenesisRaffleRequest request) {
         if(request==null||request.id()==null||!request.id().matches("[A-Za-z0-9_-]{1,64}"))throw new BizException(422,"RAFFLE_ID_INVALID");
         for(String title:Arrays.asList(request.titleZh(),request.titleEn(),request.titleVi()))
-            if(title==null||title.isBlank()||title.length()>160||title.matches("(?s).*<[^>]*>.*"))throw new BizException(422,"RAFFLE_TITLE_REQUIRED");
+            if(AuthoringWhitespace.isBlank(title)||title.length()>160||title.matches("(?s).*<[^>]*>.*"))throw new BizException(422,"RAFFLE_TITLE_REQUIRED");
         validateText(request.titleTranslations());
         LocalDateTime start=parseDate(request.startsAt()),draw=parseDate(request.drawAt());
         if(start==null||draw==null||!draw.isAfter(start))throw new BizException(422,"RAFFLE_DATE_INVALID");
@@ -174,7 +175,7 @@ public class GenesisRaffleService {
                     ||prize.rewardType()==null||!Set.of("UVT","USDT","DEVICE").contains(prize.rewardType())||prize.quantity()<1||prize.quantity()>100)
                 throw new BizException(422,"RAFFLE_PRIZE_INVALID");
             for(String name:Arrays.asList(prize.nameZh(),prize.nameEn(),prize.nameVi()))
-                if(name==null||name.isBlank()||name.length()>160)throw new BizException(422,"RAFFLE_PRIZE_NAME_REQUIRED");
+                if(AuthoringWhitespace.isBlank(name)||name.length()>160)throw new BizException(422,"RAFFLE_PRIZE_NAME_REQUIRED");
             validateText(prize.nameTranslations());
             if(prize.amount()==null||prize.amount().signum()<=0||prize.amount().scale()>6||prize.amount().compareTo(new BigDecimal("1000000"))>0)
                 throw new BizException(422,"RAFFLE_AMOUNT_INVALID");
@@ -197,7 +198,7 @@ public class GenesisRaffleService {
     }
     @Transactional(rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> save(String id,GenesisRaffleRequest request,boolean create){
-        return save(id,completeAuthoredCopy(request),create,false,false);
+        return save(id,request,create,false,false);
     }
     @Transactional(rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> previewOpen(String id,GenesisRaffleRequest request){
@@ -207,17 +208,23 @@ public class GenesisRaffleService {
         return save(id,request,false,true,false);
     }
     private ApiResult<Map<String,Object>> save(String id,GenesisRaffleRequest request,boolean create,boolean approved,boolean preview){
+        if(request==null)throw new BizException(422,"RAFFLE_ID_INVALID");
+        var current=db.row("SELECT * FROM nx_genesis_raffle_draw WHERE draw_id=? FOR UPDATE",id);
+        boolean draft=current==null||"DRAFT".equals(current.get("status"));
+        if(draft&&!approved)request=completeAuthoredCopy(request);
         validate(request);
         if(!id.equals(request.id())||request.reason()==null||request.reason().trim().length()<a2.reasonMinChars()||request.reason().length()>200)
             throw new BizException(422,"REASON_REQUIRED");
-        var current=db.row("SELECT * FROM nx_genesis_raffle_draw WHERE draw_id=? FOR UPDATE",id);
         if(create&&current!=null)throw new BizException(409,"RAFFLE_ALREADY_EXISTS");
         if(!create&&(current==null||request.expectedRevision()==null||number(current.get("revision")).longValue()!=request.expectedRevision()))
             throw new BizException(409,"RAFFLE_CONFIG_STALE");
         boolean enabled=!create&&Boolean.TRUE.equals(request.enabled());
-        if(current!=null&&!"DRAFT".equals(current.get("status"))){
+        if(!draft){
             long entered=number(db.row("SELECT COALESCE(SUM(quantity),0) amount FROM nx_genesis_raffle_entry WHERE draw_id=?",id).get("amount")).longValue();
             if(!"OPEN".equals(current.get("status"))||enabled||entered>0)throw new BizException(409,"RAFFLE_ALREADY_OPEN");
+            if(preview)return ApiResult.fail(422,"H4_APPROVAL_NOT_REQUIRED");
+            db.write("UPDATE nx_genesis_raffle_draw SET status='DRAFT',opened_at=NULL,revision=revision+1 WHERE draw_id=?",id);
+            return configured(id,request.reason(),false,prizes(current));
         }
         if(enabled){
             if(!parseDate(request.drawAt()).isAfter(now()))throw new BizException(422,"RAFFLE_DATE_ENDED");
@@ -246,9 +253,13 @@ public class GenesisRaffleService {
                 INSERT INTO nx_genesis_raffle_translation(draw_id,title_translations_json) VALUES(?,?)
                 ON DUPLICATE KEY UPDATE title_translations_json=VALUES(title_translations_json)
                 """, id, MessageTranslations.json(titles));
+        return configured(id,request.reason(),enabled,updatedPrizes);
+    }
+
+    private ApiResult<Map<String,Object>> configured(String id,String reason,boolean enabled,List<Prize> prizes){
         var saved=db.row(DRAW_WITH_TRANSLATIONS + "WHERE d.draw_id=?",id);
         audit.recordRequired(AuditLogWriteRequest.builder().action("H4_GENESIS_RAFFLE_CONFIGURED").resourceType("GENESIS_RAFFLE").resourceId(id).result("SUCCESS").riskLevel("HIGH")
-                .detail(values("reason",request.reason(),"enabled",enabled,"prizes",updatedPrizes,"titleTranslations",MessageTranslations.read(text(saved.get("title_translations_json"))))).build());
+                .detail(values("reason",reason,"enabled",enabled,"prizes",prizes,"titleTranslations",MessageTranslations.read(text(saved.get("title_translations_json"))))).build());
         return ApiResult.ok(view(saved,null,null));
     }
     @SuppressWarnings({"rawtypes","unchecked"})

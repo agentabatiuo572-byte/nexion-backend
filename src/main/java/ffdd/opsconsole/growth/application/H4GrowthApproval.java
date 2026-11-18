@@ -15,6 +15,7 @@ import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.exception.H4EventRuleIncompleteException;
 import ffdd.opsconsole.shared.security.SuperAdminAuthorization;
 import java.math.BigDecimal;
 import java.util.*;
@@ -105,7 +106,7 @@ public class H4GrowthApproval {
                 values.put("rewardAmount", expectedState.get("rewardAmount"));
             }
         }
-        if (RAFFLE.equals(command.op())) {
+        if (RAFFLE.equals(command.op()) && "DRAFT".equals(expectedState.get("status"))) {
             // Freeze the proposed save before A2 reviews or hashes the command.
             var submitted = raffle(command, null);
             var completed = raffles.completeAuthoredCopy(submitted);
@@ -116,6 +117,23 @@ public class H4GrowthApproval {
         }
         return new AuditReplayCommand("H", command.op(), Map.of("values", values, "makerAdminId", adminId,
                 "expectedState", expectedState));
+    }
+
+    /** Freeze copy in the proposal transaction after the existing preview checks. */
+    public AuditReplayCommand bindEventCopy(AuditReplayCommand command) {
+        if (!supports(command) || !Set.of(RULE, LEGACY_OPEN).contains(command.op())) return command;
+        AuditLockTarget target = target(command);
+        boolean legacy = LEGACY_OPEN.equals(command.op());
+        var published = rules.checkLocalizedContent(target.id(), true);
+        if (!published.complete()) {
+            throw new H4EventRuleIncompleteException(422,
+                    legacy ? "EVENT_LOCALIZED_CONTENT_INCOMPLETE" : "EVENT_RULE_INCOMPLETE",
+                    legacy ? growth.eventPublicationDetails(target.id(), published) : published.details());
+        }
+        var params = new LinkedHashMap<>(command.params());
+        params.put("eventCopy", published.content());
+        if (legacy) params.put("expectedState", state(target, command.op()));
+        return new AuditReplayCommand(command.domain(), command.op(), params);
     }
 
     public ApiResult<Void> validateChecker(AuditReplayCommand command, Long checkerId) {
@@ -183,6 +201,10 @@ public class H4GrowthApproval {
                 new AuditLockTarget(locks.get(0).getTargetDomain(), locks.get(0).getTargetType(), locks.get(0).getTargetId())))
             return ApiResult.fail(403, "H4_APPROVAL_FORBIDDEN");
         if (!state(target, command.op()).equals(command.params().get("expectedState"))) return ApiResult.fail(409, "H4_CONFIG_STALE");
+        if (command.params().get("eventCopy") instanceof Map<?, ?> copy
+                && !rules.savedLocalizedContent(target.id()).content().equals(copy)) {
+            return ApiResult.fail(409, "H4_CONFIG_STALE");
+        }
         if (!(command.params().get("proposalReason") instanceof String reason)) return ApiResult.fail(422, "H4_PROPOSAL_INVALID");
         return switch (command.op()) {
             case RULE -> {
@@ -247,6 +269,7 @@ public class H4GrowthApproval {
         }
         Map<String, Object> row;
         if ("h4_event_rule".equals(target.type())) {
+            if (!growth.lockH4Event()) throw new BizException(409, "H4_EVENT_MUTEX_UNAVAILABLE");
             row = db.row("""
                 SELECT r.*,q.status q_status,q.is_deleted q_deleted,q.starts_at q_starts_at,q.ends_at q_ends_at
                 FROM nx_growth_event_rule r JOIN nx_event_quest q ON q.quest_code=r.event_code
