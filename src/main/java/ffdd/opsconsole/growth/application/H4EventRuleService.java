@@ -31,6 +31,8 @@ public class H4EventRuleService {
 
     public static final Set<String> KINDS=Set.of("discount","referral","wheel","regional","boost","seasonal","onboarding");
     public static final String ACTIVE_KINDS_SQL="('discount','referral','wheel','regional','boost','seasonal','onboarding')";
+    static final List<String> REQUIRED_EVENT_LOCALES=List.of("zh","vi","en");
+    static final List<String> REQUIRED_EVENT_FIELDS=List.of("name","description","rewardName");
 
     public Map<String,Object> find(String code,boolean lock) {
         return db.row("SELECT * FROM nx_growth_event_rule WHERE kind IN "+ACTIVE_KINDS_SQL+" AND event_code=?"+(lock?" FOR UPDATE":""),code);
@@ -135,13 +137,14 @@ public class H4EventRuleService {
         Map<String,Object> r=rules(row);
         String code=text(row.get("event_code"));
         boolean supported=CODES.contains(code);
+        boolean enabled=number(row.get("enabled")).intValue()==1;
         var missing=missing(text(row.get("event_code")),r,date(row.get("starts_at")),date(row.get("ends_at")));
         missing=new ArrayList<>(missing);
         if(!"evt-anniversary-spin".equals(row.get("event_code"))&&date(row.get("ends_at"))!=null&&!date(row.get("ends_at")).isAfter(LocalDateTime.now(ZoneOffset.UTC)))missing.add("endsAt");
-        missing.addAll(localizedMissing(text(row.get("event_code"))));
+        missing.addAll(localizedMissing(code,!enabled));
         if(missing.isEmpty())missing.addAll(commerce.readiness(text(row.get("event_code")),r,date(row.get("starts_at")),date(row.get("ends_at"))));
         return values("eventCode",row.get("event_code"),"kind",row.get("kind"),"revision",row.get("revision"),
-                "enabled",number(row.get("enabled")).intValue()==1,"startsAt",iso(row.get("starts_at")),
+                "enabled",enabled,"startsAt",iso(row.get("starts_at")),
                 "endsAt",iso(row.get("ends_at")),"rules",r,"rulesLocked",row.get("activated_at")!=null,
                 "readiness",Map.of("ready",missing.isEmpty(),"missing",missing),
                 "supported",supported,"rewardCopyOnly",supported);
@@ -166,25 +169,26 @@ public class H4EventRuleService {
         if(number(current.get("revision")).longValue()!=request.expectedRevision())throw new BizException(409,"EVENT_CONFIG_STALE");
         Map<String,Object> rules=request.rules()==null?Map.of():request.rules();
         LocalDateTime start=parseDate(request.startsAt()),end=parseDate(request.endsAt());
+        boolean enabled=number(current.get("enabled")).intValue()==1;
         boolean changed=!rules(current).equals(rules)||!Objects.equals(date(current.get("starts_at")),start)
                 ||!Objects.equals(date(current.get("ends_at")),end);
-        if(changed&&(current.get("activated_at")!=null||number(current.get("enabled")).intValue()==1))
+        if(changed&&(current.get("activated_at")!=null||enabled))
             throw new BizException(409,"EVENT_RULES_ALREADY_IN_USE");
         var missing=missing(code,rules,start,end);
         if(request.enabled()&&!missing.isEmpty())return ApiResult.fail(422,"EVENT_RULE_INCOMPLETE",Map.of("missing",missing));
         if(request.enabled()) {
-            var localizedMissing=localizedMissing(code);
+            var localizedMissing=localizedMissing(code,!enabled);
             if(!localizedMissing.isEmpty())return ApiResult.fail(422,"EVENT_RULE_INCOMPLETE",Map.of("missing",localizedMissing));
             var domainMissing=commerce.readiness(code,rules,start,end);
             if(!domainMissing.isEmpty())return ApiResult.fail(422,"EVENT_RULE_INCOMPLETE",Map.of("missing",domainMissing));
             var snapshot=coverage.snapshot();
             if(!"evt-anniversary-spin".equals(code)&&(snapshot==null||!snapshot.reliable()||snapshot.coverageRatio()==null||snapshot.redlinePct()==null
                     ||snapshot.redlineBreached()))throw new BizException(409,"COVERAGE_REDLINE");
-            if(current.get("activated_at")!=null&&number(current.get("enabled")).intValue()!=1)
+            if(current.get("activated_at")!=null&&!enabled)
                 throw new BizException(409,"EVENT_RULE_REOPEN_NOT_ALLOWED");
         }
         if(request.enabled()&&!"evt-anniversary-spin".equals(code)&&end!=null&&!end.isAfter(LocalDateTime.now(ZoneOffset.UTC)))throw new BizException(422,"EVENT_WINDOW_ENDED");
-        boolean firstEnable=request.enabled()&&number(current.get("enabled")).intValue()!=1&&current.get("activated_at")==null;
+        boolean firstEnable=request.enabled()&&!enabled&&current.get("activated_at")==null;
         if(preview)return firstEnable?ApiResult.ok(Map.of("before",view(current),"after",request))
                 :ApiResult.fail(422,"H4_APPROVAL_NOT_REQUIRED");
         if(firstEnable&&!approved)throw new BizException(409,"H4_APPROVAL_REQUIRED");
@@ -194,7 +198,7 @@ public class H4EventRuleService {
             db.write("UPDATE nx_growth_event_rule SET activated_at=COALESCE(activated_at,UTC_TIMESTAMP(6)) WHERE event_code=?",code);
             db.write("UPDATE nx_event_quest SET starts_at=?,ends_at=?,status=1,updated_at=NOW() WHERE quest_code=? AND is_deleted=0",start,end,code);
         } else {
-            if(number(current.get("enabled")).intValue()==1)freezeReferral(current);
+            if(enabled)freezeReferral(current);
             db.write("UPDATE nx_growth_event_rule SET disabled_at=COALESCE(disabled_at,UTC_TIMESTAMP(6)) WHERE event_code=? AND activated_at IS NOT NULL",code);
         }
         audit.recordRequired(AuditLogWriteRequest.builder().action("H4_EVENT_RULE_CHANGED").resourceType("GROWTH_EVENT")
@@ -204,13 +208,16 @@ public class H4EventRuleService {
         return ApiResult.ok(view(find(code,false)));
     }
     @SuppressWarnings("unchecked")
-    private List<String> localizedMissing(String code){
+    private List<String> localizedMissing(String code,boolean requireEnglish){
         Map<String,Object> root=Map.of();var value=db.row("SELECT config_value FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1");
         if(value!=null)try{root=json.readValue(text(value.get("config_value")),new TypeReference<>(){});}catch(Exception ignored){ }
         var event=root.get("event") instanceof Map<?,?> all&&all.get(code) instanceof Map<?,?> entry?entry:Map.of();
         List<String> missing=new ArrayList<>();
-        for(String lang:List.of("zh","vi"))for(String field:List.of("name","description","rewardName"))
-            if(!(event.get(lang) instanceof Map<?,?> translated)||text(translated.get(field)).isBlank())missing.add("localized."+lang+"."+field);
+        for(String lang:REQUIRED_EVENT_LOCALES){
+            if(!requireEnglish&&"en".equals(lang))continue;
+            for(String field:REQUIRED_EVENT_FIELDS)
+                if(!(event.get(lang) instanceof Map<?,?> translated)||text(translated.get(field)).isBlank())missing.add("localized."+lang+"."+field);
+        }
         return missing;
     }
     public static List<String> missing(String code,Map<String,Object> r,LocalDateTime start,LocalDateTime end) {
