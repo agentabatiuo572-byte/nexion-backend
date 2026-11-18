@@ -26,6 +26,12 @@ public class AppNotificationService {
     private static final Set<String> PRIORITIES = Set.of("critical", "high", "normal", "low");
     private static final Set<String> CATEGORIES = Set.of("all", "finance", "device", "team", "rewards", "system");
     private static final Set<String> ACTIONS = Set.of("cta", "swipe_conversion");
+    /** 产品 2026-11-19 跳转清单:kind→规范左滑路由;未配置返回空(不跳)。 */
+    static final Map<String, String> SWIPE_ROUTE_BY_KIND = Map.of(
+            "commission", "/pages/me/wallet-repurchase",
+            "team", "/pages/team/team",
+            "market", "/pages/market/market",
+            "genesis", "/pages/genesis/marketplace");
     private final NotificationCampaignRepository repository;
     private final EventOutboxService eventOutboxService;
     private final NovaSocialRuntimeRepository novaRuntimeRepository;
@@ -224,13 +230,8 @@ public class AppNotificationService {
         if (StringUtils.hasText(fact.ctaHref())) {
             return AppNotificationView.withoutRetiredStakingHref(fact.ctaHref().trim());
         }
-        return switch (fact.kind() == null ? "" : fact.kind().trim().toLowerCase(Locale.ROOT)) {
-            case "commission" -> "/pages/me/wallet-repurchase";
-            case "team" -> "/pages/team/team";
-            case "market" -> "/pages/market/market";
-            case "genesis" -> "/pages/genesis/marketplace";
-            default -> "";
-        };
+        return SWIPE_ROUTE_BY_KIND.getOrDefault(
+                fact.kind() == null ? "" : fact.kind().trim().toLowerCase(Locale.ROOT), "");
     }
 
     private boolean isNova(NotificationEventFact fact) {

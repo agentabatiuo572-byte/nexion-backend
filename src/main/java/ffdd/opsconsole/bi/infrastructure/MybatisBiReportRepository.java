@@ -21,6 +21,7 @@ import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -280,8 +281,10 @@ public class MybatisBiReportRepository implements BiReportRepository {
 
     @Override
     public Map<String, Object> operationsDashboard(String period, String phase, String from, String to) {
+        List<Map<String, Object>> l4Facts = new ArrayList<>(mapper.selectL4EventFacts());
+        l4Facts.addAll(mapper.selectL4QuestDispatchFacts());
         Map<String, Object> result = new LinkedHashMap<>(
-                L4OperationsAnalytics.calculate(mapper.selectL4EventFacts(), period, phase, from, to));
+                L4OperationsAnalytics.calculate(l4Facts, period, phase, from, to));
         Object deviceValue = result.get("device");
         if (deviceValue instanceof Map<?, ?> deviceRaw) {
             @SuppressWarnings("unchecked")

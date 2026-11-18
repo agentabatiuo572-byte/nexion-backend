@@ -94,6 +94,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         ensureArbitrageParamVersionColumn();
         mapper.createArbitrageRowTable();
         ensureArbitrageRowVersionColumn();
+        ensureArbitrageRowBlockedCountColumn();
         mapper.retireObsoleteArbitrageParam("minHoldingMonths");
         ensureK4Schema();
         mapper.createRiskParamTable();
@@ -235,6 +236,14 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     private void ensureArbitrageRowVersionColumn() {
         try {
             mapper.addArbitrageRowVersionColumn();
+        } catch (RuntimeException ignored) {
+            // Existing deployments may already have this column.
+        }
+    }
+
+    private void ensureArbitrageRowBlockedCountColumn() {
+        try {
+            mapper.addArbitrageRowBlockedCountColumn();
         } catch (RuntimeException ignored) {
             // Existing deployments may already have this column.
         }

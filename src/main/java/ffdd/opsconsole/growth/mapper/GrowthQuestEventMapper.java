@@ -1563,6 +1563,22 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             """)
     List<H3PaidAsset> h3PaidAssets(@Param("from") LocalDateTime from, @Param("asOf") LocalDateTime asOf);
 
+    @Select("""
+            SELECT COUNT(DISTINCT participant.user_id) participantCount
+              FROM (
+                    SELECT um.user_id
+                      FROM nx_user_mission um
+                      JOIN nx_user u ON u.id = um.user_id AND u.is_deleted = 0 AND COALESCE(u.sandbox,0)=0
+                     WHERE um.is_deleted = 0 AND um.created_at >= #{from} AND um.created_at < #{asOf}
+                     UNION
+                    SELECT ue.user_id
+                      FROM nx_user_event_quest ue
+                      JOIN nx_user ue_user ON ue_user.id = ue.user_id AND ue_user.is_deleted = 0 AND COALESCE(ue_user.sandbox,0)=0
+                     WHERE ue.is_deleted = 0 AND ue.created_at >= #{from} AND ue.created_at < #{asOf}
+                   ) participant
+            """)
+    long h3MonthlyParticipants(@Param("from") LocalDateTime from, @Param("asOf") LocalDateTime asOf);
+
     record H3ClaimCounts(long fullEligible, long fullClaimed, long graceEligible, long graceClaimed) { }
     record H3CompletionCounts(long completedCount, long tier1Count, long tier2Count,
                               long unknownTierCount, long undatedCount) { }

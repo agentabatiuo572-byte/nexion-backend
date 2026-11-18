@@ -75,7 +75,6 @@ public class OpsNovaService {
             new NovaOptionView("EXPIRED", "已过期"));
     private static final List<NovaOptionView> TEMPLATE_CTA_OPTIONS = List.of(
             new NovaOptionView("NONE", "无跳转"),
-            new NovaOptionView("/staking", "质押产品"),
             new NovaOptionView("/team", "团队"),
             new NovaOptionView("/earn", "收益任务"));
     private static final List<NovaEventDrivenView> EVENT_DRIVEN_CHANNELS = List.of(

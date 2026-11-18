@@ -965,7 +965,11 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                         List<String> cells = new ArrayList<>(row.cells());
                         String legacy = cells.get(2);
                         if (legacy != null && legacy.endsWith(" / 0 已拦")) {
-                            cells.set(2, legacy.substring(0, legacy.length() - " / 0 已拦".length()) + " / 已拦无可核数据");
+                            Object blocked = row.structured().get("blockedCount");
+                            String blockedText = blocked instanceof Number
+                                    ? ((Number) blocked).intValue() + " 已拦"
+                                    : "已拦无可核数据";
+                            cells.set(2, legacy.substring(0, legacy.length() - " / 0 已拦".length()) + " / " + blockedText);
                             return new RiskArbitrageRowView(row.rowId(), row.viewKey(), row.clusterId(), cells,
                                     row.level(), row.actions(), row.disposition(), row.version(), row.clusterStatus(),
                                     row.clusterVersion(), row.structured());
@@ -1066,9 +1070,9 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             amounts.add(k2Amount("UVT", k2Decimal(raw.get("nexRaw"))));
             fact.put("amounts", amounts);
             fact.put("settledCount", k2Integer(raw.get("settledCount")));
-            fact.put("blockedCount", null);
-            fact.put("blockedCountAvailable", false);
-            fact.put("blockedCountBasis", "NO_PERSISTED_DENIED_GIFT_FACT");
+            fact.put("blockedCount", k2Integer(raw.get("blockedCount")));
+            fact.put("blockedCountAvailable", true);
+            fact.put("blockedCountBasis", "nx_admin_risk_arbitrage_row.disposition=gift_blocked");
             fact.put("amountBasis", "nx_referral_reward_settlement.newcomer_usdt/newcomer_nex; SETTLED rows; same cluster membership as gift projection");
             fact.put("cellMeaning", "SETTLED_GIFTS_WITH_LEGACY_BLOCKED_CELL");
             facts.put(rowId, fact);

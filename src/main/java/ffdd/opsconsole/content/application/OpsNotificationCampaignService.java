@@ -68,9 +68,11 @@ public class OpsNotificationCampaignService {
             new NotificationAudienceOption("/pages/market/market", "商城 · 市场"),
             new NotificationAudienceOption("/pages/genesis/marketplace", "商城 · Genesis"));
     private static final List<NotificationSwipeRouteView> SWIPE_ROUTES = List.of(
-            new NotificationSwipeRouteView("/reinvest", "commission", "奖励到账 -> 锁定计划"),
-            new NotificationSwipeRouteView("/me/bills", "refund", "退款到账 -> 账单"),
-            new NotificationSwipeRouteView("-", "system", "维护公告 / 监管通告 / 运营公告 - system kind 无转化跳转"));
+            new NotificationSwipeRouteView("", "system", "system 或未配置路由：左滑不跳转"),
+            new NotificationSwipeRouteView(AppNotificationService.SWIPE_ROUTE_BY_KIND.get("commission"), "commission", "奖励到账 -> 锁定计划"),
+            new NotificationSwipeRouteView(AppNotificationService.SWIPE_ROUTE_BY_KIND.get("team"), "team", "团队 -> 赚取 · 团队"),
+            new NotificationSwipeRouteView(AppNotificationService.SWIPE_ROUTE_BY_KIND.get("market"), "market", "市场 -> 商城 · 市场"),
+            new NotificationSwipeRouteView(AppNotificationService.SWIPE_ROUTE_BY_KIND.get("genesis"), "genesis", "Genesis -> 商城 · Genesis"));
     private static final DateTimeFormatter CAMPAIGN_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
     private static final DateTimeFormatter SCHEDULE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
     private static final Pattern JSON_LIKE_PATTERN = Pattern.compile("^\\s*[\\[{]");

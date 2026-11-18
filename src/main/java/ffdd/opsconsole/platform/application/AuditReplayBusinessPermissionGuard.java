@@ -2391,7 +2391,10 @@ public class AuditReplayBusinessPermissionGuard {
         if (key.startsWith("F3.dailyCap.")) {
             return "network_f3_write";
         }
-        if (key.startsWith("F.pool.votes.") || key.startsWith("F.quota.")) {
+        if (key.startsWith("F.pool.votes.")) {
+            return "network_f4_pool_fund";
+        }
+        if (key.startsWith("F.quota.")) {
             return "network_f4_write";
         }
         if (key.startsWith("F.ambassador.") && key.endsWith(".status")) {

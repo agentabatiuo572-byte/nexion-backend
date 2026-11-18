@@ -393,6 +393,32 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
             """)
     List<Map<String, Object>> selectL4EventFacts();
 
+    /**
+     * 产品 2026-11-19 L4 任务承接率分母改用真实任务派发表 nx_user_event_quest:
+     * 每行代表一次派发给真实用户的任务实例(JOINED),eventTs 取 created_at。
+     * phase 取当前 growth.phase.current(与 quest.completed 归因同源),非 sandbox 用户。
+     */
+    @Select("""
+            SELECT CONCAT('QUEST_DISPATCH:EVENT:', ue.id) AS eventId,
+                   'quest.dispatched' AS eventName,
+                   COALESCE(ue.created_at, ue.updated_at) AS eventTs,
+                   ue.user_id AS actorId,
+                   COALESCE((SELECT c.config_value FROM nx_config_item c
+                              WHERE c.config_key='growth.phase.current' AND c.status=1 AND c.is_deleted=0
+                              LIMIT 1),'P1') AS phase,
+                   ue.quest_code AS questKey,
+                   '0' AS amountUsdt,
+                   '0' AS amountNex,
+                   '0' AS baselineUsdt
+              FROM nx_user_event_quest ue
+              JOIN nx_user u ON u.id = ue.user_id AND u.is_deleted = 0 AND COALESCE(u.sandbox,0)=0
+             WHERE ue.is_deleted = 0
+               AND COALESCE(ue.created_at, ue.updated_at) >= DATE_SUB(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
+               , INTERVAL 400 DAY)
+             ORDER BY COALESCE(ue.created_at, ue.updated_at) ASC, ue.id ASC
+            """)
+    List<Map<String, Object>> selectL4QuestDispatchFacts();
+
     @Select("""
             WITH RECURSIVE tree_edges AS (
                 SELECT m.user_id AS root_user_id,

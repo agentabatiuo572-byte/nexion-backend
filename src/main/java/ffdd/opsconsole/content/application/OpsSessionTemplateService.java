@@ -66,7 +66,6 @@ public class OpsSessionTemplateService {
     private static final List<SessionCtaOption> CTA_OPTIONS = List.of(
             new SessionCtaOption("无跳转", "—", "content"),
             new SessionCtaOption("设备商城", "/store", "device"),
-            new SessionCtaOption("锁仓 Staking", "/staking", "market"),
             new SessionCtaOption("创世节点", "/genesis", "market"));
     private static final List<String> SCRIPT_GROUPS = List.of("开场", "升级", "锁仓", "复投");
     private static final List<String> SCRIPT_STATUS_OPTIONS = List.of("draft", "published", "archived");

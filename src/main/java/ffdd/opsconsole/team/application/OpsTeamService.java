@@ -150,7 +150,7 @@ public class OpsTeamService implements AuditReplayable {
             Map.entry("F.pool.settleCron", "network_f4_write"),
             Map.entry("F.pool.unlockVRank", "network_f4_write"),
             // F4 · A1 批2b 修复1:F4 主流程按钮 key 对齐白名单 + 权限码。
-            // 票权/配额常规写 → f4_write;大使审批 → f4_ambassador_approve(HIGH);榜单控制 → f4_leaderboard_control(HIGH)。
+            // 配额常规写 → f4_write;票权 F.pool.votes.V{n} → f4_pool_fund;大使审批 → f4_ambassador_approve(HIGH);榜单控制 → f4_leaderboard_control(HIGH)。
             Map.entry("F.quota.proUnlock", "network_f4_write"),
             Map.entry("F.quota.rackUnlock", "network_f4_write"),
             Map.entry("F.quota.monthlyStock", "network_f4_write"),
@@ -185,13 +185,9 @@ public class OpsTeamService implements AuditReplayable {
         if (key.startsWith("F.binary.")) {
             return "network_f3_match_rate";
         }
-        // F.pool.* → pool_fund
+        // F.pool.* → pool_fund(产品 2026-11-19:票权 F.pool.votes.V{n} 与资金权限统一走 pool_fund)
         if (key.startsWith("F.pool.")) {
             return "network_f4_pool_fund";
-        }
-        // F4 · A1 批2b 修复2:F.pool.votes.V{n} 票权动态分发 → f4_write(权重调整非直接放大流出,走常规写)。
-        if (key.startsWith("F.pool.votes.")) {
-            return "network_f4_write";
         }
         // F4 · A1 批2b 修复3:F.ambassador.{label}.status 动态分发 → f4_ambassador_approve(HIGH 大使审批专用)。
         if (key.startsWith("F.ambassador.") && key.endsWith(".status")) {

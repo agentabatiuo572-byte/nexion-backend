@@ -907,6 +907,13 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         var claims = mapper.h3ClaimCounts(through);
         var completions = mapper.h3CompletionCounts(from, through, calendar.weekKey(through));
         var paid = mapper.h3PaidAssets(from, through);
+        LocalDateTime monthFrom = calendar.storageStart(businessDate.withDayOfMonth(1));
+        long monthlyParticipants = mapper.h3MonthlyParticipants(monthFrom, through);
+        stats.put("monthlyInflight", monthlyParticipants);
+        stats.put("monthlyInflightAvailable", true);
+        stats.put("monthlyInflightReason", null);
+        stats.put("monthlyParticipantsBasis", "nx_user_mission + nx_user_event_quest created_at in current business month; non-sandbox distinct users");
+        stats.put("monthlyWindowFromStorage", monthFrom);
         stats.put("asOf", asOf);
         stats.put("weekTimeZone", calendar.zoneAt(asOf).getId());
         stats.put("storageTimeZone", BusinessCalendar.STORAGE_ZONE.getId());

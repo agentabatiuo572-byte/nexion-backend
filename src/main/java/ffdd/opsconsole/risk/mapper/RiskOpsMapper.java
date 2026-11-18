@@ -204,6 +204,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
               actions_csv VARCHAR(128) NOT NULL,
               disposition VARCHAR(64) DEFAULT NULL,
               version BIGINT NOT NULL DEFAULT 0,
+              blocked_count BIGINT NOT NULL DEFAULT 0,
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
               updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
               is_deleted TINYINT NOT NULL DEFAULT 0,
@@ -215,6 +216,9 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
 
     @Update("ALTER TABLE nx_admin_risk_arbitrage_row ADD COLUMN version BIGINT NOT NULL DEFAULT 0 AFTER disposition")
     void addArbitrageRowVersionColumn();
+
+    @Update("ALTER TABLE nx_admin_risk_arbitrage_row ADD COLUMN blocked_count BIGINT NOT NULL DEFAULT 0 AFTER version")
+    void addArbitrageRowBlockedCountColumn();
 
     @Update("UPDATE nx_admin_risk_arbitrage_param SET is_deleted = 1, updated_at = NOW() WHERE param_key = #{key} AND is_deleted = 0")
     int retireObsoleteArbitrageParam(@Param("key") String key);
@@ -1545,7 +1549,8 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             SELECT CONCAT('K2-GIFT-C', LEFT(SHA2(cluster.cluster_id, 256), 40)) AS rowId,
                    SUM(settlement.newcomer_usdt) AS usdtRaw,
                    SUM(settlement.newcomer_nex) AS nexRaw,
-                   COUNT(DISTINCT settlement.id) AS settledCount
+                   COUNT(DISTINCT settlement.id) AS settledCount,
+                   COALESCE(MAX(CASE WHEN risk.disposition = 'gift_blocked' THEN 1 ELSE 0 END), 0) AS blockedCount
               FROM nx_admin_risk_multi_account_cluster cluster
               JOIN nx_referral_reward_settlement settlement
                 ON settlement.is_deleted = 0
@@ -1557,6 +1562,9 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                AND JSON_SEARCH(cluster.nodes_json, 'one',
                        CONCAT('U', LPAD(invited.id,
                            GREATEST(8, CHAR_LENGTH(CAST(invited.id AS CHAR))), '0'))) IS NOT NULL
+              LEFT JOIN nx_admin_risk_arbitrage_row risk
+                ON risk.row_id = CONCAT('K2-GIFT-C', LEFT(SHA2(cluster.cluster_id, 256), 40))
+               AND risk.is_deleted = 0
              WHERE cluster.is_deleted = 0
                AND cluster.nodes_json IS NOT NULL
              GROUP BY cluster.cluster_id
