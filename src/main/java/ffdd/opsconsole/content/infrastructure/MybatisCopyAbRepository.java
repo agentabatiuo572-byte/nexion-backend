@@ -169,10 +169,22 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         entity.setExperimentId(experimentId);
         entity.setCopyKey(request.copyKey().trim());
         entity.setAudience(audience);
-        CopyVersionEntity audienceSource = request.variants().isEmpty()
-                ? null
-                : findVersionEntity(request.copyKey().trim(), request.variants().get(0).version().trim());
-        entity.setAudienceSnapshotJson(audienceSource == null ? null : audienceSource.getAudienceJson());
+        CopyAudienceTarget audienceSource = null;
+        for (var variant : request.variants()) {
+            CopyVersionEntity version = findVersionEntity(request.copyKey().trim(), variant.version().trim());
+            if (version == null) continue;
+            CopyAudienceTarget candidate = readAudience(version.getAudienceJson(), version.getAudience());
+            if (candidate == null) continue;
+            if (audienceSource == null) audienceSource = candidate;
+            if (!"全量".equals(version.getAudience())
+                    || candidate.locales() != null && !candidate.locales().isEmpty()
+                    || candidate.tiers() != null && !candidate.tiers().isEmpty()
+                    || candidate.registrationDaysMin() != null || candidate.registrationDaysMax() != null) {
+                audienceSource = candidate;
+                break;
+            }
+        }
+        entity.setAudienceSnapshotJson(writeAudience(audienceSource));
         entity.setImpressionsLabel("0");
         entity.setConversionsLabel("0");
         entity.setState("SCHEDULED");

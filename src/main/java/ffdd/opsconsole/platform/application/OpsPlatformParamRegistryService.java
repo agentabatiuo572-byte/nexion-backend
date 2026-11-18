@@ -146,9 +146,11 @@ public class OpsPlatformParamRegistryService {
             return liveHealthRow(canonicalKey, displayName, owner);
         }
         boolean h5Retired = ComputeConfigRegistry.coeffKey("h5BaseFactor").equals(canonicalKey);
-        boolean retired = h5Retired || ComputeConfigRegistry.coeffKey("continuityFullHours").equals(canonicalKey);
+        boolean legacyDayOneWindow = "growth.quest.day_one.window_ms".equals(canonicalKey);
+        boolean retired = h5Retired || legacyDayOneWindow || ComputeConfigRegistry.coeffKey("continuityFullHours").equals(canonicalKey);
         var confirmedUsage = A5ParameterUsageCatalog.usage(canonicalKey);
         String description = h5Retired ? "已退役，值固定为 0，历史数据也不再生效。"
+                : legacyDayOneWindow ? "已退役：仅保留历史说明，不接受新写入，不决定新手任务期限。"
                 : retired ? "已退役，仅兼容读取，不参与收益计算。" : secret
                 ? "这个敏感参数在「" + owner.label() + "」设置；这里只显示是否已配置，不显示具体值。"
                 : phoneBindingUsage(canonicalKey) != null ? phoneBindingUsage(canonicalKey)
@@ -168,7 +170,6 @@ public class OpsPlatformParamRegistryService {
                     case A4RuntimePolicyService.EVENT_RETENTION_KEY -> "事件保留期，单位月；用于事件留存清理策略。";
                     case A4RuntimePolicyService.SAMPLING_KEY -> "事件采样规则；浏览和会话的采样与关键业务事件规则分别处理。";
                     case "growth.quest.day_one.eligibility_hours" -> "新手任务完成期限（小时）；由新手任务配置读取。";
-                    case "growth.quest.day_one.window_ms" -> "新手任务窗口的说明文字，不改变完成期限。";
                     case "wallet.exchange.min_usdt" -> "以 USDT 为来源资产时的最小兑换额。";
                     case "wallet.exchange.min_nex" -> "以 UVT 为来源资产时的最小兑换额。";
                     case "platform.experience.interface_languages" -> "公开界面可选语言；与运营内容必填语言范围分别配置。";

@@ -102,6 +102,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (h1CommandScope(scope)) return "growth_h1_read";
         if (scope.startsWith("H2") || scope.startsWith("GROWTH:H2:")) return "growth_h2_read";
         if (h4DirectScope(scope)) return "growth_h4_read";
+        if (g2ExchangeParamScope(scope)) return "finprod_g2_read";
         if (scope.startsWith("K1")) return "risk_k1_read";
         if ("J3_ALERT_CONFIG".equals(scope)) return "emergency_j3_read";
         if (scope.startsWith("I3_NOTIFICATION_CAMPAIGN_")) return "content_i3_read";
@@ -141,7 +142,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || purchasePaymentPolicyScope(scope)
                 || scope.startsWith("E2_POOL_") || scope.startsWith("E5_DEVICE_") || scope.startsWith("E6_PHONE_")
                 || scope.startsWith("GROWTH:H2:")
-                || h4DirectScope(scope)
+                || h4DirectScope(scope) || g2ExchangeParamScope(scope)
                 || "J3_ALERT_CONFIG".equals(scope)
                 || "A1_PERMISSION_REGISTER".equals(scope)
                 || platformRoleMenuWrite(scope)
@@ -166,6 +167,10 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || e3TradeinScope(scope)
                 || fCommandScope(scope)
                 || "A2_COMMAND".equals(scope) || "L_BI_REPORT_CREATE".equals(scope) || scope.startsWith("L_BI_REPORT_ACTION"));
+    }
+
+    private static boolean g2ExchangeParamScope(String scope) {
+        return scope != null && scope.matches("ADMIN:G2:PARAM:(userDailyCap|platformDailyCap|fee|feeMin|queueMode|queueEtaHours|queueEtaCopy|queueEtaCopyZh|queueEtaCopyVi)");
     }
 
     static boolean h4DirectScope(String scope) {

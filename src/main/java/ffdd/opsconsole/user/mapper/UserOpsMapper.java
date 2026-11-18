@@ -661,18 +661,9 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                    GREATEST(COALESCE(s.login_fail_count, 0), COALESCE(g.failed_count, 0)) AS loginFailCount,
                    1 AS locked,
                    COALESCE(s.password_reset_required, 0) AS passwordResetRequired,
-                   CASE
-                     WHEN GREATEST(COALESCE(s.login_fail_count, 0), COALESCE(g.failed_count, 0)) >= #{longLockThreshold} THEN 'LONG'
-                     ELSE 'SHORT'
-                   END AS lockKind,
-                   CASE
-                     WHEN GREATEST(COALESCE(s.login_fail_count, 0), COALESCE(g.failed_count, 0)) >= #{longLockThreshold} THEN CONCAT(#{longLockHours}, ' 小时长锁')
-                     ELSE CONCAT(#{shortLockMinutes}, ' 分钟短锁')
-                   END AS lockLabel,
-                   CASE
-                     WHEN GREATEST(COALESCE(s.login_fail_count, 0), COALESCE(g.failed_count, 0)) >= #{longLockThreshold} THEN '服务端登录保护长锁已触发'
-                     ELSE '服务端登录保护短锁已触发'
-                   END AS lockReason,
+                   'UNKNOWN' AS lockKind,
+                   '已锁定（类型未确认）' AS lockLabel,
+                   '仅可核对有效锁定截止，不能按当前阈值推断原锁类型' AS lockReason,
                    CONCAT('锁定至 ', DATE_FORMAT(g.locked_until, '%Y-%m-%d %H:%i:%s')) AS lockLeft
               FROM nx_user_security s
               JOIN nx_user u ON u.id = s.user_id AND u.is_deleted = 0

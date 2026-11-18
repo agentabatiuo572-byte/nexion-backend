@@ -544,6 +544,10 @@ public class OpsCopyAbService {
     }
 
     private ApiResult<CopyContentRow> createCopyOnce(String idempotencyKey, CopyCreateRequest request) {
+        if (request.audienceTarget() != null || !"全量".equals(request.audience().trim())
+                || parseSplit(request.trafficSplit()) != 100) {
+            return ApiResult.fail(422, "COPY_PUBLISH_ALLOCATION_EXPERIMENT_ONLY");
+        }
         CopyText text = completeCopyText(request.zh(), request.en(), request.vi());
         if (!text.complete()) return ApiResult.fail(422, "COPY_FIELDS_REQUIRED");
         ApiResult<CopyContentRow> positionGuard = validatePositionReference(request.copyPosition(), request.surface());
@@ -1232,6 +1236,7 @@ public class OpsCopyAbService {
                 return ExperimentAudienceSnapshot.failure(
                         OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_EXPERIMENT_VERSION_INVALID");
             }
+            if (isNeutralExperimentVersion(version)) continue;
             if (first) {
                 firstTarget = version.audienceTarget();
                 firstLegacyAudience = version.audience();
@@ -1242,8 +1247,16 @@ public class OpsCopyAbService {
                         OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_EXPERIMENT_AUDIENCE_MISMATCH");
             }
         }
-        String label = audienceLabel(firstTarget, firstLegacyAudience);
+        String label = first ? "全量" : audienceLabel(firstTarget, firstLegacyAudience);
         return new ExperimentAudienceSnapshot(label, null, 0);
+    }
+
+    private boolean isNeutralExperimentVersion(CopyVersionRow version) {
+        CopyAudienceTarget target = version.audienceTarget();
+        return "全量".equals(version.audience()) && (target == null
+                || (target.locales() == null || target.locales().isEmpty())
+                    && (target.tiers() == null || target.tiers().isEmpty())
+                    && target.registrationDaysMin() == null && target.registrationDaysMax() == null);
     }
 
     private String experimentVariantError(List<CopyExperimentVariantRequest> variants) {

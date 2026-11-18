@@ -125,6 +125,7 @@ public class H4GrowthApproval {
         if (!supports(command) || !Set.of(RULE, LEGACY_OPEN).contains(command.op())) return command;
         AuditLockTarget target = target(command);
         boolean legacy = LEGACY_OPEN.equals(command.op());
+        String copyBefore = rules.encode(growth.eventLocalizedContent(target.id()));
         var published = growth.saveEventPublicationCopy(target.id(), operator, Map.of(
                 "reason", reason, "idempotencyKey", idempotencyKey.trim(),
                 "operation", command.op(), "operationId", operationId, "sourceLocale", "en"));
@@ -135,9 +136,8 @@ public class H4GrowthApproval {
         }
         var params = new LinkedHashMap<>(command.params());
         params.put("eventCopy", published.content());
+        params.put("eventCopyBefore", copyBefore);
         if (legacy) {
-            var before = (Map<?, ?>) params.get("expectedState");
-            params.put("eventCopyBefore", before.get("localized"));
             params.put("expectedState", state(target, command.op()));
         }
         return new AuditReplayCommand(command.domain(), command.op(), params);
