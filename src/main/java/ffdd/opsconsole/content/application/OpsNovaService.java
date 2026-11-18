@@ -492,9 +492,13 @@ public class OpsNovaService {
         if (current.isEmpty()) {
             return ApiResult.fail(404, "NOVA_CHANNEL_NOT_FOUND");
         }
-        if (!NovaRuntimeAdapterCatalog.fixedSources().containsKey(normalizedKey)
-                && !NovaRuntimeAdapterCatalog.isControlledDynamicSource(request.trigger())
-                && !isUnchangedSocialRuntimeTrigger(normalizedKey, current.get().trigger(), request.trigger())) {
+        String currentKey = current.get().key();
+        if (NovaSocialRuntimeService.SOCIAL_CHANNEL.equals(currentKey)) {
+            if (!isUnchangedSocialRuntimeTrigger(currentKey, current.get().trigger(), request.trigger())) {
+                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_CHANNEL_RUNTIME_SOURCE_UNSUPPORTED");
+            }
+        } else if (!NovaRuntimeAdapterCatalog.fixedSources().containsKey(normalizedKey)
+                && !NovaRuntimeAdapterCatalog.isControlledDynamicSource(request.trigger())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_CHANNEL_RUNTIME_SOURCE_UNSUPPORTED");
         }
         boolean enabled = request.enabled() == null ? current.get().enabled() : request.enabled();
