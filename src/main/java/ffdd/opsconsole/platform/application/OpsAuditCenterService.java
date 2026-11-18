@@ -48,6 +48,7 @@ import ffdd.opsconsole.shared.audit.A2AuditAggregate;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.exception.AppTextChineseNotAllowedException;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.device.application.MonthlyTargetPoolException;
 import ffdd.opsconsole.device.application.MonthlyTargetRewardOutOfRangeException;
@@ -145,6 +146,8 @@ public class OpsAuditCenterService {
 
     private final ffdd.opsconsole.device.application.OpsDeviceService devices;
     private final OpsI18nLearningService learning;
+    @Autowired @Lazy
+    private OpsAdminAccountService accounts;
     @Autowired
     private OpsGrowthService growth;
     @Autowired
@@ -360,6 +363,11 @@ public class OpsAuditCenterService {
             sourceDomain = "A";
             ticket.setSourceDomain(sourceDomain);
         }
+        if (command != null && "A".equals(command.domain())
+                && ("a1_account_create".equals(command.op()) || "a1_account_update_profile".equals(command.op()))) {
+            var review = accounts.reviewDisplayNameProposal(command);
+            if (review.getCode() != 0) return ApiResult.fail(review.getCode(), review.getMessage());
+        }
         if (descriptor != null) {
             boolean j1Restore = OpsKillSwitchService.isRestoreCommand(command);
             boolean superAdminProposal = j1Restore || "A1".equals(descriptor.sourceDomain())
@@ -556,8 +564,9 @@ public class OpsAuditCenterService {
                     stored.put("avatarMakerAdminId", maker);
                 }
                 ticket.setCommandJson(objectMapper.writeValueAsString(stored));
-            } catch (MonthlyTargetPoolException | MonthlyTargetRewardOutOfRangeException ex) {
-                throw ex; // The HTTP exception boundary preserves affectedSkuIds.
+            } catch (MonthlyTargetPoolException | MonthlyTargetRewardOutOfRangeException
+                    | AppTextChineseNotAllowedException ex) {
+                throw ex; // Preserve structured validation details at the HTTP boundary.
             } catch (BizException ex) {
                 return ApiResult.fail(ex.getCode(), ex.getMessage());
             } catch (Exception ex) {
@@ -927,7 +936,7 @@ public class OpsAuditCenterService {
                 return proposalByIdempotencyKey(idempotencyKey);
             }
             return ApiResult.ok(receipt);
-        } catch (MonthlyTargetPoolException | MonthlyTargetRewardOutOfRangeException
+        } catch (MonthlyTargetPoolException | MonthlyTargetRewardOutOfRangeException | AppTextChineseNotAllowedException
                 | ffdd.opsconsole.shared.exception.H4EventRuleIncompleteException ex) {
             throw ex; // Idempotency has rolled back; preserve the structured approval rejection.
         } catch (ffdd.opsconsole.shared.exception.PhoneReplacementException ex) {

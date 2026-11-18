@@ -497,7 +497,8 @@ $migrations = @(
   # Restore it after the event governance structure and lifecycle closure above.
   (Join-Path $root "scripts\migrations\20261118_h4_wheel_award_event_registry.sql"),
   (Join-Path $root "scripts\migrations\20261118_bug456_legacy_spring_spin_status.sql"),
-  (Join-Path $root "scripts\migrations\20261118_bug457_nova_social_wrapped_uvel_titles.sql")
+  (Join-Path $root "scripts\migrations\20261118_bug457_nova_social_wrapped_uvel_titles.sql"),
+  (Join-Path $root "scripts\migrations\20261118_app_display_text_seed_names.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
