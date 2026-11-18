@@ -31,9 +31,11 @@ public class OAuthProviderController {
         @Override public String toString() { return "LinkRequest[REDACTED]"; }
     }
 
-    @GetMapping("/available") public ApiResult<List<String>> available() { return ApiResult.ok(flows.available()); }
-    @GetMapping("/linked") public ApiResult<List<String>> linked(Authentication authentication) {
-        return ApiResult.ok(flows.linked(userId(authentication)));
+    @GetMapping("/available") public ApiResult<List<String>> available(HttpServletRequest request) {
+        return ApiResult.ok(filterApple(flows.available(), request));
+    }
+    @GetMapping("/linked") public ApiResult<List<String>> linked(Authentication authentication, HttpServletRequest request) {
+        return ApiResult.ok(filterApple(flows.linked(userId(authentication)), request));
     }
 
     @PostMapping("/start")
@@ -41,8 +43,19 @@ public class OAuthProviderController {
             Authentication authentication, HttpServletRequest http) {
         if (!"LOGIN".equals(request.intent()) && !"LINK".equals(request.intent()))
             throw new BizException(422, "OAUTH_REQUEST_INVALID");
+        if ("APPLE".equals(request.provider()) && !allowsApple(http))
+            throw new BizException(503, "OAUTH_PROVIDER_NOT_CONFIGURED");
         Long userId = "LINK".equals(request.intent()) ? userId(authentication) : null;
         return ApiResult.ok(flows.start(request.provider(), userId, http.getRemoteAddr(), request.sponsorCode()));
+    }
+
+    private List<String> filterApple(List<String> channels, HttpServletRequest request) {
+        if (!channels.contains("APPLE") || allowsApple(request)) return channels;
+        return channels.stream().filter(channel -> !"APPLE".equals(channel)).toList();
+    }
+
+    private boolean allowsApple(HttpServletRequest request) {
+        return providers.allowsAppleOnRequest(request.getHeader(HttpHeaders.HOST), request.getHeader(HttpHeaders.ORIGIN));
     }
 
     @GetMapping("/authorize/{state}")

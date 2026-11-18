@@ -110,7 +110,7 @@ public class AppUserRegistrationService {
         checkRegistrationLimits(ip,0,context);
         if (context.group()==AppSessionSurface.H5 && context.installationId().isEmpty()) {
             CaptchaScene scene = OAuthProviderClient.publicTest(environment)
-                    && ("GOOGLE".equals(provider) || "TELEGRAM".equals(provider))
+                    && ("GOOGLE".equals(provider) || "TELEGRAM".equals(provider) || "APPLE".equals(provider))
                     ? CaptchaScene.LOGIN : CaptchaScene.REGISTER;
             var decision=captchaGate.checkAndConsume(scene,captchaTicket,ip,0,true);
             if (!decision.allowed()) throw new BizException(decision.status(),decision.code());
