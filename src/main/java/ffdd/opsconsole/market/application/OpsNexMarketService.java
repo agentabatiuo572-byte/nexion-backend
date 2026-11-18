@@ -240,7 +240,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         response.put("caps", exchangeCaps(todayUsd, platformCap, pendingExchangeParamTickets()));
         response.put("queue", marketRepository.exchangeOrdersByStatuses(EXCHANGE_QUEUE_STATUSES, 50));
         response.put("gateDetails", map(
-                "user", gate("user", "单用户日额度拦截", "超过单用户日额度的拦截。进次日队列或拒绝。", "USER_CAP", gateUser),
+                "user", gate("user", "单用户日额度拦截", "超过单用户日额度后，按配置转人工处理或拒绝。", "USER_CAP", gateUser),
                 "platform", gate("platform", "平台日额度拦截", "全平台日总池见底的拦截。全部转次日队列。", "PLATFORM_CAP", gatePlatform),
                 "geo", gate("geo", "地域封锁拦截", "命中 J2 地域封锁的兑换单会取消或拒绝。", "GEO_BLOCKED", gateGeo)));
         response.put("swap", map(
@@ -3534,20 +3534,20 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         BigDecimal feeMin = readDecimal(EXCHANGE_FEE_MIN_KEY, new BigDecimal("0.50"));
         String queueMode = normalizeQueueMode(readText(EXCHANGE_QUEUE_MODE_KEY, "QUEUE"));
         return List.of(
-                cap("userDailyCap", "单用户日额度", "每人每天最多换出多少 USDT", userCap, displayUsd(userCap),
-                        "范围 $0-10,000 · 放宽过红线", true, null,
+                cap("userDailyCap", "单用户日额度", "每人每天最多换出多少 USDT", userCap, userCap.stripTrailingZeros().toPlainString() + " USDT",
+                        "范围 0–10,000 USDT · 提高额度须审批", true, null,
                         pendingByKey.containsKey("userDailyCap"), pendingByKey.get("userDailyCap")),
-                cap("platformDailyCap", "平台日额度", "全平台每天兑换总池", platformCap, displayUsd(platformCap),
-                        "范围 $0-10,000,000 · 放宽过红线", true, percent(todayUsd, platformCap),
+                cap("platformDailyCap", "平台日额度", "全平台每天兑换总池", platformCap, platformCap.stripTrailingZeros().toPlainString() + " USDT",
+                        "范围 0–10,000,000 USDT · 提高额度须审批", true, percent(todayUsd, platformCap),
                         pendingByKey.containsKey("platformDailyCap"), pendingByKey.get("platformDailyCap")),
-                cap("fee", "兑换手续费率", "每笔 UVT->USDT 抽成 · 当前可为免费推广期", feePct, displayPct(feePct),
-                        "范围 0%-10% · 降费=放大流出过红线", true, null,
+                cap("fee", "兑换手续费率", "每笔 UVT 兑换 USDT 的费率", feePct, feePct.stripTrailingZeros().toPlainString() + "%",
+                        "范围 0%–10% · 降低费率须审批", true, null,
                         pendingByKey.containsKey("fee"), pendingByKey.get("fee")),
-                cap("feeMin", "最低手续费", "开费后小额兑换的保底费", feeMin, displayUsd(feeMin),
-                        "范围 $0-5 · 随费率启用生效", true, null,
+                cap("feeMin", "最低手续费", "开费后小额兑换的保底费", feeMin, feeMin.stripTrailingZeros().toPlainString() + " USDT",
+                        "范围 0–5 USDT · 随费率启用生效", true, null,
                         pendingByKey.containsKey("feeMin"), pendingByKey.get("feeMin")),
-                cap("queueMode", "超额度处置策略", "用户当日兑换超过额度时进次日队列还是直接拒绝", queueMode, displayQueueMode(queueMode),
-                        "枚举: 排队 / 拒绝", "QUEUE".equals(queueMode), null,
+                cap("queueMode", "超额度处置策略", "超过额度时进入人工处理队列或直接拒绝", queueMode, displayQueueMode(queueMode),
+                        "人工处理或拒绝；排队后不会在次日自动成交", "QUEUE".equals(queueMode), null,
                         pendingByKey.containsKey("queueMode"), pendingByKey.get("queueMode")));
     }
 
