@@ -27,7 +27,7 @@ public class PendingApprovalProjection {
     private static final VoucherPendingApproval UNKNOWN_VOUCHER = new VoucherPendingApproval(null, null, null, null);
     private static final H3PendingApproval UNKNOWN_H3 = new H3PendingApproval(null, null, null, null, null, null, null);
     private static final Map<String, String> H3_CONFIG_ACTIONS = Map.ofEntries(
-            Map.entry("dayOne.triReward", "调整首日三档奖励"),
+            Map.entry("dayOne.triReward", "调整新手任务三档奖励"),
             Map.entry("weekly.mult.P1", "调整每周倍率 P1"),
             Map.entry("weekly.mult.P2", "调整每周倍率 P2"),
             Map.entry("weekly.mult.P3", "调整每周倍率 P3"),

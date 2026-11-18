@@ -50,7 +50,12 @@ public record EventCenterOverview(
             Map.entry("risk.arbitrage_suspected", "发现套利嫌疑"), Map.entry("risk.trial_cycle_detected", "发现循环试用"),
             Map.entry("risk.withdraw_held", "提现风控拦截"), Map.entry("risk.score_updated", "更新风险评分"),
             Map.entry("auth.login_locked", "登录锁定"), Map.entry("phase.transitioned", "运营阶段切换"),
-            Map.entry("phase.dial_changed", "修改运营参数"), Map.entry("admin.emergency_playbook_executed", "执行应急预案"));
+            Map.entry("phase.dial_changed", "修改运营参数"), Map.entry("admin.emergency_playbook_executed", "执行应急预案"),
+            Map.entry("device.upgrade_recommended", "推荐设备升级"), Map.entry("earnings.credited", "收益到账"),
+            Map.entry("tradein.eligible", "符合以旧换新资格"), Map.entry("event.reward_claimable", "活动奖励可领取"),
+            Map.entry("nova.wrapped_ready", "用户回顾已就绪"), Map.entry("quest.monthly_lock_ready", "月度任务锁定已就绪"),
+            Map.entry("quest.grace_started", "任务宽限期开始"), Map.entry("quest.expired", "任务已过期"),
+            Map.entry("quest.weekly_refreshed", "每周任务已刷新"));
 
     @JsonProperty(value = "domainDisplayNames", access = JsonProperty.Access.READ_ONLY)
     public Map<String, String> domainDisplayNames() {
@@ -107,10 +112,21 @@ public record EventCenterOverview(
             String version,
             String updatedAt,
             String lifecycleState,
-            long lifecycleVersion) {
-        @JsonProperty(value = "displayName", access = JsonProperty.Access.READ_ONLY)
-        public String displayName() {
-            return eventName == null ? null : EVENT_LABELS.get(eventName);
+            long lifecycleVersion,
+            String displayName) {
+        @org.apache.ibatis.annotations.AutomapConstructor
+        public EventSchemaRegistration(String eventName, String ownerDomain, String familyKey, String producer,
+                String consumers, String properties, boolean serverAuthoritative, String samplingPolicy,
+                String version, String updatedAt, String lifecycleState, long lifecycleVersion) {
+            this(eventName, ownerDomain, familyKey, producer, consumers, properties, serverAuthoritative,
+                    samplingPolicy, version, updatedAt, lifecycleState, lifecycleVersion,
+                    eventName == null ? null : EVENT_LABELS.get(eventName));
+        }
+
+        public EventSchemaRegistration withDisplayName(String configured) {
+            if (configured == null || configured.isBlank()) return this;
+            return new EventSchemaRegistration(eventName, ownerDomain, familyKey, producer, consumers, properties,
+                    serverAuthoritative, samplingPolicy, version, updatedAt, lifecycleState, lifecycleVersion, configured);
         }
 
         @JsonProperty(value = "ownerDisplayName", access = JsonProperty.Access.READ_ONLY)

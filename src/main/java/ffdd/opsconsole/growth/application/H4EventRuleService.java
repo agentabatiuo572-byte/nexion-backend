@@ -356,17 +356,38 @@ public class H4EventRuleService {
     }
     private static void positive(Map<String,Object> r,List<String> missing,String... keys){for(String key:keys)if(number(r.get(key)).signum()<=0)missing.add(key);}
     private static void required(Map<String,Object> r,List<String> missing,String key){if(text(r.get(key)).isBlank())missing.add(key);}
-    /** Counts live H4 regional rules whose participation gate uses configured country allowlists. */
-    public long liveCountryRestrictedCampaigns() {
+    /** Count each live H4 activity once, from the actual participation and linked promotion rules. */
+    public long liveRegionRestrictedCampaigns() {
+        var now = Instant.now();
+        var utc = LocalDateTime.ofInstant(now, ZoneOffset.UTC);
+        var stored = LocalDateTime.ofInstant(now, ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE);
         return db.rows("""
-                SELECT r.event_code, r.rules_json
+                SELECT r.event_code, r.kind, r.rules_json, p.status AS promotion_status,
+                       v.contract_json AS promotion_contract, v.content_hash AS promotion_hash
                   FROM nx_growth_event_rule r
                   JOIN nx_event_quest q ON q.quest_code=r.event_code AND q.is_deleted=0
-                 WHERE r.kind='regional' AND r.enabled=1
-                   AND r.starts_at<=UTC_TIMESTAMP(6) AND r.ends_at>UTC_TIMESTAMP(6)
-                """).stream().filter(rule -> rules(rule).get("regions") instanceof List<?> regions
-                        && regions.stream().anyMatch(item -> item instanceof Map<?,?> region
-                            && region.get("countries") instanceof List<?> countries && !countries.isEmpty())).count();
+                  LEFT JOIN nx_promotion p ON p.activity_id=JSON_UNQUOTE(JSON_EXTRACT(r.rules_json, '$.promotionActivityId'))
+                       AND p.deleted_at IS NULL AND p.status IN ('ACTIVE','SCHEDULED')
+                  LEFT JOIN nx_promotion_version v ON v.activity_id=p.activity_id AND v.version=p.active_version
+                       AND v.status='PUBLISHED' AND v.starts_at<=? AND v.ends_at>?
+                 WHERE r.enabled=1 AND r.starts_at<=? AND r.ends_at>?
+                """, stored, stored, utc, utc).stream().filter(rule -> {
+            boolean countryRestricted = "regional".equals(rule.get("kind"))
+                    && rules(rule).get("regions") instanceof List<?> regions
+                    && regions.stream().anyMatch(item -> item instanceof Map<?,?> region
+                        && region.get("countries") instanceof List<?> countries && !countries.isEmpty());
+            if (countryRestricted) return true;
+            Object published = rule.get("promotion_contract");
+            if (published == null) return false;
+            var contract = ffdd.opsconsole.promotion.domain.PromotionValues.parse(published);
+            if (!ffdd.opsconsole.promotion.domain.PromotionValues.hash(contract).equals(rule.get("promotion_hash"))) {
+                throw new BizException(503, "PROMOTION_VERSION_INVALID");
+            }
+            if (!"ACTIVE".equals(ffdd.opsconsole.promotion.domain.PromotionValues.effectiveLifecycle(
+                    rule.get("promotion_status"), contract, now))) return false;
+            return contract.get("buyerAudience") instanceof Map<?,?> buyer
+                    && buyer.get("markets") instanceof List<?> markets && !markets.isEmpty();
+        }).map(rule -> text(rule.get("event_code"))).distinct().count();
     }
 
     public Map<String,Object> rules(Map<String,Object> row) {
