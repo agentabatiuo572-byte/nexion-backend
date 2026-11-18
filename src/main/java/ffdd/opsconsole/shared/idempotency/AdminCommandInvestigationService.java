@@ -55,7 +55,16 @@ public class AdminCommandInvestigationService {
 
     public record IntegrityRepairReceipt(String messageKey, String version, Integer repairedCount) {}
 
-    public record ReceiptStatus(String state) {}
+    public record ReceiptStatus(
+            String state,
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+            Integer businessCode,
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+            String businessMessage) {
+        public ReceiptStatus(String state) {
+            this(state, null, null);
+        }
+    }
 
     private enum ReceiptFamily { A1_ACCOUNT, A1_PERMISSION, A1_AVATAR_CANCEL, A6, A7, F4, D5, D6, D7 }
 
@@ -107,7 +116,7 @@ public class AdminCommandInvestigationService {
             return new ReceiptStatus("NOT_FOUND");
         }
         if (!receiptOwner(original, family, actor)) return new ReceiptStatus("UNKNOWN");
-        return new ReceiptStatus(receiptState(original));
+        return statusOf(original);
     }
 
     /** Family-less scopes still answer as long as the command is wired and the caller holds its read right. */
@@ -129,7 +138,7 @@ public class AdminCommandInvestigationService {
         if (original.getOriginAdminId() == null || !Long.valueOf(actor).equals(original.getOriginAdminId())) {
             return new ReceiptStatus("UNKNOWN");
         }
-        return new ReceiptStatus(receiptState(original));
+        return statusOf(original);
     }
 
     /** Records evidence and fences the old command. Never invokes a business writer or accepts a result payload. */
@@ -759,6 +768,26 @@ public class AdminCommandInvestigationService {
                 yield owners != null && owners.size() == 1 && Long.valueOf(actor).equals(owners.get(0));
             }
         };
+    }
+
+    private ReceiptStatus statusOf(AdminIdempotencyRecordEntity original) {
+        String state = receiptState(original);
+        if ("REJECTED".equals(state)) {
+            return new ReceiptStatus(state, businessCode(original.getResponseJson()),
+                    businessMessage(original.getResponseJson()));
+        }
+        return new ReceiptStatus(state);
+    }
+
+    private String businessMessage(String responseJson) {
+        if (!StringUtils.hasText(responseJson)) return null;
+        try {
+            var value = json.readTree(responseJson);
+            return value != null && value.has("message") && value.get("message").isTextual()
+                    ? value.get("message").asText() : null;
+        } catch (JsonProcessingException ex) {
+            return null;
+        }
     }
 
     private String receiptState(AdminIdempotencyRecordEntity original) {

@@ -498,7 +498,11 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261118_h4_wheel_award_event_registry.sql"),
   (Join-Path $root "scripts\migrations\20261118_bug456_legacy_spring_spin_status.sql"),
   (Join-Path $root "scripts\migrations\20261118_bug457_nova_social_wrapped_uvel_titles.sql"),
-  (Join-Path $root "scripts\migrations\20261118_app_display_text_seed_names.sql")
+  (Join-Path $root "scripts\migrations\20261118_app_display_text_seed_names.sql"),
+  # Retire the last legacy Nova brand token and page codes in preloaded copy.
+  (Join-Path $root "scripts\migrations\20261119_i2_be06_nova_brand_trigger_copy.sql"),
+  # Align nx_admin_menu stock display names with current navigation names.
+  (Join-Path $root "scripts\migrations\20261119_a7_be02_menu_display_names.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

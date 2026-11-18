@@ -2,8 +2,10 @@ package ffdd.opsconsole.platform.application;
 
 import ffdd.opsconsole.emergency.application.OpsKillSwitchService;
 
+import ffdd.opsconsole.content.application.DisclosureContentHash;
 import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
 import ffdd.opsconsole.content.application.OpsI18nLearningService;
+import ffdd.opsconsole.content.domain.TrustDisclosureRepository;
 import ffdd.opsconsole.content.application.OpsI18nLearningService.CourseRewardReview;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -154,6 +156,7 @@ public class OpsAuditCenterService {
     private AdminObjectDisplayNameService adminObjectDisplayNames;
     @Autowired
     private ffdd.opsconsole.team.application.AmbassadorMaterialService ambassadorMaterials;
+    private final TrustDisclosureRepository trustDisclosureRepository;
 
     public OpsAuditCenterService(PlatformConfigRepository configRepository, AuditLogService auditLogService,
             OpsReadTimeSeedPolicy readTimeSeedPolicy, AuditOperationTicketMapper ticketMapper,
@@ -163,7 +166,7 @@ public class OpsAuditCenterService {
             com.fasterxml.jackson.databind.ObjectMapper objectMapper, AdminIdempotencyService idempotencyService) {
         this(configRepository, auditLogService, readTimeSeedPolicy, ticketMapper, historyMapper,
                 confirmCategoryMapper, lockMapper, replayBusinessPermissionGuard, replayDispatcher,
-                accessPolicy, objectMapper, idempotencyService, null, null, null);
+                accessPolicy, objectMapper, idempotencyService, null, null, null, null);
     }
 
     public ApiResult<AuditCenterOverview> overview() {
@@ -1722,13 +1725,22 @@ public class OpsAuditCenterService {
             if (jurisdiction.isBlank()) jurisdiction = params.path("jurisdiction").asText("");
             String version = params.path("version").asText("");
             if (jurisdiction.isBlank() || version.isBlank()) return null;
-            return objectMapper.createObjectNode().put("kind", "MATRIX").put("jurisdiction", jurisdiction)
+            var matrix = objectMapper.createObjectNode().put("kind", "MATRIX").put("jurisdiction", jurisdiction)
                     .put("expectedVersion", params.path("expectedVersion").asText("")).put("version", version);
+            if (params.has("countryCodes")) matrix.set("targetCountryCodes", params.path("countryCodes"));
+            if (params.has("expectedCountryCodes")) matrix.set("originalCountryCodes", params.path("expectedCountryCodes"));
+            return matrix;
         }
         if (!Set.of("i4_disclosure_publish", "i5_disclosure_publish").contains(command.op())) return null;
         try {
             var frozen = objectMapper.readTree(row.getCommandJson()).get("disclosureReview");
-            if (frozen != null && frozen.isObject()) return frozen;
+            if (frozen != null && frozen.isObject()) {
+                if (frozen instanceof com.fasterxml.jackson.databind.node.ObjectNode node) {
+                    node.put("draftMatchesFrozenEvidence", disclosureDraftMatchesFrozenEvidence(frozen));
+                    return node;
+                }
+                return frozen;
+            }
         } catch (com.fasterxml.jackson.core.JsonProcessingException invalid) {
             // Legacy tickets can still show their original binding, never current draft contents.
         }
@@ -1737,6 +1749,23 @@ public class OpsAuditCenterService {
                 .put("version", params.path("version").asText(""))
                 .put("contentHash", params.path("expectedContentHash").asText(""))
                 .set("revision", params.path("expectedRevision"));
+    }
+
+    /** True only when the current stored draft still equals the frozen publish evidence; unknown states stay null. */
+    private Boolean disclosureDraftMatchesFrozenEvidence(com.fasterxml.jackson.databind.JsonNode frozen) {
+        String jurisdiction = frozen.path("jurisdiction").asText("");
+        String version = frozen.path("version").asText("");
+        long revision = frozen.path("revision").asLong(-1L);
+        String contentHash = frozen.path("contentHash").asText("");
+        if (jurisdiction.isBlank() || version.isBlank() || revision < 0 || contentHash.isBlank()) return null;
+        try {
+            var current = trustDisclosureRepository.findDisclosureVersion(jurisdiction, version).orElse(null);
+            if (current == null || current.revision() != revision) return false;
+            var chapters = trustDisclosureRepository.listChapters(jurisdiction, version);
+            return contentHash.equals(DisclosureContentHash.from(current, chapters));
+        } catch (RuntimeException unavailable) {
+            return null;
+        }
     }
 
     private boolean isRoleGrantsCommand(AuditReplayCommand command) {
@@ -1832,6 +1861,7 @@ public class OpsAuditCenterService {
     private boolean retiredOperation(AuditReplayCommand command) {
         if (command == null) return false;
         if ("H".equals(command.domain()) && "h2_trial_charge".equals(command.op())) return true;
+        if ("E".equals(command.domain()) && "e2_task_delete".equals(command.op())) return true;
         if (!"E".equals(command.domain()) || command.params() == null) return false;
         if ("e6_compute_config".equals(command.op())) {
             return ffdd.opsconsole.device.domain.ComputeConfigRegistry.isCoefficientParamKey(
