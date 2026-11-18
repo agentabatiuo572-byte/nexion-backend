@@ -793,7 +793,7 @@ public class OpsKillSwitchService {
         try {
             value = normalizeAutoRuleValue(seed, request.value());
             expectedValue = requireExpectedValue(request.expectedValue(), "AUTO_RULE_EXPECTED_VALUE_REQUIRED");
-            normalizeAutoRuleValue(seed, expectedValue);
+            validateAutoRuleExpected(seed, expectedValue);
         } catch (IllegalArgumentException ex) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
         }
@@ -823,7 +823,7 @@ public class OpsKillSwitchService {
                     "reason", request.reason().trim(), "result", "STALE_VERSION"));
             return ApiResult.fail(409, "J1_CONFIG_STALE_VERSION");
         }
-        if (normalizeAutoRuleValue(seed, before).equals(value)) {
+        if (autoRuleValuesEqual(seed, before, value)) {
             auditRejected("J1_AUTO_RULE_CHANGE_BLOCKED", seed.id(), operator, Map.of(
                     "ruleId", seed.id(), "expectedValue", expectedValue, "actualValue", before,
                     "reason", request.reason().trim(), "result", "NO_CHANGES"));
@@ -1247,6 +1247,62 @@ public class OpsKillSwitchService {
         } catch (NumberFormatException ex) {
             throw new IllegalArgumentException("AUTO_RULE_THRESHOLD_MUST_BE_POSITIVE_USDT");
         }
+    }
+
+    /**
+     * The stored value may be an older positive form the runtime already accepts (for example {@code 50K});
+     * only the maturity-gap threshold allows it, and only as the expected/current value — new values keep the
+     * strict format above.
+     */
+    private void validateAutoRuleExpected(AutoRuleSeed seed, String expectedValue) {
+        try {
+            normalizeAutoRuleValue(seed, expectedValue);
+            return;
+        } catch (IllegalArgumentException strict) {
+            if (!"maturityGap".equals(seed.id())) {
+                throw strict;
+            }
+        }
+        maturityGapLegacyAmount(expectedValue);
+    }
+
+    /** Same-value check between the stored raw and the normalized new value, read with one numeric meaning. */
+    private boolean autoRuleValuesEqual(AutoRuleSeed seed, String before, String value) {
+        try {
+            return normalizeAutoRuleValue(seed, before).equals(value);
+        } catch (IllegalArgumentException legacyRaw) {
+            if (!"maturityGap".equals(seed.id())) {
+                throw legacyRaw;
+            }
+        }
+        return maturityGapLegacyAmount(before).compareTo(new BigDecimal(value)) == 0;
+    }
+
+    /**
+     * Strict reading of the legacy threshold formats (K/M, thousands separators, {@code $}). Unlike
+     * {@link #maturityGapThresholdUsdt(String)} it never falls back to 50000, so an unusable string is
+     * rejected instead of being treated as a real stored threshold.
+     */
+    private BigDecimal maturityGapLegacyAmount(String raw) {
+        String normalized = raw == null ? "" : raw.trim().replace(",", "").replace("$", "").toUpperCase(Locale.ROOT);
+        BigDecimal multiplier = BigDecimal.ONE;
+        if (normalized.endsWith("K")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+            multiplier = new BigDecimal("1000");
+        } else if (normalized.endsWith("M")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+            multiplier = new BigDecimal("1000000");
+        }
+        BigDecimal amount;
+        try {
+            amount = new BigDecimal(normalized).multiply(multiplier);
+        } catch (RuntimeException ex) {
+            throw new IllegalArgumentException("AUTO_RULE_THRESHOLD_MUST_BE_POSITIVE_USDT");
+        }
+        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("AUTO_RULE_THRESHOLD_MUST_BE_POSITIVE_USDT");
+        }
+        return amount;
     }
 
     BigDecimal maturityGapThresholdUsdt() {
