@@ -34,7 +34,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class OpsSupportKnowledgeService {
     private static final Set<String> FAQ_CATEGORIES = Set.of("general", "account", "withdrawal", "deposit", "hardware", "earnings", "genesis", "technical", "other");
-    private static final Set<String> SURFACES = Set.of("Help Center", "Nova");
+    private static final Set<String> SURFACES = Set.of("Help Center"); // Nova retired by product decision
     private static final Set<String> STATUSES = Set.of("PUBLISHED", "DRAFT");
     private static final Set<String> LANGUAGES = Set.of("zh-CN", "en-US", "vi-VN", "id", "ms", "fil", "ru", "kk", "uz");
     private static final DateTimeFormatter FAQ_ID_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");

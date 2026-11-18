@@ -408,6 +408,37 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                                            @Param("limit") int limit,
                                            @Param("onlyInvitedUserId") Long onlyInvitedUserId);
 
+    @Select("""
+            SELECT u.id AS invitedUserId, inviter.id AS inviterUserId
+              FROM nx_user u
+              LEFT JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
+               AND inviter.id<>u.id AND inviter.sandbox=u.sandbox
+               AND EXISTS (SELECT 1 FROM nx_user_wallet w WHERE w.user_id=inviter.id AND w.is_deleted=0 AND w.sandbox=u.sandbox)
+              JOIN nx_user_wallet invited_wallet ON invited_wallet.user_id = u.id
+                AND invited_wallet.is_deleted = 0
+                AND invited_wallet.sandbox = #{accountSandbox}
+
+              LEFT JOIN nx_referral_reward_settlement s
+                ON s.invited_user_id = u.id AND s.is_deleted = 0
+             WHERE u.is_deleted = 0 AND u.status = 'ACTIVE'
+               AND #{sourceEnvironment} = 'PRODUCTION'
+               AND COALESCE(u.sandbox, 0) = #{accountSandbox}
+               AND u.created_at >= #{effectiveAt}
+               AND u.created_at < #{effectiveUntil}
+            """ + ELIGIBLE_RISK + """
+               AND s.id IS NULL
+               AND (#{onlyInvitedUserId} IS NULL OR u.id = #{onlyInvitedUserId})
+             ORDER BY u.created_at ASC, u.id ASC
+             LIMIT #{limit}
+            """)
+    List<ReferralRow> findPriorPendingReferrals(@Param("effectiveAt") LocalDateTime effectiveAt,
+                                                @Param("effectiveUntil") LocalDateTime effectiveUntil,
+                                                @Param("sourceEnvironment") String sourceEnvironment,
+                                                @Param("accountSandbox") int accountSandbox,
+                                                @Param("holdRisky") boolean holdRisky,
+                                                @Param("limit") int limit,
+                                                @Param("onlyInvitedUserId") Long onlyInvitedUserId);
+
     /**
      * Same non-risk scope as findPendingReferrals (same inviter JOIN/wallet/registered/settled),
      * used only to explain whether ELIGIBLE_RISK is the sole blocker. No release helper.

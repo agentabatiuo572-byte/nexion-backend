@@ -283,6 +283,10 @@ public class AppUserAuthService {
         UserLoginGuardRecord guard = loginGuardMapper.lock(loginKey);
         UserEntity user = lockLoginUser(findUser(countryCode, phone));
         if (user != null) loginGuardMapper.bindUser(loginKey, user.getId());
+        if (guard != null && guard.getLockedUntil() != null && guard.getLockedUntil().isAfter(now)) {
+            // 产品决定：锁定期间的失败尝试不累计，也不升级锁类型。
+            return ApiResult.fail(429, "USER_LOGIN_TEMPORARILY_LOCKED");
+        }
         boolean eligible = user != null
                 && "ACTIVE".equalsIgnoreCase(user.getStatus())
                 && !blocklistVerifier.isBlocked(user.getId())

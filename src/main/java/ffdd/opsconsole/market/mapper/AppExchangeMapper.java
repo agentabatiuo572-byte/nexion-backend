@@ -19,6 +19,9 @@ public interface AppExchangeMapper {
     @Select("SELECT CONCAT('U', IF(id<100000000,LPAD(id,8,'0'),CAST(id AS CHAR))) FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 AND COALESCE(sandbox,0)=0 FOR UPDATE")
     String lockActiveUserNo(@Param("userId") Long userId);
 
+    @Select("SELECT language FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
+    String userLanguage(@Param("userId") Long userId);
+
     @Select("SELECT COALESCE(sandbox,0) FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
     Integer userSandbox(@Param("userId") Long userId);
 

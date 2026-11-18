@@ -429,7 +429,10 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
               LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id
              WHERE d.user_id = #{userId} AND d.is_deleted = 0
                AND """ + USER_PAUSE_CANDIDATE + """
-            ON DUPLICATE KEY UPDATE is_deleted = 0, paused_reason = VALUES(paused_reason), updated_at = NOW()
+            ON DUPLICATE KEY UPDATE is_deleted = 0,
+                paused_reason = IF(UPPER(TRIM(r.paused_reason)) IN ('PHONE_OFFLINE','PHONE_LOW_BATTERY'),
+                                   r.paused_reason, VALUES(paused_reason)),
+                updated_at = NOW()
             """)
     int pauseDevicesByUser(@Param("userId") Long userId, @Param("reason") String reason,
                            @Param("now") LocalDateTime now, @Param("simEnabled") boolean simEnabled);
