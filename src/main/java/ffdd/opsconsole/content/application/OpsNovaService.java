@@ -672,6 +672,10 @@ public class OpsNovaService {
                 && carriesTranslationPlaceholder(current.get())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
         }
+        if (request.translations() == null && !translatedPlaceholdersMatch(
+                current.get().translations(), request.titleEn(), request.bodyEn())) {
+            return ApiResult.fail(422, "NOVA_TEMPLATE_TRANSLATIONS_INVALID");
+        }
         boolean updatedInDatabase = novaRepository.updateTemplateIfCurrent(
                 current.get(), request.name().trim(), request.cta().trim(), request.version().trim(),
                 request.titleZh(), request.bodyZh(), request.titleVi(), request.bodyVi(),
@@ -1090,8 +1094,7 @@ public class OpsNovaService {
                     || translated.title().length() > 255 || translated.body().length() > 4000
                     || !translated.ctaLabel().isEmpty()
                     || ffdd.opsconsole.shared.canonical.RetiredBrandGate.anyCarriesRetiredBrand(translated.title(), translated.body())
-                    || !translated.title().isEmpty() && !placeholders(request.titleEn()).equals(placeholders(translated.title()))
-                    || !translated.body().isEmpty() && !bodyPlaceholders.equals(placeholders(translated.body()))) {
+                    || !translatedPlaceholdersMatch(Map.of(entry.getKey(), translated), request.titleEn(), request.bodyEn())) {
                 return ApiResult.fail(422, "NOVA_TEMPLATE_TRANSLATIONS_INVALID");
             }
         }
@@ -1107,6 +1110,15 @@ public class OpsNovaService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
         }
         return null;
+    }
+
+    private boolean translatedPlaceholdersMatch(Map<String, NotificationTranslation> translations, String title, String body) {
+        if (translations == null || translations.isEmpty()) return true;
+        Set<String> titleVariables = placeholders(title);
+        Set<String> bodyVariables = placeholders(body);
+        return translations.values().stream().allMatch(value -> value != null
+                && (value.title().isEmpty() || titleVariables.equals(placeholders(value.title())))
+                && (value.body().isEmpty() || bodyVariables.equals(placeholders(value.body()))));
     }
 
     /** True when this channel runs on a server-side business adapter (non-social, no event variables). */
