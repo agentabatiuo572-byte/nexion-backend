@@ -1164,7 +1164,13 @@ public class AuditReplayBusinessPermissionGuard {
                 return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
             }
             var preview = h4GrowthApproval.preview(command, request.reason());
-            if (preview.getCode() != 0) return ApiResult.fail(preview.getCode(), preview.getMessage());
+            if (preview.getCode() != 0) {
+                if ("EVENT_RULE_INCOMPLETE".equals(preview.getMessage()) && preview.getData() != null) {
+                    throw new ffdd.opsconsole.shared.exception.H4EventRuleIncompleteException(
+                            preview.getCode(), preview.getMessage(), preview.getData());
+                }
+                return ApiResult.fail(preview.getCode(), preview.getMessage());
+            }
             var review = preview.getData();
             boolean historical = "h4_event_rule".equals(target.type()) && "evt-anniversary-spin".equals(target.id());
             return ApiResult.ok(new DelegatedProposalDescriptor(historical ? "发布历史活动只读记录" : H4GrowthApproval.proposalAction(command), target.id(),

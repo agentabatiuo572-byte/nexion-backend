@@ -61,6 +61,12 @@ public class GlobalExceptionHandler {
         return ApiResult.fail(ex.getCode(), ex.getMessage(), ex.errorData());
     }
 
+    @ExceptionHandler(H4EventRuleIncompleteException.class)
+    public ApiResult<Map<String, Object>> handleH4EventRuleIncomplete(H4EventRuleIncompleteException ex, HttpServletResponse response) {
+        response.setStatus(normalizeHttpStatus(ex.getCode()));
+        return ApiResult.fail(ex.getCode(), ex.getMessage(), ex.errorData());
+    }
+
     @ExceptionHandler(BizException.class)
     public ApiResult<Void> handleBiz(BizException ex, HttpServletResponse response) {
         response.setStatus(normalizeHttpStatus(ex.getCode()));
