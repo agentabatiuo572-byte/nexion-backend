@@ -416,7 +416,7 @@ public class AppLearningService {
 
     private LocalizedCourse localizedCourse(LearningCourseView course, String language) {
         String locale = normalizeLanguage(language);
-        boolean requireReadableCopy = "en".equals(locale) || "vi".equals(locale);
+        boolean requireReadableCopy = "en".equals(locale) || "vi".equals(locale) || InterfaceLanguages.isAdditional(locale);
         String title = localized(locale, course.titleZh(), course.titleVi(), course.titleEn(), course.titleTranslations());
         String body = localized(locale, course.bodyZh(), course.bodyVi(), course.bodyEn(), course.bodyTranslations());
         if (requireReadableCopy && (!StringUtils.hasText(title) || !StringUtils.hasText(body))) return null;
@@ -425,7 +425,7 @@ public class AppLearningService {
         for (LearningQuizQuestionView question : course.quizQuestions() == null ? List.<LearningQuizQuestionView>of() : course.quizQuestions()) {
             String prompt = localized(locale, question.questionZh(), question.questionVi(), question.questionEn(), question.questionTranslations());
             List<String> options = localizedOptions(locale, question);
-            if (requireReadableCopy && (!StringUtils.hasText(prompt) || options.size() < 2
+            if (requireReadableCopy && (!StringUtils.hasText(prompt) || options == null || options.size() < 2
                     || question.optionsZh() == null || options.size() != question.optionsZh().size()
                     || options.stream().anyMatch(option -> !StringUtils.hasText(option)))) {
                 return null;
