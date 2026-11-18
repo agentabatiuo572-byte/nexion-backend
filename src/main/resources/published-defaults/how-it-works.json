@@ -108,7 +108,7 @@
       }
     },
     "wallet-exchange-how": {
-      "version": "default-2026.10.29",
+      "version": "default-2026.11.19",
       "locales": {
         "zh": {
           "blocks": [
@@ -133,7 +133,7 @@
               "id": "daily-limit",
               "kind": "text",
               "title": "每日额度",
-              "body": "每天的兑换额度有限。额度用完时，可选择排到次日处理，处理前可以取消。"
+              "body": "兑换受每日额度限制。如果平台接受排队，将由平台确认后处理；处理前可以取消。"
             },
             {
               "id": "note",
@@ -166,7 +166,7 @@
               "id": "daily-limit",
               "kind": "text",
               "title": "Daily limit",
-              "body": "Daily exchange limits apply. When the limit is reached, you may be able to queue the exchange for the next day and cancel it before it’s processed."
+              "body": "Daily exchange limits apply. If the platform accepts the order into the queue, it will confirm and process it manually. You can cancel before processing."
             },
             {
               "id": "note",
@@ -199,7 +199,7 @@
               "id": "daily-limit",
               "kind": "text",
               "title": "Hạn mức mỗi ngày",
-              "body": "Hạn mức quy đổi mỗi ngày có giới hạn. Khi đã hết hạn mức, bạn có thể chọn xếp hàng sang ngày hôm sau và hủy trước khi giao dịch được xử lý."
+              "body": "Quy đổi có hạn mức ngày. Nếu được xếp hàng, lệnh sẽ do nền tảng xác nhận và xử lý thủ công. Bạn có thể hủy trước khi xử lý."
             },
             {
               "id": "note",
