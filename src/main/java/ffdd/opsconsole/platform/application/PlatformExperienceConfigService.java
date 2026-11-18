@@ -22,6 +22,7 @@ import ffdd.opsconsole.growth.application.OpsGrowthService;
 import java.net.URI;
 import java.time.LocalDateTime;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -160,12 +161,23 @@ public class PlatformExperienceConfigService {
         if (homeFlags.getCode() != 0 || homeFlags.getData() == null) {
             return ApiResult.fail(homeFlags.getCode(), homeFlags.getMessage());
         }
-        PlatformComputeConfigView.ShareConfig next = toShare(request);
+        List<String> previousOperatingLanguages = operatingLanguages();
+        List<String> nextOperatingLanguages = operatingLanguages == null ? previousOperatingLanguages : operatingLanguages;
+        AppDownloadRequest download = request.appDownload();
+        Map<String, String> notes = Map.of("zh", "", "en", "");
+        if ("official".equals(trim(download.source()))) {
+            notes = new LinkedHashMap<>(download.releaseNotes());
+            if (!StringUtils.hasText(notes.get("zh"))) {
+                if (nextOperatingLanguages.contains("zh")) {
+                    return ApiResult.fail(422, "PLATFORM_EXPERIENCE_RELEASE_METADATA_REQUIRED");
+                }
+                notes.put("zh", notes.get("en"));
+            }
+        }
+        PlatformComputeConfigView.ShareConfig next = toShare(request, Map.copyOf(notes));
         Optional<PlatformComputeConfigView.ShareConfig> previousShare = readShare(true);
         List<String> previousLanguages = interfaceLanguages();
         List<String> nextLanguages = languages == null ? previousLanguages : languages;
-        List<String> previousOperatingLanguages = operatingLanguages();
-        List<String> nextOperatingLanguages = operatingLanguages == null ? previousOperatingLanguages : operatingLanguages;
         config.upsertAdminValue(BASE_URL_KEY, next.baseUrl(), "STRING", GROUP, "A3 App experience base URL");
         config.upsertAdminValue(CHANNELS_KEY, json(next.channels()), "JSON", GROUP, "A3 App share channels");
         config.upsertAdminValue(APP_DOWNLOAD_KEY, json(next.appDownload()), "JSON", GROUP, "A3 App installer metadata");
@@ -254,7 +266,6 @@ public class PlatformExperienceConfigService {
         }
         if (!"unavailable".equals(source)) {
             if (!StringUtils.hasText(download.version()) || download.releaseNotes() == null
-                    || !StringUtils.hasText(download.releaseNotes().get("zh"))
                     || !StringUtils.hasText(download.releaseNotes().get("en"))) {
                 return "PLATFORM_EXPERIENCE_RELEASE_METADATA_REQUIRED";
             }
@@ -262,14 +273,13 @@ public class PlatformExperienceConfigService {
         return null;
     }
 
-    private PlatformComputeConfigView.ShareConfig toShare(PlatformExperienceConfigUpdateRequest request) {
+    private PlatformComputeConfigView.ShareConfig toShare(PlatformExperienceConfigUpdateRequest request, Map<String, String> notes) {
         List<PlatformComputeConfigView.ShareChannel> channels = request.channels().stream()
                 .map(channel -> new PlatformComputeConfigView.ShareChannel(
                         trim(channel.key()), trim(channel.intentType()), trim(channel.textTemplate()), trim(channel.urlTemplate()),
                         trim(channel.androidPackage()), trim(channel.iosScheme()), Boolean.TRUE.equals(channel.enabled())))
                 .toList();
         AppDownloadRequest download = request.appDownload();
-        Map<String, String> notes = download.releaseNotes() == null ? Map.of() : Map.copyOf(download.releaseNotes());
         boolean available = "official".equals(trim(download.source()));
         return new PlatformComputeConfigView.ShareConfig(
                 trim(request.baseUrl()) == null ? "" : trim(request.baseUrl()), channels,
@@ -279,7 +289,7 @@ public class PlatformExperienceConfigService {
                         available && trim(download.androidUrl()) != null ? trim(download.androidUrl()) : "",
                         available && trim(download.apkUrl()) != null ? trim(download.apkUrl()) : "",
                         available && trim(download.version()) != null ? trim(download.version()) : "",
-                        available ? notes : Map.of("zh", "", "en", ""),
+                        notes,
                         available ? "official" : "unavailable"));
     }
 
