@@ -920,6 +920,22 @@
               }
             ],
             "description": "Required non-null for approved DEVICE_RIGHTS policies. Server-resolved immutable materialization, not accepted in PolicyDraft input."
+          },
+          "execution": {
+            "type": "object",
+            "description": "Read-only execution facts for the approved refund policy; absent for other policies.",
+            "properties": {
+              "basis": { "type": "string" },
+              "walletRecovery": { "type": "string" },
+              "deviceRecovery": { "type": "string" },
+              "insufficientRecovery": { "type": "string" },
+              "negativeBalance": { "type": "boolean" },
+              "crossAssetDeduction": { "type": "boolean" },
+              "terminalState": { "type": "string" },
+              "manualReviewAppliesTo": { "type": "string" },
+              "unknownEvidence": { "type": "string" }
+            },
+            "additionalProperties": false
           }
         },
         "required": [

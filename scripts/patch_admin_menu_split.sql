@@ -95,7 +95,7 @@ VALUES
   (1706, 'MENU_GROWTH_H6', '里程碑庆祝', '里程碑庆祝', 'H6', 1700, '/growth/milestones', 'Document', 1706, 'H6 里程碑庆祝,按PC左侧菜单同步。', 1),
   (1800, 'MENU_CONTENT', '内容与合规 CMS', '内容与合规 CMS', 'content', NULL, '/content', 'Megaphone', 1800, '内容与合规 CMS目录,按PC左侧菜单同步。', 1),
   (1801, 'MENU_CONTENT_I1', '转化文案 A/B', '转化文案 A/B', 'I1', 1800, '/content/copy-ab', 'Document', 1801, 'I1 转化文案 A/B,按PC左侧菜单同步。', 1),
-  (1802, 'MENU_CONTENT_I2', 'Nova 推送运营', 'Nova 推送运营', 'I2', 1800, '/content/nova', 'Document', 1802, 'I2 Nova 推送运营,按PC左侧菜单同步。', 1),
+  (1802, 'MENU_CONTENT_I2', '消息推送', '消息推送', 'I2', 1800, '/content/nova', 'Document', 1802, 'I2 消息推送,按PC左侧菜单同步。', 1),
   (1803, 'MENU_CONTENT_I3', '通知 Campaign', '通知 Campaign', 'I3', 1800, '/content/notifications', 'Document', 1803, 'I3 通知 Campaign,按PC左侧菜单同步。', 1),
   (1804, 'MENU_CONTENT_I4', '信任中心 CMS', '信任中心 CMS', 'I4', 1800, '/content/trust', 'Document', 1804, 'I4 信任中心 CMS,按PC左侧菜单同步。', 1),
   (1805, 'MENU_CONTENT_I5', '风险披露版本', '风险披露版本', 'I5', 1800, '/content/disclosures', 'Document', 1805, 'I5 风险披露版本,按PC左侧菜单同步。', 1),

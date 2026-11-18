@@ -53,7 +53,7 @@ public final class AdminMenuDisplayNames {
             Map.entry("/growth/daily", new Name("签到与UVT奖励", Set.of("签到 & NEX", "签到 & UVT"))),
             Map.entry("/growth/public-stats", new Name("首页与网络展示设置", Set.of("历史估算配置", "对外公布数据"))),
             Map.entry("/content/copy-ab", new Name("页面文案对比测试", Set.of("转化文案 A/B"))),
-            Map.entry("/content/nova", new Name("Nova 消息推送", Set.of("Nova 推送运营", "Nova 消息推送"))),
+            Map.entry("/content/nova", new Name("消息推送", Set.of("Nova 推送运营", "Nova 消息推送"))),
             Map.entry("/content/notifications", new Name("通知活动", Set.of("通知 Campaign"))),
             Map.entry("/content/trust", new Name("信任中心", Set.of("信任中心 CMS"))),
             Map.entry("/content/disclosures", new Name("法律条款与风险披露", Set.of("风险披露", "风险披露版本"))),
