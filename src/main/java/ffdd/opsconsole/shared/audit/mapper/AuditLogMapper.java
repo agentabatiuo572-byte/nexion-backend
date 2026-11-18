@@ -14,6 +14,30 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 public interface AuditLogMapper extends BaseMapper<AuditLogEntity> {
+    // A later change's before-image records the prior label, including for seeded phases.
+    // The phase row itself is evidence only if it had not changed since the receipt.
+    @Select("""
+            WITH later_phase_changes AS (
+                SELECT resource_id, created_at,
+                       COALESCE(detail_json->>'$.before.label', detail_json->>'$.phase.label') AS old_label,
+                       COALESCE(detail_json->>'$.before.status', detail_json->>'$.phase.status') AS old_status,
+                       ROW_NUMBER() OVER (PARTITION BY resource_id ORDER BY created_at, id) AS change_order
+                  FROM nx_audit_log
+                 WHERE resource_type = 'DEVICE_PHASE' AND result = 'SUCCESS' AND is_deleted = 0
+                   AND action IN ('E1_PHASE_UPDATED', 'E1_PHASE_ARCHIVED')
+                   AND created_at >= #{receiptTime}
+            )
+            SELECT CAST(id AS CHAR) FROM nx_admin_phase_config
+             WHERE scope = 'E1' AND is_deleted = 0 AND status = 'active'
+               AND updated_at <= #{receiptTime} AND BINARY label = BINARY #{label}
+            UNION
+            SELECT resource_id FROM later_phase_changes
+             WHERE (change_order = 1 OR created_at = #{receiptTime})
+               AND old_status = 'active' AND BINARY old_label = BINARY #{label}
+            """)
+    List<String> findE1PhaseIdsByHistoricalLabel(@Param("label") String label,
+                                                @Param("receiptTime") LocalDateTime receiptTime);
+
     @Select("""
             SELECT DISTINCT actor_id FROM nx_audit_log
              WHERE is_deleted=0 AND actor_type='ADMIN' AND result='SUCCESS'

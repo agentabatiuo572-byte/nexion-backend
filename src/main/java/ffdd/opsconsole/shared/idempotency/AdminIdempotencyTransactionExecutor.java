@@ -83,6 +83,14 @@ public class AdminIdempotencyTransactionExecutor {
         return new AdminIdempotencyService.ActiveReceipt(record.getId(), record.getRequestHash());
     }
 
+    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
+    public AdminIdempotencyService.ActiveRequest activeRequest(String scope, String idempotencyKey) {
+        var record = recordMapper.selectActive(scope, idempotencyKey);
+        if (record == null) return null;
+        return new AdminIdempotencyService.ActiveRequest(record.getRequestHash(), record.getUpdatedAt(),
+                recoveryStatus(record, record.getRequestHash()) == AdminIdempotencyService.RecoveryStatus.SUCCEEDED);
+    }
+
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public <T> Claim<T> claimRetained(String scope, String idempotencyKey, String requestHash,
                                     LocalDateTime expiresAt, Class<T> responseType) {

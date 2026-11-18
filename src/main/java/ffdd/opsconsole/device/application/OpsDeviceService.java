@@ -387,6 +387,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     @Transactional
     public ApiResult<DeviceSkuView> createSku(String idempotencyKey, DeviceSkuUpsertRequest request) {
+        String scope = "E1_SKU_CREATE";
+        SkuWriteReplay replay = skuWriteReplay(scope, idempotencyKey, "", request, null);
+        if (replay.response() != null) {
+            return replay.response();
+        }
         // Sales is maintained exclusively by the order state machine. A new
         // SKU always starts at zero; tolerate the legacy E1 round-trip field
         // but never let it create a hand-entered sales history.
@@ -402,7 +407,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return mediaObjectGuard;
         }
         DeviceSkuUpsertRequest writeRequest = normalizeSkuPhaseRequest(request, 0L);
-        return e1Idempotent("E1_SKU_CREATE", idempotencyKey, "", normalizeSkuPhaseRequest(incomingRequest,0L), () -> {
+        return e1IdempotentHashed(scope, idempotencyKey, replay.requestHash(), () -> {
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         requireSkuDisplayText(incomingRequest);
         String skuId = normalizeSkuId(writeRequest.skuId(), writeRequest.name());
@@ -450,33 +455,25 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     @Transactional
     public ApiResult<DeviceSkuView> updateSku(
             String skuId, String expectedUpdatedAt, String idempotencyKey, DeviceSkuUpsertRequest request) {
+        String scope = "E1_SKU_UPDATE";
+        SkuRevision revision = parseSkuRevision(expectedUpdatedAt);
+        String revisionText = revision.value() == null ? expectedUpdatedAt : revision.value().toString();
+        SkuWriteReplay replay = skuWriteReplay(scope, idempotencyKey, skuId, request, revisionText);
+        if (replay.response() != null) {
+            return replay.response();
+        }
         DeviceSkuUpsertRequest incomingRequest=request;
         request = monthlyTargetRequest(request, catalogRepository.findSku(normalizeId(skuId)).orElse(null), true);
         ApiResult<DeviceSkuView> guard = requireSkuCommand(idempotencyKey, request);
         if (guard != null) {
             return guard;
         }
-        SkuRevision revision = parseSkuRevision(expectedUpdatedAt);
         if (revision.error() != null) {
             return ApiResult.fail(409, revision.error());
         }
         LocalDateTime expectedRevision = revision.value();
-        // Exclude the order-managed counter from the idempotency payload as
-        // well as from persistence; the current value is restored below.
         DeviceSkuUpsertRequest writeRequest = normalizeSkuPhaseRequest(request, 0L);
-        String scope = "E1_SKU_UPDATE";
-        DeviceSkuUpsertRequest fingerprintRequest = normalizeSkuPhaseRequest(incomingRequest, 0L);
-        String revisionText = expectedRevision.toString();
-        Map<String, Object> fingerprint = detail("expectedUpdatedAt", revisionText, "request", fingerprintRequest);
-        // Map.of used either key order across JVM restarts. Preserve the other order for existing keys.
-        Map<String, Object> legacyFingerprint = detail("request", fingerprintRequest, "expectedUpdatedAt", revisionText);
-        var legacyStatus = idempotencyService.recoveryStatus(scope, idempotencyKey,
-                e1RequestHash(scope, skuId, legacyFingerprint));
-        if (legacyStatus != AdminIdempotencyService.RecoveryStatus.NOT_FOUND
-                && legacyStatus != AdminIdempotencyService.RecoveryStatus.MISMATCH) {
-            fingerprint = legacyFingerprint;
-        }
-        return e1Idempotent(scope, idempotencyKey, skuId, fingerprint, () -> {
+        return e1IdempotentHashed(scope, idempotencyKey, replay.requestHash(), () -> {
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         requireSkuDisplayText(incomingRequest);
         if (!A2ReplayContext.isReplaying()
@@ -3776,6 +3773,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private DeviceSkuUpsertRequest normalizeSkuPhaseRequest(DeviceSkuUpsertRequest request, Long runtimeSold) {
         String tier = normalizeExact(request.tier());
         String unlockPhase = "Share".equals(tier) ? "" : normalizeE1Phase(request.unlockPhase());
+        return skuRequestWithPhaseId(request, runtimeSold, unlockPhase);
+    }
+
+    private DeviceSkuUpsertRequest skuRequestWithPhaseId(
+            DeviceSkuUpsertRequest request, Long runtimeSold, String unlockPhase) {
         ProductInventoryMode inventoryMode = inventoryMode(request.inventoryMode());
         return new DeviceSkuUpsertRequest(
                 request.skuId(),
@@ -5469,15 +5471,73 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 (Supplier) action);
     }
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
     private <T> ApiResult<T> e1Idempotent(
             String scope, String idempotencyKey, String resourceId, Object request, Supplier<ApiResult<T>> action) {
+        return e1IdempotentHashed(scope, idempotencyKey,
+                e1RequestHashCompatible(scope, idempotencyKey, resourceId, request), action);
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private <T> ApiResult<T> e1IdempotentHashed(
+            String scope, String idempotencyKey, String requestHash, Supplier<ApiResult<T>> action) {
         return (ApiResult<T>) (ApiResult) idempotencyService.execute(
-                scope,
-                idempotencyKey.trim(),
-                e1RequestHashCompatible(scope, idempotencyKey, resourceId, request),
-                ApiResult.class,
-                (Supplier) action);
+                scope, idempotencyKey.trim(), requestHash, ApiResult.class, (Supplier) action);
+    }
+
+    private record SkuWriteReplay(String requestHash, ApiResult<DeviceSkuView> response) {}
+
+    @SuppressWarnings("unchecked")
+    private SkuWriteReplay skuWriteReplay(String scope, String key, String skuId,
+            DeviceSkuUpsertRequest request, String revision) {
+        // The wrapper distinguishes raw hashes from old normalized hashes and preserves actor binding.
+        String requestHash = e1RequestHashStructured(scope, skuId,
+                detail("rawRequest", request, "operator", operator(request == null ? null : request.operator()),
+                        "expectedUpdatedAt", revision));
+        var active = idempotencyService.activeRequest(scope, key);
+        if (active == null) {
+            return new SkuWriteReplay(requestHash, null);
+        }
+        String storedHash = active.requestHash();
+        if (!storedHash.equals(requestHash) && !matchesLegacySkuHash(scope, skuId, request, revision, active)) {
+            throw new BizException(409, "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+        }
+        if (!active.hasReceipt()) {
+            return new SkuWriteReplay(storedHash, null);
+        }
+        var recovery = idempotencyService.recoveryResult(scope, key, storedHash, ApiResult.class);
+        if (recovery.response() == null) {
+            throw new BizException(500, "IDEMPOTENCY_RESPONSE_DESERIALIZE_FAILED");
+        }
+        return new SkuWriteReplay(storedHash, recovery.response());
+    }
+
+    private boolean matchesLegacySkuHash(String scope, String skuId, DeviceSkuUpsertRequest request,
+            String revision, AdminIdempotencyService.ActiveRequest active) {
+        if (request == null || inventoryMode(request.inventoryMode()) == null) return false;
+        boolean share = "Share".equals(normalizeExact(request.tier()));
+        String phase = share ? "" : normalizeText(request.unlockPhase());
+        if (matchesLegacySkuHash(scope, skuId, request, revision, phase, active.requestHash())) return true;
+        if (!StringUtils.hasText(phase)) return false;
+        for (String historicalId : auditLogService.findE1PhaseIdsByHistoricalLabel(phase, active.updatedAt())) {
+            if (matchesLegacySkuHash(scope, skuId, request, revision, historicalId, active.requestHash())) return true;
+        }
+        return false;
+    }
+
+    private boolean matchesLegacySkuHash(String scope, String skuId, DeviceSkuUpsertRequest request,
+            String revision, String phaseId, String storedHash) {
+        DeviceSkuUpsertRequest normalized = skuRequestWithPhaseId(request, 0L, phaseId);
+        if (revision == null) {
+            return storedHash.equals(e1RequestHashStructured(scope, skuId, normalized))
+                    || storedHash.equals(e1RequestHash(scope, skuId, normalized));
+        }
+        var fingerprint = detail("expectedUpdatedAt", revision, "request", normalized);
+        // Earlier edit hashes used Map.of, which could emit either order.
+        var reverse = detail("request", normalized, "expectedUpdatedAt", revision);
+        return storedHash.equals(e1RequestHashStructured(scope, skuId, fingerprint))
+                || storedHash.equals(e1RequestHash(scope, skuId, fingerprint))
+                || storedHash.equals(e1RequestHashStructured(scope, skuId, reverse))
+                || storedHash.equals(e1RequestHash(scope, skuId, reverse));
     }
 
     /** Chooses the legacy hash when a receipt for that key already exists, otherwise uses a structured JSON hash. */

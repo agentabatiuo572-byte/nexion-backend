@@ -239,6 +239,10 @@ public class AuditLogService {
         return list(request, MAX_LIMIT);
     }
 
+    public List<String> findE1PhaseIdsByHistoricalLabel(String label, LocalDateTime receiptTime) {
+        return auditLogMapper.findE1PhaseIdsByHistoricalLabel(label, receiptTime);
+    }
+
     /** Returns only the exact maker/key association, never a recent-log approximation. */
     public String findA2ProposalId(long actorId, String key) {
         if (actorId < 1 || !StringUtils.hasText(key) || key.length() > 128)

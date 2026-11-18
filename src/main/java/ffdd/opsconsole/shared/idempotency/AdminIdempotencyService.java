@@ -89,6 +89,16 @@ public class AdminIdempotencyService {
         return transactionExecutor.activeReceipt(normalizeScope(scope), normalizeIdempotencyKey(idempotencyKey));
     }
 
+    public record ActiveRequest(String requestHash, LocalDateTime updatedAt, boolean hasReceipt) {}
+
+    /** Probes an active key without claiming it. Command validation handles malformed keys. */
+    public ActiveRequest activeRequest(String scope, String idempotencyKey) {
+        if (!StringUtils.hasText(idempotencyKey) || idempotencyKey.trim().length() > MAX_IDEMPOTENCY_KEY_LENGTH) {
+            return null;
+        }
+        return transactionExecutor.activeRequest(normalizeScope(scope), idempotencyKey.trim());
+    }
+
     private <T> T execute(String scope, String idempotencyKey, String requestHash, Class<T> responseType,
                           Supplier<T> action, boolean retainSuccess) {
         return execute(scope, idempotencyKey, requestHash, responseType, action, retainSuccess, false);
