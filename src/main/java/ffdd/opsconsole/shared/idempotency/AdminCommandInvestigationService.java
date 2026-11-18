@@ -66,7 +66,7 @@ public class AdminCommandInvestigationService {
         }
     }
 
-    private enum ReceiptFamily { A1_ACCOUNT, A1_PERMISSION, A1_AVATAR_CANCEL, A6, A7, F4, D5, D6, D7 }
+    private enum ReceiptFamily { A1_ACCOUNT, A1_PERMISSION, A1_AVATAR_CANCEL, A6, A7, F4, D5, D6, D7, A2_COMMAND }
 
     /** Looks up server-owned bindings; a client need not reproduce a business service's hash algorithm. */
     @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
@@ -726,6 +726,7 @@ public class AdminCommandInvestigationService {
         if (scope.matches("A6_ROLE_(?:CREATE:[A-Za-z0-9_-]{1,64}|UPDATE:[1-9][0-9]{0,18})")) return ReceiptFamily.A6;
         if (scope.matches("A7_MENU_(?:CREATE:[A-Za-z0-9_-]{1,64}|UPDATE:[1-9][0-9]{0,18}|DELETE:[1-9][0-9]{0,18})")) return ReceiptFamily.A7;
         if (scope.matches("F4_MATERIAL_REVIEW:[1-9][0-9]{0,18}:[1-9][0-9]{0,18}")) return ReceiptFamily.F4;
+        if ("A2_COMMAND".equals(scope)) return ReceiptFamily.A2_COMMAND;
         if (Set.of("D5_WITHDRAWAL_LIMITS_UPDATE", "D5_WITHDRAWAL_LIMITS").contains(scope)) return ReceiptFamily.D5;
         if (Set.of("D6_FX_QUOTE_UPDATE", "D6_FX_QUOTE").contains(scope)) return ReceiptFamily.D6;
         if (Set.of("FINANCE:D7:CONFIG_UPDATE", "D7_PAYOUT_VND_CONFIG").contains(scope)) return ReceiptFamily.D7;
@@ -741,8 +742,9 @@ public class AdminCommandInvestigationService {
             case D5 -> "finance_d5_read";
             case D6 -> "finance_d6_read";
             case D7 -> "finance_d7_read";
+            case A2_COMMAND -> null; // Owner-only, verified by receiptOwner against originAdminId.
         };
-        if (!permissions.getPermissionCodes(actor).contains(authority)) throw denied();
+        if (authority != null && !permissions.getPermissionCodes(actor).contains(authority)) throw denied();
     }
 
     private boolean receiptOwner(AdminIdempotencyRecordEntity original, ReceiptFamily family, long actor) {
@@ -756,7 +758,7 @@ public class AdminCommandInvestigationService {
                 String[] parts = original.getScope().split(":");
                 yield parts.length == 3 && Long.toString(actor).equals(parts[1]);
             }
-            case A1_PERMISSION, A6, A7 -> {
+            case A1_PERMISSION, A6, A7, A2_COMMAND -> {
                 if (original.getOriginAdminId() != null) {
                     yield Long.valueOf(actor).equals(original.getOriginAdminId());
                 }

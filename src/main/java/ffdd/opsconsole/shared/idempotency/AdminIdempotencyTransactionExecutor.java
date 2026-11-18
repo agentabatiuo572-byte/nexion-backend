@@ -1,6 +1,7 @@
 package ffdd.opsconsole.shared.idempotency;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -395,7 +396,9 @@ public class AdminIdempotencyTransactionExecutor {
 
     private <T> T readJson(String value, Class<T> responseType) {
         try {
-            return objectMapper.readValue(value, responseType);
+            return objectMapper.readerFor(responseType)
+                    .with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+                    .readValue(value);
         } catch (JsonProcessingException ex) {
             throw new BizException(500, "IDEMPOTENCY_RESPONSE_DESERIALIZE_FAILED");
         }

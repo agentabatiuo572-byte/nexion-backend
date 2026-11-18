@@ -842,7 +842,6 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               FROM nx_product
              WHERE unlock_phase = #{phaseId}
                AND is_deleted = 0
-               AND store_visible = 1
             """)
     int countSkusByUnlockPhase(@Param("phaseId") String phaseId);
 
