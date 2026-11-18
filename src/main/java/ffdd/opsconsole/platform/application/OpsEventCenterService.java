@@ -409,8 +409,10 @@ public class OpsEventCenterService {
                         row("admin.emergency_playbook_executed", "应急剧本执行(J4)"),
                         row("admin.emergency_playbook_edited", "应急剧本编辑(J4)"))));
 
+        Map<String, String> configuredNames = configFacade.activeValuesByKeys(extensionRecords.stream()
+                .map(record -> eventDisplayNameKey(record.eventName())).distinct().toList());
         extensionRecords.stream()
-                .map(this::dynamicBatch)
+                .map(record -> dynamicBatch(record, configuredNames.get(eventDisplayNameKey(record.eventName()))))
                 .forEach(batches::add);
         return batches;
     }
@@ -463,15 +465,18 @@ public class OpsEventCenterService {
                 .toList();
     }
 
-    private EventDomainExtensionBatch dynamicBatch(DomainExtensionRecord record) {
-        return new EventDomainExtensionBatch(
-                "manual-" + record.id(),
-                "登记扩展工单",
-                normalizeBatchStatus(record.status()),
-                record.producer(),
+    private EventDomainExtensionBatch dynamicBatch(DomainExtensionRecord record, String configuredName) {
+        return extensionBatch("manual-" + record.id(), normalizeBatchStatus(record.status()),
                 "done".equalsIgnoreCase(record.status()) ? "字段已登记，归属已确认" : "等待登记字段并确认归属",
-                List.of(new EventDomainItem(record.domainName(), true)),
-                List.of(row(record.eventName(), "生产方 " + record.producer() + " → 消费方 " + record.consumer())));
+                record.domainName(), record.eventName(), record.producer(), record.consumer(), configuredName);
+    }
+
+    private EventDomainExtensionBatch extensionBatch(String id, String state, String impact, String module,
+            String event, String producer, String consumer, String configuredName) {
+        String name = StringUtils.hasText(configuredName) ? configuredName : EventCenterOverview.eventLabel(event);
+        return new EventDomainExtensionBatch(id, "登记扩展工单", state, EventCenterOverview.domainLabel(module), impact,
+                List.of(new EventDomainItem(module, true)),
+                List.of(new EventDetailRow(event, "事件登记与接入核对", name)), producer, consumer);
     }
 
     private List<AuditLogRecord> recentLogs() {
@@ -796,11 +801,9 @@ public class OpsEventCenterService {
                         "eventName", extension.eventName(),
                         "producer", extension.producer(),
                         "consumer", extension.consumer()));
-        return ApiResult.ok(new EventDomainExtensionBatch(
-                "manual-" + slug(extension.domainName() + "-" + extension.eventName()),
-                "登记扩展工单", "registered", extension.producer(), "等待登记字段并确认归属",
-                List.of(new EventDomainItem(extension.domainName(), true)),
-                List.of(row(extension.eventName(), "生产方 " + extension.producer() + " → 消费方 " + extension.consumer()))));
+        return ApiResult.ok(extensionBatch("manual-" + slug(extension.domainName() + "-" + extension.eventName()),
+                "registered", "等待登记字段并确认归属", extension.domainName(), extension.eventName(),
+                extension.producer(), extension.consumer(), null));
     }
 
     private void auditRequired(

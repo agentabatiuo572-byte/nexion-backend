@@ -32,7 +32,14 @@ public record EventCenterOverview(
             Map.entry("phase", "运营阶段"), Map.entry("risk", "风控"), Map.entry("admin", "运营后台"),
             Map.entry("event", "活动"), Map.entry("milestone", "里程碑"), Map.entry("nex", "平台资产"),
             Map.entry("repurchase", "复购"), Map.entry("disclosure", "风险披露"), Map.entry("content", "内容"),
-            Map.entry("notification", "通知"), Map.entry("learn", "课程"));
+            Map.entry("notification", "通知"), Map.entry("learn", "课程"),
+            Map.entry("account", "账户与会话"), Map.entry("capacity_replacement", "产能置换"),
+            Map.entry("compute", "算力配置"), Map.entry("finance", "财务"),
+            Map.entry("leadership_pool", "团队激励池"), Map.entry("market", "市场"),
+            Map.entry("order", "订单"), Map.entry("task", "设备任务"),
+            Map.entry("tradein", "以旧换新"), Map.entry("voucher", "代金券"),
+            Map.entry("premium", "会员权益（历史）"), Map.entry("points", "积分（历史）"),
+            Map.entry("nexv2", "平台资产第二版（历史）"));
     private static final Map<String, String> EVENT_LABELS = Map.ofEntries(
             Map.entry("app.session_started", "应用会话开始"), Map.entry("app.dau", "应用日活跃"),
             Map.entry("auth.register_started", "开始注册"), Map.entry("auth.register_completed", "注册完成"),
@@ -57,10 +64,20 @@ public record EventCenterOverview(
             Map.entry("quest.grace_started", "任务宽限期开始"), Map.entry("quest.expired", "任务已过期"),
             Map.entry("quest.weekly_refreshed", "每周任务已刷新"));
 
+    public static String domainLabel(String code) {
+        return code == null ? null : DOMAIN_LABELS.get(code);
+    }
+
+    public static String eventLabel(String code) {
+        if (code == null) return null;
+        String label = EVENT_LABELS.get(code);
+        return label != null ? label : A4HistoricalEventNames.eventName(code);
+    }
+
     @JsonProperty(value = "domainDisplayNames", access = JsonProperty.Access.READ_ONLY)
     public Map<String, String> domainDisplayNames() {
         Map<String, String> labels = new LinkedHashMap<>();
-        for (List<String> domains : List.of(registeredDomains, pendingDomains)) {
+        for (List<String> domains : List.of(registeredDomains, pendingDomains, sunsetDomains)) {
             for (String code : domains) {
                 if (code != null && DOMAIN_LABELS.containsKey(code)) labels.put(code, DOMAIN_LABELS.get(code));
             }
@@ -88,7 +105,10 @@ public record EventCenterOverview(
             List<EventDetailRow> events) {
     }
 
-    public record EventDetailRow(String item, String desc) {
+    public record EventDetailRow(String item, String desc, String displayName) {
+        public EventDetailRow(String item, String desc) {
+            this(item, desc, eventLabel(item));
+        }
     }
 
     public record EventCommonField(String key, String name, String sub, String value) {
@@ -120,7 +140,7 @@ public record EventCenterOverview(
                 String version, String updatedAt, String lifecycleState, long lifecycleVersion) {
             this(eventName, ownerDomain, familyKey, producer, consumers, properties, serverAuthoritative,
                     samplingPolicy, version, updatedAt, lifecycleState, lifecycleVersion,
-                    eventName == null ? null : EVENT_LABELS.get(eventName));
+                    eventLabel(eventName));
         }
 
         public EventSchemaRegistration withDisplayName(String configured) {
@@ -136,7 +156,13 @@ public record EventCenterOverview(
 
         @JsonProperty(value = "ownerDisplayName", access = JsonProperty.Access.READ_ONLY)
         public String ownerDisplayName() {
-            return ownerDomain == null ? null : DOMAIN_LABELS.get(ownerDomain);
+            return domainLabel(ownerDomain);
+        }
+
+        /** Technical reference for diagnostics, not an operator label. */
+        @JsonProperty(value = "producerReference", access = JsonProperty.Access.READ_ONLY)
+        public String producerReference() {
+            return producer;
         }
     }
 
@@ -150,9 +176,20 @@ public record EventCenterOverview(
             String proposer,
             String impact,
             List<EventDomainItem> newDomains,
-            List<EventDetailRow> details) {
+            List<EventDetailRow> details,
+            String producerReference,
+            String consumerReference) {
+        public EventDomainExtensionBatch(String id, String title, String state, String proposer, String impact,
+                List<EventDomainItem> newDomains, List<EventDetailRow> details) {
+            this(id, title, state, proposer, impact, newDomains, details, null, null);
+        }
     }
 
     public record EventDomainItem(String name, boolean n) {
+        @JsonProperty(value = "displayName", access = JsonProperty.Access.READ_ONLY)
+        public String displayName() {
+            String label = domainLabel(name);
+            return label != null ? label : eventLabel(name);
+        }
     }
 }
