@@ -38,6 +38,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.i18n.AppDisplayText;
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.shared.security.AdminSessionRegistry;
 import ffdd.opsconsole.shared.security.AdminSessionPolicy;
@@ -177,6 +178,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
             return ApiResult.fail(409, "ADMIN_USERNAME_EXISTS");
         }
         String displayName = normalizeText(request.displayName(), "DISPLAY_NAME_REQUIRED");
+        AppDisplayText.requireNoHan("displayName", displayName);
         String email = normalizeOptionalEmail(request.email());
         if (StringUtils.hasText(request.email()) && email == null) {
             return ApiResult.fail(422, "EMAIL_FORMAT_INVALID");
@@ -319,6 +321,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
 
         boolean usernameChanged = !username.equals(current.username());
         boolean displayNameChanged = !displayName.equals(current.name());
+        if (displayNameChanged) AppDisplayText.requireNoHan("displayName", displayName);
         boolean emailChanged = !firstText(email).equals(firstText(current.email()));
         ffdd.opsconsole.content.application.SupportDefaultAvatarCatalog.gender(request.avatarGender());
         boolean genderChanged=request.avatarGender()!=null && !request.avatarGender().equals(current.avatarGender());
@@ -1652,6 +1655,20 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         AdminEntity admin = id == null ? null : adminMapper.selectById(id);
         return admin == null || !Integer.valueOf(0).equals(admin.getIsDeleted()) ? null
                 : roleFromRelation(id).orElseGet(() -> defaultRole(admin));
+    }
+
+    ApiResult<Void> reviewDisplayNameProposal(AuditReplayCommand command) {
+        Map<String, Object> params = command.params() == null ? Map.of() : command.params();
+        String displayName = firstText(str(params, "displayName"));
+        if ("a1_account_update_profile".equals(command.op())) {
+            var current = findOperator(str(params, "accountId")).orElse(null);
+            if (current == null) return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
+            var versionError = requireAccountVersion(str(params, "expectedVersion"), current.version());
+            if (versionError != null) return versionError;
+            if (displayName.equals(current.name())) return ApiResult.ok();
+        }
+        AppDisplayText.requireNoHan("displayName", displayName);
+        return ApiResult.ok();
     }
 
     @Override
