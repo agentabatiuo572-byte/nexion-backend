@@ -1128,6 +1128,8 @@ public class OpsKillSwitchService {
                 row.put("actualThreshold", maturityGapThresholdUsdt(threshold).stripTrailingZeros());
                 row.put("target", "exchange");
                 row.put("action", "autoDisable");
+            } else if ("tamperCluster".equals(seed.id())) {
+                putTamperAdvisoryState(row, threshold);
             }
             row.put("configKey", switch (seed.id()) {
                 case "withdrawSurge" -> TreasuryEmergencySignalFacadeAdapter.BANK_RUN_REDLINE_CONFIG_KEY;
@@ -1136,6 +1138,32 @@ public class OpsKillSwitchService {
             });
             return row;
         }).toList();
+    }
+
+    /**
+     * J3 counts SUM(event_count) per account over the selected window and flags accounts at or above
+     * the threshold. The J1 row exposes the same 24h baseline as advisory metadata only: it does not
+     * send an alert, send a report, or change a kill switch. A non-empty value that J3 cannot parse is
+     * reported as unknown rather than silently replaced by the default 10.
+     */
+    private void putTamperAdvisoryState(Map<String, Object> row, String threshold) {
+        row.put("metric", "tamperAccountEventCount");
+        row.put("comparator", ">=");
+        row.put("window", "24h");
+        row.put("scope", "PER_ACCOUNT");
+        row.put("target", "account");
+        row.put("action", "advisory");
+        row.put("classification", "TAMPER_ACCOUNT_MONITOR");
+        row.put("autoDisable", false);
+        try {
+            row.put("actualThreshold", BigDecimal.valueOf(Integer.parseInt(threshold)).stripTrailingZeros());
+            row.put("available", true);
+            row.put("unknownReason", null);
+        } catch (NumberFormatException invalid) {
+            row.put("actualThreshold", null);
+            row.put("available", false);
+            row.put("unknownReason", "TAMPER_ALERT_THRESHOLD_INVALID");
+        }
     }
 
     private GateSeed gateSeed(String key) {
