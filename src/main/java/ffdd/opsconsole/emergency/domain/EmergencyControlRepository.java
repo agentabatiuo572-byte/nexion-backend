@@ -92,6 +92,10 @@ public interface EmergencyControlRepository {
 
     void upsertSetting(String settingKey, String settingValue, String valueType, String groupCode, String remark, String operator);
 
+    default boolean insertSettingIfAbsent(String settingKey, String value, String groupCode, String operator) {
+        return false;
+    }
+
     default boolean compareAndSetSetting(String settingKey, String expectedValue, String newValue, String operator) {
         return false;
     }

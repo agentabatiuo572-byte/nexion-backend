@@ -810,13 +810,7 @@ public class OpsKillSwitchService {
             EmergencyConfigUpdateRequest request, String operator) {
         String configKey = autoRuleConfigKey(seed.id());
         Optional<String> current = activeValue(configKey);
-        if (current.isEmpty()) {
-            auditRejected("J1_AUTO_RULE_CHANGE_BLOCKED", seed.id(), operator, Map.of(
-                    "ruleId", seed.id(), "expectedValue", expectedValue,
-                    "reason", request.reason().trim(), "result", "STATE_UNAVAILABLE"));
-            return ApiResult.fail(409, "J1_CONFIG_STATE_UNAVAILABLE");
-        }
-        String before = current.get().trim();
+        String before = current.orElse(seed.threshold()).trim();
         if (!before.equals(expectedValue)) {
             auditRejected("J1_AUTO_RULE_CHANGE_BLOCKED", seed.id(), operator, Map.of(
                     "ruleId", seed.id(), "expectedValue", expectedValue, "actualValue", before,
@@ -829,7 +823,10 @@ public class OpsKillSwitchService {
                     "reason", request.reason().trim(), "result", "NO_CHANGES"));
             return ApiResult.fail(409, "J1_CONFIG_NO_CHANGES");
         }
-        if (!emergencyRepository.compareAndSetSetting(configKey, before, value, operator)) {
+        boolean written = current.isPresent()
+                ? emergencyRepository.compareAndSetSetting(configKey, before, value, operator)
+                : emergencyRepository.insertSettingIfAbsent(configKey, value, GROUP_AUTORULE, operator);
+        if (!written) {
             String actual = activeValue(configKey).orElse("<missing>");
             auditRejected("J1_AUTO_RULE_CHANGE_BLOCKED", seed.id(), operator, Map.of(
                     "ruleId", seed.id(), "expectedValue", expectedValue, "actualValue", actual,
@@ -1090,15 +1087,15 @@ public class OpsKillSwitchService {
         // 四条自动触发规则是固定目录,不应因 DB 未配阈值而消失;DB 有值则覆盖,否则落回 seed 自带阈值。
         return AUTO_RULE_SEEDS.stream()
                 .map(seed -> {
+            Optional<String> configuredThreshold = seed.adjustable()
+                    ? activeValue(autoRuleConfigKey(seed.id())) : Optional.empty();
             String threshold = switch (seed.id()) {
                 case "withdrawSurge" -> emergencySignalFacade.bankRunRedlinePct()
                         .stripTrailingZeros().toPlainString();
                 case "tamperCluster" -> activeValue(TAMPER_ALERT_THRESHOLD_CONFIG_KEY)
                         .filter(StringUtils::hasText)
                         .orElse(seed.threshold());
-                default -> activeValue(autoRuleConfigKey(seed.id()))
-                        .filter(StringUtils::hasText)
-                        .orElse(seed.threshold());
+                default -> configuredThreshold.orElse(seed.threshold());
             };
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("id", seed.id());
@@ -1114,6 +1111,7 @@ public class OpsKillSwitchService {
             row.put("unit", seed.unit());
             row.put("mode", seed.mode());
             row.put("adjustable", seed.adjustable());
+            if (seed.adjustable()) row.put("thresholdSource", configuredThreshold.isPresent() ? "CONFIGURED" : "DEFAULT");
             row.put("refNote", seed.refNote());
             row.put("refTitle", seed.refTitle());
             if ("withdrawSurge".equals(seed.id())) {

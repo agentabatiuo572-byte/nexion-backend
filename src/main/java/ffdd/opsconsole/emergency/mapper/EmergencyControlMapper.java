@@ -620,6 +620,14 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
                       @Param("remark") String remark,
                       @Param("operator") String operator);
 
+    @Insert("""
+            INSERT IGNORE INTO nx_emergency_control_setting
+              (setting_key, setting_value, value_type, group_code, remark, operator, is_deleted)
+            VALUES (#{settingKey}, #{value}, 'STRING', #{groupCode}, 'J1 auto trigger rule threshold', #{operator}, 0)
+            """)
+    int insertSettingIfAbsent(@Param("settingKey") String settingKey, @Param("value") String value,
+                              @Param("groupCode") String groupCode, @Param("operator") String operator);
+
     @Update("""
             UPDATE nx_emergency_control_setting
                SET setting_value = #{newValue},
