@@ -78,9 +78,9 @@ public class OpsConversationController {
         }
     }
 
-    private ApiResult<ContentConversationView> sendCommand(Long customer,String scope,String key,String hash,
+    private ApiResult<?> sendCommand(Long customer,String scope,String key,String hash,
             String clientMessageId,jakarta.servlet.http.HttpServletResponse response,
-            java.util.function.Supplier<ApiResult<ContentConversationView>> action) {
+            java.util.function.Supplier<OpsConversationService.MessageCommandResult> action) {
         try {
             ownership.requireMessageWriter(customer);
             productionPathGuard.requireOpsWriteAllowed();
@@ -99,7 +99,19 @@ public class OpsConversationController {
             return ApiResult.fail(422,"IDEMPOTENCY_KEY_INVALID");
         }
         try {
-            var result=executeRegisteredCommand(scope,key,hash,action);
+            var result=this.<Object>executeRegisteredCommand(scope,key,hash,() -> {
+                var command=action.get();
+                var reply=command.result();
+                if (command.messageId()==null && reply.getCode()>=400 && reply.getCode()<500
+                        && customer!=null && customer>0 && clientMessageId!=null
+                        && clientMessageId.matches("[A-Za-z0-9_-]{8,128}")) {
+                    sessions.rejected(customer,scope,reply.getMessage());
+                    return ApiResult.fail(reply.getCode(),reply.getMessage(),
+                            ffdd.opsconsole.content.application.SupportSessionService.sendRejectionDetails(
+                                    ownership.actorId(),customer,scope,key.trim(),clientMessageId,hash));
+                }
+                return new ApiResult<>(reply.getCode(),reply.getMessage(),reply.getData());
+            });
             Object data=result.getData();
             if(data instanceof Map<?,?> receipt
                     && ffdd.opsconsole.content.application.SupportSessionService.SEND_REJECTION_RECEIPT.equals(receipt.get("receiptType"))) {
@@ -170,7 +182,7 @@ public class OpsConversationController {
     // 主动发起会话 — M3 即时会话台 写
     @PreAuthorize("hasAuthority('service_m3_write')")
     @PostMapping
-    public ApiResult<ContentConversationView> initiate(
+    public ApiResult<?> initiate(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody ConversationInitiateRequest request,jakarta.servlet.http.HttpServletResponse response) {
         Long customer=request==null ? null : request.userId();
@@ -179,7 +191,7 @@ public class OpsConversationController {
             OpsConversationService.MessageCommandResult command = conversationService.initiateWithMessageId(idempotencyKey, request);
             ApiResult<ContentConversationView> result = command.result();
             publishMessage(result.getData(), command.messageId(), ConversationMessageEvent.EventType.INITIATE, "AGENT", null);
-            return result;
+            return command;
         });
     }
 
@@ -230,7 +242,7 @@ public class OpsConversationController {
     // 会话回复 — M3 即时会话台 写
     @PreAuthorize("hasAuthority('service_m3_write')")
     @PostMapping("/{conversationNo}/replies")
-    public ApiResult<ContentConversationView> reply(
+    public ApiResult<?> reply(
             @PathVariable String conversationNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody ConversationReplyRequest request,jakarta.servlet.http.HttpServletResponse response) {
@@ -239,7 +251,7 @@ public class OpsConversationController {
             OpsConversationService.MessageCommandResult command = conversationService.replyWithMessageId(conversationNo, idempotencyKey, request);
             ApiResult<ContentConversationView> result = command.result();
             publishMessage(result.getData(), command.messageId(), ConversationMessageEvent.EventType.MESSAGE, "AGENT", null);
-            return result;
+            return command;
         });
     }
 

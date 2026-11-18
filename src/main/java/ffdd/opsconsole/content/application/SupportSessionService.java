@@ -164,15 +164,7 @@ public class SupportSessionService {
     public void rejectedSend(long customer,String operation,String key,String clientMessageId,String requestHash,
                              BizException failure) {
         long actor=ownership.actorId();
-        Map<String,Object> detail=new LinkedHashMap<>();
-        detail.put("receiptType",SEND_REJECTION_RECEIPT);
-        detail.put("actorId",actor);
-        detail.put("customerId",customer);
-        detail.put("operation",operation);
-        detail.put("idempotencyKey",key);
-        detail.put("clientMessageId",clientMessageId);
-        detail.put("requestHash",requestHash);
-        detail.put("sent",false);
+        Map<String,Object> detail=sendRejectionDetails(actor,customer,operation,key,clientMessageId,requestHash);
         AdminIdempotencyRecordEntity record=new AdminIdempotencyRecordEntity();
         record.setScope(operation+":"+actor);
         record.setIdempotencyKey(key);
@@ -191,6 +183,20 @@ public class SupportSessionService {
             detail.remove("sent");
         }
         audit.recordRequired(rejectionAudit(customer,operation,failure.getMessage(),detail));
+    }
+
+    public static Map<String,Object> sendRejectionDetails(long actor,long customer,String operation,String key,
+            String clientMessageId,String requestHash) {
+        Map<String,Object> detail=new LinkedHashMap<>();
+        detail.put("receiptType",SEND_REJECTION_RECEIPT);
+        detail.put("actorId",actor);
+        detail.put("customerId",customer);
+        detail.put("operation",operation);
+        detail.put("idempotencyKey",key);
+        detail.put("clientMessageId",clientMessageId);
+        detail.put("requestHash",requestHash);
+        detail.put("sent",false);
+        return detail;
     }
 
     private AuditLogWriteRequest rejectionAudit(Long customer,String operation,String error,Map<String,Object> command) {
