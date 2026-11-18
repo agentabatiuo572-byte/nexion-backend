@@ -403,6 +403,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         DeviceSkuUpsertRequest writeRequest = normalizeSkuPhaseRequest(request, 0L);
         return e1Idempotent("E1_SKU_CREATE", idempotencyKey, "", normalizeSkuPhaseRequest(incomingRequest,0L), () -> {
+        catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         requireSkuDisplayText(incomingRequest);
         String skuId = normalizeSkuId(writeRequest.skuId(), writeRequest.name());
         if (!A2ReplayContext.isReplaying()
@@ -476,6 +477,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             fingerprint = legacyFingerprint;
         }
         return e1Idempotent(scope, idempotencyKey, skuId, fingerprint, () -> {
+        catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         requireSkuDisplayText(incomingRequest);
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("E", "device_sku", skuId) > 0) {
@@ -2064,10 +2066,16 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         Map<String, Object> phaseComparison = new LinkedHashMap<>();
         phaseComparison.put("e1CurrentPhase", currentPhase);
         phaseComparison.put("h1CurrentPhase", rhythm.currentPhase());
-        phaseComparison.put("same", java.util.Objects.equals(currentPhase, rhythm.currentPhase()));
+        // E1 stores the release phase with the same P1-P6 ids as H1, but older
+        // rows/configuration can still surface numeric ids. Normalize both sides
+        // to the canonical phase token before comparing or mapping.
+        String e1PhaseToken = normalizeE1PhaseToken(currentPhase);
+        String h1PhaseToken = normalizeE1PhaseToken(rhythm.currentPhase());
+        phaseComparison.put("same", java.util.Objects.equals(e1PhaseToken, h1PhaseToken));
         phaseComparison.put("gateSource", "E1_CONFIGURED_RELEASE_PHASE");
         phaseComparison.put("h1PhaseCatalog", GrowthRhythmSnapshot.phaseNames());
-        boolean mapped = rhythm.reliable() && rhythm.currentPhase() != null && phaseOrder.contains(rhythm.currentPhase());
+        boolean mapped = rhythm.reliable() && h1PhaseToken != null
+                && phaseOrder.stream().map(OpsDeviceService::normalizeE1PhaseToken).anyMatch(h1PhaseToken::equals);
         phaseComparison.put("mappingStatus", mapped ? "EXACT_ID_PRESENT" : "UNMAPPED");
         phaseComparison.put("mappedH1Phase", mapped ? rhythm.currentPhase() : null);
         response.put("phaseComparison", phaseComparison);
@@ -3673,7 +3681,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (!allows(request.lifecycle(), SKU_LIFECYCLES)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_LIFECYCLE_INVALID");
         }
-        catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         if (!"Share".equals(tier) && !isConfiguredE1PhaseId(request.unlockPhase())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_UNLOCK_PHASE_INVALID");
         }
@@ -4262,6 +4269,14 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     private String currentE1PhaseId(int platformMonth, List<DevicePhaseView> phases) {
         return phaseForMonth(platformMonth, phases);
+    }
+
+    private static String normalizeE1PhaseToken(String raw) {
+        if (raw == null) return null;
+        String token = raw.trim().toUpperCase(java.util.Locale.ROOT);
+        if (token.isEmpty()) return token;
+        if (token.matches("[1-9]")) return "P" + token;
+        return token;
     }
 
     private ApiResult<Map<String, Object>> requireE1PhaseArchivable(String phaseId) {
@@ -5460,9 +5475,30 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return (ApiResult<T>) (ApiResult) idempotencyService.execute(
                 scope,
                 idempotencyKey.trim(),
-                e1RequestHash(scope, resourceId, request),
+                e1RequestHashCompatible(scope, idempotencyKey, resourceId, request),
                 ApiResult.class,
                 (Supplier) action);
+    }
+
+    /** Chooses the legacy hash when a receipt for that key already exists, otherwise uses a structured JSON hash. */
+    private String e1RequestHashCompatible(String scope, String idempotencyKey, String resourceId, Object request) {
+        String legacyHash = e1RequestHash(scope, resourceId, request);
+        var legacyStatus = idempotencyService.recoveryStatus(scope, idempotencyKey, legacyHash);
+        if (legacyStatus != AdminIdempotencyService.RecoveryStatus.NOT_FOUND
+                && legacyStatus != AdminIdempotencyService.RecoveryStatus.MISMATCH) {
+            return legacyHash;
+        }
+        return e1RequestHashStructured(scope, resourceId, request);
+    }
+
+    private String e1RequestHashStructured(String scope, String resourceId, Object request) {
+        String payload;
+        try {
+            payload = E1_AUDIT_JSON.writeValueAsString(request);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
+            payload = String.valueOf(request);
+        }
+        return e1Hash(scope, resourceId, payload);
     }
 
     private String e1RequestHash(String scope, String resourceId, Object request) {
@@ -5475,6 +5511,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             // The existing PUT receipt must remain recoverable when older clients omit the new revision.
             payload = payload.substring(0, payload.length() - ", expectedRevision=null]".length()) + "]";
         }
+        return e1Hash(scope, resourceId, payload);
+    }
+
+    private String e1Hash(String scope, String resourceId, String payload) {
         String canonical = scope + "\n" + normalizeText(resourceId) + "\n" + payload;
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")

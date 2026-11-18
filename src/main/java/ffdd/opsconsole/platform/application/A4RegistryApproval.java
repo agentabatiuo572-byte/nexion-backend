@@ -29,7 +29,7 @@ public class A4RegistryApproval {
     private static final String SCHEMA_TARGET = "a4_event_schema";
     private static final String EXTENSION_TARGET = "a4_domain_extension";
     private static final Set<String> SCHEMA_FIELDS = Set.of("eventName", "ownerDomain", "producer", "consumer",
-            "propertyName", "propertyType", "pii", "serverAuthoritative", "samplingPolicy", "expectedVersion");
+            "propertyName", "propertyType", "pii", "serverAuthoritative", "samplingPolicy", "expectedVersion", "displayName");
     private static final Set<String> PROPERTY_FIELDS = Set.of("eventName", "propertyName", "propertyType", "expectedVersion");
     private static final Set<String> EXTENSION_FIELDS = Set.of("domainName", "eventName", "producer", "consumer");
 
@@ -80,6 +80,7 @@ public class A4RegistryApproval {
                             "producer", value.producer(), "consumer", value.consumer(), "propertyName", value.propertyName(),
                             "propertyType", value.propertyType(), "serverAuthoritative", value.serverAuthoritative(),
                             "samplingPolicy", value.samplingPolicy(), "expectedVersion", value.expectedVersion()));
+                    if (value.displayName() != null) canonical.put("displayName", value.displayName());
                 }
                 case PROPERTY -> {
                     var value = events.normalizeSchemaProperty(propertyRequest(params, reason));
@@ -180,7 +181,7 @@ public class A4RegistryApproval {
     private static EventSchemaRegistrationRequest schemaRequest(Map<String, Object> p, String reason) {
         return new EventSchemaRegistrationRequest(field(p, "eventName"), field(p, "ownerDomain"), field(p, "producer"),
                 field(p, "consumer"), field(p, "propertyName"), field(p, "propertyType"), flag(p, "pii"),
-                flag(p, "serverAuthoritative"), field(p, "samplingPolicy"), field(p, "expectedVersion"), reason);
+                flag(p, "serverAuthoritative"), field(p, "samplingPolicy"), field(p, "expectedVersion"), optionalField(p, "displayName"), reason);
     }
 
     private static ExistingSchemaPropertyRequest propertyRequest(Map<String, Object> p, String reason) {
@@ -191,6 +192,12 @@ public class A4RegistryApproval {
     private static EventDomainExtensionRequest extensionRequest(Map<String, Object> p, String reason) {
         return new EventDomainExtensionRequest(field(p, "domainName"), field(p, "eventName"), field(p, "producer"),
                 field(p, "consumer"), reason);
+    }
+
+    private static String optionalField(Map<String, Object> p, String key) {
+        if (p.get(key) == null) return null;
+        if (p.get(key) instanceof String value) return value;
+        throw invalid();
     }
 
     private static String field(Map<String, Object> p, String key) {
