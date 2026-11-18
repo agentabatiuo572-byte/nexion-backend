@@ -106,13 +106,14 @@ public class OpsNovaService {
                 .map(channel -> phaseAwareChannel(channel, currentPhase))
                 .toList();
         Map<String, Object> stats = novaRepository.stats();
+        LocalDateTime asOf = LocalDateTime.now(clock);
         return ApiResult.ok(new NovaOverview(
                 novaStats(stats),
                 channels,
                 EVENT_DRIVEN_CHANNELS,
                 novaRepository.templates(),
                 novaRepository.socialDistribution(),
-                publicEvents(novaRepository.socialEvents("", "", LocalDateTime.now(clock), 20, 0)),
+                publicEvents(novaRepository.socialEvents("", "", asOf, 20, 0)),
                 SOCIAL_EVENT_TYPE_OPTIONS,
                 SOCIAL_EVENT_STATUS_OPTIONS,
                 List.copyOf(TEMPLATE_STATUSES),
@@ -124,7 +125,38 @@ public class OpsNovaService {
                         "nx_nova_social_distribution",
                         "nx_nova_social_event",
                         "nx_notification"),
-                channelRuntimeSources(channels)));
+                channelRuntimeSources(channels),
+                pushDelivery(channels, asOf)));
+    }
+
+    /**
+     * One query for the whole rolling window. Existing configured channels without events are
+     * reported as zero only after the query succeeds; unknown extra event channels stay visible.
+     */
+    private NovaOverview.PushDeliveryView pushDelivery(List<NovaChannelView> channels, LocalDateTime asOf) {
+        LocalDateTime from = asOf.minusDays(7);
+        Map<String, Long> counts = new LinkedHashMap<>();
+        for (Map<String, Object> row : novaRepository.channelPushSentCounts(from, asOf)) {
+            Object channel = row.get("channel");
+            Object count = row.get("sentCount");
+            if (channel instanceof String key && !key.isBlank() && count instanceof Number number) {
+                counts.put(key, number.longValue());
+            }
+        }
+        List<NovaOverview.ChannelPushSentStat> result = new ArrayList<>();
+        LinkedHashSet<String> seen = new LinkedHashSet<>();
+        for (NovaChannelView channel : channels) {
+            if (seen.add(channel.key())) {
+                result.add(new NovaOverview.ChannelPushSentStat(channel.key(), counts.getOrDefault(channel.key(), 0L)));
+            }
+        }
+        for (Map.Entry<String, Long> entry : counts.entrySet()) {
+            if (seen.add(entry.getKey())) {
+                result.add(new NovaOverview.ChannelPushSentStat(entry.getKey(), entry.getValue()));
+            }
+        }
+        return new NovaOverview.PushDeliveryView(from.toString(), asOf.toString(), 7,
+                "nova.push_sent", "NOVA_NOTIFICATION", "NOTIFICATION_RECIPIENT_PER_EVENT", result);
     }
 
     /**

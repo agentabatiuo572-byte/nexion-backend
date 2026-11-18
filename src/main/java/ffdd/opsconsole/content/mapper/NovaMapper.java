@@ -280,6 +280,26 @@ public interface NovaMapper extends BaseMapper<Object> {
             """)
     NovaChannelView channel(@Param("key") String key);
 
+    @Select("""
+            SELECT JSON_UNQUOTE(JSON_EXTRACT(payload, '$.channel')) AS channel,
+                   COUNT(DISTINCT aggregate_id) AS sentCount
+              FROM nx_event_outbox
+             WHERE is_deleted = 0
+               AND event_name = 'nova.push_sent'
+               AND aggregate_type = 'NOVA_NOTIFICATION'
+               AND analytics_event = 1
+               AND schema_registered = 1
+               AND is_server_authoritative = 1
+               AND event_ts >= #{fromAt}
+               AND event_ts < #{toAt}
+               AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.channel')) IS NOT NULL
+               AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.channel')) <> ''
+             GROUP BY JSON_UNQUOTE(JSON_EXTRACT(payload, '$.channel'))
+             ORDER BY channel ASC
+            """)
+    List<Map<String, Object>> channelPushSentCounts(@Param("fromAt") LocalDateTime fromAt,
+                                                    @Param("toAt") LocalDateTime toAt);
+
     @Select("SELECT COALESCE(MAX(sort_order), 0) FROM nx_nova_channel WHERE is_deleted = 0")
     int maxChannelOrder();
 
