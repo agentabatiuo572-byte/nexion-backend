@@ -59,6 +59,7 @@ import org.springframework.util.StringUtils;
 public class OpsNovaService {
     private static final Pattern KEY_PATTERN = Pattern.compile("^[A-Za-z0-9_-]{2,64}$");
     private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\{[A-Za-z][A-Za-z0-9_]*}");
+    private static final Pattern LOCALIZED_WHITESPACE = Pattern.compile("[\\s\\p{Z}\\uFEFF]*");
     private static final Pattern DURATION_PATTERN = Pattern.compile("^(\\d+)\\s*(s|min|h|d)$", Pattern.CASE_INSENSITIVE);
     private static final Set<String> TEMPLATE_STATUSES = Set.of("DRAFT", "PUBLISHED", "ARCHIVED");
     private static final Set<String> SOCIAL_EVENT_STATUSES = Set.of("ACTIVE", "DISABLED", "EXPIRED");
@@ -1044,8 +1045,8 @@ public class OpsNovaService {
 
     private NovaTemplateCreateRequest fillTemplateLocales(NovaTemplateCreateRequest request) {
         List<String> required = experienceConfig.operatingLanguages();
-        boolean fillZh = !required.contains("zh") && !StringUtils.hasText(request.titleZh()) && !StringUtils.hasText(request.bodyZh());
-        boolean fillVi = !required.contains("vi") && !StringUtils.hasText(request.titleVi()) && !StringUtils.hasText(request.bodyVi());
+        boolean fillZh = !required.contains("zh") && isLocalizedBlank(request.titleZh()) && isLocalizedBlank(request.bodyZh());
+        boolean fillVi = !required.contains("vi") && isLocalizedBlank(request.titleVi()) && isLocalizedBlank(request.bodyVi());
         String titleEn = trimToEmpty(request.titleEn());
         String bodyEn = trimToEmpty(request.bodyEn());
         return new NovaTemplateCreateRequest(request.channel(), request.name(), request.cta(), request.version(),
@@ -1054,12 +1055,20 @@ public class OpsNovaService {
                 titleEn, bodyEn, request.operator(), request.reason(), request.translations());
     }
 
+    private boolean isLocalizedBlank(String value) {
+        return value == null || LOCALIZED_WHITESPACE.matcher(value).matches();
+    }
+
+    private boolean validLocalizedText(String value) {
+        return !isLocalizedBlank(value) && StringUtils.hasText(value);
+    }
+
     private ApiResult<NovaTemplateView> requireTemplateFields(NovaTemplateCreateRequest request) {
         if (!StringUtils.hasText(request.channel()) || !StringUtils.hasText(request.name())
                 || !StringUtils.hasText(request.cta()) || !StringUtils.hasText(request.version())
-                || !StringUtils.hasText(request.titleEn()) || !StringUtils.hasText(request.bodyEn())
-                || !StringUtils.hasText(request.titleZh()) || !StringUtils.hasText(request.bodyZh())
-                || !StringUtils.hasText(request.titleVi()) || !StringUtils.hasText(request.bodyVi())) {
+                || !validLocalizedText(request.titleEn()) || !validLocalizedText(request.bodyEn())
+                || !validLocalizedText(request.titleZh()) || !validLocalizedText(request.bodyZh())
+                || !validLocalizedText(request.titleVi()) || !validLocalizedText(request.bodyVi())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_FIELDS_REQUIRED");
         }
         if (request.name().trim().length() > 128 || request.cta().trim().length() > 255

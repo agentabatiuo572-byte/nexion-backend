@@ -58,9 +58,9 @@ public class SupportWelcomeService {
         return (ApiResult<Config>)commands.executeRetained("SUPPORT_WELCOME:"+actor,key,hash,ApiResult.class,()->{
             List<String> required=experienceConfig.operatingLanguages();
             var texts=new Texts(
-                    !required.contains("zh") && blankText(submitted.zh()) ? submitted.en() : submitted.zh(),
+                    !required.contains("zh") && submitted.zh().isEmpty() ? submitted.en() : submitted.zh(),
                     submitted.en(),
-                    !required.contains("vi") && blankText(submitted.vi()) ? submitted.en() : submitted.vi());
+                    !required.contains("vi") && submitted.vi().isEmpty() ? submitted.en() : submitted.vi());
             validateText(texts.zh());
             validateText(texts.en());
             validateText(texts.vi());
@@ -82,12 +82,8 @@ public class SupportWelcomeService {
         return value==null?"":value.replaceAll("^[\\s\\p{Z}\\uFEFF]+|[\\s\\p{Z}\\uFEFF]+$", "");
     }
 
-    private boolean blankText(String value) {
-        return value.matches("[\\p{javaWhitespace}\\p{Z}\\uFEFF]*");
-    }
-
     private void validateText(String value) {
-        if(blankText(value) || value.codePointCount(0,value.length())>500) throw new BizException(422,"SUPPORT_WELCOME_TEXT_INVALID");
+        if(value.matches("[\\p{javaWhitespace}\\p{Z}\\uFEFF]*") || value.codePointCount(0,value.length())>500) throw new BizException(422,"SUPPORT_WELCOME_TEXT_INVALID");
     }
 
     @Transactional(propagation=Propagation.MANDATORY)

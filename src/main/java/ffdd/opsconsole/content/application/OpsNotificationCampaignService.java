@@ -74,6 +74,7 @@ public class OpsNotificationCampaignService {
     private static final DateTimeFormatter CAMPAIGN_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
     private static final DateTimeFormatter SCHEDULE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
     private static final Pattern JSON_LIKE_PATTERN = Pattern.compile("^\\s*[\\[{]");
+    private static final Pattern LOCALIZED_WHITESPACE = Pattern.compile("[\\s\\p{Z}\\uFEFF]*");
     private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\{[A-Za-z][A-Za-z0-9_]*}");
 
     private final NotificationCampaignRepository campaignRepository;
@@ -679,18 +680,26 @@ public class OpsNotificationCampaignService {
     private CampaignCopy fillCampaignLocales(String titleEn, String bodyEn, String titleZh, String bodyZh,
             String titleVi, String bodyVi) {
         List<String> required = experienceConfig.operatingLanguages();
-        boolean fillZh = !required.contains("zh") && !StringUtils.hasText(titleZh) && !StringUtils.hasText(bodyZh);
-        boolean fillVi = !required.contains("vi") && !StringUtils.hasText(titleVi) && !StringUtils.hasText(bodyVi);
+        boolean fillZh = !required.contains("zh") && isLocalizedBlank(titleZh) && isLocalizedBlank(bodyZh);
+        boolean fillVi = !required.contains("vi") && isLocalizedBlank(titleVi) && isLocalizedBlank(bodyVi);
         return new CampaignCopy(trimToEmpty(titleEn), trimToEmpty(bodyEn),
                 trimToEmpty(fillZh ? titleEn : titleZh), trimToEmpty(fillZh ? bodyEn : bodyZh),
                 trimToEmpty(fillVi ? titleEn : titleVi), trimToEmpty(fillVi ? bodyEn : bodyVi));
     }
 
+    private static boolean isLocalizedBlank(String value) {
+        return value == null || LOCALIZED_WHITESPACE.matcher(value).matches();
+    }
+
+    private static boolean validLocalizedText(String value) {
+        return !isLocalizedBlank(value) && StringUtils.hasText(value);
+    }
+
     private record CampaignCopy(String titleEn, String bodyEn, String titleZh, String bodyZh, String titleVi, String bodyVi) {
         boolean complete() {
-            return StringUtils.hasText(titleEn) && StringUtils.hasText(bodyEn)
-                    && StringUtils.hasText(titleZh) && StringUtils.hasText(bodyZh)
-                    && StringUtils.hasText(titleVi) && StringUtils.hasText(bodyVi);
+            return validLocalizedText(titleEn) && validLocalizedText(bodyEn)
+                    && validLocalizedText(titleZh) && validLocalizedText(bodyZh)
+                    && validLocalizedText(titleVi) && validLocalizedText(bodyVi);
         }
 
         boolean tooLong() {
