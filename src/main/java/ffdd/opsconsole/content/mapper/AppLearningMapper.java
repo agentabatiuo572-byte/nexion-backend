@@ -60,6 +60,18 @@ public interface AppLearningMapper extends BaseMapper<HelpArticleEntity> {
             """)
     List<LearningSandboxCourseRow> listSandboxCourses(@Param("runId") String runId);
 
+    @Select("""
+            SELECT course_id courseId,course_version version,status,title_zh titleZh,title_en titleEn,title_vi titleVi,
+                   body_zh bodyZh,body_en bodyEn,body_vi bodyVi,category,format,level,reward_nex rewardNex,duration,
+                   featured,quiz_json quizJson,pass_score passScore,retry_limit retryLimit,completion_condition completionCondition,
+                   reward_event rewardEvent,revision
+              FROM nx_learning_sandbox_course
+             WHERE run_id=#{runId} AND course_id=#{courseId} AND course_version=#{version}
+               AND revision=#{revision} AND status='DRAFT' AND is_deleted=0
+            """)
+    LearningSandboxCourseRow findSandboxCourseDraft(@Param("runId") String runId, @Param("courseId") String courseId,
+                                                     @Param("version") String version, @Param("revision") long revision);
+
     @Insert("""
             INSERT INTO nx_learning_sandbox_course (run_id,course_id,course_version,status,title_zh,title_en,title_vi,body_zh,body_en,body_vi,category,format,level,reward_nex,duration,featured,quiz_json,pass_score,retry_limit,completion_condition,reward_event,source,source_environment,revision,created_at,updated_at,is_deleted)
             VALUES (#{runId},#{row.courseId},#{row.version},'DRAFT',#{row.titleZh},#{row.titleEn},#{row.titleVi},#{row.bodyZh},#{row.bodyEn},#{row.bodyVi},#{row.category},#{row.format},#{row.level},#{row.rewardNex},#{row.duration},#{row.featured},#{row.quizJson},#{row.passScore},#{row.retryLimit},#{row.completionCondition},#{row.rewardEvent},'mock','SANDBOX',0,NOW(),NOW(),0)
