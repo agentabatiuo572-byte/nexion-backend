@@ -93,6 +93,9 @@ public class OpsI18nLearningService {
     private final AuditObjectLockMapper lockMapper;
     private final EventOutboxService eventOutboxService;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private ffdd.opsconsole.platform.application.PlatformExperienceConfigService experienceConfig;
+
     public ApiResult<I18nLearningOverview> overview() {
         return ApiResult.ok(currentOverview());
     }
@@ -113,6 +116,7 @@ public class OpsI18nLearningService {
 
     @Transactional
     public ApiResult<I18nMessagePairView> saveLocalizedDraft(String messageKey, String idempotencyKey, I18nLocalizedCopyRequest request) {
+        request = withConversationCopyFallback(messageKey, request);
         ApiResult<Void> guard = requireLocalizedCopy(messageKey, idempotencyKey, request);
         if (guard != null) {
             return fail(guard);
@@ -156,6 +160,7 @@ public class OpsI18nLearningService {
 
     @Transactional
     public ApiResult<I18nMessagePairView> publishLocalizedMessage(String messageKey, String idempotencyKey, I18nLocalizedCopyRequest request) {
+        request = withConversationCopyFallback(messageKey, request);
         ApiResult<Void> guard = requireLocalizedCopy(messageKey, idempotencyKey, request);
         if (guard != null) {
             return fail(guard);
@@ -804,9 +809,12 @@ public class OpsI18nLearningService {
         List<LearningCourseView> courses = learningRepository.listCourses();
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
         int totalKeys = namespaces.stream().mapToInt(I18nNamespaceView::keys).sum();
-        int managedKeys = (int) messages.stream()
-                .map(row -> learningRepository.findPublishedMessagePair(row.messageKey()).orElse(row))
-                .filter(I18nCopyQuality::isComplete).count();
+        Map<String, I18nMessagePairView> publishedMessages = new LinkedHashMap<>();
+        for (I18nMessagePairView message : messages) {
+            learningRepository.findPublishedMessagePair(message.messageKey())
+                    .ifPresent(published -> publishedMessages.put(message.messageKey(), published));
+        }
+        int managedKeys = (int) publishedMessages.values().stream().filter(I18nCopyQuality::isComplete).count();
         int openIssues = issues.stream()
                 .filter(row -> !"fixed".equals(row.status()))
                 .mapToInt(I18nIntegrityIssueView::cnt)
@@ -835,7 +843,8 @@ public class OpsI18nLearningService {
                 LEVELS,
                 STATUSES,
                 SOURCES,
-                scanAtOverride != null ? scanAtOverride : latestScanAt());
+                scanAtOverride != null ? scanAtOverride : latestScanAt(),
+                publishedMessages);
     }
 
     private LocalDateTime latestScanAt() {
@@ -981,6 +990,17 @@ public class OpsI18nLearningService {
     private boolean hasCompleteQuizPayload(LearningCourseUpsertRequest request) {
         return request != null && request.quizQuestions() != null && !request.quizQuestions().isEmpty()
                 && requireQuizPayload(request) == null;
+    }
+
+    private I18nLocalizedCopyRequest withConversationCopyFallback(String messageKey, I18nLocalizedCopyRequest request) {
+        if (messageKey == null || request == null || !StringUtils.hasText(request.en())) return request;
+        String key = messageKey.trim();
+        if (!key.startsWith("conversation.script.") && !key.startsWith("conversation.template.")) return request;
+        List<String> required = experienceConfig.operatingLanguages();
+        String zh = StringUtils.hasText(request.zh()) || required.contains("zh") ? request.zh() : request.en();
+        String vi = StringUtils.hasText(request.vi()) || required.contains("vi") ? request.vi() : request.en();
+        return new I18nLocalizedCopyRequest(zh, request.en(), vi, request.expectedVersion(), request.operator(),
+                request.reason(), request.translations());
     }
 
     private ApiResult<Void> requireLocalizedCopy(String messageKey, String idempotencyKey, I18nLocalizedCopyRequest request) {
