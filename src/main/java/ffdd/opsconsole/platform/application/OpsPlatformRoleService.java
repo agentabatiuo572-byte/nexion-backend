@@ -104,9 +104,11 @@ public class OpsPlatformRoleService {
         }
         List<String> permissionCodes = rolePermissionMapper.selectActivePermissionCodesByRole(roleId);
         List<Long> menuIds = roleMenuMapper.selectActiveMenuIdsByRole(roleId);
+        List<String> legacyNonRead = "AUDITOR".equalsIgnoreCase(role.getRoleCode()) && !permissionCodes.isEmpty()
+                ? rolePermissionMapper.selectNonReadPermissionCodes(permissionCodes) : List.of();
         return ApiResult.ok(new PlatformRoleDetail(role.getId(), role.getRoleCode(), role.getRoleName(),
                 role.getRemark(), role.getStatus(), BUILTIN_ROLE_CODES.contains(role.getRoleCode()),
-                permissionCodes, menuIds));
+                permissionCodes, menuIds, legacyNonRead));
     }
 
     @Transactional

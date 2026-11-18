@@ -147,11 +147,31 @@ public class OpsPlatformParamRegistryService {
         }
         boolean h5Retired = ComputeConfigRegistry.coeffKey("h5BaseFactor").equals(canonicalKey);
         boolean retired = h5Retired || ComputeConfigRegistry.coeffKey("continuityFullHours").equals(canonicalKey);
+        var confirmedUsage = A5ParameterUsageCatalog.usage(canonicalKey);
         String description = h5Retired ? "已退役，值固定为 0，历史数据也不再生效。"
                 : retired ? "已退役，仅兼容读取，不参与收益计算。" : secret
                 ? "这个敏感参数在「" + owner.label() + "」设置；这里只显示是否已配置，不显示具体值。"
+                : phoneBindingUsage(canonicalKey) != null ? phoneBindingUsage(canonicalKey)
                 : switch (canonicalKey) {
+                    case "commission/cooling-days" -> "佣金冷却天数；结算写入解锁时刻时使用。";
+                    case "team.ui.F.binary.threshold" -> "团队双轨结算对碰门槛；结算读取该值作为匹配量门槛。";
+                    case "team.ui.F.binary.matchRate" -> "团队双轨对碰奖励比例，结算用该比例乘匹配量。";
+                    case "team.ui.F.binary.paused" -> "是否暂停团队双轨结算，不表示清除已记录的业绩。";
+                    case "team.ui.F.binary.spillover" -> "团队双轨余量转结的许可配置；仍受实际结转策略约束。";
+                    case "team.ui.F.binary.settlePeriod" -> "团队双轨结算周期，取每日、每周或每月。";
+                    case "team.ui.F.binary.residualPolicy" -> "团队双轨剩余业绩处理规则：每月清零、对碰后清零或转结。";
+                    case "withdrawal.strong_review_threshold_usdt" -> "提现进入强化人工复核的金额门槛，单位 USDT。";
+                    case "auth.risk.otp_send_window_minutes" -> "登录验证码发送频率的统计窗口，单位分钟；不等于注册验证码窗口。";
+                    case "auth.risk.otp_send_window_limit" -> "登录验证码在发送频率窗口内允许的次数。";
+                    case "auth.risk.lock_duration_minutes" -> "账号短锁时长，也是登录失败次数的统计窗口，单位分钟。";
+                    case "auth.risk.long_lock_duration_hours" -> "账号长锁时长，单位小时；并不设置强制密码重置。";
+                    case A4RuntimePolicyService.EVENT_RETENTION_KEY -> "事件保留期，单位月；用于事件留存清理策略。";
+                    case A4RuntimePolicyService.SAMPLING_KEY -> "事件采样规则；浏览和会话的采样与关键业务事件规则分别处理。";
                     case "growth.quest.day_one.eligibility_hours" -> "新手任务完成期限（小时）；由新手任务配置读取。";
+                    case "growth.quest.day_one.window_ms" -> "新手任务窗口的说明文字，不改变完成期限。";
+                    case "wallet.exchange.min_usdt" -> "以 USDT 为来源资产时的最小兑换额。";
+                    case "wallet.exchange.min_nex" -> "以 UVT 为来源资产时的最小兑换额。";
+                    case "platform.experience.interface_languages" -> "公开界面可选语言；与运营内容必填语言范围分别配置。";
                     case "wallet.exchange.queue_mode" -> "额度不足的订单按该策略进入人工处理队列或拒绝。";
                     case "wallet.exchange.user_daily_cap_usdt" -> "单用户日兑换额度，单位 USDT；按当前兑换业务日累计。";
                     case "wallet.exchange.platform_daily_cap_usdt" -> "全平台日兑换额度，单位 USDT；用完后按超额策略处理。";
@@ -163,7 +183,8 @@ public class OpsPlatformParamRegistryService {
                     case "wallet.exchange.queue_eta_hours" -> "用户排队的预计处理时长（小时），不是自动成交或到账时间。";
                     case "wallet.exchange.queue_eta_copy", "wallet.exchange.queue_eta_copy_zh", "wallet.exchange.queue_eta_copy_vi" ->
                             "排队预计时间文案，使用 {hours} 引用已配置的预计时长。";
-                    default -> "这个参数在「" + owner.label() + "」设置；这里只显示当前值。";
+                    default -> confirmedUsage == null ? "未确认：尚未核实此参数的 Java 生效用途。"
+                            : confirmedUsage.description();
                 };
         String valueType = secret
                 ? "SECRET"
@@ -456,6 +477,14 @@ public class OpsPlatformParamRegistryService {
             return "GPU 档位关键词";
         }
         return owner.code() + " · " + tokenLabel(lastToken(key));
+    }
+
+    private String phoneBindingUsage(String key) {
+        if (ComputeConfigRegistry.phoneBindingKey("allowReplacement").equals(key)) return "是否允许换绑手机；不放宽其他换绑校验。";
+        if (ComputeConfigRegistry.phoneBindingKey("minReplacementIntervalDays").equals(key)) return "两次手机换绑之间的最短间隔，单位天。";
+        if (ComputeConfigRegistry.phoneBindingKey("replacementWindowDays").equals(key)) return "计算手机换绑次数的滚动窗口，单位天。";
+        if (ComputeConfigRegistry.phoneBindingKey("maxReplacementsInWindow").equals(key)) return "指定滚动窗口内允许的手机换绑次数上限。";
+        return null;
     }
 
     private String lastToken(String key) {

@@ -413,12 +413,14 @@ public class OpsReferralRewardService {
                         long nextVersion = Math.addExact(currentVersion, 1L);
                         boolean startsNewRewardPolicy = ("enabled".equals(paramKey) && !Boolean.parseBoolean(before)
                                 && Boolean.parseBoolean(value)) || !"enabled".equals(paramKey);
+                        Instant policyChangeAt = clock.instant();
                         Long pendingBeforePolicyChange = null;
                         if (startsNewRewardPolicy && config.activeValue(EFFECTIVE_AT_KEY).isPresent()) {
-                            pendingBeforePolicyChange = mapper.totalPending(effectiveAtRequired(), 0, "risk_bucket".equals(lockMode()));
+                            pendingBeforePolicyChange = mapper.totalPendingBefore(effectiveAtRequired(),
+                                    LocalDateTime.ofInstant(policyChangeAt, DATABASE_ZONE), 0, "risk_bucket".equals(lockMode()));
                         }
                         if (startsNewRewardPolicy) {
-                            config.upsertAdminValue(EFFECTIVE_AT_KEY, clock.instant().toString(), "DATETIME", "GROWTH_REFERRAL",
+                            config.upsertAdminValue(EFFECTIVE_AT_KEY, policyChangeAt.toString(), "DATETIME", "GROWTH_REFERRAL",
                                     "H8 reward policy version " + nextVersion
                                             + " effective time; earlier pending referrals are never repriced");
                         } else if (config.activeValue(EFFECTIVE_AT_KEY).isEmpty()) {
@@ -444,7 +446,10 @@ public class OpsReferralRewardService {
                             detail.put("effectiveRewards", Map.of("newcomer.usdt", appliedRewards.newcomerUsdt(),
                                     "newcomer.nex", appliedRewards.newcomerNex(), "inviter.nex", appliedRewards.inviterNex()));
                         }
-                        if (pendingBeforePolicyChange != null) detail.put("pendingBeforePolicyChange", pendingBeforePolicyChange);
+                        if (pendingBeforePolicyChange != null) {
+                            detail.put("pendingBeforePolicyChange", pendingBeforePolicyChange);
+                            if (pendingBeforePolicyChange > 0) detail.put("priorCohortDisposition", "REVIEW_REQUIRED");
+                        }
                         audit("REFERRAL_REWARD_PARAM_UPDATE", paramKey, operator, idempotencyKey, detail);
                         outbox.publish("REFERRAL_REWARD_PARAM", paramKey, "H8_REFERRAL_REWARD_PARAM_CHANGED",
                                 Map.of("paramKey", paramKey, "before", before, "after", value,
@@ -452,7 +457,10 @@ public class OpsReferralRewardService {
                                         "idempotencyKey", idempotencyKey));
                         Map<String, Object> result = new LinkedHashMap<>(Map.of("key", paramKey, "value", value,
                                 "status", "UPDATED", "version", nextVersion));
-                        if (pendingBeforePolicyChange != null) result.put("pendingBeforePolicyChange", pendingBeforePolicyChange);
+                        if (pendingBeforePolicyChange != null) {
+                            result.put("pendingBeforePolicyChange", pendingBeforePolicyChange);
+                            if (pendingBeforePolicyChange > 0) result.put("priorCohortDisposition", "REVIEW_REQUIRED");
+                        }
                         return result;
                     });
         } catch (RuntimeException ex) {

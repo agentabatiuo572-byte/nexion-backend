@@ -599,7 +599,7 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
             """)
     long totalSettled(@Param("accountSandbox") int accountSandbox);
 
-    @Select("""
+    String PENDING_REFERRALS_COUNT = """
             SELECT COUNT(*) FROM nx_user u
               LEFT JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
                AND inviter.id<>u.id AND inviter.sandbox=u.sandbox
@@ -611,9 +611,14 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
              WHERE u.is_deleted = 0 AND u.status = 'ACTIVE'
                AND COALESCE(u.sandbox, 0) = #{accountSandbox}
                AND u.created_at >= #{effectiveAt}
-            """ + ELIGIBLE_RISK + """
-               AND s.id IS NULL
-            """)
+            """ + ELIGIBLE_RISK + " AND s.id IS NULL ";
+
+    @Select(PENDING_REFERRALS_COUNT + " AND u.created_at < #{nextEffectiveAt}")
+    long totalPendingBefore(@Param("effectiveAt") LocalDateTime effectiveAt,
+                            @Param("nextEffectiveAt") LocalDateTime nextEffectiveAt,
+                            @Param("accountSandbox") int accountSandbox, @Param("holdRisky") boolean holdRisky);
+
+    @Select(PENDING_REFERRALS_COUNT)
     long totalPending(@Param("effectiveAt") LocalDateTime effectiveAt,
                       @Param("accountSandbox") int accountSandbox,
                       @Param("holdRisky") boolean holdRisky);
