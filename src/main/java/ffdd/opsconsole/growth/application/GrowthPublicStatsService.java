@@ -306,6 +306,7 @@ public class GrowthPublicStatsService {
         display.put("onlineDevices", online[index]);
         display.put("paidCents", paidCents[index]);
         display.put("paid", BigDecimal.valueOf(paidCents[index], 2));
+        display.put("paidCurrency", "USDT");
         return display;
     }
 
