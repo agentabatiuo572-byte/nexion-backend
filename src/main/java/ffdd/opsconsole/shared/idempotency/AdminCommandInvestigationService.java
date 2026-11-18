@@ -423,7 +423,8 @@ public class AdminCommandInvestigationService {
             return "A3_PLATFORM_EXPERIENCE".equals(fact.getResourceType())
                     && "A3_PLATFORM_EXPERIENCE_CHANGED".equals(action)
                     && java.util.Set.of("platform.experience.share.base_url",
-                            "platform.experience.interface_languages").contains(fact.getResourceId());
+                            "platform.experience.interface_languages",
+                            "platform.experience.operating_languages").contains(fact.getResourceId());
         }
         if (AdminCommandOrigin.userDetailScope(scope)) {
             if (scope.startsWith("USER_PAYMENT_METHOD_UNBIND:")) {
