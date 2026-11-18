@@ -2508,8 +2508,53 @@ public class AuditReplayBusinessPermissionGuard {
         if (!expectedHash.equals(DisclosureContentHash.from(draft, chapters))) {
             throw new ffdd.opsconsole.shared.exception.BizException(409, "A2_DISCLOSURE_SNAPSHOT_CHANGED");
         }
-        return Map.of("kind", "PUBLISH", "jurisdiction", jurisdiction, "version", version,
-                "revision", revision, "contentHash", expectedHash, "draft", draft, "chapters", chapters);
+        java.util.Map<String, Object> frozen = new java.util.LinkedHashMap<>();
+        frozen.put("kind", "PUBLISH");
+        frozen.put("jurisdiction", jurisdiction);
+        frozen.put("version", version);
+        frozen.put("revision", revision);
+        frozen.put("contentHash", expectedHash);
+        frozen.put("draft", draft);
+        frozen.put("chapters", chapters);
+        java.util.Map<String, Object> previous = previousPublishedDisclosure(jurisdiction, version);
+        frozen.put("previousVersion", previous == null ? null : previous.get("version"));
+        frozen.put("previousVersionSummary", previous);
+        return frozen;
+    }
+
+    /** Freezes the latest already-published version for the same jurisdiction, or null for a first publish. */
+    private java.util.Map<String, Object> previousPublishedDisclosure(String jurisdiction, String version) {
+        return trustDisclosureRepository.listDisclosureVersionItems().stream()
+                .filter(item -> item.jurisdiction() != null && item.jurisdiction().equalsIgnoreCase(jurisdiction))
+                .filter(item -> item.version() != null && !item.version().equalsIgnoreCase(version))
+                .filter(item -> "PUBLISHED".equalsIgnoreCase(item.status()) || "ARCHIVED".equalsIgnoreCase(item.status()))
+                .findFirst()
+                .map(item -> {
+                    java.util.List<java.util.Map<String, Object>> chapters =
+                            trustDisclosureRepository.listChapters(jurisdiction, item.version()).stream()
+                                    .map(chapter -> java.util.Map.<String, Object>of(
+                                            "no", chapter.no() == null ? "" : chapter.no(),
+                                            "zh", chapter.zh() == null ? "" : chapter.zh(),
+                                            "vi", chapter.vi() == null ? "" : chapter.vi(),
+                                            "en", chapter.en() == null ? "" : chapter.en(),
+                                            "zhBody", chapter.zhBody() == null ? "" : chapter.zhBody(),
+                                            "viBody", chapter.viBody() == null ? "" : chapter.viBody(),
+                                            "enBody", chapter.enBody() == null ? "" : chapter.enBody()))
+                                    .toList();
+                    java.util.Map<String, Object> summary = new java.util.LinkedHashMap<>();
+                    summary.put("version", item.version());
+                    summary.put("status", item.status());
+                    summary.put("languageScope", item.languageScope());
+                    summary.put("effectiveDate", item.effectiveDate());
+                    summary.put("requiresReack", item.requiresReack());
+                    summary.put("zh", item.zh());
+                    summary.put("vi", item.vi());
+                    summary.put("en", item.en());
+                    summary.put("revision", item.revision());
+                    summary.put("contentHash", item.contentHash());
+                    summary.put("chapters", chapters);
+                    return summary;
+                }).orElse(null);
     }
 
     private ApiResult<Void> validateDisclosureSnapshot(Map<String, Object> params) {
