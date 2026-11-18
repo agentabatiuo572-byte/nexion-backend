@@ -813,9 +813,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (StringUtils.hasText(request.version())) {
             return ApiResult.fail(422, "DISCLOSURE_VERSION_SERVER_ASSIGNED");
         }
-        if (!isActiveJurisdiction(jurisdiction)) {
-            return ApiResult.fail(409, "DISCLOSURE_JURISDICTION_NOT_ACTIVE");
-        }
+        // Validate catalog state inside the idempotent action, not on a successful receipt replay.
         return saveDisclosureDraft(jurisdiction, idempotencyKey, request);
     }
 

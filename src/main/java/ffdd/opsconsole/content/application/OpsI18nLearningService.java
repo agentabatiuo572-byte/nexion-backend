@@ -636,6 +636,10 @@ public class OpsI18nLearningService {
                 throw new BizException(422, "LEARNING_COURSE_QUIZ_INCOMPLETE");
             }
         }
+        String primaryTitle = target == null ? current.titleZh() : target.payload().titleZh();
+        if (primaryTitle != null && primaryTitle.trim().codePointCount(0, primaryTitle.trim().length()) > 128) {
+            throw new BizException(422, "LEARNING_COURSE_COPY_TOO_LONG");
+        }
         ApiResult<Void> quality = target == null
                 ? LearningCourseCopy.requirePublishable(current.titleZh(), current.titleEn(), current.titleVi(),
                         current.bodyZh(), current.bodyEn(), current.bodyVi())
