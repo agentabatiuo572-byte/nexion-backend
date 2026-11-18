@@ -12,5 +12,5 @@ public record ConversationWriteState(
         String currentAssignmentAgentId,
         String currentAssignmentAgentName,
         String writableConversationNo,
-        boolean canReply) {
+        boolean canReply) implements ContentConversationDetail.WriteState {
 }
