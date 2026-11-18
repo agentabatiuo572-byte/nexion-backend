@@ -481,7 +481,8 @@ public class OpsBiService implements AuditReplayable {
                 "containsPii", true,
                 "downloadTtlHours", 24,
                 "downloadTokenPath", "/api/admin/bi/exports/" + created.reportId() + "/download-token",
-                "alertedRoles", List.of("SUPER_ADMIN", "GROWTH_LEAD")));
+                // Nothing is delivered to these roles for this export; keep the field with no recipients.
+                "alertedRoles", List.of()));
     }
 
     private ApiResult<Map<String, Object>> operationsSection(
