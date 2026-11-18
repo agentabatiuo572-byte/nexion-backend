@@ -1041,7 +1041,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
                     long impressions = metric == null ? 0L : metric.impressions();
                     long conversions = metric == null ? 0L : metric.conversions();
                     BigDecimal cvr = impressions == 0
-                            ? BigDecimal.ZERO.setScale(2)
+                            ? null
                             : BigDecimal.valueOf(conversions)
                                     .multiply(BigDecimal.valueOf(100))
                                     .divide(BigDecimal.valueOf(impressions), 2, RoundingMode.HALF_UP);

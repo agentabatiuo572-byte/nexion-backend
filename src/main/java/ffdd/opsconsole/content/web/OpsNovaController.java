@@ -59,9 +59,20 @@ public class OpsNovaController {
         return (ApiResult<T>) idempotencyService.execute(
                 scope,
                 idempotencyKey.trim(),
-                requestHash(scope + ":" + String.valueOf(request)),
+                requestHash(scope + ":" + commandPayload(request)),
                 ApiResult.class,
                 (Supplier) action);
+    }
+
+    private static String commandPayload(Object request) {
+        String payload = String.valueOf(request);
+        String omittedRevision = ", expectedRevision=null]";
+        // Preserve original create and update receipt fingerprints when no token was submitted.
+        if (request instanceof NovaTemplateCreateRequest template && template.expectedRevision() == null
+                && payload.endsWith(omittedRevision)) {
+            return payload.substring(0, payload.length() - omittedRevision.length()) + "]";
+        }
+        return payload;
     }
 
     private String requestHash(String value) {

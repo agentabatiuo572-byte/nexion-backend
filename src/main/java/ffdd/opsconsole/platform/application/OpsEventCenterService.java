@@ -74,12 +74,12 @@ public class OpsEventCenterService {
     private static final List<String> SUNSET_DOMAINS = List.of("premium", "points", "nexv2");
 
     private static final List<EventFamilyDefinition> EVENT_FAMILY_DEFINITIONS = List.of(
-            familyDef("acquisition", "① 获客漏斗", "注册前后身份拼接 + 渠道归因",
+            familyDef("acquisition", "① 获客漏斗", "已记录的注册与获客事件；不推断匿名身份关联",
                     "app.session_started · auth.register_completed · device.first_yield_received",
                     "部分（注册、验证类由系统记录）",
                     List.of("APP_", "AUTH_", "C1_", "DEVICE_FIRST"),
-                    row("app.session_started", "匿名设备首次会话"),
-                    row("auth.register_started / completed", "注册链路开始与完成"),
+                    row("app.session_started", "应用会话开始（仅展示已记录事件）"),
+                    row("auth.register_started / completed", "已记录的注册开始或完成事件"),
                     row("device.first_yield_received", "首笔设备收益到账")),
             familyDef("conversion", "② 转化", "商城浏览、下单、试用和邀请转化",
                     "store.viewed · checkout.completed · trial.started · referral.invite_sent",
@@ -100,12 +100,12 @@ public class OpsEventCenterService {
                     row("genesis.purchased", "创世节点购买完成")),
             familyDef("retention", "④ 留存", "日活、签到、任务和推送触达",
                     "app.dau · daily.checkin · quest.completed · nova.push_clicked",
-                    "推送送达由系统记录",
+                    "推送发送与点击按各自事件统计，不把发送视为送达",
                     List.of("H3_", "H4_", "H5_", "H6_", "I2_", "I3_", "I7_", "DAILY_", "QUEST_", "NOVA_", "NOTIFICATION_"),
                     row("app.dau", "日活跃（关键指标 #2）"),
                     row("daily.checkin", "每日签到"),
                     row("quest.completed", "任务完成"),
-                    row("nova.push_sent / push_clicked", "推送送达与点击（关键指标 #6）")),
+                    row("nova.push_sent / push_clicked", "推送发送与点击（关键指标 #6）")),
             familyDef("risk", "⑤ 风控", "系统检测到的风险信号",
                     "risk.multi_account_flagged · risk.score_updated · auth.login_locked",
                     "全部由系统记录",
@@ -127,8 +127,8 @@ public class OpsEventCenterService {
     private static final List<EventCommonField> COMMON_FIELDS = List.of(
             new EventCommonField("event_id", "event_id", "系统生成的唯一编号，用于去重", "必带"),
             new EventCommonField("event_name", "event_name", "domain.object_action,动作使用过去式", "必带"),
-            new EventCommonField("ts", "ts", "系统收到的时间（毫秒），不以用户设备时间为准", "以系统为准"),
-            new EventCommonField("identity", "user_id / anon_id", "二选一，注册前后可同时存在", "字段必带,值可空"),
+            new EventCommonField("ts", "ts", "事件记录的发生时间（毫秒）；不等同于系统接收时间", "以系统为准"),
+            new EventCommonField("identity", "user_id / anon_id", "按原事件记录的用户或匿名标识读取，不推断历史关联", "字段必带,值可空"),
             new EventCommonField("session_id", "session_id", "单次会话 ID", "字段必带,值可空"),
             new EventCommonField("phase", "phase + 账户月龄", "事件发生时用户所在的运营阶段，用于分析阶段效果", "必带"),
             new EventCommonField("cohort", "cohort", "注册周(按周分群)", "必带"),
@@ -1046,6 +1046,7 @@ public class OpsEventCenterService {
         return List.of(
                 "资金和关键指标只统计由系统记录的事件",
                 "事件名和字段要先登记再使用，字段里不能有明文个人敏感信息",
+                "目录登记不代表生产者已接入；查询仅统计已有记录，不自动回填历史事件",
                 "Premium、积分系统、UVT v2 已下线，只保留历史数据和到期兑付");
     }
 

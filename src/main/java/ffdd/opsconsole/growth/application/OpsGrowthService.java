@@ -3578,10 +3578,12 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         // the same column its daily limits are enforced on. Unknown stays null instead of a made-up zero.
         stats.put("wheelSpinsToday", wheelSpinsToday());
         stats.put("wheelSpinsTodayBasis", "nx_growth_wheel_spin.spin_date");
-        // No H4-region-restriction source exists: event definitions and prize slots are not such a count.
-        stats.put("regionRestrictionCount", null);
-        stats.put("regionRestrictionsAvailable", false);
-        stats.put("regionRestrictionsReason", "H4_REGION_RESTRICTION_SOURCE_MISSING");
+        Long restricted = h4EventRules == null ? null : h4EventRules.liveCountryRestrictedCampaigns();
+        stats.put("geoBlocked", restricted);
+        stats.put("regionRestrictionCount", restricted);
+        stats.put("regionRestrictionsAvailable", restricted != null);
+        stats.put("regionRestrictionsReason", restricted == null ? "H4_REGION_RESTRICTION_SOURCE_MISSING" : null);
+        stats.put("regionRestrictionsBasis", "LIVE_H4_REGIONAL_RULE_COUNTRY_ALLOWLIST");
         return stats;
     }
 

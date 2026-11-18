@@ -60,6 +60,7 @@ class OpsNotificationCampaignServiceTest {
     private final NotificationCampaignDispatchExecutor dispatchExecutor =
             new NotificationCampaignDispatchExecutor(repository, auditLogService, eventOutboxService);
     private final OpsNotificationCampaignService service = new OpsNotificationCampaignService(
+            new ffdd.opsconsole.platform.application.PlatformExperienceConfigService(mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class), new com.fasterxml.jackson.databind.ObjectMapper(), null, null, null),
             repository,
             auditLogService,
             clock,
@@ -565,6 +566,11 @@ class OpsNotificationCampaignServiceTest {
     }
 
     private static final class FakeNotificationCampaignRepository implements NotificationCampaignRepository {
+        @Override
+        public List<NotificationCampaignRepository.CampaignDeliveryFacts> campaignDeliveryFacts(LocalDateTime asOf, LocalDateTime weekFrom) {
+            return List.of();
+        }
+
         private final Map<String, NotificationCampaignRow> campaigns = new LinkedHashMap<>();
         private final Map<String, NotificationCapRuleView> caps = new LinkedHashMap<>();
         private final List<String> dispatchBizNos = new ArrayList<>();

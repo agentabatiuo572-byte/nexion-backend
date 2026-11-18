@@ -94,6 +94,7 @@ class OpsTrustDisclosureServiceTest {
     private final OpsTrustDisclosureService service = new OpsTrustDisclosureService(
             repository,
             configFacade,
+            new ffdd.opsconsole.platform.application.PlatformExperienceConfigService(mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class), new com.fasterxml.jackson.databind.ObjectMapper(), null, null, null),
             auditLogService,
             clock,
             ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),

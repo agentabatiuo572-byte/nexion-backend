@@ -544,13 +544,16 @@ public interface NovaMapper extends BaseMapper<Object> {
                    updated_at = NOW()
              WHERE channel_key = #{channel}
                AND status = 'DRAFT'
-               AND version = #{expectedVersion}
-               AND title_zh = #{expectedTitleZh}
-               AND body_zh = #{expectedBodyZh}
-               AND title_vi = #{expectedTitleVi}
-               AND body_vi = #{expectedBodyVi}
-               AND COALESCE(title_en, '') = #{expectedTitleEn}
-               AND COALESCE(body_en, '') = #{expectedBodyEn}
+               AND BINARY version = BINARY #{expectedVersion}
+               AND BINARY title_zh = BINARY #{expectedTitleZh}
+               AND BINARY body_zh = BINARY #{expectedBodyZh}
+               AND BINARY title_vi = BINARY #{expectedTitleVi}
+               AND BINARY body_vi = BINARY #{expectedBodyVi}
+               AND BINARY COALESCE(title_en, '') = BINARY #{expectedTitleEn}
+               AND BINARY COALESCE(body_en, '') = BINARY #{expectedBodyEn}
+               AND BINARY template_name <=> BINARY #{expectedName}
+               AND BINARY cta <=> BINARY #{expectedCta}
+               AND BINARY CAST(translations_json AS CHAR) <=> BINARY #{expectedTranslations,jdbcType=VARCHAR}
                AND is_deleted = 0
             """)
     int updateTemplateIfCurrent(
@@ -562,6 +565,9 @@ public interface NovaMapper extends BaseMapper<Object> {
             @Param("expectedBodyVi") String expectedBodyVi,
             @Param("expectedTitleEn") String expectedTitleEn,
             @Param("expectedBodyEn") String expectedBodyEn,
+            @Param("expectedName") String expectedName,
+            @Param("expectedCta") String expectedCta,
+            @Param("expectedTranslations") String expectedTranslations,
             @Param("name") String name,
             @Param("cta") String cta,
             @Param("version") String version,

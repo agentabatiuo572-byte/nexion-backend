@@ -523,8 +523,9 @@ public class OpsPlatformParamRegistryService {
             case "genesis_emissions_open" -> "Genesis 释放开关";
             case "commissiontighteningpct" -> "月度奖励收紧比例";
             case "quest_reward_multiplier" -> "任务奖励倍率";
-            case "tri_reward" -> "首日任务奖励";
-            case "window_ms" -> "任务有效窗口";
+            case "tri_reward" -> "新手任务奖励";
+            case "window_ms" -> "任务时长说明文字";
+            case "eligibility_hours" -> "新手任务完成期限";
             case "phaseprogresspct" -> "阶段进度";
             case "totalmonths" -> "总运营月数";
             case "matchrate" -> "团队平衡奖励比例";

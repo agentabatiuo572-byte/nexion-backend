@@ -37,7 +37,8 @@ class AppUserProfileServiceTest {
     private final ffdd.opsconsole.growth.application.H3DayOneBusinessFactService facts = mock(ffdd.opsconsole.growth.application.H3DayOneBusinessFactService.class);
     private final StorageProperties storageProperties = new StorageProperties();
     private final AppUserAvatarImageService avatarImages = avatarImages();
-    private final AppUserProfileService service = new AppUserProfileService(mapper, idempotency, audit, storage, facts, avatarImages);
+    private final AppUserProfileService service = new AppUserProfileService(mapper, idempotency, audit, storage, facts, avatarImages,
+            new ffdd.opsconsole.platform.application.PlatformExperienceConfigService(mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class), new com.fasterxml.jackson.databind.ObjectMapper(), null, null, null));
 
     private AppUserAvatarImageService avatarImages() {
         storageProperties.setPublicMediaOrigin("https://avatar-test.example");

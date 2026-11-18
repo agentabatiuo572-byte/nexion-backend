@@ -34,10 +34,11 @@ class AppRegistrationAttemptRecoveryTest {
         var executor = mock(AppUserRegistrationTransactionExecutor.class);
         when(executor.execute(any())).thenAnswer(call -> ((Supplier<?>) call.getArgument(0)).get());
         var environment = new MockEnvironment(); environment.setActiveProfiles("prod");
-        var service = new AppUserRegistrationService(mapper, users, mock(PasswordEncoder.class),
+        var service = new AppUserRegistrationService(null, mapper, users, mock(PasswordEncoder.class),
                 mock(UserOtpDeliveryService.class), auth, mock(EventOutboxService.class), executor, environment,
                 mock(OpsReferralRewardService.class), mock(PlatformConfigFacade.class), mock(UserLoginGuardMapper.class),
-                mock(CaptchaOtpGate.class), mock(DayOneInstanceFacade.class), mock(SupportRegistrationFacade.class), accounts);
+                mock(CaptchaOtpGate.class), mock(DayOneInstanceFacade.class), mock(SupportRegistrationFacade.class), accounts,
+                new ffdd.opsconsole.platform.application.PlatformExperienceConfigService(mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class), new com.fasterxml.jackson.databind.ObjectMapper(), null, null, null));
         var context = new AppLoginContext(AppSessionSurface.APP, "installation-A", true,
                 "attempt-registration-123", "r".repeat(43), "REGISTRATION", "REG-" + "a".repeat(32));
         var receipt = ApiResult.ok(new UserLoginResponse("original-access", "Bearer",

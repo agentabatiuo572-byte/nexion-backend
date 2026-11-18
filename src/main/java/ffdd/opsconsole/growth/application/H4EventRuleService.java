@@ -356,6 +356,19 @@ public class H4EventRuleService {
     }
     private static void positive(Map<String,Object> r,List<String> missing,String... keys){for(String key:keys)if(number(r.get(key)).signum()<=0)missing.add(key);}
     private static void required(Map<String,Object> r,List<String> missing,String key){if(text(r.get(key)).isBlank())missing.add(key);}
+    /** Counts live H4 regional rules whose participation gate uses configured country allowlists. */
+    public long liveCountryRestrictedCampaigns() {
+        return db.rows("""
+                SELECT r.event_code, r.rules_json
+                  FROM nx_growth_event_rule r
+                  JOIN nx_event_quest q ON q.quest_code=r.event_code AND q.is_deleted=0
+                 WHERE r.kind='regional' AND r.enabled=1
+                   AND r.starts_at<=UTC_TIMESTAMP(6) AND r.ends_at>UTC_TIMESTAMP(6)
+                """).stream().filter(rule -> rules(rule).get("regions") instanceof List<?> regions
+                        && regions.stream().anyMatch(item -> item instanceof Map<?,?> region
+                            && region.get("countries") instanceof List<?> countries && !countries.isEmpty())).count();
+    }
+
     public Map<String,Object> rules(Map<String,Object> row) {
         try{return json.readValue(text(row.get("rules_json")),new TypeReference<>(){});}catch(Exception ex){throw new BizException(503,"EVENT_RULE_INVALID");}
     }

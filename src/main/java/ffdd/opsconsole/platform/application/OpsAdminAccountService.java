@@ -1543,7 +1543,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     private String defaultRoleDescription(String role) {
         return switch (role) {
             case "super" -> "平台 Owner，保留所有危急操作。";
-            case "config" -> "运营配置、平台参数与跨域配置变更。";
+            case "config" -> "维护已授权的运营配置，不默认拥有跨域变更权限。";
             case "finance" -> "资金、账务、提现与覆盖率。";
             case "risk" -> "风控模型、账户限制与熔断。";
             case "content" -> "文案、课程、风险披露与公告。";
@@ -1557,7 +1557,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     private String defaultRoleScope(String role) {
         return switch (role) {
             case "super" -> "全域：资金、风控、内容、配置、审计";
-            case "config" -> "A/C/E/F/G/H/I/J/M 配置";
+            case "config" -> "仅限此角色实际获授的菜单与配置权限";
             case "finance" -> "B/D/C 资金域";
             case "risk" -> "C/K/J 风控域";
             case "content" -> "I/公告/课程";
