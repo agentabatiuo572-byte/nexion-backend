@@ -128,6 +128,112 @@ final class H4TicketReviewText {
         return changes.isEmpty() ? null : String.join("；", changes);
     }
 
+    static String remainingOperationChanges(ObjectMapper mapper, String op, Object previous, Object proposed,
+            boolean before) throws com.fasterxml.jackson.core.JsonProcessingException {
+        JsonNode state = mapper.valueToTree(previous);
+        JsonNode request = mapper.valueToTree(proposed);
+        if (state == null || request == null || !state.isObject() || !request.isObject()) return null;
+        List<String> changes = new ArrayList<>();
+        switch (op) {
+            case "h4_wheel_guard_create" -> {
+                if (!"false".equals(state.path("exists").asText()) || !present(request.path("guardValue"))) return null;
+                return before ? "护栏未配置" : "新建护栏：" + request.path("guardLabel").asText(request.path("guardKey").asText())
+                        + "；护栏值：" + request.path("guardValue").asText();
+            }
+            case "h4_wheel_guard_update" -> {
+                if (!present(state.path("guard_value")) || !present(request.path("value"))) return null;
+                addChange(mapper, changes, "护栏值", state.path("guard_value"), request.path("value"), before);
+            }
+            case "h4_wheel_tier_create", "h4_wheel_tier_delete" -> {
+                String tier = request.path("tierName").asText("");
+                if (tier.isBlank()) return null;
+                JsonNode tiers = structured(mapper, state.path("tiers"));
+                if (!tiers.isArray()) return null;
+                JsonNode oldTier = null;
+                for (JsonNode item : tiers) {
+                    if (tier.equals(item.path("tier").asText())) {
+                        if (oldTier != null) return null;
+                        oldTier = item;
+                    }
+                }
+                if ("h4_wheel_tier_create".equals(op)) {
+                    if (oldTier != null) return null;
+                    if (before) return "未配置奖档：" + tier;
+                    append(mapper, request, "新增奖档", changes);
+                } else {
+                    if (oldTier == null) return null;
+                    if (!before) return "移除奖档：" + tier;
+                    append(mapper, oldTier, "原奖档", changes);
+                }
+            }
+            case "h4_legacy_event_open" -> {
+                if (!present(state.path("status")) || !present(request.path("value"))) return null;
+                String prior = switch (state.path("status").asText()) {
+                    case "0" -> "未开始";
+                    case "1" -> "进行中";
+                    case "2" -> "已结束";
+                    default -> state.path("status").asText();
+                };
+                changes.add("活动状态：" + (before ? prior : request.path("value").asText()));
+            }
+            case "h4_event_rule_enable" -> {
+                addChange(mapper, changes, "规则启用", state.path("enabled"), request.path("enabled"), before);
+                addChange(mapper, changes, "开始时间", state.path("starts_at"), request.path("startsAt"), before);
+                addChange(mapper, changes, "结束时间", state.path("ends_at"), request.path("endsAt"), before);
+                addChange(mapper, changes, "活动规则", structured(mapper, state.path("rules_json")), request.path("rules"), before);
+            }
+            case "h4_genesis_raffle_open" -> {
+                if (!present(state.path("status"))) return null;
+                changes.add("抽奖状态：" + (before ? state.path("status").asText() : "拟开放"));
+                addChange(mapper, changes, "英文标题", state.path("title_en"), request.path("titleEn"), before);
+                addChange(mapper, changes, "中文标题", state.path("title_zh"), request.path("titleZh"), before);
+                addChange(mapper, changes, "越南语标题", state.path("title_vi"), request.path("titleVi"), before);
+                addChange(mapper, changes, "开始时间", state.path("starts_at"), request.path("startsAt"), before);
+                addChange(mapper, changes, "开奖时间", state.path("draw_at"), request.path("drawAt"), before);
+                addChange(mapper, changes, "奖项", structured(mapper, state.path("prizes_json")), request.path("prizes"), before);
+            }
+            default -> { return null; }
+        }
+        return changes.isEmpty() ? null : String.join("；", changes);
+    }
+
+    private static void addChange(ObjectMapper mapper, List<String> changes, String field,
+            JsonNode oldValue, JsonNode newValue, boolean before) {
+        if (!present(oldValue) || !present(newValue) || oldValue.equals(newValue)) return;
+        if (oldValue.isObject() && newValue.isObject()) {
+            var fields = new java.util.LinkedHashSet<String>();
+            oldValue.fieldNames().forEachRemaining(fields::add);
+            newValue.fieldNames().forEachRemaining(fields::add);
+            for (String key : fields) {
+                if (TECHNICAL.contains(key)) continue;
+                String path = field + " / " + LABELS.getOrDefault(key, key);
+                JsonNode oldField = oldValue.path(key);
+                JsonNode newField = newValue.path(key);
+                JsonNode shown = before ? oldField : newField;
+                if (oldField.isMissingNode() != newField.isMissingNode()) {
+                    if (shown.isMissingNode()) changes.add(path + "：未配置");
+                    else append(mapper, shown, path, changes);
+                } else {
+                    addChange(mapper, changes, path, oldField, newField, before);
+                }
+            }
+            return;
+        }
+        var oldNumber = decimal(oldValue);
+        var newNumber = decimal(newValue);
+        if (oldNumber != null && newNumber != null && oldNumber.compareTo(newNumber) == 0) return;
+        append(mapper, before ? oldValue : newValue, field, changes);
+    }
+
+    private static boolean present(JsonNode value) {
+        return !value.isMissingNode() && !value.isNull() && !(value.isTextual() && "null".equals(value.asText()));
+    }
+
+    private static JsonNode structured(ObjectMapper mapper, JsonNode value) throws com.fasterxml.jackson.core.JsonProcessingException {
+        if (!value.isTextual() || !present(value) || value.asText().isBlank()) return value;
+        return mapper.readTree(value.asText());
+    }
+
     private static java.math.BigDecimal decimal(JsonNode value) {
         if (!value.isNumber() && !value.isTextual()) return null;
         try {
@@ -141,7 +247,7 @@ final class H4TicketReviewText {
         if (node.isArray()) {
             for (int i = 0; i < node.size(); i++) {
                 JsonNode part = node.get(i);
-                String identifier = part.path("tierName").asText(part.path("tier_name").asText("第 " + (i + 1) + " 项"));
+                String identifier = part.path("tierName").asText(part.path("tier_name").asText(part.path("tier").asText("第 " + (i + 1) + " 项")));
                 append(mapper, part, path + " / " + identifier, values);
             }
             return;
@@ -151,7 +257,7 @@ final class H4TicketReviewText {
             return;
         }
         String asset = node.path("rewardKind").asText(node.path("reward_kind").asText(
-                node.path("rewardType").asText(node.path("reward_type").asText(""))));
+                node.path("rewardType").asText(node.path("reward_type").asText(node.path("kind").asText("")))));
         var fields = node.fields();
         while (fields.hasNext()) {
             var field = fields.next();
