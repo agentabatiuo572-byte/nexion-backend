@@ -2490,6 +2490,28 @@ public class AuditReplayBusinessPermissionGuard {
         return hasAuthority("platform_a2_proposal_create") && !hasAuthority("platform_a2_write");
     }
 
+    /** Called by A2 only after proposal and business authorization have succeeded. */
+    Map<String, Object> freezeDisclosureReview(AuditReplayCommand command) {
+        if (command == null || !"I".equalsIgnoreCase(command.domain()) || command.op() == null) return null;
+        if (!Set.of("i4_disclosure_publish", "i5_disclosure_publish").contains(command.op())) return null;
+        var params = command.params();
+        String jurisdiction = value(params, "jurisdiction");
+        String version = value(params, "version");
+        String expectedHash = value(params, "expectedContentHash");
+        Long revision = longValue(params, "expectedRevision");
+        var draft = trustDisclosureRepository.findDisclosureVersion(jurisdiction, version).orElse(null);
+        if (draft == null || !"draft".equalsIgnoreCase(draft.status()) || revision == null
+                || revision != draft.revision() || expectedHash.isBlank() || !expectedHash.equals(draft.contentHash())) {
+            throw new ffdd.opsconsole.shared.exception.BizException(409, "A2_DISCLOSURE_SNAPSHOT_CHANGED");
+        }
+        var chapters = trustDisclosureRepository.listChapters(jurisdiction, version);
+        if (!expectedHash.equals(DisclosureContentHash.from(draft, chapters))) {
+            throw new ffdd.opsconsole.shared.exception.BizException(409, "A2_DISCLOSURE_SNAPSHOT_CHANGED");
+        }
+        return Map.of("kind", "PUBLISH", "jurisdiction", jurisdiction, "version", version,
+                "revision", revision, "contentHash", expectedHash, "draft", draft, "chapters", chapters);
+    }
+
     private ApiResult<Void> validateDisclosureSnapshot(Map<String, Object> params) {
         String jurisdiction = value(params, "jurisdiction");
         String version = value(params, "version");

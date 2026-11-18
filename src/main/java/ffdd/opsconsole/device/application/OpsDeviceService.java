@@ -1622,22 +1622,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return reviewedRevision == null ? ApiResult.fail(404, "TASK_NOT_FOUND")
                     : ApiResult.fail(409, "E2_TASK_PRICING_STALE");
         }
-        if(before.simulation()!=null)return ApiResult.fail(422,"SIMULATED_TASK_DISABLE_IN_SETTINGS");
-        ApiResult<Map<String, Object>> inUseGuard = requireTaskNotReferencedBySku(normalized);
-        if (inUseGuard != null) {
-            return inUseGuard;
-        }
-        LocalDateTime now = taskCatalogWriteTime();
-        ApiResult<Map<String, Object>> pricingGuard = guardTaskLifecycle(catalog, before, null, now, reviewedRevision);
-        if (pricingGuard != null) return pricingGuard;
-        catalogRepository.softDeleteTask(normalized, now);
-        auditRequired("E2_TASK_DELETED", "DEVICE_TASK", normalized, trusted.operator(), detail(
-                "taskId", normalized,
-                "name", before.name(),
-                "reason", trusted.reason(),
-                "idempotencyKey", idempotencyKey.trim(),
-                "operationId", A2ReplayContext.operationId()));
-        return ApiResult.ok(detail("taskId", normalized, "deleted", true));
+        return ApiResult.fail(422, before.simulation() == null ? "TASK_POOL_FORMAT_RETIRED"
+                : "SIMULATED_TASK_DISABLE_IN_SETTINGS");
         };
         return reviewedRevision == null ? deviceIdempotent("E2_TASK_DELETE", idempotencyKey, taskId, trusted, action)
                 : action.get();
@@ -1657,6 +1643,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         DeviceTaskView before = create ? null
                 : catalogRepository.findTaskForUpdate(normalizeId(str(values, "taskId"))).orElse(null);
         if (!create && before == null) return ApiResult.fail(404, "TASK_NOT_FOUND");
+        if (delete && before.simulation() == null) return ApiResult.fail(422, "TASK_POOL_FORMAT_RETIRED");
         if (create && trusted.simulation() != null || before != null && before.simulation() != null) {
             return ApiResult.fail(422, "E2_TASK_PRICING_APPROVAL_NOT_REQUIRED");
         }

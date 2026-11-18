@@ -776,20 +776,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         boolean twoFactorEnabled = status == null ? Boolean.TRUE.equals(account.twoFactorEnabled()) : status.twoFactorEnabled();
         int loginFailCount = status == null ? 0 : status.loginFailCount();
         boolean passwordResetRequired = status != null && status.passwordResetRequired();
-        int longLockThreshold = configInt("auth.risk.login_long_lock_threshold", 10);
         boolean locked = status != null && status.locked();
-        boolean longLock = locked && longLockThreshold > 0 && loginFailCount >= longLockThreshold;
-        String lockKind = !locked ? "NONE" : longLock ? "LONG" : "SHORT";
-        String lockLabel = switch (lockKind) {
-            case "LONG" -> configInt("auth.risk.long_lock_duration_hours", 24) + " 小时长锁";
-            case "SHORT" -> (status == null ? 15 : Math.max(status.lockDurationMinutes(), 1)) + " 分钟短锁";
-            default -> "未锁定";
-        };
-        String lockReason = switch (lockKind) {
-            case "LONG" -> passwordResetRequired ? "账户处于长锁，且有独立的密码重置要求" : "账户处于长锁";
-            case "SHORT" -> "连续登录/两步验证失败达到短锁阈值";
-            default -> "当前无锁定";
-        };
+        String lockKind = locked ? "UNKNOWN" : "NONE";
+        String lockLabel = locked ? "已锁定（类型未确认）" : "未锁定";
+        String lockReason = locked ? "仅可核对有效锁定截止，不能按当前阈值推断原锁类型" : "当前无锁定";
         // This fallback read knows the configured duration, not the remaining time of a particular lock.
         String lockLeft = !locked ? "—" : status.lockedUntil() == null ? "解除时间未提供"
                 : "锁定至 " + status.lockedUntil().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));

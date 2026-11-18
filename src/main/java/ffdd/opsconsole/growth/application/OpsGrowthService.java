@@ -6610,7 +6610,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         return details;
     }
 
-    private Map<String, Object> eventLocalizedContent(String eventCode) {
+    Map<String, Object> eventLocalizedContent(String eventCode) {
         return localizedBranch(localizedBranch(localizedContent(), "event"), eventCode);
     }
 

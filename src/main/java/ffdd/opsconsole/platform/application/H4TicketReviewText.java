@@ -178,8 +178,8 @@ final class H4TicketReviewText {
             }
             case "h4_event_rule_enable" -> {
                 addChange(mapper, changes, "规则启用", state.path("enabled"), request.path("enabled"), before);
-                addChange(mapper, changes, "开始时间", state.path("starts_at"), request.path("startsAt"), before);
-                addChange(mapper, changes, "结束时间", state.path("ends_at"), request.path("endsAt"), before);
+                addDateChange(mapper, changes, "开始时间", state.path("starts_at"), request.path("startsAt"), before);
+                addDateChange(mapper, changes, "结束时间", state.path("ends_at"), request.path("endsAt"), before);
                 addChange(mapper, changes, "活动规则", structured(mapper, state.path("rules_json")), request.path("rules"), before);
             }
             case "h4_genesis_raffle_open" -> {
@@ -195,6 +195,35 @@ final class H4TicketReviewText {
             default -> { return null; }
         }
         return changes.isEmpty() ? null : String.join("；", changes);
+    }
+
+    private static void addDateChange(ObjectMapper mapper, List<String> changes, String label,
+            JsonNode original, JsonNode proposed, boolean before) {
+        if (!present(original) && present(proposed)) {
+            changes.add(label + "：" + (before ? "未配置" : proposed.asText()));
+        } else {
+            addChange(mapper, changes, label, original, proposed, before);
+        }
+    }
+
+    static String publicationCopy(ObjectMapper mapper, Object frozen) throws com.fasterxml.jackson.core.JsonProcessingException {
+        if (frozen == null) return "文案：原票未记录冻结文案";
+        JsonNode copy = mapper.valueToTree(frozen);
+        if (copy != null && copy.isTextual()) copy = mapper.readTree(copy.asText());
+        if (copy == null || !copy.isObject()) return "文案：原票冻结文案不可核对";
+        List<String> names = new ArrayList<>();
+        var languages = copy.fields();
+        while (languages.hasNext()) {
+            var language = languages.next();
+            JsonNode value = language.getValue();
+            if (!value.isObject()) continue;
+            for (String field : List.of("name", "description", "rewardName")) {
+                if (!value.path(field).isTextual()) continue;
+                String label = switch (field) { case "name" -> "标题"; case "description" -> "说明"; default -> "奖项名"; };
+                names.add(language.getKey() + " / " + label + "：" + value.path(field).asText());
+            }
+        }
+        return names.isEmpty() ? "文案：未配置" : "冻结文案：" + String.join("；", names);
     }
 
     private static void addChange(ObjectMapper mapper, List<String> changes, String field,

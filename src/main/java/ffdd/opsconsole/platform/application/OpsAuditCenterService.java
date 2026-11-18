@@ -472,6 +472,8 @@ public class OpsAuditCenterService {
         if (command != null) {
             try {
                 com.fasterxml.jackson.databind.node.ObjectNode stored = objectMapper.valueToTree(command);
+                var disclosureReview = replayBusinessPermissionGuard.freezeDisclosureReview(command);
+                if (disclosureReview != null) stored.set("disclosureReview", objectMapper.valueToTree(disclosureReview));
                 if (isRoleGrantsCommand(command)) {
                     ticket.setAmplifies(0);
                     ticket.setOperationType("acct");
@@ -1032,7 +1034,7 @@ public class OpsAuditCenterService {
         return ApiResult.ok(receipt.withViewerMetadata(mine, metadata.operationCode(), metadata.fundEffect(),
                 metadata.refundOrderNo(), retiredOperation(command), roleGateText(receipt.roleGate()),
                 decisionQualification(ticket, command, makerId, actorId, true),
-                decisionQualification(ticket, command, makerId, actorId, false)));
+                decisionQualification(ticket, command, makerId, actorId, false), disclosureReview(ticket, command)));
     }
 
     private ApiResult<Void> decisionAccess(AuditOperationTicketEntity ticket, Long makerId, Long actorId) {
@@ -1509,6 +1511,14 @@ public class OpsAuditCenterService {
                 }
                 String operationChanges = H4TicketReviewText.remainingOperationChanges(objectMapper, command.op(),
                         command.params().get("expectedState"), command.params().get("values"), "before".equals(side));
+                if (Set.of("h4_event_rule_enable", "h4_legacy_event_open").contains(command.op())) {
+                    String copy = H4TicketReviewText.publicationCopy(objectMapper,
+                            command.params().get("before".equals(side) ? "eventCopyBefore" : "eventCopy"));
+                    if (operationChanges != null) return operationChanges + "；" + copy;
+                    String snapshot = "before".equals(side) ? "expectedState" : "values";
+                    return H4TicketReviewText.render(objectMapper, objectMapper.writeValueAsString(command.params().get(snapshot)))
+                            + "；" + copy;
+                }
                 if (operationChanges != null) return operationChanges;
                 if (!command.params().containsKey("expectedState") || !command.params().containsKey("values")) {
                     return "原票缺少冻结快照，无法核对变更";
@@ -1701,7 +1711,32 @@ public class OpsAuditCenterService {
                 approve.getCode() == 0, reject.getCode() == 0,
                 approve.getCode() == 0 ? null : approve.getCode(), approve.getCode() == 0 ? null : approve.getMessage(),
                 reject.getCode() == 0 ? null : reject.getCode(), reject.getCode() == 0 ? null : reject.getMessage(),
-                objectDisplayName(row, command, displayNames), roleGrantsDiff(row, command));
+                objectDisplayName(row, command, displayNames), roleGrantsDiff(row, command), disclosureReview(row, command));
+    }
+
+    private com.fasterxml.jackson.databind.JsonNode disclosureReview(AuditOperationTicketEntity row, AuditReplayCommand command) {
+        if (command == null || !"I".equalsIgnoreCase(command.domain()) || command.params() == null || command.op() == null) return null;
+        var params = objectMapper.<com.fasterxml.jackson.databind.JsonNode>valueToTree(command.params());
+        if ("i5_matrix_configure".equals(command.op())) {
+            String jurisdiction = params.path("jurisdictionCode").asText("");
+            if (jurisdiction.isBlank()) jurisdiction = params.path("jurisdiction").asText("");
+            String version = params.path("version").asText("");
+            if (jurisdiction.isBlank() || version.isBlank()) return null;
+            return objectMapper.createObjectNode().put("kind", "MATRIX").put("jurisdiction", jurisdiction)
+                    .put("expectedVersion", params.path("expectedVersion").asText("")).put("version", version);
+        }
+        if (!Set.of("i4_disclosure_publish", "i5_disclosure_publish").contains(command.op())) return null;
+        try {
+            var frozen = objectMapper.readTree(row.getCommandJson()).get("disclosureReview");
+            if (frozen != null && frozen.isObject()) return frozen;
+        } catch (com.fasterxml.jackson.core.JsonProcessingException invalid) {
+            // Legacy tickets can still show their original binding, never current draft contents.
+        }
+        return objectMapper.createObjectNode().put("kind", "PUBLISH")
+                .put("jurisdiction", params.path("jurisdiction").asText(""))
+                .put("version", params.path("version").asText(""))
+                .put("contentHash", params.path("expectedContentHash").asText(""))
+                .set("revision", params.path("expectedRevision"));
     }
 
     private boolean isRoleGrantsCommand(AuditReplayCommand command) {

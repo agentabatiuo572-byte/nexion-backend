@@ -50,7 +50,12 @@ public class G2G3AdminCommandService {
     public ApiResult<Map<String,Object>> exchangeParam(String key,String paramKey,ExchangeParamUpdateRequest request) {
         requireReason(request == null ? null : request.reason());
         return once("G2:PARAM:" + paramKey,key,request,() -> {
-            ApiResult<Map<String,Object>> result = success(market.updateExchangeParam(key,paramKey,request));
+            ApiResult<Map<String,Object>> result = market.updateExchangeParam(key,paramKey,request);
+            if (result != null && result.getCode() >= 400 && result.getCode() < 500) {
+                throw new ffdd.opsconsole.shared.idempotency.AdminCommandBusinessRejection(
+                        result.getCode(), result.getMessage(), result);
+            }
+            result = success(result);
             String event = List.of("fee","feeMin").contains(paramKey)
                     ? "admin.exchange_fee_changed" : "admin.exchange_caps_changed";
             outbox.publish("EXCHANGE_CONFIG",paramKey,event,linked("field",paramKey,"value",request.value(),
