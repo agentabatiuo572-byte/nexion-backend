@@ -483,6 +483,11 @@ public class OpsCopyAbService {
         CopyText text = publishSavedDraft ? new CopyText(target.zh(), target.en(), target.vi())
                 : completeCopyText(request.zh(), request.en(), request.vi());
         if (!text.complete()) return ApiResult.fail(422, "COPY_FIELDS_REQUIRED");
+        // Enforce only on new execution; an already committed original key replays before reaching here.
+        if (request.audienceTarget() != null || !"全量".equals(request.audience().trim())
+                || parseSplit(request.trafficSplit()) != 100) {
+            return ApiResult.fail(422, "COPY_PUBLISH_ALLOCATION_EXPERIMENT_ONLY");
+        }
         CopyVersionPublishRequest publication = normalizePublish(request, version, text);
         LocalDateTime publishedAt = now();
         if (target != null && !publishSavedDraft) {

@@ -580,7 +580,9 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                    ) THEN 1 ELSE 0 END AS locked,
                    COALESCE(s.password_reset_required, 0) AS passwordResetRequired,
                    0 AS lockThreshold,
-                   0 AS lockDurationMinutes
+                   0 AS lockDurationMinutes,
+                   (SELECT MAX(g.locked_until) FROM nx_user_login_guard g
+                     WHERE g.user_id=u.id AND g.locked_until>NOW()) AS lockedUntil
               FROM nx_user u
               LEFT JOIN nx_user_security s ON s.user_id = u.id AND s.is_deleted = 0
              WHERE u.id = #{userId} AND u.is_deleted = 0

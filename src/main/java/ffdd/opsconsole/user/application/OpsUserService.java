@@ -777,8 +777,8 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         int loginFailCount = status == null ? 0 : status.loginFailCount();
         boolean passwordResetRequired = status != null && status.passwordResetRequired();
         int longLockThreshold = configInt("auth.risk.login_long_lock_threshold", 10);
-        boolean longLock = passwordResetRequired || (longLockThreshold > 0 && loginFailCount >= longLockThreshold);
-        boolean locked = status != null && (status.locked() || longLock);
+        boolean locked = status != null && status.locked();
+        boolean longLock = locked && longLockThreshold > 0 && loginFailCount >= longLockThreshold;
         String lockKind = !locked ? "NONE" : longLock ? "LONG" : "SHORT";
         String lockLabel = switch (lockKind) {
             case "LONG" -> configInt("auth.risk.long_lock_duration_hours", 24) + " 小时长锁";
@@ -791,7 +791,8 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             default -> "当前无锁定";
         };
         // This fallback read knows the configured duration, not the remaining time of a particular lock.
-        String lockLeft = locked ? "解除时间未提供" : "—";
+        String lockLeft = !locked ? "—" : status.lockedUntil() == null ? "解除时间未提供"
+                : "锁定至 " + status.lockedUntil().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
         return new UserSecurityUserRow(
                 account.id(),
                 account.userNo(),
@@ -3177,7 +3178,8 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                             raw.locked(),
                             raw.passwordResetRequired(),
                             lockThreshold,
-                            lockDurationMinutes);
+                            lockDurationMinutes,
+                            raw.lockedUntil());
                 })
                 .orElse(null);
     }

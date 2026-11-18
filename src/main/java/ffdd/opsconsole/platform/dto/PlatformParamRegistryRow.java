@@ -29,4 +29,10 @@ public record PlatformParamRegistryRow(
         String observedAt,
         /** 该值已过期/无法实时读取 —— 页面必须标「历史/已过期」,不得称「当前服务端值」。 */
         boolean stale) {
+    @com.fasterxml.jackson.annotation.JsonProperty(value = "usageDescriptionAvailable", access = com.fasterxml.jackson.annotation.JsonProperty.Access.READ_ONLY)
+    public boolean usageDescriptionAvailable() {
+        return description != null && !description.isBlank()
+                && !description.endsWith("这里只显示当前值。")
+                && !description.endsWith("这里只显示是否已配置，不显示具体值。");
+    }
 }

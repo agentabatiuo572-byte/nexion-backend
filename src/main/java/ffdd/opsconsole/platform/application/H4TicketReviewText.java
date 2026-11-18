@@ -86,6 +86,48 @@ final class H4TicketReviewText {
                 + " " + (before ? oldAsset : newAsset);
     }
 
+    static String wheelTierChanges(ObjectMapper mapper, Object previous, Object proposed, boolean before)
+            throws com.fasterxml.jackson.core.JsonProcessingException {
+        JsonNode state = mapper.valueToTree(previous);
+        JsonNode requested = mapper.valueToTree(proposed);
+        if (state == null || requested == null) return null;
+        JsonNode tiers = state.path("tiers");
+        if (tiers.isTextual()) tiers = mapper.readTree(tiers.asText());
+        String name = requested.path("tierName").asText("");
+        if (tiers == null || !tiers.isArray() || name.isBlank()) return null;
+        JsonNode old = null;
+        for (JsonNode tier : tiers) {
+            if (name.equals(tier.path("tier").asText())) {
+                if (old != null) return null;
+                old = tier;
+            }
+        }
+        if (old == null) return null;
+        List<String> changes = new ArrayList<>();
+        String[][] fields = {{"rewardName","reward","奖项名称"},{"probabilityPct","prob","中奖概率"},
+                {"rewardKind","kind","奖励类型"},{"rewardAmount","amount","奖励数量"},
+                {"dailyStock","dailyStock","每日库存"},{"voucherId","voucherId","代金券"},
+                {"realOutflow","real","实际资金支出"}};
+        for (String[] field : fields) {
+            JsonNode current = old.path(field[1]);
+            JsonNode next = requested.path(field[0]);
+            if (current.isMissingNode() || next.isMissingNode() || next.isNull()) continue;
+            var oldNumber = decimal(current);
+            var newNumber = decimal(next);
+            if (current.asText().equals(next.asText()) || oldNumber != null && newNumber != null
+                    && oldNumber.compareTo(newNumber) == 0) continue;
+            JsonNode value = before ? current : next;
+            String suffix = "probabilityPct".equals(field[0]) ? "%" : "";
+            if ("rewardAmount".equals(field[0])) {
+                String asset = (before ? old.path("kind") : requested.path("rewardKind")).asText(old.path("kind").asText(""));
+                asset = asset.toUpperCase(java.util.Locale.ROOT);
+                if (Set.of("UVT", "USDT", "NEX").contains(asset)) suffix = " " + asset;
+            }
+            changes.add(name + " / " + field[2] + "：" + value.asText() + suffix);
+        }
+        return changes.isEmpty() ? null : String.join("；", changes);
+    }
+
     private static java.math.BigDecimal decimal(JsonNode value) {
         if (!value.isNumber() && !value.isTextual()) return null;
         try {
