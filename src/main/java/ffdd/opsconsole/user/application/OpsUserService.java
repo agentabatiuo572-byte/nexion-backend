@@ -1790,10 +1790,12 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "C5_REASON_LENGTH_OR_FORMAT_INVALID");
         }
         String normalizedRefreshTokenId = refreshTokenId.trim();
+        String subject = AdminActorResolver.subjectId();
+        String identity = StringUtils.hasText(subject) ? subject : operator(request.operator());
         return idempotentC2(
                 "C5_SESSION_REVOKE_ONE:" + normalizedRefreshTokenId,
                 idempotencyKey,
-                normalizedRefreshTokenId + "|" + request.reason().trim(),
+                normalizedRefreshTokenId + "|" + identity + "|" + request.reason().trim(),
                 () -> doRevokeSession(normalizedRefreshTokenId, idempotencyKey.trim(), request));
     }
 
