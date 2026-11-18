@@ -14,6 +14,8 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.idempotency.AdminCommandBusinessRejection;
+import ffdd.opsconsole.shared.idempotency.AdminCommandOrigin;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -48,6 +50,7 @@ public class G2G3AdminCommandService {
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String,Object>> exchangeParam(String key,String paramKey,ExchangeParamUpdateRequest request) {
+<<<<<<< HEAD
         requireReason(request == null ? null : request.reason());
         return once("G2:PARAM:" + paramKey,key,request,() -> {
             ApiResult<Map<String,Object>> result = market.updateExchangeParam(key,paramKey,request);
