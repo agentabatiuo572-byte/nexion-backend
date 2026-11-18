@@ -1130,6 +1130,15 @@ public class OpsKillSwitchService {
                 row.put("action", "autoDisable");
             } else if ("tamperCluster".equals(seed.id())) {
                 putTamperAdvisoryState(row, threshold);
+            } else if ("regulatoryDirective".equals(seed.id())) {
+                // R4 has no automatic judgement: it only exists through the existing manual batch route.
+                row.put("manualDisable", true);
+                row.put("autoDisable", false);
+                row.put("manualDisableCommand", "/api/admin/emergency/kill-switches/emergency-disable");
+                row.put("manualDisablePermission", "emergency_j1_batch_kill");
+                row.put("manualDisableRequiredInputs", List.of("keys", "reason", "triggerBasis", "regulatoryContext"));
+                row.put("manualDisableRequiredHeaders", List.of(ffdd.opsconsole.common.api.OpsAdminApi.IDEMPOTENCY_KEY_HEADER));
+                row.put("manualDisableConditionalInputs", List.of("dispositionPlan"));
             }
             row.put("configKey", switch (seed.id()) {
                 case "withdrawSurge" -> TreasuryEmergencySignalFacadeAdapter.BANK_RUN_REDLINE_CONFIG_KEY;
