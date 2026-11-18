@@ -781,18 +781,28 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                     map("window", window), "", "读取篡改监控总览");
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TAMPER_WINDOW_INVALID");
         }
-        Map<String, Object> alertConfig = tamperAlertConfig();
-        int threshold = intValue(alertConfig.get("threshold"));
-        int effectiveThreshold = scaledTamperThreshold(threshold, range.label());
+        Map<String, Object> alertConfig;
+        try {
+            alertConfig = tamperAlertConfig();
+        } catch (NumberFormatException invalidThreshold) {
+            boolean feedK4 = emergencyRepository.settingValue(TAMPER_FEED_K4)
+                    .map(Boolean::parseBoolean)
+                    .orElse(true);
+            alertConfig = map("threshold", null, "label", null, "feedK4", feedK4,
+                    "available", false, "unknownReason", "TAMPER_ALERT_THRESHOLD_INVALID");
+        }
+        Integer threshold = (Integer) alertConfig.get("threshold");
+        Integer effectiveThreshold = threshold == null ? null : scaledTamperThreshold(threshold, range.label());
         List<Map<String, Object>> paths = tamperPaths(range);
         int pageSize = accountPageSize <= 0 ? 5 : Math.min(accountPageSize, 50);
-        int totalAccounts = Math.toIntExact(emergencyRepository.countTamperAccounts(
+        Integer totalAccounts = effectiveThreshold == null ? null : Math.toIntExact(emergencyRepository.countTamperAccounts(
                 range.startAt(), range.endAt(), effectiveThreshold));
-        int pages = Math.max(1, (int) Math.min(Integer.MAX_VALUE,
+        Integer pages = totalAccounts == null ? null : Math.max(1, (int) Math.min(Integer.MAX_VALUE,
                 (totalAccounts + pageSize - 1L) / pageSize));
-        int page = Math.max(1, Math.min(accountPage, pages));
+        int page = pages == null ? 1 : Math.max(1, Math.min(accountPage, pages));
         int offset = Math.multiplyExact(page - 1, pageSize);
-        List<Map<String, Object>> pagedAccounts = emergencyRepository.pageTamperAccounts(
+        List<Map<String, Object>> pagedAccounts = effectiveThreshold == null ? List.of()
+                : emergencyRepository.pageTamperAccounts(
                         range.startAt(), range.endAt(), effectiveThreshold, offset, pageSize).stream()
                 .map(this::tamperAccountReadView)
                 .toList();
@@ -813,14 +823,14 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                 .stream()
                 .mapToInt(this::intValue)
                 .sum();
-        int sevenDayAlertAccounts = "7d".equals(range.label())
+        Integer sevenDayAlertAccounts = threshold == null ? null : ("7d".equals(range.label())
                 ? totalAccounts
                 : Math.toIntExact(emergencyRepository.countTamperAccounts(
-                        now.minusDays(7), now, scaledTamperThreshold(threshold, "7d")));
+                        now.minusDays(7), now, scaledTamperThreshold(threshold, "7d"))));
         Map<String, Object> sevenDayPreviewByThreshold = sevenDayThresholdPreview(now);
         Map<String, Object> selectedAlertConfig = new LinkedHashMap<>(alertConfig);
         selectedAlertConfig.put("effectiveThreshold", effectiveThreshold);
-        selectedAlertConfig.put("effectiveLabel", effectiveThreshold + " 次 / " + range.label());
+        selectedAlertConfig.put("effectiveLabel", effectiveThreshold == null ? null : effectiveThreshold + " 次 / " + range.label());
         selectedAlertConfig.put("sevenDayAlertAccounts", sevenDayAlertAccounts);
         selectedAlertConfig.put("sevenDayPreviewByThreshold", sevenDayPreviewByThreshold);
         Map<String, Object> response = map(
@@ -843,7 +853,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                         "total", totalAccounts,
                         "pages", pages,
                         "hasPrev", page > 1,
-                        "hasNext", page < pages),
+                        "hasNext", pages != null && page < pages),
                 "coverage", TamperCoverageRegistry.snapshot(),
                 "alertConfig", selectedAlertConfig,
                 "sources", List.of("nx_emergency_tamper_event", "nx_emergency_control_setting"));
