@@ -5325,9 +5325,9 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     private List<Map<String, Object>> phaseControls() {
         // 三项阶段控制是固定目录,不再按 value 是否配置过滤(value 空时前端显示"未配置")。
         return List.of(
-                phaseControl("schedule", "排程", "按 12 个月增长曲线自动推进"),
-                phaseControl("pin", "锁定阶段", "临时固定在指定阶段，用于投产窗口或演示"),
-                phaseControl("override", "覆盖策略", "按批次或 cohort 临时覆盖阶段"));
+                phaseControl("schedule", "排程", "保存排程配置，不触发独立调度"),
+                phaseControl("pin", "锁定阶段", "保存阶段锁定配置，不锁定当前阶段"),
+                phaseControl("override", "覆盖策略", "保存人群覆盖配置，不执行分组覆盖"));
     }
 
     private Map<String, Object> phaseControl(String key, String label, String description) {
@@ -5336,6 +5336,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         control.put("label", label);
         control.put("value", configFacade.activeValue(CONTROL_PREFIX + key).orElse(""));
         control.put("description", description);
+        control.put("executionMode", "CONFIG_ONLY");
         return control;
     }
 

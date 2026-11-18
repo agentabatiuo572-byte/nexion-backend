@@ -309,7 +309,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         }
         String oldValue = readText(def.configKey(), def.defaultValue());
         String newValue = normalizeExchangeParamValue(def, request.value());
-        if (!StringUtils.hasText(newValue)) {
+        if (newValue == null || (!StringUtils.hasText(newValue)
+                && def.kind() != ExchangeParamKind.ETA_HOURS && def.kind() != ExchangeParamKind.ETA_COPY)) {
             return validation("VALUE_REQUIRED");
         }
         // 批准回放时服务端绑定的旧值快照必须仍然成立,否则这次批准作废。
@@ -1209,6 +1210,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         response.put("activeFrame", activeFrame);
         response.put("weekPeakPrice", weekPeak(frames));
         response.put("frames", frames);
+        response.put("curveFieldExecution", Map.of("targetPrice", "USED", "volatilityPct", "RETIRED_WRITE_RETAINED_FOR_COMPATIBILITY",
+                "pumpProbability", "RETAINED_POLICY_FIELD_NOT_DIRECT_QUOTED_PRICE"));
         response.put("curveRevision", marketPolicyRevision("curve", writeCurve(frames)));
         response.put("priceRevision", activePrice == null ? "" : marketPolicyRevision("price", activePrice.stripTrailingZeros().toPlainString()));
         response.put("scheduleRevision", marketPolicyRevision("schedule", configFacade.activeValue(SCHEDULE_CONTROL_KEY).orElse(null)));
@@ -3702,8 +3705,12 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
 
     private String normalizeExchangeParamValue(ExchangeParamDef def, String rawValue) {
         String trimmed = rawValue == null ? "" : rawValue.trim();
-        if (def.kind() == ExchangeParamKind.ETA_HOURS) return trimmed.matches("[1-9][0-9]{0,2}") ? trimmed : null;
-        if (def.kind() == ExchangeParamKind.ETA_COPY) return validQueueEtaCopy(trimmed) ? trimmed : null;
+        if (def.kind() == ExchangeParamKind.ETA_HOURS || def.kind() == ExchangeParamKind.ETA_COPY) {
+            if (rawValue == null) return null;
+            if (trimmed.isEmpty()) return "";
+            return (def.kind() == ExchangeParamKind.ETA_HOURS ? trimmed.matches("[1-9][0-9]{0,2}")
+                    : validQueueEtaCopy(trimmed)) ? trimmed : null;
+        }
         if (def.kind() == ExchangeParamKind.QUEUE_MODE) {
             return normalizeQueueMode(rawValue);
         }

@@ -41,6 +41,45 @@ final class H4TicketReviewText {
         return values.isEmpty() ? frozenJson : String.join("；", values);
     }
 
+    static String probabilityChanges(ObjectMapper mapper, Object previous, Object proposed, boolean before)
+            throws com.fasterxml.jackson.core.JsonProcessingException {
+        JsonNode state = mapper.valueToTree(previous);
+        JsonNode requested = mapper.valueToTree(proposed);
+        if (state == null || requested == null) return null;
+        JsonNode tiers = state.path("tiers");
+        if (tiers.isTextual()) tiers = mapper.readTree(tiers.asText());
+        var probabilities = requested.path("probabilities");
+        if (tiers == null || !tiers.isArray() || !probabilities.isObject()) return null;
+        var previousByTier = new java.util.LinkedHashMap<String, java.math.BigDecimal>();
+        for (JsonNode tier : tiers) {
+            String key = tier.path("tier").asText("");
+            var amount = decimal(tier.path("prob"));
+            if (key.isBlank() || amount == null || previousByTier.putIfAbsent(key, amount) != null) return null;
+        }
+        List<String> changes = new ArrayList<>();
+        var fields = probabilities.fields();
+        while (fields.hasNext()) {
+            var field = fields.next();
+            var oldValue = previousByTier.get(field.getKey());
+            var newValue = decimal(field.getValue());
+            if (oldValue == null || newValue == null) return null;
+            if (oldValue.compareTo(newValue) != 0) {
+                var amount = before ? oldValue : newValue;
+                changes.add(field.getKey() + "中奖概率：" + amount.stripTrailingZeros().toPlainString() + "%");
+            }
+        }
+        return changes.isEmpty() ? null : String.join("；", changes);
+    }
+
+    private static java.math.BigDecimal decimal(JsonNode value) {
+        if (!value.isNumber() && !value.isTextual()) return null;
+        try {
+            return new java.math.BigDecimal(value.asText());
+        } catch (NumberFormatException invalid) {
+            return null;
+        }
+    }
+
     private static void append(ObjectMapper mapper, JsonNode node, String path, List<String> values) {
         if (node.isArray()) {
             for (int i = 0; i < node.size(); i++) {

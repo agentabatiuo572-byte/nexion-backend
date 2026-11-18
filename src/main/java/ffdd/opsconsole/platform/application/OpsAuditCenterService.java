@@ -1483,6 +1483,11 @@ public class OpsAuditCenterService {
         }
         if (H4GrowthApproval.supports(command)) {
             try {
+                if ("h4_wheel_probabilities_update".equals(command.op())) {
+                    String changes = H4TicketReviewText.probabilityChanges(objectMapper,
+                            command.params().get("expectedState"), command.params().get("values"), "before".equals(side));
+                    if (changes != null) return changes;
+                }
                 if ("before".equals(side)) {
                     Object state = command.params().get("expectedState");
                     if (command.params().get("eventCopyBefore") instanceof String originalCopy) {
