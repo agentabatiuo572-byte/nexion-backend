@@ -690,6 +690,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
 
     private ApiResult<DisclosureJurisdictionCatalogView> doCreateJurisdiction(
             String idempotencyKey, DisclosureJurisdictionCatalogRequest request) {
+        AppDisplayText.requireNoHan("name", request.name());
         String code = request.code().trim().toUpperCase(Locale.ROOT);
         if (trustDisclosureRepository.jurisdictionCatalogCodeExists(code)) {
             return ApiResult.fail(409, "DISCLOSURE_JURISDICTION_CODE_EXISTS");
@@ -728,6 +729,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
 
     private ApiResult<DisclosureJurisdictionCatalogView> doUpdateJurisdiction(
             String jurisdiction, String idempotencyKey, DisclosureJurisdictionCatalogRequest request) {
+        AppDisplayText.requireNoHan("name", request.name());
         trustDisclosureRepository.lockJurisdictionCatalog(jurisdiction);
         DisclosureJurisdictionCatalogView current = findJurisdictionCatalog(jurisdiction);
         if (current == null) return ApiResult.fail(404, "DISCLOSURE_JURISDICTION_NOT_FOUND");
@@ -1445,7 +1447,6 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 return ApiResult.fail(409, "DISCLOSURE_JURISDICTION_REVISION_REQUIRED");
             }
         }
-        AppDisplayText.requireNoHan("name", request.name());
         return null;
     }
 

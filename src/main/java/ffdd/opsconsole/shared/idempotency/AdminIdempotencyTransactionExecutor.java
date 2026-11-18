@@ -271,6 +271,16 @@ public class AdminIdempotencyTransactionExecutor {
             LocalDateTime expiresAt,
             Class<T> responseType,
             AdminCommandOrigin origin) {
+        if (AdminCommandOrigin.g2ParameterKey(record.getScope()) != null && record.getOriginAdminId() != null) {
+            if (origin == null || !Long.valueOf(origin.actorId()).equals(record.getOriginAdminId())) {
+                throw conflict("IDEMPOTENCY_RESULT_UNKNOWN");
+            }
+            if (STATUS_FAILED.equals(record.getStatus()) && StringUtils.hasText(record.getResponseJson())) {
+                if (!requestHash.equals(record.getRequestHash())) throw conflict("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+                // A captured business rejection already rolled back and must not execute again under the same key.
+                return Claim.replayed(readJson(record.getResponseJson(), responseType));
+            }
+        }
         if (!STATUS_FAILED.equals(record.getStatus())) {
             return Claim.replayed(replay(record, requestHash, responseType));
         }

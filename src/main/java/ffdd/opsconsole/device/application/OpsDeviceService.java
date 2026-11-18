@@ -387,7 +387,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     @Transactional
     public ApiResult<DeviceSkuView> createSku(String idempotencyKey, DeviceSkuUpsertRequest request) {
-        requireSkuDisplayText(request);
         // Sales is maintained exclusively by the order state machine. A new
         // SKU always starts at zero; tolerate the legacy E1 round-trip field
         // but never let it create a hand-entered sales history.
@@ -404,6 +403,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         DeviceSkuUpsertRequest writeRequest = normalizeSkuPhaseRequest(request, 0L);
         return e1Idempotent("E1_SKU_CREATE", idempotencyKey, "", normalizeSkuPhaseRequest(incomingRequest,0L), () -> {
+        requireSkuDisplayText(incomingRequest);
         String skuId = normalizeSkuId(writeRequest.skuId(), writeRequest.name());
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("E", "device_sku", skuId) > 0) {
@@ -449,7 +449,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     @Transactional
     public ApiResult<DeviceSkuView> updateSku(
             String skuId, String expectedUpdatedAt, String idempotencyKey, DeviceSkuUpsertRequest request) {
-        requireSkuDisplayText(request);
         DeviceSkuUpsertRequest incomingRequest=request;
         request = monthlyTargetRequest(request, catalogRepository.findSku(normalizeId(skuId)).orElse(null), true);
         ApiResult<DeviceSkuView> guard = requireSkuCommand(idempotencyKey, request);
@@ -464,8 +463,20 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         // Exclude the order-managed counter from the idempotency payload as
         // well as from persistence; the current value is restored below.
         DeviceSkuUpsertRequest writeRequest = normalizeSkuPhaseRequest(request, 0L);
-        return e1Idempotent("E1_SKU_UPDATE", idempotencyKey, skuId,
-                Map.of("request", normalizeSkuPhaseRequest(incomingRequest,0L), "expectedUpdatedAt", expectedRevision.toString()), () -> {
+        String scope = "E1_SKU_UPDATE";
+        DeviceSkuUpsertRequest fingerprintRequest = normalizeSkuPhaseRequest(incomingRequest, 0L);
+        String revisionText = expectedRevision.toString();
+        Map<String, Object> fingerprint = detail("expectedUpdatedAt", revisionText, "request", fingerprintRequest);
+        // Map.of used either key order across JVM restarts. Preserve the other order for existing keys.
+        Map<String, Object> legacyFingerprint = detail("request", fingerprintRequest, "expectedUpdatedAt", revisionText);
+        var legacyStatus = idempotencyService.recoveryStatus(scope, idempotencyKey,
+                e1RequestHash(scope, skuId, legacyFingerprint));
+        if (legacyStatus != AdminIdempotencyService.RecoveryStatus.NOT_FOUND
+                && legacyStatus != AdminIdempotencyService.RecoveryStatus.MISMATCH) {
+            fingerprint = legacyFingerprint;
+        }
+        return e1Idempotent(scope, idempotencyKey, skuId, fingerprint, () -> {
+        requireSkuDisplayText(incomingRequest);
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("E", "device_sku", skuId) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
