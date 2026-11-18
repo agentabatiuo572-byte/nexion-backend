@@ -228,18 +228,23 @@ public class OpsI18nLearningService {
         if (previous == null) {
             return ApiResult.fail(404, "I18N_MESSAGE_KEY_NOT_REGISTERED");
         }
+        Map<String, String> translations = request.translations() == null ? previous.translations() : request.translations();
+        ApiResult<Void> translationGuard = validateMessageCopy(messageKey, copy, translations);
+        if (translationGuard != null) return fail(translationGuard);
         Optional<I18nMessagePairView> published = learningRepository.findPublishedMessagePair(messageKey);
         I18nMessagePairView saved = learningRepository.saveMessagePair(
-                messageKey, copy.zh().trim(), copy.en().trim(), copy.vi().trim(), "draft", now());
+                messageKey, copy.zh().trim(), copy.en().trim(), copy.vi().trim(),
+                MessageTranslations.clean(translations), "draft", now());
         List<I18nIntegrityIssueView> recomputed = learningRepository.recomputeIntegrity(now(), requiredLanguages);
         I18nIntegrityIssueView remaining = recomputed.stream().filter(issue -> issue.code().equals(issueCode.trim())).findFirst()
                 .orElse(new I18nIntegrityIssueView(issueCode.trim(), current.get().kind(), 0, List.of(), "fixed"));
         int repairedCount = I18nCopyQuality.integrityIssueCodes(published.orElse(previous), requiredLanguages).contains(remaining.code())
                 && !I18nCopyQuality.integrityIssueCodes(published.orElse(saved), requiredLanguages).contains(remaining.code()) ? 1 : 0;
         audit("I6_I18N_INTEGRITY_FIXED", "I18N_INTEGRITY", remaining.code(), request.operator(), idempotencyKey, request.reason(), Map.of(
-                "messageKey", messageKey, "remainingCount", remaining.cnt(), "repairedCount", repairedCount));
+                "messageKey", saved.messageKey(), "version", saved.version(),
+                "remainingCount", remaining.cnt(), "repairedCount", repairedCount));
         return ApiResult.ok(new I18nIntegrityIssueView(remaining.code(), remaining.kind(), remaining.cnt(),
-                remaining.samples(), remaining.status(), repairedCount));
+                remaining.samples(), remaining.status(), repairedCount, saved.messageKey(), saved.version()));
     }
 
     @Transactional
