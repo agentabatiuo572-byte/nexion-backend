@@ -1079,7 +1079,37 @@ public class AuditReplayBusinessPermissionGuard {
                     String.valueOf(review.get("before")), String.valueOf(review.get("after")),
                     domain, "fund", true, target));
         }
+        if (H4GrowthApproval.isRaffleOpen(boundCommand)) {
+            return describeH4Proposal(request, boundCommand);
+        }
         return validateProposalContext(request);
+    }
+
+    private ApiResult<DelegatedProposalDescriptor> describeH4Proposal(
+            AuditOperationProposalRequest request, AuditReplayCommand command) {
+        AuditLockTarget target = H4GrowthApproval.target(command);
+        if (!"H4".equals(text(request.sourceDomain())) || !target.id().equals(text(request.obj()))
+                || !target.equals(request.target()) || (request.targets() != null && !request.targets().isEmpty())) {
+            return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+        }
+        var preview = h4GrowthApproval.preview(command, request.reason());
+        if (preview.getCode() != 0) {
+            if (Set.of("EVENT_RULE_INCOMPLETE", "EVENT_LOCALIZED_CONTENT_INCOMPLETE").contains(preview.getMessage())
+                    && preview.getData() != null) {
+                throw new ffdd.opsconsole.shared.exception.H4EventRuleIncompleteException(
+                        preview.getCode(), preview.getMessage(), preview.getData());
+            }
+            return ApiResult.fail(preview.getCode(), preview.getMessage());
+        }
+        var review = preview.getData();
+        boolean historical = "h4_event_rule".equals(target.type()) && "evt-anniversary-spin".equals(target.id());
+        return ApiResult.ok(new DelegatedProposalDescriptor(historical ? "发布历史活动只读记录" : H4GrowthApproval.proposalAction(command), target.id(),
+                String.valueOf(review.get("before")), String.valueOf(review.get("after")), "H4", historical ? "param" : "fund", !historical, target));
+    }
+
+    AuditReplayCommand bindH4EventCopy(AuditReplayCommand command, String operator,
+            String reason, String idempotencyKey, String operationId) {
+        return h4GrowthApproval.bindEventCopy(command, operator, reason, idempotencyKey, operationId);
     }
 
     public ApiResult<DelegatedProposalDescriptor> validateProposalContext(
@@ -1172,23 +1202,7 @@ public class AuditReplayBusinessPermissionGuard {
                     "G3", review.operationType(), review.amplifies(), target, null, review));
         }
         if (H4GrowthApproval.supports(command)) {
-            AuditLockTarget target = H4GrowthApproval.target(command);
-            if (!"H4".equals(text(request.sourceDomain())) || !target.id().equals(text(request.obj()))
-                    || !target.equals(request.target()) || (request.targets() != null && !request.targets().isEmpty())) {
-                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
-            }
-            var preview = h4GrowthApproval.preview(command, request.reason());
-            if (preview.getCode() != 0) {
-                if ("EVENT_RULE_INCOMPLETE".equals(preview.getMessage()) && preview.getData() != null) {
-                    throw new ffdd.opsconsole.shared.exception.H4EventRuleIncompleteException(
-                            preview.getCode(), preview.getMessage(), preview.getData());
-                }
-                return ApiResult.fail(preview.getCode(), preview.getMessage());
-            }
-            var review = preview.getData();
-            boolean historical = "h4_event_rule".equals(target.type()) && "evt-anniversary-spin".equals(target.id());
-            return ApiResult.ok(new DelegatedProposalDescriptor(historical ? "发布历史活动只读记录" : H4GrowthApproval.proposalAction(command), target.id(),
-                    String.valueOf(review.get("before")), String.valueOf(review.get("after")), "H4", historical ? "param" : "fund", !historical, target));
+            return describeH4Proposal(request, command);
         }
         if (H3GrowthApproval.supports(command)) {
             AuditLockTarget target = H3GrowthApproval.target(command);

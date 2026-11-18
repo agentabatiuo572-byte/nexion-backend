@@ -69,13 +69,20 @@ public class H4EventEngine {
     }
     private Map<String,Object> legacyRewardDisplay(Map<String,Object> source){
         var row=new LinkedHashMap<>(source);
-        String asset=text(row.get("rewardType"));
-        if(!"wheel".equals(row.get("kind"))&&("UVT".equals(asset)||"USDT".equals(asset))){
-            BigDecimal amount=number(row.get("rewardAmount"));
+        if(!usesAuthoredRewardName(text(row.get("kind")),false,row.get("rewardType"),row.get("rewardAmount"))){
             // App and Lite prepend rewardAmount to the cash reward label.
-            if(amount.signum()>0)row.put("rewardName",asset);
+            row.put("rewardName",text(row.get("rewardType")));
         }
         return row;
+    }
+    static boolean usesAuthoredRewardName(String kind,boolean hasRule,Object asset,Object amount){
+        return "wheel".equals(kind)||!hasRule
+                && !(Set.of("UVT","USDT").contains(text(asset))&&number(amount).signum()>0);
+    }
+    static String displayRewardName(String kind,Map<String,Object> rules,Object asset,Object amount,String authored,String locale){
+        if(usesAuthoredRewardName(kind,rules!=null,asset,amount))return authored;
+        if(rules!=null)return rewardSummary(rules,locale);
+        return number(amount).stripTrailingZeros().toPlainString()+" "+text(asset);
     }
     private Map<String,Object> project(Long id,Map<String,Object> source,Map<String,Object> rule,String locale){
         var row=new LinkedHashMap<>(source);String code=text(rule.get("event_code")),phase=phase(rule);
@@ -84,10 +91,12 @@ public class H4EventEngine {
         row.put("progressValue",progress.getOrDefault("current",0));row.put("targetValue",progress.getOrDefault("target",1));
         boolean trackable=Set.of("referral","onboarding","regional").contains(text(rule.get("kind")))||"evt-reinvest-bonus".equals(code);
         row.put("trackable",trackable);
-        if(!"wheel".equals(rule.get("kind"))){
+        String kind=text(rule.get("kind"));
+        if(!usesAuthoredRewardName(kind,true,null,null)){
             row.put("rewardType","COMPOSITE");row.put("rewardAmount",0);
-            row.put("rewardName",rewardSummary(r,locale));
         }
+        row.put("rewardName",displayRewardName(kind,r,source.get("rewardType"),source.get("rewardAmount"),
+                text(source.get("rewardName")),locale));
         boolean claimed=db.row("SELECT 1 FROM nx_growth_event_claim WHERE event_code=? AND user_id=? AND claim_key='ONCE' AND status='CLAIMED'",code,id)!=null;
         Object previousStatus="CLAIMABLE".equals(source.get("userStatus"))?"JOINED":source.get("userStatus");
         row.put("userStatus",claimed?"CLAIMED":trackable&&Boolean.TRUE.equals(progress.get("eligible"))?"CLAIMABLE":previousStatus);
