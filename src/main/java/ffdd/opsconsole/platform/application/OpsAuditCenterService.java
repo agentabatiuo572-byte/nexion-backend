@@ -1021,7 +1021,7 @@ public class OpsAuditCenterService {
         }
         var metadata = ticketMetadata(ticket, command);
         return ApiResult.ok(receipt.withViewerMetadata(mine, metadata.operationCode(), metadata.fundEffect(),
-                metadata.refundOrderNo(), retiredOperation(command),
+                metadata.refundOrderNo(), retiredOperation(command), roleGateText(receipt.roleGate()),
                 decisionQualification(ticket, command, makerId, actorId, true),
                 decisionQualification(ticket, command, makerId, actorId, false)));
     }
@@ -2346,7 +2346,7 @@ public class OpsAuditCenterService {
      * text, so reads fold this code back to the label that every existing response already shows.
      */
     private static final String ROLE_GATE_DELEGATED_APPROVER = "DELEGATED_APPROVER";
-    private static final String ROLE_GATE_DELEGATED_APPROVER_LABEL = "门槛者";
+    private static final String ROLE_GATE_DELEGATED_APPROVER_LABEL = "另一位有审批批准权限和对应业务权限的管理员";
 
     private String normalizeRoleGate(String value) {
         if (!StringUtils.hasText(value) || "TWO_PERSON".equalsIgnoreCase(value.trim())) {
@@ -2357,9 +2357,10 @@ public class OpsAuditCenterService {
 
     /** Ticket role gate as it is shown: the structured code and historical text render identically. */
     private String roleGateText(String value) {
-        return ROLE_GATE_DELEGATED_APPROVER.equalsIgnoreCase(StringUtils.hasText(value) ? value.trim() : "")
+        String normalized = normalizeRoleGate(value);
+        return ROLE_GATE_DELEGATED_APPROVER.equalsIgnoreCase(normalized) || "门槛者".equals(normalized)
                 ? ROLE_GATE_DELEGATED_APPROVER_LABEL
-                : normalizeRoleGate(value);
+                : normalized;
     }
 
     private List<AuditStatsBucket> topActions() {

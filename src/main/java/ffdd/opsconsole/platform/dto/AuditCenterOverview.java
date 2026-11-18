@@ -64,11 +64,11 @@ public record AuditCenterOverview(
             String objDisplayName,
             RoleGrantsDiff roleGrantsDiff) {
         public AuditOperationTicket withViewerMetadata(boolean ownedByViewer, String code, FundEffect effect,
-                                                       String orderNo, boolean retired,
+                                                       String orderNo, boolean retired, String displayedRoleGate,
                                                        ffdd.opsconsole.shared.api.ApiResult<Void> approve,
                                                        ffdd.opsconsole.shared.api.ApiResult<Void> reject) {
             return new AuditOperationTicket(id, action, obj, beforeValue, afterValue, operator, operatorRole,
-                    type, amplifies, sos, ts, ownedByViewer, roleGate, reason, status, phoneCalibrationProposal,
+                    type, amplifies, sos, ts, ownedByViewer, displayedRoleGate, reason, status, phoneCalibrationProposal,
                     coverageCheckOnApproval, code, effect, orderNo, retired, ruleTaskAction, ambassadorMaterialProposal,
                     originalAmountUsdt, refundAmountUsdt,
                     approve.getCode() == 0, reject.getCode() == 0,
