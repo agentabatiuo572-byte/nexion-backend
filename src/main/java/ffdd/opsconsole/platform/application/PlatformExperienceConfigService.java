@@ -22,10 +22,12 @@ import ffdd.opsconsole.growth.application.OpsGrowthService;
 import java.net.URI;
 import java.time.LocalDateTime;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.Optional;
+import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -40,6 +42,7 @@ public class PlatformExperienceConfigService {
     public static final String APP_DOWNLOAD_KEY = "platform.experience.app_download";
     private static final String LANGUAGES_KEY = "platform.experience.interface_languages";
     private static final String OPERATING_LANGUAGES_KEY = "platform.experience.operating_languages";
+    private static final String INTERFACE_LANGUAGES_INVALID = "PLATFORM_EXPERIENCE_LANGUAGES_INVALID";
     private static final String OPERATING_LANGUAGES_INVALID = "PLATFORM_OPERATING_LANGUAGES_INVALID";
     private static final List<String> OPERATING_LANGUAGE_CODES = List.of("en", "zh", "vi");
     private static final List<String> DEFAULT_OPERATING_LANGUAGES = List.of("en");
@@ -48,6 +51,7 @@ public class PlatformExperienceConfigService {
             "zalo", "telegram", "whatsapp", "messenger", "sms", "x", "copy", "poster", "system");
     private static final Set<String> INTENT_TYPES = Set.of("web", "scheme", "copy", "poster", "system");
     private static final Set<String> SOURCES = Set.of("official", "unavailable");
+    private static final Pattern LOCALIZED_WHITESPACE = Pattern.compile("[\\s\\p{Z}\\uFEFF]*");
 
     private final PlatformConfigFacade config;
     private final ObjectMapper objectMapper;
@@ -71,30 +75,42 @@ public class PlatformExperienceConfigService {
                 share.map(value -> List.of("nx_config_item:" + BASE_URL_KEY,
                         "nx_config_item:" + CHANNELS_KEY,
                         "nx_config_item:" + APP_DOWNLOAD_KEY)).orElse(List.of()),
-                LocalDateTime.now().toString(), interfaceLanguages(), operatingLanguages()));
+                LocalDateTime.now().toString(), readInterfaceLanguages(), readOperatingLanguages()));
     }
 
     public List<String> interfaceLanguages() {
-        return readLanguages(LANGUAGES_KEY, InterfaceLanguages.CODES, InterfaceLanguages.REQUIRED,
-                InterfaceLanguages.DEFAULT, "PLATFORM_EXPERIENCE_LANGUAGES_INVALID");
+        return requireLanguages(readInterfaceLanguages(), INTERFACE_LANGUAGES_INVALID);
     }
 
     public List<String> operatingLanguages() {
-        return readLanguages(OPERATING_LANGUAGES_KEY, OPERATING_LANGUAGE_CODES, DEFAULT_OPERATING_LANGUAGES,
-                DEFAULT_OPERATING_LANGUAGES, OPERATING_LANGUAGES_INVALID);
+        return requireLanguages(readOperatingLanguages(), OPERATING_LANGUAGES_INVALID);
     }
 
+    private List<String> readInterfaceLanguages() {
+        return readLanguages(LANGUAGES_KEY, InterfaceLanguages.CODES, InterfaceLanguages.REQUIRED,
+                InterfaceLanguages.DEFAULT);
+    }
+
+    private List<String> readOperatingLanguages() {
+        return readLanguages(OPERATING_LANGUAGES_KEY, OPERATING_LANGUAGE_CODES, DEFAULT_OPERATING_LANGUAGES,
+                DEFAULT_OPERATING_LANGUAGES);
+    }
+
+    // Absence uses the default. A stored invalid value is exposed as null only by the A3 editor.
     private List<String> readLanguages(String key, List<String> codes, List<String> required,
-            List<String> defaults, String error) {
-        return config.activeValue(key).map(value -> {
-            try {
-                List<String> languages = configuredLanguages(objectMapper.readTree(value), codes, required);
-                if (languages != null) return languages;
-            } catch (JsonProcessingException ex) {
-                throw new BizException(503, error);
-            }
-            throw new BizException(503, error);
-        }).orElse(defaults);
+            List<String> defaults) {
+        Optional<String> value = config.activeValue(key);
+        if (value.isEmpty()) return defaults;
+        try {
+            return configuredLanguages(objectMapper.readTree(value.get()), codes, required);
+        } catch (JsonProcessingException ex) {
+            return null;
+        }
+    }
+
+    private List<String> requireLanguages(List<String> languages, String error) {
+        if (languages == null) throw new BizException(503, error);
+        return languages;
     }
 
     private List<String> configuredLanguages(JsonNode value, List<String> codes, List<String> required) {
@@ -135,7 +151,7 @@ public class PlatformExperienceConfigService {
         if (validation != null) return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), validation);
         List<String> languages = configuredLanguages(request.interfaceLanguages(), InterfaceLanguages.CODES, InterfaceLanguages.REQUIRED);
         if (request.interfaceLanguages() != null && languages == null) {
-            return ApiResult.fail(422, "PLATFORM_EXPERIENCE_LANGUAGES_INVALID");
+            return ApiResult.fail(422, INTERFACE_LANGUAGES_INVALID);
         }
         List<String> operatingLanguages = configuredLanguages(request.operatingLanguages(),
                 OPERATING_LANGUAGE_CODES, DEFAULT_OPERATING_LANGUAGES);
@@ -160,12 +176,26 @@ public class PlatformExperienceConfigService {
         if (homeFlags.getCode() != 0 || homeFlags.getData() == null) {
             return ApiResult.fail(homeFlags.getCode(), homeFlags.getMessage());
         }
-        PlatformComputeConfigView.ShareConfig next = toShare(request);
+        List<String> previousOperatingLanguages = readOperatingLanguages();
+        List<String> nextOperatingLanguages = operatingLanguages == null
+                ? requireLanguages(previousOperatingLanguages, OPERATING_LANGUAGES_INVALID) : operatingLanguages;
+        List<String> previousLanguages = readInterfaceLanguages();
+        List<String> nextLanguages = languages == null
+                ? requireLanguages(previousLanguages, INTERFACE_LANGUAGES_INVALID) : languages;
+        AppDownloadRequest download = request.appDownload();
+        Map<String, String> notes = Map.of("zh", "", "en", "");
+        if ("official".equals(trim(download.source()))) {
+            notes = new LinkedHashMap<>(download.releaseNotes());
+            String chineseNotes = notes.get("zh");
+            boolean blankChineseNotes = isLocalizedBlank(chineseNotes);
+            if (blankChineseNotes && !nextOperatingLanguages.contains("zh")) {
+                notes.put("zh", notes.get("en"));
+            } else if (blankChineseNotes || !StringUtils.hasText(chineseNotes)) {
+                return ApiResult.fail(422, "PLATFORM_EXPERIENCE_RELEASE_METADATA_REQUIRED");
+            }
+        }
+        PlatformComputeConfigView.ShareConfig next = toShare(request, Map.copyOf(notes));
         Optional<PlatformComputeConfigView.ShareConfig> previousShare = readShare(true);
-        List<String> previousLanguages = interfaceLanguages();
-        List<String> nextLanguages = languages == null ? previousLanguages : languages;
-        List<String> previousOperatingLanguages = operatingLanguages();
-        List<String> nextOperatingLanguages = operatingLanguages == null ? previousOperatingLanguages : operatingLanguages;
         config.upsertAdminValue(BASE_URL_KEY, next.baseUrl(), "STRING", GROUP, "A3 App experience base URL");
         config.upsertAdminValue(CHANNELS_KEY, json(next.channels()), "JSON", GROUP, "A3 App share channels");
         config.upsertAdminValue(APP_DOWNLOAD_KEY, json(next.appDownload()), "JSON", GROUP, "A3 App installer metadata");
@@ -176,8 +206,8 @@ public class PlatformExperienceConfigService {
             config.upsertAdminValue(OPERATING_LANGUAGES_KEY, json(operatingLanguages), "JSON", GROUP, "A3 operating region languages");
         }
         config.upsertAdminValue(VERSION_KEY, String.valueOf(current + 1), "NUMBER", GROUP, "A3 App experience CAS version");
-        boolean languagesChanged = !previousLanguages.equals(nextLanguages);
-        boolean operatingLanguagesChanged = !previousOperatingLanguages.equals(nextOperatingLanguages);
+        boolean languagesChanged = !nextLanguages.equals(previousLanguages);
+        boolean operatingLanguagesChanged = !nextOperatingLanguages.equals(previousOperatingLanguages);
         if ((!languagesChanged && !operatingLanguagesChanged) || previousShare.filter(next::equals).isEmpty()) {
             auditChange(BASE_URL_KEY, Map.of(
                     "before", previousShare.map(this::json).orElse("<unavailable>"), "after", json(next),
@@ -187,13 +217,15 @@ public class PlatformExperienceConfigService {
         if (languagesChanged) {
             // Share templates can exceed the audit detail limit. The language change remains readable on its own.
             auditChange(LANGUAGES_KEY, Map.of(
-                    "previousInterfaceLanguages", previousLanguages, "interfaceLanguages", nextLanguages,
+                    "previousInterfaceLanguages", previousLanguages == null ? "<invalid>" : previousLanguages,
+                    "interfaceLanguages", nextLanguages,
                     "expectedVersion", current, "version", current + 1,
                     "reason", request.reason().trim(), "idempotencyKey", idempotencyKey));
         }
         if (operatingLanguagesChanged) {
             auditChange(OPERATING_LANGUAGES_KEY, Map.of(
-                    "previousOperatingLanguages", previousOperatingLanguages, "operatingLanguages", nextOperatingLanguages,
+                    "previousOperatingLanguages", previousOperatingLanguages == null ? "<invalid>" : previousOperatingLanguages,
+                    "operatingLanguages", nextOperatingLanguages,
                     "expectedVersion", current, "version", current + 1,
                     "reason", request.reason().trim(), "idempotencyKey", idempotencyKey));
         }
@@ -253,23 +285,25 @@ public class PlatformExperienceConfigService {
             if (StringUtils.hasText(download.apkUrl()) && !validUrl(download.apkUrl(), false)) return "PLATFORM_EXPERIENCE_APK_URL_INVALID";
         }
         if (!"unavailable".equals(source)) {
-            if (!StringUtils.hasText(download.version()) || download.releaseNotes() == null
-                    || !StringUtils.hasText(download.releaseNotes().get("zh"))
-                    || !StringUtils.hasText(download.releaseNotes().get("en"))) {
+            String englishNotes = download.releaseNotes() == null ? null : download.releaseNotes().get("en");
+            if (!StringUtils.hasText(download.version()) || isLocalizedBlank(englishNotes) || !StringUtils.hasText(englishNotes)) {
                 return "PLATFORM_EXPERIENCE_RELEASE_METADATA_REQUIRED";
             }
         }
         return null;
     }
 
-    private PlatformComputeConfigView.ShareConfig toShare(PlatformExperienceConfigUpdateRequest request) {
+    private boolean isLocalizedBlank(String value) {
+        return value == null || LOCALIZED_WHITESPACE.matcher(value).matches();
+    }
+
+    private PlatformComputeConfigView.ShareConfig toShare(PlatformExperienceConfigUpdateRequest request, Map<String, String> notes) {
         List<PlatformComputeConfigView.ShareChannel> channels = request.channels().stream()
                 .map(channel -> new PlatformComputeConfigView.ShareChannel(
                         trim(channel.key()), trim(channel.intentType()), trim(channel.textTemplate()), trim(channel.urlTemplate()),
                         trim(channel.androidPackage()), trim(channel.iosScheme()), Boolean.TRUE.equals(channel.enabled())))
                 .toList();
         AppDownloadRequest download = request.appDownload();
-        Map<String, String> notes = download.releaseNotes() == null ? Map.of() : Map.copyOf(download.releaseNotes());
         boolean available = "official".equals(trim(download.source()));
         return new PlatformComputeConfigView.ShareConfig(
                 trim(request.baseUrl()) == null ? "" : trim(request.baseUrl()), channels,
@@ -279,7 +313,7 @@ public class PlatformExperienceConfigService {
                         available && trim(download.androidUrl()) != null ? trim(download.androidUrl()) : "",
                         available && trim(download.apkUrl()) != null ? trim(download.apkUrl()) : "",
                         available && trim(download.version()) != null ? trim(download.version()) : "",
-                        available ? notes : Map.of("zh", "", "en", ""),
+                        notes,
                         available ? "official" : "unavailable"));
     }
 
