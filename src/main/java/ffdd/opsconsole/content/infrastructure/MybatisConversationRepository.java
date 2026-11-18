@@ -153,6 +153,11 @@ public class MybatisConversationRepository implements ConversationRepository {
     }
 
     @Override
+    public boolean canClaimUnassignedPeerForRead(String conversationNo, String staffId) {
+        return mapper.canClaimUnassignedPeer(conversationNo, staffId);
+    }
+
+    @Override
     public Optional<ContentConversationView> findByConversationNoForUpdate(String conversationNo) {
         if (mapper.lockConversationHeader(conversationNo) == null) {
             return Optional.empty();
