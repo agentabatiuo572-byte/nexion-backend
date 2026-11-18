@@ -229,10 +229,7 @@ public class AppSupportService {
         var conversation=conversationRepository.findByConversationNoForUpdate(no).orElse(null);
         if(conversation==null || !userId.equals(conversation.userId())) return hiddenNotFound("CONVERSATION_NOT_FOUND");
         var fetched=conversationRepository.currentRecentUserVisibleMessages(no,APP_MESSAGE_WINDOW+1);
-        boolean truncated=fetched.size()>APP_MESSAGE_WINDOW;
-        var page=fetched.stream().skip(truncated?1:0).toList();
-        return ApiResult.ok(new ContentConversationDetail(appConversation(conversation,true),page,null,truncated,
-                truncated && !page.isEmpty()?page.get(0).id():null, appWriteState(conversation)));
+        return ApiResult.ok(conversationDetail(conversation, fetched, true));
     }
 
     private ContentConversationDetail conversationDetail(ContentConversationView conversation, Long beforeMessageId) {
@@ -240,19 +237,27 @@ public class AppSupportService {
                 ? conversationRepository.recentUserVisibleMessages(conversation.conversationNo(), APP_MESSAGE_WINDOW + 1)
                 : conversationRepository.recentUserVisibleMessagesBefore(
                         conversation.conversationNo(), beforeMessageId, APP_MESSAGE_WINDOW + 1);
+        return conversationDetail(conversation, fetched, false);
+    }
+
+    private ContentConversationDetail conversationDetail(ContentConversationView conversation,
+            List<ContentConversationMessageView> fetched, boolean currentRead) {
         boolean truncated = fetched.size() > APP_MESSAGE_WINDOW;
         List<ContentConversationMessageView> page = fetched.stream().skip(truncated ? 1 : 0).toList();
         Long nextCursor = truncated && !page.isEmpty() ? page.get(0).id() : null;
-        return new ContentConversationDetail(appConversation(conversation), page, null, truncated, nextCursor,
-                appWriteState(conversation));
+        // App projection carries the stored peer. The original row carries the active assignment.
+        ContentConversationView projected = visibility.project(conversation, currentRead);
+        return new ContentConversationDetail(projected, page, null, truncated, nextCursor,
+                appWriteState(projected, conversation.ownerAgentId()));
     }
 
-    private AppWriteState appWriteState(ContentConversationView conversation) {
+    private AppWriteState appWriteState(ContentConversationView conversation, String currentAdvisorId) {
         if (!CONVERSATION_TYPES.contains(normalizeUpper(conversation.conversationType()))) return null;
-        // The unprojected row carries the active assignment, as it does for Ops detail.
-        String writableConversationNo = conversationRepository.currentCustomerConversationForRead(
-                conversation.userId(), conversation.ownerAgentId());
-        return new AppWriteState(conversation.conversationNo().equals(writableConversationNo), writableConversationNo);
+        String storedAdvisorId = conversation.ownerAgentId();
+        boolean canReply = storedAdvisorId == null || storedAdvisorId.equals(currentAdvisorId);
+        String writableConversationNo = canReply ? conversation.conversationNo()
+                : conversationRepository.currentCustomerConversationForRead(conversation.userId(), currentAdvisorId);
+        return new AppWriteState(canReply, writableConversationNo);
     }
 
     public ApiResult<List<SupportFaqView>> faqs(Long userId, String language, String category) {
@@ -399,14 +404,6 @@ public class AppSupportService {
         if (!StringUtils.hasText(conversationNo)) return null;
         return conversationRepository.findByConversationNo(conversationNo.trim())
                 .filter(row -> userId.equals(row.userId())).orElse(null);
-    }
-
-    private ContentConversationView appConversation(ContentConversationView row) {
-        return appConversation(row,false);
-    }
-
-    private ContentConversationView appConversation(ContentConversationView row,boolean currentRead) {
-        return visibility.project(row, currentRead);
     }
 
     private ApiResult<ContentConversationDetail> currentConversationResult(Long userId, ApiResult<?> retained) {
