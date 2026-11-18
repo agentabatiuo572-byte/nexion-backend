@@ -11,6 +11,7 @@ import ffdd.opsconsole.content.domain.MessageTranslations;
 import ffdd.opsconsole.content.dto.LearningCourseUpsertRequest;
 import ffdd.opsconsole.content.dto.LearningQuizQuestionRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -48,6 +49,34 @@ final class LearningCourseCopy {
                 request.reason(), completedQuestions, request.passScore(), request.retryLimit(), request.completionCondition(),
                 request.rewardEvent(), request.expectedRevision(), fillVi ? request.titleEn() : request.titleVi(),
                 fillVi ? request.bodyEn() : request.bodyVi(), request.version(), request.titleTranslations(), request.bodyTranslations());
+    }
+
+    static LearningCourseUpsertRequest cleanQuizTranslations(LearningCourseUpsertRequest request) {
+        if (request.quizQuestions() == null || request.quizQuestions().isEmpty()) return request;
+        List<LearningQuizQuestionRequest> questions = request.quizQuestions().stream().map(question -> {
+            if (question == null) return null;
+            Map<String, String> prompts = question.questionTranslations() == null ? null
+                    : new LinkedHashMap<>(question.questionTranslations());
+            if (prompts != null) {
+                prompts.values().removeIf(value -> !hasCopyText(value));
+                prompts.replaceAll((locale, value) -> value.trim());
+            }
+            Map<String, List<String>> options = question.optionTranslations() == null ? null
+                    : new LinkedHashMap<>(question.optionTranslations());
+            if (options != null) {
+                // Leave a partially filled translation intact so validation can reject it without shifting indices.
+                options.entrySet().removeIf(entry -> MessageTranslations.LOCALES.containsKey(entry.getKey())
+                        && entry.getValue() != null && !hasOptionText(entry.getValue()));
+            }
+            return new LearningQuizQuestionRequest(question.questionId(), question.questionZh(), question.questionEn(),
+                    question.optionsZh(), question.optionsEn(), question.correctOptionIndex(), question.questionVi(),
+                    question.optionsVi(), prompts, options);
+        }).toList();
+        return new LearningCourseUpsertRequest(request.titleZh(), request.titleEn(), request.bodyZh(), request.bodyEn(),
+                request.category(), request.format(), request.difficulty(), request.rewardNex(), request.duration(),
+                request.publishState(), request.operator(), request.reason(), questions, request.passScore(),
+                request.retryLimit(), request.completionCondition(), request.rewardEvent(), request.expectedRevision(),
+                request.titleVi(), request.bodyVi(), request.version(), request.titleTranslations(), request.bodyTranslations());
     }
 
     private static boolean hasOptionText(List<String> options) {

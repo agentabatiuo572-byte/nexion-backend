@@ -119,7 +119,7 @@ public class OpsI18nLearningService {
     @Transactional
     public ApiResult<I18nMessagePairView> saveLocalizedDraft(String messageKey, String idempotencyKey, I18nLocalizedCopyRequest request) {
         MessageCopy copy = request == null ? null
-                : completeMessageCopy(messageKey, request.zh(), request.en(), request.vi(), operatingLanguages.get());
+                : completeMessageCopy(request.zh(), request.en(), request.vi(), operatingLanguages.get());
         ApiResult<Void> guard = requireLocalizedCopy(messageKey, idempotencyKey, request, copy);
         if (guard != null) {
             return fail(guard);
@@ -166,8 +166,7 @@ public class OpsI18nLearningService {
         ApiResult<Void> guard = requireIdempotencyAndReason(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) return fail(guard);
         if (request == null || !StringUtils.hasText(messageKey) || !MESSAGE_KEY_PATTERN.matcher(messageKey.trim()).matches()
-                || !I18nCopyQuality.hasCopyText(request.en())
-                || (I18nCopyQuality.requiresChineseSource(messageKey) && !I18nCopyQuality.hasCopyText(request.zh()))) {
+                || !hasCopyText(request.en())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "I18N_COPY_REQUIRED");
         }
         I18nMessagePairView draft = learningRepository.findMessagePairForUpdate(messageKey.trim()).orElse(null);
@@ -206,7 +205,7 @@ public class OpsI18nLearningService {
     public ApiResult<I18nIntegrityIssueView> fixIntegrity(String issueCode, String idempotencyKey, I18nIntegrityFixRequest request) {
         List<String> requiredLanguages = operatingLanguages.get();
         MessageCopy copy = request == null ? null
-                : completeMessageCopy(request.messageKey(), request.zh(), request.en(), request.vi(), requiredLanguages);
+                : completeMessageCopy(request.zh(), request.en(), request.vi(), requiredLanguages);
         ApiResult<Void> guard = requireIntegrityFix(issueCode, idempotencyKey, request, copy);
         if (guard != null) {
             return fail(guard);
@@ -245,7 +244,7 @@ public class OpsI18nLearningService {
 
     @Transactional
     public ApiResult<LearningCourseView> createCourse(String courseId, String idempotencyKey, LearningCourseUpsertRequest request) {
-        request = request == null ? null : LearningCourseCopy.complete(request, operatingLanguages.get());
+        request = prepareCourseCopy(request);
         ApiResult<Void> guard = requireCoursePayload(courseId, idempotencyKey, request);
         if (guard != null) {
             return fail(guard);
@@ -280,7 +279,7 @@ public class OpsI18nLearningService {
 
     @Transactional
     public ApiResult<LearningCourseView> updateCourseDraft(String courseId, String idempotencyKey, LearningCourseUpsertRequest request) {
-        request = request == null ? null : LearningCourseCopy.complete(request, operatingLanguages.get());
+        request = prepareCourseCopy(request);
         ApiResult<Void> guard = requireCoursePayload(courseId, idempotencyKey, request);
         if (guard != null) {
             return fail(guard);
@@ -301,7 +300,7 @@ public class OpsI18nLearningService {
         }
         LearningCourseVersionView snapshot = learningRepository.findCourseVersion(current.id(), current.version()).orElse(null);
         if (snapshot != null) {
-            request = request.withPreviousTranslations(snapshot.payload());
+            request = LearningCourseCopy.cleanQuizTranslations(request.withPreviousTranslations(snapshot.payload()));
             guard = requireCoursePayload(courseId, idempotencyKey, request);
             if (guard != null) return fail(guard);
         }
@@ -465,7 +464,7 @@ public class OpsI18nLearningService {
     @Transactional
     public ApiResult<LearningCourseVersionView> createCourseVersion(String courseId, String idempotencyKey,
             LearningCourseUpsertRequest request) {
-        request = request == null ? null : LearningCourseCopy.complete(request, operatingLanguages.get());
+        request = prepareCourseCopy(request);
         ApiResult<Void> guard = requireCoursePayload(courseId, idempotencyKey, request);
         if (guard != null) return fail(guard);
         if (!StringUtils.hasText(request.version()) || !COURSE_VERSION_PATTERN.matcher(request.version().trim()).matches()) {
@@ -518,7 +517,7 @@ public class OpsI18nLearningService {
     @Transactional
     public ApiResult<LearningCourseVersionView> updateCourseVersion(String courseId, String version,
             String idempotencyKey, LearningCourseUpsertRequest request) {
-        request = request == null ? null : LearningCourseCopy.complete(request, operatingLanguages.get());
+        request = prepareCourseCopy(request);
         ApiResult<Void> guard = requireCoursePayload(courseId, idempotencyKey, request);
         if (guard != null) return fail(guard);
         LearningCourseVersionView current = learningRepository.findCourseVersion(courseId, version).orElse(null);
@@ -530,7 +529,7 @@ public class OpsI18nLearningService {
                 || retiredOptionChanged(request.rewardEvent(), current.payload().rewardEvent())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEARNING_COURSE_OPTION_RETIRED");
         }
-        request = request.withPreviousTranslations(current.payload());
+        request = LearningCourseCopy.cleanQuizTranslations(request.withPreviousTranslations(current.payload()));
         guard = requireCoursePayload(courseId, idempotencyKey, request);
         if (guard != null) return fail(guard);
         try {
@@ -831,9 +830,12 @@ public class OpsI18nLearningService {
         List<LearningCourseView> courses = learningRepository.listCourses();
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
         int totalKeys = namespaces.stream().mapToInt(I18nNamespaceView::keys).sum();
-        int managedKeys = (int) messages.stream()
-                .map(row -> learningRepository.findPublishedMessagePair(row.messageKey()).orElse(row))
-                .filter(I18nCopyQuality::isComplete).count();
+        Map<String, I18nMessagePairView> publishedMessages = new LinkedHashMap<>();
+        for (I18nMessagePairView message : messages) {
+            learningRepository.findPublishedMessagePair(message.messageKey())
+                    .ifPresent(published -> publishedMessages.put(message.messageKey(), published));
+        }
+        int managedKeys = (int) publishedMessages.values().stream().filter(I18nCopyQuality::isComplete).count();
         int openIssues = issues.stream()
                 .filter(row -> !"fixed".equals(row.status()))
                 .mapToInt(I18nIntegrityIssueView::cnt)
@@ -862,7 +864,8 @@ public class OpsI18nLearningService {
                 LEVELS,
                 STATUSES,
                 SOURCES,
-                scanAtOverride != null ? scanAtOverride : latestScanAt());
+                scanAtOverride != null ? scanAtOverride : latestScanAt(),
+                publishedMessages);
     }
 
     private LocalDateTime latestScanAt() {
@@ -889,6 +892,11 @@ public class OpsI18nLearningService {
                 .map(LearningCourseView::id)
                 .findFirst()
                 .orElse("");
+    }
+
+    private LearningCourseUpsertRequest prepareCourseCopy(LearningCourseUpsertRequest request) {
+        return request == null ? null
+                : LearningCourseCopy.cleanQuizTranslations(LearningCourseCopy.complete(request, operatingLanguages.get()));
     }
 
     private ApiResult<Void> requireCoursePayload(String courseId, String idempotencyKey, LearningCourseUpsertRequest request) {
@@ -939,10 +947,10 @@ public class OpsI18nLearningService {
         }
     }
 
-    private MessageCopy completeMessageCopy(String messageKey, String zh, String en, String vi, List<String> required) {
+    private MessageCopy completeMessageCopy(String zh, String en, String vi, List<String> required) {
         return new MessageCopy(
-                !I18nCopyQuality.hasCopyText(zh) && !required.contains("zh") && !I18nCopyQuality.requiresChineseSource(messageKey) ? en : zh,
-                en, !I18nCopyQuality.hasCopyText(vi) && !required.contains("vi") ? en : vi);
+                !hasCopyText(zh) && !required.contains("zh") ? en : zh,
+                en, !hasCopyText(vi) && !required.contains("vi") ? en : vi);
     }
 
     private ApiResult<Void> requireLocalizedCopy(String messageKey, String idempotencyKey,
