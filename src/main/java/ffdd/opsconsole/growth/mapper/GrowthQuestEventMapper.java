@@ -758,7 +758,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT mission_type AS label,
-                   CONCAT(COUNT(1), ' 个任务定义来自 nx_mission') AS note
+                   CONCAT(COUNT(1), ' 个任务定义') AS note
               FROM nx_mission
              WHERE is_deleted = 0
              GROUP BY mission_type
