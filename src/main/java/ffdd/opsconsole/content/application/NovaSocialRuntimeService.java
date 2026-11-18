@@ -35,7 +35,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class NovaSocialRuntimeService {
     private static final Pattern DURATION_PATTERN = Pattern.compile("^(\\d+)\\s*(s|min|h|d)$", Pattern.CASE_INSENSITIVE);
-    private static final String SOCIAL_CHANNEL = "social";
+    static final String SOCIAL_CHANNEL = "social";
     private final NovaRepository novaRepository;
     private final NovaSocialRuntimeRepository runtimeRepository;
     private final OpsNovaService novaService;
