@@ -31,8 +31,17 @@ public record PlatformParamRegistryRow(
         boolean stale) {
     @com.fasterxml.jackson.annotation.JsonProperty(value = "usageDescriptionAvailable", access = com.fasterxml.jackson.annotation.JsonProperty.Access.READ_ONLY)
     public boolean usageDescriptionAvailable() {
-        return description != null && !description.isBlank()
-                && !description.endsWith("这里只显示当前值。")
-                && !description.endsWith("这里只显示是否已配置，不显示具体值。");
+        String status = usageStatus();
+        return !"UNCONFIRMED".equals(status) && !"REDACTED".equals(status);
+    }
+
+    @com.fasterxml.jackson.annotation.JsonProperty(value = "usageStatus", access = com.fasterxml.jackson.annotation.JsonProperty.Access.READ_ONLY)
+    public String usageStatus() {
+        if ("SECRET".equals(valueType)) return "REDACTED";
+        if (description == null || description.isBlank() || description.startsWith("未确认")
+                || description.endsWith("这里只显示当前值。")) return "UNCONFIRMED";
+        if (description.startsWith("已退役")) return "RETIRED";
+        if (description.startsWith("仅管理") || description.startsWith("内部执行状态")) return "READ_OR_METADATA_ONLY";
+        return "VERIFIED_USAGE";
     }
 }

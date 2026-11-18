@@ -147,6 +147,7 @@ public class OpsPlatformParamRegistryService {
         }
         boolean h5Retired = ComputeConfigRegistry.coeffKey("h5BaseFactor").equals(canonicalKey);
         boolean retired = h5Retired || ComputeConfigRegistry.coeffKey("continuityFullHours").equals(canonicalKey);
+        var confirmedUsage = A5ParameterUsageCatalog.usage(canonicalKey);
         String description = h5Retired ? "已退役，值固定为 0，历史数据也不再生效。"
                 : retired ? "已退役，仅兼容读取，不参与收益计算。" : secret
                 ? "这个敏感参数在「" + owner.label() + "」设置；这里只显示是否已配置，不显示具体值。"
@@ -182,7 +183,8 @@ public class OpsPlatformParamRegistryService {
                     case "wallet.exchange.queue_eta_hours" -> "用户排队的预计处理时长（小时），不是自动成交或到账时间。";
                     case "wallet.exchange.queue_eta_copy", "wallet.exchange.queue_eta_copy_zh", "wallet.exchange.queue_eta_copy_vi" ->
                             "排队预计时间文案，使用 {hours} 引用已配置的预计时长。";
-                    default -> "这个参数在「" + owner.label() + "」设置；这里只显示当前值。";
+                    default -> confirmedUsage == null ? "未确认：尚未核实此参数的 Java 生效用途。"
+                            : confirmedUsage.description();
                 };
         String valueType = secret
                 ? "SECRET"
