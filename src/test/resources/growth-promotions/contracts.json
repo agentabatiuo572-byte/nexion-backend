@@ -4409,6 +4409,7 @@
                 },
                 "deviceName": "Approved fixture device"
               },
+              "platformLoss": {},
               "dispositionOptions": []
             }
           ],
@@ -4510,6 +4511,7 @@
             },
             "deviceName": "Approved fixture device"
           },
+          "platformLoss": {},
           "dispositionOptions": []
         }
       }

@@ -2,16 +2,23 @@ package ffdd.opsconsole.promotion.application;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ffdd.opsconsole.platform.application.PlatformExperienceConfigService;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.i18n.AuthoringWhitespace;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.*;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
+import static ffdd.opsconsole.promotion.domain.PromotionValues.map;
 
 @Component
 public class PromotionContractValidator {
     private final ObjectMapper json;
     private final JsonNode schemas;
+    @Autowired @Lazy
+    private PlatformExperienceConfigService experience;
     public PromotionContractValidator(ObjectMapper json) {
         this.json=json;
         try(var stream=getClass().getResourceAsStream("/promotion/contract-schemas.json")) {
@@ -26,6 +33,35 @@ public class PromotionContractValidator {
     /** Read compatibility only; write commands continue to call the strict current schema above. */
     public void validateRecorded(String schema,Object original) {
         validate(schema,ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView.validationView(original));
+    }
+
+    /** Complete a language group before freezing an authored contract. */
+    Map<String,Object> completeAuthoredCopy(Map<String,Object> content, String... fields) {
+        var result = new LinkedHashMap<>(content);
+        Map<String,Map<String,Object>> texts = new LinkedHashMap<>();
+        for (String field : fields) {
+            if (content.get(field) == null) continue;
+            var localized = map(content.get(field));
+            for (String locale : List.of("en","zh","vi")) {
+                if (localized.get(locale) instanceof String text && AuthoringWhitespace.isBlank(text)) localized.remove(locale);
+            }
+            texts.put(field, localized);
+            result.put(field, localized);
+        }
+        if (texts.isEmpty()) return result;
+        var required = experience == null ? List.of("en") : experience.operatingLanguages();
+        for (String locale : List.of("en","zh","vi")) {
+            boolean useTranslation = required.contains(locale) || texts.values().stream().anyMatch(localized -> localized.containsKey(locale));
+            for (var field : texts.entrySet()) {
+                var localized = field.getValue();
+                if (useTranslation) {
+                    if (!localized.containsKey(locale)) fail("$." + field.getKey() + "." + locale);
+                } else {
+                    localized.put(locale, localized.get("en"));
+                }
+            }
+        }
+        return result;
     }
     private void fail(String field) {throw new BizException(422,"PROMOTION_FIELD_INVALID:"+field);}
     private boolean matches(JsonNode value,JsonNode schema,String path) {
