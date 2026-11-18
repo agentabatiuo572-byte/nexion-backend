@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.infrastructure;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -382,14 +383,19 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
             version.setVersion(request.version().trim());
             version.setCreatedAt(now);
             version.setIsDeleted(0);
-        }
-        fillVersion(version, request.surface(), request.audience(), request.audienceTarget(), request.trafficSplit(), request.versionNote(),
-                request.zh(), request.en(), request.vi(), request.translations(), request.copyPosition(), "PUBLISHED", operator(request.operator()), now);
-        version.setTsLabel(TS_FULL.format(now));
-        if (version.getId() == null) {
+            fillVersion(version, request.surface(), request.audience(), request.audienceTarget(), request.trafficSplit(), request.versionNote(),
+                    request.zh(), request.en(), request.vi(), request.translations(), request.copyPosition(), "PUBLISHED", operator(request.operator()), now);
+            version.setTsLabel(TS_FULL.format(now));
             versionMapper.insert(version);
         } else {
-            versionMapper.updateById(version);
+            String actor = operator(request.operator());
+            versionMapper.update(null, new LambdaUpdateWrapper<CopyVersionEntity>()
+                    .eq(CopyVersionEntity::getId, version.getId())
+                    .set(CopyVersionEntity::getStatus, "PUBLISHED")
+                    .set(CopyVersionEntity::getChain, actor + " / content")
+                    .set(CopyVersionEntity::getTsLabel, TS_FULL.format(now))
+                    .set(CopyVersionEntity::getLastOperator, actor)
+                    .set(CopyVersionEntity::getUpdatedAt, now));
         }
 
         copy.setSurface(request.surface().trim());
