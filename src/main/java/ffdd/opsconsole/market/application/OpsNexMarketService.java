@@ -3183,26 +3183,26 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     "nx_genesis_series.dividend_base_formula",
                     "STRING",
                     "platform daily volume * 0.1% / 1000 slots",
-                    "每日收益基数公式",
+                    "收益计算基数",
                     "控制服务端每日收益发放批次的基数与均分规则",
                     "更改公式会改变每日派发并触发 B1 覆盖率红线预检",
                     true,
                     GenesisParamKind.TEXT);
             case "airdropPct" -> new GenesisParamDef(
                     key, GENESIS_AIRDROP_PCT_KEY, "NUMBER", "8",
-                    "Genesis 释放分配占比",
+                    "空投占比",
                     "为 Genesis 权益与其社区范围预留的协议释放份额",
                     "提高占比会放大未来 UVT 释放负债并触发 B1 覆盖率预检",
                     true, GenesisParamKind.PERCENT);
             case "emissionCurve" -> new GenesisParamDef(
                     key, GENESIS_EMISSION_CURVE_KEY, "STRING", "TGE 10% · halve every 6 months",
-                    "释放曲线",
+                    "收益发放曲线",
                     "H1 开始释放后的服务端释放节奏",
                     "修改曲线会改变负债时序并触发 B1 覆盖率预检",
                     true, GenesisParamKind.TEXT);
             case "airdropLockDays" -> new GenesisParamDef(
                     key, GENESIS_AIRDROP_LOCK_DAYS_KEY, "NUMBER", "180",
-                    "OG 倍率锁仓期",
+                    "早期持有人奖励锁仓期",
                     "Genesis 释放优先倍率使用的锁仓时长",
                     "缩短锁仓会提前释放资格并触发 B1 覆盖率预检",
                     true, GenesisParamKind.DAYS);
