@@ -69,8 +69,10 @@ public class H4EventEngine {
     }
     private Map<String,Object> legacyRewardDisplay(Map<String,Object> source){
         var row=new LinkedHashMap<>(source);
-        row.put("rewardName",displayRewardName(text(row.get("kind")),null,row.get("rewardType"),
-                row.get("rewardAmount"),text(row.get("rewardName")),null));
+        if(!usesAuthoredRewardName(text(row.get("kind")),false,row.get("rewardType"),row.get("rewardAmount"))){
+            // App and Lite prepend rewardAmount to the cash reward label.
+            row.put("rewardName",text(row.get("rewardType")));
+        }
         return row;
     }
     static boolean usesAuthoredRewardName(String kind,boolean hasRule,Object asset,Object amount){

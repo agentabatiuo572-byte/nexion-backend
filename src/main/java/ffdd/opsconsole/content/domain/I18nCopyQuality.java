@@ -7,6 +7,7 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import ffdd.opsconsole.shared.canonical.RetiredBrandGate;
 import org.springframework.util.StringUtils;
 
@@ -70,8 +71,12 @@ public final class I18nCopyQuality {
         }
         if (!hasEn) issues.add("missing-en");
         if (!hasVi && requiredLanguages.contains("vi")) issues.add("missing-vi");
-        if (hasZh && hasEn && hasVi && !placeholdersMatch(message.en(), message.zh(), message.vi())) {
-            issues.add("placeholder");
+        if (hasEn) {
+            Set<String> expected = placeholders(message.en());
+            boolean mismatch = Stream.concat(Stream.of(message.zh(), message.vi()), message.translations().values().stream())
+                    .filter(I18nCopyQuality::hasCopyText)
+                    .anyMatch(translation -> !expected.equals(placeholders(translation)));
+            if (mismatch) issues.add("placeholder");
         }
         if (isPlaceholderText(message.zh()) || isPlaceholderText(message.en()) || isPlaceholderText(message.vi())) {
             issues.add("placeholder-text");
