@@ -10,7 +10,17 @@ public record ContentConversationDetail(
         boolean historyTruncated,
         Long nextCursor,
         @JsonInclude(JsonInclude.Include.NON_NULL)
-        ConversationWriteState writeState) {
+        WriteState writeState) {
+    public sealed interface WriteState permits ConversationWriteState, AppWriteState {
+        String writableConversationNo();
+        boolean canReply();
+    }
+
+    public record AppWriteState(
+            boolean canReply,
+            @JsonInclude(JsonInclude.Include.ALWAYS) String writableConversationNo) implements WriteState {
+    }
+
     public ContentConversationDetail(
             ContentConversationView conversation,
             List<ContentConversationMessageView> messages,
