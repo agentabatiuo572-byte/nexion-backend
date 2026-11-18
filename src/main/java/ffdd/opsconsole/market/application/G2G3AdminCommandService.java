@@ -50,15 +50,23 @@ public class G2G3AdminCommandService {
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String,Object>> exchangeParam(String key,String paramKey,ExchangeParamUpdateRequest request) {
-<<<<<<< HEAD
-        requireReason(request == null ? null : request.reason());
-        return once("G2:PARAM:" + paramKey,key,request,() -> {
-            ApiResult<Map<String,Object>> result = market.updateExchangeParam(key,paramKey,request);
-            if (result != null && result.getCode() >= 400 && result.getCode() < 500) {
-                throw new ffdd.opsconsole.shared.idempotency.AdminCommandBusinessRejection(
-                        result.getCode(), result.getMessage(), result);
+        String scope = "G2:PARAM:" + paramKey;
+        if (AdminCommandOrigin.g2ParameterKey("ADMIN:" + scope) == null) {
+            throw new BizException(422, "G2_EXCHANGE_PARAM_KEY_INVALID");
+        }
+        final boolean directOrigin = AdminCommandOrigin.current("ADMIN:" + scope) != null;
+        return once(scope,key,request,() -> {
+            ApiResult<Map<String,Object>> result;
+            try {
+                requireReason(request == null ? null : request.reason());
+                result = success(market.updateExchangeParam(key,paramKey,request));
+            } catch (BizException rejected) {
+                if (directOrigin && rejected.getCode() >= 400 && rejected.getCode() < 500) {
+                    throw new AdminCommandBusinessRejection(rejected.getCode(), rejected.getMessage(),
+                            ApiResult.fail(rejected.getCode(), rejected.getMessage()));
+                }
+                throw rejected;
             }
-            result = success(result);
             String event = List.of("fee","feeMin").contains(paramKey)
                     ? "admin.exchange_fee_changed" : "admin.exchange_caps_changed";
             outbox.publish("EXCHANGE_CONFIG",paramKey,event,linked("field",paramKey,"value",request.value(),
