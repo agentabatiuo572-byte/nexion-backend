@@ -172,6 +172,9 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261018_h3_regional_weekly_period.sql"),
   (Join-Path $root "scripts\migrations\20261106_h3_weekly_phase_multiplier.sql"),
   (Join-Path $root "scripts\migrations\20260911_h3_day_one_registration_bindings.sql"),
+  # invite_friend is still the active Day-One referral target; add its missing
+  # directory row so the active REFERRAL_SETTLED binding has a visible target.
+  (Join-Path $root "scripts\migrations\20261119_h3_be10_invite_friend_mission.sql"),
   # Lifetime purchase quota release must follow the reservation made by the
   # exact order line, never today's mutable SKU policy.
   (Join-Path $root "scripts\migrations\20260902_order_quota_reservation_lineage.sql"),
@@ -502,7 +505,9 @@ $migrations = @(
   # Retire the last legacy Nova brand token and page codes in preloaded copy.
   (Join-Path $root "scripts\migrations\20261119_i2_be06_nova_brand_trigger_copy.sql"),
   # Align nx_admin_menu stock display names with current navigation names.
-  (Join-Path $root "scripts\migrations\20261119_a7_be02_menu_display_names.sql")
+  (Join-Path $root "scripts\migrations\20261119_a7_be02_menu_display_names.sql"),
+  # Remove legacy admin menu nodes that never appear in the PC left navigation.
+  (Join-Path $root "scripts\migrations\20261119_a7_be01_legacy_menu_removal.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
