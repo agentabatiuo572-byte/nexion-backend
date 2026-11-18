@@ -277,16 +277,59 @@
         "description": "Stored and delivered copy has all three base language values."
       },
       "AuthoredLocalizedText": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/DraftLocalizedText"
+        "type": "object",
+        "properties": {
+          "zh": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4000
           },
-          {
-            "required": [
-              "en"
-            ]
+          "en": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "vi": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4000
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "ms": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "fil": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "ru": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "kk": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "uz": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
           }
-        ]
+        },
+        "required": [
+          "en"
+        ],
+        "additionalProperties": false,
+        "description": "Policy version input. English and configured operating languages are required. An entirely blank optional language uses English."
       },
       "StoredPolicyContent": {
         "allOf": [
@@ -4817,7 +4860,7 @@
         "properties": {
           "zh": {
             "type": "string",
-            "minLength": 0,
+            "minLength": 1,
             "maxLength": 4000
           },
           "en": {
@@ -4827,7 +4870,7 @@
           },
           "vi": {
             "type": "string",
-            "minLength": 0,
+            "minLength": 1,
             "maxLength": 4000
           },
           "id": {
@@ -4863,7 +4906,7 @@
         },
         "required": [],
         "additionalProperties": false,
-        "description": "When copy is supplied, English and the configured operating languages are required. Blank optional languages fall back to English only when the complete language group is blank."
+        "description": "Ordinary drafts preserve the supplied language keys and values. A language can be omitted; a supplied value must be nonempty."
       },
       "DraftAudience": {
         "type": "object",

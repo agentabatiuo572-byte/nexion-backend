@@ -52,6 +52,7 @@ import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
+import ffdd.opsconsole.shared.i18n.AuthoringWhitespace;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
@@ -2639,7 +2640,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             return validation("EVENT_STATUS_TRANSITION_INVALID");
         }
         if ("ongoing".equals(status)) {
-            var localized = eventPublicationContent(id, false);
+            var localized = eventPublicationContent(id, false, approved && !preview);
             if (localized != null) return localized;
         }
         BigDecimal openingReward = "ongoing".equals(status) && !hasRule && legacyEventRewardWindow(id, current)
@@ -2659,7 +2660,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 && coverageBelowRedline()) {
             return coverageRedline();
         }
-        if ("ongoing".equals(status)) {
+        if ("ongoing".equals(status) && !approved) {
             var localized = eventPublicationContent(id, true);
             if (localized != null) return localized;
         }
@@ -6185,7 +6186,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         return h4EventRules != null && H4EventRuleService.CODES.contains(eventId);
     }
 
-    private boolean lockH4Event() {
+    boolean lockH4Event() {
         return questEventMapper.isPresent() && "H4_EVENT".equals(questEventMapper.get().lockGrowthMutation("H4_EVENT"));
     }
 
@@ -6507,17 +6508,26 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     }
 
     private ApiResult<Map<String, Object>> eventPublicationContent(String eventCode, boolean persist) {
+        return eventPublicationContent(eventCode, persist, false);
+    }
+
+    private ApiResult<Map<String, Object>> eventPublicationContent(String eventCode, boolean persist, boolean approved) {
         var localized = h4EventRules == null
                 ? H4EventRuleService.localizedGaps(eventLocalizedContent(eventCode), List.of("en"))
-                : h4EventRules.checkLocalizedContent(eventCode, persist);
+                : approved ? h4EventRules.savedLocalizedContent(eventCode) : h4EventRules.checkLocalizedContent(eventCode, persist);
         if (localized.complete()) return null;
+        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "EVENT_LOCALIZED_CONTENT_INCOMPLETE",
+                eventPublicationDetails(eventCode, localized));
+    }
+
+    Map<String, Object> eventPublicationDetails(String eventCode, H4EventRuleService.LocalizedReadiness localized) {
         var details = row("missing", localized.missing().stream()
                 .map(gap -> row("eventCode", eventCode, "field", gap.field(), "locale", gap.locale())).toList());
         if (!localized.incomplete().isEmpty()) {
             details.put("incomplete", localized.incomplete().stream()
                     .map(gap -> row("eventCode", eventCode, "field", gap.field(), "locale", gap.locale())).toList());
         }
-        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "EVENT_LOCALIZED_CONTENT_INCOMPLETE", details);
+        return details;
     }
 
     private Map<String, Object> eventLocalizedContent(String eventCode) {
@@ -6530,7 +6540,12 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             boolean allowBaseClear) {
         String value;
         try {
-            boolean blank = request.value() != null && request.value().isBlank();
+            boolean eventCopy = "event".equals(entity);
+            boolean blank = request.value() != null && (eventCopy
+                    ? AuthoringWhitespace.isBlank(request.value()) : request.value().isBlank());
+            if (eventCopy && blank && !InterfaceLanguages.isAdditional(locale) && !allowBaseClear) {
+                return validation("value is required");
+            }
             value = blank && (InterfaceLanguages.isAdditional(locale) || allowBaseClear)
                     ? "" : normalizePlainText(request.value(), 512);
         } catch (IllegalArgumentException ex) {

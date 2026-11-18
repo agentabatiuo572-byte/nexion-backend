@@ -26,6 +26,7 @@ import ffdd.opsconsole.content.dto.NovaSocialEventStatusRequest;
 import ffdd.opsconsole.content.dto.NovaSocialEventSyncRequest;
 import ffdd.opsconsole.content.dto.NovaTemplateCreateRequest;
 import ffdd.opsconsole.content.dto.NovaTemplateStatusRequest;
+import ffdd.opsconsole.platform.application.PlatformExperienceConfigService;
 import ffdd.opsconsole.shared.canonical.RetiredBrandGate;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -58,6 +59,7 @@ import org.springframework.util.StringUtils;
 public class OpsNovaService {
     private static final Pattern KEY_PATTERN = Pattern.compile("^[A-Za-z0-9_-]{2,64}$");
     private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\{[A-Za-z][A-Za-z0-9_]*}");
+    private static final Pattern LOCALIZED_WHITESPACE = Pattern.compile("[\\s\\p{Z}\\uFEFF]*");
     private static final Pattern DURATION_PATTERN = Pattern.compile("^(\\d+)\\s*(s|min|h|d)$", Pattern.CASE_INSENSITIVE);
     private static final Set<String> TEMPLATE_STATUSES = Set.of("DRAFT", "PUBLISHED", "ARCHIVED");
     private static final Set<String> SOCIAL_EVENT_STATUSES = Set.of("ACTIVE", "DISABLED", "EXPIRED");
@@ -99,6 +101,7 @@ public class OpsNovaService {
     private final AuditLogService auditLogService;
     private final CopyAudiencePhaseProvider audiencePhaseProvider;
     private final Clock clock;
+    private final PlatformExperienceConfigService experienceConfig;
 
     public ApiResult<NovaOverview> overview() {
         String currentPhase = normalizePhase(audiencePhaseProvider.currentPhase());
@@ -596,8 +599,13 @@ public class OpsNovaService {
     }
 
     @Transactional
-    public ApiResult<NovaTemplateView> createTemplate(String idempotencyKey, NovaTemplateCreateRequest request) {
-        ApiResult<NovaTemplateView> guard = requireTemplateCreate(idempotencyKey, request);
+    public ApiResult<NovaTemplateView> createTemplate(String idempotencyKey, NovaTemplateCreateRequest input) {
+        ApiResult<NovaTemplateView> guard = requireReason(idempotencyKey, input == null ? null : input.reason());
+        if (guard != null) {
+            return guard;
+        }
+        NovaTemplateCreateRequest request = fillTemplateLocales(input);
+        guard = requireTemplateFields(request);
         if (guard != null) {
             return guard;
         }
@@ -614,12 +622,12 @@ public class OpsNovaService {
                 request.name().trim(),
                 request.cta().trim(),
                 request.version().trim(),
-                request.titleZh().trim(),
-                request.bodyZh().trim(),
-                request.titleVi().trim(),
-                request.bodyVi().trim(),
-                trimToEmpty(request.titleEn()),
-                trimToEmpty(request.bodyEn()),
+                request.titleZh(),
+                request.bodyZh(),
+                request.titleVi(),
+                request.bodyVi(),
+                request.titleEn(),
+                request.bodyEn(),
                 operator(request.operator()),
                 request.reason().trim());
         if (request.translations() != null) novaRepository.setTemplateTranslations(channel, null,
@@ -634,9 +642,14 @@ public class OpsNovaService {
     }
 
     @Transactional
-    public ApiResult<NovaTemplateView> updateTemplate(String channel, String idempotencyKey, NovaTemplateCreateRequest request) {
+    public ApiResult<NovaTemplateView> updateTemplate(String channel, String idempotencyKey, NovaTemplateCreateRequest input) {
         String normalizedChannel = normalizeChannelKey(channel);
-        ApiResult<NovaTemplateView> guard = requireTemplateCreate(idempotencyKey, request);
+        ApiResult<NovaTemplateView> guard = requireReason(idempotencyKey, input == null ? null : input.reason());
+        if (guard != null) {
+            return guard;
+        }
+        NovaTemplateCreateRequest request = fillTemplateLocales(input);
+        guard = requireTemplateFields(request);
         if (guard != null) {
             return guard;
         }
@@ -661,8 +674,8 @@ public class OpsNovaService {
         }
         boolean updatedInDatabase = novaRepository.updateTemplateIfCurrent(
                 current.get(), request.name().trim(), request.cta().trim(), request.version().trim(),
-                request.titleZh().trim(), request.bodyZh().trim(), request.titleVi().trim(), request.bodyVi().trim(),
-                trimToEmpty(request.titleEn()), trimToEmpty(request.bodyEn()), operator(request.operator()), request.reason().trim());
+                request.titleZh(), request.bodyZh(), request.titleVi(), request.bodyVi(),
+                request.titleEn(), request.bodyEn(), operator(request.operator()), request.reason().trim());
         if (!updatedInDatabase) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_TEMPLATE_CONCURRENT_MODIFICATION");
         }
@@ -1030,30 +1043,45 @@ public class OpsNovaService {
         }
     }
 
-    private ApiResult<NovaTemplateView> requireTemplateCreate(String idempotencyKey, NovaTemplateCreateRequest request) {
-        ApiResult<NovaTemplateView> reasonGuard = requireReason(idempotencyKey, request == null ? null : request.reason());
-        if (reasonGuard != null) {
-            return reasonGuard;
-        }
+    private NovaTemplateCreateRequest fillTemplateLocales(NovaTemplateCreateRequest request) {
+        List<String> required = experienceConfig.operatingLanguages();
+        boolean fillZh = !required.contains("zh") && isLocalizedBlank(request.titleZh()) && isLocalizedBlank(request.bodyZh());
+        boolean fillVi = !required.contains("vi") && isLocalizedBlank(request.titleVi()) && isLocalizedBlank(request.bodyVi());
+        String titleEn = trimToEmpty(request.titleEn());
+        String bodyEn = trimToEmpty(request.bodyEn());
+        return new NovaTemplateCreateRequest(request.channel(), request.name(), request.cta(), request.version(),
+                fillZh ? titleEn : trimToEmpty(request.titleZh()), fillZh ? bodyEn : trimToEmpty(request.bodyZh()),
+                fillVi ? titleEn : trimToEmpty(request.titleVi()), fillVi ? bodyEn : trimToEmpty(request.bodyVi()),
+                titleEn, bodyEn, request.operator(), request.reason(), request.translations());
+    }
+
+    private boolean isLocalizedBlank(String value) {
+        return value == null || LOCALIZED_WHITESPACE.matcher(value).matches();
+    }
+
+    private boolean validLocalizedText(String value) {
+        return !isLocalizedBlank(value) && StringUtils.hasText(value);
+    }
+
+    private ApiResult<NovaTemplateView> requireTemplateFields(NovaTemplateCreateRequest request) {
         if (!StringUtils.hasText(request.channel()) || !StringUtils.hasText(request.name())
                 || !StringUtils.hasText(request.cta()) || !StringUtils.hasText(request.version())
-                || !StringUtils.hasText(request.titleZh()) || !StringUtils.hasText(request.bodyZh())
-                || !StringUtils.hasText(request.titleVi()) || !StringUtils.hasText(request.bodyVi())) {
+                || !validLocalizedText(request.titleEn()) || !validLocalizedText(request.bodyEn())
+                || !validLocalizedText(request.titleZh()) || !validLocalizedText(request.bodyZh())
+                || !validLocalizedText(request.titleVi()) || !validLocalizedText(request.bodyVi())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_FIELDS_REQUIRED");
         }
         if (request.name().trim().length() > 128 || request.cta().trim().length() > 255
-                || request.version().trim().length() > 32 || request.titleZh().trim().length() > 255
-                || request.titleVi().trim().length() > 255 || trimToEmpty(request.titleEn()).length() > 255
-                || request.bodyZh().trim().length() > 4000 || request.bodyVi().trim().length() > 4000
-                || trimToEmpty(request.bodyEn()).length() > 4000) {
+                || request.version().trim().length() > 32 || request.titleEn().length() > 255
+                || request.titleZh().length() > 255 || request.titleVi().length() > 255
+                || request.bodyEn().length() > 4000 || request.bodyZh().length() > 4000 || request.bodyVi().length() > 4000) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_FIELD_TOO_LONG");
         }
         if (TEMPLATE_CTA_OPTIONS.stream().noneMatch(option -> option.value().equals(request.cta().trim()))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_CTA_UNSUPPORTED");
         }
-        if ((StringUtils.hasText(request.titleEn()) != StringUtils.hasText(request.bodyEn()))
-                || !placeholders(request.bodyZh()).equals(placeholders(request.bodyVi()))
-                || (StringUtils.hasText(request.bodyEn()) && !placeholders(request.bodyZh()).equals(placeholders(request.bodyEn())))) {
+        Set<String> bodyPlaceholders = placeholders(request.bodyEn());
+        if (!bodyPlaceholders.equals(placeholders(request.bodyZh())) || !bodyPlaceholders.equals(placeholders(request.bodyVi()))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDERS_MISMATCH");
         }
         if (request.translations() != null) for (var entry : request.translations().entrySet()) {
@@ -1062,14 +1090,13 @@ public class OpsNovaService {
                     || translated.title().length() > 255 || translated.body().length() > 4000
                     || !translated.ctaLabel().isEmpty()
                     || ffdd.opsconsole.shared.canonical.RetiredBrandGate.anyCarriesRetiredBrand(translated.title(), translated.body())
-                    || !translated.title().isEmpty() && !placeholders(request.titleZh()).equals(placeholders(translated.title()))
-                    || !translated.body().isEmpty() && !placeholders(request.bodyZh()).equals(placeholders(translated.body()))) {
+                    || !translated.title().isEmpty() && !placeholders(request.titleEn()).equals(placeholders(translated.title()))
+                    || !translated.body().isEmpty() && !bodyPlaceholders.equals(placeholders(translated.body()))) {
                 return ApiResult.fail(422, "NOVA_TEMPLATE_TRANSLATIONS_INVALID");
             }
         }
         Set<String> usedPlaceholders = new LinkedHashSet<>();
-        List.of(request.titleZh(), request.bodyZh(), request.titleVi(), request.bodyVi(),
-                        trimToEmpty(request.titleEn()), trimToEmpty(request.bodyEn()))
+        List.of(request.titleZh(), request.bodyZh(), request.titleVi(), request.bodyVi(), request.titleEn(), request.bodyEn())
                 .forEach(value -> usedPlaceholders.addAll(placeholders(value)));
         if (!NovaSocialMessageRenderer.SUPPORTED_PLACEHOLDERS.containsAll(usedPlaceholders)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
@@ -1102,10 +1129,12 @@ public class OpsNovaService {
     }
 
     private boolean hasCompleteLocalizedContent(NovaTemplateView template) {
-        return StringUtils.hasText(template.titleZh()) && StringUtils.hasText(template.bodyZh())
+        Set<String> bodyPlaceholders = placeholders(template.bodyEn());
+        return StringUtils.hasText(template.titleEn()) && StringUtils.hasText(template.bodyEn())
+                && StringUtils.hasText(template.titleZh()) && StringUtils.hasText(template.bodyZh())
                 && StringUtils.hasText(template.titleVi()) && StringUtils.hasText(template.bodyVi())
-                && placeholders(template.bodyZh()).equals(placeholders(template.bodyVi()))
-                && (!StringUtils.hasText(template.bodyEn()) || placeholders(template.bodyZh()).equals(placeholders(template.bodyEn())))
+                && bodyPlaceholders.equals(placeholders(template.bodyZh()))
+                && bodyPlaceholders.equals(placeholders(template.bodyVi()))
                 && NovaSocialMessageRenderer.SUPPORTED_PLACEHOLDERS.containsAll(placeholders(template.titleZh()))
                 && NovaSocialMessageRenderer.SUPPORTED_PLACEHOLDERS.containsAll(placeholders(template.bodyZh()))
                 && NovaSocialMessageRenderer.SUPPORTED_PLACEHOLDERS.containsAll(placeholders(template.titleVi()))
