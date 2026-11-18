@@ -1,5 +1,14 @@
 package ffdd.opsconsole.content.application;
 
+import static ffdd.opsconsole.content.application.LearningCourseCopy.CATEGORIES;
+import static ffdd.opsconsole.content.application.LearningCourseCopy.FORMATS;
+import static ffdd.opsconsole.content.application.LearningCourseCopy.LEVELS;
+import static ffdd.opsconsole.content.application.LearningCourseCopy.STATUSES;
+import static ffdd.opsconsole.content.application.LearningCourseCopy.normalizeStatus;
+import static ffdd.opsconsole.content.domain.I18nCopyQuality.containsSunsetCapability;
+import static ffdd.opsconsole.content.domain.I18nCopyQuality.containsUnsafeText;
+import static ffdd.opsconsole.content.domain.I18nCopyQuality.hasCopyText;
+
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.I18nHardcodedFindingView;
@@ -23,7 +32,6 @@ import ffdd.opsconsole.content.dto.I18nLocalizedCopyRequest;
 import ffdd.opsconsole.content.dto.I18nVersionActionRequest;
 import ffdd.opsconsole.content.dto.LearningCourseUpsertRequest;
 import ffdd.opsconsole.content.dto.LearningFeaturedUpdateRequest;
-import ffdd.opsconsole.content.dto.LearningQuizQuestionRequest;
 import ffdd.opsconsole.content.dto.LearningRewardUpdateRequest;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.application.PlatformExperienceConfigService;
@@ -48,12 +56,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
-import java.util.TreeSet;
 import java.util.function.Supplier;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -68,10 +72,6 @@ public class OpsI18nLearningService {
     public static final String COURSE_REWARD_ADJUST = "i7_course_reward_adjust";
     private static final String FOCUS_MESSAGE_KEY = "milestones.earnCross";
     private static final TutorialRewardRange REWARD_RANGE = new TutorialRewardRange(new BigDecimal("10"), new BigDecimal("50"));
-    private static final List<String> CATEGORIES = List.of("Basics", "Earn", "Team", "Wealth", "Security");
-    private static final List<String> FORMATS = List.of("Article", "Video", "Hands-on");
-    private static final List<String> LEVELS = List.of("Beginner", "Intermediate", "Advanced");
-    private static final List<String> STATUSES = List.of("draft", "ready", "published", "archived");
     private static final List<String> SOURCES = List.of(
             "nx_i18n_namespace",
             "nx_i18n_message",
@@ -80,11 +80,6 @@ public class OpsI18nLearningService {
             "nx_i18n_hardcoded_finding",
             "nx_help_article",
             "B1 treasury coverage facade");
-    private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\{[a-zA-Z0-9_.-]+}");
-    private static final Pattern JSON_LIKE_PATTERN = Pattern.compile("^\\s*[\\[{]");
-    private static final Pattern MANUAL_URL_PATTERN = Pattern.compile("https?://|href\\s*=|href=#", Pattern.CASE_INSENSITIVE);
-    private static final Pattern HTML_TAG_PATTERN = Pattern.compile("<\\s*/?\\s*[a-z][^>]*>", Pattern.CASE_INSENSITIVE);
-    private static final Pattern SUNSET_PATTERN = Pattern.compile("premium|(?:nex|uvt)\\s*v?2|points|积分", Pattern.CASE_INSENSITIVE);
     private static final Pattern COURSE_ID_PATTERN = Pattern.compile("^[a-z0-9][a-z0-9-]{2,80}$");
     private static final Pattern COURSE_VERSION_PATTERN = Pattern.compile("^v[1-9][0-9]{0,8}$", Pattern.CASE_INSENSITIVE);
     private static final Pattern MESSAGE_KEY_PATTERN = Pattern.compile("^[A-Za-z][A-Za-z0-9_-]*(?:\\.[A-Za-z0-9_-]+)+$");
@@ -114,7 +109,7 @@ public class OpsI18nLearningService {
             return fail(guard);
         }
         LocalDateTime scannedAt = now();
-        learningRepository.recomputeIntegrity(scannedAt);
+        learningRepository.recomputeIntegrity(scannedAt, operatingLanguages.get());
         I18nLearningOverview overview = currentOverview(scannedAt);
         audit("I6_I18N_INTEGRITY_RESCANNED", "I18N_SCAN", "full", request.operator(), idempotencyKey, request.reason(), Map.of(
                 "remainingIssues", overview.stats().integrityIssues()));
@@ -123,7 +118,8 @@ public class OpsI18nLearningService {
 
     @Transactional
     public ApiResult<I18nMessagePairView> saveLocalizedDraft(String messageKey, String idempotencyKey, I18nLocalizedCopyRequest request) {
-        MessageCopy copy = request == null ? null : completeMessageCopy(messageKey, request.zh(), request.en(), request.vi());
+        MessageCopy copy = request == null ? null
+                : completeMessageCopy(messageKey, request.zh(), request.en(), request.vi(), operatingLanguages.get());
         ApiResult<Void> guard = requireLocalizedCopy(messageKey, idempotencyKey, request, copy);
         if (guard != null) {
             return fail(guard);
@@ -171,7 +167,7 @@ public class OpsI18nLearningService {
         if (guard != null) return fail(guard);
         if (request == null || !StringUtils.hasText(messageKey) || !MESSAGE_KEY_PATTERN.matcher(messageKey.trim()).matches()
                 || !I18nCopyQuality.hasCopyText(request.en())
-                || (requiresChineseSource(messageKey) && !I18nCopyQuality.hasCopyText(request.zh()))) {
+                || (I18nCopyQuality.requiresChineseSource(messageKey) && !I18nCopyQuality.hasCopyText(request.zh()))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "I18N_COPY_REQUIRED");
         }
         I18nMessagePairView draft = learningRepository.findMessagePairForUpdate(messageKey.trim()).orElse(null);
@@ -208,7 +204,9 @@ public class OpsI18nLearningService {
 
     @Transactional
     public ApiResult<I18nIntegrityIssueView> fixIntegrity(String issueCode, String idempotencyKey, I18nIntegrityFixRequest request) {
-        MessageCopy copy = request == null ? null : completeMessageCopy(request.messageKey(), request.zh(), request.en(), request.vi());
+        List<String> requiredLanguages = operatingLanguages.get();
+        MessageCopy copy = request == null ? null
+                : completeMessageCopy(request.messageKey(), request.zh(), request.en(), request.vi(), requiredLanguages);
         ApiResult<Void> guard = requireIntegrityFix(issueCode, idempotencyKey, request, copy);
         if (guard != null) {
             return fail(guard);
@@ -234,11 +232,11 @@ public class OpsI18nLearningService {
         Optional<I18nMessagePairView> published = learningRepository.findPublishedMessagePair(messageKey);
         I18nMessagePairView saved = learningRepository.saveMessagePair(
                 messageKey, copy.zh().trim(), copy.en().trim(), copy.vi().trim(), "draft", now());
-        List<I18nIntegrityIssueView> recomputed = learningRepository.recomputeIntegrity(now());
+        List<I18nIntegrityIssueView> recomputed = learningRepository.recomputeIntegrity(now(), requiredLanguages);
         I18nIntegrityIssueView remaining = recomputed.stream().filter(issue -> issue.code().equals(issueCode.trim())).findFirst()
                 .orElse(new I18nIntegrityIssueView(issueCode.trim(), current.get().kind(), 0, List.of(), "fixed"));
-        int repairedCount = I18nCopyQuality.integrityIssueCodes(published.orElse(previous)).contains(remaining.code())
-                && !I18nCopyQuality.integrityIssueCodes(published.orElse(saved)).contains(remaining.code()) ? 1 : 0;
+        int repairedCount = I18nCopyQuality.integrityIssueCodes(published.orElse(previous), requiredLanguages).contains(remaining.code())
+                && !I18nCopyQuality.integrityIssueCodes(published.orElse(saved), requiredLanguages).contains(remaining.code()) ? 1 : 0;
         audit("I6_I18N_INTEGRITY_FIXED", "I18N_INTEGRITY", remaining.code(), request.operator(), idempotencyKey, request.reason(), Map.of(
                 "messageKey", messageKey, "remainingCount", remaining.cnt(), "repairedCount", repairedCount));
         return ApiResult.ok(new I18nIntegrityIssueView(remaining.code(), remaining.kind(), remaining.cnt(),
@@ -247,7 +245,7 @@ public class OpsI18nLearningService {
 
     @Transactional
     public ApiResult<LearningCourseView> createCourse(String courseId, String idempotencyKey, LearningCourseUpsertRequest request) {
-        request = completeCourseCopy(request);
+        request = request == null ? null : LearningCourseCopy.complete(request, operatingLanguages.get());
         ApiResult<Void> guard = requireCoursePayload(courseId, idempotencyKey, request);
         if (guard != null) {
             return fail(guard);
@@ -282,7 +280,7 @@ public class OpsI18nLearningService {
 
     @Transactional
     public ApiResult<LearningCourseView> updateCourseDraft(String courseId, String idempotencyKey, LearningCourseUpsertRequest request) {
-        request = completeCourseCopy(request);
+        request = request == null ? null : LearningCourseCopy.complete(request, operatingLanguages.get());
         ApiResult<Void> guard = requireCoursePayload(courseId, idempotencyKey, request);
         if (guard != null) {
             return fail(guard);
@@ -386,7 +384,7 @@ public class OpsI18nLearningService {
         if (target == null || !"archived".equals(target.status())) {
             return ApiResult.fail(422, "I18N_ROLLBACK_TARGET_INVALID");
         }
-        ApiResult<Void> quality = requirePublishableMessage(target);
+        ApiResult<Void> quality = requirePublishableCopy(target.zh(), target.en(), target.vi());
         if (quality != null) return fail(quality);
         I18nMessagePairView restored;
         try {
@@ -467,7 +465,7 @@ public class OpsI18nLearningService {
     @Transactional
     public ApiResult<LearningCourseVersionView> createCourseVersion(String courseId, String idempotencyKey,
             LearningCourseUpsertRequest request) {
-        request = completeCourseCopy(request);
+        request = request == null ? null : LearningCourseCopy.complete(request, operatingLanguages.get());
         ApiResult<Void> guard = requireCoursePayload(courseId, idempotencyKey, request);
         if (guard != null) return fail(guard);
         if (!StringUtils.hasText(request.version()) || !COURSE_VERSION_PATTERN.matcher(request.version().trim()).matches()) {
@@ -520,7 +518,7 @@ public class OpsI18nLearningService {
     @Transactional
     public ApiResult<LearningCourseVersionView> updateCourseVersion(String courseId, String version,
             String idempotencyKey, LearningCourseUpsertRequest request) {
-        request = completeCourseCopy(request);
+        request = request == null ? null : LearningCourseCopy.complete(request, operatingLanguages.get());
         ApiResult<Void> guard = requireCoursePayload(courseId, idempotencyKey, request);
         if (guard != null) return fail(guard);
         LearningCourseVersionView current = learningRepository.findCourseVersion(courseId, version).orElse(null);
@@ -635,14 +633,14 @@ public class OpsI18nLearningService {
             if (target != null && !"DRAFT".equals(target.status())) {
                 throw new BizException(409, "LEARNING_COURSE_VERSION_NOT_DRAFT");
             }
-            if (!(target == null ? hasCompleteQuiz(current) : hasCompleteQuizPayload(target.payload()))) {
+            if (!(target == null ? hasCompleteQuiz(current) : LearningCourseCopy.hasCompleteQuiz(target.payload()))) {
                 throw new BizException(422, "LEARNING_COURSE_QUIZ_INCOMPLETE");
             }
         }
         ApiResult<Void> quality = target == null
-                ? requireCoursePublishable(current.titleZh(), current.titleEn(), current.titleVi(),
+                ? LearningCourseCopy.requirePublishable(current.titleZh(), current.titleEn(), current.titleVi(),
                         current.bodyZh(), current.bodyEn(), current.bodyVi())
-                : requireCoursePublishable(target.payload());
+                : LearningCourseCopy.requirePublishable(target.payload());
         if (quality != null) throw new BizException(quality.getCode(), quality.getMessage());
     }
 
@@ -901,88 +899,15 @@ public class OpsI18nLearningService {
         if (!StringUtils.hasText(courseId) || !COURSE_ID_PATTERN.matcher(courseId.trim()).matches()) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEARNING_COURSE_ID_INVALID");
         }
-        if (request == null || !StringUtils.hasText(request.titleZh()) || !StringUtils.hasText(request.titleEn())
-                || !StringUtils.hasText(request.titleVi()) || !StringUtils.hasText(request.bodyZh())
-                || !StringUtils.hasText(request.bodyEn()) || !StringUtils.hasText(request.bodyVi())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEARNING_COURSE_COPY_REQUIRED");
-        }
-        String primaryTitle = request.titleZh().trim();
-        if (primaryTitle.codePointCount(0, primaryTitle.length()) > 128
-                || java.util.stream.Stream.of(request.titleEn(), request.titleVi(),
-                        request.bodyZh(), request.bodyEn(), request.bodyVi()).anyMatch(value -> value.trim().length() > 1024)) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEARNING_COURSE_COPY_TOO_LONG");
-        }
-        if (!containsIgnoreCase(CATEGORIES, request.category()) || !containsIgnoreCase(FORMATS, request.format())
-                || !containsIgnoreCase(LEVELS, request.difficulty()) || !STATUSES.contains(normalizeStatus(request.publishState()))) {
+        ApiResult<Void> copy = LearningCourseCopy.validateBase(request);
+        if (copy != null) return copy;
+        if (!LearningCourseCopy.validEnums(request)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEARNING_COURSE_ENUM_UNSUPPORTED");
         }
         if (invalidReward(request.rewardNex())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEARNING_REWARD_OUT_OF_RANGE");
         }
-        if (containsUnsafeText(request.titleZh(), request.titleEn(), request.titleVi(), request.bodyZh(), request.bodyEn(), request.bodyVi())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEARNING_COURSE_RAW_JSON_OR_URL_NOT_ALLOWED");
-        }
-        if (containsSunsetCapability(request.titleZh(), request.titleEn(), request.titleVi(), request.bodyZh(), request.bodyEn(), request.bodyVi())) {
-            return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), "SUNSET_CAPABILITY_READONLY");
-        }
-        if (!I18nCopyQuality.placeholdersMatch(request.bodyEn(), request.bodyZh(), request.bodyVi())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEARNING_COURSE_PLACEHOLDERS_MISMATCH");
-        }
-        for (var field : List.of(Map.entry(request.titleEn(), MessageTranslations.clean(request.titleTranslations())),
-                Map.entry(request.bodyEn(), MessageTranslations.clean(request.bodyTranslations())))) {
-            for (var translated : field.getValue().entrySet()) {
-                String value = translated.getValue();
-                if (!MessageTranslations.LOCALES.containsKey(translated.getKey()) || value.length() > 1024
-                        || containsUnsafeText(value) || containsSunsetCapability(value)
-                        || !placeholders(field.getKey()).equals(placeholders(value))
-                        || I18nCopyQuality.publishError(value, value, value) != null)
-                    return ApiResult.fail(422, "LEARNING_COURSE_TRANSLATION_INVALID");
-            }
-        }
-        ApiResult<Void> quizGuard = requireQuizPayload(request);
-        if (quizGuard != null) {
-            return quizGuard;
-        }
-        return null;
-    }
-
-    private ApiResult<Void> requireQuizPayload(LearningCourseUpsertRequest request) {
-        List<LearningQuizQuestionRequest> questions = request.quizQuestions() == null ? List.of() : request.quizQuestions();
-        if (questions.isEmpty()) {
-            return null;
-        }
-        if (request.passScore() == null || request.passScore() < 1 || request.passScore() > 100
-                || request.retryLimit() == null || request.retryLimit() < 0 || request.retryLimit() > 10) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEARNING_COURSE_QUIZ_INCOMPLETE");
-        }
-        for (LearningQuizQuestionRequest question : questions) {
-            List<String> zhOptions = question == null || question.optionsZh() == null ? List.of() : question.optionsZh();
-            List<String> enOptions = question == null || question.optionsEn() == null ? List.of() : question.optionsEn();
-            List<String> viOptions = question == null || question.optionsVi() == null ? List.of() : question.optionsVi();
-            if (question != null && (MessageTranslations.clean(question.questionTranslations()).entrySet().stream()
-                    .anyMatch(entry -> !MessageTranslations.LOCALES.containsKey(entry.getKey())
-                            || entry.getValue().length() > 1024 || containsUnsafeText(entry.getValue())
-                            || containsSunsetCapability(entry.getValue()))
-                    || question.optionTranslations() != null && question.optionTranslations().entrySet().stream()
-                    .anyMatch(entry -> !MessageTranslations.LOCALES.containsKey(entry.getKey()) || entry.getValue() == null
-                            || entry.getValue().size() != enOptions.size() || entry.getValue().stream()
-                            .anyMatch(value -> !StringUtils.hasText(value) || value.length() > 1024
-                                    || containsUnsafeText(value) || containsSunsetCapability(value))))) {
-                return ApiResult.fail(422, "LEARNING_COURSE_QUIZ_TRANSLATION_INVALID");
-            }
-            if (question == null || !StringUtils.hasText(question.questionId())
-                    || !StringUtils.hasText(question.questionZh()) || !StringUtils.hasText(question.questionEn())
-                    || !StringUtils.hasText(question.questionVi())
-                    || enOptions.size() < 2 || enOptions.size() != zhOptions.size() || enOptions.size() != viOptions.size()
-                    || zhOptions.stream().anyMatch(value -> !StringUtils.hasText(value))
-                    || enOptions.stream().anyMatch(value -> !StringUtils.hasText(value))
-                    || viOptions.stream().anyMatch(value -> !StringUtils.hasText(value))
-                    || question.correctOptionIndex() == null || question.correctOptionIndex() < 0
-                    || question.correctOptionIndex() >= enOptions.size()) {
-                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEARNING_COURSE_QUIZ_INCOMPLETE");
-            }
-        }
-        return null;
+        return LearningCourseCopy.validateContent(request);
     }
 
     private boolean hasCompleteQuiz(LearningCourseView course) {
@@ -992,25 +917,20 @@ public class OpsI18nLearningService {
             return false;
         }
         for (LearningQuizQuestionView question : course.quizQuestions()) {
-            if (!StringUtils.hasText(question.questionId()) || !StringUtils.hasText(question.questionZh())
-                    || !StringUtils.hasText(question.questionEn()) || !StringUtils.hasText(question.questionVi())
+            if (!StringUtils.hasText(question.questionId()) || !hasCopyText(question.questionZh())
+                    || !hasCopyText(question.questionEn()) || !hasCopyText(question.questionVi())
                     || question.optionsZh() == null || question.optionsEn() == null || question.optionsVi() == null
                     || question.optionsZh().size() < 2
                     || question.optionsZh().size() != question.optionsEn().size()
                     || question.optionsZh().size() != question.optionsVi().size()
-                    || question.optionsZh().stream().anyMatch(value -> !StringUtils.hasText(value))
-                    || question.optionsEn().stream().anyMatch(value -> !StringUtils.hasText(value))
-                    || question.optionsVi().stream().anyMatch(value -> !StringUtils.hasText(value))
+                    || question.optionsZh().stream().anyMatch(value -> !hasCopyText(value))
+                    || question.optionsEn().stream().anyMatch(value -> !hasCopyText(value))
+                    || question.optionsVi().stream().anyMatch(value -> !hasCopyText(value))
                     || question.correctOptionIndex() < 0 || question.correctOptionIndex() >= question.optionsZh().size()) {
                 return false;
             }
         }
         return true;
-    }
-
-    private boolean hasCompleteQuizPayload(LearningCourseUpsertRequest request) {
-        return request != null && request.quizQuestions() != null && !request.quizQuestions().isEmpty()
-                && requireQuizPayload(request) == null;
     }
 
     private record MessageCopy(String zh, String en, String vi) {
@@ -1019,17 +939,10 @@ public class OpsI18nLearningService {
         }
     }
 
-    private MessageCopy completeMessageCopy(String messageKey, String zh, String en, String vi) {
-        List<String> required = operatingLanguages.get();
+    private MessageCopy completeMessageCopy(String messageKey, String zh, String en, String vi, List<String> required) {
         return new MessageCopy(
-                !I18nCopyQuality.hasCopyText(zh) && !required.contains("zh") && !requiresChineseSource(messageKey) ? en : zh,
+                !I18nCopyQuality.hasCopyText(zh) && !required.contains("zh") && !I18nCopyQuality.requiresChineseSource(messageKey) ? en : zh,
                 en, !I18nCopyQuality.hasCopyText(vi) && !required.contains("vi") ? en : vi);
-    }
-
-    private boolean requiresChineseSource(String messageKey) {
-        if (!StringUtils.hasText(messageKey)) return false;
-        String key = messageKey.trim().toLowerCase(Locale.ROOT);
-        return key.startsWith("conversation.script.") || key.startsWith("conversation.template.");
     }
 
     private ApiResult<Void> requireLocalizedCopy(String messageKey, String idempotencyKey,
@@ -1054,7 +967,7 @@ public class OpsI18nLearningService {
                 if (value.trim().length() > 1024) return ApiResult.fail(422, "I18N_COPY_TOO_LONG");
                 if (containsUnsafeText(value)) return ApiResult.fail(422, "I18N_RAW_JSON_OR_URL_NOT_ALLOWED");
                 if (containsSunsetCapability(value)) return ApiResult.fail(422, "SUNSET_CAPABILITY_READONLY");
-                if (!placeholders(value).equals(placeholders(copy.en()))) return ApiResult.fail(422, "I18N_PLACEHOLDERS_MISMATCH");
+                if (!I18nCopyQuality.placeholdersMatch(copy.en(), value)) return ApiResult.fail(422, "I18N_PLACEHOLDERS_MISMATCH");
                 String qualityError = I18nCopyQuality.publishError(copy.zh(), copy.en(), value);
                 if (qualityError != null) return ApiResult.fail(422, qualityError);
             }
@@ -1071,31 +984,9 @@ public class OpsI18nLearningService {
         return null;
     }
 
-    private ApiResult<Void> requirePublishableMessage(I18nMessagePairView message) {
-        ApiResult<Void> quality = requirePublishableCopy(message.zh(), message.en(), message.vi());
-        if (quality != null) return quality;
-        return I18nCopyQuality.placeholdersMatch(message.en(), message.zh(), message.vi())
-                ? null : ApiResult.fail(422, "I18N_PLACEHOLDERS_MISMATCH");
-    }
-
     private ApiResult<Void> requirePublishableCopy(String zh, String en, String vi) {
         String error = I18nCopyQuality.publishError(zh, en, vi);
         return error == null ? null : ApiResult.fail(422, error);
-    }
-
-    private ApiResult<Void> requireCoursePublishable(LearningCourseUpsertRequest request) {
-        return requireCoursePublishable(request.titleZh(), request.titleEn(), request.titleVi(),
-                request.bodyZh(), request.bodyEn(), request.bodyVi());
-    }
-
-    private ApiResult<Void> requireCoursePublishable(String titleZh, String titleEn, String titleVi,
-            String bodyZh, String bodyEn, String bodyVi) {
-        if (java.util.stream.Stream.of(titleZh, titleEn, titleVi, bodyZh, bodyEn, bodyVi)
-                .anyMatch(value -> !StringUtils.hasText(value))) {
-            return ApiResult.fail(422, "LEARNING_COURSE_COPY_REQUIRED");
-        }
-        ApiResult<Void> titleQuality = requirePublishableCopy(titleZh, titleEn, titleVi);
-        return titleQuality != null ? titleQuality : requirePublishableCopy(bodyZh, bodyEn, bodyVi);
     }
 
     private ApiResult<Void> requireIntegrityFix(String issueCode, String idempotencyKey,
@@ -1163,35 +1054,6 @@ public class OpsI18nLearningService {
         return null;
     }
 
-    private LearningCourseUpsertRequest completeCourseCopy(LearningCourseUpsertRequest request) {
-        if (request == null) return null;
-        List<String> required = operatingLanguages.get();
-        List<LearningQuizQuestionRequest> questions = request.quizQuestions() == null ? List.of() : request.quizQuestions();
-        boolean fillZh = !required.contains("zh") && !StringUtils.hasText(request.titleZh())
-                && !StringUtils.hasText(request.bodyZh()) && questions.stream().filter(Objects::nonNull)
-                .noneMatch(q -> StringUtils.hasText(q.questionZh()) || hasOptionText(q.optionsZh()));
-        boolean fillVi = !required.contains("vi") && !StringUtils.hasText(request.titleVi())
-                && !StringUtils.hasText(request.bodyVi()) && questions.stream().filter(Objects::nonNull)
-                .noneMatch(q -> StringUtils.hasText(q.questionVi()) || hasOptionText(q.optionsVi()));
-        if (!fillZh && !fillVi) return request;
-
-        List<LearningQuizQuestionRequest> completedQuestions = questions.stream().map(q -> q == null ? null
-                : new LearningQuizQuestionRequest(q.questionId(), fillZh ? q.questionEn() : q.questionZh(), q.questionEn(),
-                        fillZh ? q.optionsEn() : q.optionsZh(), q.optionsEn(), q.correctOptionIndex(),
-                        fillVi ? q.questionEn() : q.questionVi(), fillVi ? q.optionsEn() : q.optionsVi(),
-                        q.questionTranslations(), q.optionTranslations())).toList();
-        return new LearningCourseUpsertRequest(fillZh ? request.titleEn() : request.titleZh(), request.titleEn(),
-                fillZh ? request.bodyEn() : request.bodyZh(), request.bodyEn(), request.category(), request.format(),
-                request.difficulty(), request.rewardNex(), request.duration(), request.publishState(), request.operator(),
-                request.reason(), completedQuestions, request.passScore(), request.retryLimit(), request.completionCondition(),
-                request.rewardEvent(), request.expectedRevision(), fillVi ? request.titleEn() : request.titleVi(),
-                fillVi ? request.bodyEn() : request.bodyVi(), request.version(), request.titleTranslations(), request.bodyTranslations());
-    }
-
-    private boolean hasOptionText(List<String> options) {
-        return options != null && options.stream().anyMatch(StringUtils::hasText);
-    }
-
     private LearningCourseUpsertRequest normalizeCourseRequest(LearningCourseUpsertRequest request) {
         return new LearningCourseUpsertRequest(
                 request.titleZh().trim(),
@@ -1206,12 +1068,7 @@ public class OpsI18nLearningService {
                 normalizeStatus(request.publishState()),
                 operator(request.operator()),
                 request.reason().trim(),
-                request.quizQuestions() == null ? List.of() : request.quizQuestions().stream().map(question -> new LearningQuizQuestionRequest(
-                        question.questionId().trim(), question.questionZh().trim(), question.questionEn().trim(),
-                        question.optionsZh().stream().map(String::trim).toList(),
-                        question.optionsEn().stream().map(String::trim).toList(), question.correctOptionIndex(),
-                        question.questionVi().trim(), question.optionsVi().stream().map(String::trim).toList(),
-                        MessageTranslations.clean(question.questionTranslations()), question.optionTranslations())).toList(),
+                LearningCourseCopy.normalizeQuestions(request.quizQuestions()),
                 request.passScore(), request.retryLimit(), trimToNull(request.completionCondition()),
                 trimToNull(request.rewardEvent()), request.expectedRevision(),
                 request.titleVi().trim(), request.bodyVi().trim(), trimToNull(request.version()),
@@ -1235,20 +1092,11 @@ public class OpsI18nLearningService {
         return rewardNex == null || rewardNex.compareTo(REWARD_RANGE.min()) < 0 || rewardNex.compareTo(REWARD_RANGE.max()) > 0;
     }
 
-    private boolean containsIgnoreCase(List<String> values, String value) {
-        return values.stream().anyMatch(row -> row.equalsIgnoreCase(value == null ? "" : value.trim()));
-    }
-
     private String canonical(List<String> values, String value) {
         return values.stream()
                 .filter(row -> row.equalsIgnoreCase(value == null ? "" : value.trim()))
                 .findFirst()
                 .orElse(values.get(0));
-    }
-
-    private String normalizeStatus(String status) {
-        String value = StringUtils.hasText(status) ? status.trim().toLowerCase(Locale.ROOT) : "draft";
-        return STATUSES.contains(value) ? value : "";
     }
 
     private LearningCourseView findCourse(String courseId) {
@@ -1258,36 +1106,6 @@ public class OpsI18nLearningService {
     private LearningCourseView findCourseForUpdate(String courseId) {
         return StringUtils.hasText(courseId) ? learningRepository.findCourseForUpdate(courseId.trim())
                 .filter(course -> courseId.trim().equals(course.id())).orElse(null) : null;
-    }
-
-    private boolean containsUnsafeText(String... values) {
-        for (String value : values) {
-            if (StringUtils.hasText(value)
-                    && (JSON_LIKE_PATTERN.matcher(value).find()
-                    || MANUAL_URL_PATTERN.matcher(value).find()
-                    || HTML_TAG_PATTERN.matcher(value).find())) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean containsSunsetCapability(String... values) {
-        for (String value : values) {
-            if (StringUtils.hasText(value) && SUNSET_PATTERN.matcher(value).find()) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private Set<String> placeholders(String text) {
-        Matcher matcher = PLACEHOLDER_PATTERN.matcher(text == null ? "" : text);
-        Set<String> values = new TreeSet<>();
-        while (matcher.find()) {
-            values.add(matcher.group());
-        }
-        return values;
     }
 
     private LocalDateTime now() {

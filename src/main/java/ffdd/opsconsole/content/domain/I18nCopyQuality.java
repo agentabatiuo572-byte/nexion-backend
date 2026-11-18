@@ -13,6 +13,10 @@ import org.springframework.util.StringUtils;
 /** Content check shared by I6 publication and integrity scans. */
 public final class I18nCopyQuality {
     private static final Pattern PLACEHOLDER = Pattern.compile("\\{[a-zA-Z0-9_.-]+}");
+    private static final Pattern JSON_LIKE_PATTERN = Pattern.compile("^\\s*[\\[{]");
+    private static final Pattern MANUAL_URL_PATTERN = Pattern.compile("https?://|href\\s*=|href=#", Pattern.CASE_INSENSITIVE);
+    private static final Pattern HTML_TAG_PATTERN = Pattern.compile("<\\s*/?\\s*[a-z][^>]*>", Pattern.CASE_INSENSITIVE);
+    private static final Pattern SUNSET_PATTERN = Pattern.compile("premium|(?:nex|uvt)\\s*v?2|points|积分", Pattern.CASE_INSENSITIVE);
     private I18nCopyQuality() {}
 
     public static boolean isComplete(I18nMessagePairView message) {
@@ -31,14 +35,47 @@ public final class I18nCopyQuality {
         return expected.equals(placeholders(zh)) && expected.equals(placeholders(vi));
     }
 
-    public static List<String> integrityIssueCodes(I18nMessagePairView message) {
+    public static boolean placeholdersMatch(String english, String translation) {
+        return placeholders(english).equals(placeholders(translation));
+    }
+
+    public static boolean containsUnsafeText(String... values) {
+        for (String value : values) {
+            if (StringUtils.hasText(value)
+                    && (JSON_LIKE_PATTERN.matcher(value).find()
+                    || MANUAL_URL_PATTERN.matcher(value).find()
+                    || HTML_TAG_PATTERN.matcher(value).find())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public static boolean containsSunsetCapability(String... values) {
+        for (String value : values) {
+            if (StringUtils.hasText(value) && SUNSET_PATTERN.matcher(value).find()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public static boolean requiresChineseSource(String messageKey) {
+        if (!StringUtils.hasText(messageKey)) return false;
+        String key = messageKey.trim().toLowerCase(Locale.ROOT);
+        return key.startsWith("conversation.script.") || key.startsWith("conversation.template.");
+    }
+
+    public static List<String> integrityIssueCodes(I18nMessagePairView message, List<String> requiredLanguages) {
         var issues = new ArrayList<String>();
         boolean hasZh = hasCopyText(message.zh());
         boolean hasEn = hasCopyText(message.en());
         boolean hasVi = hasCopyText(message.vi());
-        if (!hasZh) issues.add("missing-zh");
+        if (!hasZh && (requiredLanguages.contains("zh") || requiresChineseSource(message.messageKey()))) {
+            issues.add("missing-zh");
+        }
         if (!hasEn) issues.add("missing-en");
-        if (!hasVi) issues.add("missing-vi");
+        if (!hasVi && requiredLanguages.contains("vi")) issues.add("missing-vi");
         if (hasZh && hasEn && hasVi && !placeholdersMatch(message.en(), message.zh(), message.vi())) {
             issues.add("placeholder");
         }

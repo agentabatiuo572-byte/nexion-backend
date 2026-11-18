@@ -1,5 +1,7 @@
 package ffdd.opsconsole.content.application;
 
+import static ffdd.opsconsole.content.domain.I18nCopyQuality.hasCopyText;
+
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
@@ -376,10 +378,6 @@ public class OpsCopyAbService {
     }
 
     private ApiResult<CopyContentRow> saveDraftOnce(String copyKey, String idempotencyKey, CopyDraftSaveRequest request) {
-        CopyText text = completeCopyText(request.zh(), request.en(), request.vi());
-        ApiResult<CopyContentRow> payloadGuard = validateCopyPayload(
-                request.surface(), request.trafficSplit(), text.zh(), text.en(), text.vi(), request.translations(), request.reason());
-        if (payloadGuard != null) return payloadGuard;
         CopyContentRow current = copyAbRepository.findCopyForUpdate(copyKey.trim()).orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "COPY_NOT_FOUND");
@@ -416,6 +414,8 @@ public class OpsCopyAbService {
         if (positionGuard != null) {
             return positionGuard;
         }
+        CopyText text = completeCopyText(current.i18nKey(), request.zh(), request.en(), request.vi());
+        if (!text.complete()) return ApiResult.fail(422, "COPY_FIELDS_REQUIRED");
         copyAbRepository.saveDraft(current.key(), normalizeDraft(request, version, text), now());
         CopyContentRow updated = findCopy(current.key());
         auditRequired("I1_COPY_DRAFT_SAVED", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
@@ -471,21 +471,6 @@ public class OpsCopyAbService {
         if (target != null && !isCurrentDraft(current, target)) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "COPY_VERSION_HISTORY_IMMUTABLE");
         }
-        CopyText text;
-        if (target == null) {
-            text = completeCopyText(request.zh(), request.en(), request.vi());
-        } else {
-            // A saved draft is the publication source even if operating languages have since changed.
-            text = new CopyText(target.zh(), target.en(), target.vi());
-            if (!matchesDraft(request, target)) {
-                return ApiResult.fail(409, "COPY_REVISION_CONFLICT");
-            }
-        }
-        Map<String, String> translations = request.translations() == null && target != null
-                ? target.translations() : request.translations();
-        ApiResult<CopyContentRow> payloadGuard = validateCopyPayload(request.surface(), request.trafficSplit(),
-                text.zh(), text.en(), text.vi(), translations, request.reason());
-        if (payloadGuard != null) return payloadGuard;
         ApiResult<CopyContentRow> positionGuard = validatePositionReference(request.copyPosition(), request.surface());
         if (positionGuard != null) {
             return positionGuard;
@@ -494,7 +479,21 @@ public class OpsCopyAbService {
         if (positionConflict != null) {
             return positionConflict;
         }
-        CopyContentRow updated = copyAbRepository.publishVersion(current.key(), normalizePublish(request, version, text), now());
+        boolean publishSavedDraft = target != null && matchesDraft(request, target);
+        CopyText text = publishSavedDraft ? new CopyText(target.zh(), target.en(), target.vi())
+                : completeCopyText(current.i18nKey(), request.zh(), request.en(), request.vi());
+        if (!text.complete()) return ApiResult.fail(422, "COPY_FIELDS_REQUIRED");
+        CopyVersionPublishRequest publication = normalizePublish(request, version, text);
+        LocalDateTime publishedAt = now();
+        if (target != null && !publishSavedDraft) {
+            // The editor can save changes and publish in one command against the same locked revision.
+            copyAbRepository.saveDraft(current.key(), new CopyDraftSaveRequest(
+                    version, publication.surface(), publication.audience(), publication.audienceTarget(),
+                    publication.trafficSplit(), publication.versionNote(), publication.zh(), publication.en(),
+                    publication.vi(), publication.copyPosition(), publication.operator(), publication.reason(),
+                    publication.expectedRevision(), publication.translations()), publishedAt);
+        }
+        CopyContentRow updated = copyAbRepository.publishVersion(current.key(), publication, publishedAt);
         syncPublishedI18n(updated);
         auditRequired("I1_COPY_VERSION_PUBLISHED", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
                 "from", current.version(),
@@ -514,7 +513,7 @@ public class OpsCopyAbService {
                 || !StringUtils.hasText(request.version())
                 || !StringUtils.hasText(request.versionNote())
                 || (!StringUtils.hasText(request.audience()) && request.audienceTarget() == null) || !StringUtils.hasText(request.trafficSplit())
-                || !StringUtils.hasText(request.en()) || !StringUtils.hasText(request.copyPosition())) {
+                || !hasCopyText(request.en()) || !StringUtils.hasText(request.copyPosition())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_FIELDS_REQUIRED");
         }
         if (!COPY_KEY_PATTERN.matcher(request.copyKey().trim()).matches()
@@ -527,6 +526,12 @@ public class OpsCopyAbService {
         if (audienceGuard != null) {
             return audienceGuard;
         }
+        if (I18nCopyQuality.requiresChineseSource(request.i18nKey()) && !hasCopyText(request.zh())) {
+            return ApiResult.fail(422, "COPY_FIELDS_REQUIRED");
+        }
+        ApiResult<CopyContentRow> payloadGuard = validateCopyPayload(
+                request.surface(), request.trafficSplit(), request.zh(), request.en(), request.vi(), request.translations(), request.reason());
+        if (payloadGuard != null) return payloadGuard;
         return executeIdempotentMutation(
                 IDEMPOTENCY_SCOPE_CREATE,
                 request.copyKey().trim(),
@@ -536,10 +541,8 @@ public class OpsCopyAbService {
     }
 
     private ApiResult<CopyContentRow> createCopyOnce(String idempotencyKey, CopyCreateRequest request) {
-        CopyText text = completeCopyText(request.zh(), request.en(), request.vi());
-        ApiResult<CopyContentRow> payloadGuard = validateCopyPayload(request.surface(), request.trafficSplit(),
-                text.zh(), text.en(), text.vi(), request.translations(), request.reason());
-        if (payloadGuard != null) return payloadGuard;
+        CopyText text = completeCopyText(request.i18nKey(), request.zh(), request.en(), request.vi());
+        if (!text.complete()) return ApiResult.fail(422, "COPY_FIELDS_REQUIRED");
         ApiResult<CopyContentRow> positionGuard = validatePositionReference(request.copyPosition(), request.surface());
         if (positionGuard != null) {
             return positionGuard;
@@ -631,6 +634,9 @@ public class OpsCopyAbService {
         }
         if (!StringUtils.hasText(target.vi())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VI_REQUIRED");
+        }
+        if (!hasCopyText(target.zh()) || !hasCopyText(target.en())) {
+            return ApiResult.fail(422, "COPY_FIELDS_REQUIRED");
         }
         ApiResult<CopyContentRow> payloadGuard = validateCopyPayload(
                 target.surface(), target.trafficSplit(), target.zh(), target.en(), target.vi(), target.translations(), request.reason());
@@ -1135,7 +1141,7 @@ public class OpsCopyAbService {
         if (!StringUtils.hasText(copyKey) || request == null
                 || !StringUtils.hasText(request.surface()) || (!StringUtils.hasText(request.audience()) && request.audienceTarget() == null)
                 || !StringUtils.hasText(request.trafficSplit()) || !StringUtils.hasText(request.versionNote())
-                || !StringUtils.hasText(request.en()) || !StringUtils.hasText(request.copyPosition())) {
+                || !hasCopyText(request.en()) || !StringUtils.hasText(request.copyPosition())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_FIELDS_REQUIRED");
         }
         if (copyKey.trim().length() > 96 || request.versionNote().trim().length() > 255) {
@@ -1145,7 +1151,8 @@ public class OpsCopyAbService {
         if (audienceGuard != null) {
             return audienceGuard;
         }
-        return null;
+        return validateCopyPayload(request.surface(), request.trafficSplit(),
+                request.zh(), request.en(), request.vi(), request.translations(), request.reason());
     }
 
     private ApiResult<CopyContentRow> requirePublishCommand(String copyKey, String idempotencyKey, CopyVersionPublishRequest request) {
@@ -1155,7 +1162,7 @@ public class OpsCopyAbService {
         if (!StringUtils.hasText(copyKey) || request == null
                 || !StringUtils.hasText(request.surface()) || (!StringUtils.hasText(request.audience()) && request.audienceTarget() == null)
                 || !StringUtils.hasText(request.trafficSplit()) || !StringUtils.hasText(request.versionNote())
-                || !StringUtils.hasText(request.en()) || !StringUtils.hasText(request.copyPosition())) {
+                || !hasCopyText(request.en()) || !StringUtils.hasText(request.copyPosition())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_FIELDS_REQUIRED");
         }
         if (copyKey.trim().length() > 96 || request.versionNote().trim().length() > 255) {
@@ -1165,7 +1172,8 @@ public class OpsCopyAbService {
         if (audienceGuard != null) {
             return audienceGuard;
         }
-        return null;
+        return validateCopyPayload(request.surface(), request.trafficSplit(),
+                request.zh(), request.en(), request.vi(), request.translations(), request.reason());
     }
 
     private ApiResult<CopyExperimentRow> validateExperimentCreateCommand(
@@ -1429,7 +1437,7 @@ public class OpsCopyAbService {
     }
 
     private ApiResult<CopyContentRow> validateCopyPayload(String surface, String trafficSplit, String zh, String en, String vi, Map<String, String> translations, String reason) {
-        if (!StringUtils.hasText(zh) || !StringUtils.hasText(en) || !StringUtils.hasText(vi)) {
+        if (!hasCopyText(en)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_FIELDS_REQUIRED");
         }
         if (!SURFACES.contains(normalizeSurface(surface))) {
@@ -1439,15 +1447,17 @@ public class OpsCopyAbService {
         if (split <= 0 || split > 100) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_TRAFFIC_SPLIT_INVALID");
         }
-        if (zh.trim().length() > 1000 || en.trim().length() > 1000 || (vi != null && vi.trim().length() > 1000)) {
+        boolean hasZh = hasCopyText(zh);
+        boolean hasVi = hasCopyText(vi);
+        if (en.trim().length() > 1000 || (hasZh && zh.trim().length() > 1000) || (hasVi && vi.trim().length() > 1000)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_TEXT_TOO_LONG");
         }
-        if (JSON_LIKE_PATTERN.matcher(zh).find() || JSON_LIKE_PATTERN.matcher(en).find()
-                || (StringUtils.hasText(vi) && JSON_LIKE_PATTERN.matcher(vi).find())) {
+        if (JSON_LIKE_PATTERN.matcher(en).find() || (hasZh && JSON_LIKE_PATTERN.matcher(zh).find())
+                || (hasVi && JSON_LIKE_PATTERN.matcher(vi).find())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_JSON_NOT_ALLOWED");
         }
-        if (MANUAL_URL_PATTERN.matcher(zh).find() || MANUAL_URL_PATTERN.matcher(en).find()
-                || (StringUtils.hasText(vi) && MANUAL_URL_PATTERN.matcher(vi).find())) {
+        if (MANUAL_URL_PATTERN.matcher(en).find() || (hasZh && MANUAL_URL_PATTERN.matcher(zh).find())
+                || (hasVi && MANUAL_URL_PATTERN.matcher(vi).find())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_MANUAL_URL_NOT_ALLOWED");
         }
         if (translations != null) {
@@ -1459,11 +1469,12 @@ public class OpsCopyAbService {
                 if (JSON_LIKE_PATTERN.matcher(value).find()) return ApiResult.fail(422, "COPY_JSON_NOT_ALLOWED");
                 if (MANUAL_URL_PATTERN.matcher(value).find()) return ApiResult.fail(422, "COPY_MANUAL_URL_NOT_ALLOWED");
                 if (!placeholders(value).equals(placeholders(en))) return ApiResult.fail(422, "COPY_PLACEHOLDERS_MISMATCH");
-                String error = I18nCopyQuality.publishError(zh, en, value);
+                String error = I18nCopyQuality.publishError(hasZh ? zh : en, en, value);
                 if (error != null) return ApiResult.fail(422, error);
             }
         }
-        if (!placeholders(en).equals(placeholders(zh)) || !placeholders(en).equals(placeholders(vi))) {
+        Set<String> expected = placeholders(en);
+        if ((hasZh && !expected.equals(placeholders(zh))) || (hasVi && !expected.equals(placeholders(vi)))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_PLACEHOLDERS_MISMATCH");
         }
         if (!StringUtils.hasText(reason) || reason.trim().length() < 8 || reason.trim().length() > 200) {
@@ -1486,19 +1497,23 @@ public class OpsCopyAbService {
         return null;
     }
 
-    private record CopyText(String zh, String en, String vi) {}
+    private record CopyText(String zh, String en, String vi) {
+        boolean complete() {
+            return hasCopyText(zh) && hasCopyText(en) && hasCopyText(vi);
+        }
+    }
 
-    private CopyText completeCopyText(String zh, String en, String vi) {
+    private CopyText completeCopyText(String i18nKey, String zh, String en, String vi) {
         List<String> required = operatingLanguages.get();
-        return new CopyText(!StringUtils.hasText(zh) && !required.contains("zh") ? en : zh, en,
-                !StringUtils.hasText(vi) && !required.contains("vi") ? en : vi);
+        return new CopyText(!hasCopyText(zh) && !required.contains("zh") && !I18nCopyQuality.requiresChineseSource(i18nKey) ? en : zh,
+                en, !hasCopyText(vi) && !required.contains("vi") ? en : vi);
     }
 
     private boolean matchesDraft(CopyVersionPublishRequest request, CopyVersionRow draft) {
         String en = request.en().trim();
         return en.equals(draft.en())
-                && (StringUtils.hasText(request.zh()) ? request.zh().trim() : en).equals(draft.zh())
-                && (StringUtils.hasText(request.vi()) ? request.vi().trim() : en).equals(draft.vi())
+                && (hasCopyText(request.zh()) ? request.zh().trim() : en).equals(draft.zh())
+                && (hasCopyText(request.vi()) ? request.vi().trim() : en).equals(draft.vi())
                 && (request.translations() == null || MessageTranslations.clean(request.translations()).equals(draft.translations()))
                 && normalizeSurface(request.surface()).equals(draft.surface())
                 && request.copyPosition().trim().equals(draft.copyPosition())
