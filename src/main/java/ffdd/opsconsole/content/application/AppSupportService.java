@@ -273,7 +273,7 @@ public class AppSupportService {
         return ApiResult.ok(List.of(
                 new ConversationCategoryAvailability("advisor", conversationCategoryEnabled("advisor")),
                 new ConversationCategoryAvailability("support", false),
-                new ConversationCategoryAvailability("ai", conversationCategoryEnabled("ai"))));
+                new ConversationCategoryAvailability("ai", false)));
     }
 
     private boolean conversationCategoryEnabled(String type) {

@@ -437,8 +437,8 @@ public class OpsBiService implements AuditReplayable {
                 (long) rows.size(),
                 true,
                 "PARTIAL",
-                "READY",
-                "已确认；下载链接 24 小时内有效"));
+                "PENDING_CONFIRM",
+                "待另一管理员审批放行；下载链接 24 小时内有效"));
         reportRepository.saveSnapshotCsv(created.reportId(), networkTreeCsv(rows));
         Map<String, Object> auditDetail = linked(
                 "reportId", created.reportId(),
@@ -455,23 +455,13 @@ public class OpsBiService implements AuditReplayable {
                 // naming recipients that never receive a notification.
                 "alertRecipients", List.of(),
                 "notificationDelivery", "AUDIT_ONLY");
-        audit("admin.report_exported", created, currentActorUsername(), auditDetail);
+        audit("L_BI_REPORT_CREATE", created, currentActorUsername(), auditDetail);
         auditResource("admin.sensitive_export_alerted", "BI_EXPORT_ALERT", created.reportId(),
                 currentActorUsername(), "HIGH", linked(
                         "reportId", created.reportId(),
                         "recipients", List.of(),
                         "delivery", "AUDIT_ONLY",
                         "reason", reason));
-        reportRepository.publishReportExported(created.reportId(), linked(
-                "reportId", created.reportId(),
-                "exportType", created.type(),
-                "scope", created.scope(),
-                "rowCount", created.rowCount(),
-                "containsPii", created.containsPii(),
-                "maskingPolicy", created.maskingPolicy(),
-                "operator", trimOrDefault(currentActorUsername(), "unknown"),
-                "reason", reason,
-                "format", created.format()));
         return ApiResult.ok(linked(
                 "reportId", created.reportId(),
                 "status", created.status(),
@@ -479,6 +469,7 @@ public class OpsBiService implements AuditReplayable {
                 "scope", created.scope(),
                 "maskingPolicy", created.maskingPolicy(),
                 "containsPii", true,
+                "approvalRequired", true,
                 "downloadTtlHours", 24,
                 "downloadTokenPath", "/api/admin/bi/exports/" + created.reportId() + "/download-token",
                 // Nothing is delivered to these roles for this export; keep the field with no recipients.
@@ -819,6 +810,7 @@ public class OpsBiService implements AuditReplayable {
             case "FUNNEL_COHORT" -> "L2";
             case "FINANCE_AGG" -> "L3";
             case "OPERATIONS_AGG" -> "L4";
+            case "NETWORK_TREE" -> "L4";
             case "REGULATORY" -> "L5";
             default -> null;
         };
@@ -859,7 +851,9 @@ public class OpsBiService implements AuditReplayable {
         if (report == null) {
             return ApiResult.fail(404, "BI_REPORT_NOT_FOUND");
         }
-        if (!isSupportedAggregateReport(report) && !"REGULATORY".equals(normalizeText(report.type()))) {
+        if (!isSupportedAggregateReport(report)
+                && !"REGULATORY".equals(normalizeText(report.type()))
+                && !"NETWORK_TREE".equals(normalizeText(report.type()))) {
             return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), "L5_EXPORT_TYPE_NOT_AVAILABLE");
         }
         if (Set.of("GENERATE", "RERUN", "APPROVE", "DOWNLOAD").contains(normalizedAction)
@@ -867,7 +861,7 @@ public class OpsBiService implements AuditReplayable {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "REPORT_SNAPSHOT_NOT_AVAILABLE");
         }
         String requiredCode = "APPROVE".equals(normalizedAction)
-                ? "bi_l5_task_approve"
+                ? ("NETWORK_TREE".equals(normalizeText(report.type())) ? "bi_l4_export_tree" : "bi_l5_task_approve")
                 : reportAccessPermission(report);
         var permission = reportActionPermission(adminId, requiredCode);
         if (permission.getCode() != 0) return ApiResult.fail(permission.getCode(), permission.getMessage());

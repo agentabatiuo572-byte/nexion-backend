@@ -51,6 +51,7 @@ public class OpsReferralRewardService {
     private static final String EFFECTIVE_AT_KEY = "K.rewards.referral.effectiveAt";
     private static final String VERSION_KEY = "K.rewards.referral.version";
     private static final String ENABLED_KEY = "K.rewards.referral.enabled";
+    private static final String PRIOR_POLICY_KEY = "K.rewards.referral.priorPolicy";
     // This product ceiling is exact in JavaScript and remains below DECIMAL(18,6).
     private static final BigDecimal MAX_EFFECTIVE_REWARD = new BigDecimal("999999999.000000");
     // H1 payout multipliers are bounded to 4x. Capping the editable base here
@@ -421,8 +422,10 @@ public class OpsReferralRewardService {
                         Instant policyChangeAt = clock.instant();
                         Long pendingBeforePolicyChange = null;
                         if (startsNewRewardPolicy && config.activeValue(EFFECTIVE_AT_KEY).isPresent()) {
-                            pendingBeforePolicyChange = mapper.totalPendingBefore(effectiveAtRequired(),
+                            LocalDateTime priorEffectiveAt = effectiveAtRequired();
+                            pendingBeforePolicyChange = mapper.totalPendingBefore(priorEffectiveAt,
                                     LocalDateTime.ofInstant(policyChangeAt, DATABASE_ZONE), 0, "risk_bucket".equals(lockMode()));
+                            storePriorPolicy(priorEffectiveAt, policyChangeAt);
                         }
                         if (startsNewRewardPolicy) {
                             config.upsertAdminValue(EFFECTIVE_AT_KEY, policyChangeAt.toString(), "DATETIME", "GROWTH_REFERRAL",
@@ -453,7 +456,7 @@ public class OpsReferralRewardService {
                         }
                         if (pendingBeforePolicyChange != null) {
                             detail.put("pendingBeforePolicyChange", pendingBeforePolicyChange);
-                            if (pendingBeforePolicyChange > 0) detail.put("priorCohortDisposition", "REVIEW_REQUIRED");
+                            if (pendingBeforePolicyChange > 0) detail.put("priorCohortDisposition", "AUTO_SETTLE_UNDER_PRIOR_POLICY");
                         }
                         audit("REFERRAL_REWARD_PARAM_UPDATE", paramKey, operator, idempotencyKey, detail);
                         outbox.publish("REFERRAL_REWARD_PARAM", paramKey, "H8_REFERRAL_REWARD_PARAM_CHANGED",
@@ -464,7 +467,7 @@ public class OpsReferralRewardService {
                                 "status", "UPDATED", "version", nextVersion));
                         if (pendingBeforePolicyChange != null) {
                             result.put("pendingBeforePolicyChange", pendingBeforePolicyChange);
-                            if (pendingBeforePolicyChange > 0) result.put("priorCohortDisposition", "REVIEW_REQUIRED");
+                            if (pendingBeforePolicyChange > 0) result.put("priorCohortDisposition", "AUTO_SETTLE_UNDER_PRIOR_POLICY");
                         }
                         return result;
                     });
@@ -642,56 +645,39 @@ public class OpsReferralRewardService {
         requireHealthyCoverage();
         LocalDateTime effectiveAt = snapshot.effectiveAt();
         EffectiveRewards effectiveRewards = snapshot.rewards();
-        BigDecimal newcomerMultiplier = effectiveRewards.newcomerMultiplier();
-        BigDecimal inviterMultiplier = effectiveRewards.inviterMultiplier();
         BigDecimal newcomerUsdt = effectiveRewards.newcomerUsdt();
         BigDecimal newcomerNex = effectiveRewards.newcomerNex();
         BigDecimal inviterNex = effectiveRewards.inviterNex();
         String lockMode = snapshot.lockMode();
-        String configSnapshot = "usdt=" + newcomerUsdt.toPlainString() + ",newcomerNex="
-                + newcomerNex.toPlainString() + ",inviterNex=" + inviterNex.toPlainString()
-                + ",newcomerMultiplier=" + newcomerMultiplier.toPlainString()
-                + ",inviterMultiplier=" + inviterMultiplier.toPlainString() + ",lockMode=" + lockMode;
         if (newcomerUsdt.signum() == 0 && newcomerNex.signum() == 0 && inviterNex.signum() == 0) {
             throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "REFERRAL_REWARD_NOT_CONFIGURED");
         }
-        int settled = 0;
-        int skipped = 0;
         boolean holdRisky = "risk_bucket".equals(lockMode);
-        List<ReferralRewardMapper.ReferralRow> pending = mapper.findPendingReferrals(
+        List<ReferralRewardMapper.ReferralRow> currentPending = mapper.findPendingReferrals(
                 effectiveAt, SETTLEMENT_ENVIRONMENT, accountSandbox, holdRisky, limit, onlyInvitedUserId);
-        if (onlyInvitedUserId != null && pending.isEmpty()) {
-            if(Boolean.TRUE.equals(mapper.freezeNewcomer(onlyInvitedUserId))) {
-                int released=releasePurchasedGifts(onlyInvitedUserId);
-                if(released>0) return Map.of("settled",0,"skipped",0,"released",released,"limit",limit);
+        PriorPolicy prior = priorPolicy();
+        List<ReferralRewardMapper.ReferralRow> priorPending = prior == null ? List.of()
+                : mapper.findPriorPendingReferrals(prior.effectiveAt(), prior.effectiveUntil(),
+                        SETTLEMENT_ENVIRONMENT, accountSandbox, "risk_bucket".equals(prior.lockMode()),
+                        Math.max(0, limit - currentPending.size()), onlyInvitedUserId);
+        if (onlyInvitedUserId != null && currentPending.isEmpty() && priorPending.isEmpty()) {
+            if (Boolean.TRUE.equals(mapper.freezeNewcomer(onlyInvitedUserId))) {
+                int released = releasePurchasedGifts(onlyInvitedUserId);
+                if (released > 0) return Map.of("settled", 0, "skipped", 0, "released", released, "limit", limit);
             }
             throw new BizException(409, "REFERRAL_REWARD_USER_NOT_ELIGIBLE_OR_SETTLED");
         }
-        for (ReferralRewardMapper.ReferralRow row : pending) {
-            String settlementNo = "REF-" + UUID.randomUUID().toString().replace("-", "").substring(0, 24).toUpperCase();
-            BigDecimal actualInviterNex=row.inviterUserId()==null?BigDecimal.ZERO:inviterNex;
-            if (mapper.insertSettlement(settlementNo, row.invitedUserId(), row.inviterUserId(),
-                    newcomerUsdt, newcomerNex, actualInviterNex, lockMode, configSnapshot, operator, reason, key,
-                    effectiveAt, SETTLEMENT_ENVIRONMENT, accountSandbox, holdRisky) != 1) {
-                if (onlyInvitedUserId != null) {
-                    throw new BizException(409, "REFERRAL_REWARD_USER_NOT_ELIGIBLE_OR_SETTLED");
-                }
-                skipped++;
-                continue;
-            }
-            settleNewcomer(settlementNo,row.invitedUserId(),newcomerUsdt,newcomerNex,0,null);
-            if(row.inviterUserId()!=null) {
-                creditReward(row.inviterUserId(), settlementNo + ":INVITER", "UVT", actualInviterNex);
-                post(settlementNo + ":INVITER", row.inviterUserId(), BigDecimal.ZERO, actualInviterNex, "邀请人奖励");
-            }
-            Map<String,Object> detail=new LinkedHashMap<>(Map.of("invitedUserId",row.invitedUserId(),
-                    "newcomerUsdt",newcomerUsdt,"newcomerNex",newcomerNex,"inviterNex",actualInviterNex,
-                    "lockMode",lockMode,"reason",reason,"sourceEnvironment",SETTLEMENT_ENVIRONMENT));
-            if(row.inviterUserId()!=null) detail.put("inviterUserId",row.inviterUserId());
-            audit("REFERRAL_REWARD_SETTLED",settlementNo,operator,key,detail);
-            if(row.inviterUserId()!=null) outbox.publish("REFERRAL_REWARD_SETTLEMENT",settlementNo,"H8_REFERRAL_REWARD_SETTLED",detail);
-            settled++;
+        String configSnapshot = snapshotText(effectiveRewards, lockMode);
+        SettleCount currentCount = settleRows(currentPending, effectiveAt, effectiveRewards, lockMode, configSnapshot,
+                "CURRENT", reason, operator, key, accountSandbox, holdRisky, onlyInvitedUserId);
+        SettleCount priorCount = new SettleCount(0, 0);
+        if (prior != null && !priorPending.isEmpty()) {
+            String priorSnapshot = snapshotText(prior.rewards(), prior.lockMode());
+            priorCount = settleRows(priorPending, prior.effectiveAt(), prior.rewards(), prior.lockMode(), priorSnapshot,
+                    "PRIOR", reason, operator, key, accountSandbox, "risk_bucket".equals(prior.lockMode()), onlyInvitedUserId);
         }
+        int settled = currentCount.settled() + priorCount.settled();
+        int skipped = currentCount.skipped() + priorCount.skipped();
         // Recompute from the wallet state written by this transaction. If the batch
         // itself crosses B1 or makes UVT valuation unavailable, throwing here rolls
         // back every settlement, wallet credit, ledger entry and audit in the batch.
@@ -705,6 +691,12 @@ public class OpsReferralRewardService {
         batchAudit.put("effectiveAt", effectiveAt);
         batchAudit.put("sourceEnvironment", SETTLEMENT_ENVIRONMENT);
         batchAudit.put("coverage", coverageDetail());
+        if (prior != null) {
+            batchAudit.put("priorEffectiveAt", prior.effectiveAt());
+            batchAudit.put("priorEffectiveUntil", prior.effectiveUntil());
+            batchAudit.put("priorCohortSettled", priorCount.settled());
+            batchAudit.put("priorCohortSkipped", priorCount.skipped());
+        }
         if (onlyInvitedUserId != null) batchAudit.put("invitedUserId", onlyInvitedUserId);
         audit("REFERRAL_REWARD_SETTLEMENT_RUN", "batch", operator, key, batchAudit);
         Map<String, Object> completed = new LinkedHashMap<>(Map.of(
@@ -714,6 +706,66 @@ public class OpsReferralRewardService {
         outbox.publish("REFERRAL_REWARD_SETTLEMENT", key, "H8_REFERRAL_REWARD_BATCH_COMPLETED",
                 completed);
         return Map.of("settled", settled, "skipped", skipped, "limit", limit);
+    }
+
+    private String snapshotText(EffectiveRewards rewards, String lockMode) {
+        return "usdt=" + rewards.newcomerUsdt().toPlainString()
+                + ",newcomerNex=" + rewards.newcomerNex().toPlainString()
+                + ",inviterNex=" + rewards.inviterNex().toPlainString()
+                + ",newcomerMultiplier=" + rewards.newcomerMultiplier().toPlainString()
+                + ",inviterMultiplier=" + rewards.inviterMultiplier().toPlainString()
+                + ",lockMode=" + lockMode;
+    }
+
+    private SettleCount settleRows(
+            List<ReferralRewardMapper.ReferralRow> rows,
+            LocalDateTime effectiveAt,
+            EffectiveRewards rewards,
+            String lockMode,
+            String configSnapshot,
+            String policy,
+            String reason,
+            String operator,
+            String key,
+            int accountSandbox,
+            boolean holdRisky,
+            Long onlyInvitedUserId) {
+        BigDecimal newcomerUsdt = rewards.newcomerUsdt();
+        BigDecimal newcomerNex = rewards.newcomerNex();
+        BigDecimal inviterNex = rewards.inviterNex();
+        int settled = 0;
+        int skipped = 0;
+        for (ReferralRewardMapper.ReferralRow row : rows) {
+            String settlementNo = "REF-" + UUID.randomUUID().toString().replace("-", "").substring(0, 24).toUpperCase();
+            BigDecimal actualInviterNex = row.inviterUserId() == null ? BigDecimal.ZERO : inviterNex;
+            if (mapper.insertSettlement(settlementNo, row.invitedUserId(), row.inviterUserId(),
+                    newcomerUsdt, newcomerNex, actualInviterNex, lockMode, configSnapshot, operator, reason, key,
+                    effectiveAt, SETTLEMENT_ENVIRONMENT, accountSandbox, holdRisky) != 1) {
+                if (onlyInvitedUserId != null) {
+                    throw new BizException(409, "REFERRAL_REWARD_USER_NOT_ELIGIBLE_OR_SETTLED");
+                }
+                skipped++;
+                continue;
+            }
+            settleNewcomer(settlementNo, row.invitedUserId(), newcomerUsdt, newcomerNex, 0, null);
+            if (row.inviterUserId() != null) {
+                creditReward(row.inviterUserId(), settlementNo + ":INVITER", "UVT", actualInviterNex);
+                post(settlementNo + ":INVITER", row.inviterUserId(), BigDecimal.ZERO, actualInviterNex, "邀请人奖励");
+            }
+            Map<String, Object> detail = new LinkedHashMap<>(Map.of("invitedUserId", row.invitedUserId(),
+                    "newcomerUsdt", newcomerUsdt, "newcomerNex", newcomerNex, "inviterNex", actualInviterNex,
+                    "lockMode", lockMode, "reason", reason, "sourceEnvironment", SETTLEMENT_ENVIRONMENT,
+                    "policy", policy));
+            if (row.inviterUserId() != null) detail.put("inviterUserId", row.inviterUserId());
+            audit("REFERRAL_REWARD_SETTLED", settlementNo, operator, key, detail);
+            if (row.inviterUserId() != null) outbox.publish("REFERRAL_REWARD_SETTLEMENT", settlementNo,
+                    "H8_REFERRAL_REWARD_SETTLED", detail);
+            settled++;
+        }
+        return new SettleCount(settled, skipped);
+    }
+
+    private record SettleCount(int settled, int skipped) {
     }
 
     private void settleNewcomer(String no,long user,BigDecimal usdt,BigDecimal nex,int sandbox,String run) {
@@ -811,6 +863,47 @@ public class OpsReferralRewardService {
             BigDecimal newcomerUsdt,
             BigDecimal newcomerNex,
             BigDecimal inviterNex) {
+    }
+
+    private record PriorPolicy(
+            LocalDateTime effectiveAt,
+            LocalDateTime effectiveUntil,
+            String lockMode,
+            EffectiveRewards rewards) {
+    }
+
+    private void storePriorPolicy(LocalDateTime priorEffectiveAt, Instant nextEffectiveAt) {
+        EffectiveRewards priorRewards = effectiveRewards();
+        String prior = String.join("|",
+                priorEffectiveAt.atZone(DATABASE_ZONE).toInstant().toString(),
+                nextEffectiveAt.toString(),
+                lockMode(),
+                String.valueOf(priorRewards.rhythmMonth()),
+                priorRewards.newcomerMultiplier().toPlainString(),
+                priorRewards.inviterMultiplier().toPlainString(),
+                priorRewards.newcomerUsdt().toPlainString(),
+                priorRewards.newcomerNex().toPlainString(),
+                priorRewards.inviterNex().toPlainString());
+        config.upsertAdminValue(PRIOR_POLICY_KEY, prior, "STRING", "GROWTH_REFERRAL",
+                "H8 prior reward policy for pending referrals registered before the latest policy change");
+    }
+
+    private PriorPolicy priorPolicy() {
+        String raw = config.activeValue(PRIOR_POLICY_KEY).orElse(null);
+        if (!StringUtils.hasText(raw)) return null;
+        String[] p = raw.split("\\|", -1);
+        if (p.length != 9) throw new IllegalStateException("H8_PRIOR_POLICY_INVALID");
+        return new PriorPolicy(
+                LocalDateTime.ofInstant(Instant.parse(p[0]), DATABASE_ZONE),
+                LocalDateTime.ofInstant(Instant.parse(p[1]), DATABASE_ZONE),
+                p[2],
+                new EffectiveRewards(
+                        Integer.parseInt(p[3]),
+                        new BigDecimal(p[4]),
+                        new BigDecimal(p[5]),
+                        new BigDecimal(p[6]),
+                        new BigDecimal(p[7]),
+                        new BigDecimal(p[8])));
     }
 
     private record RewardSnapshot(
