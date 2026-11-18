@@ -20,6 +20,11 @@ public record NovaOverview(
         List<ChannelRuntimeSource> channelRuntimeSources,
         /** Rolling seven-day counts from the canonical NOVA_NOTIFICATION/nova.push_sent facts. */
         PushDeliveryView pushDelivery) {
+    @com.fasterxml.jackson.annotation.JsonProperty(value = "retiredBrandPublishedChannels", access = com.fasterxml.jackson.annotation.JsonProperty.Access.READ_ONLY)
+    public List<String> retiredBrandPublishedChannels() {
+        return templates.stream().filter(template -> "PUBLISHED".equalsIgnoreCase(template.status()) && template.carriesRetiredBrand())
+                .map(NovaTemplateView::channel).distinct().sorted().toList();
+    }
 
     /** Existing twelve-value callers keep their wire shape with no projected runtime sources. */
     public NovaOverview(

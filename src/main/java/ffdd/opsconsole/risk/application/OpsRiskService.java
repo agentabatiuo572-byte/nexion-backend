@@ -961,6 +961,16 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         List<RiskArbitrageRowView> rows = withK2StructuredFacts(riskRepository.arbitrageRows());
         Map<String, List<RiskArbitrageRowView>> byView = rows.stream()
                 .map(row -> {
+                    if ("gift".equals(row.viewKey()) && row.cells().size() >= 3) {
+                        List<String> cells = new ArrayList<>(row.cells());
+                        String legacy = cells.get(2);
+                        if (legacy != null && legacy.endsWith(" / 0 已拦")) {
+                            cells.set(2, legacy.substring(0, legacy.length() - " / 0 已拦".length()) + " / 已拦无可核数据");
+                            return new RiskArbitrageRowView(row.rowId(), row.viewKey(), row.clusterId(), cells,
+                                    row.level(), row.actions(), row.disposition(), row.version(), row.clusterStatus(),
+                                    row.clusterVersion(), row.structured());
+                        }
+                    }
                     if (!"board".equals(row.viewKey()) || row.cells().size() < 3) return row;
                     Matcher multiplier = K2_LEADERBOARD_DISPLAY_CELL.matcher(row.cells().get(2));
                     if (!multiplier.matches()) return row;
@@ -994,6 +1004,11 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         response.put("serverCanonical", true);
         response.put("domain", "K2");
         response.put("stats", canonicalK2Stats(rows));
+        response.put("riskLevelScale", Map.of("min", 0, "max", 5,
+                "trial", "按试用循环次数计，最低 2，最高 5",
+                "gift", "已结算新人礼不超过 2 笔为 3 级、3 笔为 4 级、4 笔及以上为 5 级（以实际入桶为前提）",
+                "board", "超过比较基线 10 倍为 4 级，其他入桶记录为 3 级",
+                "meaning", "不同监测场景独立计级，等级不是处置动作"));
         response.put("params", params);
         response.put("welcomeGiftScopeSupported", Map.of(
                 "实体", true, "账户簇", true, "手机号", false, "设备", false));

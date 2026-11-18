@@ -413,6 +413,10 @@ public class OpsReferralRewardService {
                         long nextVersion = Math.addExact(currentVersion, 1L);
                         boolean startsNewRewardPolicy = ("enabled".equals(paramKey) && !Boolean.parseBoolean(before)
                                 && Boolean.parseBoolean(value)) || !"enabled".equals(paramKey);
+                        Long pendingBeforePolicyChange = null;
+                        if (startsNewRewardPolicy && config.activeValue(EFFECTIVE_AT_KEY).isPresent()) {
+                            pendingBeforePolicyChange = mapper.totalPending(effectiveAtRequired(), 0, "risk_bucket".equals(lockMode()));
+                        }
                         if (startsNewRewardPolicy) {
                             config.upsertAdminValue(EFFECTIVE_AT_KEY, clock.instant().toString(), "DATETIME", "GROWTH_REFERRAL",
                                     "H8 reward policy version " + nextVersion
@@ -440,13 +444,16 @@ public class OpsReferralRewardService {
                             detail.put("effectiveRewards", Map.of("newcomer.usdt", appliedRewards.newcomerUsdt(),
                                     "newcomer.nex", appliedRewards.newcomerNex(), "inviter.nex", appliedRewards.inviterNex()));
                         }
+                        if (pendingBeforePolicyChange != null) detail.put("pendingBeforePolicyChange", pendingBeforePolicyChange);
                         audit("REFERRAL_REWARD_PARAM_UPDATE", paramKey, operator, idempotencyKey, detail);
                         outbox.publish("REFERRAL_REWARD_PARAM", paramKey, "H8_REFERRAL_REWARD_PARAM_CHANGED",
                                 Map.of("paramKey", paramKey, "before", before, "after", value,
                                         "version", nextVersion, "operator", operator, "reason", reason,
                                         "idempotencyKey", idempotencyKey));
-                        return Map.of("key", paramKey, "value", value, "status", "UPDATED",
-                                "version", nextVersion);
+                        Map<String, Object> result = new LinkedHashMap<>(Map.of("key", paramKey, "value", value,
+                                "status", "UPDATED", "version", nextVersion));
+                        if (pendingBeforePolicyChange != null) result.put("pendingBeforePolicyChange", pendingBeforePolicyChange);
+                        return result;
                     });
         } catch (RuntimeException ex) {
             rejectedAudit("REFERRAL_REWARD_PARAM_UPDATE_REJECTED", paramKey,
