@@ -120,11 +120,14 @@ public class H4GrowthApproval {
     }
 
     /** Freeze copy in the proposal transaction after the existing preview checks. */
-    public AuditReplayCommand bindEventCopy(AuditReplayCommand command) {
+    public AuditReplayCommand bindEventCopy(AuditReplayCommand command, String operator,
+            String reason, String idempotencyKey, String operationId) {
         if (!supports(command) || !Set.of(RULE, LEGACY_OPEN).contains(command.op())) return command;
         AuditLockTarget target = target(command);
         boolean legacy = LEGACY_OPEN.equals(command.op());
-        var published = rules.checkLocalizedContent(target.id(), true);
+        var published = growth.saveEventPublicationCopy(target.id(), operator, Map.of(
+                "reason", reason, "idempotencyKey", idempotencyKey.trim(),
+                "operation", command.op(), "operationId", operationId, "sourceLocale", "en"));
         if (!published.complete()) {
             throw new H4EventRuleIncompleteException(422,
                     legacy ? "EVENT_LOCALIZED_CONTENT_INCOMPLETE" : "EVENT_RULE_INCOMPLETE",
@@ -132,7 +135,11 @@ public class H4GrowthApproval {
         }
         var params = new LinkedHashMap<>(command.params());
         params.put("eventCopy", published.content());
-        if (legacy) params.put("expectedState", state(target, command.op()));
+        if (legacy) {
+            var before = (Map<?, ?>) params.get("expectedState");
+            params.put("eventCopyBefore", before.get("localized"));
+            params.put("expectedState", state(target, command.op()));
+        }
         return new AuditReplayCommand(command.domain(), command.op(), params);
     }
 
@@ -202,7 +209,7 @@ public class H4GrowthApproval {
             return ApiResult.fail(403, "H4_APPROVAL_FORBIDDEN");
         if (!state(target, command.op()).equals(command.params().get("expectedState"))) return ApiResult.fail(409, "H4_CONFIG_STALE");
         if (command.params().get("eventCopy") instanceof Map<?, ?> copy
-                && !rules.savedLocalizedContent(target.id()).content().equals(copy)) {
+                && !rules.readEventContent(target.id()).equals(copy)) {
             return ApiResult.fail(409, "H4_CONFIG_STALE");
         }
         if (!(command.params().get("proposalReason") instanceof String reason)) return ApiResult.fail(422, "H4_PROPOSAL_INVALID");

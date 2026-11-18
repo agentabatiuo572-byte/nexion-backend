@@ -640,7 +640,12 @@ function check(doc, fixture, sql) {
     validate(item.value, doc.components.schemas[item.schema], doc, fixture, item.schema);
   }
   assert.deepEqual(fixture.templates.map(t => t.value.template), templates);
-  assert.deepEqual(fixture.policyKinds.map(p => p.value.content.kind), doc.components.schemas.PolicyContent.oneOf.map(s => s.properties.kind.const), 'Every executable policy kind has a fixture');
+  const policyKinds = name => doc.components.schemas[name].oneOf
+    .flatMap(branch => dereference(branch, doc, fixture).oneOf ?? [branch])
+    .map(branch => branch.properties.kind.const).sort();
+  const fixturePolicyKinds = fixture.policyKinds.map(p => p.value.content.kind).sort();
+  assert.deepEqual(policyKinds('StoredPolicyContent'), fixturePolicyKinds, 'Stored policy variants cover every executable kind');
+  assert.deepEqual(policyKinds('AuthoredPolicyContent'), fixturePolicyKinds, 'Author policy variants cover every executable kind');
   fixture.policyKinds.forEach(p => validate(p.value, doc.components.schemas[p.schema], doc, fixture, 'policy.' + p.value.content.kind));
   assert(doc.components.schemas.Policy.required.includes('resolvedDeviceRights'));
   const deviceRights = doc.components.schemas.ResolvedDeviceRights;
@@ -690,6 +695,16 @@ function check(doc, fixture, sql) {
   assert.throws(() => validate(englishOnly, doc.components.schemas.LocalizedText, doc, fixture),
     undefined, 'Stored and delivered text still has three values');
   assert.equal(doc.components.schemas.Policy.properties.content.$ref, '#/components/schemas/StoredPolicyContent');
+  for (const name of ['PolicyDraft', 'PolicyVersionInput'])
+    assert.equal(doc.components.schemas[name].properties.content.$ref, '#/components/schemas/AuthoredPolicyContent');
+  for (const {value: {content}} of fixture.policyKinds) {
+    const field = {DEVICE_RIGHTS:'rightsDescription', ASSET:'availabilityDescription', REFUND:'terms'}[content.kind];
+    if (!field) continue;
+    const sparse = {...content, [field]: englishOnly};
+    validate(sparse, doc.components.schemas.AuthoredPolicyContent, doc, fixture);
+    assert.throws(() => validate(sparse, doc.components.schemas.StoredPolicyContent, doc, fixture),
+      undefined, 'Stored policy translations must be complete: ' + content.kind);
+  }
   assert(sql.includes('reserved_orders BIGINT NOT NULL DEFAULT 0') && sql.includes('used_orders BIGINT NOT NULL DEFAULT 0'));
   assert(sql.includes('chk_promotion_activity_count'), 'Activity count persists independently of beneficiary usage');
   for (const shape of doc.components.schemas.PublicRewardSpec.oneOf) {

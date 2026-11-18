@@ -1093,8 +1093,9 @@ public class AuditReplayBusinessPermissionGuard {
                 String.valueOf(review.get("before")), String.valueOf(review.get("after")), "H4", historical ? "param" : "fund", !historical, target));
     }
 
-    AuditReplayCommand bindH4EventCopy(AuditReplayCommand command) {
-        return h4GrowthApproval.bindEventCopy(command);
+    AuditReplayCommand bindH4EventCopy(AuditReplayCommand command, String operator,
+            String reason, String idempotencyKey, String operationId) {
+        return h4GrowthApproval.bindEventCopy(command, operator, reason, idempotencyKey, operationId);
     }
 
     public ApiResult<DelegatedProposalDescriptor> validateProposalContext(
