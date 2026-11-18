@@ -228,6 +228,11 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
     }
 
     @Override
+    public boolean insertSettingIfAbsent(String settingKey, String value, String groupCode, String operator) {
+        return mapper.insertSettingIfAbsent(settingKey, value, groupCode, operator) == 1;
+    }
+
+    @Override
     public boolean compareAndSetSetting(String settingKey, String expectedValue, String newValue, String operator) {
         ensureTables();
         return mapper.compareAndSetSetting(settingKey, expectedValue, newValue, operator) == 1;
