@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.domain;
 
 import java.util.List;
+import java.util.Map;
 
 public record NovaOverview(
         NovaStats stats,
@@ -59,7 +60,11 @@ public record NovaOverview(
     }
 
     /** The exact catalog source used by the business dispatcher, for one channel. */
-    public record ChannelRuntimeSource(String channel, List<String> eventNames, boolean targeted) {
+    public record ChannelRuntimeSource(String channel, List<String> eventNames, boolean targeted,
+                                       Map<String, String> eventDisplayNames) {
+        public ChannelRuntimeSource(String channel, List<String> eventNames, boolean targeted) {
+            this(channel, eventNames, targeted, Map.of());
+        }
     }
 
     /** One rolling window, sourced only from canonical user notification facts. */
