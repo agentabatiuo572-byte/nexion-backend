@@ -106,6 +106,7 @@ public class OpsConversationService {
         response.put("domain", "I9");
         response.put("statuses", List.of("OPEN", "TRANSFERRED", "RESOLVED", "CLOSED"));
         response.put("conversationTypes", List.of("advisor", "support", "ai"));
+        response.put("retiredConversationTypes", List.of("ai"));
         response.put("pendingMeaning", "unread or transferred conversations not archived");
         response.put("transferStateMachine", List.of("OPEN->TRANSFERRED", "TRANSFERRED->TRANSFERRED(wait)", "TRANSFERRED->OPEN", "OPEN->RESOLVED", "RESOLVED->CLOSED"));
         response.put("sources", List.of("nx_conversation", "nx_conversation_transfer"));
