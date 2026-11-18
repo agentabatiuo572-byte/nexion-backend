@@ -306,7 +306,9 @@ public class OpsPlatformMenuService {
     }
 
     private MenuNodeView toView(AdminMenuEntity e) {
-        return new MenuNodeView(e.getId(), e.getMenuCode(), e.getMenuName(), e.getMenuNameZh(),
+        return new MenuNodeView(e.getId(), e.getMenuCode(),
+                ffdd.opsconsole.platform.domain.AdminMenuDisplayNames.resolve(e.getRoutePath(), e.getMenuName()),
+                ffdd.opsconsole.platform.domain.AdminMenuDisplayNames.resolve(e.getRoutePath(), e.getMenuNameZh()),
                 e.getParentId(), e.getRoutePath(), e.getIcon(), e.getSortOrder(), e.getStatus(), versionOf(e));
     }
 

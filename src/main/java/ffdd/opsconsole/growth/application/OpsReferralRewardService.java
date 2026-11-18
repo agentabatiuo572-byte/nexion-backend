@@ -397,6 +397,10 @@ public class OpsReferralRewardService {
                         if (approved && !amplification) {
                             throw new BizException(422, "H8_PARAM_APPROVAL_NOT_REQUIRED");
                         }
+                        if (value.equals(normalizeParam(paramKey, before))) {
+                            return Map.of("key", paramKey, "value", value, "status", "UNCHANGED",
+                                    "version", currentVersion);
+                        }
                         EffectiveRewards appliedRewards = approved ? effectiveRewards(paramKey, value) : null;
                         Map<String, Object> coverageEvidence;
                         if (amplification) {
