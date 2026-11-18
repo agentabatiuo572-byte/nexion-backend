@@ -564,6 +564,11 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
 
     @Override
     public List<I18nIntegrityIssueView> recomputeIntegrity(LocalDateTime now) {
+        return recomputeIntegrity(now, List.of("en"));
+    }
+
+    @Override
+    public List<I18nIntegrityIssueView> recomputeIntegrity(LocalDateTime now, List<String> requiredLanguages) {
         Map<String, List<String>> samples = new LinkedHashMap<>();
         for (String code : List.of("missing-zh", "missing-en", "missing-vi", "placeholder",
                 "placeholder-text", "retired-brand")) {
@@ -572,7 +577,7 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         for (I18nMessagePairView current : listMessagePairs()) {
             // A newer draft must not hide invalid copy that is still published to App users.
             I18nMessagePairView message = findPublishedMessagePair(current.messageKey()).orElse(current);
-            for (String code : I18nCopyQuality.integrityIssueCodes(message)) {
+            for (String code : I18nCopyQuality.integrityIssueCodes(message, requiredLanguages)) {
                 samples.get(code).add(message.messageKey());
             }
         }
