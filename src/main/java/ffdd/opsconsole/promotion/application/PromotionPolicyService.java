@@ -41,9 +41,36 @@ public class PromotionPolicyService {
             Map<String,Object> copy=new LinkedHashMap<>(view);
             copy.put("approvedByAdmin",identity==null?null:values("id",identity.id(),
                     "displayName",identity.displayName(),"username",identity.username()));
+            Map<String,Object> execution=policyExecution(copy);
+            if(execution!=null)copy.put("execution",execution);
             enriched.add(copy);
         }
         return enriched;
+    }
+
+    /**
+     * Execution facts of the one approved REFUND contract, read-only and only on that exact content.
+     * The stored v1 content still says MANUAL_REVIEW because that is the historical contract; what the
+     * engine actually does for a confirmed whole-order refund is stated here instead of being edited
+     * into the content, so legacy hashes and every other policy are untouched.
+     */
+    private Map<String,Object> policyExecution(Map<String,Object> view){
+        Object raw=view.get("content");
+        if(!(raw instanceof Map<?,?> content))return null;
+        if(!"REFUND".equals(text(content.get("kind")))
+                || !"PROMOTION_WALLET_REFUND_V1".equals(text(content.get("executorCode"))))return null;
+        return values("basis","WHOLE_ORDER_REFUND_CONFIRMED",
+                // Wallet assets (UVT/USDT) are recovered from the same asset's available balance.
+                "walletRecovery","SAME_ASSET_AVAILABLE_BALANCE",
+                // Gift devices follow their own path: the device is revoked and its tasks stopped,
+                // while earnings already posted stay with the user and are booked as platform loss.
+                "deviceRecovery","REVOKE_GIFT_DEVICE_CANCEL_OPEN_TASKS_KEEP_POSTED_EARNINGS",
+                "insufficientRecovery","PLATFORM_LOSS_AND_CLOSE",
+                "negativeBalance",false,
+                "crossAssetDeduction",false,
+                "terminalState","REVERSED",
+                "manualReviewAppliesTo","APPROVED_CORRECTION",
+                "unknownEvidence","ORIGINAL_REFUND_CHECKS");
     }
 
     private Map<Long,AdminMapper.AdminIdIdentity> identities(List<Long> ids){
