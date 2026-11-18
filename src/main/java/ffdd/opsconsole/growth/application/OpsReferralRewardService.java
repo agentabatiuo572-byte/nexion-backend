@@ -398,8 +398,13 @@ public class OpsReferralRewardService {
                             throw new BizException(422, "H8_PARAM_APPROVAL_NOT_REQUIRED");
                         }
                         if (value.equals(normalizeParam(paramKey, before))) {
-                            return Map.of("key", paramKey, "value", value, "status", "UNCHANGED",
-                                    "version", currentVersion);
+                            Map<String, Object> unchanged = new LinkedHashMap<>();
+                            unchanged.put("key", paramKey);
+                            unchanged.put("value", value);
+                            unchanged.put("status", "UNCHANGED");
+                            unchanged.put("version", currentVersion);
+                            unchanged.put("effectiveAt", config.activeValue(EFFECTIVE_AT_KEY).orElse(null));
+                            return unchanged;
                         }
                         EffectiveRewards appliedRewards = approved ? effectiveRewards(paramKey, value) : null;
                         Map<String, Object> coverageEvidence;

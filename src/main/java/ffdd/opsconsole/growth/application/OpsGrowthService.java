@@ -3344,6 +3344,12 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             List<Map<String, Object>> rows = new ArrayList<>(voucherRows());
             Map<String, Object> next = normalizeVoucher(request, null);
             String id = next.get("id").toString();
+            if ("active".equals(stringValue(next.get("status"), ""))) {
+                long endAt = longValue(next.get("endAt"));
+                if (endAt > 0 && endAt < System.currentTimeMillis()) {
+                    return ApiResult.fail(409, "H7_VOUCHER_EXPIRED");
+                }
+            }
             if (rows.stream().anyMatch(row -> id.equals(row.get("id")))) {
                 return validation("VOUCHER_ID_ALREADY_EXISTS");
             }
@@ -3411,6 +3417,13 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             }
             if (longValue(current.get("version")) != expectedVersion) {
                 return ApiResult.fail(409, "H7_VOUCHER_STALE");
+            }
+            if ("active".equals(stringValue(next.get("status"), ""))
+                    && !"active".equalsIgnoreCase(stringValue(current.get("status"), ""))) {
+                long endAt = longValue(next.get("endAt"));
+                if (endAt > 0 && endAt < System.currentTimeMillis()) {
+                    return ApiResult.fail(409, "H7_VOUCHER_EXPIRED");
+                }
             }
             String nextType = stringValue(next.get("type"), "");
             if (!nextType.equalsIgnoreCase(stringValue(current.get("type"), ""))

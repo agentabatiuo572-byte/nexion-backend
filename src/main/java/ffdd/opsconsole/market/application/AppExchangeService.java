@@ -57,6 +57,7 @@ public class AppExchangeService {
     private static final String COST_BASIS = "wallet.nex_market.cost_basis";
     private static final String EXCHANGE_KILL = "killswitch.exchange";
     private static final String EXCHANGE_KILL_LEGACY = "emergency.killswitch.exchange";
+    private static final String DISCLOSURE_GATE_EXCHANGE = "disclosure.gate.exchange";
     private static final String EXCHANGE_EXECUTION_MUTEX = "G2_EXCHANGE_EXECUTION";
     private static final Map<String, ExternalAsset> EXTERNAL_ASSETS = Map.of(
             "EXT_RNDR_USDT", new ExternalAsset("RNDR", "Render", "ai"),
@@ -550,7 +551,23 @@ public class AppExchangeService {
     private boolean swapEnabled() {
         String current = mapper.emergencyValue(EXCHANGE_KILL);
         String legacy = mapper.emergencyValue(EXCHANGE_KILL_LEGACY);
-        return KillSwitchState.enabled(java.util.Optional.ofNullable(current), java.util.Optional.ofNullable(legacy));
+        return !disclosureGateActive() && KillSwitchState.enabled(
+                Optional.ofNullable(current), Optional.ofNullable(legacy));
+    }
+
+    private boolean disclosureGateActive() {
+        return config.activeValue(DISCLOSURE_GATE_EXCHANGE)
+                .or(() -> Optional.ofNullable(mapper.emergencyValue(DISCLOSURE_GATE_EXCHANGE)))
+                .map(this::parseDisclosureGateActive)
+                .orElse(false);
+    }
+
+    private boolean parseDisclosureGateActive(String raw) {
+        String value = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
+        return switch (value) {
+            case "enabled", "enable", "on", "true", "1", "blocked", "required" -> true;
+            default -> false;
+        };
     }
 
     private BigDecimal number(String key, String fallback) {
