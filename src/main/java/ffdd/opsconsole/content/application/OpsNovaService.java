@@ -170,7 +170,8 @@ public class OpsNovaService {
         return channels.stream()
                 .map(channel -> NovaRuntimeAdapterCatalog.resolve(channel.key(), channel.trigger())
                         .map(source -> new NovaOverview.ChannelRuntimeSource(
-                                channel.key(), source.eventNames(), source.targeted()))
+                                channel.key(), source.eventNames(), source.targeted(),
+                                NovaRuntimeAdapterCatalog.eventDisplayNames(source.eventNames())))
                         .orElse(null))
                 .filter(source -> source != null)
                 .toList();
