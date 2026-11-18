@@ -92,6 +92,10 @@ public interface I18nLearningRepository {
 
     List<I18nIntegrityIssueView> recomputeIntegrity(LocalDateTime now);
 
+    default List<I18nIntegrityIssueView> recomputeIntegrity(LocalDateTime now, List<String> requiredLanguages) {
+        return recomputeIntegrity(now);
+    }
+
     List<I18nHardcodedFindingView> listHardcodedFindings();
 
     List<LearningCourseView> listCourses();
