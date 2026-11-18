@@ -49,7 +49,11 @@ public class AdminCommandInvestigationService {
                           String originalMethod, String originalPath, String originalTarget, String originalTargets, long originalAdminId,
                           String originalStatus, boolean locked, boolean newOperationAllowed,
                           Integer businessCode, String businessState, Map<String, Object> batch,
-                          AdminCommandInvestigationEntity investigation, boolean localTransactionRollbackConfirmed) {}
+                          AdminCommandInvestigationEntity investigation, boolean localTransactionRollbackConfirmed,
+                          @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                          IntegrityRepairReceipt integrityRepair) {}
+
+    public record IntegrityRepairReceipt(String messageKey, String version, Integer repairedCount) {}
 
     public record ReceiptStatus(String state) {}
 
@@ -804,7 +808,23 @@ public class AdminCommandInvestigationService {
                 original.getOriginMethod(), original.getOriginPath(), original.getOriginTarget(), original.getOriginTargets(), original.getOriginAdminId(),
                 original.getStatus(), locked, "CONFIRMED_NOT_EXECUTED".equals(original.getStatus()),
                 businessCode(original.getResponseJson()), receiptState(original), batchSplit(original), latest,
-                original.getResponseJson() == null && provenNotExecuted(original));
+                original.getResponseJson() == null && provenNotExecuted(original), integrityRepair(original));
+    }
+
+    private IntegrityRepairReceipt integrityRepair(AdminIdempotencyRecordEntity original) {
+        if (!original.getScope().startsWith("I6_I18N_INTEGRITY_FIX:")
+                || !Integer.valueOf(0).equals(businessCode(original.getResponseJson()))) return null;
+        try {
+            var data = json.readTree(original.getResponseJson()).path("data");
+            var key = data.path("messageKey");
+            var version = data.path("version");
+            if (!key.isTextual() || key.asText().isBlank() || !version.isTextual() || version.asText().isBlank()) return null;
+            var count = data.path("repairedCount");
+            return new IntegrityRepairReceipt(key.asText(), version.asText(),
+                    count.isIntegralNumber() && count.canConvertToInt() ? count.intValue() : null);
+        } catch (JsonProcessingException invalid) {
+            return null;
+        }
     }
 
     /** Only the D2 batch split is projected: item ids plus the rejection/conflict reason codes. */

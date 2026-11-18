@@ -274,9 +274,21 @@ public class OpsI18nLearningController {
         return (ApiResult<T>) idempotencyService.execute(
                 scope,
                 idempotencyKey.trim(),
-                requestHash(scope + "\u0000" + String.valueOf(request).trim()),
+                commandRequestHash(scope, idempotencyKey.trim(), request),
                 ApiResult.class,
                 (Supplier) action);
+    }
+
+    private String commandRequestHash(String scope, String key, Object request) {
+        String payload = scope + (char) 0 + String.valueOf(request).trim();
+        String newSuffix = ", translations=null]";
+        if (request instanceof I18nIntegrityFixRequest fix && fix.translations() == null && payload.endsWith(newSuffix)) {
+            String legacyHash = requestHash(payload.substring(0, payload.length() - newSuffix.length()) + "]");
+            var status = idempotencyService.recoveryStatus(scope, key, legacyHash);
+            if (status != AdminIdempotencyService.RecoveryStatus.NOT_FOUND
+                    && status != AdminIdempotencyService.RecoveryStatus.MISMATCH) return legacyHash;
+        }
+        return requestHash(payload);
     }
 
     private String requestHash(String value) {

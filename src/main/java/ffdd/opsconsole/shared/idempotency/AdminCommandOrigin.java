@@ -333,6 +333,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || a3PlatformParamScope(scope)
                 || fLocalConfiguration(scope)
                 || i7CourseDraftOnly(scope)
+                || h4DirectScope(scope)
                 || m4FaqLocalEdit(scope)
                 || i4TrustDraftOnly(scope)
                 || scope != null && (scope.startsWith("E2_POOL_") || scope.startsWith("E5_DEVICE_") || scope.startsWith("E6_PHONE_"));
