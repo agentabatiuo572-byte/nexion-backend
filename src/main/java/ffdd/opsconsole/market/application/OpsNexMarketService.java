@@ -1215,6 +1215,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         response.put("curveRevision", marketPolicyRevision("curve", writeCurve(frames)));
         response.put("priceRevision", activePrice == null ? "" : marketPolicyRevision("price", activePrice.stripTrailingZeros().toPlainString()));
         response.put("scheduleRevision", marketPolicyRevision("schedule", configFacade.activeValue(SCHEDULE_CONTROL_KEY).orElse(null)));
+        response.put("pinRevision", marketPolicyRevision("pin", configFacade.activeValue(PIN_CONTROL_KEY).orElse(null)));
+        response.put("pausedRevision", marketPolicyRevision("paused", readText(PAUSED_KEY, "false")));
         response.put("controls", controls());
         response.put("overrides", overrides(activeFrame, activePrice));
         response.put("coverage", coverage());
@@ -1325,6 +1327,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             case "curve-cell" -> G3MarketApproval.CURVE_TARGET;
             case "current-price" -> G3MarketApproval.PRICE_TARGET;
             case "initial-schedule" -> G3MarketApproval.SCHEDULE_TARGET;
+            case "pin" -> G3MarketApproval.PIN_TARGET;
+            case "resume" -> G3MarketApproval.RESUME_TARGET;
             default -> throw new BizException(422, "G3_POLICY_PROPOSAL_INVALID");
         };
         var locks = lockMapper.selectActiveByTicketId(operationId);
@@ -1340,6 +1344,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     new BigDecimal(prepared.value().expectedValue()), new BigDecimal(prepared.value().value()), prepared.value());
             case "initial-schedule" -> applyControlValue(idempotencyKey, "schedule", prepared.value().value(),
                     "", prepared.value(), null);
+            case "pin" -> applyControlValue(idempotencyKey, "pin", prepared.value().value(),
+                    prepared.value().expectedValue() == null ? "" : prepared.value().expectedValue(),
+                    prepared.value(), resolvePinnedFrame(loadCurve(), prepared.value().value()));
+            case "resume" -> applyBooleanOverride(idempotencyKey, prepared.value().value(), prepared.value());
             default -> throw new BizException(422, "G3_POLICY_PROPOSAL_INVALID");
         };
     }
@@ -1413,6 +1421,65 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     Map.copyOf(beforeFields), Map.copyOf(afterFields), "fund", true);
             return new PreparedMarketPolicy(review, null, new NexMarketValueUpdateRequest(value.toPlainString(), reason,
                     operator, before.stripTrailingZeros().toPlainString()));
+        }
+        if ("pin".equals(request.action())) {
+            List<NexMarketCurveFrame> pinCurve = configFacade.activeValueForUpdate(WEEKLY_CURVE_KEY)
+                    .filter(StringUtils::hasText).map(this::readCurve).orElse(List.of());
+            if (pinCurve.size() != 7) throw new BizException(503, "G3_WEEKLY_CURVE_INVALID");
+            String before = configFacade.activeValueForUpdate(PIN_CONTROL_KEY).orElse(null);
+            if (!request.expectedRevision().equals(marketPolicyRevision("pin", before))) {
+                throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
+            }
+            String value = normalizeControlValue("pin", request.value());
+            NexMarketCurveFrame pinned = resolvePinnedFrame(pinCurve, value);
+            if (pinned == null || pinned.targetPrice().compareTo(currentPrice()) <= 0) {
+                throw new BizException(422, "G3_POLICY_APPROVAL_NOT_REQUIRED");
+            }
+            ApiResult<Map<String, Object>> redline = coverageRedlineFailure(
+                    coverageFacade.snapshotAtNexPrice(pinned.targetPrice()));
+            if (redline != null) throw new BizException(redline.getCode(), redline.getMessage());
+            String beforeDisplay = StringUtils.hasText(before) ? before : "未钉住";
+            beforeFields.put("钉住控制", beforeDisplay);
+            afterFields.put("钉住控制", value);
+            beforeFields.put("当前全站价格（USDT/UVT）", currentPrice());
+            afterFields.put("生效时间", "批准后钉住该日，并把该日目标价同步为全站现价");
+            addMarketPolicyCoverage(afterFields, pinned.targetPrice());
+            var review = new G3MarketApproval.Review(G3MarketApproval.PIN_TARGET, "钉住并提高UVT价格",
+                    "钉住 " + beforeDisplay,
+                    "钉住 " + value + " · 现价提高到 " + pinned.targetPrice().stripTrailingZeros().toPlainString() + " USDT/UVT · 批准后生效",
+                    Map.copyOf(beforeFields), Map.copyOf(afterFields), "fund", true);
+            return new PreparedMarketPolicy(review, null, new NexMarketValueUpdateRequest(value, reason, operator, beforeDisplay));
+        }
+        if ("resume".equals(request.action())) {
+            configFacade.activeValueForUpdate(PAUSED_KEY);
+            String before = readText(PAUSED_KEY, "false");
+            if (!request.expectedRevision().equals(marketPolicyRevision("paused", before))) {
+                throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
+            }
+            if (!Boolean.TRUE.equals(parseBooleanValue(before))
+                    || !Boolean.FALSE.equals(parseBooleanValue(request.value()))) {
+                throw new BizException(422, "G3_POLICY_APPROVAL_NOT_REQUIRED");
+            }
+            List<NexMarketCurveFrame> resumeCurve = configFacade.activeValueForUpdate(WEEKLY_CURVE_KEY)
+                    .filter(StringUtils::hasText).map(this::readCurve).orElse(List.of());
+            if (resumeCurve.size() != 7) throw new BizException(503, "G3_WEEKLY_CURVE_INVALID");
+            int nextDayIndex = pinnedDayIndex().orElseGet(this::nextAdvanceDayIndex);
+            NexMarketCurveFrame activeFrame = frameFor(resumeCurve, nextDayIndex);
+            if (activeFrame.targetPrice().compareTo(currentPrice()) <= 0) {
+                throw new BizException(422, "G3_POLICY_APPROVAL_NOT_REQUIRED");
+            }
+            ApiResult<Map<String, Object>> redline = coverageRedlineFailure(
+                    coverageFacade.snapshotAtNexPrice(activeFrame.targetPrice()));
+            if (redline != null) throw new BizException(redline.getCode(), redline.getMessage());
+            beforeFields.put("引擎状态", "已暂停");
+            afterFields.put("引擎状态", "恢复运行");
+            afterFields.put("恢复后推进", "D" + (activeFrame.dayIndex() + 1) + " · 目标价 "
+                    + activeFrame.targetPrice().stripTrailingZeros().toPlainString() + " USDT/UVT");
+            addMarketPolicyCoverage(afterFields, activeFrame.targetPrice());
+            var review = new G3MarketApproval.Review(G3MarketApproval.RESUME_TARGET, "恢复G3价格引擎并提价",
+                    "引擎已暂停", "批准后恢复运行 · 推进至 D" + (activeFrame.dayIndex() + 1) + " 提价",
+                    Map.copyOf(beforeFields), Map.copyOf(afterFields), "fund", true);
+            return new PreparedMarketPolicy(review, null, new NexMarketValueUpdateRequest("false", reason, operator, "已暂停"));
         }
         if (!"initial-schedule".equals(request.action())) throw new BizException(422, "G3_POLICY_PROPOSAL_INVALID");
         // The existing curve row serializes the first save while the schedule row is absent.
@@ -1627,12 +1694,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         // frozen day must also become the live price, otherwise the single site-wide price source
         // keeps quoting the previous frame while the control claims Dn is pinned.
         NexMarketCurveFrame pinned = "pin".equals(controlKey) ? resolvePinnedFrame(loadCurve(), value) : null;
+        // 产品拍板 G3-BE-02：钉住/恢复提价视同提价，走 A2 双人审批，不再直写。
         if (pinned != null && pinned.targetPrice().compareTo(currentPrice()) > 0) {
-            ApiResult<Map<String, Object>> redline = coverageRedlineFailure(
-                    coverageFacade.snapshotAtNexPrice(pinned.targetPrice()));
-            if (redline != null) {
-                return redline;
-            }
+            return ApiResult.fail(409, "G3_POLICY_APPROVAL_REQUIRED");
         }
         return applyControlValue(idempotencyKey, controlKey, value, normalizedCurrent, request, pinned);
     }
@@ -1914,11 +1978,32 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         String oldValue = readText(PAUSED_KEY, "false");
         boolean before = Boolean.TRUE.equals(parseBooleanValue(oldValue));
         if (before && !parsed) {
+            // 产品拍板 G3-BE-02：恢复若会把价格推进到更高目标价，视同提价，走 A2 双人审批。
+            List<NexMarketCurveFrame> resumeCurve = loadCurve();
+            if (resumeCurve.size() == 7) {
+                int nextDayIndex = pinnedDayIndex().orElseGet(this::nextAdvanceDayIndex);
+                NexMarketCurveFrame activeFrame = frameFor(resumeCurve, nextDayIndex);
+                if (activeFrame.targetPrice().compareTo(currentPrice()) > 0) {
+                    return ApiResult.fail(409, "G3_POLICY_APPROVAL_REQUIRED");
+                }
+            }
             ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
             if (redline != null) {
                 return redline;
             }
         }
+        return applyBooleanOverride(idempotencyKey, parsed.toString(), request);
+    }
+
+    private ApiResult<Map<String, Object>> applyBooleanOverride(
+            String idempotencyKey,
+            String value,
+            NexMarketValueUpdateRequest request) {
+        Boolean parsed = parseBooleanValue(value);
+        if (parsed == null) {
+            return validation("BOOLEAN_VALUE_INVALID");
+        }
+        String oldValue = readText(PAUSED_KEY, "false");
         configFacade.upsertAdminValue(PAUSED_KEY, parsed.toString(), "BOOLEAN", "wallet", "G3 UVT market engine pause override");
         auditOverride("paused", PAUSED_KEY, oldValue, parsed, idempotencyKey, request);
         return overview();

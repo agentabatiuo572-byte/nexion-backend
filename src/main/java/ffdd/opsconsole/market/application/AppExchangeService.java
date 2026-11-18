@@ -420,7 +420,7 @@ public class AppExchangeService {
         int pageSize = Math.max(1, Math.min(requestedPageSize, 100));
         long total = Math.max(0L, mapper.countUserOrdersAt(userId, snapshotId));
         long offset = (long) (pageNum - 1) * pageSize;
-        Map<String, Object> estimate = queueEstimate();
+        Map<String, Object> estimate = queueEstimate(userId);
         return linked("caps", caps().getData(), "wallet", linked("usdtAvailable", money(wallet.usdtAvailable()),
                         "nexAvailable", money(wallet.nexAvailable())),
                 "todayUserUsedUsdt", money(mapper.userTodayUsdt(userId)),
@@ -461,15 +461,19 @@ public class AppExchangeService {
     private Map<String, Object> orderMap(AppExchangeMapper.ExchangeWrite row) {
         return linked("exchangeNo", row.exchangeNo(), "fromAsset", row.fromAsset(), "toAsset", row.toAsset(),
                 "fromAmount", row.fromAmount(), "toAmount", row.toAmount(), "rate", row.rate(), "status", row.status(),
-                "queueEstimate", "QUEUED".equals(row.status()) ? queueEstimate() : null);
+                "queueEstimate", "QUEUED".equals(row.status()) ? queueEstimate(row.userId()) : null);
     }
 
     private Map<String, Object> queueEstimate() {
+        return queueEstimate(null);
+    }
+
+    private Map<String, Object> queueEstimate(Long userId) {
         String hours = text("wallet.exchange.queue_eta_hours", "");
         String english = text("wallet.exchange.queue_eta_copy", "");
         if (!hours.matches("[1-9][0-9]{0,2}") || !OpsNexMarketService.validQueueEtaCopy(english)) return null;
         String locale = ffdd.opsconsole.shared.i18n.InterfaceLanguages.baseCode(
-                org.springframework.context.i18n.LocaleContextHolder.getLocale().toLanguageTag());
+                resolveQueueEstimateLocale(userId));
         try {
             var configured = objectMapper.reader()
                     .with(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
@@ -491,6 +495,14 @@ public class AppExchangeService {
         } catch (com.fasterxml.jackson.core.JsonProcessingException invalid) {
             return null;
         }
+    }
+
+    private String resolveQueueEstimateLocale(Long userId) {
+        if (userId != null) {
+            String language = mapper.userLanguage(userId);
+            if (StringUtils.hasText(language)) return language.trim();
+        }
+        return org.springframework.context.i18n.LocaleContextHolder.getLocale().toLanguageTag();
     }
 
     private NormalizedSwap normalize(SwapRequest request) {
