@@ -53,6 +53,7 @@ import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import ffdd.opsconsole.shared.i18n.AuthoringWhitespace;
+import ffdd.opsconsole.shared.i18n.AppDisplayText;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
@@ -1628,6 +1629,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 return validation("WHEEL_TIER_COUNT_OUT_OF_RANGE");
             }
             String rewardName = normalizePlainText(request.rewardName(), 128);
+            AppDisplayText.requireNoHan("rewardName", rewardName);
             BigDecimal probability = request.probabilityPct() == null ? BigDecimal.ZERO : request.probabilityPct();
             if (probability.compareTo(BigDecimal.ZERO) < 0 || probability.compareTo(new BigDecimal("100")) > 0) {
                 throw new IllegalArgumentException("WHEEL_TIER_PROBABILITY_INVALID");
@@ -1728,6 +1730,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 return validation("WHEEL_POINTS_TIER_RETIRED");
             }
             String rewardName = normalizePlainText(request.rewardName(), 128);
+            AppDisplayText.requireNoHan("rewardName", rewardName);
             BigDecimal probability = request.probabilityPct() == null
                     ? parseDecimal(String.valueOf(before.get("prob")), BigDecimal.ZERO)
                     : request.probabilityPct();

@@ -22,14 +22,14 @@ SELECT seed.task_id, seed.name, seed.max_reward, seed.unit_text, seed.requiremen
        seed.task_class, seed.model_name, seed.min_reward, seed.max_reward, seed.min_vram, '派发中',
        NOW(), NOW(), 0
   FROM (
-    SELECT 'TK-1' AS task_id, 'LLM 推理' AS name, '/job' AS unit_text, '需 UVELRack' AS requirement,
+    SELECT 'TK-1' AS task_id, 'LLM inference' AS name, '/job' AS unit_text, '需 UVELRack' AS requirement,
            'LL' AS task_class, 'Llama 70B,Phi-3-mini' AS model_name,
            0.00005 AS min_reward, 0.8500 AS max_reward, '80GB' AS min_vram
-    UNION ALL SELECT 'TK-2','语音识别','/job','手机+','SP','Whisper',0.00005,0.0720,'8GB'
-    UNION ALL SELECT 'TK-3','图像生成','/job','S1+','IG','SDXL Turbo,Flux Schnell',0.00010,0.0450,'12GB'
-    UNION ALL SELECT 'TK-4','视频生成','/job','需 UVELBox Pro','VG','Sora-class',0.45000,1.8000,'48GB'
-    UNION ALL SELECT 'TK-5','模型微调','/job','需 UVELBox Pro','FT','LoRA',0.06000,0.4200,'48GB'
-    UNION ALL SELECT 'TK-6','向量嵌入','/1k','手机+','EM','BGE-M3',0.00001,0.0900,'8GB'
+    UNION ALL SELECT 'TK-2','Speech recognition','/job','手机+','SP','Whisper',0.00005,0.0720,'8GB'
+    UNION ALL SELECT 'TK-3','Image generation','/job','S1+','IG','SDXL Turbo,Flux Schnell',0.00010,0.0450,'12GB'
+    UNION ALL SELECT 'TK-4','Video generation','/job','需 UVELBox Pro','VG','Sora-class',0.45000,1.8000,'48GB'
+    UNION ALL SELECT 'TK-5','Model fine-tuning','/job','需 UVELBox Pro','FT','LoRA',0.06000,0.4200,'48GB'
+    UNION ALL SELECT 'TK-6','Vector embedding','/1k','手机+','EM','BGE-M3',0.00001,0.0900,'8GB'
   ) AS seed
  -- A new canonical ID would take precedence over a configured fallback of the same class.
  WHERE NOT EXISTS (
