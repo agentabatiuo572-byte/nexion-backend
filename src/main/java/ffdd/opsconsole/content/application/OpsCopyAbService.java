@@ -499,7 +499,8 @@ public class OpsCopyAbService {
                 "from", current.version(),
                 "to", version,
                 "surface", request.surface().trim(),
-                "audience", audienceLabel(request.audienceTarget(), request.audience())));
+                "audience", audienceLabel(request.audienceTarget(), request.audience()),
+                "audienceAllocationScope", "EXPERIMENT_ONLY"));
         return ApiResult.ok(updated);
     }
 

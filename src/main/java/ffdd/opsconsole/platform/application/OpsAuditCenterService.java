@@ -1483,6 +1483,11 @@ public class OpsAuditCenterService {
         }
         if (H4GrowthApproval.supports(command)) {
             try {
+                if ("h4_legacy_event_reward_update".equals(command.op())) {
+                    String change = H4TicketReviewText.legacyRewardChange(objectMapper,
+                            command.params().get("expectedState"), command.params().get("values"), "before".equals(side));
+                    if (change != null) return change;
+                }
                 if ("h4_wheel_probabilities_update".equals(command.op())) {
                     String changes = H4TicketReviewText.probabilityChanges(objectMapper,
                             command.params().get("expectedState"), command.params().get("values"), "before".equals(side));

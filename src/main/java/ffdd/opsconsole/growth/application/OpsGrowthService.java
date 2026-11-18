@@ -741,6 +741,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         response.put("h3Stats", questStats());
         response.put("h4Stats", eventStats());
         response.put("dayOneWindow", dayOneWindow());
+        response.put("dayOneRewardTierBasis", "CLAIM_TIME");
+        response.put("dayOneRewardTierNote", "奖励档位按领取时刻与冻结任务窗口计算；完成任务本身不锁定金额。");
         response.put("dayOneWindowConfig", Map.of("key", "dayOne.windowMs", "readOnly", true,
                 "retired", true, "valueKind", "DISPLAY_TEXT_ONLY"));
         response.put("dayOneEligibilityHours", questConfig("dayOne.eligibilityHours"));
@@ -792,6 +794,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         return ApiResult.ok(response);
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
+    @org.springframework.context.annotation.Lazy
+    private ffdd.opsconsole.platform.application.PlatformExperienceConfigService h3Experience;
+
     /** GET-only task read: attaches pending H3 config approvals without changing mutation receipts. */
     public ApiResult<Map<String, Object>> questTasksForRead() {
         return ApiResult.ok(withPendingH3Approvals(questTasksWithOperatingStats().getData()));
@@ -824,10 +830,11 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         }
         Map<String, PendingApprovalProjection.H3PendingApproval> pending =
                 pendingApprovalProjection.readH3Configs(keys);
-        response.put("dayOneTasks", withH3TaskPending(dayOne, "taskCode", pending));
-        response.put("weeklyTier1", withH3TaskPending(weeklyTier1, "taskCode", pending));
-        response.put("weeklyTier2", withH3TaskPending(weeklyTier2, "taskCode", pending));
-        response.put("taskContracts", withH3TaskPending(taskContracts, "missionCode", pending));
+        var names = h3MissionCopy(configFacade.activeValue("growth.content.localized"));
+        response.put("dayOneTasks", withH3TaskPending(dayOne, "taskCode", pending, names));
+        response.put("weeklyTier1", withH3TaskPending(weeklyTier1, "taskCode", pending, names));
+        response.put("weeklyTier2", withH3TaskPending(weeklyTier2, "taskCode", pending, names));
+        response.put("taskContracts", withH3TaskPending(taskContracts, "missionCode", pending, names));
         Map<String, Object> configs = new LinkedHashMap<>();
         keys.forEach(key -> configs.put(key, pending.get(key)));
         response.put("pendingApprovals", configs);
@@ -837,14 +844,37 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
 
     private List<Map<String, Object>> withH3TaskPending(
             List<Map<String, Object>> rows, String codeField,
-            Map<String, PendingApprovalProjection.H3PendingApproval> pending) {
+            Map<String, PendingApprovalProjection.H3PendingApproval> pending, com.fasterxml.jackson.databind.JsonNode names) {
         return rows.stream().map(row -> {
             Map<String, Object> projected = new LinkedHashMap<>(row);
             Object code = row.get(codeField);
             projected.put("pendingApproval", code instanceof String text
                     ? pending.get("mission." + text + ".reward") : null);
+            if (code instanceof String text) projected.put("missionNames", h3MissionNames(names, text));
             return projected;
         }).toList();
+    }
+
+    private com.fasterxml.jackson.databind.JsonNode h3MissionCopy(java.util.Optional<String> config) {
+        if (config.isEmpty()) return objectMapper.createObjectNode();
+        try {
+            var copy = objectMapper.readTree(config.get());
+            if (copy != null && copy.isObject()) return copy.path("mission");
+        } catch (com.fasterxml.jackson.core.JsonProcessingException invalid) {
+            // Never publish a name from a malformed translation catalogue.
+        }
+        throw new BizException(503, "H3_MISSION_COPY_UNAVAILABLE");
+    }
+
+    private Map<String, String> h3MissionNames(com.fasterxml.jackson.databind.JsonNode names, String code) {
+        Map<String, String> group = new LinkedHashMap<>();
+        for (String language : ffdd.opsconsole.shared.i18n.InterfaceLanguages.CODES) {
+            var field = names.path(code).path(language).path("name");
+            if (field.isTextual() && ffdd.opsconsole.content.domain.I18nCopyQuality.hasCopyText(field.textValue())) {
+                group.put(language, field.textValue());
+            }
+        }
+        return group;
     }
 
     /** Operating aggregates belong to the H3 GET, not to the existing mutation receipts. */
@@ -1399,6 +1429,11 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             if ("MISSION".equals(kind) && target == 1 && "weekly_t2_nex_swap".equals(code)
                     && !streakPerkAvailability.exchangeAvailableForMissionPublication()) {
                 return validation("H3_MISSION_TARGET_BUSINESS_UNAVAILABLE");
+            }
+            if ("MISSION".equals(kind) && target == 1) {
+                var names = h3MissionNames(h3MissionCopy(configFacade.activeValueForUpdate("growth.content.localized")), code);
+                var missing = h3Experience.operatingLanguages().stream().filter(language -> !names.containsKey(language)).toList();
+                if (!missing.isEmpty()) return ApiResult.fail(422, "H3_MISSION_NAMES_REQUIRED", Map.of("missingLanguages", missing));
             }
             if (transitionMissionStatus(kind, code, expected, target) != 1) return ApiResult.fail(409, "H3_MISSION_STALE");
             audit("H3_MISSION_STATUS_CHANGED", "GROWTH_MISSION", code, request.operator(), row(

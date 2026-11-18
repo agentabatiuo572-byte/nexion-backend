@@ -11,5 +11,10 @@ public record PlatformRoleDetail(
         Integer status,
         boolean builtin,
         List<String> permissionCodes,
-        List<Long> menuIds) {
+        List<Long> menuIds,
+        List<String> legacyNonReadPermissionCodes) {
+    public PlatformRoleDetail(Long id, String roleCode, String roleName, String remark, Integer status,
+            boolean builtin, List<String> permissionCodes, List<Long> menuIds) {
+        this(id, roleCode, roleName, remark, status, builtin, permissionCodes, menuIds, List.of());
+    }
 }

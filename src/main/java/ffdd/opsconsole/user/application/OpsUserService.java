@@ -790,11 +790,8 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             case "SHORT" -> "连续登录/两步验证失败达到短锁阈值";
             default -> "当前无锁定";
         };
-        String lockLeft = switch (lockKind) {
-            case "LONG" -> configInt("auth.risk.long_lock_duration_hours", 24) + " 小时内";
-            case "SHORT" -> (status == null ? 15 : Math.max(status.lockDurationMinutes(), 1)) + " 分钟内";
-            default -> "—";
-        };
+        // This fallback read knows the configured duration, not the remaining time of a particular lock.
+        String lockLeft = locked ? "解除时间未提供" : "—";
         return new UserSecurityUserRow(
                 account.id(),
                 account.userNo(),
