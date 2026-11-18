@@ -82,7 +82,7 @@ public class H4EventEngine {
     static String displayRewardName(String kind,Map<String,Object> rules,Object asset,Object amount,String authored,String locale){
         if(usesAuthoredRewardName(kind,rules!=null,asset,amount))return authored;
         if(rules!=null)return rewardSummary(rules,locale);
-        return number(amount).stripTrailingZeros().toPlainString()+" "+text(asset);
+        return number(amount).setScale(2,RoundingMode.HALF_UP).toPlainString()+" "+text(asset);
     }
     private Map<String,Object> project(Long id,Map<String,Object> source,Map<String,Object> rule,String locale){
         var row=new LinkedHashMap<>(source);String code=text(rule.get("event_code")),phase=phase(rule);
