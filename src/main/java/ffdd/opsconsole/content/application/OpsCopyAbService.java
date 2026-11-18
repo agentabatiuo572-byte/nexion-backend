@@ -1733,8 +1733,8 @@ public class OpsCopyAbService {
                 .map(CopyExperimentVariantView::cvr)
                 .filter(value -> value != null)
                 .max(BigDecimal::compareTo);
-        BigDecimal top = best.orElse(BigDecimal.ZERO);
-        return new CopyAbStats(copies.size(), running, compactNumber(exposure), "+" + top.toPlainString() + "%",
+        String topLabel = best.map(value -> "+" + value.toPlainString() + "%").orElse("—");
+        return new CopyAbStats(copies.size(), running, compactNumber(exposure), topLabel,
                 cumulativeImpressions, best.orElse(null));
     }
 

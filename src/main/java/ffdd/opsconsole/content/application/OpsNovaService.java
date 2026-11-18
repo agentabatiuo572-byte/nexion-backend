@@ -665,6 +665,12 @@ public class OpsNovaService {
         if (!"DRAFT".equalsIgnoreCase(current.get().status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_TEMPLATE_NOT_DRAFT");
         }
+        if (!StringUtils.hasText(input.expectedRevision())) {
+            return ApiResult.fail(409, "NOVA_TEMPLATE_REVISION_REQUIRED");
+        }
+        if (!current.get().revision().equals(input.expectedRevision().trim())) {
+            return ApiResult.fail(409, "NOVA_TEMPLATE_CONCURRENT_MODIFICATION");
+        }
         if (request.translations() == null
                 && NovaSocialMessageRenderer.hasRetiredSourceNote(current.get().translations())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");

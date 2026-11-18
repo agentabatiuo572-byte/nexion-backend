@@ -145,7 +145,7 @@ public class MybatisNovaRepository implements NovaRepository {
         return mapper.updateTemplateIfCurrent(
                 current.channel(), current.version(), current.titleZh(), current.bodyZh(),
                 current.titleVi(), current.bodyVi(), text(current.titleEn()), text(current.bodyEn()),
-                name, cta, version, titleZh, bodyZh, titleVi, bodyVi, titleEn, bodyEn,
+                current.name(), current.cta(), current.translationsJson(), name, cta, version, titleZh, bodyZh, titleVi, bodyVi, titleEn, bodyEn,
                 operator, reason) == 1;
     }
 
