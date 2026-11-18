@@ -90,6 +90,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private static final String EXCHANGE_FEE_PCT_KEY = "wallet.exchange.fee_pct";
     private static final String EXCHANGE_FEE_MIN_KEY = "wallet.exchange.fee_min_usdt";
     private static final String EXCHANGE_QUEUE_MODE_KEY = "wallet.exchange.queue_mode";
+    private static final String EXCHANGE_QUEUE_ETA_HOURS_KEY = "wallet.exchange.queue_eta_hours";
+    private static final String EXCHANGE_QUEUE_ETA_COPY_KEY = "wallet.exchange.queue_eta_copy";
     private static final String EXCHANGE_KILLSWITCH_KEY = "killswitch.exchange";
     private static final String EXCHANGE_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.exchange";
     private static final String DISCLOSURE_GATE_PREFIX = "disclosure.gate.";
@@ -135,7 +137,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             Map.entry("platformDailyCap", "finprod_g2_cap_platform_write"),
             Map.entry("fee", "finprod_g2_fee_rate_write"),
             Map.entry("feeMin", "finprod_g2_fee_rate_write"),
-            Map.entry("queueMode", "finprod_g2_write"));
+            Map.entry("queueMode", "finprod_g2_write"),
+            Map.entry("queueEtaHours", "finprod_g2_write"),
+            Map.entry("queueEtaCopy", "finprod_g2_write"));
     /** updateStakingPoolParam paramKey→精确权限码。对照 OpsStakingController updatePoolParam。 */
     private static final Map<String, String> STAKING_PARAM_PERMISSION = Map.ofEntries(
             Map.entry("apy", "finprod_g1_apy_write"),
@@ -238,10 +242,16 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "gatePlatform", gatePlatform,
                 "gateGeo", gateGeo));
         response.put("caps", exchangeCaps(todayUsd, platformCap, pendingExchangeParamTickets()));
-        response.put("queue", marketRepository.exchangeOrdersByStatuses(EXCHANGE_QUEUE_STATUSES, 50));
+        String estimatedTime = exchangeQueueEstimate();
+        response.put("queue", marketRepository.exchangeOrdersByStatuses(EXCHANGE_QUEUE_STATUSES, 50).stream()
+                .map(order -> order.withQueueEstimate(estimatedTime)).toList());
+        response.put("queueEstimate", map("hours", readText(EXCHANGE_QUEUE_ETA_HOURS_KEY, ""),
+                "copy", readText(EXCHANGE_QUEUE_ETA_COPY_KEY, "")));
         response.put("gateDetails", map(
                 "user", gate("user", "单用户日额度拦截", "超过单用户日额度后，按配置转人工处理或拒绝。", "USER_CAP", gateUser),
-                "platform", gate("platform", "平台日额度拦截", "全平台日总池见底的拦截。全部转次日队列。", "PLATFORM_CAP", gatePlatform),
+                "platform", gate("platform", "平台日额度拦截", "QUEUE".equalsIgnoreCase(readText(EXCHANGE_QUEUE_MODE_KEY, "QUEUE"))
+                        ? "平台日额度用尽；允许排队的请求转人工处理，其他请求拒绝。"
+                        : "平台日额度用尽；按当前策略拒绝，不排队。", "PLATFORM_CAP", gatePlatform),
                 "geo", gate("geo", "地域封锁拦截", "命中 J2 地域封锁的兑换单会取消或拒绝。", "GEO_BLOCKED", gateGeo)));
         response.put("swap", map(
                 "enabled", swapEnabled,
@@ -433,7 +443,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             return ApiResult.fail(404, "EXCHANGE_ORDER_NOT_FOUND");
         }
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("order", order.get());
+        response.put("order", order.get().withQueueEstimate(exchangeQueueEstimate()));
         response.put("config", map(
                 "userDailyCapUsdt", readDecimal(EXCHANGE_USER_DAILY_CAP_KEY, new BigDecimal("50")),
                 "platformDailyCapUsdt", readDecimal(EXCHANGE_PLATFORM_DAILY_CAP_KEY, new BigDecimal("20000")),
@@ -3135,7 +3145,12 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 genesisParamDef("showcaseEnabled"));
     }
 
-    private GenesisParamDef genesisParamDef(String rawKey) {
+    public static String genesisParamDisplayName(String rawKey) {
+        GenesisParamDef definition = genesisParamDef(rawKey);
+        return definition == null ? null : definition.name();
+    }
+
+    private static GenesisParamDef genesisParamDef(String rawKey) {
         String key = rawKey == null ? "" : rawKey.trim();
         return switch (key) {
             case "supply" -> new GenesisParamDef(
@@ -3633,6 +3648,18 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "rows", rows);
     }
 
+    private String exchangeQueueEstimate() {
+        String hours = readText(EXCHANGE_QUEUE_ETA_HOURS_KEY, "").trim();
+        String copy = readText(EXCHANGE_QUEUE_ETA_COPY_KEY, "").trim();
+        if (!hours.matches("[1-9][0-9]{0,2}") || !validQueueEtaCopy(copy)) return null;
+        return copy.replace("{hours}", hours);
+    }
+
+    private boolean validQueueEtaCopy(String value) {
+        return StringUtils.hasText(value) && value.codePointCount(0, value.length()) <= 240
+                && value.contains("{hours}") && value.codePoints().noneMatch(Character::isISOControl);
+    }
+
     private Map<String, Object> exchangeCoverage() {
         TreasuryCoverageSnapshot snapshot = coverageFacade.snapshot();
         return map(
@@ -3655,11 +3682,18 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     key, EXCHANGE_FEE_MIN_KEY, "NUMBER", "0.50", "G2 minimum exchange fee", ExchangeParamKind.DECIMAL);
             case "queueMode" -> new ExchangeParamDef(
                     key, EXCHANGE_QUEUE_MODE_KEY, "STRING", "QUEUE", "G2 over-cap queue strategy", ExchangeParamKind.QUEUE_MODE);
+            case "queueEtaHours" -> new ExchangeParamDef(key, EXCHANGE_QUEUE_ETA_HOURS_KEY, "NUMBER", "",
+                    "G2 estimated manual handling time in hours", ExchangeParamKind.ETA_HOURS);
+            case "queueEtaCopy" -> new ExchangeParamDef(key, EXCHANGE_QUEUE_ETA_COPY_KEY, "STRING", "",
+                    "G2 non-binding queue estimate using {hours}", ExchangeParamKind.ETA_COPY);
             default -> null;
         };
     }
 
     private String normalizeExchangeParamValue(ExchangeParamDef def, String rawValue) {
+        String trimmed = rawValue == null ? "" : rawValue.trim();
+        if (def.kind() == ExchangeParamKind.ETA_HOURS) return trimmed.matches("[1-9][0-9]{0,2}") ? trimmed : null;
+        if (def.kind() == ExchangeParamKind.ETA_COPY) return validQueueEtaCopy(trimmed) ? trimmed : null;
         if (def.kind() == ExchangeParamKind.QUEUE_MODE) {
             return normalizeQueueMode(rawValue);
         }
@@ -3970,7 +4004,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private enum ExchangeParamKind {
         DECIMAL,
         PERCENT,
-        QUEUE_MODE
+        QUEUE_MODE,
+        ETA_HOURS,
+        ETA_COPY
     }
 
     private enum StakingParamKind {

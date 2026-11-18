@@ -1063,7 +1063,7 @@ public class AuditReplayBusinessPermissionGuard {
                     || (request.targets() != null && !request.targets().isEmpty()))
                 return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
             var review = g4ParamApproval.preview(boundCommand, request.reason());
-            return ApiResult.ok(new DelegatedProposalDescriptor("调整创世参数 · " + target.id(), target.id(),
+            return ApiResult.ok(new DelegatedProposalDescriptor("调整创世参数 · " + review.get("displayName"), target.id(),
                     String.valueOf(review.get("before")), String.valueOf(review.get("after")),
                     "G4", "fund", true, target));
         }

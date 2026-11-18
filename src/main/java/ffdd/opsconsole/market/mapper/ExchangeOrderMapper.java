@@ -71,7 +71,7 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
                    eo.rate,
                    UPPER(eo.status) AS status,
                    CASE UPPER(eo.status)
-                     WHEN 'QUEUED' THEN '次日队列'
+                     WHEN 'QUEUED' THEN '人工处理队列'
                      WHEN 'USER_CAP' THEN '单用户超限'
                      WHEN 'PLATFORM_CAP' THEN '平台超限'
                      WHEN 'GEO_BLOCKED' THEN '地域封锁'
@@ -106,13 +106,10 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
                      WHEN 'USER_CAP' THEN '超过单用户日额度'
                      WHEN 'PLATFORM_CAP' THEN '超过平台日额度'
                      WHEN 'GEO_BLOCKED' THEN '命中 J2 地域封锁'
-                     WHEN 'QUEUED' THEN '超额度,排队等待次日处理'
+                     WHEN 'QUEUED' THEN '超额排队，等待人工处理'
                      ELSE NULL
                    END AS gateReason,
-                   CASE UPPER(eo.status)
-                     WHEN 'QUEUED' THEN '明天 00:00'
-                     ELSE NULL
-                   END AS etaLabel,
+                   CAST(NULL AS CHAR) AS etaLabel,
                    eo.created_at AS createdAt,
                    eo.updated_at AS updatedAt
               FROM nx_exchange_order eo
@@ -145,7 +142,7 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
                    eo.rate,
                    UPPER(eo.status) AS status,
                    CASE UPPER(eo.status)
-                     WHEN 'QUEUED' THEN '次日队列'
+                     WHEN 'QUEUED' THEN '人工处理队列'
                      WHEN 'USER_CAP' THEN '单用户超限'
                      WHEN 'PLATFORM_CAP' THEN '平台超限'
                      WHEN 'GEO_BLOCKED' THEN '地域封锁'
@@ -180,13 +177,10 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
                      WHEN 'USER_CAP' THEN '超过单用户日额度'
                      WHEN 'PLATFORM_CAP' THEN '超过平台日额度'
                      WHEN 'GEO_BLOCKED' THEN '命中 J2 地域封锁'
-                     WHEN 'QUEUED' THEN '超额度,排队等待次日处理'
+                     WHEN 'QUEUED' THEN '超额排队，等待人工处理'
                      ELSE NULL
                    END AS gateReason,
-                   CASE UPPER(eo.status)
-                     WHEN 'QUEUED' THEN '明天 00:00'
-                     ELSE NULL
-                   END AS etaLabel,
+                   CAST(NULL AS CHAR) AS etaLabel,
                    eo.created_at AS createdAt,
                    eo.updated_at AS updatedAt
               FROM nx_exchange_order eo
