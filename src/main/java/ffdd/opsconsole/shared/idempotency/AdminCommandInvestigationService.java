@@ -119,7 +119,9 @@ public class AdminCommandInvestigationService {
             throw new BizException(422, "RECEIPT_COMMAND_KEY_INVALID");
         }
         if (!permissions.getPermissionCodes(actor).contains(authority)) throw denied();
-        var original = records.selectCurrent(scope, commandKey);
+        String storedScope = AdminCommandOrigin.g2ParameterKey(scope) == null ? scope
+                : scope.toUpperCase(java.util.Locale.ROOT);
+        var original = records.selectCurrent(storedScope, commandKey);
         if (original == null || !Integer.valueOf(0).equals(original.getIsDeleted())) {
             return new ReceiptStatus("NOT_FOUND");
         }
@@ -767,7 +769,8 @@ public class AdminCommandInvestigationService {
             // FAILED row (or a legacy row without provenance) still proves no business result.
             Integer code = original.getOriginAdminId() == null ? null : businessCode(original.getResponseJson());
             if (code != null && code != 0) return "REJECTED";
-            return AdminCommandOrigin.h4DirectScope(original.getScope()) ? "UNKNOWN" : "FAILED";
+            return AdminCommandOrigin.h4DirectScope(original.getScope())
+                    || AdminCommandOrigin.g2ParameterKey(original.getScope()) != null ? "UNKNOWN" : "FAILED";
         }
         if ("CONFIRMED_NOT_EXECUTED".equals(status) && AdminCommandOrigin.h4DirectScope(original.getScope())) {
             return "NOT_EXECUTED";
