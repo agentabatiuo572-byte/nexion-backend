@@ -257,8 +257,14 @@ public final class L4OperationsAnalytics {
         List<Fact> completed = events(rows, "quest.completed");
         boolean keysComplete = merge(dispatched, completed).stream()
                 .allMatch(item -> hasText(item.actor()) && hasText(item.questKey()));
-        Map<String, LocalDateTime> dispatchTimes = firstTimes(dispatched, L4OperationsAnalytics::taskKey);
-        long dispatchedCount = keysComplete ? dispatchTimes.size() : distinctKey(dispatched, Fact::eventId);
+        // 派发实例身份复用既有可证实的事实身份:每条派发事实(一条 nx_user_event_quest 行)
+        // 的 eventId 就是一次真实派发实例,分母按它计数;不再按 actor+任务码 firstTimes 合并,
+        // 同一用户同任务码跨周期的多条派发各算一个独立实例。
+        Map<String, List<Fact>> dispatchesByKey = new LinkedHashMap<>();
+        for (Fact item : dispatched) {
+            dispatchesByKey.computeIfAbsent(taskKey(item), ignored -> new ArrayList<>()).add(item);
+        }
+        long dispatchedCount = distinctKey(dispatched, Fact::eventId);
         // 「完成量」与「周期趋势」同源同式：两者都读窗口内 quest.completed 的完成实例。
         // 派发-完成 join 只用于判定承接率分母是否可用，绝不能反过来把完成量压成 0：
         // quest.dispatched 当前没有生产方，若以 join 结果作完成量，汇总会恒为 0，
@@ -266,16 +272,43 @@ public final class L4OperationsAnalytics {
         boolean orderedJoin = actorComplete && keysComplete && dispatchedCount > 0;
         // L4-BE-09: 承接率分子只统计与派发实例(actor+任务)匹配的完成,分子分母同一批任务实例;
         // 无派发事实时承接率不可用。完成量/趋势仍读全部 quest.completed。
-        long matchedCompletions = orderedJoin
-                ? completed.stream().filter(item -> dispatchTimes.containsKey(taskKey(item))).count() : 0;
+        // L4-BE-12: 完成必须晚于该实例的派发,同一实例的多条完成只计一次,分子因此不自造超过分母。
+        // 完成端只带 actor+任务码、没有派发实例号:同一键在窗口内有多条派发时无法证明完成属于
+        // 哪一条实例(跨周期),这类歧义组保留各自的真实派发在分母里,承接率报不可用,不合并实例。
+        Set<String> completedInstances = new LinkedHashSet<>();
+        boolean ambiguousCompletions = false;
+        long unmatchedCompletions = 0;
+        if (orderedJoin) {
+            for (Fact item : completed) {
+                List<Fact> instances = dispatchesByKey.get(taskKey(item));
+                if (instances == null || instances.isEmpty()) {
+                    unmatchedCompletions++;
+                    continue;
+                }
+                if (instances.size() > 1) {
+                    ambiguousCompletions = true;
+                    continue;
+                }
+                if (item.ts().isAfter(instances.get(0).ts())) {
+                    completedInstances.add(taskKey(item));
+                } else {
+                    unmatchedCompletions++;
+                }
+            }
+        }
+        // 窗口里确有完成却对不上派发实例(如两批事实代码空间不同)、或存在无法归属的歧义组时,
+        // 0% 或任何百分比都不是可证明的值;按平台既有口径把承接率报为不可用(null),不把未知记 0。
+        boolean rateProvable = orderedJoin && !ambiguousCompletions
+                && (!completedInstances.isEmpty() || unmatchedCompletions == 0);
+        long matchedCompletions = completedInstances.size();
         return linked(
                 "summary", linked(
                         "dispatched", dispatchedCount,
                         "completed", completionVolume,
-                        "acceptanceRate", orderedJoin ? pct(matchedCompletions, dispatchedCount) : null,
+                        "acceptanceRate", rateProvable ? pct(matchedCompletions, dispatchedCount) : null,
                         "queueSaturation", saturation(rows),
                         "checkinActive", distinctActors(events(rows, "daily.checkin")),
-                        "orderedTaskJoin", orderedJoin),
+                        "orderedTaskJoin", rateProvable),
                 "byTier", distribution(completionInstances(completed, period), Fact::tier));
     }
 
