@@ -118,9 +118,16 @@ public class OpsReferralRewardService {
                 "newcomer.usdt", effectiveRewards.newcomerUsdt(),
                 "newcomer.nex", effectiveRewards.newcomerNex(),
                 "inviter.nex", effectiveRewards.inviterNex()));
-        long pending = mapper.totalPending(effectiveAt, accountSandbox, holdRisky);
-        long blockedByK2 = mapper.totalBlockedByK2(effectiveAt, null, accountSandbox, holdRisky);
+        long pending = 0L;
+        long blockedByK2 = 0L;
+        // H8-BE-10 segment eligibility: only an enabled segment with at least one
+        // positive reward can be settled. Disabled-period registrations are not pending.
+        if (enabled && hasPositiveRewards(effectiveRewards)) {
+            pending = mapper.totalPending(effectiveAt, accountSandbox, holdRisky);
+            blockedByK2 = mapper.totalBlockedByK2(effectiveAt, null, accountSandbox, holdRisky);
+        }
         for (PriorPolicy prior : priorPolicies()) {
+            if (!hasPositiveRewards(prior.rewards())) continue;
             boolean priorHoldRisky = "risk_bucket".equals(prior.lockMode());
             pending += mapper.totalPendingBefore(prior.effectiveAt(), prior.effectiveUntil(), accountSandbox, priorHoldRisky);
             blockedByK2 += mapper.totalBlockedByK2(prior.effectiveAt(), prior.effectiveUntil(), accountSandbox, priorHoldRisky);
@@ -206,9 +213,10 @@ public class OpsReferralRewardService {
         result.put("firstPaidOrder", snapshot == null ? null : firstPaidOrder > 0);
         boolean activeAccount = snapshot != null && "ACTIVE".equalsIgnoreCase(snapshot.status())
                 && !Integer.valueOf(1).equals(snapshot.isDeleted());
-        List<ReferralRewardMapper.ReferralRow> pending = snapshot == null ? List.of()
+        boolean currentPayable = enabled && hasPositiveRewards(rewards);
+        List<ReferralRewardMapper.ReferralRow> pending = snapshot == null || !currentPayable ? List.of()
                 : mapper.findPendingReferrals(effectiveAt, "PRODUCTION", 0, holdRisky, 1, invitedUserId);
-        List<ReferralRewardMapper.ReferralRow> riskScope = snapshot == null ? List.of()
+        List<ReferralRewardMapper.ReferralRow> riskScope = snapshot == null || !currentPayable ? List.of()
                 : mapper.findSettlementScopeCandidates(effectiveAt, null, "PRODUCTION", 0, 1, invitedUserId);
         for (PriorPolicy prior : priorPolicies) {
             if (!hasPositiveRewards(prior.rewards())) continue;
