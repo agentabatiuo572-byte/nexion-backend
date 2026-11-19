@@ -83,7 +83,7 @@ public class AppTradeinService {
             "tradeinLadderCut1", "tradeinLadderCut2", "tradeinLadderCut3", "tradeinLadderCut4",
             "tradeinLadderCredit1", "tradeinLadderCredit2", "tradeinLadderCredit3",
             "tradeinLadderCredit4", "tradeinLadderCredit5",
-            "tradeinRequireHigherPrice", "tradeinMaxDevicesPerOrder",
+            "tradeinRequireHigherPrice",
             "earlyAccessEnabled", "earlyAccessLeadDays");
     private static final Set<Integer> EARLY_ACCESS_LEAD_DAY_OPTIONS = Set.of(7, 14, 30, 60, 90);
 
@@ -814,7 +814,7 @@ public class AppTradeinService {
         int maxDevices;
         int earlyAccessLeadDays;
         try {
-            maxDevices = Integer.parseInt(values.get("tradeinMaxDevicesPerOrder"));
+            maxDevices = Integer.parseInt(values.getOrDefault("tradeinMaxDevicesPerOrder", "1"));
             earlyAccessLeadDays = Integer.parseInt(values.get("earlyAccessLeadDays"));
         } catch (RuntimeException ex) {
             throw new BizException(503, "E3_TRADEIN_MAX_DEVICES_INVALID");
