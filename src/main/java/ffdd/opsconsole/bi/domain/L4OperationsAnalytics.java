@@ -1,5 +1,6 @@
 package ffdd.opsconsole.bi.domain;
 
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.sql.Timestamp;
@@ -392,7 +393,7 @@ public final class L4OperationsAnalytics {
             long registered = distinctActors(registrations);
             long active = distinctActors(activeFacts);
             long store = distinctActors(storeFacts);
-            long retained = orderedActors(registrations, activity).size();
+            long retained = returningActors(registrations, activity).size();
             long converted = orderedActors(storeFacts, buyerFacts).size();
             Double retention = retentionActorsComplete && registered > 0 ? pct(retained, registered) : null;
             Double conversion = actorComplete && store > 0 ? pct(converted, store) : null;
@@ -511,6 +512,19 @@ public final class L4OperationsAnalytics {
             String key = keyValue.apply(item);
             if (!hasText(key)) continue;
             result.merge(key, item.ts(), (left, right) -> left.isBefore(right) ? left : right);
+        }
+        return result;
+    }
+
+    private static Set<String> returningActors(List<Fact> registrations, List<Fact> activity) {
+        var calendar = BusinessCalendar.legacy();
+        Map<String, LocalDateTime> starts = firstTimes(registrations, Fact::actor);
+        Set<String> result = new LinkedHashSet<>();
+        for (Fact item : activity) {
+            LocalDateTime start = starts.get(item.actor());
+            if (start != null && calendar.dateAtStorage(item.ts()).isAfter(calendar.dateAtStorage(start))) {
+                result.add(item.actor());
+            }
         }
         return result;
     }
