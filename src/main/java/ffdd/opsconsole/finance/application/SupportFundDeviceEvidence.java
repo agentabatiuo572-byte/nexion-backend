@@ -85,7 +85,7 @@ public class SupportFundDeviceEvidence {
         var ledgers=sources.ledgers().stream().filter(l->taskNo.equals(l.get("bizNo"))||nex.signum()>0&&daily.equals(l.get("bizNo"))).toList();var earnings=sources.earningEvents().stream().filter(e->no.equals(e.get("receiptNo"))).toList();int size=nex.signum()>0?2:1;require(ledgers.size()==size&&earnings.size()==size);var events=new ArrayList<Event>();var seenLedger=new HashSet<Long>();var seenEarning=new HashSet<Long>();
         for(String asset:nex.signum()>0?List.of("USDT","UVT"):List.of("USDT")){
             var amount=asset.equals("USDT")?usd:nex;var l=one(ledgers,"asset",asset);var e=one(earnings,"asset",asset);require(seenLedger.add(number(l.get("id")))&&number(l.get("id"))>0&&seenEarning.add(number(e.get("id")))&&number(e.get("id"))>0);
-            require(number(l.get("customerId"))==customer&&"COMPUTE_TASK_REWARD".equals(l.get("bizType"))&&"IN".equals(l.get("direction"))&&"SUCCESS".equals(l.get("status"))&&zero(l.get("deleted"))&&amount.compareTo(money(l.get("amount")))==0&&money(l.get("balanceAfter")).signum()>=0&&(asset.equals("USDT")?taskNo:daily).equals(l.get("bizNo"))&&close(time(l.get("createdAt")),time(r.get("completedAt")))&&!time(l.get("updatedAt")).isBefore(time(l.get("createdAt"))));
+            require(number(l.get("customerId"))==customer&&"COMPUTE_TASK_REWARD".equals(l.get("bizType"))&&"IN".equals(l.get("direction"))&&"SUCCESS".equals(l.get("status"))&&zero(l.get("deleted"))&&amount.compareTo(money(l.get("amount")))==0&&(asset.equals("USDT")||money(l.get("balanceAfter")).signum()>=0)&&(asset.equals("USDT")?taskNo:daily).equals(l.get("bizNo"))&&close(time(l.get("createdAt")),time(r.get("completedAt")))&&!time(l.get("updatedAt")).isBefore(time(l.get("createdAt"))));
             require(number(e.get("customerId"))==customer&&number(e.get("deviceId"))==device&&"POSTED".equals(e.get("status"))&&zero(e.get("deleted"))&&amount.compareTo(money(e.get("amount")))==0&&(asset.equals("USDT")?"EARN-"+taskNo:"EARN-NEX-"+no).equals(e.get("eventNo"))&&close(time(e.get("walletPostedAt")),time(r.get("completedAt")))&&close(time(e.get("createdAt")),time(r.get("completedAt")))&&!time(e.get("updatedAt")).isBefore(time(e.get("createdAt"))));
             if(amount.signum()>0)events.add(new Event(key(no)+":"+("USDT".equals(asset)?"USDT":"NEX"),Action.EARNINGS,null,new Account(customer,asset,"available"),null,amount,null));
         }return new Original(r,t,ledgers,earnings,List.copyOf(events),null);
@@ -142,7 +142,7 @@ public class SupportFundDeviceEvidence {
                 require(seenLedger.add(number(l.get("id")))&&number(l.get("id"))>0&&ledgerKeys.add(biz)&&number(l.get("customerId"))==customer
                     &&"COMPUTE_TASK_REWARD".equals(l.get("bizType"))&&"IN".equals(l.get("direction"))&&"SUCCESS".equals(l.get("status"))&&zero(l.get("deleted"))
                     &&("USDT".equals(asset)?taskNo.equals(biz):taskNo.equals(biz)&&baseNex.signum()>0||daily.equals(biz)&&dailyNex.signum()>0)
-                    &&expected.compareTo(money(l.get("amount")))==0&&money(l.get("balanceAfter")).signum()>=0
+                    &&expected.compareTo(money(l.get("amount")))==0&&(asset.equals("USDT")||money(l.get("balanceAfter")).signum()>=0)
                     &&close(time(l.get("createdAt")),simulation.postedAt())&&!time(l.get("updatedAt")).isBefore(time(l.get("createdAt"))));
                 total=total.add(money(l.get("amount")));
             }

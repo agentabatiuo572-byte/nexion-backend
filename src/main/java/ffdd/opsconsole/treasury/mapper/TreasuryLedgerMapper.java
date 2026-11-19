@@ -904,8 +904,9 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
                    nex_available=nex_available+CASE WHEN #{asset}='UVT' THEN #{delta} ELSE 0 END,
                    version=version+1, updated_at=NOW(6)
              WHERE user_id=#{userId} AND is_deleted=0
-               AND CASE #{asset} WHEN 'USDT' THEN usdt_available WHEN 'UVT' THEN nex_available END
-                   + #{delta} >= 0
+               AND (#{delta} >= 0 AND #{asset}='USDT'
+                    OR CASE #{asset} WHEN 'USDT' THEN usdt_available WHEN 'UVT' THEN nex_available END
+                       + #{delta} >= 0)
             """)
     int adjustCommissionWallet(@Param("userId") Long userId, @Param("asset") String asset,
                                @Param("delta") BigDecimal delta);

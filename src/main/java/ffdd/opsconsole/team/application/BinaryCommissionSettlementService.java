@@ -50,6 +50,7 @@ import org.springframework.util.StringUtils;
 @Slf4j
 public class BinaryCommissionSettlementService {
     private static final BigDecimal ZERO = BigDecimal.ZERO.setScale(6);
+    static final String EARLIER_PERIOD_PENDING = "F3_EARLIER_PERIOD_PENDING";
     private static final DateTimeFormatter DAY_KEY = DateTimeFormatter.BASIC_ISO_DATE;
     /** F5 coolingDays 配置 key(PRD line231 默认30;读 commission/cooling-days)。 */
     private static final String CONFIG_KEY_COOLING_DAYS = "commission/cooling-days";
@@ -135,7 +136,6 @@ public class BinaryCommissionSettlementService {
         return result;
     }
 
-    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
     public String automaticBatchBlock(LocalDate date) {
         if (platformPeriods.period(date) != null) {
             return policyProvider.projectedCoverageBlock(platformPeriods.remaining(date));
@@ -291,6 +291,12 @@ public class BinaryCommissionSettlementService {
         var period = productionAccount ? platformPeriods.period(settlementDate) : null;
         int days = period != null ? period.periodDays()
                 : isSettlementDue(settlementDate, policy.settlePeriod()) ? periodDays(settlementDate, policy.settlePeriod()) : 0;
+        if (days > 0 && !policy.paused() && productionAccount
+                && platformPlan.hasBlockingEarlierPeriod(ownerUserId, settlementDate,
+                earlierVolumeStart(settlementDate, policy), previous -> !hasNoPayableVolume(prepare(ownerUserId,
+                        previous.settlementDate(), policy, previous.periodDays(), null, "SYSTEM", "SYSTEM", true)))) {
+            return blockedWithoutRow(ownerUserId, settlementDate, EARLIER_PERIOD_PENDING);
+        }
         Preparation preparation = prepare(ownerUserId, settlementDate, policy, days, actorId, actorUsername, actorType, false);
         if (preparation.blocked() != null) return preparation.blocked();
         Quote quote = preparation.quote();
@@ -344,8 +350,6 @@ public class BinaryCommissionSettlementService {
         }
         if (proposed != null) platformPlan.freeze(proposed);
 
-        Long leftRoot = quote.leftRoot();
-        Long rightRoot = quote.rightRoot();
         BigDecimal left = quote.left();
         BigDecimal right = quote.right();
         BigDecimal rawMatched = quote.rawMatched();
@@ -353,18 +357,7 @@ public class BinaryCommissionSettlementService {
         BigDecimal settlementCap = quote.settlementCap();
         VolumeWindow volumeWindow = quote.volumeWindow();
         BigDecimal consumedBefore = volumeWindow.consumedBefore();
-        String status = amount.signum() == 0 ? "CAPPED" : "PENDING";
-        BinarySettlementRow pending = new BinarySettlementRow(
-                null, ownerUserId, settlementDate, leftRoot, rightRoot,
-                left, right, consumedMatched, amount, settlementCap, null, status);
-        if (mapper.insertSettlement(pending) != 1) throw new IllegalStateException("BINARY_SETTLEMENT_INSERT_FAILED");
-        if (volumeWindow.pairReset()
-                && mapper.insertPairResetCursorCas(
-                        ownerUserId, settlementDate,
-                        volumeWindow.fromVolumeId(), volumeWindow.throughVolumeId(),
-                        left, right, consumedMatched) != 1) {
-            throw new BizException(409, "F3_PAIR_RESET_CURSOR_CAS_CONFLICT");
-        }
+        String status = recordVolumeConsumption(ownerUserId, settlementDate, quote, amount);
 
         String settlementNo = settlementNo(ownerUserId, settlementDate);
         String billId = billId(ownerUserId, settlementDate);
@@ -446,14 +439,59 @@ public class BinaryCommissionSettlementService {
     }
 
 
+    private String recordVolumeConsumption(long owner, LocalDate date, Quote quote, BigDecimal amount) {
+        String status = amount.signum() == 0 ? "CAPPED" : "PENDING";
+        BinarySettlementRow pending = new BinarySettlementRow(null, owner, date, quote.leftRoot(), quote.rightRoot(),
+                quote.left(), quote.right(), quote.consumedMatched(), amount, quote.settlementCap(), null, status);
+        if (mapper.insertSettlement(pending) != 1) throw new IllegalStateException("BINARY_SETTLEMENT_INSERT_FAILED");
+        VolumeWindow window = quote.volumeWindow();
+        if (window.pairReset() && mapper.insertPairResetCursorCas(owner, date, window.fromVolumeId(), window.throughVolumeId(),
+                quote.left(), quote.right(), quote.consumedMatched()) != 1) {
+            throw new BizException(409, "F3_PAIR_RESET_CURSOR_CAS_CONFLICT");
+        }
+        return status;
+    }
+
+    // BinaryPlatformSettlementPlan invokes this in a rollback-only transaction.
     private BigDecimal quoteOwner(long owner, LocalDate date, BinarySettlementPolicy policy, int days) {
         if (mapper.lockActiveOwner(owner) == null) return ZERO;
         BinarySettlementRow settled = mapper.findSettlementForUpdate(owner, date);
         if (settled != null && !"BLOCKED".equals(settled.status())) return ZERO;
         reconcileRefundedVolumes(owner);
         if (mapper.countReversalRequiredVolumes(owner) > 0) return ZERO;
+        // Consume earlier payable volume in date order before capturing orders for the later quote.
+        // Zero records the same volume consumption without a commission, ledger entry or audit event.
+        for (var previous : platformPeriods.earlierPendingPeriods(owner, date, earlierVolumeStart(date, policy))) {
+            LocalDate earlierDate = previous.settlementDate();
+            BinarySettlementRow existing = mapper.findSettlementForUpdate(owner, earlierDate);
+            if (existing != null && !"BLOCKED".equals(existing.status())) continue;
+            Preparation earlier = prepare(owner, earlierDate, policy, previous.periodDays(), null, "SYSTEM", "SYSTEM", true);
+            if (hasNoPayableVolume(earlier)) continue;
+            if (earlier.blocked() != null) {
+                String block = earlier.blocked().reason();
+                if ("BINARY_LEG_ASSIGNMENT_INCOMPLETE".equals(block) || "BINARY_BOTH_LEGS_REQUIRED".equals(block)) {
+                    return ZERO;
+                }
+                throw new SettlementBlocked(block);
+            }
+            if (existing != null && mapper.deleteBlockedSettlement(owner, earlierDate) != 1) {
+                throw new IllegalStateException("BINARY_BLOCKED_SETTLEMENT_RETRY_CONFLICT");
+            }
+            recordVolumeConsumption(owner, earlierDate, earlier.quote(), ZERO);
+        }
         Preparation prepared = prepare(owner, date, policy, days, null, "SYSTEM", "SYSTEM", true);
         return prepared.quote() == null ? ZERO : prepared.quote().rawAmount();
+    }
+
+    private LocalDate earlierVolumeStart(LocalDate date, BinarySettlementPolicy policy) {
+        return "每月清零".equals(policy.residualPolicy()) ? date.withDayOfMonth(1) : null;
+    }
+
+    private boolean hasNoPayableVolume(Preparation prepared) {
+        return prepared.blocked() != null && switch (prepared.blocked().reason()) {
+            case "BINARY_THRESHOLD_NOT_MET", "BINARY_NO_AVAILABLE_MATCHED_VOLUME", "BINARY_PAYABLE_AMOUNT_ZERO" -> true;
+            default -> false;
+        };
     }
 
     private Preparation prepare(Long ownerUserId, LocalDate settlementDate, BinarySettlementPolicy policy, int days,

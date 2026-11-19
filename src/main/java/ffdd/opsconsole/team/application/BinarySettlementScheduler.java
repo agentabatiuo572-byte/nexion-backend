@@ -1,5 +1,7 @@
 package ffdd.opsconsole.team.application;
 
+import static ffdd.opsconsole.team.application.BinaryCommissionSettlementService.EARLIER_PERIOD_PENDING;
+
 import com.zaxxer.hikari.HikariDataSource;
 import ffdd.opsconsole.shared.config.VietnamBusinessPeriod;
 import ffdd.opsconsole.team.mapper.BinarySettlementScheduleMapper;
@@ -128,9 +130,10 @@ public class BinarySettlementScheduler {
         // Retry owners from a prior pass first. Exceptions in this pass remain queued for the next one.
         if (!settleOwners(date, 0, true) || !settleOwners(date, batch.lastOwnerId(), false)) return false;
         if (mapper.completeBatch(date) == 1) return true;
-        // Later dates may consume volume still owed to an owner whose earlier settlement failed.
-        mapper.recordError(date, "F3_AUTO_OWNER_RETRY");
-        return false;
+        // Known waits are scoped to one owner. Unknown failures still fence later dates.
+        boolean blocking = mapper.hasBlockingRetries(date, EARLIER_PERIOD_PENDING);
+        mapper.recordError(date, blocking ? "F3_AUTO_OWNER_RETRY" : EARLIER_PERIOD_PENDING);
+        return !blocking;
     }
 
     private boolean settleOwners(LocalDate date, long afterOwnerId, boolean retry) {
@@ -165,18 +168,22 @@ public class BinarySettlementScheduler {
                     status.setRollbackOnly();
                     return result.reason();
                 }
+                if (EARLIER_PERIOD_PENDING.equals(result.reason())) {
+                    mapper.enqueueRetry(date, ownerId, EARLIER_PERIOD_PENDING);
+                }
                 return null;
             });
         } catch (BinarySettlementPolicyProvider.PolicyBlocked ex) {
             return ex.getMessage();
         } catch (RuntimeException ex) {
             if (retry) {
+                mapper.enqueueRetry(date, ownerId, null);
                 log.debug("F3 automatic settlement owner retry failed date={} ownerId={}", date, ownerId, ex);
             } else {
                 // Settlement and cursor rolled back together. Advance the scan only after saving the retry.
                 boolean queued = Boolean.TRUE.equals(transaction.execute(status -> {
                     if (mapper.advanceCursor(date, ownerId) != 1) return false;
-                    mapper.enqueueRetry(date, ownerId);
+                    mapper.enqueueRetry(date, ownerId, null);
                     return true;
                 }));
                 if (queued) {

@@ -260,7 +260,7 @@ public class WithdrawalPayoutFinalizer {
             if (mapper.refundPending(row.userId(), row.amount(), nexBurned, now) != 1) {
                 throw new BizException(409, "WITHDRAWAL_PENDING_REFUND_CONFLICT");
             }
-            ledger.postLedgerEntry(row.withdrawalNo() + ":PAYOUT:USDT:REFUND", row.userId(),
+            ledger.postLedgerEntryWithActualBalance(row.withdrawalNo() + ":PAYOUT:USDT:REFUND", row.userId(),
                     "WITHDRAW_PAYOUT_REFUND", "USDT", "IN", row.amount(), "POSTED",
                     "Provider payout failed; reserved withdrawal returned");
             if (nexBurned.signum() > 0) {

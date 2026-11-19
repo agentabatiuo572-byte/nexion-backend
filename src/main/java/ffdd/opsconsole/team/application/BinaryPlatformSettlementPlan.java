@@ -3,6 +3,7 @@ package ffdd.opsconsole.team.application;
 import ffdd.opsconsole.shared.config.VietnamBusinessPeriod;
 import ffdd.opsconsole.team.mapper.BinaryPlatformSettlementMapper;
 import ffdd.opsconsole.team.mapper.BinaryPlatformSettlementMapper.Allocation;
+import ffdd.opsconsole.team.mapper.BinaryPlatformSettlementMapper.PendingPeriod;
 import ffdd.opsconsole.team.mapper.BinaryPlatformSettlementMapper.Period;
 import ffdd.opsconsole.team.mapper.BinarySettlementScheduleMapper;
 import java.math.BigDecimal;
@@ -13,6 +14,8 @@ import java.util.List;
 import java.util.NavigableMap;
 import java.util.TreeMap;
 import java.util.function.LongFunction;
+import java.util.function.Predicate;
+import org.mybatis.spring.SqlSessionTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -25,14 +28,34 @@ class BinaryPlatformSettlementPlan {
     private final BinaryPlatformSettlementMapper periods;
     private final BinarySettlementScheduleMapper schedule;
     private final TransactionTemplate quoteTransaction;
+    private final TransactionTemplate priorPeriodCheck;
+    private final SqlSessionTemplate sqlSession;
 
     BinaryPlatformSettlementPlan(BinaryPlatformSettlementMapper periods, BinarySettlementScheduleMapper schedule,
-                                 PlatformTransactionManager transactionManager) {
+                                 PlatformTransactionManager transactionManager, SqlSessionTemplate sqlSession) {
         this.periods = periods;
         this.schedule = schedule;
+        this.sqlSession = sqlSession;
         this.quoteTransaction = new TransactionTemplate(transactionManager);
         this.quoteTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.quoteTransaction.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+        this.priorPeriodCheck = new TransactionTemplate(transactionManager);
+        this.priorPeriodCheck.setPropagationBehavior(TransactionDefinition.PROPAGATION_NESTED);
+    }
+
+    boolean hasBlockingEarlierPeriod(long ownerId, LocalDate date, LocalDate fromDate, Predicate<PendingPeriod> blocksLater) {
+        var earlier = periods.earlierPendingPeriods(ownerId, date, fromDate);
+        if (earlier.isEmpty()) return false;
+        // Use the same owner lock and roll back order capture or auto-placement done by the quote.
+        try {
+            return Boolean.TRUE.equals(priorPeriodCheck.execute(status -> {
+                status.setRollbackOnly();
+                return earlier.stream().anyMatch(blocksLater);
+            }));
+        } finally {
+            // The JDBC savepoint rolls back database changes outside the MyBatis session cache.
+            sqlSession.clearCache();
+        }
     }
 
     ProposedPlan quote(LocalDate date, int periodDays, BigDecimal capPct, long firstOwner,
@@ -52,7 +75,7 @@ class BinaryPlatformSettlementPlan {
             for (long owner : owners) {
                 cursor = owner;
                 if (owner == firstOwner) continue;
-                // Roll back preview-only placement and volume captures. A failed read cannot
+                // Roll back preview-only placement, volume captures and earlier consumption. A failed read cannot
                 // be treated as a zero quote when computing everyone else's proportional share.
                 BigDecimal raw = quoteTransaction.execute(status -> {
                     status.setRollbackOnly();

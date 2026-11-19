@@ -4,6 +4,7 @@ import ffdd.opsconsole.content.domain.NovaSocialEventView;
 import ffdd.opsconsole.content.domain.NovaTemplateView;
 import ffdd.opsconsole.content.domain.NotificationTranslation;
 import ffdd.opsconsole.shared.exception.BizException;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -14,7 +15,7 @@ final class NovaSocialMessageRenderer {
     static final Set<String> SUPPORTED_PLACEHOLDERS = Set.of(
             "{actor}", "{name}", "{city}", "{amount}", "{eventType}");
     /** BUG-520: 非中文模板/渲染结果不得含汉字，避免默认中文素材漏进英文、越南语通知。 */
-    private static final Pattern HAN = Pattern.compile("[\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uF900-\\uFAFF]");
+    private static final Pattern HAN = Pattern.compile("\\p{IsHan}");
     private static final String USERS_UNIT_CODE = " USERS";
     /** NovaMapper.newUserSourceEvents 生成的固定小时批号：newUsers:yyyyMMddHH。 */
     private static final Pattern HOURLY_REGISTRATION_BATCH = Pattern.compile("newUsers:\\d{10}");
@@ -33,8 +34,9 @@ final class NovaSocialMessageRenderer {
         if (hasRetiredSourceNote(template)) {
             throw new BizException(422, "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
         }
+        language = language.toUpperCase(Locale.ROOT);
         Map<String, String> values = localizedValues(event, language);
-        var translated = template.translations().get(language.toLowerCase(java.util.Locale.ROOT));
+        var translated = template.translations().get(language.toLowerCase(Locale.ROOT));
         String titleTemplate = switch (language) {
             case "ZH" -> template.titleZh();
             case "VI" -> template.titleVi();
@@ -47,7 +49,18 @@ final class NovaSocialMessageRenderer {
             default -> translated != null && StringUtils.hasText(translated.body()) ? translated.body()
                     : StringUtils.hasText(template.bodyEn()) ? template.bodyEn() : "Open UVEL to view the update.";
         };
-        return new RenderedMessage(replace(titleTemplate, values), renderBody(bodyTemplate, values, event, language));
+        String title = replace(titleTemplate, values);
+        String body = renderBody(bodyTemplate, values, event, language);
+        if (hasHanInEnglishOrVietnamese(title, language)) {
+            title = "VI".equals(language) ? "Hoạt động thực trên UVEL" : "Verified UVEL activity";
+        }
+        if (hasHanInEnglishOrVietnamese(body, language)) {
+            body = eventSummary(event, language);
+            if (containsHan(body)) {
+                body = "VI".equals(language) ? "Mở UVEL để xem cập nhật." : "Open UVEL to view the update.";
+            }
+        }
+        return new RenderedMessage(title, body);
     }
 
     static boolean hasRetiredSourceNote(NovaTemplateView template) {
@@ -115,7 +128,8 @@ final class NovaSocialMessageRenderer {
 
     static String actorText(String raw, String language) {
         String value = safe(raw);
-        if (!StringUtils.hasText(value) || LEGACY_ANONYMOUS.equals(value)) {
+        if (!StringUtils.hasText(value) || LEGACY_ANONYMOUS.equals(value)
+                || hasHanInEnglishOrVietnamese(value, language)) {
             return switch (language) {
                 case "ZH" -> LEGACY_ANONYMOUS;
                 case "VI" -> "Người dùng ẩn danh";
@@ -130,7 +144,10 @@ final class NovaSocialMessageRenderer {
         String value = safe(event == null ? null : event.cityDisplay());
         // 旧数据里未掩码的「全网」哨兵同样按全站聚合出字（掩码后的「全***」不在此匹配，只认身份）。
         if (LEGACY_ALL_REGIONS.equals(value)) return allRegions(language);
-        if (!StringUtils.hasText(value) || LEGACY_UNKNOWN_REGION.equals(value)) return unknownRegion(language);
+        if (!StringUtils.hasText(value) || LEGACY_UNKNOWN_REGION.equals(value)
+                || hasHanInEnglishOrVietnamese(value, language)) {
+            return unknownRegion(language);
+        }
         return value;
     }
 
@@ -165,6 +182,10 @@ final class NovaSocialMessageRenderer {
     /** BUG-520: 模板与渲染结果的语言检查（非中文不得含汉字）。 */
     static boolean containsHan(String text) {
         return text != null && HAN.matcher(text).find();
+    }
+
+    private static boolean hasHanInEnglishOrVietnamese(String text, String language) {
+        return ("EN".equals(language) || "VI".equals(language)) && containsHan(text);
     }
 
     private static String eventSummary(NovaSocialEventView event, String language) {
