@@ -165,7 +165,7 @@ $migrations = @(
   # Weekly H3 completions publish the existing strict quest.completed A4 contract.
   # Exchange/referral thresholds are prospective server-derived H3 facts; their binding rows are idempotent.
   (Join-Path $root "scripts\migrations\20260907_h3_weekly_exchange_referral.sql"),
-  # Only the currently active H3 mission set may consume new canonical facts.
+  # H3 reward policy is provisioned independently of existing task bindings.
   (Join-Path $root "scripts\migrations\20261120_lc_h3_mission_alignment.sql"),
   # New registrations freeze their H3 Day-One member, binding, reward, and deadline snapshot.
   # This is create-only: legacy rows remain explicitly unverifiable.
@@ -173,9 +173,9 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261016_h3_weekly_definition_snapshot.sql"),
   (Join-Path $root "scripts\migrations\20261018_h3_regional_weekly_period.sql"),
   (Join-Path $root "scripts\migrations\20261106_h3_weekly_phase_multiplier.sql"),
-  # Restore the invite task and its completion binding before validating registration.
+  # Restore missing Day One definitions and receipts without reopening existing bindings.
   (Join-Path $root "scripts\migrations\20261119_h3_invite_friend_registration_binding.sql"),
-  (Join-Path $root "scripts\migrations\20260911_h3_day_one_registration_bindings.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_h3_missing_bindings.sql"),
   # Lifetime purchase quota release must follow the reservation made by the
   # exact order line, never today's mutable SKU policy.
   (Join-Path $root "scripts\migrations\20260902_order_quota_reservation_lineage.sql"),

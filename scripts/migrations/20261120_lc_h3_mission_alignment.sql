@@ -1,16 +1,5 @@
--- Keep the trusted mission alignment from 20260902. Its historical NEX-only
--- reward repair would reset valid UVT-denominated policies on every startup.
+-- Launch reward defaults are independent of mission and binding repairs.
 START TRANSACTION;
-
-UPDATE nx_growth_quest_event_binding
-   SET quest_code = 'invite_friend', status = 1, updated_at = NOW()
- WHERE binding_code = 'REFERRAL_SETTLED' AND is_deleted = 0
-   AND (quest_code <> 'invite_friend' OR status <> 1);
-
-UPDATE nx_growth_quest_event_binding
-   SET status = 0, updated_at = NOW()
- WHERE binding_code IN ('ORDER_STARTED','LEARNING_COMPLETED','DEVICE_ACTIVATED','COMMISSION_UNLOCKED')
-   AND is_deleted = 0 AND status <> 0;
 
 INSERT INTO nx_config_item
   (config_key, config_value, value_type, config_group, visibility, remark, status, is_deleted)

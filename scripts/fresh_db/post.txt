@@ -23,6 +23,9 @@ fresh_db/ddl-20260721_e3_user_tradein_flow.sql
 fresh_db/ddl-20260727_h7_voucher_inventory_cas.sql
 fresh_db/03_app_runtime_tables.sql
 fresh_db/04_event_registry_restore.sql
+# The registry restore replays the older G2 batch property list.
+migrations/20261106_g2_queue_batch_event_fields.sql
+migrations/20261106_g2_restore_queue_batch_event_fields.sql
 migrations/20261028_janus_retirement.sql
 migrations/20261028_support_ticket_rbac_retirement.sql
 migrations/20261028_f5_commission_key_split.sql

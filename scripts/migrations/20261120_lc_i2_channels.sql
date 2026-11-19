@@ -1,4 +1,4 @@
--- I2 launch catalog from the canonical July seed. Keep existing rows, including disabled ones.
+-- I2 launch catalog uses current copy when applied after the legacy cleanup.
 SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 
 START TRANSACTION;
@@ -10,25 +10,25 @@ INSERT INTO nx_nova_channel (
 VALUES
     ('welcome', '欢迎与玩法解释', '注册成功后首次触达', '8s', '24h', '', 0, 25, 1, 10,
      'system:migration', 'CANONICAL_I2_CHANNEL welcome', NOW(), NOW(), 0),
-    ('market', '市场氛围播报', '全网算力或 NEX 行情满足播报条件', '12 min', '30 min', '', 0, 25, 1, 20,
+    ('market', '市场氛围播报', '全网算力或 UVT 行情满足播报条件', '12 min', '30 min', '', 0, 25, 1, 20,
      'system:migration', 'CANONICAL_I2_CHANNEL market', NOW(), NOW(), 0),
     ('upgrade', '设备升级建议', '用户设备组合满足升级建议条件', '15 min', '60 min', '', 0, 25, 0, 30,
      'system:migration', 'CANONICAL_I2_CHANNEL upgrade', NOW(), NOW(), 0),
     ('dailySummary', '每日收益总结', '完成日内任务后汇总触达', '25 min', '25 min', '', 0, 25, 1, 40,
      'system:migration', 'CANONICAL_I2_CHANNEL dailySummary', NOW(), NOW(), 0),
-    ('tradein', '以旧换新提醒', '符合 E3 以旧换新资格时触达', '15 min', '60 min',
+    ('tradein', '以旧换新提醒', '符合以旧换新资格时触达', '15 min', '60 min',
      'P1-P2 skip / P3-P4 60 min / P5-P6 24h', 0, 25, 0, 50,
      'system:migration', 'CANONICAL_I2_CHANNEL tradein follows H1', NOW(), NOW(), 0),
     ('social', '真实业务动态', '从已验证且未过期的真实事件池按权重抽样', '20 min', '30 min', '', 0, 25, 0, 60,
      'system:migration', 'CANONICAL_I2_CHANNEL social', NOW(), NOW(), 0),
-    ('eventClaim', '活动奖励催领', 'H4 活动奖励进入可领取态时触达', '15 min', '60 min', '', 0, 25, 0, 70,
+    ('eventClaim', '活动奖励催领', '活动奖励进入可领取态时触达', '15 min', '60 min', '', 0, 25, 0, 70,
      'system:migration', 'CANONICAL_I2_CHANNEL eventClaim', NOW(), NOW(), 0),
     ('wrapped', '半年与年度回顾', '服务端回顾周期到达且用户满足召回条件', '1d', '30d', '', 0, 25, 0, 80,
      'system:migration', 'CANONICAL_I2_CHANNEL wrapped', NOW(), NOW(), 0),
-    ('taskLockMonthly', '月度任务锁定召回', 'H3 月度任务锁定累计条件满足时触达', '30 min', '30d',
+    ('taskLockMonthly', '月度任务锁定召回', '月度任务锁定累计条件满足时触达', '30 min', '30d',
      'P1-P2 30d / P3-P4 7d / P5-P6 84h', 0, 25, 0, 90,
      'system:migration', 'CANONICAL_I2_CHANNEL taskLockMonthly follows H1', NOW(), NOW(), 0),
-    ('quest', '任务宽限与过期召回', 'H3 任务状态进入宽限、过期或周刷新时触达', '5 min', '7d', '', 0, 25, 0, 100,
+    ('quest', '任务宽限与过期召回', '任务状态进入宽限、过期或周刷新时触达', '5 min', '7d', '', 0, 25, 0, 100,
      'system:migration', 'CANONICAL_I2_CHANNEL quest', NOW(), NOW(), 0)
 ON DUPLICATE KEY UPDATE channel_key = nx_nova_channel.channel_key;
 
@@ -38,14 +38,14 @@ INSERT INTO nx_nova_template (
     status, operator, reason, created_at, updated_at, is_deleted)
 VALUES
     ('welcome', '欢迎模板', '/earn', 'v1',
-     '欢迎来到 Nexion', '从第一项收益任务开始了解平台。',
-     'Chào mừng đến Nexion', 'Hãy bắt đầu với nhiệm vụ thu nhập đầu tiên.',
-     'Welcome to Nexion', 'Start with your first earning task.',
+     '欢迎来到 UVEL', '从第一项收益任务开始了解平台。',
+     'Chào mừng đến UVEL', 'Hãy bắt đầu với nhiệm vụ thu nhập đầu tiên.',
+     'Welcome to UVEL', 'Start with your first earning task.',
      'PUBLISHED', 'system:migration', 'I2 canonical localized template', NOW(), NOW(), 0),
     ('market', '市场动态模板', '/earn', 'v1',
-     '市场动态', 'NEX 市场出现了值得关注的新变化。',
-     'Diễn biến thị trường', 'Thị trường NEX vừa có thay đổi đáng chú ý.',
-     'Market update', 'There is a notable change in the NEX market.',
+     '市场动态', 'UVT 市场出现了值得关注的新变化。',
+     'Diễn biến thị trường', 'Thị trường UVT vừa có thay đổi đáng chú ý.',
+     'Market update', 'There is a notable change in the UVT market.',
      'PUBLISHED', 'system:migration', 'I2 canonical localized template', NOW(), NOW(), 0),
     ('upgrade', '升级建议模板', '/devices', 'v1',
      '设备升级建议', '你的设备组合出现了新的升级选择。',
@@ -63,9 +63,9 @@ VALUES
      'Trade-in opportunity', 'One of your devices is eligible for trade-in.',
      'PUBLISHED', 'system:migration', 'I2 canonical localized template', NOW(), NOW(), 0),
     ('social', '真实业务动态模板', 'NONE', 'v1',
-     'Nexion 真实动态', '{actor} 在 {city} 完成 {amount}',
-     'Hoạt động thực trên Nexion', '{actor} tại {city} vừa hoàn tất {amount}',
-     'Verified Nexion activity', '{actor} in {city} completed {amount}',
+     'UVEL 真实动态', '{actor} 在 {city} 完成 {amount}',
+     'Hoạt động thực trên UVEL', '{actor} tại {city} vừa hoàn tất {amount}',
+     'Verified UVEL activity', '{actor} in {city} completed {amount}',
      'PUBLISHED', 'system:migration', 'I2 canonical localized template', NOW(), NOW(), 0),
     ('eventClaim', '活动催领模板', '/earn', 'v1',
      '奖励待领取', '你有一项活动奖励等待领取。',
@@ -73,9 +73,9 @@ VALUES
      'Reward ready to claim', 'An event reward is ready for you to claim.',
      'PUBLISHED', 'system:migration', 'I2 canonical localized template', NOW(), NOW(), 0),
     ('wrapped', '周期回顾模板', '/me/weekly', 'v1',
-     '你的 Nexion 回顾', '回顾这一周期的设备、收益和任务成果。',
-     'Nhìn lại hành trình Nexion', 'Xem lại thiết bị, thu nhập và thành tích nhiệm vụ của bạn.',
-     'Your Nexion recap', 'Review your devices, earnings, and task achievements.',
+     '你的 UVEL 回顾', '回顾这一周期的设备、收益和任务成果。',
+     'Nhìn lại hành trình UVEL', 'Xem lại thiết bị, thu nhập và thành tích nhiệm vụ của bạn.',
+     'Your UVEL recap', 'Review your devices, earnings, and task achievements.',
      'PUBLISHED', 'system:migration', 'I2 canonical localized template', NOW(), NOW(), 0),
     ('taskLockMonthly', '月度任务锁定模板', '/earn', 'v1',
      '月度任务进度提醒', '本月仍有任务进度等待完成。',

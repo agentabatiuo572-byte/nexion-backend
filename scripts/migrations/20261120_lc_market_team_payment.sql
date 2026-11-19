@@ -1,5 +1,15 @@
 SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 
+-- The direct startup runner also needs the G3 scheduler's claim table.
+CREATE TABLE IF NOT EXISTS nx_g3_schedule_execution (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  run_date DATE NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_g3_schedule_run_date (run_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 START TRANSACTION;
 
 SET @lc_g3_curve =
@@ -53,12 +63,20 @@ SELECT 'UVT_USDT','UVT / USDT','per UVT',@lc_g3_opening_price,0,
        JSON_EXTRACT(@lc_g3_curve, '$[*].targetPrice'),'ACTIVE',NOW(),0
 WHERE @lc_g3_opening;
 
--- HDPAY reads the shared singleton. The retired manual VietQR channel is independent.
-INSERT INTO nx_vietqr_config
-  (id, tolerance_vnd, grace_minutes, per_tx_limit_usd,
-   trc20_confirmations, erc20_confirmations, bep20_confirmations, rotation_strategy, version, is_deleted)
-VALUES (1,1000,10,5000,20,12,15,'ROUND_ROBIN',0,0)
-ON DUPLICATE KEY UPDATE id = nx_vietqr_config.id;
+-- The direct startup runner may lack the Bash payment prerequisite.
+SET @lc_hdpay_seed = IF(EXISTS (
+  SELECT 1 FROM information_schema.TABLES
+   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_vietqr_config'
+),
+ 'INSERT INTO nx_vietqr_config
+    (id, tolerance_vnd, grace_minutes, per_tx_limit_usd,
+     trc20_confirmations, erc20_confirmations, bep20_confirmations, rotation_strategy, version, is_deleted)
+  VALUES (1,1000,10,5000,20,12,15,''ROUND_ROBIN'',0,0)
+  ON DUPLICATE KEY UPDATE id = nx_vietqr_config.id',
+ 'DO 0');
+PREPARE lc_hdpay_stmt FROM @lc_hdpay_seed;
+EXECUTE lc_hdpay_stmt;
+DEALLOCATE PREPARE lc_hdpay_stmt;
 
 -- H5 needs an authoritative DAILY mission before the App can check in.
 INSERT INTO nx_mission
