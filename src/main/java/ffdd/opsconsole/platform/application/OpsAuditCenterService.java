@@ -66,6 +66,7 @@ import ffdd.opsconsole.risk.application.K1RiskApproval;
 import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.team.application.BinaryCommissionSettlementService.SettlementResult;
 import ffdd.opsconsole.team.application.TeamFundApproval;
+import ffdd.opsconsole.team.application.HardwareQuotaApproval;
 import ffdd.opsconsole.market.application.G2G7ParamApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
 import ffdd.opsconsole.market.application.G4CatalogApproval;
@@ -1034,7 +1035,7 @@ public class OpsAuditCenterService {
         }
         if ("PROPOSE".equals(verb) && (G4CatalogApproval.supports(command) || A4RegistryApproval.supports(command)
                 || G4ParamApproval.supports(command)
-                || H7VoucherDisposition.isOperation(command)
+                || H7VoucherDisposition.isOperation(command) || HardwareQuotaApproval.supports(command)
                 || AuditReplayBusinessPermissionGuard.isUserSessionRevocation(command))) {
             if (!canReadOwnProposal(ticket, command, actorId)) return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
             return ApiResult.ok(toTicket(ticket, true));
@@ -1116,6 +1117,7 @@ public class OpsAuditCenterService {
             var target = j1Restore ? OpsKillSwitchService.restoreTarget(cmd)
                     : LearningCourseActivationApproval.supports(cmd) ? LearningCourseActivationApproval.target(cmd)
                     : G4CatalogApproval.supports(cmd) ? G4CatalogApproval.TARGET
+                    : HardwareQuotaApproval.supports(cmd) ? HardwareQuotaApproval.target(cmd)
                     : TeamFundApproval.supports(cmd) ? TeamFundApproval.target(cmd)
                     : G3MarketApproval.supports(cmd) ? G3MarketApproval.target(cmd)
                     : G2G7ParamApproval.supports(cmd) ? G2G7ParamApproval.target(cmd)
@@ -1138,7 +1140,7 @@ public class OpsAuditCenterService {
             boolean classificationMatches = j1Restore
                     ? target != null && "sos".equals(ticket.getOperationType()) && isTrue(ticket.getSos())
                         && isTrue(ticket.getAmplifies()) == OpsKillSwitchService.requiresRestoreCoverage(target)
-                    : initialSchedule || historicalH4
+                    : initialSchedule || historicalH4 || HardwareQuotaApproval.supports(cmd)
                     ? "param".equals(ticket.getOperationType()) && Integer.valueOf(0).equals(ticket.getAmplifies())
                     : "fund".equals(ticket.getOperationType()) && Integer.valueOf(1).equals(ticket.getAmplifies());
             if (target == null || !target.id().equals(ticket.getObjectText()) || !target.domain().equals(ticket.getSourceDomain())
@@ -1348,6 +1350,7 @@ public class OpsAuditCenterService {
         return WithdrawalConfigApproval.supports(command) || TreasuryThresholdApproval.supports(command)
                 || LearningCourseActivationApproval.supports(command)
                 || E2TaskPricingApproval.supports(command) || TeamFundApproval.supports(command)
+                || HardwareQuotaApproval.supports(command)
                 || G3MarketApproval.supports(command) || H8RewardParamApproval.supports(command)
                 || G2G7ParamApproval.supports(command)
                 || G4CatalogApproval.supports(command) || G4DividendApproval.supports(command)
@@ -1393,7 +1396,8 @@ public class OpsAuditCenterService {
         detail.put("idempotencyKey", idempotencyKey.trim());
         detail.put("domain", TreasuryThresholdApproval.supports(command) || E2TaskPricingApproval.supports(command)
                 || LearningCourseActivationApproval.supports(command) || OpsI18nLearningService.isCourseRewardAdjustment(command)
-                || TeamFundApproval.supports(command) || G3MarketApproval.supports(command) || H8RewardParamApproval.supports(command)
+                || TeamFundApproval.supports(command) || HardwareQuotaApproval.supports(command)
+                || G3MarketApproval.supports(command) || H8RewardParamApproval.supports(command)
                 || G4CatalogApproval.supports(command) || G4DividendApproval.supports(command)
                 || G4ParamApproval.supports(command) || H5GrowthApproval.supports(command)
                 || H3GrowthApproval.supports(command)
@@ -1526,7 +1530,7 @@ public class OpsAuditCenterService {
     private String auditReviewValue(AuditOperationTicketEntity ticket, String side) {
         var command = deserializeCommand(ticket.getCommandJson());
         if (A4RegistryApproval.supports(command) || H4GrowthApproval.supports(command) || LearningCourseActivationApproval.supports(command)
-                || E2TaskPricingApproval.isLifecycle(command)) {
+                || E2TaskPricingApproval.isLifecycle(command) || HardwareQuotaApproval.supports(command)) {
             return "before".equals(side) ? ticket.getBeforeValue() : ticket.getAfterValue();
         }
         return reviewValue(ticket, side);
@@ -1534,6 +1538,9 @@ public class OpsAuditCenterService {
 
     private String reviewValue(AuditOperationTicketEntity ticket, String side) {
         var command = deserializeCommand(ticket.getCommandJson());
+        if (HardwareQuotaApproval.supports(command) && "after".equals(side)) {
+            return objectMapper.valueToTree(command.params().get("values")).toPrettyString();
+        }
         if (A4RegistryApproval.supports(command) && "after".equals(side)) {
             return A4RegistryApproval.reviewAfter(command);
         }

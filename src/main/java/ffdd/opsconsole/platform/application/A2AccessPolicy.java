@@ -26,6 +26,7 @@ import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import ffdd.opsconsole.team.application.TeamFundApproval;
+import ffdd.opsconsole.team.application.HardwareQuotaApproval;
 import ffdd.opsconsole.market.application.G2G7ParamApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
 import ffdd.opsconsole.market.application.G4CatalogApproval;
@@ -109,6 +110,7 @@ public class A2AccessPolicy {
                         || (grants.contains(K2OtpInitialApproval.MAKER_AUTHORITY)
                             && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write")))
                         || grants.contains("network_f1_write") || grants.contains("network_f3_write") || grants.contains("network_f4_pool_fund")
+                        || grants.contains(HardwareQuotaApproval.AUTHORITY)
                         || grants.contains("finprod_g3_curve_target_price_write") || grants.contains("finprod_g3_curve_pump_prob_write")
                         || grants.contains("finprod_g3_override_price_write") || grants.contains("finprod_g3_write")
                         || grants.contains("finprod_g4_dividend_rate_write") || grants.contains("finprod_g4_write")
@@ -200,6 +202,7 @@ public class A2AccessPolicy {
                 && grants.contains("platform_a2_proposal_create")
                 && grants.contains(AuditReplayBusinessPermissionGuard.E4_REFUND_AUTHORITY)) return true;
         if ("F".equals(domain) && replayBusinessPermissionGuard.canRecoverF5Proposal(command, grants)) return true;
+        if (HardwareQuotaApproval.supports(command)) return grants.contains(HardwareQuotaApproval.AUTHORITY);
         if ("K".equals(domain) && K1RiskApproval.supports(command)) {
             return grants.contains(K1RiskApproval.MAKER_AUTHORITY)
                     && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write"));

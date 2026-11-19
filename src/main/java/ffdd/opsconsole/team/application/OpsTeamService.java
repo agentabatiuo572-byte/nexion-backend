@@ -2899,8 +2899,10 @@ public class OpsTeamService implements AuditReplayable {
         List<Map<String, Object>> ranks = leadershipRanks();
         int participantCount = 0;
         List<Map<String, Object>> quotaRows = quotaRows();
-        int quotaCurrent = quotaRows.stream().mapToInt(row -> intValue(row.get("current"), 0)).sum();
-        int quotaCap = quotaRows.stream().mapToInt(row -> intValue(row.get("cap"), 0)).sum();
+        List<Map<String, Object>> activeQuotaRows = quotaRows.stream()
+                .filter(OpsTeamService::activeQuota).toList();
+        int quotaCurrent = activeQuotaRows.stream().mapToInt(row -> intValue(row.get("current"), 0)).sum();
+        int quotaCap = activeQuotaRows.stream().mapToInt(row -> intValue(row.get("cap"), 0)).sum();
         Map<String, Object> ambassador = commissionRepository.ambassadorSummary();
         Map<String, Object> leaderboard = commissionRepository.leaderboardSummary();
         String leaderboardStatus = textValue(leaderboard, "periodStatus", "");
@@ -2960,8 +2962,8 @@ public class OpsTeamService implements AuditReplayable {
         pool.put("quotaMonthlyStockTotal", quotaCap);
         pool.put("quotaMonthlyStockUsed", quotaCurrent);
         pool.put("quotaMonthlyStockRemaining", Math.max(0, quotaCap - quotaCurrent));
-        pool.put("proUnlock", quotaUnlock("PRO"));
-        pool.put("rackUnlock", quotaUnlock("RACK"));
+        pool.put("proUnlock", quotaUnlock(activeQuotaRows, "PRO"));
+        pool.put("rackUnlock", quotaUnlock(activeQuotaRows, "RACK"));
         pool.put("ambassadorBands", ambassadorBands());
         pool.put("ambassadorApplications", commissionRepository.ambassadorApplications(30).stream().map(row -> {
             Map<String, Object> view = new LinkedHashMap<>(row);
@@ -3023,7 +3025,7 @@ public class OpsTeamService implements AuditReplayable {
         if (intValue(pool.get("weeklyGmvUsd"), 0) == 0
                 && intValue(pool.get("weeklyInjectedUsd"), 0) == 0
                 && pool.get("quotaRows") instanceof List<?> quotaRows
-                && quotaRows.isEmpty()) {
+                && quotaRows.stream().noneMatch(row -> row instanceof Map<?, ?> quota && activeQuota(quota))) {
             return List.of();
         }
         return List.of(
@@ -3090,6 +3092,10 @@ public class OpsTeamService implements AuditReplayable {
                 .toList();
     }
 
+    private static boolean activeQuota(Map<?, ?> row) {
+        return Integer.valueOf(1).equals(row.get("status"));
+    }
+
     private Map<String, Object> normalizeQuotaRow(Map<String, Object> raw) {
         int current = intValue(raw.get("current"), 0);
         int cap = Math.max(current, intValue(raw.get("cap"), current));
@@ -3099,6 +3105,10 @@ public class OpsTeamService implements AuditReplayable {
         row.put("productNo", String.valueOf(raw.getOrDefault("productNo", "")));
         row.put("monthlyQuota", raw.get("cap"));
         row.put("name", String.valueOf(raw.getOrDefault("name", "Quota")));
+        row.put("displayName", row.get("name"));
+        row.put("note", String.valueOf(raw.getOrDefault("note", "")));
+        row.put("status", intValue(raw.get("status"), 1));
+        row.put("sortOrder", intValue(raw.get("sortOrder"), 0));
         row.put("directRefs", intValue(raw.get("directRefs"), 0));
         BigDecimal monthComputePoints = decimalValue(raw.get("monthComputePoints"), BigDecimal.ZERO);
         row.put("monthComputePoints", monthComputePoints);
@@ -4106,8 +4116,8 @@ public class OpsTeamService implements AuditReplayable {
                 .orElse(0);
     }
 
-    private String quotaUnlock(String code) {
-        return quotaRows().stream()
+    private String quotaUnlock(List<Map<String, Object>> activeQuotaRows, String code) {
+        return activeQuotaRows.stream()
                 .filter(row -> textValue(row, "name", "").toUpperCase(Locale.ROOT).contains(code))
                 .findFirst()
                 .map(row -> "月配额 " + row.get("cap"))
