@@ -733,8 +733,6 @@ public class OpsReferralRewardService {
         }
         if (onlyInvitedUserId != null) batchAudit.put("invitedUserId", onlyInvitedUserId);
         audit("REFERRAL_REWARD_SETTLEMENT_RUN", "batch", operator, key, batchAudit);
-        if (onlyInvitedUserId != null) batchAudit.put("invitedUserId", onlyInvitedUserId);
-        audit("REFERRAL_REWARD_SETTLEMENT_RUN", "batch", operator, key, batchAudit);
         Map<String, Object> completed = new LinkedHashMap<>(Map.of(
                 "limit", limit, "settled", settled, "skipped", skipped,
                 "operator", operator, "idempotencyKey", key));
