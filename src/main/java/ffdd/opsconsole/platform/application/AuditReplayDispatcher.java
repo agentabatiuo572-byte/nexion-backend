@@ -1,4 +1,5 @@
 package ffdd.opsconsole.platform.application;
+import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
 import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.growth.application.H8RewardParamApproval;
@@ -40,7 +41,7 @@ public class AuditReplayDispatcher {
                     "c2_impersonate_terminate", "c2_impersonate_start", "c3_adjust_approve", "c3_adjust_reject",
                     "c3_adjust_create", "c2_blocklist_upsert", "c2_blocklist_remove")),
             Map.entry("D", Set.of("d_cregis_deposit_policy", "d2_withdraw_approve", "d2_withdraw_unfreeze")),
-            Map.entry("E", Set.of("e1_legacy_unknown_zero_credit_cancel", "e1_bundle_discount", "e1_phone_task_policy",
+            Map.entry("E", Set.of(HostingCenterService.OPERATION, "e1_legacy_unknown_zero_credit_cancel", "e1_bundle_discount", "e1_phone_task_policy",
                     "e6_phone_calibration", "e1_sku_create", "e1_sku_update", "e1_sku_status", "e1_sku_delete",
                     "e1_review_create", "e1_review_update", "e1_review_status", "e1_review_delete",
                     "e1_phase_create", "e1_phase_patch", "e1_phase_archive", "e1_gate_create", "e1_gate_patch",

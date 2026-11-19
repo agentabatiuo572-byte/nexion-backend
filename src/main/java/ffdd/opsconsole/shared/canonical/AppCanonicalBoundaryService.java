@@ -1,5 +1,6 @@
 package ffdd.opsconsole.shared.canonical;
 
+import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.risk.facade.TamperDetectionPublisher;
 import ffdd.opsconsole.growth.application.AppGrowthLifecyclePublisher;
 import ffdd.opsconsole.growth.application.AppGrowthLifecyclePublisher.UserAttribution;
@@ -55,6 +56,9 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor(onConstructor_ = @Autowired)
 public class AppCanonicalBoundaryService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private HostingCenterService hostingCenters;
+
     private static final ZoneId SERVER_ZONE = ZoneId.of("Asia/Shanghai");
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -1047,7 +1051,7 @@ public class AppCanonicalBoundaryService {
             needsF4bFacts = needsF4bFacts || quotas.stream().anyMatch(this::hardwareQuotaNeedsFacts);
             PurchaseEligibilityDecision decision = storefrontConfigurationDecision(
                     product.productNo(), product.productType(), product.inventoryMode(),
-                    product.gpuModel(), product.vramTotalGb(), product.power(), product.datacenter());
+                    product.gpuModel(), product.vramTotalGb(), product.power());
             if (decision == null) releaseCandidates.put(product.productNo(), product.unlockPhase());
             else preliminary.put(product.productNo(), decision);
         }
@@ -1105,7 +1109,7 @@ public class AppCanonicalBoundaryService {
             if (product == null) continue;
             PurchaseEligibilityDecision decision = storefrontConfigurationDecision(
                     product.productNo(), product.productType(), product.inventoryMode(),
-                    product.gpuModel(), product.vramTotalGb(), product.power(), product.datacenter());
+                    product.gpuModel(), product.vramTotalGb(), product.power());
             if (decision == null) releaseCandidates.put(product.productNo(), product.unlockPhase());
             else preliminary.put(product.productNo(), decision);
         }
@@ -1138,9 +1142,9 @@ public class AppCanonicalBoundaryService {
 
     private PurchaseEligibilityDecision storefrontConfigurationDecision(
             String productNo, String productType, String inventoryMode,
-            String gpuModel, Integer vramTotalGb, String power, String datacenter) {
+            String gpuModel, Integer vramTotalGb, String power) {
         String configurationBlock = storefrontConfigurationBlock(
-                productType, inventoryMode, gpuModel, vramTotalGb, power, datacenter);
+                productType, inventoryMode, gpuModel, vramTotalGb, power);
         if (configurationBlock != null) {
             return new PurchaseEligibilityDecision(productNo, false, configurationBlock);
         }
@@ -1237,7 +1241,7 @@ public class AppCanonicalBoundaryService {
 
     static String storefrontConfigurationBlock(
             String productType, String inventoryMode, String gpuModel, Integer vramTotalGb,
-            String power, String datacenter) {
+            String power) {
         String type = StringUtils.hasText(productType) ? productType.trim().toUpperCase(Locale.ROOT) : "";
         boolean physical = "DEVICE".equals(type) || "SERVER".equals(type);
         ProductInventoryMode mode = ProductInventoryMode.parse(inventoryMode);
@@ -1247,7 +1251,7 @@ public class AppCanonicalBoundaryService {
         }
         if (physical && (!StringUtils.hasText(gpuModel)
                 || vramTotalGb == null || vramTotalGb <= 0
-                || !StringUtils.hasText(power) || !StringUtils.hasText(datacenter))) {
+                || !StringUtils.hasText(power))) {
             return "PRODUCT_SPECS_UNAVAILABLE";
         }
         return null;
@@ -1364,7 +1368,7 @@ public class AppCanonicalBoundaryService {
         }
         String configurationBlock = storefrontConfigurationBlock(
                 product.productType(), product.inventoryMode(), product.gpuModel(), product.vramTotalGb(),
-                product.power(), product.datacenter());
+                product.power());
         if (configurationBlock != null) return ApiResult.fail(409, configurationBlock);
         ProductInventoryMode inventoryMode = ProductInventoryMode.parse(product.inventoryMode());
         if (inventoryMode == ProductInventoryMode.FINITE
@@ -1422,7 +1426,7 @@ public class AppCanonicalBoundaryService {
         }
         String configurationBlock = storefrontConfigurationBlock(
                 product.productType(), product.inventoryMode(), product.gpuModel(), product.vramTotalGb(),
-                product.power(), product.datacenter());
+                product.power());
         if (configurationBlock != null) return ApiResult.fail(409, configurationBlock);
         ProductInventoryMode inventoryMode = ProductInventoryMode.parse(product.inventoryMode());
         if (StringUtils.hasText(product.purchaseGateJson())
@@ -1458,6 +1462,7 @@ public class AppCanonicalBoundaryService {
         if (attribution == null || attribution.accountAgeMonths() == null || !StringUtils.hasText(attribution.cohort())) {
             throw new BizException(409, "USER_EVENT_ATTRIBUTION_UNAVAILABLE");
         }
+        hostingCenters.requirePool();
         String orderNo = "ORD-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         BigDecimal subtotal = product.priceUsdt().multiply(BigDecimal.valueOf(qty)).setScale(6, RoundingMode.DOWN);
         VoucherRedemption voucher = growthLifecyclePublisher.prepareVoucher(

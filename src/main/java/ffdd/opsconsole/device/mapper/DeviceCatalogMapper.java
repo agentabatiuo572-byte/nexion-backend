@@ -188,7 +188,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             """ + ORDER_STATE_SQL + """
              AS state,
             (SELECT ud.dc_location FROM nx_user_device ud
-              WHERE ud.source_order_no=o.order_no AND ud.is_deleted=0 ORDER BY ud.id DESC LIMIT 1) AS dcLocation,
+              WHERE ud.source_order_no=o.order_no AND ud.user_id=o.user_id AND ud.is_deleted=0
+                AND ud.source_channel IN ('ORDER','TRIAL') ORDER BY ud.id LIMIT 1) AS dcLocation,
             CASE
               WHEN 60 > TIMESTAMPDIFF(MINUTE,o.created_at,NOW())
                 THEN CONCAT(TIMESTAMPDIFF(MINUTE,o.created_at,NOW()),'分钟')
@@ -1572,18 +1573,15 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                    COALESCE((SELECT oi.product_name FROM nx_order_item oi
                               WHERE oi.order_no=o.order_no AND oi.is_deleted=0 ORDER BY oi.sort_order,oi.id LIMIT 1),
                             p.name,o.order_no) AS productName,
-                   (SELECT ud.id FROM nx_user_device ud WHERE ud.source_order_no=o.order_no AND ud.is_deleted=0
-                     ORDER BY ud.id DESC LIMIT 1) AS deviceId,
-                   (SELECT ud.instance_no FROM nx_user_device ud WHERE ud.source_order_no=o.order_no AND ud.is_deleted=0
-                     ORDER BY ud.id DESC LIMIT 1) AS deviceInstanceNo,
-                   (SELECT ud.dc_location FROM nx_user_device ud WHERE ud.source_order_no=o.order_no AND ud.is_deleted=0
-                     ORDER BY ud.id DESC LIMIT 1) AS dcLocation,
+                   ud.id AS deviceId, ud.instance_no AS deviceInstanceNo, ud.dc_location AS dcLocation,
                    o.created_at AS createdAt, o.paid_at AS paidAt,
-                   (SELECT ud.activated_at FROM nx_user_device ud WHERE ud.source_order_no=o.order_no AND ud.is_deleted=0
-                     ORDER BY ud.id DESC LIMIT 1) AS activatedAt,
+                   ud.activated_at AS activatedAt,
                    o.updated_at AS updatedAt
               FROM nx_order o
               LEFT JOIN nx_product p ON p.id=o.product_id AND p.is_deleted=0
+              LEFT JOIN nx_user_device ud ON ud.id=(SELECT MIN(delivered.id) FROM nx_user_device delivered
+                   WHERE delivered.source_order_no=o.order_no AND delivered.user_id=o.user_id AND delivered.is_deleted=0
+                     AND delivered.source_channel IN ('ORDER','TRIAL'))
              WHERE o.order_no=#{orderNo} AND o.is_deleted=0
              LIMIT 1
             """)
@@ -1592,7 +1590,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
     @Select("""
             SELECT id AS deviceId, instance_no AS deviceInstanceNo,
                    CASE WHEN source_channel='PROMOTION_GIFT' THEN 'PROMOTION_GIFT' ELSE 'PURCHASE' END AS kind,
-                   source_channel AS sourceChannel, status, ownership_status AS ownershipStatus
+                   source_channel AS sourceChannel, status, ownership_status AS ownershipStatus, dc_location AS dcLocation
               FROM nx_user_device
              WHERE source_order_no=#{orderNo} AND is_deleted=0
              ORDER BY (source_channel='PROMOTION_GIFT'), id

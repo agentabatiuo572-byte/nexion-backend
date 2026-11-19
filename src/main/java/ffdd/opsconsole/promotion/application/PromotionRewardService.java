@@ -1,5 +1,6 @@
 package ffdd.opsconsole.promotion.application;
 
+import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import ffdd.opsconsole.device.application.DeviceMonthlyTargetService;
 import ffdd.opsconsole.device.mapper.SimulatedTaskMapper;
@@ -24,6 +25,9 @@ import ffdd.opsconsole.common.domain.LegacyUvtProof;
 @Service
 @RequiredArgsConstructor
 public class PromotionRewardService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private HostingCenterService hostingCenters;
+
     private final PromotionMapper db;
     private final PromotionOrderService orders;
     private final DeviceMonthlyTargetService monthlyTargets;
@@ -122,6 +126,7 @@ public class PromotionRewardService {
         boolean share=false;
         BigDecimal watts=share?BigDecimal.ZERO:PromotionNativeContractResolver.powerWatts(sku.get("power_text"));
         require(watts!=null,"PROMOTION_GIFT_POWER_UNAVAILABLE");
+        var hostingPool = hostingCenters.requirePool();
         int count=Math.toIntExact(number(spec.get("quantity")));
         for(int i=0;i<count;i++){
             String instance="PG-"+sha256(text(reward.get("obligation_id"))+":"+i).substring(0,48);
@@ -131,7 +136,7 @@ public class PromotionRewardService {
                   source_environment,run_id,status,hashrate,daily_usdt,daily_nex,last_seen_at,purchased_at,activated_at,pending_deactivate,row_version,is_deleted)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'OWNED','PROMOTION_GIFT','PRODUCTION','','ACTIVE',?,?,?,NOW(),NOW(),NOW(),0,0,0)
                 """,reward.get("beneficiary_id"),reward.get("order_no"),product.get("id"),productNo,product.get("tier"),currentSku.get("series_code"),instance,product.get("name"),type,
-                product.get("generation"),product.get("gpu_model"),product.get("vram_total_gb"),watts,required(sku.get("datacenter"),"datacenter"),
+                product.get("generation"),product.get("gpu_model"),product.get("vram_total_gb"),watts,hostingPool.assign(instance),
                 decimal(product.get("hashrate")),decimal(product.get("estimated_daily_usdt")),decimal(product.get("daily_nex"))));
             Map<String,Object> device=db.requiredRow("SELECT id FROM nx_user_device WHERE instance_no=?",instance);
             changed(db.write("INSERT INTO nx_promotion_device_receipt(obligation_id,device_unit_seq,device_id,instance_no,profile_id,profile_version,rights_snapshot_json) VALUES(?,?,?,?,?,?,?)",

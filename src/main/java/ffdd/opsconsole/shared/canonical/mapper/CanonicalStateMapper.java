@@ -1026,6 +1026,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                       WHERE ordinary_device.user_id = o.user_id
                         AND ordinary_device.source_order_no = o.order_no
                         AND ordinary_device.is_deleted = 0
+                        AND ordinary_device.source_channel IN ('ORDER','TRIAL')
                    ))
                AND ud.user_id = o.user_id AND ud.is_deleted = 0
              WHERE o.user_id = #{userId} AND o.is_deleted = 0

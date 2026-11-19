@@ -419,7 +419,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
 
     @Insert("""
             INSERT INTO nx_user_device_runtime(user_device_id, online_status, region, ops_paused, ops_pause_reason, heartbeat_at)
-            SELECT d.id, 'UNKNOWN', COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED'), 1, #{reason}, COALESCE(d.last_seen_at, #{now})
+            SELECT d.id, 'UNKNOWN', COALESCE(NULLIF(LEFT(d.dc_location,64),''),'UNASSIGNED'), 1, #{reason}, COALESCE(d.last_seen_at, #{now})
               FROM nx_user_device d
               LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id
              WHERE d.user_id = #{userId} AND d.is_deleted = 0
@@ -709,7 +709,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             INSERT INTO nx_user_device_runtime(user_device_id, online_status, region, paused_reason, heartbeat_at)
             SELECT d.id,
                    'OFFLINE',
-                   COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED'),
+                   COALESCE(NULLIF(LEFT(d.dc_location,64),''),'UNASSIGNED'),
                    #{operation},
                    #{now}
               FROM nx_user_device d

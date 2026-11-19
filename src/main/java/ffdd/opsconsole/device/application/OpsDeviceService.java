@@ -132,6 +132,9 @@ import org.springframework.util.StringUtils;
 @ApplicationService
 @RequiredArgsConstructor(onConstructor_ = @Autowired)
 public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditReplayable {
+    @org.springframework.beans.factory.annotation.Autowired
+    private HostingCenterService hostingCenters;
+
     private static final ObjectMapper E1_AUDIT_JSON = new ObjectMapper();
     private static final Set<String> RESTORABLE_STATUSES = Set.of("RECYCLED");
     private static final Set<String> SKU_STATUSES = Set.of("on", "off", "pending");
@@ -630,7 +633,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         if ("on".equals(status) && !"on".equals(before.status())) requireStoreSkuSeries(before.seriesCode(),before.productType());
         simulationPolicies.validateProductScope(normalized,before.seriesCode(),before.allowedPoolCodes(),false,before.monthlyTargetUsdt(),before.monthlyTargetBandPct(),"on".equals(status),false);
-        validateHosting(before.datacenter(),"on".equals(status));
         if (status.equals(before.status())) {
             return ApiResult.ok(before);
         }
@@ -3629,11 +3631,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     private record SkuRevision(LocalDateTime value, String error) { }
 
-    private static void validateHosting(String label,boolean publishing) {
-        if(label!=null && label.length()>128)throw new BizException(422,"SKU_DATACENTER_INVALID");
-        if(publishing && !StringUtils.hasText(label))throw new BizException(422,"SKU_DATACENTER_REQUIRED");
-    }
-
     private static void requireStoreSkuSeries(String seriesCode, String productType) {
         if (!StringUtils.hasText(seriesCode)) throw new BizException(422, "SKU_SERIES_REQUIRED");
         if (!ProductSeries.valid(seriesCode)) throw new BizException(422, "SKU_SERIES_INVALID");
@@ -3667,7 +3664,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 && !ProductSeries.valid(series);
         boolean publishing="on".equals(request.status()) && !legacyOnSaleMaintenance;
         simulationPolicies.validateProductScope(key,series,pools,!scopeChanged && !listing,target,band,publishing,clear);
-        validateHosting(request.datacenter(),publishing);
+        if (request.datacenter() != null && request.datacenter().length() > 128) {
+            throw new BizException(422, "SKU_DATACENTER_INVALID");
+        }
         if(clear && ("Share".equals(request.tier())
                 ?request.shareYieldMin()==null || request.shareYieldMax()==null || request.shareYieldMin().signum()<0 || request.shareYieldMax().compareTo(request.shareYieldMin())<0
                 :request.dailyEarn()==null || request.dailyEarn().signum()<0 || request.dailyEarn().stripTrailingZeros().scale()>6))
@@ -4433,7 +4432,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
      * fixes the yield is judged on its new state rather than the stored one.
      */
     private ApiResult<DeviceSkuView> requireE1SkuPublishable(String skuId, DeviceSkuUpsertRequest next) {
-        validateHosting(next==null?catalogRepository.findSku(skuId).map(DeviceSkuView::datacenter).orElse(null):next.datacenter(),true);
         String productNo = StringUtils.hasText(skuId) ? skuId : null;
         String name = null;
         BigDecimal dailyEarn = null;
@@ -5864,6 +5862,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 E3ConfigUpdateRequest req = new E3ConfigUpdateRequest(str(p, "key"), str(p, "value"), reason, operator);
                 return updateE1GenerationGate(idem, req);
             }
+            case HostingCenterService.OPERATION -> {
+                return ApiResult.ok(hostingCenters.apply(p, operator, reason));
+            }
             case "e1_early_access_update" -> {
                 DeviceEarlyAccessUpdateRequest req = new DeviceEarlyAccessUpdateRequest(
                         boolVal(p, "enabled"), intVal(p, "leadDays"), reason, operator);
@@ -6023,7 +6024,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         var before=catalogRepository.findSku(hardwarePolicyTarget(str(params,"skuId"))).orElseThrow(()->new BizException(404,"SKU_NOT_FOUND"));
         boolean listing="on".equals(normalizeSkuStatus(str(params,"status")));
         if (listing && !"on".equals(before.status())) requireStoreSkuSeries(before.seriesCode(),before.productType());
-        validateHosting(before.datacenter(),listing);
         simulationPolicies.validateProductScope(before.skuId(),before.seriesCode(),before.allowedPoolCodes(),false,before.monthlyTargetUsdt(),before.monthlyTargetBandPct(),listing,false);
     }
 

@@ -1,5 +1,7 @@
 package ffdd.opsconsole.platform.application;
 
+import ffdd.opsconsole.device.application.HostingCenterService;
+
 import ffdd.opsconsole.emergency.application.OpsKillSwitchService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -87,6 +89,7 @@ public class A2AccessPolicy {
                         || (grants.contains("platform_a2_write")
                             && (grants.contains("user_c2_session_revoke_all") || grants.contains("user_c5_session_revoke_all")))
                         || (grants.contains("platform_a2_write") && grants.contains("growth_h1_override_revoke"))
+                        || (grants.contains("platform_a2_write") && grants.containsAll(Set.of("device_e1_read", "device_e1_write")))
                         || grants.stream().anyMatch(AuditReplayBusinessPermissionGuard.F5_ACTION_AUTHORITIES::contains)
                         || grants.contains(A4RegistryApproval.MAKER_AUTHORITY)
                         || (grants.contains(OpsKillSwitchService.RESTORE_AUTHORITY) && grants.contains("platform_a2_write"))
@@ -202,7 +205,7 @@ public class A2AccessPolicy {
                     && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write"));
         }
         if ("I".equals(domain) && isI3CapAdjust(command) && canReadOwnI3CapProposal(grants)) return true;
-        if (canRecoverOnboardingSku(command, actorId, grants)) return true;
+        if (canRecoverOnboardingSku(command, actorId, grants) || canRecoverHostingCenters(command, actorId, grants)) return true;
         if (!grants.contains("platform_a2_read")) {
             return grants.contains("platform_a2_proposal_create")
                     && (!StringUtils.hasText(ticket.getCommandJson()) || ("D".equals(domain)
@@ -230,7 +233,8 @@ public class A2AccessPolicy {
     }
 
     boolean canAccessOwnBusinessProposal(AuditReplayCommand command, long actorId) {
-        if (canRecoverOnboardingSku(command, actorId, permissions.getPermissionCodes(actorId))) return true;
+        Set<String> ownGrants = permissions.getPermissionCodes(actorId);
+        if (canRecoverOnboardingSku(command, actorId, ownGrants) || canRecoverHostingCenters(command, actorId, ownGrants)) return true;
         if (canReadOwnH1Override(command, actorId, permissions.getPermissionCodes(actorId))) return true;
         if (isJ4ExecuteProposal(command)) {
             return roleResolver.isActiveAdministrator(actorId)
@@ -300,6 +304,12 @@ public class A2AccessPolicy {
         return makerId instanceof Number && Long.toString(actorId).equals(makerId.toString())
                 && authorityGranted
                 && (!K1RiskApproval.supports(command) || proposalAuthority);
+    }
+
+    private boolean canRecoverHostingCenters(AuditReplayCommand command, long actorId, Set<String> grants) {
+        return command != null && "E".equals(command.domain()) && HostingCenterService.OPERATION.equals(command.op())
+                && roleResolver.isActiveAdministrator(actorId) && grants.containsAll(Set.of("device_e1_read", "device_e1_write"))
+                && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write"));
     }
 
     /** Only the J4 execution proposal; the exact original maker is checked by the caller. */

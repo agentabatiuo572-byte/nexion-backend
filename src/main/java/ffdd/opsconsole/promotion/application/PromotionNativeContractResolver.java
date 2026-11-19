@@ -116,7 +116,7 @@ public class PromotionNativeContractResolver {
         String identity=String.join(" ",type,text(product.get("device_type")),text(product.get("product_no")),text(sku.get("name"))).toUpperCase(Locale.ROOT);
         if(identity.contains("CLOUD-SHARE")||identity.contains("CLOUD_SHARE")||identity.matches(".*\\bSHARE\\b.*")||!Set.of("DEVICE","SERVER").contains(type))return "UNSUPPORTED_DEVICE_TYPE";
         if(!productOnSale(product.get("status")))return "PRODUCT_UNAVAILABLE";
-        if(powerWatts(sku.get("power_text"))==null||text(sku.get("datacenter")).isBlank()||product.get("vram_total_gb")==null||number(product.get("vram_total_gb"))<=0)return "PRODUCT_RIGHTS_INCOMPLETE";
+        if(powerWatts(sku.get("power_text"))==null||product.get("vram_total_gb")==null||number(product.get("vram_total_gb"))<=0)return "PRODUCT_RIGHTS_INCOMPLETE";
         return null;
     }
     public static java.math.BigDecimal powerWatts(Object value){

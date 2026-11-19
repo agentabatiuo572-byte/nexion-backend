@@ -1,5 +1,6 @@
 package ffdd.opsconsole.device.web;
 
+import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.device.application.OpsDeviceService;
 import ffdd.opsconsole.device.dto.E2PhoneTierConfigUpdateRequest;
@@ -20,7 +21,16 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/config")
 @RequiredArgsConstructor
 public class OpsDeviceConfigController {
+    @org.springframework.beans.factory.annotation.Autowired
+    private HostingCenterService hostingCenters;
+
     private final OpsDeviceService deviceService;
+
+    @GetMapping("/hosting-centers")
+    @PreAuthorize("hasAuthority('device_e1_read')")
+    public ApiResult<HostingCenterService.State> hostingCenters() {
+        return ApiResult.ok(hostingCenters.read());
+    }
 
     @GetMapping("/task-pricing")
     @PreAuthorize("hasAuthority('device_e2_read')")

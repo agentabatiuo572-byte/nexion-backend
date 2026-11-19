@@ -1,5 +1,6 @@
 package ffdd.opsconsole.platform.application;
 
+import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.emergency.application.OpsKillSwitchService;
 
 import ffdd.opsconsole.device.application.E2TaskPricingApproval;
@@ -71,6 +72,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 @ApplicationService
 @RequiredArgsConstructor(onConstructor_ = @org.springframework.beans.factory.annotation.Autowired)
 public class AuditReplayBusinessPermissionGuard {
+
 
     static final String E4_REFUND_AUTHORITY = "device_e4_order_refund";
     public static final Set<String> F5_ACTION_AUTHORITIES = Set.of(
@@ -1142,6 +1144,17 @@ public class AuditReplayBusinessPermissionGuard {
         boolean delegated = delegatedProposal();
         if(command!=null && "E".equals(command.domain()) && Set.of("e1_sku_create","e1_sku_update").contains(command.op()))
             return ApiResult.ok(delegatedDescriptor(command)); // E1 derives its lock target from the typed SKU, including generated create ids.
+
+        if (command != null && "E".equals(command.domain()) && HostingCenterService.OPERATION.equals(command.op())) {
+            if (!hasAuthority("device_e1_read")) return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:device_e1_read");
+            var target = new AuditLockTarget("E", "hosting_centers", "default");
+            if (!"E1".equals(text(request.sourceDomain())) || !target.id().equals(text(request.obj()))
+                    || !target.equals(request.target()) || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            return ApiResult.ok(new DelegatedProposalDescriptor("调整托管机房清单", target.id(),
+                    "托管机房当前清单", "托管机房拟发布清单", "E1", "param", false, target));
+        }
 
         if (command != null && "E".equals(command.domain()) && "e6_onboarding_yield_sku".equals(command.op())) {
             if (!hasAuthority("device_e1_read"))
@@ -2290,7 +2303,7 @@ public class AuditReplayBusinessPermissionGuard {
                 default -> null;
             };
             case "E" -> switch (operation) {
-                case "e1_sku_create", "e1_sku_update", "e1_sku_status", "e1_sku_delete", "e1_phone_task_policy" -> "device_e1_write";
+                case HostingCenterService.OPERATION, "e1_sku_create", "e1_sku_update", "e1_sku_status", "e1_sku_delete", "e1_phone_task_policy" -> "device_e1_write";
                 case "e2_task_create", "e2_task_update", "e2_task_price", "e2_task_status", "e2_task_delete" -> "device_e2_write";
                 case "e1_legacy_unknown_zero_credit_cancel" -> "device_e5_write";
                 case "e3_config", "e3_config_batch" -> "device_e3_write";

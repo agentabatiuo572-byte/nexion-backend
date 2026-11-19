@@ -1,5 +1,6 @@
 package ffdd.opsconsole.shared.canonical;
 
+import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.commerce.application.CommerceAcceptanceRun;
 import ffdd.opsconsole.commerce.mapper.CommerceAcceptanceSandboxMapper;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
@@ -36,6 +37,9 @@ import org.springframework.beans.factory.annotation.Value;
 
 @Service
 public class AppBundleOrderService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private HostingCenterService hostingCenters;
+
     private static final int MIN_ITEMS = 2;
     private static final int MAX_ITEMS = 8;
     private final AppBundleOrderMapper mapper;
@@ -228,7 +232,7 @@ public class AppBundleOrderService {
             }
             String configurationBlock = AppCanonicalBoundaryService.storefrontConfigurationBlock(
                     product.productType(), product.inventoryMode(), product.gpuModel(), product.vramTotalGb(),
-                    product.power(), product.datacenter());
+                    product.power());
             if (configurationBlock != null) return ApiResult.fail(409, configurationBlock);
             StorefrontProductReleasePolicy.Decision release = releasePolicy.evaluate(product.productNo(), product.unlockPhase());
             if (release == null || !release.available()) return ApiResult.fail(409, "BUNDLE_PRODUCT_NOT_RELEASED");
@@ -288,7 +292,7 @@ public class AppBundleOrderService {
         for (AppBundleOrderMapper.ProductRow product : products) {
             String configurationBlock = AppCanonicalBoundaryService.storefrontConfigurationBlock(
                     product.productType(), product.inventoryMode(), product.gpuModel(), product.vramTotalGb(),
-                    product.power(), product.datacenter());
+                    product.power());
             if (configurationBlock != null) return ApiResult.fail(409, configurationBlock);
         }
         if (products.stream().anyMatch(row -> (!ProductInventoryMode.isUnlimited(row.inventoryMode())
@@ -333,6 +337,7 @@ public class AppBundleOrderService {
         if (attribution == null || attribution.accountAgeMonths() == null || !StringUtils.hasText(attribution.cohort())) {
             throw new BizException(409, "USER_EVENT_ATTRIBUTION_UNAVAILABLE");
         }
+        hostingCenters.requirePool();
         String orderNo = "BND-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         for (var product : products) validateCanonicalPurchaseGate(userId, product.productNo());
         if (mapper.insertBundleOrder(userId, orderNo, products.get(0).id(), itemCount, quantity, subtotal, discount, amount) != 1) {

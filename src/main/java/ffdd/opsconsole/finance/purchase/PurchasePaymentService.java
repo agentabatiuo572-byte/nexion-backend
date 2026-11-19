@@ -1,5 +1,6 @@
 package ffdd.opsconsole.finance.purchase;
 
+import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.commerce.application.AppOrderCommandService;
@@ -31,6 +32,9 @@ import static ffdd.opsconsole.finance.purchase.PurchasePaymentPolicyService.mone
 /** Durable direct purchase intents. No wallet principal transaction belongs to this rail. */
 @Service @RequiredArgsConstructor
 public class PurchasePaymentService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private HostingCenterService hostingCenters;
+
     private final PurchasePaymentMapper db;
     private final PurchasePaymentPolicyService policy;
     private final AppOrderCommandService orders;
@@ -184,6 +188,7 @@ public class PurchasePaymentService {
         db.write("INSERT IGNORE INTO nx_purchase_payment_result(notification_key,intent_no,outcome,user_id,order_no) VALUES(?,?,?,?,?)",key,row.get("intent_no"),status,row.get("user_id"),orderNo);
     }
     private Map<String,Object> pricing(long owner,String kind,Map<String,Object> payload,Instant pricingAt,boolean legacyTrialQuote){
+        hostingCenters.requirePool();
         switch(kind){
             case "ORDER_PAY":{
                 var order=db.one("SELECT * FROM nx_order WHERE order_no=? AND user_id=? AND is_deleted=0 FOR UPDATE",text(payload.get("orderNo")),owner);

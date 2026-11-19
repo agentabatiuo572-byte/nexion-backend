@@ -398,12 +398,12 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
             SELECT #{userId},#{sourceOrderNo},p.id,p.product_no,#{productTier},p.series_code,#{instanceNo},#{deviceName},
                #{deviceType},1,CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)),
                #{priceUsdt},'OWNED','TRIAL','ACTIVE',0,p.estimated_daily_usdt,p.daily_nex,NOW(),NOW(),NOW(),NOW(),0,
-               p.gpu_model,p.vram_total_gb,s.datacenter
+               p.gpu_model,p.vram_total_gb,#{hostingCenter}
               FROM nx_product p
               JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
              WHERE p.id=#{productId} AND p.product_no=#{productCode} AND p.is_deleted=0
                AND p.estimated_daily_usdt>0 AND p.daily_nex>0
-               AND TRIM(p.gpu_model)<>'' AND p.vram_total_gb>0 AND TRIM(s.datacenter)<>''
+               AND TRIM(p.gpu_model)<>'' AND p.vram_total_gb>0
                AND UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP|[[:space:]]*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计|PER-GPU RATED|COMBINED GPU RATED)[)]))?)?\\\\z'
                AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6))>0
             """)
@@ -416,7 +416,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
             @Param("deviceType") String deviceType,
             @Param("instanceNo") String instanceNo,
             @Param("deviceName") String deviceName,
-            @Param("priceUsdt") BigDecimal priceUsdt);
+            @Param("priceUsdt") BigDecimal priceUsdt, @Param("hostingCenter") String hostingCenter);
 
     @Select("SELECT id FROM nx_user_device WHERE instance_no=#{instanceNo} AND is_deleted=0 LIMIT 1")
     Long deviceIdByInstanceNo(@Param("instanceNo") String instanceNo);

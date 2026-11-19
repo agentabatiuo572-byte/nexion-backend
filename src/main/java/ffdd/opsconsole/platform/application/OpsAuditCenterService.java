@@ -56,6 +56,7 @@ import ffdd.opsconsole.device.application.MonthlyTargetPoolException;
 import ffdd.opsconsole.device.application.MonthlyTargetRewardOutOfRangeException;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import ffdd.opsconsole.device.application.E2TaskPricingApproval;
+import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.growth.application.H5GrowthApproval;
 import ffdd.opsconsole.growth.application.H3GrowthApproval;
@@ -147,6 +148,8 @@ public class OpsAuditCenterService {
             java.util.Set.of("e2_task_create", "e2_task_update", "e2_task_status");
 
     private final ffdd.opsconsole.device.application.OpsDeviceService devices;
+    @Autowired
+    private HostingCenterService hostingCenters;
     private final OpsI18nLearningService learning;
     @Autowired @Lazy
     private OpsAdminAccountService accounts;
@@ -307,8 +310,9 @@ public class OpsAuditCenterService {
             operationType = normalizeOperationType(request.type());
             action = normalizeLimitedText(request.action(), "ACTION_REQUIRED", 160);
             objectText = normalizeLimitedText(request.obj(), "OBJECT_REQUIRED", 255);
-            beforeValue = isSkuReviewCommand(request.command()) ? "商品完整旧值" : normalizeOptionalText(request.beforeValue(), "—", 128);
-            afterValue = isSkuReviewCommand(request.command()) ? "商品完整新值" : normalizeOptionalText(request.afterValue(), "—", 128);
+            boolean serverReview = isSkuReviewCommand(request.command()) || isHostingCenterCommand(request.command());
+            beforeValue = serverReview ? "完整旧值" : normalizeOptionalText(request.beforeValue(), "—", 128);
+            afterValue = serverReview ? "完整新值" : normalizeOptionalText(request.afterValue(), "—", 128);
             operator = normalizeLimitedText(authenticatedOperator, "OPERATOR_REQUIRED", 128);
             operatorRole = normalizeOptionalText(request.operatorRole(), "operator", 32);
             roleGate = normalizeOptionalText(request.roleGate(), "超管", 255);
@@ -477,6 +481,15 @@ public class OpsAuditCenterService {
                 com.fasterxml.jackson.databind.node.ObjectNode stored = objectMapper.valueToTree(command);
                 var disclosureReview = replayBusinessPermissionGuard.freezeDisclosureReview(command);
                 if (disclosureReview != null) stored.set("disclosureReview", objectMapper.valueToTree(disclosureReview));
+                if (isHostingCenterCommand(command)) {
+                    var review = hostingCenters.review(command.params());
+                    ticket.setBeforeValue("托管机房清单 r" + review.before().revision());
+                    ticket.setAfterValue("托管机房清单 r" + review.after().revision());
+                    var reviewMetadata = stored.putObject(HostingCenterService.REVIEW_FIELD);
+                    var writer = objectMapper.writerWithDefaultPrettyPrinter();
+                    reviewMetadata.put("before", writer.writeValueAsString(review.before()));
+                    reviewMetadata.put("after", writer.writeValueAsString(review.after()));
+                }
                 if (isRoleGrantsCommand(command)) {
                     ticket.setAmplifies(0);
                     ticket.setOperationType("acct");
@@ -1478,6 +1491,7 @@ public class OpsAuditCenterService {
             stored.remove(RoleGrantsDiff.FIELD);
             stored.remove(A4RegistryApproval.MAKER_FIELD);
             stored.remove("skuReview");
+            stored.remove(HostingCenterService.REVIEW_FIELD);
             stored.remove("ambassadorPolicyReview");
             var version=stored.remove("ruleStatusReviewVersion");
             if("E".equals(stored.path("domain").asText()) && "e2_task_status".equals(stored.path("op").asText())
@@ -1502,6 +1516,10 @@ public class OpsAuditCenterService {
     private boolean isSkuReviewCommand(AuditReplayCommand command) {
         return command != null && "E".equals(command.domain())
                 && ("e1_sku_create".equals(command.op()) || "e1_sku_update".equals(command.op()));
+    }
+
+    private boolean isHostingCenterCommand(AuditReplayCommand command) {
+        return command != null && "E".equals(command.domain()) && HostingCenterService.OPERATION.equals(command.op());
     }
 
     // H4 keeps complete review data in its bound command; audit summaries keep the recovery key structured.
@@ -1574,6 +1592,7 @@ public class OpsAuditCenterService {
             }
         }
         String reviewKey = isSkuReviewCommand(command) ? "skuReview"
+                : isHostingCenterCommand(command) ? HostingCenterService.REVIEW_FIELD
                 : G3MarketApproval.supports(command) ? "marketPolicyReview"
                 : TeamFundApproval.isVRank(command) ? "vrankPolicyReview"
                 : TeamFundApproval.supports(command) && !TeamFundApproval.isSettlement(command) ? "ambassadorPolicyReview" : null;

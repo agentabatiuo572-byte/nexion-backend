@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
 import ffdd.opsconsole.finance.purchase.VerifiedPurchasePayment;
@@ -53,6 +54,9 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor(onConstructor_ = @org.springframework.beans.factory.annotation.Autowired)
 public class AppTrialLifecycleService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private HostingCenterService hostingCenters;
+
     private final ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade paymentAuthorization;
 
     // Compatibility constructor for existing isolated domain tests; runtime uses the full constructor.
@@ -419,6 +423,7 @@ public class AppTrialLifecycleService {
         if (confirmedQuote != null && !confirmedQuote.equals(quote.version())) {
             return ApiResult.fail(409, "TRIAL_QUOTE_CHANGED");
         }
+        String hostingCenter = hostingCenters.requirePool().assign("trial:" + row.claimNo());
         testCloudAdmission.requireCapacity(1);
         requireCoverage(quote.remainderUsdt(), quote.rewardNex());
         var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, product.productNo(),
@@ -465,7 +470,7 @@ public class AppTrialLifecycleService {
         HardwareQuotaPurchaseGuard.record(mapper, hardwareQuota, userId, orderNo);
         if (mapper.insertPurchasedDevice(userId, orderNo, product.id(), product.productNo(), product.tier(),
                 "SHARE".equalsIgnoreCase(product.productType()) ? "CLOUD_SHARE" : normalize(product.productType()),
-                instanceNo, row.deviceName(), subtotal) != 1) {
+                instanceNo, row.deviceName(), subtotal, hostingCenter) != 1) {
             throw new BizException(409, "TRIAL_DEVICE_CREATE_CONFLICT");
         }
         Long deviceId = mapper.deviceIdByInstanceNo(instanceNo);

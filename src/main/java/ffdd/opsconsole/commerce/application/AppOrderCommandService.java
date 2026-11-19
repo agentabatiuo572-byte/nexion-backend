@@ -1,5 +1,6 @@
 package ffdd.opsconsole.commerce.application;
 
+import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import ffdd.opsconsole.shared.config.HardwareQuotaPeriod;
 import ffdd.opsconsole.finance.purchase.VerifiedPurchasePayment;
@@ -41,6 +42,9 @@ import org.springframework.util.StringUtils;
 
 @Service
 public class AppOrderCommandService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private HostingCenterService hostingCenters;
+
     private final ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade paymentAuthorization;
     private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 128;
     private static final String MAINTENANCE_KILLSWITCH_KEY = "killswitch.maintenance";
@@ -358,6 +362,7 @@ public class AppOrderCommandService {
                 throw new BizException(409, "ORDER_WALLET_INSUFFICIENT");
             }
         }
+        var hostingPool = hostingCenters.requirePool();
         testCloudAdmission.requireCapacity(order.quantity());
         if (consumeInventory) consumePaymentInventory(userId, orderNo, order.quantity());
         BigDecimal balanceAfter = fullyDiscounted || external ? null : wallet.usdtAvailable().subtract(order.amountUsdt());
@@ -393,7 +398,7 @@ public class AppOrderCommandService {
                             + "|" + item.productId() + "|" + unitIndex)
                             .substring(0, 24).toUpperCase(Locale.ROOT);
                     if (mapper.insertWalletDevice(
-                            orderNo, userId, item.productId(), instanceNo, unitIndex) != 1) {
+                            orderNo, userId, item.productId(), instanceNo, unitIndex, hostingPool.assign(instanceNo)) != 1) {
                         throw new BizException(409, "DEVICE_ACTIVATION_CONFLICT");
                     }
                     publishDevelopmentDeviceActivated(userId, instanceNo, paymentRail);
@@ -403,7 +408,7 @@ public class AppOrderCommandService {
             for (int unitIndex = 0; unitIndex < order.quantity(); unitIndex++) {
                 String instanceNo = "NEX-ORD-" + sha256(orderNo + "|" + unitIndex)
                         .substring(0, 24).toUpperCase(Locale.ROOT);
-                if (mapper.insertDevelopmentDevice(orderNo, userId, instanceNo, unitIndex) != 1) {
+                if (mapper.insertDevelopmentDevice(orderNo, userId, instanceNo, unitIndex, hostingPool.assign(instanceNo)) != 1) {
                     throw new BizException(409, "DEVICE_ACTIVATION_CONFLICT");
                 }
                 publishDevelopmentDeviceActivated(userId, instanceNo, paymentRail);

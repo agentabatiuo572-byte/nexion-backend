@@ -33,6 +33,6 @@ public record DeviceOrderDetailView(
                                Long unfinishedTaskCount, long stoppedTaskCount, TaskEarnings creditedRetained,
                                boolean runtimeComplete, String runtimeUnavailableReason) { }
     public record OrderDevice(Long deviceId, String deviceInstanceNo, String kind, String sourceChannel,
-                              String status, String ownershipStatus) {
+                              String status, String ownershipStatus, String dcLocation) {
     }
 }

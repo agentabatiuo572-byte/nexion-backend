@@ -200,8 +200,6 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                          AND (NULLIF(TRIM(p.gpu_model),'') IS NULL
                            OR p.vram_total_gb IS NULL OR p.vram_total_gb<=0
                            OR (SELECT NULLIF(TRIM(s.power_text),'') FROM nx_admin_device_sku s
-                                WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) IS NULL
-                           OR (SELECT NULLIF(TRIM(s.datacenter),'') FROM nx_admin_device_sku s
                                 WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) IS NULL)))
             ) THEN 1 ELSE 0 END
             """)
@@ -520,7 +518,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                    GREATEST(COALESCE(p.vram_total_gb,0),0),
                    CASE WHEN UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') THEN 0
                          ELSE CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) END,
-                   s.datacenter,
+                   #{hostingCenter},
                    CASE WHEN o.quantity > 0 THEN o.amount_usdt/o.quantity ELSE p.price_usdt END,
                    'OWNED','ORDER','PRODUCTION','','ACTIVE',GREATEST(COALESCE(p.hashrate,0),0),
                    GREATEST(COALESCE(p.estimated_daily_usdt,0),0),GREATEST(COALESCE(p.daily_nex,0),0),
@@ -539,7 +537,8 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
     int insertDevelopmentDevice(@Param("orderNo") String orderNo,
                                 @Param("userId") Long userId,
                                 @Param("instanceNo") String instanceNo,
-                                @Param("unitIndex") Integer unitIndex);
+                                @Param("unitIndex") Integer unitIndex,
+                                @Param("hostingCenter") String hostingCenter);
 
     @Insert("""
             INSERT IGNORE INTO nx_user_device
@@ -553,7 +552,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                    GREATEST(COALESCE(p.vram_total_gb,0),0),
                    CASE WHEN UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') THEN 0
                          ELSE CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) END,
-                   s.datacenter,
+                   #{hostingCenter},
                    CASE WHEN oi.quantity > 0 THEN oi.line_amount_usdt/oi.quantity ELSE p.price_usdt END,
                    'OWNED','ORDER','PRODUCTION','','ACTIVE',GREATEST(COALESCE(p.hashrate,0),0),
                    GREATEST(COALESCE(p.estimated_daily_usdt,0),0),GREATEST(COALESCE(p.daily_nex,0),0),
@@ -575,7 +574,8 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                            @Param("userId") Long userId,
                            @Param("productId") Long productId,
                            @Param("instanceNo") String instanceNo,
-                           @Param("unitIndex") Integer unitIndex);
+                           @Param("unitIndex") Integer unitIndex,
+                                @Param("hostingCenter") String hostingCenter);
 
     @Select("""
             SELECT id deviceId,instance_no instanceNo

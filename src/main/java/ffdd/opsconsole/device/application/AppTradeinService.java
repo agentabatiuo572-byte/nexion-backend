@@ -52,6 +52,9 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor(onConstructor_ = @org.springframework.beans.factory.annotation.Autowired)
 public class AppTradeinService {
     @org.springframework.beans.factory.annotation.Autowired
+    private HostingCenterService hostingCenters;
+
+    @org.springframework.beans.factory.annotation.Autowired
     private DeviceMonthlyTargetReadService monthlyTargetReads;
     private final ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade paymentAuthorization;
 
@@ -312,6 +315,7 @@ public class AppTradeinService {
         if (attribution == null || attribution.accountAgeMonths() == null || !StringUtils.hasText(attribution.cohort())) {
             throw new BizException(409, "TRADEIN_EVENT_ATTRIBUTION_UNAVAILABLE");
         }
+        String hostingCenter = hostingCenters.requirePool().assign(instanceNo);
         testCloudAdmission.requireReplacementCapacity(evaluation.source().id(),evaluation.source().activated()?1:0);
         reservePurchaseQuotaAtSettlement(userId, evaluation.target().productNo());
         var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, evaluation.target().productNo(),
@@ -352,7 +356,7 @@ public class AppTradeinService {
                 evaluation.target().generation(), evaluation.target().gpuModel(), evaluation.target().vramTotalGb(),
                 nz(evaluation.target().hashrate()), nz(evaluation.target().dailyUsdt()), nz(evaluation.target().dailyNex()),
                 quote.targetPriceUsdt(), evaluation.source().activated());
-        if (mapper.insertTargetDevice(delivered) != 1) {
+        if (mapper.insertTargetDevice(delivered, hostingCenter) != 1) {
             throw new BizException(409, "TRADEIN_TARGET_DELIVERY_CONFLICT");
         }
         Long targetDeviceId = mapper.findDeviceIdByInstanceNo(instanceNo);
@@ -473,6 +477,7 @@ public class AppTradeinService {
         if (target == null || !finiteTarget(target) || target.stock() == null || target.stock() < 1) {
             throw new BizException(409, "TRADEIN_TARGET_NOT_ACTIVE");
         }
+        String hostingCenter = hostingCenters.requirePool().assign(instanceNo);
         testCloudAdmission.requireReplacementCapacity(source.id(),1);
         reservePurchaseQuotaAtSettlement(userId, target.productNo());
         var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, target.productNo(),
@@ -506,7 +511,7 @@ public class AppTradeinService {
                 userId, orderNo, target.id(), target.productNo(), target.tier(), instanceNo, target.name(),
                 target.deviceType(), target.generation(), target.gpuModel(), target.vramTotalGb(),
                 nz(target.hashrate()), nz(target.dailyUsdt()), nz(target.dailyNex()), quote.targetPriceUsdt());
-        if (mapper.insertTargetDevice(delivered) != 1) {
+        if (mapper.insertTargetDevice(delivered, hostingCenter) != 1) {
             throw new BizException(409, "TRADEIN_TARGET_DELIVERY_CONFLICT");
         }
         Long targetDeviceId = mapper.findDeviceIdByInstanceNo(instanceNo);
@@ -583,6 +588,7 @@ public class AppTradeinService {
         if (money(target.priceUsdt()).compareTo(quote.targetPriceUsdt()) != 0) {
             throw new BizException(409, "CAPACITY_KEEP_QUOTE_CHANGED");
         }
+        String hostingCenter = hostingCenters.requirePool().assign(instanceNo);
         testCloudAdmission.requireCapacity(1);
         reservePurchaseQuotaAtSettlement(userId, target.productNo());
         var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, target.productNo(),
@@ -613,7 +619,7 @@ public class AppTradeinService {
                 userId, orderNo, target.id(), target.productNo(), target.tier(), instanceNo, target.name(),
                 target.deviceType(), target.generation(), target.gpuModel(), target.vramTotalGb(),
                 nz(target.hashrate()), nz(target.dailyUsdt()), nz(target.dailyNex()), quote.targetPriceUsdt());
-        if (mapper.insertCapacityKeepTargetDevice(delivered) != 1) {
+        if (mapper.insertCapacityKeepTargetDevice(delivered, hostingCenter) != 1) {
             throw new BizException(409, "CAPACITY_KEEP_TARGET_DELIVERY_CONFLICT");
         }
         Long targetDeviceId = mapper.findDeviceIdByInstanceNo(instanceNo);
