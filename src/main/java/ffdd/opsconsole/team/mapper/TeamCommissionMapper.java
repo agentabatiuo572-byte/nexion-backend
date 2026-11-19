@@ -588,7 +588,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
              WHERE quota_code = #{quotaCode}
                AND monthly_quota = #{expectedMonthlyQuota}
                AND is_deleted = 0
-               AND #{monthlyQuota} >= (
+               AND (#{monthlyQuota} <= monthly_quota OR #{monthlyQuota} >= (
                     SELECT COALESCE(SUM(u.quantity), 0)
                       FROM nx_team_hardware_quota_usage u
                      WHERE u.quota_tier_id = nx_team_hardware_quota_tier.id
@@ -596,7 +596,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                        AND UPPER(u.status) = 'ACTIVE'
                         AND u.occurred_at >= """ + HardwareQuotaPeriod.SQL_MONTH_START_UTC + """
                         AND u.occurred_at < """ + HardwareQuotaPeriod.SQL_NEXT_MONTH_START_UTC + """
-               )
+               ))
             """)
     int updateHardwareQuotaTierCas(@Param("quotaCode") String quotaCode,
                                    @Param("expectedMonthlyQuota") int expectedMonthlyQuota,
