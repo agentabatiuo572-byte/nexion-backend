@@ -45,6 +45,8 @@ spring:
 nexion:
   hardware-daily-uvt:
     start-utc: ${NEXION_HARDWARE_DAILY_UVT_START_UTC:}
+  compute-v2:
+    refund-runtime-closed: ${NEXION_COMPUTE_V2_REFUND_RUNTIME_CLOSED:false}
   simulated-tasks:
     abandon-before: ${NEXION_SIMULATED_TASKS_ABANDON_BEFORE:}
   websocket:

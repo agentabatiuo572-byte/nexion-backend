@@ -139,9 +139,19 @@ public class ComputeV2ReadService {
     public record RefundRuntime(ComputeV2Runtime.PendingSummary completedPending,long unfinishedTaskCount) { }
 
     /** Reads retained work even after the order's device has been reclaimed. */
-    public RefundRuntime refundRuntime(long userId,Set<Long> deviceIds) {
-        if(deviceIds.isEmpty())return new RefundRuntime(new ComputeV2Runtime.PendingSummary(0,0,0,0),0);
-        if(runtime.isEmpty())throw new BizException(503,"COMPUTE_V2_STATE_UNAVAILABLE");
+    public RefundRuntime refundRuntime(String orderNo,long userId,Set<Long> deviceIds) {
+        if(deviceIds.isEmpty())return emptyRefundRuntime();
+        if(runtime.isEmpty()) {
+            // A disabled reader can still have unsettled work. Only an operationally verified closure
+            // allows rule-task previews, and orders with any V2 history still require the real reader.
+            if(environment.getProperty("nexion.compute-v2.refund-runtime-closed",Boolean.class,false)
+                    && SCOPE.equals(environment.getProperty("nexion.compute-v2.deployment-scope"))
+                    && environment.getProperty("nexion.simulated-tasks.enabled",Boolean.class,false)
+                    && !environment.getProperty("nexion.compute-v2.enabled",Boolean.class,false)
+                    && !environment.getProperty("nexion.compute-task.test-cloud.enabled",Boolean.class,false)
+                    && mapper.devicesWithoutV2History(orderNo,userId,deviceIds)==deviceIds.size())return emptyRefundRuntime();
+            throw new BizException(503,"COMPUTE_V2_STATE_UNAVAILABLE");
+        }
         var snapshot=runtime.get().pendingVerifiedSnapshot(userId);
         long unfinished=0;
         for(long deviceId:deviceIds) {
@@ -153,6 +163,10 @@ public class ComputeV2ReadService {
             if(!Set.of("COMPLETED","FAILED","HISTORICAL").contains(view.status()))unfinished++;
         }
         return new RefundRuntime(unpostedSummary(userId,snapshot,deviceIds),unfinished);
+    }
+
+    private static RefundRuntime emptyRefundRuntime() {
+        return new RefundRuntime(new ComputeV2Runtime.PendingSummary(0,0,0,0),0);
     }
 
     private ComputeV2Runtime.PendingSummary unpostedSummary(long userId,ComputeV2Runtime.PendingVerifiedSnapshot snapshot,

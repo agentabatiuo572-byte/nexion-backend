@@ -31,7 +31,7 @@ public class DeviceOrderRefundImpactService {
                 .map(OrderDevice::deviceId).collect(Collectors.toSet());
         ComputeV2ReadService.RefundRuntime runtime=null;
         String unavailable=null;
-        try { runtime=compute.refundRuntime(userId,ids); }
+        try { runtime=compute.refundRuntime(orderNo,userId,ids); }
         catch(RuntimeException failure) {
             unavailable=failure instanceof BizException business ? business.getMessage() : "COMPUTE_V2_STATE_UNAVAILABLE";
         }
