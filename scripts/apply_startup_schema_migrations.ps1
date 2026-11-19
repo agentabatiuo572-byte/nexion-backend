@@ -408,8 +408,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261031_z_cregis_erc20_network.sql")
   (Join-Path $root "scripts\migrations\20261107_cregis_network_switches.sql")
   (Join-Path $root "scripts\migrations\20261108_cregis_trc20_network.sql")
-  (Join-Path $root "scripts\migrations\20261022_05_cregis_auto_forward.sql")
-  (Join-Path $root "scripts\migrations\20261109_cregis_multinetwork_auto_forward.sql")
+  (Join-Path $root "scripts\migrations\20261120_lc_cregis_deployment_config.sql")
   # Empty databases need the funds-preparation tables before the ERC20 ALTER.
   (Join-Path $root "scripts\migrations\20261119_cregis_00_funds_preparation_schema.sql")
   (Join-Path $root "scripts\migrations\20261119_cregis_erc20_funds_preparation.sql")
@@ -466,6 +465,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261106_g4_emission_item_rate_snapshot.sql"),
   (Join-Path $root "scripts\migrations\20261106_b32_user_daily_active.sql"),
   (Join-Path $root "scripts\migrations\20261106_b32_daily_flow_wallet_index.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_bi_dau.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_bi_registration_phase.sql"),
   (Join-Path $root "scripts\migrations\20261106_g2_queue_batch_event_fields.sql"),
   (Join-Path $root "scripts\migrations\20261106_g2_restore_queue_batch_event_fields.sql"),
   (Join-Path $root "scripts\migrations\20261106_zy_b31_menu_names_order.sql"),
