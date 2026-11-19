@@ -139,22 +139,32 @@ public final class L2FunnelAnalytics {
             funnelExt.add(detail);
         }
 
-        List<Map<String, Object>> cohorts = cohortRows(selectedEvents, registered, false);
-        Map<String, Object> curves = cohortCurves(selectedEvents, registered, cohorts, false);
-        List<Map<String, Object>> monthlyCohorts = cohortRows(selectedEvents, registered, true);
-        Map<String, Object> monthlyCurves = cohortCurves(selectedEvents, registered, monthlyCohorts, true);
+        LocalDate collectionFrom = events.stream().filter(event -> event.name().equals("app.dau"))
+                .map(event -> businessDay(event.at())).min(LocalDate::compareTo).orElse(null);
+        Map<String, Set<LocalDate>> activeDays = selectedEvents.stream().filter(event -> event.name().equals("app.dau"))
+                .collect(Collectors.groupingBy(EventFact::actor,
+                        Collectors.mapping(event -> businessDay(event.at()), Collectors.toSet())));
+        Retention retention = new Retention(activeDays, registered, collectionFrom,
+                businessDay(LocalDateTime.now(BUSINESS_TIME_OFFSET)));
+        List<Map<String, Object>> cohorts = cohortRows(registered, retention, false);
+        Map<String, Object> curves = cohortCurves(registered, cohorts, retention, false);
+        List<Map<String, Object>> monthlyCohorts = cohortRows(registered, retention, true);
+        Map<String, Object> monthlyCurves = cohortCurves(registered, monthlyCohorts, retention, true);
         long totalTrial = rawRows == null ? 0 : rawRows.stream()
                 .filter(row -> TRIAL_EVENTS.contains(text(row, "eventName", "event_name"))).count();
         TrialFunnel trial = trialFunnel(selectedEvents,
                 totalTrial == events.stream().filter(event -> TRIAL_EVENTS.contains(event.name())).count());
-        Map<String, Object> cross = crossAnalysis(selectedEvents, registered, firstPurchase, trial);
+        Map<String, Object> cross = crossAnalysis(registered, firstPurchase, trial, retention);
         Map<String, Object> latestMature = cohorts.stream()
-                .filter(row -> row.get("d7") instanceof Number)
+                .filter(row -> row.get("d7") instanceof Number || "DAU_NOT_COLLECTED".equals(retentionReason(row, "d7")))
                 .reduce((left, right) -> right)
                 .orElse(Map.of());
-        boolean day7Suppressed = latestMature.get("size") instanceof Number size && belowThreshold(size.longValue());
-        Map<String, Object> day7Kpi = protect(linked("value", latestMature.get("d7"), "target", 60),
-                day7Suppressed, "value");
+        boolean day7Suppressed = latestMature.get("d7") instanceof Number
+                && belowThreshold(((Number) latestMature.get("size")).longValue());
+        String day7Reason = latestMature.isEmpty() ? "NO_MATURE_DAY7_COHORT" : retentionReason(latestMature, "d7");
+        Map<String, Object> day7Kpi = protect(linked("value", latestMature.get("d7"), "target", 60,
+                "available", day7Reason == null && !day7Suppressed,
+                "unavailableReason", day7Suppressed ? "BELOW_MINIMUM" : day7Reason), day7Suppressed, "value");
         protectCohorts(cohorts);
         protectCohorts(monthlyCohorts);
 
@@ -171,6 +181,7 @@ public final class L2FunnelAnalytics {
                 "stageEvents", stageEvents,
                 "filters", filterMap(cohort, phase, locale, ref),
                 "day7Kpi", day7Kpi,
+                "retentionCollectionFrom", collectionFrom == null ? null : collectionFrom.toString(),
                 "quality", linked(
                         "sameUserJoin", true,
                         "stageOrderEnforced", true,
@@ -254,29 +265,30 @@ public final class L2FunnelAnalytics {
     }
 
     private static List<Map<String, Object>> cohortRows(
-            List<EventFact> events,
-            Map<String, EventFact> registered,
-            boolean monthly) {
+            Map<String, EventFact> registered, Retention retention, boolean monthly) {
         Map<String, Set<String>> actorsByCohort = new TreeMap<>();
         registered.forEach((actor, event) -> actorsByCohort
                 .computeIfAbsent(cohortKey(event, monthly), ignored -> new LinkedHashSet<>()).add(actor));
         List<Map<String, Object>> result = new ArrayList<>();
-        actorsByCohort.forEach((cohort, actors) -> result.add(linked(
-                "w", cohort,
-                "size", actors.size(),
-                "d1", retention(events, registered, actors, 1),
-                "d7", retention(events, registered, actors, 7),
-                "d14", retention(events, registered, actors, 14),
-                "d30", retention(events, registered, actors, 30),
-                "d60", retention(events, registered, actors, 60))));
+        actorsByCohort.forEach((cohort, actors) -> {
+            Map<String, Object> reasons = new LinkedHashMap<>();
+            Map<String, Object> row = linked("w", cohort, "size", actors.size(), "retentionUnavailableReasons", reasons);
+            for (int day : CURVE_DAYS.subList(1, CURVE_DAYS.size())) {
+                RetentionValue point = retention.value(actors, day);
+                String key = "d" + day;
+                if (day != 3 && day != 21) row.put(key, point.value());
+                if (point.reason() != null) reasons.put(key, point.reason());
+                else if (belowThreshold(actors.size())) reasons.put(key, "BELOW_MINIMUM");
+            }
+            result.add(row);
+        });
         return result.size() <= 6 ? result : result.subList(result.size() - 6, result.size());
     }
 
     private static Map<String, Object> cohortCurves(
-            List<EventFact> events,
             Map<String, EventFact> registered,
             List<Map<String, Object>> cohorts,
-            boolean monthly) {
+            Retention retention, boolean monthly) {
         Map<String, Object> curves = new LinkedHashMap<>();
         for (Map<String, Object> cohort : cohorts) {
             String key = String.valueOf(cohort.get("w"));
@@ -290,7 +302,7 @@ public final class L2FunnelAnalytics {
                     .collect(Collectors.toCollection(LinkedHashSet::new));
             List<List<Object>> points = new ArrayList<>();
             for (int day : CURVE_DAYS) {
-                Object value = day == 0 ? (Object) 100D : retention(events, registered, actors, day);
+                Object value = day == 0 ? (Object) 100D : retention.value(actors, day).value();
                 if (value instanceof Number) points.add(List.of(day, value));
             }
             curves.put(key, points);
@@ -307,23 +319,30 @@ public final class L2FunnelAnalytics {
     /** R-1: business calendar date of a stored (Beijing) timestamp. */
     private static LocalDate businessDay(LocalDateTime storageTime) { return ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(storageTime); }
 
-    private static Double retention(
-            List<EventFact> events,
-            Map<String, EventFact> registered,
-            Set<String> actors,
-            int day) {
-        if (actors.isEmpty()) return null;
-        LocalDateTime now = LocalDateTime.now(BUSINESS_TIME_OFFSET);
-        boolean mature = actors.stream().allMatch(actor ->
-                !registered.get(actor).at().plusDays(day).isAfter(now));
-        if (!mature) return null;
-        long active = actors.stream().filter(actor -> events.stream().anyMatch(event ->
-                event.actor().equals(actor)
-                        && event.name().equals("app.dau")
-                        && ChronoUnit.DAYS.between(
-                                businessDay(registered.get(actor).at()), businessDay(event.at())) == day)).count();
-        return percent(active, actors.size());
+    private static String retentionReason(Map<String, Object> row, String key) {
+        return row.get("retentionUnavailableReasons") instanceof Map<?, ?> reasons
+                ? (String) reasons.get(key) : null;
     }
+
+    private record Retention(Map<String, Set<LocalDate>> activeDays, Map<String, EventFact> registered,
+                             LocalDate collectionFrom, LocalDate today) {
+        private RetentionValue value(Set<String> actors, int day) {
+            if (actors.isEmpty()) return new RetentionValue(null, "NO_REGISTRATION_COHORT");
+            List<LocalDate> activityDays = actors.stream()
+                    .map(actor -> businessDay(registered.get(actor).at()).plusDays(day)).toList();
+            if (activityDays.stream().anyMatch(date -> !date.isBefore(today))) {
+                return new RetentionValue(null, "WINDOW_IMMATURE");
+            }
+            if (collectionFrom == null || activityDays.stream().anyMatch(date -> date.isBefore(collectionFrom))) {
+                return new RetentionValue(null, "DAU_NOT_COLLECTED");
+            }
+            long active = actors.stream().filter(actor -> activeDays.getOrDefault(actor, Set.of())
+                    .contains(businessDay(registered.get(actor).at()).plusDays(day))).count();
+            return new RetentionValue(percent(active, actors.size()), null);
+        }
+    }
+
+    private record RetentionValue(Double value, String reason) { }
 
     private static TrialFunnel trialFunnel(List<EventFact> events, boolean actorCoverageComplete) {
         boolean available = actorCoverageComplete && events.stream()
@@ -369,10 +388,9 @@ public final class L2FunnelAnalytics {
     }
 
     private static Map<String, Object> crossAnalysis(
-            List<EventFact> events,
             Map<String, EventFact> registered,
             Map<String, EventFact> purchased,
-            TrialFunnel trial) {
+            TrialFunnel trial, Retention retention) {
         List<String> locales = registered.values().stream()
                 .map(EventFact::locale)
                 .filter(value -> !value.equals("und"))
@@ -395,7 +413,7 @@ public final class L2FunnelAnalytics {
         return linked(
                 "cvr", crossMetric(safeGroups, locales, registered, registered, purchased,
                         "同用户首购 ÷ 注册；分母不足显示为空"),
-                "ret", retentionCrossMetric(safeGroups, locales, events, registered),
+                "ret", retentionCrossMetric(safeGroups, locales, registered, retention),
                 "trial", trialMetric);
     }
 
@@ -434,29 +452,42 @@ public final class L2FunnelAnalytics {
     private static Map<String, Object> retentionCrossMetric(
             List<String> groups,
             List<String> locales,
-            List<EventFact> events,
-            Map<String, EventFact> registered) {
+            Map<String, EventFact> registered, Retention retention) {
         List<List<Object>> rows = new ArrayList<>();
         List<List<Integer>> suppressedCells = new ArrayList<>();
+        List<Map<String, Object>> unavailableCells = new ArrayList<>();
         for (String group : groups) {
             List<Object> row = new ArrayList<>();
             row.add(group);
             List<Double> valid = new ArrayList<>();
             boolean rowSuppressed = false;
+            boolean rowNotCollected = false;
             for (String locale : locales) {
                 Set<String> actors = actorsFor(registered, group, locale);
                 boolean suppressed = !actors.isEmpty() && belowThreshold(actors.size());
                 if (suppressed) suppressedCells.add(List.of(rows.size(), row.size() - 1));
                 rowSuppressed |= suppressed;
-                Double value = suppressed ? null : retention(events, registered, actors, 7);
+                RetentionValue retentionValue = retention.value(actors, 7);
+                rowNotCollected |= "DAU_NOT_COLLECTED".equals(retentionValue.reason());
+                if (retentionValue.reason() != null) {
+                    unavailableCells.add(linked("row", rows.size(), "column", row.size() - 1,
+                            "reason", retentionValue.reason()));
+                }
+                Double value = suppressed ? null : retentionValue.value();
                 row.add(value);
                 if (value != null) valid.add(value);
             }
             if (rowSuppressed) suppressedCells.add(List.of(rows.size(), locales.size()));
-            row.add(rowSuppressed || valid.isEmpty() ? null : round(valid.stream().mapToDouble(Double::doubleValue).average().orElse(0)));
+            if (rowNotCollected) {
+                unavailableCells.add(linked("row", rows.size(), "column", locales.size(), "reason", "DAU_NOT_COLLECTED"));
+            }
+            row.add(rowSuppressed || rowNotCollected || valid.isEmpty()
+                    ? null : round(valid.stream().mapToDouble(Double::doubleValue).average().orElse(0)));
             rows.add(row);
         }
-        return crossResult(locales, rows, suppressedCells, "Day7 app.dau ÷ 注册 cohort；未成熟窗口显示为空");
+        Map<String, Object> result = crossResult(locales, rows, suppressedCells, "Day7 app.dau ÷ 注册 cohort；未成熟窗口显示为空");
+        result.put("unavailableCells", unavailableCells);
+        return result;
     }
 
     private static Map<String, Object> crossResult(List<String> locales, List<List<Object>> rows,

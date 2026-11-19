@@ -18,11 +18,17 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
     @Insert("""
-            INSERT IGNORE INTO nx_user_daily_active (biz_date, user_id, first_seen_at)
-            VALUES (#{date}, #{userId}, #{seenAt})
+            INSERT IGNORE INTO nx_user_daily_active (biz_date, user_id, first_seen_at, dau_recorded)
+            VALUES (#{date}, #{userId}, #{seenAt}, 1)
             """)
     int recordDailyUserActivity(@Param("date") LocalDate date, @Param("userId") Long userId,
                                 @Param("seenAt") LocalDateTime seenAt);
+
+    @Update("""
+            UPDATE nx_user_daily_active SET dau_recorded = 1
+             WHERE biz_date = #{date} AND user_id = #{userId} AND dau_recorded = 0
+            """)
+    int claimDailyActivityEvent(@Param("date") LocalDate date, @Param("userId") Long userId);
 
     record SessionSummary(String sessionGroup,String installationId,Long appSessionVersion,boolean executionSupported,
                           long sessionCount,java.time.LocalDateTime lastActiveAt) { }

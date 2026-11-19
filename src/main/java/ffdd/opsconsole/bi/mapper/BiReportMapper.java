@@ -206,12 +206,12 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                AND event_name IN (
                  'auth.register_completed', 'device.first_yield_received', 'app.dau',
                  'store.viewed', 'checkout.completed', 'device.purchase_completed',
-                 'referral.invite_sent', 'nova.push_sent', 'nova.push_clicked',
+                 'referral.invite_sent',
                  'referral.bound', 'commission.paid', 'genesis.purchased'
                )
                AND (
                  is_server_authoritative = 1
-                 OR event_name IN ('store.viewed', 'nova.push_clicked')
+                 OR event_name = 'store.viewed'
                )
             """;
 
@@ -220,6 +220,13 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
              ORDER BY COALESCE(event_ts, created_at) ASC, id ASC
             """)
     List<Map<String, Object>> selectL1EventFacts();
+
+    @Select("""
+            SELECT MIN(event_ts) FROM nx_event_outbox
+             WHERE event_name='app.dau' AND is_deleted=0 AND analytics_event=1
+               AND schema_registered=1 AND is_server_authoritative=1
+            """)
+    LocalDateTime selectFirstDauEventAt();
 
     String L1_REGISTRATION_WINDOW = """
              WHERE sandbox = 0 AND created_at >= #{registrationFrom} AND created_at < #{registrationToExclusive}

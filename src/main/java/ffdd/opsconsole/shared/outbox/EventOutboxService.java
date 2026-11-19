@@ -339,6 +339,7 @@ public class EventOutboxService {
             "E2_TASK_POOL_RANDOM_ADDED",
             "E2_TASK_POOL_STATUS_CHANGED",
             "account.app_session_replaced",
+            "app.dau",
             "phone.replacement_succeeded",
             "phone.replacement_rejected",
             "phone.replacement_request_created",

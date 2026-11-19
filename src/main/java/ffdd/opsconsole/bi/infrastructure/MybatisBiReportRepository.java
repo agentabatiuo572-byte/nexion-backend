@@ -221,8 +221,9 @@ public class MybatisBiReportRepository implements BiReportRepository {
         var facts = registrations.isEmpty() ? List.<Map<String, Object>>of()
                 : mapper.selectL1RegistrationEventFacts(from.truncatedTo(ChronoUnit.MICROS),
                         lastRegistrationExclusive, query.observationEnd().truncatedTo(ChronoUnit.MICROS));
-        return L1KpiAnalytics.calculateRegistrationCohorts(
-                facts, registrations, query, a4RuntimePolicyService.day0Seconds());
+        LocalDateTime firstDauAt = mapper.selectFirstDauEventAt();
+        return L1KpiAnalytics.calculateRegistrationCohorts(facts, registrations, query,
+                a4RuntimePolicyService.day0Seconds(), firstDauAt == null ? null : BusinessCalendar.legacy().dateAtStorage(firstDauAt));
     }
 
     private static LocalDateTime registrationEdge(LocalDateTime value) {
