@@ -513,6 +513,8 @@ $migrations = @(
   # F1 voucher clawback column + wallet negative-balance constraint (BUG-515/F1-BE-10).
   (Join-Path $root "scripts\migrations\20261119_f1_be04_voucher_redeemed_amount.sql"),
   (Join-Path $root "scripts\migrations\20261119_f1_be06_wallet_negative_clawback.sql"),
+  # F1-BE-20: keep cumulative_deposit_usdt non-negative after the wallet CHECK rebuild.
+  (Join-Path $root "scripts\migrations\20261119_f1_be20_wallet_cumulative_non_negative.sql"),
   # Restore only the I4/I5 grants the legacy-menu run deleted, proven by catalog
   # damage plus the same-run timestamp and no later A6 save (A7-BE-09). Runs once.
   # Supersedes the broad A7-BE-07 repair, which stays in source control as

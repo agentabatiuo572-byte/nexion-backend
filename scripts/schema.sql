@@ -808,7 +808,9 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = 'chk_user_wallet_non_negative') = 0,
-  'ALTER TABLE nx_user_wallet ADD CONSTRAINT chk_user_wallet_non_negative CHECK (nex_available >= 0 AND pending_withdraw >= 0 AND lifetime_earned >= 0)',
+  IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_wallet' AND COLUMN_NAME = 'cumulative_deposit_usdt') = 0,
+    'ALTER TABLE nx_user_wallet ADD CONSTRAINT chk_user_wallet_non_negative CHECK (nex_available >= 0 AND pending_withdraw >= 0 AND lifetime_earned >= 0)',
+    'ALTER TABLE nx_user_wallet ADD CONSTRAINT chk_user_wallet_non_negative CHECK (nex_available >= 0 AND pending_withdraw >= 0 AND lifetime_earned >= 0 AND cumulative_deposit_usdt >= 0)'),
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
