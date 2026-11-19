@@ -66,12 +66,15 @@ public interface ConversationHistoryMapper {
         """)
     List<ContentConversationMessageView> page(@Param("customerId") long customerId,@Param("beforeAt") LocalDateTime beforeAt,@Param("beforeId") Long beforeId);
 
+    record CustomerIdentityRow(long customerId,String userNo,String nickname,String phoneMasked,String language) { }
+
     @Select("""
         SELECT id customerId,CONCAT('U',LPAD(id,GREATEST(8,LENGTH(CAST(id AS CHAR))),'0')) userNo,nickname,
-          CASE WHEN phone REGEXP '^[0-9]{7,15}$' THEN CONCAT(SUBSTRING(phone,1,3),'****',SUBSTRING(phone,LENGTH(phone)-3)) ELSE NULL END phoneMasked
+          CASE WHEN phone REGEXP '^[0-9]{7,15}$' THEN CONCAT(SUBSTRING(phone,1,3),'****',SUBSTRING(phone,LENGTH(phone)-3)) ELSE NULL END phoneMasked,
+          language
         FROM nx_user WHERE id=#{customerId} AND is_deleted=0 AND sandbox=0
         """)
-    CustomerIdentity identity(@Param("customerId") long customerId);
+    CustomerIdentityRow identity(@Param("customerId") long customerId);
 
     @Select("""
         SELECT c.conversation_no conversationNo,MAX(m.id) throughMessageId
