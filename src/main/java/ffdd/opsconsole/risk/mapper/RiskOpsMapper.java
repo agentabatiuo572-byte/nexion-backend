@@ -1550,7 +1550,8 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                    SUM(settlement.newcomer_usdt) AS usdtRaw,
                    SUM(settlement.newcomer_nex) AS nexRaw,
                    COUNT(DISTINCT settlement.id) AS settledCount,
-                   CASE WHEN MAX(risk.blocked_count) > 0 THEN MAX(risk.blocked_count) ELSE NULL END AS blockedCount
+                   -- No persisted per-gift denial fact exists. A disposition marker is not a denied-gift count.
+                   CAST(NULL AS SIGNED) AS blockedCount
               FROM nx_admin_risk_multi_account_cluster cluster
               JOIN nx_referral_reward_settlement settlement
                 ON settlement.is_deleted = 0
@@ -1562,9 +1563,6 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                AND JSON_SEARCH(cluster.nodes_json, 'one',
                        CONCAT('U', LPAD(invited.id,
                            GREATEST(8, CHAR_LENGTH(CAST(invited.id AS CHAR))), '0'))) IS NOT NULL
-              LEFT JOIN nx_admin_risk_arbitrage_row risk
-                ON risk.row_id = CONCAT('K2-GIFT-C', LEFT(SHA2(cluster.cluster_id, 256), 40))
-               AND risk.is_deleted = 0
              WHERE cluster.is_deleted = 0
                AND cluster.nodes_json IS NOT NULL
              GROUP BY cluster.cluster_id
@@ -1624,7 +1622,6 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Update("""
             UPDATE nx_admin_risk_arbitrage_row
                SET disposition = #{disposition},
-                   blocked_count = blocked_count + CASE WHEN #{disposition} = 'gift_blocked' THEN 1 ELSE 0 END,
                    version = version + 1, updated_at = NOW()
              WHERE row_id = #{rowId} AND version = #{expectedVersion}
                AND disposition IS NULL AND is_deleted = 0
