@@ -1,6 +1,5 @@
 package ffdd.opsconsole.market.application;
 
-import ffdd.opsconsole.content.facade.RiskDisclosureGateFacade;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.emergency.domain.KillSwitchState;
@@ -58,6 +57,7 @@ public class AppExchangeService {
     private static final String COST_BASIS = "wallet.nex_market.cost_basis";
     private static final String EXCHANGE_KILL = "killswitch.exchange";
     private static final String EXCHANGE_KILL_LEGACY = "emergency.killswitch.exchange";
+    private static final String DISCLOSURE_GATE_EXCHANGE = "disclosure.gate.exchange";
     private static final String EXCHANGE_EXECUTION_MUTEX = "G2_EXCHANGE_EXECUTION";
     private static final Map<String, ExternalAsset> EXTERNAL_ASSETS = Map.of(
             "EXT_RNDR_USDT", new ExternalAsset("RNDR", "Render", "ai"),
@@ -80,7 +80,6 @@ public class AppExchangeService {
     /** The sandbox ledger is absent from production-only deployments. */
     private final Optional<AppMarketSandboxService> sandbox;
     private final SupportExchangeFundAdapter exchangeFunds;
-    private final RiskDisclosureGateFacade disclosureGate;
     private final Object marketHistoryCacheLock = new Object();
     private final AtomicReference<CachedMarketHistory> marketHistoryCache = new AtomicReference<>();
 
@@ -248,11 +247,6 @@ public class AppExchangeService {
         AppExchangeMapper.WalletGateRow wallet = mapper.lockWalletGate(userId);
         if (wallet == null) throw new BizException(409, "EXCHANGE_WALLET_NOT_FOUND");
         if (!swapEnabled()) throw new BizException(409, "EXCHANGE_SWAP_PAUSED");
-        ApiResult<Void> disclosure = disclosureGate.checkUserGate(userId, "exchange", idempotencyKey);
-        if (disclosure.getCode() != 0) {
-            // The same intent may be retried after the user acknowledges the disclosure.
-            throw new BizException(disclosure.getCode(), disclosure.getMessage());
-        }
 
         BigDecimal price = requirePrice();
         BigDecimal minimum = "USDT".equals(request.fromAsset()) ? number(MIN_USDT, "1") : number(MIN_NEX, "10");
@@ -569,7 +563,23 @@ public class AppExchangeService {
     private boolean swapEnabled() {
         String current = mapper.emergencyValue(EXCHANGE_KILL);
         String legacy = mapper.emergencyValue(EXCHANGE_KILL_LEGACY);
-        return KillSwitchState.enabled(Optional.ofNullable(current), Optional.ofNullable(legacy));
+        return !disclosureGateActive() && KillSwitchState.enabled(
+                Optional.ofNullable(current), Optional.ofNullable(legacy));
+    }
+
+    private boolean disclosureGateActive() {
+        return config.activeValue(DISCLOSURE_GATE_EXCHANGE)
+                .or(() -> Optional.ofNullable(mapper.emergencyValue(DISCLOSURE_GATE_EXCHANGE)))
+                .map(this::parseDisclosureGateActive)
+                .orElse(false);
+    }
+
+    private boolean parseDisclosureGateActive(String raw) {
+        String value = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
+        return switch (value) {
+            case "enabled", "enable", "on", "true", "1", "blocked", "required" -> true;
+            default -> false;
+        };
     }
 
     private BigDecimal number(String key, String fallback) {
