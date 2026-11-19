@@ -1619,6 +1619,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             if (!"H4_WHEEL".equals(questEventMapper.get().lockWheelMutation())) {
                 return validation("H4_WHEEL_MUTEX_UNAVAILABLE");
             }
+            boolean requireCompletePool = approved && !preview && questEventMapper.get().hasOpenWheelEvent();
             List<Map<String, Object>> currentPool = questEventMapper.get().wheelTiers();
             if (!wheelSignatureMatches(request.expectedSignature(), currentPool, approved)) {
                 return validation("WHEEL_CONFIG_STALE");
@@ -1638,8 +1639,12 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             }
             BigDecimal currentProbability = Optional.ofNullable(questEventMapper.get().activeWheelProbabilitySum())
                     .orElse(BigDecimal.ZERO);
-            if (currentProbability.add(probability).compareTo(new BigDecimal("100")) > 0) {
+            BigDecimal nextTotal = currentProbability.add(probability);
+            if (nextTotal.compareTo(new BigDecimal("100")) > 0) {
                 return validation("WHEEL_PROBABILITY_TOTAL_EXCEEDS_100");
+            }
+            if (requireCompletePool && nextTotal.setScale(4, RoundingMode.HALF_UP).compareTo(new BigDecimal("100")) != 0) {
+                return validation("WHEEL_PROBABILITY_TOTAL_MUST_EQUAL_100");
             }
             int realOutflow = (request.realOutflow() != null && request.realOutflow() == 1) ? 1 : 0;
             String rewardKind = normalizePlainText(StringUtils.hasText(request.rewardKind()) ? request.rewardKind() : "uvt", 64).toLowerCase(Locale.ROOT);
@@ -1854,6 +1859,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             if (!"H4_WHEEL".equals(questEventMapper.get().lockWheelMutation())) {
                 return validation("H4_WHEEL_MUTEX_UNAVAILABLE");
             }
+            boolean requireCompletePool = approved && !preview && questEventMapper.get().hasOpenWheelEvent();
             String tierName = normalizePlainText(tierNameRaw, 128);
             List<Map<String, Object>> tiers = growthRows(GrowthQuestEventMapper::wheelTiers);
             if (!wheelSignatureMatches(request.expectedValue(), tiers, approved)) {
@@ -1874,6 +1880,9 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             }
             if (parseDecimal(String.valueOf(before.get("prob")), BigDecimal.ZERO).compareTo(BigDecimal.ZERO) != 0) {
                 return validation("WHEEL_TIER_DELETE_REQUIRES_ZERO_PROBABILITY");
+            }
+            if (requireCompletePool && questEventMapper.get().activeWheelProbabilitySum().compareTo(new BigDecimal("100")) != 0) {
+                return validation("WHEEL_PROBABILITY_TOTAL_MUST_EQUAL_100");
             }
             boolean amplifies = !truthy(before.get("real")) && "uvt".equalsIgnoreCase(String.valueOf(before.get("kind")))
                     && increasesUvtFallback(tiers, before, parseDecimal(String.valueOf(before.get("amount")), BigDecimal.ZERO), false);
@@ -4167,6 +4176,15 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         return mapper.wheelTiers();
     }
 
+    boolean lockH4WheelProbabilityTotalIsValid() {
+        GrowthQuestEventMapper mapper = questEventMapper.orElseThrow(
+                () -> new BizException(422, "GROWTH_BUSINESS_TABLE_UNAVAILABLE"));
+        if (!"H4_WHEEL".equals(mapper.lockWheelMutation())) {
+            throw new BizException(409, "H4_WHEEL_MUTEX_UNAVAILABLE");
+        }
+        return mapper.activeWheelProbabilitySum().compareTo(new BigDecimal("100")) == 0;
+    }
+
     private boolean wheelSignatureMatches(String expected, List<Map<String, Object>> tiers, boolean approved) {
         String current = wheelPoolSignature(tiers);
         return approved ? current.equals(expected) : expectedTextMatches(expected, current);
@@ -5532,6 +5550,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         voucher.put("startAt", longValue(row.get("startAt")));
         voucher.put("endAt", longValue(row.get("endAt")));
         voucher.put("claimSurfaces", parseJsonStringList(row.get("claimSurfacesJson")));
+        voucher.put("wheelOnly", truthy(row.get("wheelOnly")));
         voucher.put("popupEnabled", truthy(row.get("popupEnabled")));
         voucher.put("popupDelayMs", longValue(row.get("popupDelayMs")));
         voucher.put("popupCooldownHours", longValue(row.get("popupCooldownHours")));

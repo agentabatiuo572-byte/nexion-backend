@@ -54,12 +54,14 @@ public interface GrowthVoucherGrantMapper {
              WHERE voucher_id = #{voucherId}
                AND is_deleted = 0
                AND status = 'active'
+               AND (wheel_only = 0 OR #{sourceType} = 'WHEEL_SPIN')
                AND (start_at = 0 OR start_at <= #{nowMillis})
                AND (end_at = 0 OR end_at >= #{nowMillis})
              LIMIT 1 FOR UPDATE
             """)
     Map<String, Object> lockGrantableVoucher(
             @Param("voucherId") String voucherId,
+            @Param("sourceType") String sourceType,
             @Param("nowMillis") long nowMillis);
 
     /** Read current policy after the voucher-row mutex, including inside an outer REPEATABLE READ transaction. */

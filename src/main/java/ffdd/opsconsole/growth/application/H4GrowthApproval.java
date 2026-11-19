@@ -207,6 +207,12 @@ public class H4GrowthApproval {
         if (locks.size() != 1 || !operationId.equals(locks.get(0).getTicketId()) || !target.equals(
                 new AuditLockTarget(locks.get(0).getTargetDomain(), locks.get(0).getTargetType(), locks.get(0).getTargetId())))
             return ApiResult.fail(403, "H4_APPROVAL_FORBIDDEN");
+        if (RULE.equals(command.op()) && "evt-spring-spin".equals(target.id())) {
+            if (!growth.lockH4Event()) throw new BizException(409, "H4_EVENT_MUTEX_UNAVAILABLE");
+            if (!growth.lockH4WheelProbabilityTotalIsValid()) {
+                return ApiResult.fail(409, "WHEEL_PROBABILITY_TOTAL_MUST_EQUAL_100");
+            }
+        }
         if (!state(target, command.op()).equals(command.params().get("expectedState"))) return ApiResult.fail(409, "H4_CONFIG_STALE");
         if (command.params().get("eventCopy") instanceof Map<?, ?> copy
                 && !rules.readEventContent(target.id()).equals(copy)) {

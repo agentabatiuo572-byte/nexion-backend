@@ -855,8 +855,21 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
               FROM nx_growth_wheel_tier
              WHERE is_deleted = 0
                AND status = 1
+             FOR UPDATE
             """)
     BigDecimal activeWheelProbabilitySum();
+
+    @Select("""
+            SELECT EXISTS (
+              SELECT 1 FROM nx_event_quest q
+               WHERE q.is_deleted=0 AND q.status=1 AND LOWER(q.target_type)='wheel'
+                 AND (q.starts_at IS NULL OR q.starts_at<=UTC_TIMESTAMP())
+                 AND (q.ends_at IS NULL OR q.ends_at>UTC_TIMESTAMP())
+                 AND NOT EXISTS (SELECT 1 FROM nx_growth_event_rule r WHERE r.event_code=q.quest_code AND r.enabled=0)
+               FOR SHARE
+            )
+            """)
+    boolean hasOpenWheelEvent();
 
     /**
      * Awards persisted by the spin transaction itself, grouped by reward asset. A committed spin row and

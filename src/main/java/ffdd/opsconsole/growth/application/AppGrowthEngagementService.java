@@ -475,8 +475,9 @@ public class AppGrowthEngagementService {
                     && "active".equalsIgnoreCase(String.valueOf(row.get("definitionStatus")));
             long issuanceLimit = numberValue(item.remove("issuanceLimit"));
             long issuedCount = numberValue(item.remove("issuedCount"));
+            boolean wheelOnly = truthy(item.remove("wheelOnly"));
             boolean claimable = audienceEligible && definitionOpen && "UNCLAIMED".equals(grantStatus)
-                    && (issuanceLimit == 0L || issuedCount < issuanceLimit);
+                    && !wheelOnly && (issuanceLimit == 0L || issuedCount < issuanceLimit);
             long lastSeenAt = numberValue(row.get("popupLastSeenAt"));
             long delayMs = boundedCadence(row, "popupDelayMs", 1300L, 0L, 60_000L);
             long cooldownHours = boundedCadence(row, "popupCooldownHours", 24L, 0L, 720L);

@@ -1,4 +1,14 @@
 -- LC-03: seed H4 configuration without publishing or changing an event.
+SET @lc_wheel_voucher_column = IF(
+    EXISTS (SELECT 1 FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_growth_voucher' AND COLUMN_NAME='wheel_only'),
+    'DO 0',
+    'ALTER TABLE nx_growth_voucher ADD COLUMN wheel_only TINYINT(1) NOT NULL DEFAULT 0 AFTER claim_surfaces'
+);
+PREPARE lc_wheel_voucher_column FROM @lc_wheel_voucher_column;
+EXECUTE lc_wheel_voucher_column;
+DEALLOCATE PREPARE lc_wheel_voucher_column;
+
 START TRANSACTION;
 
 SET @lc_wheel_pool_locked = EXISTS (
@@ -22,7 +32,13 @@ UPDATE nx_growth_wheel_tier
    AND BINARY tier_name='usdt-500' AND BINARY reward_name='$500 USDT'
    AND probability_pct=0.1 AND real_outflow=1 AND BINARY reward_kind='usdt'
    AND reward_amount=500 AND voucher_id IS NULL AND daily_stock=5 AND sort_order=80
-   AND status=1 AND is_deleted=0;
+   AND status=1 AND is_deleted=0
+   AND NOT EXISTS (
+       SELECT 1 FROM nx_audit_operation_ticket t
+        WHERE t.source_domain='H' AND t.status='approved' AND t.is_deleted=0
+          AND JSON_CONTAINS(IF(JSON_VALID(t.command_json), t.command_json, '{}'),
+                            '{"domain":"H","op":"h4_wheel_tier_update","params":{"values":{"tierName":"usdt-500"}}}')
+   );
 
 -- Match the repaired tier so this note can also be corrected on a later run.
 UPDATE nx_growth_wheel_guard g
@@ -95,12 +111,31 @@ SELECT d.guard_key,d.guard_label,d.guard_value,d.note,d.sort_order,1,0
    )
  ORDER BY d.sort_order;
 
+-- Keep ownership records and operator-defined voucher settings intact.
+UPDATE nx_growth_voucher
+   SET wheel_only=1, version=version+1
+ WHERE BINARY voucher_id='H4-WHEEL-DEVICE-50' AND wheel_only=0
+   AND BINARY voucher_name='Lucky Spin $50 Device Coupon' AND BINARY voucher_type='fixed'
+   AND amount_usd=50 AND percent_value=0 AND min_purchase_usd=50 AND max_discount_usd=50
+   AND JSON_TYPE(applicable_skus)='ARRAY' AND JSON_LENGTH(applicable_skus)=0
+   AND JSON_TYPE(claim_surfaces)='ARRAY' AND JSON_LENGTH(claim_surfaces)=0
+   AND BINARY audience='all' AND start_at=0 AND end_at=0 AND popup_enabled=0
+   AND popup_delay_ms=1300 AND popup_cooldown_hours=24 AND popup_max_per_session=1 AND popup_cadence_enabled=1
+   AND stack_with_trial=0 AND stack_with_others=0 AND splittable=0 AND issuance_limit=0 AND version=1
+   AND BINARY status='active' AND is_deleted=0
+   AND BINARY created_by='migration:h4-wheel' AND BINARY updated_by='migration:h4-wheel'
+   AND NOT EXISTS (
+       SELECT 1 FROM nx_audit_object_lock
+        WHERE target_domain='H' AND target_type='voucher' AND target_id='H4-WHEEL-DEVICE-50'
+          AND is_deleted=0
+   );
+
 INSERT INTO nx_growth_voucher
     (voucher_id,voucher_name,voucher_type,amount_usd,percent_value,min_purchase_usd,max_discount_usd,
      applicable_skus,audience,start_at,end_at,claim_surfaces,popup_enabled,stack_with_trial,
-     stack_with_others,splittable,status,created_by,updated_by,is_deleted)
+     stack_with_others,splittable,status,created_by,updated_by,is_deleted,wheel_only)
 SELECT 'H4-WHEEL-DEVICE-50','Lucky Spin $50 Device Coupon','fixed',50,0,50,50,
-       JSON_ARRAY(),'all',0,0,JSON_ARRAY(),0,0,0,0,'active','migration:h4-wheel','migration:h4-wheel',0
+       JSON_ARRAY(),'all',0,0,JSON_ARRAY(),0,0,0,0,'active','migration:h4-wheel','migration:h4-wheel',0,1
  WHERE NOT EXISTS (SELECT 1 FROM nx_growth_voucher WHERE voucher_id='H4-WHEEL-DEVICE-50')
    AND NOT EXISTS (
        SELECT 1 FROM nx_audit_object_lock
