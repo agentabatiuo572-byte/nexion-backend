@@ -19,6 +19,7 @@ import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayable;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.team.application.TeamFundApproval;
+import ffdd.opsconsole.team.application.HardwareQuotaApproval;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import java.util.List;
 import java.util.Map;
@@ -81,6 +82,8 @@ public class AuditReplayDispatcher {
     @Autowired
     private TeamFundApproval teamFundApproval;
     @Autowired
+    private HardwareQuotaApproval hardwareQuotaApproval;
+    @Autowired
     private G3MarketApproval g3MarketApproval;
     @Autowired
     private G2G7ParamApproval g2g7ParamApproval;
@@ -113,7 +116,7 @@ public class AuditReplayDispatcher {
                 || G4DividendApproval.supports(cmd) || G4ParamApproval.supports(cmd) || H3GrowthApproval.supports(cmd) || K1RiskApproval.supports(cmd) || K2OtpInitialApproval.supports(cmd)
                 || G2G7ParamApproval.supports(cmd)
                 || G3MarketApproval.supports(cmd) || H5GrowthApproval.supports(cmd) || H8RewardParamApproval.supports(cmd)
-                || TeamFundApproval.supports(cmd) || E2TaskPricingApproval.supports(cmd)
+                || TeamFundApproval.supports(cmd) || HardwareQuotaApproval.supports(cmd) || E2TaskPricingApproval.supports(cmd)
                 || TreasuryThresholdApproval.supports(cmd) || WithdrawalConfigApproval.supports(cmd);
     }
 
@@ -184,6 +187,9 @@ public class AuditReplayDispatcher {
         }
         if (TeamFundApproval.supports(cmd)) {
             return teamFundApproval.replay(cmd, ctx, A2ReplayContext.authenticatedAdminId(), A2ReplayContext.operationId());
+        }
+        if (HardwareQuotaApproval.supports(cmd)) {
+            return hardwareQuotaApproval.replay(cmd, ctx);
         }
         if (E2TaskPricingApproval.supports(cmd)) {
             return e2TaskPricingApproval.replay(cmd, ctx);

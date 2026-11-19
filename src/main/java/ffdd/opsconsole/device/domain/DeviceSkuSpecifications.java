@@ -10,6 +10,10 @@ public final class DeviceSkuSpecifications {
 
     private DeviceSkuSpecifications() { }
 
+    public static boolean hasPurchaseSpecifications(String gpu, Integer vramGb, String power) {
+        return StringUtils.hasText(gpu) && vramGb != null && vramGb > 0 && StringUtils.hasText(power);
+    }
+
     public static String validateDocument(String title, String url) {
         if (!StringUtils.hasText(title) && !StringUtils.hasText(url)) return null;
         if (!StringUtils.hasText(title) || title.trim().length() > 200

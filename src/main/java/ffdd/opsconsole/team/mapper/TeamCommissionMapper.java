@@ -1,5 +1,6 @@
 package ffdd.opsconsole.team.mapper;
 
+import ffdd.opsconsole.shared.canonical.StorefrontProductPublishGate;
 import ffdd.opsconsole.shared.config.VietnamBusinessPeriodSql;
 import ffdd.opsconsole.shared.config.HardwareQuotaPeriod;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
@@ -491,6 +492,9 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    t.quota_code AS quotaCode,
                    t.product_no AS productNo,
                    COALESCE(t.display_name, t.quota_code) AS name,
+                   COALESCE(t.note, '') AS note,
+                   t.status,
+                   t.sort_order AS sortOrder,
                    t.direct_refs AS directRefs,
                    t.month_compute_points AS monthComputePoints,
                    t.unlock_mode AS unlockMode,
@@ -507,12 +511,57 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                AND u.occurred_at >= """ + HardwareQuotaPeriod.SQL_MONTH_START_UTC + """
                AND u.occurred_at < """ + HardwareQuotaPeriod.SQL_NEXT_MONTH_START_UTC + """
              WHERE t.is_deleted = 0
-               AND t.status = 1
-             GROUP BY t.id, t.display_name, t.quota_code, t.product_no, t.direct_refs,
+             GROUP BY t.id, t.display_name, t.quota_code, t.product_no, t.note, t.status, t.direct_refs,
                       t.month_compute_points, t.unlock_mode, t.monthly_quota, t.sort_order
              ORDER BY t.sort_order ASC, t.id ASC
             """)
     List<Map<String, Object>> quotaRows();
+
+    record QuotaProduct(String productNo, String unlockPhaseId, boolean sellable,
+                        String tier, String productType, String gpu, Integer vramGb, String power) { }
+
+    @Select("""
+            <script>
+            SELECT p.product_no AS productNo, p.unlock_phase AS unlockPhaseId,
+                   (p.is_deleted = 0 AND p.store_visible = 1
+                       AND UPPER(p.status) IN ('ACTIVE', 'ON_SALE') AND p.price_usdt > 0
+                       AND (p.inventory_mode = 'FINITE' AND p.stock >= 1
+                            OR p.inventory_mode = 'UNLIMITED' AND UPPER(p.product_type) = 'SHARE')
+                       AND
+            """ + StorefrontProductPublishGate.PUBLISHABLE_SQL + """
+                   ) AS sellable,
+                   p.tier, p.product_type AS productType, p.gpu_model AS gpu, p.vram_total_gb AS vramGb,
+                   s.power_text AS power
+              FROM nx_product p
+              LEFT JOIN nx_admin_device_sku s ON s.sku_id = p.product_no AND s.is_deleted = 0
+             WHERE p.product_no = #{productNo}
+             <if test="lock">FOR UPDATE</if>
+            </script>
+            """)
+    @Options(useCache = false, flushCache = Options.FlushCachePolicy.TRUE)
+    QuotaProduct hardwareQuotaProduct(@Param("productNo") String productNo, @Param("lock") boolean lock);
+
+    @Select("""
+            <script>
+            SELECT id FROM nx_team_hardware_quota_tier
+             WHERE product_no = #{productNo} AND is_deleted = 0
+             LIMIT 1 <if test="lock">FOR UPDATE</if>
+            </script>
+            """)
+    Long hardwareQuotaTierForProduct(@Param("productNo") String productNo, @Param("lock") boolean lock);
+
+    @Select("SELECT id FROM nx_team_hardware_quota_tier WHERE quota_code = #{quotaCode}")
+    Long hardwareQuotaTierForCode(@Param("quotaCode") String quotaCode);
+
+    @Insert("""
+            INSERT INTO nx_team_hardware_quota_tier
+                (quota_code, product_no, display_name, note, direct_refs, month_compute_points,
+                 monthly_quota, unlock_mode, status, sort_order)
+            VALUES
+                (#{quotaCode}, #{productNo}, #{displayName}, #{note}, #{directRefs}, #{monthComputePoints},
+                 #{monthlyQuota}, #{unlockMode}, #{status}, #{sortOrder})
+            """)
+    void insertHardwareQuotaTier(Map<String, Object> values);
 
     @Select("""
             SELECT u.id,
@@ -540,8 +589,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
              WHERE quota_code = #{quotaCode}
                AND monthly_quota = #{expectedMonthlyQuota}
                AND is_deleted = 0
-               AND status = 1
-               AND #{monthlyQuota} >= (
+               AND (#{monthlyQuota} <= monthly_quota OR #{monthlyQuota} >= (
                     SELECT COALESCE(SUM(u.quantity), 0)
                       FROM nx_team_hardware_quota_usage u
                      WHERE u.quota_tier_id = nx_team_hardware_quota_tier.id
@@ -549,7 +597,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                        AND UPPER(u.status) = 'ACTIVE'
                         AND u.occurred_at >= """ + HardwareQuotaPeriod.SQL_MONTH_START_UTC + """
                         AND u.occurred_at < """ + HardwareQuotaPeriod.SQL_NEXT_MONTH_START_UTC + """
-               )
+               ))
             """)
     int updateHardwareQuotaTierCas(@Param("quotaCode") String quotaCode,
                                    @Param("expectedMonthlyQuota") int expectedMonthlyQuota,

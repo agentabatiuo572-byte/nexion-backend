@@ -210,9 +210,8 @@ public class AppProductCatalogService {
                 && shareYield.minPct() != null && shareYield.minPct().signum() > 0
                 && shareYield.maxPct() != null
                 && shareYield.maxPct().compareTo(shareYield.minPct()) >= 0;
-        boolean specsComplete = share || (StringUtils.hasText(target.gpuModel())
-                && target.vramTotalGb() != null && target.vramTotalGb() > 0
-                && StringUtils.hasText(target.power()));
+        boolean specsComplete = share || DeviceSkuSpecifications.hasPurchaseSpecifications(
+                target.gpuModel(), target.vramTotalGb(), target.power());
         item.put("gpu", display(target.gpuModel()));
         item.put("vram", target.vramTotalGb() == null || target.vramTotalGb() <= 0
                 ? ("SHARE".equals(productType) ? "not_applicable" : "unavailable") : target.vramTotalGb() + "GB");
