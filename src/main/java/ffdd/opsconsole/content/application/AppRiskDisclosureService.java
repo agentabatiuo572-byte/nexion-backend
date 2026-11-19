@@ -11,6 +11,7 @@ import ffdd.opsconsole.content.facade.RiskDisclosureGateFacade;
 import ffdd.opsconsole.content.infrastructure.DisclosureAckStatusEntity;
 import ffdd.opsconsole.content.mapper.DisclosureAckStatusMapper;
 import ffdd.opsconsole.content.mapper.DisclosureAckStatusMapper.UserAttribution;
+import ffdd.opsconsole.emergency.web.GeoBlockEnforcementFilter;
 import ffdd.opsconsole.risk.facade.TamperDetectionPublisher;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -33,8 +34,11 @@ import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.env.Environment;
 import org.springframework.core.env.Profiles;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 @ApplicationService
 @RequiredArgsConstructor
@@ -59,7 +63,7 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
 
     @Transactional
     public ApiResult<AppRiskDisclosureView> current(Long userId, String locale) {
-        return currentAndPublish(userId, null, locale);
+        return currentAndPublish(userId, locale);
     }
 
     @Transactional(readOnly = true)
@@ -69,20 +73,11 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
 
     @Transactional(readOnly = true)
     public ApiResult<AppRiskDisclosureView> publicCurrent(String country, String locale) {
-        // Caller-selected country is only for reading public text; account gates use the saved country.
+        // Caller-selected country is only for reading public text.
         if (!StringUtils.hasText(CountryCodeNormalizer.normalize(country))) {
             return ApiResult.fail(422, "RISK_DISCLOSURE_COUNTRY_REQUIRED");
         }
         return loadCurrent(null, country, false, locale);
-    }
-
-    /**
-     * Reserved for a trusted edge integration. Controllers must not pass a client-provided country header here.
-     * A trusted edge country may override the user's saved profile country for this request.
-     */
-    @Transactional
-    ApiResult<AppRiskDisclosureView> currentWithTrustedIpCountry(Long userId, String trustedIpCountry) {
-        return currentAndPublish(userId, trustedIpCountry, null);
     }
 
     @Transactional
@@ -157,11 +152,11 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
         return ApiResult.ok(null);
     }
 
-    private ApiResult<AppRiskDisclosureView> loadCurrent(Long userId, String trustedIpCountry, boolean issueReadToken, String locale) {
-        if ((userId == null && !StringUtils.hasText(trustedIpCountry)) || (userId != null && userId <= 0)) {
+    private ApiResult<AppRiskDisclosureView> loadCurrent(Long userId, String publicCountry, boolean issueReadToken, String locale) {
+        if ((userId == null && !StringUtils.hasText(publicCountry)) || (userId != null && userId <= 0)) {
             return ApiResult.fail(401, "USER_AUTH_REQUIRED");
         }
-        JurisdictionResolution resolution = resolveJurisdiction(userId, trustedIpCountry);
+        JurisdictionResolution resolution = resolveJurisdiction(userId, publicCountry);
         if (resolution.error() != null) return ApiResult.fail(resolution.error().code(), resolution.error().message());
         DisclosureJurisdictionView jurisdiction = resolution.jurisdiction();
         DisclosureDraftView disclosure = repository.findDisclosureVersion(jurisdiction.code(), jurisdiction.version()).orElse(null);
@@ -193,8 +188,8 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
                 ackProperties.boundedMinReadSeconds(), summary));
     }
 
-    private ApiResult<AppRiskDisclosureView> currentAndPublish(Long userId, String trustedIpCountry, String locale) {
-        ApiResult<AppRiskDisclosureView> current = loadCurrent(userId, trustedIpCountry, true, locale);
+    private ApiResult<AppRiskDisclosureView> currentAndPublish(Long userId, String locale) {
+        ApiResult<AppRiskDisclosureView> current = loadCurrent(userId, null, true, locale);
         if (current.getCode() == 0) {
             AppRiskDisclosureView disclosure = current.getData();
             publishUserEvent(
@@ -208,7 +203,7 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
         return current;
     }
 
-    private JurisdictionResolution resolveJurisdiction(Long userId, String trustedIpCountry) {
+    private JurisdictionResolution resolveJurisdiction(Long userId, String publicCountry) {
         if (isStrictLocalSandbox()) {
             if (!Integer.valueOf(1).equals(ackMapper.isSandboxUser(userId))) {
                 return JurisdictionResolution.error(403, "RISK_DISCLOSURE_SANDBOX_USER_REQUIRED");
@@ -221,30 +216,52 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
                     .orElseGet(() -> JurisdictionResolution.error(
                             404, "RISK_DISCLOSURE_JURISDICTION_NOT_CONFIGURED"));
         }
-        String ipCountry = CountryCodeNormalizer.normalize(trustedIpCountry);
-        String profileCountry = userId == null ? "" : CountryCodeNormalizer.normalize(ackMapper.findUserCountryCode(userId));
-        String country = StringUtils.hasText(ipCountry) ? ipCountry : profileCountry;
-        if (!StringUtils.hasText(country)) {
-            return JurisdictionResolution.error(404, "RISK_DISCLOSURE_JURISDICTION_NOT_CONFIGURED");
-        }
+        String country = userId == null ? CountryCodeNormalizer.normalize(publicCountry) : accountCountry(userId);
         var activeJurisdictions = repository.listActiveJurisdictionCatalog().stream()
                 .collect(java.util.stream.Collectors.toMap(
                         row -> row.code().toUpperCase(java.util.Locale.ROOT), row -> row.name(),
                         (first, ignored) -> first, LinkedHashMap::new));
-        List<DisclosureJurisdictionView> matches = repository.listJurisdictions().stream()
+        List<DisclosureJurisdictionView> publishedJurisdictions = repository.listJurisdictions().stream()
                 .filter(row -> activeJurisdictions.containsKey(row.code().toUpperCase(java.util.Locale.ROOT)))
                 .filter(row -> "published".equalsIgnoreCase(row.status()))
-                .filter(row -> row.countryCodes().stream()
-                        .map(CountryCodeNormalizer::normalize)
-                        .anyMatch(country::equals))
                 .map(row -> new DisclosureJurisdictionView(
                         row.code(), activeJurisdictions.get(row.code().toUpperCase(java.util.Locale.ROOT)),
                         row.countryCodes(), row.version(), row.status(), row.publishedAt(), row.affected(),
                         row.ackProgress(), row.blocked()))
                 .toList();
+        List<DisclosureJurisdictionView> matches = StringUtils.hasText(country) ? publishedJurisdictions.stream()
+                .filter(row -> row.countryCodes().stream()
+                        .map(CountryCodeNormalizer::normalize)
+                        .anyMatch(country::equals))
+                .toList() : List.of();
+        if (matches.isEmpty() && userId != null) {
+            matches = publishedJurisdictions.stream()
+                    .filter(row -> "SBV".equalsIgnoreCase(row.code()))
+                    .toList();
+        }
         if (matches.isEmpty()) return JurisdictionResolution.error(404, "RISK_DISCLOSURE_JURISDICTION_NOT_CONFIGURED");
         if (matches.size() > 1) return JurisdictionResolution.error(409, "RISK_DISCLOSURE_JURISDICTION_AMBIGUOUS");
         return new JurisdictionResolution(matches.get(0), null);
+    }
+
+    private String accountCountry(Long userId) {
+        var countries = ackMapper.findUserCountries(userId);
+        String savedCountry = countries == null ? null : countries.countryCode();
+        if (savedCountry != null && savedCountry.trim().matches("\\+?[0-9]{1,4}")) {
+            String dialingCountry = CountryCodeNormalizer.normalize(savedCountry);
+            if (StringUtils.hasText(dialingCountry)) return dialingCountry;
+        }
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        // The edge country belongs to the authenticated user making this request.
+        if (RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes attributes
+                && authentication != null && authentication.isAuthenticated()
+                && authentication.getDetails() instanceof Map<?, ?> details
+                && "USER".equals(details.get("subjectType"))
+                && userId.toString().equals(String.valueOf(authentication.getPrincipal()))) {
+            return CountryCodeNormalizer.normalize(GeoBlockEnforcementFilter.trustedCountry(attributes.getRequest()));
+        }
+        String profileCountry = countries == null ? null : countries.profileCountry();
+        return CountryCodeNormalizer.normalize(StringUtils.hasText(profileCountry) ? profileCountry : savedCountry);
     }
 
     private boolean isStrictLocalSandbox() {

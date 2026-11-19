@@ -28,6 +28,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @Order(Ordered.HIGHEST_PRECEDENCE + 30)
 @RequiredArgsConstructor
 public class GeoBlockEnforcementFilter extends OncePerRequestFilter {
+    private static final String TRUSTED_COUNTRY_ATTRIBUTE = GeoBlockEnforcementFilter.class.getName() + ".trustedCountry";
     private static final String EDGE_SETTING = "emergency.geo.edgeJudgeSource";
     private static final String EDGE_FALLBACK_SETTING = "emergency.geo.edgeJudgeFallbackSource";
     private static final String EDGE_FALLBACK_UNTIL_SETTING = "emergency.geo.edgeJudgeFallbackUntilEpochMs";
@@ -75,6 +76,10 @@ public class GeoBlockEnforcementFilter extends OncePerRequestFilter {
     private final GeoEdgeHealthMonitor healthMonitor;
     @Autowired(required = false)
     private JwtAuthenticationFilter trustedIdentity;
+
+    public static String trustedCountry(HttpServletRequest request) {
+        return (String) request.getAttribute(TRUSTED_COUNTRY_ATTRIBUTE);
+    }
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
@@ -170,6 +175,7 @@ public class GeoBlockEnforcementFilter extends OncePerRequestFilter {
 
         GeoBlockDecision decision = policyService.evaluate(countryCode, request.getMethod(), request.getRequestURI());
         if (!decision.blocked()) {
+            request.setAttribute(TRUSTED_COUNTRY_ATTRIBUTE, countryCode);
             filterChain.doFilter(request, response);
             return;
         }
