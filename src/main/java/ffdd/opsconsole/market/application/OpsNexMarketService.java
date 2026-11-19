@@ -1386,8 +1386,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         }
         if ("current-price".equals(request.action())) {
             configFacade.activeValueForUpdate(CURRENT_PRICE_KEY);
-            BigDecimal before = currentPrice();
-            if (before.signum() <= 0) throw new BizException(503, "G3_PRICE_UNAVAILABLE");
+            BigDecimal before = requireAuthoritativeCurrentPrice();
             if (!request.expectedRevision().equals(marketPolicyRevision("price", before.stripTrailingZeros().toPlainString()))) {
                 throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
             }
@@ -1426,8 +1425,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
                 }
             }
-            BigDecimal current = currentPrice();
-            if (current.signum() <= 0) throw new BizException(422, "G3_POLICY_APPROVAL_NOT_REQUIRED");
+            BigDecimal current = requireAuthoritativeCurrentPrice();
             if (pinned == null || pinned.targetPrice().compareTo(current) <= 0) {
                 throw new BizException(422, "G3_POLICY_APPROVAL_NOT_REQUIRED");
             }
@@ -1471,8 +1469,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
                 }
             }
-            BigDecimal current = currentPrice();
-            if (current.signum() <= 0 || activeFrame.targetPrice().compareTo(current) <= 0) {
+            BigDecimal current = requireAuthoritativeCurrentPrice();
+            if (activeFrame.targetPrice().compareTo(current) <= 0) {
                 throw new BizException(422, "G3_POLICY_APPROVAL_NOT_REQUIRED");
             }
             ApiResult<Map<String, Object>> redline = coverageRedlineFailure(
@@ -1713,8 +1711,11 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         // keeps quoting the previous frame while the control claims Dn is pinned.
         NexMarketCurveFrame pinned = "pin".equals(controlKey) ? resolvePinnedFrame(loadCurve(), value) : null;
         // 产品拍板 G3-BE-02：钉住/恢复提价视同提价，走 A2 双人审批，不再直写。
-        if (pinned != null && pinned.targetPrice().compareTo(currentPrice()) > 0) {
-            return ApiResult.fail(409, "G3_POLICY_APPROVAL_REQUIRED");
+        if (pinned != null) {
+            BigDecimal current = requireAuthoritativeCurrentPrice();
+            if (pinned.targetPrice().compareTo(current) > 0) {
+                return ApiResult.fail(409, "G3_POLICY_APPROVAL_REQUIRED");
+            }
         }
         return applyControlValue(idempotencyKey, controlKey, value, normalizedCurrent, request, pinned);
     }
@@ -2025,7 +2026,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             if (resumeCurve.size() == 7) {
                 int nextDayIndex = pinnedDayIndex().orElseGet(this::nextAdvanceDayIndex);
                 NexMarketCurveFrame activeFrame = frameFor(resumeCurve, nextDayIndex);
-                if (activeFrame.targetPrice().compareTo(currentPrice()) > 0) {
+                BigDecimal current = requireAuthoritativeCurrentPrice();
+                if (activeFrame.targetPrice().compareTo(current) > 0) {
                     return ApiResult.fail(409, "G3_POLICY_APPROVAL_REQUIRED");
                 }
             }
@@ -2303,6 +2305,15 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     /** The management G3 read exposes only an authoritative positive price. */
     private BigDecimal currentPriceOrNull() {
         return marketRepository.latestNexUsdtPrice().filter(price -> price.signum() > 0).orElse(null);
+    }
+
+    /** Direct writes and A2 previews must reject a missing authoritative price identically. */
+    private BigDecimal requireAuthoritativeCurrentPrice() {
+        BigDecimal price = currentPriceOrNull();
+        if (price == null) {
+            throw new BizException(503, "G3_PRICE_UNAVAILABLE");
+        }
+        return price;
     }
 
     private BigDecimal deltaPercent(BigDecimal oldPrice, BigDecimal newPrice) {
