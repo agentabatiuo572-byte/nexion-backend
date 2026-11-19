@@ -450,16 +450,16 @@ public class OpsReferralRewardService {
                         Long pendingBeforePolicyChange = null;
                         if (config.activeValue(EFFECTIVE_AT_KEY).isPresent()) {
                             LocalDateTime priorEffectiveAt = effectiveAtRequired();
-                            // Every accepted param change freezes the running interval. The interval only
-                            // remains payable if the program was enabled while it ran; a disabled interval
-                            // must not resurrect registrations made while the switch was off (H8-BE-06).
+                            // Every accepted param change freezes the running interval. Only an interval
+                            // that was actually enabled with positive rewards is sealed; a disabled or
+                            // zero-reward interval must not resurrect registrations made while it was off.
+                            // Pending count may be temporarily zero (wallet missing or risk review), but
+                            // the valid old segment still needs its own amount, interval and lock mode.
                             boolean priorEligible = "enabled".equals(paramKey) ? Boolean.parseBoolean(before) : referralEnabled();
-                            if (priorEligible) {
+                            if (priorEligible && hasPositiveRewards(effectiveRewards())) {
                                 pendingBeforePolicyChange = mapper.totalPendingBefore(priorEffectiveAt,
                                         LocalDateTime.ofInstant(policyChangeAt, DATABASE_ZONE), 0, "risk_bucket".equals(lockMode()));
-                                if (pendingBeforePolicyChange > 0) {
-                                    storePriorPolicy(priorEffectiveAt, policyChangeAt);
-                                }
+                                storePriorPolicy(priorEffectiveAt, policyChangeAt);
                             }
                         }
                         config.upsertAdminValue(EFFECTIVE_AT_KEY, policyChangeAt.toString(), "DATETIME", "GROWTH_REFERRAL",
