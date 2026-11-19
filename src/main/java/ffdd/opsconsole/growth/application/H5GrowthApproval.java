@@ -15,9 +15,9 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.SuperAdminAuthorization;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.LinkedHashMap;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
@@ -61,9 +61,13 @@ public class H5GrowthApproval {
         int sortOrder = earnCreateSortOrder(request.sortOrder());
         var threshold = earnCreateAmount(request.thresholdUsd(), BigDecimal.ONE);
         var reward = earnCreateAmount(request.rewardNex(), BigDecimal.ZERO);
-        var command = new AuditReplayCommand("H", EARN_CREATE, Map.of("values", Map.of(
-                "milestoneKey", key, "label", label, "sortOrder", sortOrder,
-                "thresholdUsd", threshold.toPlainString(), "rewardNex", reward.toPlainString())));
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("milestoneKey", key);
+        values.put("label", label);
+        values.put("sortOrder", sortOrder);
+        values.put("thresholdUsd", threshold.toPlainString());
+        values.put("rewardNex", reward.toPlainString());
+        var command = new AuditReplayCommand("H", EARN_CREATE, Map.of("values", values));
         return new AuditOperationProposalRequest(EARN_CREATE_ACTION, key, EARN_CREATE_BEFORE, null,
                 null, operatorRole, "fund", true, false, null, request.reason(), "H5", command, target(command), List.of());
     }
