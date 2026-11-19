@@ -510,11 +510,11 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
 
     @Insert("""
             INSERT IGNORE INTO nx_user_device
-              (user_id,source_order_no,product_id,product_code,product_tier,instance_no,name,device_type,
+              (user_id,source_order_no,product_id,product_code,product_tier,series_code,instance_no,name,device_type,
                generation,gpu_model,vram_total_gb,base_power_w,dc_location,price_usdt_snapshot,
                ownership_status,source_channel,source_environment,run_id,status,hashrate,daily_usdt,daily_nex,
                last_seen_at,purchased_at,activated_at,pending_deactivate,row_version,created_at,updated_at,is_deleted)
-            SELECT #{userId},o.order_no,p.id,p.product_no,COALESCE(p.tier,'STANDARD'),#{instanceNo},p.name,
+            SELECT #{userId},o.order_no,p.id,p.product_no,COALESCE(p.tier,'STANDARD'),p.series_code,#{instanceNo},p.name,
                    COALESCE(NULLIF(p.product_type,''),'BOX'),GREATEST(COALESCE(p.generation,1),1),
                    COALESCE(NULLIF(p.gpu_model,''),NULLIF(s.gpu,''),'UVEL accelerator'),
                    GREATEST(COALESCE(p.vram_total_gb,0),0),
@@ -543,11 +543,11 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
 
     @Insert("""
             INSERT IGNORE INTO nx_user_device
-              (user_id,source_order_no,product_id,product_code,product_tier,instance_no,name,device_type,
+              (user_id,source_order_no,product_id,product_code,product_tier,series_code,instance_no,name,device_type,
                generation,gpu_model,vram_total_gb,base_power_w,dc_location,price_usdt_snapshot,
                ownership_status,source_channel,source_environment,run_id,status,hashrate,daily_usdt,daily_nex,
                last_seen_at,purchased_at,activated_at,pending_deactivate,row_version,created_at,updated_at,is_deleted)
-            SELECT #{userId},o.order_no,p.id,p.product_no,COALESCE(p.tier,'STANDARD'),#{instanceNo},p.name,
+            SELECT #{userId},o.order_no,p.id,p.product_no,COALESCE(p.tier,'STANDARD'),p.series_code,#{instanceNo},p.name,
                    COALESCE(NULLIF(p.product_type,''),'BOX'),GREATEST(COALESCE(p.generation,1),1),
                    COALESCE(NULLIF(p.gpu_model,''),NULLIF(s.gpu,''),'UVEL accelerator'),
                    GREATEST(COALESCE(p.vram_total_gb,0),0),

@@ -39,7 +39,7 @@ public class DeviceMonthlyTargetService {
         LocalDateTime due=start.plusSeconds(type.durationSeconds());
         var anchor=device.purchasedAt()!=null?device.purchasedAt():device.activatedAt();
         var cycle=DeviceMonthlyTargetPacing.cycleAt(anchor,due);
-        var capacity=E3DeviceCapacityPolicy.project(device.productCode(),device.deviceType(),anchor,device.activatedAt(),cycle.start(),policy.e3Config()).capacityPct();
+        var capacity=E3DeviceCapacityPolicy.project(device.seriesCode(),device.deviceType(),anchor,device.activatedAt(),cycle.start(),policy.e3Config()).capacityPct();
         if(capacity.compareTo(DeviceMonthlyTargetPacing.MAX_REWARD)>0)
             throw new MonthlyTargetRewardOutOfRangeException(List.of(device.productCode()));
         // A settled predecessor proves this PK exists. Never lock a potentially missing key under RR.

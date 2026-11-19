@@ -562,7 +562,7 @@ public class AppCanonicalBoundaryService {
         E3DeviceCapacityPolicy.Projection capacity;
         try {
             capacity = E3DeviceCapacityPolicy.project(
-                    device.productCode(), device.deviceType(), device.purchasedAt(),
+                    device.seriesCode(), device.deviceType(), device.purchasedAt(),
                     device.activatedAt(), now, config);
         } catch (IllegalArgumentException invalid) {
             throw new BizException(409, invalid.getMessage());

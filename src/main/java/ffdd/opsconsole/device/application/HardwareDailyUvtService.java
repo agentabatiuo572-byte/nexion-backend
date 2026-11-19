@@ -30,27 +30,27 @@ public class HardwareDailyUvtService {
                 .withZoneSameInstant(DateTimeFormatConfig.BUSINESS_ZONE).toLocalDateTime();
     }
 
-    BigDecimal amount(long userId, long deviceId, String productCode, String deviceType, LocalDateTime completedAt) {
-        return amount(userId, deviceId, productCode, deviceType, completedAt, true);
+    BigDecimal amount(long userId, long deviceId, String productCode, String seriesCode, LocalDateTime completedAt) {
+        return amount(userId, deviceId, productCode, seriesCode, completedAt, true);
     }
 
-    BigDecimal previewAmount(long userId, long deviceId, String productCode, String deviceType, LocalDateTime completedAt) {
-        return amount(userId, deviceId, productCode, deviceType, completedAt, false);
+    BigDecimal previewAmount(long userId, long deviceId, String productCode, String seriesCode, LocalDateTime completedAt) {
+        return amount(userId, deviceId, productCode, seriesCode, completedAt, false);
     }
 
-    private BigDecimal amount(long userId, long deviceId, String productCode, String deviceType, LocalDateTime completedAt,
+    private BigDecimal amount(long userId, long deviceId, String productCode, String seriesCode, LocalDateTime completedAt,
             boolean lock) {
-        if (startsAt == null || completedAt.isBefore(startsAt) || !appliesTo(productCode, deviceType)) return BigDecimal.ZERO;
+        if (startsAt == null || completedAt.isBefore(startsAt) || !appliesTo(seriesCode)) return BigDecimal.ZERO;
         var device = lock ? assignments.lockPaidHardwareDailyUvt(userId, deviceId, productCode, completedAt)
                 : assignments.paidHardwareDailyUvt(userId, deviceId, productCode, completedAt);
         if (device == null) return BigDecimal.ZERO;
-        var capacity = E3DeviceCapacityPolicy.project(productCode, deviceType, device.purchasedAt(), device.activatedAt(),
+        var capacity = E3DeviceCapacityPolicy.project(device.seriesCode(), null, device.purchasedAt(), device.activatedAt(),
                 completedAt, policies.capacityConfigAt(completedAt));
         return E3DeviceCapacityPolicy.applyCapacity(device.dailyNex(), capacity);
     }
 
-    boolean appliesTo(String productCode, String deviceType) {
-        String capacityKey = E3DeviceCapacityPolicy.classify(productCode, deviceType);
+    boolean appliesTo(String seriesCode) {
+        String capacityKey = E3DeviceCapacityPolicy.classify(seriesCode, null);
         return capacityKey != null && HARDWARE_CAPACITY_KEYS.contains(capacityKey);
     }
 }

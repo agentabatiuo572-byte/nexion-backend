@@ -723,7 +723,7 @@ public class TestCloudExecutorService {
         if(lock && !Long.valueOf(i.ownerId()).equals(assignments.lockProductionUser(i.ownerId()))) throw error(403,"TEST_CLOUD_BINDING_INVALID");
         var device=lock ? assignments.lockOwnedDevice(i.ownerId(),i.deviceId()) : assignments.ownedDevice(i.ownerId(),i.deviceId());
         if(device==null || i.deviceId()<=0 || !i.instanceNo().equals(device.instanceNo())
-                || (!fleet(i) && (!"cloud-share".equals(device.productCode())
+                || (!fleet(i) && (!"CLOUD_SHARE".equals(device.seriesCode())
                 || !Set.of("SHARE","CLOUD_SHARE").contains(Objects.toString(device.deviceType(),"").toUpperCase(Locale.ROOT))))) throw error(403,"TEST_CLOUD_BINDING_INVALID");
         // Reconciliation is read-only in effect and remains possible after a successful deferred deactivation.
         if(!live) return;

@@ -459,7 +459,7 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                     directSuccessorStart=null;
                     continue;
                 }
-                var projection=E3DeviceCapacityPolicy.project(device.productCode(),device.deviceType(),device.purchasedAt(),device.activatedAt(),
+                var projection=E3DeviceCapacityPolicy.project(device.seriesCode(),device.deviceType(),device.purchasedAt(),device.activatedAt(),
                         runtime.nextStartAt(),policy.e3Config());
                 BigDecimal reward=E3DeviceCapacityPolicy.applyCapacity(type.baseReward(),projection);
                 var wallets=mapper.wallets(device.userId());
@@ -473,7 +473,7 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                 var wallet=wallets.get(0);String suffix=UUID.randomUUID().toString().replace("-","").toUpperCase(Locale.ROOT);
                 LocalDateTime dueAt=runtime.nextStartAt().plusSeconds(type.durationSeconds());
                 BigDecimal daily=assignments.lockPaidCloudShareDailyNex(device.userId(),device.deviceId());
-                if(daily==null) daily=hardwareDailyUvt.amount(device.userId(),device.deviceId(),device.productCode(),device.deviceType(),dueAt);
+                if(daily==null) daily=hardwareDailyUvt.amount(device.userId(),device.deviceId(),device.productCode(),device.seriesCode(),dueAt);
                 var task=new TaskRow("SIM-"+suffix,"CTR-"+suffix,device.userId(),device.deviceId(),device.instanceNo(),runtime.generation(),
                         device.productId(),device.productCode(),device.productTier(),device.deviceName(),device.deviceType(),device.gpuModel(),device.vramTotalGb(),
                         type.taskTypeId(),type.typeVersion(),policy.version(),policy.e3Version(),type.name(),type.taskClass(),type.durationSeconds(),"NEX".equals(type.asset())?"UVT":type.asset(),
@@ -501,8 +501,8 @@ public class SimulatedTaskService implements SchedulingConfigurer {
             if(!task.dueAt().isAfter(observed) && (cutoff==null || !task.dueAt().isAfter(cutoff))) {
                 LocalDateTime posted=now();
                 // Resolve against the completion date, including tasks dispatched before B52.
-                BigDecimal daily=hardwareDailyUvt.appliesTo(task.productCode(),task.deviceType())
-                        ? hardwareDailyUvt.amount(task.userId(),task.deviceId(),task.productCode(),task.deviceType(),task.dueAt())
+                BigDecimal daily=hardwareDailyUvt.appliesTo(device.seriesCode())
+                        ? hardwareDailyUvt.amount(task.userId(),task.deviceId(),task.productCode(),device.seriesCode(),task.dueAt())
                         : task.cloudDailyNex();
                 if(mapper.completeTask(task.taskNo(),posted,daily)!=1)throw error(409,"SIMULATED_TASK_SETTLEMENT_CONFLICT");
                 settlement.settle(task,posted,daily,accountLockedBeforeSnapshot);

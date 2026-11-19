@@ -33,12 +33,13 @@ public interface DeviceOrderRefundImpactMapper {
             )
             """;
 
-    record PendingDailyUvt(long deviceId,String productCode,String deviceType,LocalDateTime dueAt,BigDecimal quotedUvt) { }
+    record PendingDailyUvt(long deviceId,String productCode,String seriesCode,LocalDateTime dueAt,BigDecimal quotedUvt) { }
 
     @Select(SIMULATED_ORDER_TASKS + """
-            SELECT t.user_device_id deviceId,t.product_code productCode,t.device_type deviceType,
+            SELECT t.user_device_id deviceId,t.product_code productCode,d.series_code seriesCode,
                    t.due_at dueAt,t.cloud_daily_nex quotedUvt
-              FROM simulated t WHERE t.due_at<=t.cutoff
+              FROM simulated t JOIN nx_user_device d ON d.id=t.user_device_id
+             WHERE t.due_at<=t.cutoff
                AND NOT EXISTS (
                  SELECT 1 FROM nx_wallet_ledger l WHERE l.user_id=t.user_id AND l.asset='UVT' AND l.direction='IN'
                    AND l.biz_no=CONCAT('CLOUD_SHARE_DAILY:',t.user_device_id,':',DATE(CONVERT_TZ(t.due_at,'+08:00','+00:00')))
@@ -71,7 +72,8 @@ public interface DeviceOrderRefundImpactMapper {
               UNION ALL
               SELECT 'PENDING',t.task_no COLLATE utf8mb4_0900_ai_ci,CASE WHEN t.asset='USDT' THEN t.reward_amount ELSE 0 END,
                 CASE WHEN t.asset='UVT' THEN t.reward_amount ELSE 0 END
-              FROM simulated t WHERE t.due_at<=t.cutoff
+              FROM simulated t JOIN nx_user_device d ON d.id=t.user_device_id
+             WHERE t.due_at<=t.cutoff
               UNION ALL
               SELECT 'UNFINISHED',t.task_no,0,0 FROM devices d
               JOIN nx_compute_task t ON t.user_device_id=d.id AND t.user_id=d.user_id

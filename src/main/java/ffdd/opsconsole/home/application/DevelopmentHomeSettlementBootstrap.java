@@ -283,7 +283,7 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
             }
             try {
                 E3DeviceCapacityPolicy.Projection capacity = E3DeviceCapacityPolicy.project(
-                        device.productCode(), device.deviceType(), device.purchasedAt(),
+                        device.seriesCode(), device.deviceType(), device.purchasedAt(),
                         device.activatedAt(), now, capacityConfig);
                 plans.add(new PlannedDevice(device, eligible, capacity));
             } catch (IllegalArgumentException invalid) {
@@ -366,13 +366,11 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
     }
 
     private int effectiveVram(DevelopmentTaskDevice device) {
-        String type = device.deviceType().trim().toUpperCase(Locale.ROOT);
-        String product = device.productCode().trim().toLowerCase(Locale.ROOT);
         // Cloud-share represents a managed provider slice rather than local physical VRAM.
         // Route it through the same low-capability E2 pool used by the 8 GB phone tier even if a
         // stale/incorrect physical VRAM value was persisted. The physical display value remains
         // untouched; this method is only the server routing equivalent.
-        if (type.equals("SHARE") || type.equals("CLOUD") || product.equals("cloud-share")) return 8;
+        if ("CLOUD_SHARE".equals(device.seriesCode())) return 8;
         return device.vramTotalGb() == null ? 0 : Math.max(0, device.vramTotalGb());
     }
 

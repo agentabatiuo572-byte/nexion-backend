@@ -142,7 +142,7 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
                    d.product_code AS productCode,
                    d.product_tier AS productTier,
                    d.device_type AS deviceType,
-                   d.daily_usdt AS dailyUsdt,d.id
+                   d.daily_usdt AS dailyUsdt,d.id,d.series_code AS seriesCode
               FROM nx_user_device d
               JOIN nx_user u ON u.id = d.user_id
                             AND u.id = #{userId}
@@ -339,7 +339,7 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
                    p.price_usdt AS priceUsdt,
                    p.estimated_daily_usdt AS dailyUsdt,
                    p.stock,
-                   p.inventory_mode AS inventoryMode
+                   p.inventory_mode AS inventoryMode,p.series_code AS seriesCode
               FROM nx_product p
              WHERE p.is_deleted = 0
                AND p.store_visible = 1
@@ -361,19 +361,12 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
                    b.target_daily AS targetDaily,
                    LOWER(b.status) AS status,
                    b.updated_at AS updatedAt,
-                   (SELECT p.product_type
-                      FROM nx_product p
-                     WHERE p.is_deleted = 0
-                       AND (p.product_no = b.target_device OR p.name = b.target_device)
-                     ORDER BY p.id
-                     LIMIT 1) AS productType,
-                   (SELECT p.price_usdt
-                      FROM nx_product p
-                     WHERE p.is_deleted = 0
-                       AND (p.product_no = b.target_device OR p.name = b.target_device)
-                     ORDER BY p.id
-                     LIMIT 1) AS productPriceUsdt
+                   p.product_type AS productType,p.price_usdt AS productPriceUsdt,p.series_code AS seriesCode
               FROM nx_growth_promo_banner b
+              LEFT JOIN nx_product p ON p.id=(
+                  SELECT target.id FROM nx_product target
+                  WHERE target.is_deleted=0 AND (target.product_no=b.target_device OR target.name=b.target_device)
+                  ORDER BY (target.product_no=b.target_device) DESC,target.id LIMIT 1)
              WHERE b.is_deleted = 0
              ORDER BY b.sort_order, b.id
              LIMIT 1
@@ -395,9 +388,9 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
     }
     record PaidSummary(BigDecimal amountUsdt, Long orderCount) { }
     record OwnedDeviceRow(String name, String productCode, String productTier,
-                          String deviceType, BigDecimal dailyUsdt,Long id) {
+                          String deviceType, BigDecimal dailyUsdt,Long id,String seriesCode) {
         public OwnedDeviceRow(String name,String productCode,String productTier,String deviceType,BigDecimal dailyUsdt) {
-            this(name,productCode,productTier,deviceType,dailyUsdt,null);
+            this(name,productCode,productTier,deviceType,dailyUsdt,null,null);
         }
     }
     record OnGridSummary(Long activeJobs, BigDecimal perSecUsdt) { }
@@ -408,13 +401,13 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
                          String modelName, BigDecimal minReward, BigDecimal maxReward) { }
     record TaskPriceHistoryRow(String taskId, BigDecimal price, LocalDateTime observedAt) { }
     record MarketProductRow(String productNo, String name, String productType, String tier,
-                            BigDecimal priceUsdt, BigDecimal dailyUsdt, Integer stock, String inventoryMode) {
+                            BigDecimal priceUsdt, BigDecimal dailyUsdt, Integer stock, String inventoryMode, String seriesCode) {
         public MarketProductRow(String productNo, String name, String productType, String tier,
                                 BigDecimal priceUsdt, BigDecimal dailyUsdt, Integer stock) {
-            this(productNo, name, productType, tier, priceUsdt, dailyUsdt, stock, "FINITE");
+            this(productNo, name, productType, tier, priceUsdt, dailyUsdt, stock, "FINITE", null);
         }
     }
     record PromoRow(String baseReward, String multiplier, Integer countdownDays, Integer countdownHours,
                     String targetDevice, String targetDaily, String status, LocalDateTime updatedAt,
-                    String productType, BigDecimal productPriceUsdt) { }
+                    String productType, BigDecimal productPriceUsdt, String seriesCode) { }
 }

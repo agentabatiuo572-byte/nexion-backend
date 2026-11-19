@@ -20,13 +20,13 @@ public interface DeviceMonthlyTargetMapper {
             + "first_capacity_pct firstCapacityPct,config_changed configChanged";
     record Current(long deviceId,long userId,String instanceNo,String productCode,String deviceType,
             LocalDateTime purchasedAt,LocalDateTime activatedAt,BigDecimal dailyUsdt,
-            BigDecimal monthlyTargetUsdt,BigDecimal monthlyTargetBandPct,LocalDateTime targetEffectiveAt) { }
+            BigDecimal monthlyTargetUsdt,BigDecimal monthlyTargetBandPct,LocalDateTime targetEffectiveAt,String seriesCode) { }
     @Select("<script>"+"""
             SELECT d.id deviceId,d.user_id userId,d.instance_no instanceNo,d.product_code productCode,d.device_type deviceType,
               d.purchased_at purchasedAt,d.activated_at activatedAt,d.daily_usdt dailyUsdt,
               p.monthly_target_usdt monthlyTargetUsdt,p.monthly_target_band_pct monthlyTargetBandPct,
               (SELECT v.effective_at FROM nx_sim_product_task_policy_version v WHERE v.product_key=d.product_code COLLATE utf8mb4_unicode_ci
-                ORDER BY v.version DESC LIMIT 1) targetEffectiveAt
+                ORDER BY v.version DESC LIMIT 1) targetEffectiveAt,d.series_code seriesCode
             FROM nx_user_device d LEFT JOIN nx_product p ON p.product_no=d.product_code
             WHERE d.id IN <foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>
             """+"</script>")

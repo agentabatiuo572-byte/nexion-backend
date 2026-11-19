@@ -18,6 +18,7 @@ import ffdd.opsconsole.shared.canonical.AppCanonicalBoundaryService;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.io.IOException;
 import java.io.InputStream;
+import ffdd.opsconsole.shared.capacity.ProductSeries;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -309,18 +310,17 @@ public class AppHomeOverviewService {
         var current=monthlyTargets.projections(candidates.stream().map(OwnedDeviceRow::id).toList());
         return candidates.stream().map(d->{
             var p=current.get(d.id());
-            return p==null || p.target()==null ? d : new OwnedDeviceRow(d.name(),d.productCode(),d.productTier(),d.deviceType(),p.daily(),d.id());
+            return p==null || p.target()==null ? d : new OwnedDeviceRow(d.name(),d.productCode(),d.productTier(),d.deviceType(),p.daily(),d.id(),d.seriesCode());
         }).filter(d->d.dailyUsdt()!=null && d.dailyUsdt().signum()>0)
             .max(java.util.Comparator.comparing(OwnedDeviceRow::dailyUsdt).thenComparing(d->-d.id())).orElse(null);
     }
 
     private Map<String, Object> doTheMath(Long userId, OwnedDeviceRow base, List<MarketProductRow> products) {
         if (base == null || base.dailyUsdt() == null || base.dailyUsdt().signum() <= 0) return null;
-        String baseKind = productKind(String.join(" ",
-                text(base.productCode()), text(base.productTier()), text(base.deviceType()), text(base.name())));
-        if ("cloud-share".equals(baseKind)) return null;
+        String baseKind = ProductSeries.kind(base.seriesCode(), base.deviceType());
+        if (baseKind == null || "cloud-share".equals(baseKind)) return null;
         int baseIndex = DEVICE_UPGRADE_LADDER.indexOf(baseKind);
-        if (baseIndex == DEVICE_UPGRADE_LADDER.size() - 1) return null;
+        if (baseIndex < 0 || baseIndex == DEVICE_UPGRADE_LADDER.size() - 1) return null;
         List<MarketProductRow> candidates = products.stream()
                 .filter(row -> row != null && row.dailyUsdt() != null && row.dailyUsdt().compareTo(base.dailyUsdt()) > 0)
                 .filter(row -> !"cloud-share".equals(deviceKind(row)))
@@ -330,8 +330,8 @@ public class AppHomeOverviewService {
                         || (row.stock() != null && row.stock() > 0))
                 .filter(row -> !text(row.productNo()).isBlank() && !text(row.name()).isBlank())
                 .filter(row -> {
-                    int targetIndex = DEVICE_UPGRADE_LADDER.indexOf(deviceKind(row));
-                    return targetIndex > baseIndex;
+                    String kind = deviceKind(row);
+                    return kind != null && DEVICE_UPGRADE_LADDER.indexOf(kind) > baseIndex;
                 })
                 .sorted(java.util.Comparator
                         .comparingInt((MarketProductRow row) -> DEVICE_UPGRADE_LADDER.indexOf(deviceKind(row)))
@@ -347,7 +347,7 @@ public class AppHomeOverviewService {
         if (multiplier < 1 || paybackDays < 1) return null;
         return linked(
                 "basis", "OWNED_DEVICE_TO_NEXT_CATALOG_PRODUCT",
-                "base", linked("kind", baseKind, "name", text(base.name()),
+                "base", linked("kind", baseKind, "productNo", text(base.productCode()), "name", text(base.name()),
                         "dailyUsdt", nonNegative(base.dailyUsdt())),
                 "target", linked("productNo", text(target.productNo()), "kind", targetKind,
                         "name", text(target.name()), "dailyUsdt", nonNegative(target.dailyUsdt()),
@@ -495,11 +495,8 @@ public class AppHomeOverviewService {
                 && (row.countdownDays() > 0 || row.countdownHours() > 0)) {
             endAt = row.updatedAt().plusDays(row.countdownDays()).plusHours(row.countdownHours());
         }
-        String targetKind = productKind(row.targetDevice());
-        boolean hasProductType = row.productType() != null && !row.productType().isBlank();
-        boolean share = "SHARE".equalsIgnoreCase(row.productType())
-                || (!hasProductType && "cloud-share".equals(targetKind));
-        if (!share && "cloud-share".equals(targetKind)) targetKind = null;
+        String targetKind = ProductSeries.kind(row.seriesCode(), row.productType());
+        boolean share = "cloud-share".equals(targetKind);
         return linked("status", status, "rewardNex", nonNegative(decimal(row.baseReward())),
                 "multiplier", nonNegative(decimal(row.multiplier())), "endAt", endAt == null ? null : endAt.atZone(SERVER_ZONE).toInstant().toString(),
                 "product", linked("kind", share ? "cloud-share" : targetKind, "name", text(row.targetDevice()),
@@ -578,19 +575,8 @@ public class AppHomeOverviewService {
         };
     }
 
-    private String deviceKind(MarketProductRow row) { return productKind((row.productType() == null ? "" : row.productType()) + " " + (row.tier() == null ? "" : row.tier()) + " " + (row.productNo() == null ? "" : row.productNo())); }
-    private String productKind(String value) {
-        if (value == null) return null;
-        String s = value.toUpperCase(Locale.ROOT).replace('_', '-');
-        if (s.contains("PHONE")) return "phone";
-        if (s.contains("CLOUD") || s.contains("SHARE")) return "cloud-share";
-        if (s.contains("PRO-V2") || s.contains("PROV2")) return "stellarbox-pro-v2";
-        if (s.contains("PRO")) return "stellarbox-pro";
-        if (s.contains("RACK-P2") || s.contains("RACKP2")) return "stellarrack-p2";
-        if (s.contains("RACK-P1") || s.contains("RACKP1")) return "stellarrack-p1";
-        if (s.contains("S1") || s.contains("STELLARBOX")) return "stellarbox-s1";
-        if (s.contains("GPU") || s.contains("PC")) return "pc-gpu";
-        return null;
+    private String deviceKind(MarketProductRow row) {
+        return ProductSeries.kind(row.seriesCode(), row.productType());
     }
 
     private Map<String, Object> linked(Object... values) { Map<String, Object> result = new LinkedHashMap<>(); for (int i = 0; i + 1 < values.length; i += 2) result.put(String.valueOf(values[i]), values[i + 1]); return result; }

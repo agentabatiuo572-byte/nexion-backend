@@ -1123,6 +1123,22 @@ public class AuditReplayBusinessPermissionGuard {
         if(command!=null && "E".equals(command.domain()) && Set.of("e1_sku_create","e1_sku_update").contains(command.op()))
             return ApiResult.ok(delegatedDescriptor(command)); // E1 derives its lock target from the typed SKU, including generated create ids.
 
+        if (command != null && "E".equals(command.domain()) && "e6_onboarding_yield_sku".equals(command.op())) {
+            if (!hasAuthority("device_e1_read"))
+                return ApiResult.fail(403,"A2_BUSINESS_PERMISSION_DENIED:device_e1_read");
+            if (!hasAuthority("platform_a2_read") && !hasAuthority("platform_a2_proposal_create"))
+                return ApiResult.fail(403,"A2_BUSINESS_PERMISSION_DENIED:platform_a2_proposal_create");
+            var review = devices.reviewOnboardingYieldSku(command.params());
+            var target = new AuditLockTarget("E","onboarding_yield_comparison",review.key());
+            if (!"E6".equals(text(request.sourceDomain())) || !target.id().equals(text(request.obj()))
+                    || !target.equals(request.target()) || (request.targets()!=null && !request.targets().isEmpty()))
+                return ApiResult.fail(403,"A2_BUSINESS_CONTEXT_MISMATCH");
+            return ApiResult.ok(new DelegatedProposalDescriptor("更换引导对比商品",review.key(),
+                    java.util.Objects.toString(review.previousSku(),"未选择"),
+                    review.product().name()+" ("+review.product().skuId()+") · "+review.product().dailyEarn()+" USDT / "
+                            +review.product().dailyEarnNex()+" UVT 每日","E6","param",false,target));
+        }
+
         if (H7VoucherDisposition.isOperation(command)) {
             var disposition = H7VoucherDisposition.parse(command);
             var target = disposition.target();
@@ -2262,7 +2278,7 @@ public class AuditReplayBusinessPermissionGuard {
                 case "e5_device_activate", "e5_device_deactivate",
                         "e5_device_batch_pause", "e5_device_batch_resume" -> "device_e5_write";
                 case "e6_compute_config" -> e6ComputeAuthority(command.params());
-                case "e6_compute_config_batch", "e6_phone_calibration" -> "device_e6_write";
+                case "e6_compute_config_batch", "e6_phone_calibration", "e6_onboarding_yield_sku" -> "device_e6_write";
                 default -> null;
             };
             // A1 批1a 修复3:F5 佣金事件 A2 越权守卫(原无 F 域 case → 持 platform_a2_proposal_create/approve 可任意处置佣金)。
@@ -2312,7 +2328,7 @@ public class AuditReplayBusinessPermissionGuard {
         }
         return switch (operation) {
             case "e3_config", "e3_config_batch" -> "device_e3_read";
-            case "e6_compute_config", "e6_compute_config_batch", "e6_phone_calibration" -> "device_e6_read";
+            case "e6_compute_config", "e6_compute_config_batch", "e6_phone_calibration", "e6_onboarding_yield_sku" -> "device_e6_read";
             default -> null;
         };
     }

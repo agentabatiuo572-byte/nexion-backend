@@ -63,18 +63,19 @@ public interface SimulatedTaskPolicyMapper {
     @Select("<script>SELECT "+TYPE_COLUMNS+" FROM (SELECT t.*,ROW_NUMBER() OVER(PARTITION BY task_type_id ORDER BY effective_at DESC,version DESC) version_rank FROM nx_sim_task_type_version t WHERE effective_at&lt;=#{at} AND pool_code IN <foreach collection='pools' item='p' open='(' separator=',' close=')'>#{p}</foreach>) ranked WHERE version_rank=1 ORDER BY task_type_id</script>")
     List<TypeVersion> typesInPoolsAt(@Param("pools")List<String> pools,@Param("at")LocalDateTime at);
 
-    record TargetConfig(String productKey, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct) { }
-    @Select("SELECT product_no productKey,monthly_target_usdt monthlyTargetUsdt,monthly_target_band_pct monthlyTargetBandPct FROM nx_product WHERE product_no=#{key} AND is_deleted=0")
+    record TargetConfig(String productKey, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, String seriesCode) { }
+    @Select("SELECT product_no productKey,monthly_target_usdt monthlyTargetUsdt,monthly_target_band_pct monthlyTargetBandPct,series_code seriesCode FROM nx_product WHERE product_no=#{key} AND is_deleted=0")
     TargetConfig targetConfig(String key);
     @Select("""
-            SELECT product_no productKey,monthly_target_usdt monthlyTargetUsdt,monthly_target_band_pct monthlyTargetBandPct
+            SELECT product_no productKey,monthly_target_usdt monthlyTargetUsdt,monthly_target_band_pct monthlyTargetBandPct,series_code seriesCode
               FROM nx_product WHERE monthly_target_usdt IS NOT NULL AND is_deleted=0
             UNION
-            SELECT v.product_key COLLATE utf8mb4_0900_ai_ci productKey,v.monthly_target_usdt monthlyTargetUsdt,v.monthly_target_band_pct monthlyTargetBandPct
-              FROM nx_sim_product_task_policy_version v WHERE v.monthly_target_usdt IS NOT NULL
+            SELECT v.product_key COLLATE utf8mb4_0900_ai_ci productKey,v.monthly_target_usdt monthlyTargetUsdt,v.monthly_target_band_pct monthlyTargetBandPct,d.series_code seriesCode
+              FROM nx_sim_product_task_policy_version v JOIN nx_user_device d
+                ON d.product_code=v.product_key COLLATE utf8mb4_0900_ai_ci AND d.is_deleted=0
+               AND d.ownership_status='OWNED' AND d.source_environment='PRODUCTION' AND d.run_id=''
+             WHERE v.monthly_target_usdt IS NOT NULL
                 AND NOT EXISTS(SELECT 1 FROM nx_sim_product_task_policy_version n WHERE n.product_key=v.product_key AND n.version>v.version)
-                AND EXISTS(SELECT 1 FROM nx_user_device d WHERE d.product_code=v.product_key COLLATE utf8mb4_0900_ai_ci AND d.is_deleted=0
-                  AND d.ownership_status='OWNED' AND d.source_environment='PRODUCTION' AND d.run_id='')
             ORDER BY productKey
             """)
     List<TargetConfig> targetProducts();

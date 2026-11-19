@@ -69,6 +69,7 @@ import ffdd.opsconsole.device.dto.DeviceSkuQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceSkuStatusRequest;
 import ffdd.opsconsole.device.dto.DeviceSkuUpsertRequest;
 import ffdd.opsconsole.shared.capacity.MonthlyTargetProjection;
+import ffdd.opsconsole.shared.capacity.ProductSeries;
 import ffdd.opsconsole.device.dto.DeviceTaskPriceRequest;
 import ffdd.opsconsole.device.dto.DeviceTaskQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceTaskStatusRequest;
@@ -395,9 +396,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         // Sales is maintained exclusively by the order state machine. A new
         // SKU always starts at zero; tolerate the legacy E1 round-trip field
         // but never let it create a hand-entered sales history.
-        if (request != null) requireStoreSkuModel(normalizeSkuId(request.skuId(),request.name()), "Share".equals(normalizeExact(request.tier())) ? "SHARE" : "DEVICE");
         DeviceSkuUpsertRequest incomingRequest=request;
-        request = monthlyTargetRequest(request, request==null?null:catalogRepository.findSku(normalizeId(request.skuId())).orElse(null), true);
+        request = monthlyTargetRequest(request, null, true);
         ApiResult<DeviceSkuView> guard = requireSkuCommand(idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -433,7 +433,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         var classes=simulationPolicies.writePools(skuId,writeRequest.allowedPoolCodes(),List.of());
         if((!classes.isEmpty() || writeRequest.monthlyTargetUsdt()!=null) && !A2ReplayContext.isReplaying())return ApiResult.fail(409,"A2_CONFIRMATION_REQUIRED");
-        simulationPolicies.validateProductScope(skuId,classes,false,writeRequest.monthlyTargetUsdt(),writeRequest.monthlyTargetBandPct(),"on".equals(writeRequest.status()),Boolean.TRUE.equals(writeRequest.clearMonthlyTarget()));
+        simulationPolicies.validateProductScope(skuId,writeRequest.seriesCode(),classes,false,writeRequest.monthlyTargetUsdt(),writeRequest.monthlyTargetBandPct(),"on".equals(writeRequest.status()),Boolean.TRUE.equals(writeRequest.clearMonthlyTarget()));
         LocalDateTime changedAt = LocalDateTime.now(clock);
         DeviceSkuView created = catalogRepository.createSku(skuId, writeRequest, changedAt);
         simulationPolicies.saveProduct(skuId,classes,"on".equals(created.status()),changedAt);
@@ -445,6 +445,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         auditRequired("E1_SKU_CREATED", "DEVICE_SKU", created.skuId(), writeRequest.operator(), detail(
                 "skuId", created.skuId(),
                 "name", created.name(),
+                "seriesCode", created.seriesCode(),
                 "status", created.status(),
                 "reason", writeRequest.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
@@ -524,7 +525,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         boolean newlyListed=!"on".equals(before.status()) && "on".equals(nextStatus);
         boolean targetChanged=!sameAmount(before.monthlyTargetUsdt(),effectiveWriteRequest.monthlyTargetUsdt())
                 ||!sameAmount(before.monthlyTargetBandPct(),effectiveWriteRequest.monthlyTargetBandPct());
-        if((scopeChanged || newlyListed || targetChanged) && !A2ReplayContext.isReplaying())return ApiResult.fail(409,"A2_CONFIRMATION_REQUIRED");
+        boolean seriesChanged = !Objects.equals(before.seriesCode(), effectiveWriteRequest.seriesCode());
+        if (seriesChanged && before.seriesLocked()) return ApiResult.fail(409, "SKU_SERIES_LOCKED");
+        if((scopeChanged || newlyListed || targetChanged || seriesChanged) && !A2ReplayContext.isReplaying())return ApiResult.fail(409,"A2_CONFIRMATION_REQUIRED");
         if (!"on".equals(before.status()) && "on".equals(nextStatus)) {
             ApiResult<DeviceSkuView> publishGuard = requireE1SkuPublishable(normalized, effectiveWriteRequest);
             if (publishGuard != null) {
@@ -536,8 +539,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
         }
         boolean legacyOnSaleMaintenance="on".equals(before.status()) && !newlyListed && !targetChanged && !scopeChanged
-                && !MonthlyTargetProjection.supportsDevice(normalized,before.productType());
-        simulationPolicies.validateProductScope(normalized,classes,!scopeChanged && !newlyListed,
+                && !ProductSeries.valid(effectiveWriteRequest.seriesCode());
+        simulationPolicies.validateProductScope(normalized,effectiveWriteRequest.seriesCode(),classes,!scopeChanged && !newlyListed,
                 effectiveWriteRequest.monthlyTargetUsdt(),effectiveWriteRequest.monthlyTargetBandPct(),
                 "on".equals(nextStatus) && !legacyOnSaleMaintenance,
                 Boolean.TRUE.equals(effectiveWriteRequest.clearMonthlyTarget()));
@@ -625,8 +628,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (before.updatedAt() == null || !before.updatedAt().equals(expectedRevision)) {
             return ApiResult.fail(409, "SKU_VERSION_CONFLICT");
         }
-        if ("on".equals(status) && !"on".equals(before.status())) requireStoreSkuModel(normalized,before.productType());
-        simulationPolicies.validateProductScope(normalized,before.allowedPoolCodes(),false,before.monthlyTargetUsdt(),before.monthlyTargetBandPct(),"on".equals(status),false);
+        if ("on".equals(status) && !"on".equals(before.status())) requireStoreSkuSeries(before.seriesCode(),before.productType());
+        simulationPolicies.validateProductScope(normalized,before.seriesCode(),before.allowedPoolCodes(),false,before.monthlyTargetUsdt(),before.monthlyTargetBandPct(),"on".equals(status),false);
         validateHosting(before.datacenter(),"on".equals(status));
         if (status.equals(before.status())) {
             return ApiResult.ok(before);
@@ -2600,6 +2603,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     public ApiResult<Map<String, Object>> e2PhoneTiers() {
+        return e2PhoneTiers(true);
+    }
+
+    public ApiResult<Map<String, Object>> e2PhoneTiers(boolean includeBindingDetails) {
         List<DevicePhoneTierRewardView> phoneTiers = catalogRepository.listPhoneTierRewards();
         List<OnboardingYieldComparisonView> yieldComparisons = catalogRepository.listOnboardingYieldComparisons();
         List<Map<String, Object>> rows = phoneTiers.stream()
@@ -2608,11 +2615,17 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                         "revision", tier.revision(), "effectiveAt", tier.updatedAt()))
                 .toList();
         List<Map<String, Object>> comparisons = yieldComparisons.stream()
-                .map(row -> detail("configKey", row.configKey(), "label", row.label(),
-                        "dailyUsdt", row.dailyUsdt(), "dailyNex", row.dailyNex(),
-                        "sortOrder", row.sortOrder(), "revision", row.revision(),
-                        "updatedAt", row.updatedAt()))
-                .toList();
+                .filter(row -> includeBindingDetails || row.dailyUsdt() != null)
+                .map(row -> {
+                    var fields = detail("configKey", row.configKey(), "label", row.label(),
+                            "dailyUsdt", row.dailyUsdt(), "dailyNex", row.dailyNex(),
+                            "sortOrder", row.sortOrder(), "revision", row.revision(), "updatedAt", row.updatedAt());
+                    if (includeBindingDetails) {
+                        fields.put("productNo", row.productNo());
+                        fields.put("bindingRevision", row.bindingRevision());
+                    }
+                    return fields;
+                }).toList();
         long configRevision = yieldComparisons.stream()
                 .map(OnboardingYieldComparisonView::revision)
                 .filter(java.util.Objects::nonNull)
@@ -2645,6 +2658,41 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         // Comparison values now come from E1 products and the phone T3 configuration.
         // Keep the legacy route explicit for older clients rather than accepting no-op writes.
         return ApiResult.fail(409, "ONBOARDING_COMPARISON_DERIVED_FROM_SOURCE");
+    }
+
+    public record YieldSkuReview(String key, long revision, String previousSku, DeviceSkuView product) {}
+
+    public YieldSkuReview reviewOnboardingYieldSku(Map<String, Object> params) {
+        String key = str(params,"configKey");
+        Long revision = longVal(params,"expectedRevision");
+        String sku = str(params,"productNo");
+        if (key == null || !Set.of("s1","pro","rack").contains(key) || revision == null || revision < 1
+                || sku == null || !sku.matches("[A-Za-z0-9._-]{2,64}"))
+            throw new BizException(422,"ONBOARDING_COMPARISON_SKU_INVALID");
+        var existing = catalogRepository.findOnboardingYieldComparison(key)
+                .orElseThrow(() -> new BizException(404,"ONBOARDING_COMPARISON_NOT_FOUND"));
+        if (!Objects.equals(revision, existing.bindingRevision()))
+            throw new BizException(409,"ONBOARDING_COMPARISON_VERSION_CONFLICT");
+        if (sku.equals(existing.productNo()))
+            throw new BizException(422,"ONBOARDING_COMPARISON_SKU_UNCHANGED");
+        DeviceSkuView product = catalogRepository.findSku(sku)
+                .orElseThrow(() -> new BizException(422,"ONBOARDING_COMPARISON_SKU_UNAVAILABLE"));
+        if (!catalogRepository.onboardingYieldSkuAvailable(sku))
+            throw new BizException(422,"ONBOARDING_COMPARISON_SKU_UNAVAILABLE");
+        return new YieldSkuReview(key,revision,existing.productNo(),product);
+    }
+
+    private ApiResult<Map<String, Object>> bindOnboardingYieldSku(Map<String, Object> params,
+            String idem, String reason, String operator) {
+        if (!A2ReplayContext.isReplaying()) return ApiResult.fail(409,"A2_CONFIRMATION_REQUIRED");
+        return e1Idempotent("E6_ONBOARDING_YIELD_SKU",idem,str(params,"configKey"),params,() -> {
+            var review = reviewOnboardingYieldSku(params);
+            if (!catalogRepository.bindOnboardingYieldSku(review.key(),review.product().skuId(),review.revision(),LocalDateTime.now(clock)))
+                return ApiResult.fail(409,"ONBOARDING_COMPARISON_VERSION_CONFLICT");
+            auditRequired("E6_ONBOARDING_YIELD_SKU_CHANGED","ONBOARDING_YIELD_COMPARISON",review.key(),operator,
+                    detail("before",review.previousSku(),"after",review.product().skuId(),"reason",reason,"idempotencyKey",idem));
+            return ApiResult.ok(detail("configKey",review.key(),"productNo",review.product().skuId(),"bindingRevision",review.revision()+1));
+        });
     }
 
     @Transactional
@@ -3586,8 +3634,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if(publishing && !StringUtils.hasText(label))throw new BizException(422,"SKU_DATACENTER_REQUIRED");
     }
 
-    private static void requireStoreSkuModel(String key, String productType) {
-        if (!MonthlyTargetProjection.supportsDevice(key,productType)) throw new BizException(422,"SKU_MODEL_UNRECOGNIZED");
+    private static void requireStoreSkuSeries(String seriesCode, String productType) {
+        if (!StringUtils.hasText(seriesCode)) throw new BizException(422, "SKU_SERIES_REQUIRED");
+        if (!ProductSeries.valid(seriesCode)) throw new BizException(422, "SKU_SERIES_INVALID");
+        boolean share = "SHARE".equals(productType) || "CLOUD_SHARE".equals(productType);
+        if (share != "CLOUD_SHARE".equals(seriesCode)) throw new BizException(422, "SKU_SERIES_TYPE_MISMATCH");
     }
 
     private static boolean sameAmount(BigDecimal a,BigDecimal b) { return a==null?b==null:b!=null && a.compareTo(b)==0; }
@@ -3597,22 +3648,25 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         // Existing product_type is retained by catalog updates; new products derive it from tier.
         String productType=before==null ? ("Share".equals(normalizeExact(request.tier())) ? "SHARE" : "DEVICE") : before.productType();
         boolean listing="on".equals(normalizeSkuStatus(request.status())) && (before==null || !"on".equals(before.status()));
-        if (listing) requireStoreSkuModel(key,productType);
+        String series = request.seriesCode() == null && before != null ? before.seriesCode() : request.seriesCode();
+        requireStoreSkuSeries(series, productType);
+        if (before != null && before.seriesLocked() && !Objects.equals(before.seriesCode(), series))
+            throw new BizException(409, "SKU_SERIES_LOCKED");
         boolean clear=Boolean.TRUE.equals(request.clearMonthlyTarget());
         BigDecimal target=clear?null:request.monthlyTargetUsdt()!=null?request.monthlyTargetUsdt():before==null?null:before.monthlyTargetUsdt();
         BigDecimal band=clear?null:request.monthlyTargetBandPct()!=null?request.monthlyTargetBandPct():before==null?null:before.monthlyTargetBandPct();
         // Legacy models can round-trip their stored target during ordinary maintenance.
         boolean targetChanged=before==null || !sameAmount(before.monthlyTargetUsdt(),target)
                 || !sameAmount(before.monthlyTargetBandPct(),band);
-        MonthlyTargetProjection.validate(key,productType,request.monthlyTargetUsdt(),request.monthlyTargetBandPct(),request.clearMonthlyTarget(),listing || targetChanged);
+        MonthlyTargetProjection.validate(series,request.monthlyTargetUsdt(),request.monthlyTargetBandPct(),request.clearMonthlyTarget(),listing || targetChanged);
         if((target==null)!=(band==null))throw new BizException(422,"MONTHLY_TARGET_PAIR_REQUIRED");
         var pools=simulationPolicies.writePools(key,request.allowedPoolCodes(),before==null?List.of():before.allowedPoolCodes());
         boolean scopeChanged=before==null || !new java.util.HashSet<>(pools).equals(new java.util.HashSet<>(before.allowedPoolCodes()));
         boolean legacyOnSaleMaintenance=before!=null && "on".equals(before.status())
                 && !listing && !targetChanged && !scopeChanged
-                && !MonthlyTargetProjection.supportsDevice(key,productType);
+                && !ProductSeries.valid(series);
         boolean publishing="on".equals(request.status()) && !legacyOnSaleMaintenance;
-        simulationPolicies.validateProductScope(key,pools,!scopeChanged && !listing,target,band,publishing,clear);
+        simulationPolicies.validateProductScope(key,series,pools,!scopeChanged && !listing,target,band,publishing,clear);
         validateHosting(request.datacenter(),publishing);
         if(clear && ("Share".equals(request.tier())
                 ?request.shareYieldMin()==null || request.shareYieldMax()==null || request.shareYieldMin().signum()<0 || request.shareYieldMax().compareTo(request.shareYieldMin())<0
@@ -3623,7 +3677,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 before==null?null:before.monthlyTargetBandPct(),target,band) && coverageBelowRedline())
             throw new BizException(409,"COVERAGE_BELOW_REDLINE");
         if(target!=null && (request.price()==null || request.price().signum()<=0))throw new BizException(422,"SKU_PRICE_REQUIRED");
-        return request.withMonthlyTarget(target,band);
+        return request.withMonthlyTarget(target,band,series);
     }
 
     private static void requireSkuDisplayText(DeviceSkuUpsertRequest request) {
@@ -3829,7 +3883,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 request.reason(),
                 operator(request.operator()),
                 inventoryMode.name(),
-                request.trialEligible(), request.specDocumentTitle(), request.specDocumentUrl(), request.computePoints(), request.allowedPoolCodes(), request.monthlyTargetUsdt(), request.monthlyTargetBandPct(), request.clearMonthlyTarget());
+                request.trialEligible(), request.specDocumentTitle(), request.specDocumentUrl(), request.computePoints(), request.allowedPoolCodes(), request.monthlyTargetUsdt(), request.monthlyTargetBandPct(), request.clearMonthlyTarget(), request.seriesCode());
     }
 
     private DeviceSkuUpsertRequest withTrialEligible(DeviceSkuUpsertRequest request, boolean trialEligible) {
@@ -3844,7 +3898,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 request.lifecycle(), request.supersededBy(), request.tradeinDiscount(), request.unlockPhase(),
                 request.purchaseGate(), request.imageAssetId(), request.imageObjectKey(), request.imagePreviewUrl(),
                 request.tag(), request.status(), request.reason(), request.operator(), request.inventoryMode(),
-                trialEligible, request.specDocumentTitle(), request.specDocumentUrl(), request.computePoints(), request.allowedPoolCodes(), request.monthlyTargetUsdt(), request.monthlyTargetBandPct(), request.clearMonthlyTarget());
+                trialEligible, request.specDocumentTitle(), request.specDocumentUrl(), request.computePoints(), request.allowedPoolCodes(), request.monthlyTargetUsdt(), request.monthlyTargetBandPct(), request.clearMonthlyTarget(), request.seriesCode());
     }
 
     private ProductInventoryMode inventoryMode(String raw) {
@@ -5815,6 +5869,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                         boolVal(p, "enabled"), intVal(p, "leadDays"), reason, operator);
                 return updateE1EarlyAccess(idem, req);
             }
+            case "e6_onboarding_yield_sku" -> {
+                return bindOnboardingYieldSku(p,idem,reason,operator);
+            }
             case "e2_phone_tier" -> {
                 if (StringUtils.hasText(str(p, "configKey"))) {
                     E2YieldComparisonUpdateRequest req = new E2YieldComparisonUpdateRequest(
@@ -5950,7 +6007,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (!Objects.equals(before.updatedAt(), revision.value()))
                 throw new BizException(409, "SKU_VERSION_CONFLICT");
         }
-        if (create) requireStoreSkuModel(skuId,"Share".equals(normalizeExact(input.tier())) ? "SHARE" : "DEVICE");
         input=monthlyTargetRequest(input,before,false);
         String inventoryError = skuInventoryError(input);
         if (inventoryError != null) throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), inventoryError);
@@ -5966,9 +6022,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         poolCodesParam(params); // refuse retired class/ID scope params
         var before=catalogRepository.findSku(hardwarePolicyTarget(str(params,"skuId"))).orElseThrow(()->new BizException(404,"SKU_NOT_FOUND"));
         boolean listing="on".equals(normalizeSkuStatus(str(params,"status")));
-        if (listing && !"on".equals(before.status())) requireStoreSkuModel(before.skuId(),before.productType());
+        if (listing && !"on".equals(before.status())) requireStoreSkuSeries(before.seriesCode(),before.productType());
         validateHosting(before.datacenter(),listing);
-        simulationPolicies.validateProductScope(before.skuId(),before.allowedPoolCodes(),false,before.monthlyTargetUsdt(),before.monthlyTargetBandPct(),listing,false);
+        simulationPolicies.validateProductScope(before.skuId(),before.seriesCode(),before.allowedPoolCodes(),false,before.monthlyTargetUsdt(),before.monthlyTargetBandPct(),listing,false);
     }
 
     public record SkuProposalReview(String skuId,DeviceSkuView before,DeviceSkuUpsertRequest after,List<String> classes) {
@@ -6053,7 +6109,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 str(p, "unlockPhase"), buildPurchaseGate(p), str(p, "imageAssetId"),
                 str(p, "imageObjectKey"), str(p, "imagePreviewUrl"), str(p, "tag"),
                 str(p, "status"), reason, operator, str(p, "inventoryMode"),
-                boolVal(p, "trialEligible"), str(p, "specDocumentTitle"), str(p, "specDocumentUrl"), longVal(p, "computePoints"), poolCodesParam(p),decimal(p,"monthlyTargetUsdt"),decimal(p,"monthlyTargetBandPct"),boolVal(p,"clearMonthlyTarget"));
+                boolVal(p, "trialEligible"), str(p, "specDocumentTitle"), str(p, "specDocumentUrl"), longVal(p, "computePoints"), poolCodesParam(p),decimal(p,"monthlyTargetUsdt"),decimal(p,"monthlyTargetBandPct"),boolVal(p,"clearMonthlyTarget"),str(p,"seriesCode"));
     }
 
     private static List<String> poolCodesParam(Map<String,Object> params) {

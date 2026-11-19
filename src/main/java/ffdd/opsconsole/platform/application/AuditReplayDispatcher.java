@@ -49,7 +49,7 @@ public class AuditReplayDispatcher {
                     "e3_config_batch", "e3_tradein", "e3_restore", "e5_device_activate", "e5_device_force_activate",
                     "e5_device_deactivate", "e5_device_unbind", "e5_device_batch_pause", "e5_device_batch_resume",
                     "e4_order_refund", "e4_order_cancel", "e4_order_terminal", "e4_order_state",
-                    "e6_compute_config", "e6_compute_config_batch")),
+                    "e6_compute_config", "e6_compute_config_batch", "e6_onboarding_yield_sku")),
             Map.entry("F", Set.of("f_vrank_bootstrap", "f_seven_layer_activation", "f_direct_referral_policy", "f_config",
                     "f_ui_config", "f_config_batch", "f_unilevel_bootstrap", "f_unilevel_rule", "f_commission_status", "f5_commission_reverse",
                     "f5_commission_reissue", "f5_commission_suspension", "f_vrank_override", "f_reward_payout_action",

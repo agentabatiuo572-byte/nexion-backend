@@ -1,5 +1,6 @@
 package ffdd.opsconsole.onboarding.mapper;
 
+import ffdd.opsconsole.shared.canonical.StorefrontProductPublishGate;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -373,14 +374,14 @@ public interface OnboardingCalibrationMapper {
               LEFT JOIN nx_onboarding_phone_tier_config t
                 ON c.config_key='phone' AND t.tier=3 AND t.active=1 AND t.is_deleted=0
               LEFT JOIN nx_product p
-                ON p.product_no=CASE c.config_key
-                     WHEN 's1' THEN 'stellarbox-s1'
-                     WHEN 'pro' THEN 'stellarbox-pro'
-                     WHEN 'rack' THEN 'stellarrack-p1' END
+                ON c.config_key<>'phone' AND p.product_no=c.product_no
+               AND p.product_type IN ('DEVICE','SERVER')
                AND p.is_deleted=0 AND p.store_visible=1
                AND p.estimated_daily_usdt>0 AND p.daily_nex>0
                AND (LOWER(COALESCE(NULLIF(p.store_status,''),'')) IN ('on','active','listed','on_sale')
                     OR (COALESCE(p.store_status,'')='' AND UPPER(p.status) IN ('ACTIVE','ON_SALE')))
+               AND """ + StorefrontProductPublishGate.PUBLISHABLE_SQL + """
+
              WHERE c.active=1 AND c.is_deleted=0
                AND ((c.config_key='phone' AND t.tier IS NOT NULL)
                     OR (c.config_key IN ('s1','pro','rack') AND p.id IS NOT NULL))

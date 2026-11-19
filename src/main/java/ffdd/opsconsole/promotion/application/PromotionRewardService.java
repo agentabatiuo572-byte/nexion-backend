@@ -110,7 +110,7 @@ public class PromotionRewardService {
     }
     private void issueDevices(Map<String,Object> reward,Map<String,Object> snapshot,Map<String,Object> spec){
         require(db.occupiedDeviceSlots(number(reward.get("beneficiary_id")))<=db.deviceSlotCap(),"PROMOTION_DEVICE_CAPACITY_UNAVAILABLE");
-        String productNo=text(spec.get("giftProductNo"));db.product(productNo,true);
+        String productNo=text(spec.get("giftProductNo"));Map<String,Object> currentSku = db.product(productNo,true);
         Map<String,Object> profile=PromotionPolicyResolver.resolveReference(map(snapshot.get("policies")),map(spec.get("deviceRightsProfile")));
         Map<String,Object> rights=map(profile.get("resolvedDeviceRights"));
         require(productNo.equals(rights.get("productNo")),"PROMOTION_GIFT_PROFILE_MISMATCH");
@@ -126,11 +126,11 @@ public class PromotionRewardService {
         for(int i=0;i<count;i++){
             String instance="PG-"+sha256(text(reward.get("obligation_id"))+":"+i).substring(0,48);
             changed(db.write("""
-                INSERT INTO nx_user_device(user_id,source_order_no,product_id,product_code,product_tier,instance_no,name,device_type,
+                INSERT INTO nx_user_device(user_id,source_order_no,product_id,product_code,product_tier,series_code,instance_no,name,device_type,
                   generation,gpu_model,vram_total_gb,base_power_w,dc_location,price_usdt_snapshot,ownership_status,source_channel,
                   source_environment,run_id,status,hashrate,daily_usdt,daily_nex,last_seen_at,purchased_at,activated_at,pending_deactivate,row_version,is_deleted)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,0,'OWNED','PROMOTION_GIFT','PRODUCTION','','ACTIVE',?,?,?,NOW(),NOW(),NOW(),0,0,0)
-                """,reward.get("beneficiary_id"),reward.get("order_no"),product.get("id"),productNo,product.get("tier"),instance,product.get("name"),type,
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'OWNED','PROMOTION_GIFT','PRODUCTION','','ACTIVE',?,?,?,NOW(),NOW(),NOW(),0,0,0)
+                """,reward.get("beneficiary_id"),reward.get("order_no"),product.get("id"),productNo,product.get("tier"),currentSku.get("series_code"),instance,product.get("name"),type,
                 product.get("generation"),product.get("gpu_model"),product.get("vram_total_gb"),watts,required(sku.get("datacenter"),"datacenter"),
                 decimal(product.get("hashrate")),decimal(product.get("estimated_daily_usdt")),decimal(product.get("daily_nex"))));
             Map<String,Object> device=db.requiredRow("SELECT id FROM nx_user_device WHERE instance_no=?",instance);

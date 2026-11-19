@@ -132,7 +132,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    d.product_code AS productCode, d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,
                    d.vram_total_gb AS vramTotalGb, d.dc_location AS dcLocation,
                    r.online_status AS onlineStatus, r.paused_reason AS pausedReason,
-                   COALESCE(r.ops_paused,0) AS opsPaused
+                   COALESCE(r.ops_paused,0) AS opsPaused, d.series_code AS seriesCode
               FROM nx_user_device d
               JOIN nx_user u ON u.id = d.user_id AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
               LEFT JOIN nx_user_device_runtime r
@@ -154,7 +154,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    d.product_code AS productCode, d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,
                    d.vram_total_gb AS vramTotalGb, d.dc_location AS dcLocation,
                    r.online_status AS onlineStatus, r.paused_reason AS pausedReason,
-                   COALESCE(r.ops_paused,0) AS opsPaused
+                   COALESCE(r.ops_paused,0) AS opsPaused, d.series_code AS seriesCode
               FROM nx_user_device d
               JOIN nx_user u ON u.id = d.user_id AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
               LEFT JOIN nx_user_device_runtime r
@@ -231,7 +231,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    d.product_tier AS productTier, d.name, d.status,
                    d.product_code AS productCode, d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,
                    d.vram_total_gb AS vramTotalGb, d.dc_location AS dcLocation,
-                   NULL AS onlineStatus, NULL AS pausedReason, 0 AS opsPaused
+                   NULL AS onlineStatus, NULL AS pausedReason, 0 AS opsPaused, d.series_code AS seriesCode
               FROM nx_user_device d
               JOIN nx_user u ON u.id=d.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=1
              WHERE d.user_id=#{userId} AND d.source_environment='SANDBOX' AND d.run_id=#{runId}
@@ -246,7 +246,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    d.product_code AS productCode, d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,
                    d.vram_total_gb AS vramTotalGb, d.dc_location AS dcLocation,
                    r.online_status AS onlineStatus, r.paused_reason AS pausedReason,
-                   COALESCE(r.ops_paused,0) AS opsPaused
+                   COALESCE(r.ops_paused,0) AS opsPaused, d.series_code AS seriesCode
               FROM nx_user_device d
               JOIN nx_user u ON u.id = d.user_id
                             AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 1
@@ -916,8 +916,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                AND d.source_channel='ORDER' AND UPPER(d.ownership_status)='OWNED'
                AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL
                AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
-               AND d.product_code='cloud-share' AND UPPER(d.device_type) IN ('SHARE','CLOUD_SHARE')
-               AND p.product_no='cloud-share' AND UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE')
+               AND d.series_code='CLOUD_SHARE' AND UPPER(d.device_type) IN ('SHARE','CLOUD_SHARE')
                AND o.is_deleted=0 AND o.payment_status='PAID'
                AND o.order_status='COMPLETED' AND o.activation_status='ACTIVATED'
                AND o.amount_usdt>0
@@ -942,10 +941,10 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     @Select(PAID_CLOUD_SHARE_DAILY_NEX + " FOR UPDATE OF o,d")
     BigDecimal lockPaidCloudShareDailyNex(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
 
-    record HardwareDailyUvt(BigDecimal dailyNex, LocalDateTime purchasedAt, LocalDateTime activatedAt) {}
+    record HardwareDailyUvt(BigDecimal dailyNex, LocalDateTime purchasedAt, LocalDateTime activatedAt, String seriesCode) {}
 
     String PAID_HARDWARE_DAILY_UVT = """
-            SELECT d.daily_nex dailyNex,d.purchased_at purchasedAt,d.activated_at activatedAt
+            SELECT d.daily_nex dailyNex,d.purchased_at purchasedAt,d.activated_at activatedAt,d.series_code seriesCode
               FROM nx_user_device d
               JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id AND o.is_deleted=0
              WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.product_code=#{productCode}
@@ -1154,8 +1153,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
             SELECT c.status, c.kill_init AS killInit,
                    CASE WHEN UPPER(c.min_vram) REGEXP '^(0|[1-9][0-9]{0,3})(GB)?$'
                          THEN CAST(c.min_vram AS UNSIGNED) ELSE NULL END AS minVram,
-                   CASE WHEN UPPER(TRIM(d.device_type)) IN ('SHARE','CLOUD_SHARE','CLOUD-SHARE')
-                              OR LOWER(TRIM(d.product_code)) = 'cloud-share'
+                   CASE WHEN d.series_code='CLOUD_SHARE'
                         THEN 8 ELSE d.vram_total_gb END AS deviceVram
               FROM nx_admin_device_task c
               JOIN nx_user_device d ON d.id = #{deviceId} AND d.user_id = #{userId} AND d.is_deleted = 0
@@ -1241,7 +1239,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     record DeviceRow(Long id, String instanceNo, String deviceType, String productTier, String name,
                      String status, String productCode, LocalDateTime purchasedAt,
                      LocalDateTime activatedAt, Integer vramTotalGb, String dcLocation,
-                     String onlineStatus, String pausedReason, Integer opsPaused) {}
+                     String onlineStatus, String pausedReason, Integer opsPaused, String seriesCode) {}
     record AssignmentCandidate(Long userId, Long deviceId) {}
     record TaskConfigRow(String taskId, String name, String taskClass, String modelName,
                          BigDecimal minReward, BigDecimal maxReward, Integer minVram,

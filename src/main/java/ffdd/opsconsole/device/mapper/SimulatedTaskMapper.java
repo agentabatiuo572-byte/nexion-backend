@@ -61,7 +61,7 @@ public interface SimulatedTaskMapper {
     record DeviceRow(long deviceId,long userId,Long productId,String productCode,String productTier,String instanceNo,
             String deviceName,String deviceType,String gpuModel,Integer vramTotalGb,LocalDateTime purchasedAt,
             LocalDateTime activatedAt,LocalDateTime deactivatedAt,boolean pendingDeactivate,String status,
-            String pausedReason,LocalDateTime updatedAt,LocalDateTime runtimeUpdatedAt) { }
+            String pausedReason,LocalDateTime updatedAt,LocalDateTime runtimeUpdatedAt,String seriesCode) { }
     record RuntimeRow(long deviceId,long userId,String instanceNo,String productCode,boolean phone,long generation,
             LocalDateTime intervalStartedAt,LocalDateTime phoneValidUntil,LocalDateTime stopAt,boolean stopAfterCurrent,
             LocalDateTime finishAfterAt,LocalDateTime nextStartAt,String currentTaskNo,LocalDateTime nextActionAt,String state,String lastError) { }
@@ -74,7 +74,7 @@ public interface SimulatedTaskMapper {
               d.instance_no instanceNo,d.name deviceName,d.device_type deviceType,d.gpu_model gpuModel,d.vram_total_gb vramTotalGb,
               d.purchased_at purchasedAt,d.activated_at activatedAt,d.deactivated_at deactivatedAt,
               d.pending_deactivate pendingDeactivate,d.status,r.paused_reason pausedReason,
-              d.updated_at updatedAt,r.updated_at runtimeUpdatedAt
+              d.updated_at updatedAt,r.updated_at runtimeUpdatedAt,d.series_code seriesCode
             FROM nx_user_device d
             LEFT JOIN nx_user_device_runtime r ON r.user_device_id=d.id AND r.is_deleted=0
 

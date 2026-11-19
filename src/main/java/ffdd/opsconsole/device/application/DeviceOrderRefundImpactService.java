@@ -46,8 +46,8 @@ public class DeviceOrderRefundImpactService {
             var earned=runtime.completedPending();
             BigDecimal pendingUvt=totals.pendingUvt().add(BigDecimal.valueOf(earned.pendingNexMicros(),6));
             for(var task:mapper.pendingDailyUvt(orderNo,userId,asOf)) {
-                BigDecimal daily=hardwareDailyUvt.appliesTo(task.productCode(),task.deviceType())
-                        ? hardwareDailyUvt.previewAmount(userId,task.deviceId(),task.productCode(),task.deviceType(),task.dueAt())
+                BigDecimal daily=hardwareDailyUvt.appliesTo(task.seriesCode())
+                        ? hardwareDailyUvt.previewAmount(userId,task.deviceId(),task.productCode(),task.seriesCode(),task.dueAt())
                         : task.quotedUvt();
                 pendingUvt=pendingUvt.add(daily);
             }

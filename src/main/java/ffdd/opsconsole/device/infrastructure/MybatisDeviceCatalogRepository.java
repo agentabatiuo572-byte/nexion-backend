@@ -91,7 +91,6 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
             mapper.addSkuImagePreviewUrlColumn();
         }
         mapper.widenSkuImagePreviewUrlColumn();
-        mapper.backfillProductsFromLegacySkus();
         mapper.backfillProductUnlockPhasesFromSkuMetadata();
         mapper.createReviewTable();
         mapper.createTaskTable();
@@ -378,6 +377,16 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     @Override
     public List<OnboardingYieldComparisonView> listOnboardingYieldComparisons() {
         return mapper.listOnboardingYieldComparisons();
+    }
+
+    @Override
+    public boolean onboardingYieldSkuAvailable(String sku) {
+        return mapper.onboardingYieldSkuAvailable(sku);
+    }
+
+    @Override
+    public boolean bindOnboardingYieldSku(String key, String productNo, long version, LocalDateTime now) {
+        return mapper.bindOnboardingYieldSku(key,productNo,version,now) == 1;
     }
 
     @Override
@@ -686,7 +695,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 row.monthlyTargetUsdt(),row.monthlyTargetBandPct(),
                 row.monthlyTargetUsdt()==null?null:ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.daily(row.monthlyTargetUsdt()),
                 row.monthlyTargetUsdt()==null||!"Share".equals(row.tier())?null:row.shareYieldMin(),
-                row.monthlyTargetUsdt()==null||!"Share".equals(row.tier())?null:row.shareYieldMax()).withTaskPolicy(simulationPolicies.productView(row.skuId()));
+                row.monthlyTargetUsdt()==null||!"Share".equals(row.tier())?null:row.shareYieldMax(), row.seriesCode(), row.seriesLocked()).withTaskPolicy(simulationPolicies.productView(row.skuId()));
     }
 
     private DeviceCatalogMapper.SkuWrite skuWrite(String skuId, DeviceSkuUpsertRequest request,
@@ -740,7 +749,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 Boolean.TRUE.equals(request.trialEligible()),
                 createdAt,
                 updatedAt, blankToNull(request.specDocumentTitle()), blankToNull(request.specDocumentUrl()),
-                request.computePoints(), request.monthlyTargetUsdt(), request.monthlyTargetBandPct());
+                request.computePoints(), request.monthlyTargetUsdt(), request.monthlyTargetBandPct(), request.seriesCode());
     }
 
     private BigDecimal firstDecimal(String value) {

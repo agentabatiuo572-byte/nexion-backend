@@ -32,8 +32,27 @@ public interface CommerceSandboxTrialMapper extends BaseMapper<Object> {
             """)
     TrialClaim lock(@Param("runId") String runId, @Param("userId") Long userId);
 
-    @Select("SELECT monthly_target_usdt FROM nx_commerce_sandbox_catalog WHERE run_id=#{runId} AND product_no=#{productNo} AND is_deleted=0 LIMIT 1")
-    BigDecimal monthlyTarget(@Param("runId")String runId,@Param("productNo")String productNo);
+    @Select("""
+            SELECT c.product_no productNo,c.name,c.price_usdt price,c.daily_usdt dailyUsdt,
+                   c.daily_nex dailyNex,c.monthly_target_usdt monthlyTarget
+              FROM nx_growth_trial_policy h
+              JOIN nx_product p ON p.product_no=h.current_value
+              JOIN nx_commerce_sandbox_catalog c ON c.product_id=p.id AND c.product_no=p.product_no
+             WHERE h.policy_key='trialProductId' AND h.is_deleted=0 AND c.run_id=#{runId}
+               AND p.is_deleted=0 AND p.trial_eligible=1 AND p.store_visible=1
+               AND p.status IN ('ACTIVE','ON_SALE') AND p.product_type IN ('DEVICE','SERVER') AND p.stock>0
+               AND c.source='mock' AND c.source_environment='SANDBOX'
+               AND c.is_deleted=0 AND c.inventory_mode='FINITE' AND c.stock>0 AND c.price_usdt>0
+             LIMIT 1
+            """)
+    TrialSku configuredSku(@Param("runId") String runId);
+
+    record TrialSku(String productNo, String name, BigDecimal price, BigDecimal dailyUsdt,
+                    BigDecimal dailyNex, BigDecimal monthlyTarget) {
+        public BigDecimal effectiveDailyUsdt() {
+            return monthlyTarget == null ? dailyUsdt : ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.daily(monthlyTarget);
+        }
+    }
 
     @Insert("""
             INSERT IGNORE INTO nx_commerce_sandbox_trial_claim

@@ -138,7 +138,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                     (NOT EXISTS (SELECT 1 FROM nx_simulated_device_runtime sim WHERE sim.user_device_id=d.id)
                      AND NOT EXISTS (SELECT 1 FROM nx_product p WHERE p.product_no=d.product_code
                                       AND p.monthly_target_usdt IS NOT NULL)) AS developmentDispatchAllowed,
-                    EXISTS (SELECT 1 FROM nx_simulated_device_runtime sim WHERE sim.user_device_id=d.id) AS simulatedRuntimePresent
+                    EXISTS (SELECT 1 FROM nx_simulated_device_runtime sim WHERE sim.user_device_id=d.id) AS simulatedRuntimePresent,d.series_code AS seriesCode
               FROM nx_user_device d
               JOIN nx_user u ON u.id=d.user_id AND u.sandbox=0
                             AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
@@ -192,7 +192,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                     (NOT EXISTS (SELECT 1 FROM nx_simulated_device_runtime sim WHERE sim.user_device_id=d.id)
                      AND NOT EXISTS (SELECT 1 FROM nx_product p WHERE p.product_no=d.product_code
                                       AND p.monthly_target_usdt IS NOT NULL)) AS developmentDispatchAllowed,
-                    EXISTS (SELECT 1 FROM nx_simulated_device_runtime sim WHERE sim.user_device_id=d.id) AS simulatedRuntimePresent
+                    EXISTS (SELECT 1 FROM nx_simulated_device_runtime sim WHERE sim.user_device_id=d.id) AS simulatedRuntimePresent,d.series_code AS seriesCode
               FROM nx_user_device d
               JOIN nx_user u ON u.id=d.user_id AND u.sandbox=0
                             AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
@@ -568,13 +568,13 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
             LocalDateTime purchasedAt,
             LocalDateTime activatedAt,
             BigDecimal dailyUsdt,
-            Boolean pendingDeactivate, boolean developmentDispatchAllowed, boolean simulatedRuntimePresent) {
+            Boolean pendingDeactivate, boolean developmentDispatchAllowed, boolean simulatedRuntimePresent, String seriesCode) {
         public DevelopmentTaskDevice(Long userId, Long userDeviceId, String instanceNo, String deviceName,
                 String modelName, String productCode, String deviceType, String status, Long rowVersion,
                 Integer vramTotalGb, LocalDateTime purchasedAt, LocalDateTime activatedAt, BigDecimal dailyUsdt,
                 Boolean pendingDeactivate) {
             this(userId,userDeviceId,instanceNo,deviceName,modelName,productCode,deviceType,status,rowVersion,
-                    vramTotalGb,purchasedAt,activatedAt,dailyUsdt,pendingDeactivate,true,false);
+                    vramTotalGb,purchasedAt,activatedAt,dailyUsdt,pendingDeactivate,true,false,null);
         }
     }
 

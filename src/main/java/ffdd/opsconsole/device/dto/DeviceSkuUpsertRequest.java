@@ -49,14 +49,63 @@ public record DeviceSkuUpsertRequest(
         String reason,
         String operator,
         String inventoryMode,
+        Boolean trialEligible, String specDocumentTitle, String specDocumentUrl, Long computePoints, List<String> allowedPoolCodes, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, Boolean clearMonthlyTarget, String seriesCode) {
+    public DeviceSkuUpsertRequest(
+        String skuId,
+        String name,
+        String tier,
+        String tagline,
+        String badge,
+        String gpu,
+        String vram,
+        String hashRate,
+        String power,
+        String datacenter,
+        String uptime,
+        String warranty,
+        BigDecimal phoneDailyEarn,
+        BigDecimal phoneDailyEarnNex,
+        BigDecimal price,
+        BigDecimal dailyEarn,
+        BigDecimal dailyEarnNex,
+        BigDecimal shareYieldMin,
+        BigDecimal shareYieldMax,
+        String baseRate,
+        Long sold,
+        String stock,
+        BigDecimal rating,
+        Long reviews,
+        Long aiImageGenPerMin,
+        Long aiLlmTokensPerSec,
+        Long aiVideoMinPerHour,
+        Long aiFineTuneMins,
+        String aiUnlocks,
+        List<String> features,
+        Integer generation,
+        String lifecycle,
+        String supersededBy,
+        BigDecimal tradeinDiscount,
+        String unlockPhase,
+        DevicePurchaseGateView purchaseGate,
+        String imageAssetId,
+        String imageObjectKey,
+        String imagePreviewUrl,
+        String tag,
+        String status,
+        String reason,
+        String operator,
+        String inventoryMode,
         Boolean trialEligible, String specDocumentTitle, String specDocumentUrl, Long computePoints, List<String> allowedPoolCodes, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, Boolean clearMonthlyTarget) {
+        this(skuId, name, tier, tagline, badge, gpu, vram, hashRate, power, datacenter, uptime, warranty, phoneDailyEarn, phoneDailyEarnNex, price, dailyEarn, dailyEarnNex, shareYieldMin, shareYieldMax, baseRate, sold, stock, rating, reviews, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, features, generation, lifecycle, supersededBy, tradeinDiscount, unlockPhase, purchaseGate, imageAssetId, imageObjectKey, imagePreviewUrl, tag, status, reason, operator, inventoryMode, trialEligible, specDocumentTitle, specDocumentUrl, computePoints, allowedPoolCodes, monthlyTargetUsdt, monthlyTargetBandPct, clearMonthlyTarget, null);
+    }
+
     @com.fasterxml.jackson.annotation.JsonAnySetter
     public void rejectRetiredScope(String key,Object value) {
         if(java.util.Set.of("allowedTaskClasses","allowedTaskTypeIds").contains(key))
             throw new ffdd.opsconsole.shared.exception.BizException(422,"TASK_POOL_FORMAT_RETIRED");
     }
 
-    public DeviceSkuUpsertRequest withMonthlyTarget(BigDecimal target, BigDecimal band) {
+    public DeviceSkuUpsertRequest withMonthlyTarget(BigDecimal target, BigDecimal band, String series) {
         return new DeviceSkuUpsertRequest(skuId,
                 name,
                 tier,
@@ -108,6 +157,6 @@ public record DeviceSkuUpsertRequest(
                 allowedPoolCodes,
                 target,
                 band,
-                clearMonthlyTarget);
+                clearMonthlyTarget, series);
     }
 }

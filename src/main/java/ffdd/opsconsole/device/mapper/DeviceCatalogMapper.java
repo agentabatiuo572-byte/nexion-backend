@@ -52,6 +52,14 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
      * nx_product. nx_admin_device_sku retains E1 extensions, including the
      * server-enforced purchase gate that must round-trip through ordinary edits.
      */
+    String SERIES_LOCKED = """
+            (COALESCE(p.sold_count,0)>0
+             OR EXISTS (SELECT 1 FROM nx_order o WHERE o.product_id=p.id)
+             OR EXISTS (SELECT 1 FROM nx_order_item i WHERE i.product_id=p.id)
+             OR EXISTS (SELECT 1 FROM nx_user_device d WHERE d.product_id=p.id
+                         OR (d.product_id IS NULL AND d.product_code=p.product_no)))
+            """;
+
     String SKU_COLUMNS = """
             p.product_no AS skuId,
             p.name,
@@ -105,7 +113,10 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             p.created_at AS createdAt,
             p.updated_at AS updatedAt,
             s.spec_document_title AS specDocumentTitle,s.spec_document_url AS specDocumentUrl,p.compute_points AS computePoints,
-            p.monthly_target_usdt AS monthlyTargetUsdt,p.monthly_target_band_pct AS monthlyTargetBandPct
+            p.monthly_target_usdt AS monthlyTargetUsdt,p.monthly_target_band_pct AS monthlyTargetBandPct,
+            p.series_code AS seriesCode,
+            """ + SERIES_LOCKED + """
+             AS seriesLocked
             """;
 
     String TASK_COLUMNS = """
@@ -291,41 +302,6 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
 
     @Update("ALTER TABLE nx_product MODIFY COLUMN updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)")
     void widenProductUpdatedAtPrecision();
-
-    /** One-way compatibility migration: missing legacy E1 rows become canonical products; existing nx_product rows always win. */
-    @Insert("""
-            INSERT INTO nx_product (
-              product_no,name,product_type,tier,status,price_usdt,hashrate,estimated_daily_usdt,daily_nex,stock,
-              badge,tagline,store_status,store_visible,sort_order,generation,gpu_model,vram_total_gb,
-              share_yield_min,share_yield_max,superseded_by_product_no,unlock_phase,sold_count,rating_value,review_count,
-              created_at,updated_at,is_deleted
-            )
-            SELECT s.sku_id,s.name,CASE WHEN s.tier='Share' THEN 'SHARE' ELSE 'DEVICE' END,s.tier,
-                   CASE WHEN LOWER(s.status) IN ('on','active') THEN 'ON_SALE' WHEN LOWER(s.status)='pending' THEN 'PENDING' ELSE 'OFF_SALE' END,
-                   s.price,
-                   CASE WHEN TRIM(COALESCE(s.hash_rate,'')) REGEXP '^[0-9]+([.][0-9]+)?$'
-                              AND CHAR_LENGTH(SUBSTRING_INDEX(TRIM(s.hash_rate),'.',1)) <= 11
-                        THEN CAST(s.hash_rate AS DECIMAL(18,6)) ELSE 0 END,
-                   s.daily_earn,s.daily_earn_nex,
-                   CASE WHEN TRIM(COALESCE(s.stock_text,'')) REGEXP '^[0-9]+$'
-                              AND (CHAR_LENGTH(TRIM(s.stock_text)) < 10
-                                   OR (CHAR_LENGTH(TRIM(s.stock_text)) = 10 AND TRIM(s.stock_text) <= '2147483647'))
-                        THEN CAST(s.stock_text AS UNSIGNED) ELSE 0 END,
-                   s.badge,s.tagline,
-                   CASE WHEN LOWER(s.status) IN ('on','active') THEN 'on' ELSE LOWER(s.status) END,
-                   CASE WHEN LOWER(s.status) IN ('on','active') THEN 1 ELSE 0 END,s.id,
-                   COALESCE(s.generation,1),s.gpu,
-                   CASE WHEN TRIM(COALESCE(s.vram,'')) REGEXP '^[0-9]+(GB|gb)?$'
-                              AND CHAR_LENGTH(REGEXP_SUBSTR(TRIM(s.vram),'^[0-9]+')) <= 3
-                        THEN CAST(REGEXP_SUBSTR(s.vram,'^[0-9]+') AS UNSIGNED) ELSE NULL END,
-                   s.share_yield_min,s.share_yield_max,s.superseded_by,
-                   COALESCE(CAST(s.unlock_phase_id AS CHAR),NULLIF(s.unlock_phase,'')),COALESCE(s.sold,0),COALESCE(s.rating,0),COALESCE(s.reviews,0),
-                   s.created_at,s.updated_at,0
-              FROM nx_admin_device_sku s
-             WHERE s.is_deleted=0
-               AND NOT EXISTS (SELECT 1 FROM nx_product p WHERE p.product_no=s.sku_id)
-            """)
-    int backfillProductsFromLegacySkus();
 
     /** Repairs only a missing canonical phase reference; existing nx_product values remain authoritative. */
     @Update("""
@@ -1032,12 +1008,12 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
 
     @Insert("""
             INSERT INTO nx_product (
-              product_no,name,product_type,tier,status,price_usdt,compute_points,hashrate,estimated_daily_usdt,daily_nex,monthly_target_usdt,monthly_target_band_pct,stock,inventory_mode,trial_eligible,
+              product_no,name,product_type,tier,series_code,status,price_usdt,compute_points,hashrate,estimated_daily_usdt,daily_nex,monthly_target_usdt,monthly_target_band_pct,stock,inventory_mode,trial_eligible,
               badge,tagline,store_status,store_visible,sort_order,generation,gpu_model,vram_total_gb,
               share_yield_min,share_yield_max,superseded_by_product_no,unlock_phase,sold_count,rating_value,review_count,
               created_at,updated_at,is_deleted
             ) VALUES (
-              #{sku.skuId},#{sku.name},CASE WHEN #{sku.tier}='Share' THEN 'SHARE' ELSE 'DEVICE' END,#{sku.tier},
+              #{sku.skuId},#{sku.name},CASE WHEN #{sku.tier}='Share' THEN 'SHARE' ELSE 'DEVICE' END,#{sku.tier},#{sku.seriesCode},
               CASE WHEN #{sku.status}='on' THEN 'ON_SALE' WHEN #{sku.status}='pending' THEN 'PENDING' ELSE 'OFF_SALE' END,
               #{sku.price},COALESCE(#{sku.computePoints},ROUND(#{sku.price}*10)),#{sku.canonicalHashrate},#{sku.dailyEarn},#{sku.dailyEarnNex},#{sku.monthlyTargetUsdt},#{sku.monthlyTargetBandPct},#{sku.canonicalStock},#{sku.inventoryMode},#{sku.trialEligible},
               #{sku.badge},#{sku.tagline},#{sku.status},CASE WHEN #{sku.status}='on' THEN 1 ELSE 0 END,0,
@@ -1083,8 +1059,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
     int upsertSkuMetadata(@Param("sku") SkuWrite sku);
 
     @Update("""
-            UPDATE nx_product
-               SET name=#{sku.name},tier=#{sku.tier},
+            UPDATE nx_product p
+               SET name=#{sku.name},tier=#{sku.tier},series_code=#{sku.seriesCode},
                    status=CASE WHEN #{sku.status}='on' THEN 'ON_SALE' WHEN #{sku.status}='pending' THEN 'PENDING' ELSE 'OFF_SALE' END,
                    price_usdt=#{sku.price},compute_points=COALESCE(#{sku.computePoints},compute_points),hashrate=#{sku.canonicalHashrate},estimated_daily_usdt=#{sku.dailyEarn},daily_nex=#{sku.dailyEarnNex},
                    monthly_target_usdt=#{sku.monthlyTargetUsdt},monthly_target_band_pct=#{sku.monthlyTargetBandPct},
@@ -1096,6 +1072,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                    rating_value=COALESCE(#{sku.rating},0),review_count=COALESCE(#{sku.reviews},0),
                    updated_at=GREATEST(CURRENT_TIMESTAMP(6),updated_at + INTERVAL 1 MICROSECOND)
              WHERE product_no=#{sku.skuId} AND is_deleted=0 AND updated_at=#{expectedUpdatedAt}
+               AND (p.series_code <=> #{sku.seriesCode} OR NOT """ + SERIES_LOCKED + """
+                   )
             """)
     int updateSku(@Param("sku") SkuWrite sku, @Param("expectedUpdatedAt") LocalDateTime expectedUpdatedAt);
 
@@ -1451,35 +1429,35 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
 
     @Select("""
             SELECT c.config_key configKey,
-                   CASE WHEN c.config_key='phone' THEN c.label ELSE p.name END label,
+                   COALESCE(p.name,c.label) label,
                    CASE WHEN c.config_key='phone' THEN t.base_rate_usdt ELSE p.estimated_daily_usdt END dailyUsdt,
                    CASE WHEN c.config_key='phone' THEN t.base_rate_nex ELSE p.daily_nex END dailyNex,
                    c.sort_order sortOrder,
                    GREATEST(c.revision,COALESCE(t.revision,0),
                      COALESCE(CAST(UNIX_TIMESTAMP(p.updated_at)*1000000 AS SIGNED),0)) revision,
-                   CASE WHEN c.config_key='phone' THEN t.updated_at ELSE p.updated_at END updatedAt
+                   CASE WHEN c.config_key='phone' THEN t.updated_at ELSE p.updated_at END updatedAt,
+                   c.product_no AS productNo,c.revision AS bindingRevision
               FROM nx_onboarding_yield_comparison_config c
               LEFT JOIN nx_onboarding_phone_tier_config t
                 ON c.config_key='phone' AND t.tier=3 AND t.active=1 AND t.is_deleted=0
               LEFT JOIN nx_product p
-                ON p.product_no=CASE c.config_key
-                     WHEN 's1' THEN 'stellarbox-s1'
-                     WHEN 'pro' THEN 'stellarbox-pro'
-                     WHEN 'rack' THEN 'stellarrack-p1' END
-               AND p.is_deleted=0 AND p.store_visible=1
+                ON c.config_key<>'phone' AND p.product_no=c.product_no
+               AND p.product_type IN ('DEVICE','SERVER')               AND p.is_deleted=0 AND p.store_visible=1
                AND p.estimated_daily_usdt>0 AND p.daily_nex>0
                AND (LOWER(COALESCE(NULLIF(p.store_status,''),'')) IN ('on','active','listed','on_sale')
                     OR (COALESCE(p.store_status,'')='' AND UPPER(p.status) IN ('ACTIVE','ON_SALE')))
+               AND """ + StorefrontProductPublishGate.PUBLISHABLE_SQL + """
+
              WHERE c.active=1 AND c.is_deleted=0
                AND ((c.config_key='phone' AND t.tier IS NOT NULL)
-                    OR (c.config_key IN ('s1','pro','rack') AND p.id IS NOT NULL))
+                    OR c.config_key IN ('s1','pro','rack'))
              ORDER BY c.sort_order,c.config_key
             """)
     List<OnboardingYieldComparisonView> listOnboardingYieldComparisons();
 
     @Select("""
             SELECT config_key configKey,label,daily_usdt dailyUsdt,daily_nex dailyNex,
-                   sort_order sortOrder,revision,updated_at updatedAt
+                   sort_order sortOrder,revision,updated_at updatedAt,product_no productNo,revision bindingRevision
               FROM nx_onboarding_yield_comparison_config
              WHERE config_key=#{configKey} AND active=1 AND is_deleted=0 LIMIT 1
             """)
@@ -1498,6 +1476,27 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                                         @Param("dailyNex") BigDecimal dailyNex,
                                         @Param("expectedRevision") Long expectedRevision,
                                         @Param("updatedAt") LocalDateTime updatedAt);
+
+    @Select("""
+            SELECT EXISTS(SELECT 1 FROM nx_product p
+             WHERE p.product_no=#{sku} AND p.is_deleted=0 AND p.store_visible=1
+               AND p.product_type IN ('DEVICE','SERVER')
+               AND p.estimated_daily_usdt>0 AND p.daily_nex>0
+               AND (LOWER(COALESCE(NULLIF(p.store_status,''),'')) IN ('on','active','listed','on_sale')
+                    OR (COALESCE(p.store_status,'')='' AND UPPER(p.status) IN ('ACTIVE','ON_SALE')))
+               AND
+            """ + StorefrontProductPublishGate.PUBLISHABLE_SQL + """
+            )
+            """)
+    boolean onboardingYieldSkuAvailable(@Param("sku") String sku);
+
+    @Update("""
+            UPDATE nx_onboarding_yield_comparison_config
+               SET product_no=#{productNo},revision=revision+1,updated_at=#{now}
+             WHERE config_key=#{key} AND active=1 AND is_deleted=0 AND revision=#{version}
+            """)
+    int bindOnboardingYieldSku(@Param("key") String key, @Param("productNo") String productNo,
+                              @Param("version") long version, @Param("now") LocalDateTime now);
 
     @Select("""
             <script>
@@ -1940,7 +1939,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             Boolean publishBlocked,
             String publishBlockReason,
             LocalDateTime createdAt,
-            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct) {
+            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, String seriesCode, boolean seriesLocked) {
     public SkuRow(
             String skuId,
             String name,
@@ -1990,7 +1989,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             String publishBlockReason,
             LocalDateTime createdAt,
             LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints) {
-        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,productType,inventoryMode,trialEligible,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,featuresJson,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhase,purchaseGateJson,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,publishBlocked,publishBlockReason,createdAt,updatedAt,specDocumentTitle,specDocumentUrl,computePoints,null,null);
+        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,productType,inventoryMode,trialEligible,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,featuresJson,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhase,purchaseGateJson,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,publishBlocked,publishBlockReason,createdAt,updatedAt,specDocumentTitle,specDocumentUrl,computePoints,null,null,null,false);
     }
 
     /** Callers that do not set computePoints leave it unset. */
@@ -2101,7 +2100,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             String inventoryMode,
             Boolean trialEligible,
             LocalDateTime createdAt,
-            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct) {
+            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, String seriesCode) {
     public SkuWrite(
             String skuId,
             String name,
@@ -2151,7 +2150,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             Boolean trialEligible,
             LocalDateTime createdAt,
             LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints) {
-        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,featuresJson,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhaseId,purchaseGateJson,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,canonicalHashrate,canonicalVramGb,canonicalStock,inventoryMode,trialEligible,createdAt,updatedAt,specDocumentTitle,specDocumentUrl,computePoints,null,null);
+        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,featuresJson,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhaseId,purchaseGateJson,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,canonicalHashrate,canonicalVramGb,canonicalStock,inventoryMode,trialEligible,createdAt,updatedAt,specDocumentTitle,specDocumentUrl,computePoints,null,null,null);
     }
 
     /** Callers that do not set computePoints leave it unset. */

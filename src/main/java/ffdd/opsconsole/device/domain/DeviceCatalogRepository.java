@@ -88,6 +88,14 @@ public interface DeviceCatalogRepository {
         return List.of();
     }
 
+    default boolean onboardingYieldSkuAvailable(String sku) {
+        return false;
+    }
+
+    default boolean bindOnboardingYieldSku(String key, String productNo, long version, LocalDateTime now) {
+        return false;
+    }
+
     default Optional<OnboardingYieldComparisonView> findOnboardingYieldComparison(String configKey) {
         return Optional.empty();
     }

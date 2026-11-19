@@ -32,8 +32,8 @@ public class DeviceMonthlyTargetReadService {
             var anchor=row.purchasedAt()!=null?row.purchasedAt():row.activatedAt();
             var cycle=anchor==null?null:DeviceMonthlyTargetPacing.cycleAt(anchor,now);
             BigDecimal capacity=BigDecimal.valueOf(100),daily=row.dailyUsdt();
-            if(anchor!=null && E3DeviceCapacityPolicy.classify(row.productCode(),row.deviceType())!=null)
-                capacity=E3DeviceCapacityPolicy.project(row.productCode(),row.deviceType(),row.purchasedAt(),row.activatedAt(),now,config).capacityPct();
+            if(anchor!=null && E3DeviceCapacityPolicy.classify(row.seriesCode(),row.deviceType())!=null)
+                capacity=E3DeviceCapacityPolicy.project(row.seriesCode(),row.deviceType(),row.purchasedAt(),row.activatedAt(),now,config).capacityPct();
             if(row.monthlyTargetUsdt()!=null) {
                 daily=row.monthlyTargetUsdt().multiply(capacity.movePointLeft(2)).divide(BigDecimal.valueOf(30),6,RoundingMode.HALF_UP);
             }

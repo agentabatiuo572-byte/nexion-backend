@@ -518,7 +518,7 @@ public class TestComputeV2Service {
         }
         var selected=ComputeV2Selection.draw(candidates,random);var task=selected.candidate();
         var capacity=new HashMap<String,String>();for(var row:assignments.e3CapacityConfig())capacity.put(row.configKey(),row.configValue());
-        var projection=E3DeviceCapacityPolicy.project(owned.productCode(),owned.deviceType(),owned.purchasedAt(),owned.activatedAt(),
+        var projection=E3DeviceCapacityPolicy.project(owned.seriesCode(),owned.deviceType(),owned.purchasedAt(),owned.activatedAt(),
                 LocalDateTime.ofInstant(clock.instant(),DateTimeFormatConfig.BUSINESS_ZONE),capacity);
         long reward=ComputeV2Selection.micros(E3DeviceCapacityPolicy.applyCapacity(BigDecimal.valueOf(selected.rawMicros(),6),projection));
         Object input;

@@ -694,7 +694,7 @@ public class AppTaskAssignmentService {
         BigDecimal reward;
         try {
             E3DeviceCapacityPolicy.Projection capacity = E3DeviceCapacityPolicy.project(
-                    device.productCode(), device.deviceType(), device.purchasedAt(),
+                    device.seriesCode(), device.deviceType(), device.purchasedAt(),
                     device.activatedAt(), now, capacityConfig);
             reward = E3DeviceCapacityPolicy.applyCapacity(
                     midpoint(task.minReward(), task.maxReward()), capacity);
@@ -839,7 +839,7 @@ public class AppTaskAssignmentService {
         String dailyNexBizNo = "CLOUD_SHARE_DAILY:" + task.deviceId() + ":" + utcDay;
         BigDecimal paidShareDailyNex = mapper.lockPaidCloudShareDailyNex(userId, task.deviceId());
         BigDecimal dailyUvt = paidShareDailyNex != null ? paidShareDailyNex
-                : hardwareDailyUvt.amount(userId, task.deviceId(), activeBinding.productCode(), activeBinding.deviceType(), now);
+                : hardwareDailyUvt.amount(userId, task.deviceId(), activeBinding.productCode(), activeBinding.seriesCode(), now);
         BigDecimal rewardNex = dailyUvt.signum() > 0
                 && mapper.lockDailyCloudShareNex(userId, dailyNexBizNo) == null
                 ? dailyUvt : BigDecimal.ZERO;
@@ -1011,12 +1011,7 @@ public class AppTaskAssignmentService {
     }
 
     static int effectiveRoutingVram(DeviceRow device) {
-        String identity = String.join(" ", value(device.deviceType()), value(device.productCode()))
-                .toUpperCase(Locale.ROOT);
-        if (identity.contains("CLOUD-SHARE") || identity.contains("CLOUD_SHARE")
-                || identity.matches(".*\\bSHARE\\b.*")) {
-            return 8;
-        }
+        if ("CLOUD_SHARE".equals(device.seriesCode())) return 8;
         return device.vramTotalGb();
     }
 

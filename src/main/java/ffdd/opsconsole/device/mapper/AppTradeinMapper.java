@@ -519,11 +519,11 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
 
     @Insert("""
             INSERT INTO nx_user_device
-              (user_id,source_order_no,product_id,product_code,product_tier,instance_no,name,device_type,
+              (user_id,source_order_no,product_id,product_code,product_tier,series_code,instance_no,name,device_type,
                generation,gpu_model,vram_total_gb,base_power_w,dc_location,price_usdt_snapshot,ownership_status,
                source_channel,status,hashrate,daily_usdt,daily_nex,purchased_at,activated_at,last_seen_at,
                pending_deactivate,created_at,updated_at,is_deleted)
-            SELECT #{row.userId},#{row.orderNo},#{row.productId},#{row.productNo},#{row.productTier},
+            SELECT #{row.userId},#{row.orderNo},#{row.productId},#{row.productNo},#{row.productTier},p.series_code,
                #{row.instanceNo},#{row.productName},#{row.deviceType},#{row.generation},#{row.gpuModel},
                #{row.vramTotalGb},CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)),
                s.datacenter,#{row.targetPriceUsdt},'OWNED','TRADE_IN',
@@ -531,6 +531,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                #{row.dailyUsdt},#{row.dailyNex},NOW(),CASE WHEN #{row.activated} THEN NOW() ELSE NULL END,
                CASE WHEN #{row.activated} THEN NOW() ELSE NULL END,0,NOW(),NOW(),0
               FROM nx_admin_device_sku s
+              JOIN nx_product p ON p.id=#{row.productId} AND p.product_no=s.sku_id
              WHERE s.sku_id=#{row.productNo} AND s.is_deleted=0 AND TRIM(s.datacenter) <> ''
                AND UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP|[[:space:]]*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计|PER-GPU RATED|COMBINED GPU RATED)[)]))?)?\\\\z'
                AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) > 0
@@ -539,16 +540,17 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
 
     @Insert("""
             INSERT INTO nx_user_device
-              (user_id,source_order_no,product_id,product_code,product_tier,instance_no,name,device_type,
+              (user_id,source_order_no,product_id,product_code,product_tier,series_code,instance_no,name,device_type,
                generation,gpu_model,vram_total_gb,base_power_w,dc_location,price_usdt_snapshot,ownership_status,
                source_channel,status,hashrate,daily_usdt,daily_nex,purchased_at,activated_at,last_seen_at,
                pending_deactivate,created_at,updated_at,is_deleted)
-            SELECT #{row.userId},#{row.orderNo},#{row.productId},#{row.productNo},#{row.productTier},
+            SELECT #{row.userId},#{row.orderNo},#{row.productId},#{row.productNo},#{row.productTier},p.series_code,
                #{row.instanceNo},#{row.productName},#{row.deviceType},#{row.generation},#{row.gpuModel},
                #{row.vramTotalGb},CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)),
                s.datacenter,#{row.targetPriceUsdt},'OWNED','ORDER','ACTIVE',#{row.hashrate},
                #{row.dailyUsdt},#{row.dailyNex},NOW(),NOW(),NOW(),0,NOW(),NOW(),0
               FROM nx_admin_device_sku s
+              JOIN nx_product p ON p.id=#{row.productId} AND p.product_no=s.sku_id
              WHERE s.sku_id=#{row.productNo} AND s.is_deleted=0 AND TRIM(s.datacenter) <> ''
                AND UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP|[[:space:]]*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计|PER-GPU RATED|COMBINED GPU RATED)[)]))?)?\\\\z'
                AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) > 0

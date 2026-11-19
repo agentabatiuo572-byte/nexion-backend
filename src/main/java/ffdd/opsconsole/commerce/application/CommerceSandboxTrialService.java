@@ -34,14 +34,9 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class CommerceSandboxTrialService {
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
-    private static final String TRIAL_PRODUCT = "stellarbox-s1";
-    private static final String TRIAL_DEVICE = "UVELBox S1";
     private static final int TRIAL_DAYS = 3;
     private static final int GRACE_DAYS = 7;
-    private static final BigDecimal DAILY_USDT = new BigDecimal("38.520000");
-    private static final BigDecimal DAILY_NEX = new BigDecimal("65.000000");
     private static final BigDecimal OFFSET_CAP = new BigDecimal("50.000000");
-    private static final BigDecimal TRIAL_PRICE = new BigDecimal("1299.000000");
     private static final BigDecimal DISCOUNT_RATE = new BigDecimal("0.15");
     private static final BigDecimal DISCOUNT_CAP = new BigDecimal("20.000000");
     private static final BigDecimal MAX_EXPECTED_AMOUNT = new BigDecimal("1000000.00");
@@ -78,15 +73,16 @@ public class CommerceSandboxTrialService {
         if (existing != null) return ApiResult.ok(project(userId, existing, LocalDateTime.now(clock)));
         LocalDateTime now = LocalDateTime.now(clock);
         String claimNo = "TRIAL-SBX-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
-        BigDecimal monthlyTarget=trialMapper.monthlyTarget(runId,TRIAL_PRODUCT);
-        BigDecimal daily=monthlyTarget==null?DAILY_USDT:ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.daily(monthlyTarget);
-        TrialClaimWrite write = new TrialClaimWrite(runId, userId, claimNo, TRIAL_PRODUCT, TRIAL_DEVICE,
-                now, now.plusDays(TRIAL_DAYS), daily, DAILY_NEX, OFFSET_CAP, TRIAL_PRICE);
+        var product = trialMapper.configuredSku(runId);
+        if (product == null) return ApiResult.fail(409,"TRIAL_PRODUCT_NOT_AVAILABLE");
+        BigDecimal daily = product.effectiveDailyUsdt();
+        TrialClaimWrite write = new TrialClaimWrite(runId,userId,claimNo,product.productNo(),product.name(),
+                now,now.plusDays(TRIAL_DAYS),daily,product.dailyNex(),OFFSET_CAP,product.price());
         int inserted = trialMapper.insertTrialClaim(write);
         TrialClaim created = inserted == 1
-                ? new TrialClaim(claimNo, userId, TRIAL_PRODUCT, TRIAL_DEVICE, "ACTIVE", now,
-                now.plusDays(TRIAL_DAYS), null, 0L, daily, DAILY_NEX, OFFSET_CAP, TRIAL_PRICE,
-                null, null, null, null)
+                ? new TrialClaim(claimNo,userId,product.productNo(),product.name(),"ACTIVE",now,
+                now.plusDays(TRIAL_DAYS),null,0L,daily,product.dailyNex(),OFFSET_CAP,product.price(),
+                null,null,null,null)
                 : trialMapper.lock(runId, userId);
         if (created == null) throw new BizException(409, "TRIAL_SANDBOX_START_CONFLICT");
         return ApiResult.ok(project(userId, created, now));
@@ -114,8 +110,8 @@ public class CommerceSandboxTrialService {
         String runId = acceptanceRun.requireRunId();
         TrialClaim row = trialMapper.lock(runId, userId);
         if (row == null) return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
-        String requested = normalizeProduct(productNo);
-        if (!TRIAL_PRODUCT.equals(requested)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_ELIGIBLE");
+        String requested = StringUtils.hasText(productNo) ? productNo.trim() : row.productNo();
+        if (!row.productNo().equals(requested)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_ELIGIBLE");
         if (!validExpectedAmount(expectedAmountUsdt)) {
             return ApiResult.fail(409, "TRIAL_AMOUNT_INVALID");
         }
@@ -198,26 +194,31 @@ public class CommerceSandboxTrialService {
     private Map<String, Object> project(Long userId, TrialClaim row, LocalDateTime now) {
         Map<String, Object> result = new LinkedHashMap<>();
         String state = row == null ? "ELIGIBLE" : effectiveState(row, now);
-        boolean canStart = row == null;
+        var product = row == null ? trialMapper.configuredSku(acceptanceRun.requireRunId()) : null;
+        boolean canStart = row == null && product != null;
         result.put("authoritative", true);
         result.put("serverNowEpochMs", epoch(now));
         result.put("state", state);
         result.put("serverState", state);
         result.put("canStart", canStart);
-        if (!canStart) result.put("eligibilityReason", "REDEEMED".equals(state) ? "converted" : "in-progress");
+        if (!canStart) result.put("eligibilityReason", row == null ? "TRIAL_PRODUCT_NOT_AVAILABLE"
+                : "REDEEMED".equals(state) ? "converted" : "in-progress");
         result.put("trialGateEnabled", true);
         result.put("version", row == null ? 0L : row.version());
         result.put("source", "nx_trial_claim_sandbox");
         result.put("paymentRail", "UVEL_USDT_WALLET");
         result.put("sourceEnvironment", "SANDBOX");
         result.put("runId", acceptanceRun.requireRunId());
-        result.put("config", Map.ofEntries(
+        if (row != null || product != null) result.put("config", Map.ofEntries(
                 Map.entry("trialDays", String.valueOf(TRIAL_DAYS)), Map.entry("graceDays", String.valueOf(GRACE_DAYS)),
                 Map.entry("discountRate", DISCOUNT_RATE.toPlainString()),
                 Map.entry("discountCapUSD", DISCOUNT_CAP.toPlainString()),
-                Map.entry("trialOffsetCapUSD", OFFSET_CAP.toPlainString()), Map.entry("trialProductId", TRIAL_PRODUCT),
-                Map.entry("trialPriceUSD", TRIAL_PRICE.toPlainString()),
-                Map.entry("shadowDailyUSD", DAILY_USDT.toPlainString()), Map.entry("shadowDailyNEX", DAILY_NEX.toPlainString()),
+                Map.entry("trialOffsetCapUSD", OFFSET_CAP.toPlainString()),
+                Map.entry("trialProductId", row == null ? product.productNo() : row.productNo()),
+                Map.entry("trialProductName", row == null ? product.name() : row.deviceName()),
+                Map.entry("trialPriceUSD", (row == null ? product.price() : row.priceUsdt()).toPlainString()),
+                Map.entry("shadowDailyUSD", (row == null ? product.effectiveDailyUsdt() : row.shadowDailyUsdt()).toPlainString()),
+                Map.entry("shadowDailyNEX", (row == null ? product.dailyNex() : row.shadowDailyNex()).toPlainString()),
                 Map.entry("phaseOpen", PHASE_OPEN), Map.entry("autoPushEnabled", AUTO_PUSH_ENABLED),
                 Map.entry("autoPushDelayMs", String.valueOf(AUTO_PUSH_DELAY_MS)),
                 Map.entry("autoPushCooldownHours", String.valueOf(AUTO_PUSH_COOLDOWN_HOURS)),
@@ -246,11 +247,6 @@ public class CommerceSandboxTrialService {
         if (userId == null || userId < 1 || !commerceMapper.isSandboxUser(userId)) {
             throw new BizException(403, "COMMERCE_SANDBOX_USER_REQUIRED");
         }
-    }
-
-    private String normalizeProduct(String value) {
-        String normalized = StringUtils.hasText(value) ? value.trim() : TRIAL_PRODUCT;
-        return "device-trial-standard".equals(normalized) ? TRIAL_PRODUCT : normalized;
     }
 
     private BigDecimal promoDiscount(BigDecimal catalogPrice) {

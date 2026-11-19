@@ -690,7 +690,7 @@ public class AppTrialLifecycleService {
             putCanonicalProvenance(result, "nx_trial_claim");
             result.put("paymentRail", "UVEL_USDT_WALLET");
             result.put("config", safePolicy(policy, configuredProductCode,
-                    catalogProduct == null ? null : catalogProduct.name(),
+                    catalogProduct == null ? mapper.configuredProductName(configuredProductCode) : catalogProduct.name(),
                     catalogProduct == null ? null : catalogProduct.priceUsdt(),
                     catalogProduct == null ? null : catalogProduct.monthlyTargetUsdt()!=null
                             ? ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.daily(catalogProduct.monthlyTargetUsdt()) : catalogProduct.estimatedDailyUsdt(),
@@ -758,7 +758,7 @@ public class AppTrialLifecycleService {
         // 用户已经按当时的数开始计息,中途改目录不该让他的 hero 数字跟着跳(zentao #78)。
         // 未领取/可重开时才回落目录商品值。
         Map<String, Object> config = safePolicy(policy, configuredProductCode,
-                frozenProduct ? row.deviceName() : catalogProduct == null ? null : catalogProduct.name(),
+                frozenProduct ? row.deviceName() : catalogProduct == null ? mapper.configuredProductName(configuredProductCode) : catalogProduct.name(),
                 frozenProduct ? row.priceUsdt() : catalogProduct == null ? null : catalogProduct.priceUsdt(),
                 frozenProduct ? row.dailyUsdt() : catalogProduct == null ? null : catalogProduct.monthlyTargetUsdt()!=null
                         ? ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.daily(catalogProduct.monthlyTargetUsdt()) : catalogProduct.estimatedDailyUsdt(),
@@ -836,7 +836,7 @@ public class AppTrialLifecycleService {
                 "trialDays", "3", "graceDays", "7", "extensionDays", "3",
                 "discountCapUSD", "20",
                 "autoChargeAtEnd", "false", "highQualityThresholdUSD", "100",
-                "trialProductId", CANONICAL_TRIAL_PRODUCT_ID, "trialPriceUSD", "1299",
+                "trialPriceUSD", "1299",
                 // 🔴 试用收益口径的兜底值不再是「像真数字」的 38.52/65(zentao #78):
                 //   真正的日收益来自该商品的 estimated_daily_usdt / daily_nex,这两个键只在
                 //   商品未配收益时兜底。给它们一个显式 0 而不是一个可观金额,运营看到
@@ -890,7 +890,7 @@ public class AppTrialLifecycleService {
     }
 
     private String trialProductCode(Map<String, String> policy) {
-        String productCode = canonicalTrialProductId(policy.getOrDefault("trialProductId", CANONICAL_TRIAL_PRODUCT_ID));
+        String productCode = canonicalTrialProductId(policy.get("trialProductId"));
         return productCode.matches("[A-Za-z0-9._-]{2,64}") ? productCode : null;
     }
 

@@ -202,6 +202,7 @@ public class A2AccessPolicy {
                     && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write"));
         }
         if ("I".equals(domain) && isI3CapAdjust(command) && canReadOwnI3CapProposal(grants)) return true;
+        if (canRecoverOnboardingSku(command, actorId, grants)) return true;
         if (!grants.contains("platform_a2_read")) {
             return grants.contains("platform_a2_proposal_create")
                     && (!StringUtils.hasText(ticket.getCommandJson()) || ("D".equals(domain)
@@ -221,7 +222,15 @@ public class A2AccessPolicy {
                 && grants.contains("growth_h1_override_revoke");
     }
 
+    private boolean canRecoverOnboardingSku(AuditReplayCommand command, long actorId, Set<String> grants) {
+        return command != null && "E".equals(command.domain()) && "e6_onboarding_yield_sku".equals(command.op())
+                && roleResolver.isActiveAdministrator(actorId)
+                && grants.containsAll(Set.of("device_e6_write","device_e1_read"))
+                && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write"));
+    }
+
     boolean canAccessOwnBusinessProposal(AuditReplayCommand command, long actorId) {
+        if (canRecoverOnboardingSku(command, actorId, permissions.getPermissionCodes(actorId))) return true;
         if (canReadOwnH1Override(command, actorId, permissions.getPermissionCodes(actorId))) return true;
         if (isJ4ExecuteProposal(command)) {
             return roleResolver.isActiveAdministrator(actorId)
