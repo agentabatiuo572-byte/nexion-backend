@@ -6245,6 +6245,15 @@ ON DUPLICATE KEY UPDATE
   tone=VALUES(tone),active=VALUES(active),sort_order=VALUES(sort_order),
   last_operator=VALUES(last_operator),is_deleted=0;
 
+-- I5-BE-03: exchange is a live disclosure-gate action, not a retired one.
+-- New databases start unrestricted; an existing exchange row keeps its state.
+INSERT INTO nx_disclosure_gate_action
+  (action_key,action_name,description,status_label,tone,active,sort_order,last_operator,is_deleted)
+VALUES
+  ('exchange','兑换','兑换（App 新兑换与 G2 排队处理）的风险披露确认范围','REMOVED','dim',0,60,'schema:i5-exchange-disclosure',0)
+ON DUPLICATE KEY UPDATE
+  is_deleted=0;
+
 INSERT INTO nx_config_item
   (config_key,config_value,value_type,config_group,visibility,remark,status,created_at,updated_at,is_deleted)
 VALUES

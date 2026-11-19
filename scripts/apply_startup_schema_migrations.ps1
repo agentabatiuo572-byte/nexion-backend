@@ -515,7 +515,9 @@ $migrations = @(
   # Restore only the 8 current I4/I5 permissions after legacy menu removal (A7-BE-08).
   (Join-Path $root "scripts\migrations\20261119_a7_be07_restore_i4_i5_permissions.sql"),
   # E5 operator pause gets its own runtime state columns (E5-BE-19).
-  (Join-Path $root "scripts\migrations\20261119_e5_be19_ops_pause_state.sql")
+  (Join-Path $root "scripts\migrations\20261119_e5_be19_ops_pause_state.sql"),
+  # I5-BE-03: register exchange in the I5 disclosure-gate action catalog.
+  (Join-Path $root "scripts\migrations\20261119_i5_be03_disclosure_gate_exchange.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
