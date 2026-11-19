@@ -4,6 +4,7 @@ import ffdd.opsconsole.content.domain.NovaSocialEventView;
 import ffdd.opsconsole.content.domain.NovaTemplateView;
 import ffdd.opsconsole.content.domain.NotificationTranslation;
 import ffdd.opsconsole.shared.exception.BizException;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -33,8 +34,9 @@ final class NovaSocialMessageRenderer {
         if (hasRetiredSourceNote(template)) {
             throw new BizException(422, "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
         }
+        language = language.toUpperCase(Locale.ROOT);
         Map<String, String> values = localizedValues(event, language);
-        var translated = template.translations().get(language.toLowerCase(java.util.Locale.ROOT));
+        var translated = template.translations().get(language.toLowerCase(Locale.ROOT));
         String titleTemplate = switch (language) {
             case "ZH" -> template.titleZh();
             case "VI" -> template.titleVi();
