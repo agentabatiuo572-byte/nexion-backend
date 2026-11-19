@@ -1,6 +1,7 @@
 package ffdd.opsconsole.shared.idempotency;
 
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.time.Clock;
 import java.time.Duration;
@@ -176,6 +177,15 @@ public class AdminIdempotencyService {
         } catch (RuntimeException ex) {
             Object businessResponse = ex instanceof AdminCommandBusinessRejection rejection
                     ? rejection.response() : null;
+            if (businessResponse == null && "A2_COMMAND".equals(normalizedScope)
+                    && ex instanceof BizException businessError) {
+                Object errorData = businessError.errorData();
+                if (errorData != null) {
+                    // Reuse the exception's existing structured rejection payload, not a bare
+                    // status-code-derived ApiResult; only proven business exceptions are replayable.
+                    businessResponse = ApiResult.fail(businessError.getCode(), businessError.getMessage(), errorData);
+                }
+            }
             businessRejection.set(businessResponse);
             if (joinedTransaction || independentAction) throw ex;
             try {
