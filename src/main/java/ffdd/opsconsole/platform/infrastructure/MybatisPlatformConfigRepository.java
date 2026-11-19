@@ -118,7 +118,7 @@ public class MybatisPlatformConfigRepository implements PlatformConfigRepository
         if (key.startsWith("platform.experience.") || key.startsWith("E.compute.")
                 || key.startsWith("K.rewards.") || key.startsWith("growth.phase.month.")
                 || key.startsWith("growth.public_stats.") || key.startsWith("h9.sb.")
-                || key.equals("G.staking.app_visible") || key.equals("dailyUsdtPerBaseline")
+                || key.equals("dailyUsdtPerBaseline")
                 || key.equals("platform.phase.config")) {
             PlatformConfigChangedEvent.publish(events);
         }

@@ -36,8 +36,8 @@ public class H4EventCommerceService {
     private final TestCloudActivationAdmission testCloudAdmission;
 
     public boolean reinvestParticipationOpen(boolean lock){
-        var value=lock?config.activeValueForUpdate("G.staking.app_visible"):config.activeValue("G.staking.app_visible");
-        return value.map(raw->"true".equalsIgnoreCase(raw.trim())).orElse(false);
+        // 质押 App 可见开关已退役：复投加码活动固定不开放。
+        return false;
     }
 
     public List<String> readiness(String eventCode, Map<String, Object> rules, LocalDateTime startsAt, LocalDateTime endsAt) {

@@ -106,6 +106,7 @@ public class AppUserAuthService {
         loginGuardMapper.createTable();
         if (loginGuardMapper.countUserIdColumn() == 0) loginGuardMapper.addUserIdColumn();
         if (loginGuardMapper.countUpdatedAtIndex() == 0) loginGuardMapper.addUpdatedAtIndex();
+        if (loginGuardMapper.countLockKindColumn() == 0) loginGuardMapper.addLockKindColumn();
     }
 
     // The account row serializes takeover. READ_COMMITTED keeps the session scan from locking adjacent users' insert gaps.
@@ -941,7 +942,9 @@ public class AppUserAuthService {
         LocalDateTime lockedUntil = failedCount >= longThreshold
                 ? now.plusHours(longLockHours)
                 : failedCount >= shortThreshold ? now.plusMinutes(shortWindowMinutes) : null;
-        loginGuardMapper.recordFailure(loginKey, failedCount, windowStartedAt, lockedUntil);
+        String lockKind = lockedUntil == null ? null
+                : failedCount >= longThreshold ? "LONG" : "SHORT";
+        loginGuardMapper.recordFailure(loginKey, failedCount, windowStartedAt, lockedUntil, lockKind);
         if (userId != null) {
             userMapper.syncLoginFailure(userId, failedCount);
             boolean alreadyLocked = guard != null && guard.getLockedUntil() != null
@@ -950,7 +953,7 @@ public class AppUserAuthService {
             boolean upgradedToLong = lockedUntil != null && alreadyLocked
                     && failedCount >= longThreshold && guard.getFailedCount() < longThreshold;
             if (newlyLocked || upgradedToLong) {
-                String lockType = failedCount >= longThreshold ? "LONG" : "SHORT";
+                String lockType = lockKind;
                 outboxService.publish("USER_SECURITY", String.valueOf(userId), "auth.login_locked", Map.of(
                         "targetUserId", userId,
                         "loginKeyHash", hashToken(loginKey),
@@ -974,7 +977,7 @@ public class AppUserAuthService {
         int attempts = newWindow ? 1 : guard.getFailedCount() + 1;
         LocalDateTime windowStartedAt = newWindow ? now : guard.getWindowStartedAt();
         LocalDateTime lockedUntil = attempts >= IP_ATTEMPTS_PER_MINUTE ? now.plusMinutes(1) : null;
-        loginGuardMapper.recordFailure(key, attempts, windowStartedAt, lockedUntil);
+        loginGuardMapper.recordFailure(key, attempts, windowStartedAt, lockedUntil, null);
         return true;
     }
 

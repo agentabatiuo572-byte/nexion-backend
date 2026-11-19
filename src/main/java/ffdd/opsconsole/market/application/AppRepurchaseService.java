@@ -46,7 +46,6 @@ public class AppRepurchaseService {
     private static final String STAKING_KILLSWITCH_KEY = "killswitch.staking";
     private static final String STAKING_LEGACY_KILLSWITCH_KEY = "J.killswitch.staking";
     private static final String STAKING_DISCLOSURE_GATE_KEY = "disclosure.gate.staking";
-    private static final String STAKING_VISIBILITY_KEY = "G.staking.app_visible";
 
     private final AppRepurchaseMapper mapper;
     private final RiskDisclosureGateFacade disclosureGate;
@@ -341,8 +340,7 @@ public class AppRepurchaseService {
                 "effectiveNurtureMultiplier", decimal(p.rewardMultiplier()).multiply(phaseReinvestMultiplier()).stripTrailingZeros(),
                 "ticketPerOrder", Math.max(0, p.ticketPerOrder() == null ? 0 : p.ticketPerOrder()),
                 "presets", presets(p.presetAmounts()), "earlyPenaltyPct", pct(p.earlyPenaltyBps()),
-                "minAmountUsdt", money(p.minAmount()), "enabled", "ACTIVE".equals(p.status()) && globalGateEnabled()
-                        && config.activeValue(STAKING_VISIBILITY_KEY).map(value->"true".equalsIgnoreCase(value.trim())).orElse(false),
+                "minAmountUsdt", money(p.minAmount()), "enabled", false, // 质押 App 可见开关已退役：复投固定关闭
                 "disclosureRequired", disclosureRequired(),
                 "currentNexPriceUsdt", currentNexPrice(),
                 "g4LotteryCapacity", configLong(G4_CAPACITY_KEY, 100_000L, 0, 100_000_000L),
@@ -352,10 +350,8 @@ public class AppRepurchaseService {
     }
 
     private void requireAppStakingVisibleForOpen() {
-        if (!config.activeValueForUpdate(STAKING_VISIBILITY_KEY)
-                .map(value -> "true".equalsIgnoreCase(value.trim())).orElse(false)) {
-            throw new BizException(409, "STAKING_APP_HIDDEN");
-        }
+        // 质押 App 可见开关已退役：复投开仓固定拒绝。
+        throw new BizException(409, "STAKING_APP_HIDDEN");
     }
 
     private boolean isSandbox() {

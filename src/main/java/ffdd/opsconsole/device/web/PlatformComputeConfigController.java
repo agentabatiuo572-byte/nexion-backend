@@ -44,7 +44,7 @@ public class PlatformComputeConfigController {
         OpsGrowthService.HomeFeatureFlags flags = homeFlags.getData();
         PlatformComputeConfigView.FeatureFlags featureFlags = new PlatformComputeConfigView.FeatureFlags(
                 compute.featureFlags().computeShareEnabled(), flags.homeNewcomerTasksEnabled(), flags.homeWeeklyPromoEnabled(),
-                platformConfig.activeValue("G.staking.app_visible").map("true"::equalsIgnoreCase).orElse(false));
+                false); // 质押 App 可见开关已退役，默认全关
         return ApiResult.ok(new PlatformComputeConfigView(
                 featureFlags, publicStats.getData(), compute.onlineBonus(),
                 compute.computerCompute(), compute.phoneBinding(), experience.getData(), compute.updatedAt(),

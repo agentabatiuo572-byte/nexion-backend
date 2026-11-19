@@ -581,6 +581,9 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                    COALESCE(s.password_reset_required, 0) AS passwordResetRequired,
                    0 AS lockThreshold,
                    0 AS lockDurationMinutes,
+                   (SELECT g.lock_kind FROM nx_user_login_guard g
+                     WHERE g.user_id=u.id AND g.locked_until>NOW()
+                     ORDER BY g.locked_until DESC LIMIT 1) AS lockKind,
                    (SELECT MAX(g.locked_until) FROM nx_user_login_guard g
                      WHERE g.user_id=u.id AND g.locked_until>NOW()) AS lockedUntil
               FROM nx_user u
@@ -597,13 +600,19 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             SELECT COUNT(DISTINCT s.user_id)
               FROM nx_user_security s
               JOIN (
-                  SELECT user_id, MAX(failed_count) AS failed_count, MAX(locked_until) AS locked_until
-                    FROM nx_user_login_guard
-                   WHERE user_id IS NOT NULL
-                   GROUP BY user_id
-              ) g ON g.user_id=s.user_id
-             WHERE s.is_deleted=0 AND g.locked_until>NOW()
-               AND GREATEST(COALESCE(s.login_fail_count,0),COALESCE(g.failed_count,0)) < #{longThreshold}
+                  SELECT g.user_id, g.lock_kind
+                    FROM nx_user_login_guard g
+                    JOIN (
+                        SELECT user_id, MAX(locked_until) AS locked_until
+                          FROM nx_user_login_guard
+                         WHERE user_id IS NOT NULL
+                         GROUP BY user_id
+                    ) latest ON latest.user_id = g.user_id AND latest.locked_until = g.locked_until
+                   WHERE g.user_id IS NOT NULL
+                     AND g.locked_until > NOW()
+              ) g ON g.user_id = s.user_id
+             WHERE s.is_deleted = 0
+               AND COALESCE(NULLIF(g.lock_kind, ''), 'UNKNOWN') = 'SHORT'
             """)
     long countActiveShortLocks(@Param("longThreshold") int longThreshold);
 
@@ -611,13 +620,19 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             SELECT COUNT(DISTINCT s.user_id)
               FROM nx_user_security s
               JOIN (
-                  SELECT user_id, MAX(failed_count) AS failed_count, MAX(locked_until) AS locked_until
-                    FROM nx_user_login_guard
-                   WHERE user_id IS NOT NULL
-                   GROUP BY user_id
-              ) g ON g.user_id=s.user_id
-             WHERE s.is_deleted=0 AND g.locked_until>NOW()
-               AND GREATEST(COALESCE(s.login_fail_count,0),COALESCE(g.failed_count,0)) >= #{longThreshold}
+                  SELECT g.user_id, g.lock_kind
+                    FROM nx_user_login_guard g
+                    JOIN (
+                        SELECT user_id, MAX(locked_until) AS locked_until
+                          FROM nx_user_login_guard
+                         WHERE user_id IS NOT NULL
+                         GROUP BY user_id
+                    ) latest ON latest.user_id = g.user_id AND latest.locked_until = g.locked_until
+                   WHERE g.user_id IS NOT NULL
+                     AND g.locked_until > NOW()
+              ) g ON g.user_id = s.user_id
+             WHERE s.is_deleted = 0
+               AND COALESCE(NULLIF(g.lock_kind, ''), 'UNKNOWN') <> 'SHORT'
             """)
     long countActiveLongLocks(@Param("longThreshold") int longThreshold);
 
@@ -661,17 +676,22 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                    GREATEST(COALESCE(s.login_fail_count, 0), COALESCE(g.failed_count, 0)) AS loginFailCount,
                    1 AS locked,
                    COALESCE(s.password_reset_required, 0) AS passwordResetRequired,
-                   'UNKNOWN' AS lockKind,
-                   '已锁定（类型未确认）' AS lockLabel,
-                   '仅可核对有效锁定截止，不能按当前阈值推断原锁类型' AS lockReason,
+                   CASE WHEN COALESCE(NULLIF(g.lock_kind, ''), 'UNKNOWN') = 'SHORT' THEN 'SHORT' ELSE 'LONG' END AS lockKind,
+                   CASE WHEN COALESCE(NULLIF(g.lock_kind, ''), 'UNKNOWN') = 'SHORT' THEN '已锁定（短锁）' ELSE '已锁定（长锁）' END AS lockLabel,
+                   CASE WHEN COALESCE(NULLIF(g.lock_kind, ''), 'UNKNOWN') = 'UNKNOWN' THEN '历史锁未记录类型，按长锁处理' ELSE '按触发时的锁类型处理' END AS lockReason,
                    CONCAT('锁定至 ', DATE_FORMAT(g.locked_until, '%Y-%m-%d %H:%i:%s')) AS lockLeft
               FROM nx_user_security s
               JOIN nx_user u ON u.id = s.user_id AND u.is_deleted = 0
               JOIN (
-                  SELECT user_id, MAX(locked_until) AS locked_until, MAX(failed_count) AS failed_count
-                    FROM nx_user_login_guard
-                   WHERE user_id IS NOT NULL
-                   GROUP BY user_id
+                  SELECT g.user_id, g.locked_until, g.failed_count, g.lock_kind
+                    FROM nx_user_login_guard g
+                    JOIN (
+                        SELECT user_id, MAX(locked_until) AS locked_until
+                          FROM nx_user_login_guard
+                         WHERE user_id IS NOT NULL
+                         GROUP BY user_id
+                    ) latest ON latest.user_id = g.user_id AND latest.locked_until = g.locked_until
+                   WHERE g.user_id IS NOT NULL
               ) g ON g.user_id = s.user_id
              WHERE s.is_deleted = 0
                AND g.locked_until IS NOT NULL

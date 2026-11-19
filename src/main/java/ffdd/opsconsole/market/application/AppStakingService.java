@@ -188,12 +188,7 @@ public class AppStakingService {
                 || !"ACTIVE".equalsIgnoreCase(product.status())) {
             throw new BizException(409, "STAKING_POOL_NOT_ACTIVE");
         }
-        // Hold the same config row lock as the admin hide command through the
-        // wallet debit and position insert. A missing migration fails closed.
-        if (!config.activeValueForUpdate("G.staking.app_visible")
-                .map("true"::equalsIgnoreCase).orElse(false)) {
-            throw new BizException(409, "STAKING_POOL_STOPPED");
-        }
+        // 质押 App 可见开关已退役：PoolPolicy.enabled 恒为 false，开仓在下方按停售拒绝。
         PoolPolicy policy = policy(product);
         if (policy.killed()) throw new BizException(409, "STAKING_POOL_KILLED");
         if (!policy.enabled()) throw new BizException(409, "STAKING_POOL_STOPPED");
@@ -370,7 +365,8 @@ public class AppStakingService {
         boolean killed = config.activeValue(STAKING_PREFIX + tier + ".killed").map(this::switchEnabled).orElse(false);
         boolean enabled = config.activeValue(STAKING_PREFIX + "enabled." + tier)
                 .map(this::switchEnabled).orElse("ACTIVE".equalsIgnoreCase(product.status()));
-        boolean visible = config.activeValue("G.staking.app_visible").map("true"::equalsIgnoreCase).orElse(false);
+        // 质押 App 可见开关已退役：池始终对 App 用户关闭。
+        boolean visible = false;
         return new PoolPolicy(apyPct, penaltyPct, minAmount, visible && enabled && !killed && globalGateEnabled(), killed);
     }
 

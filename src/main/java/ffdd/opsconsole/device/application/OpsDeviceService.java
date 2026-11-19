@@ -2040,9 +2040,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         Map<String, String> configValues = e1GateConfigValues(gates);
         List<DevicePhaseView> phases = e1PhaseDefs();
         GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy);
-        String currentPhase = currentE1PhaseId(platformMonth, phases);
+        // H1 运营阶段为两页统一权威：阶段目录与当前阶段都以运营阶段为准，
+        // E1 前端不再按月份等分重算。
+        String currentPhase = rhythm.currentPhase();
         Map<String, Object> h1Rhythm = new LinkedHashMap<>(rhythm.summary());
-        h1Rhythm.put("currentPhase", currentPhase);
         List<String> phaseOrder = phases.stream().map(DevicePhaseView::p).toList();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "E1");
@@ -2063,9 +2064,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         Map<String, Object> phaseComparison = new LinkedHashMap<>();
         phaseComparison.put("e1CurrentPhase", currentPhase);
         phaseComparison.put("h1CurrentPhase", rhythm.currentPhase());
-        // E1 stores the release phase with the same P1-P6 ids as H1, but older
-        // rows/configuration can still surface numeric ids. Normalize both sides
-        // to the canonical phase token before comparing or mapping.
+        // E1 阶段目录与 currentPhase 已统一为 H1 运营阶段；此处保留比对字段
+        // 供前端契约兼容，e1CurrentPhase 与 h1CurrentPhase 同源恒为一致。
         String e1PhaseToken = normalizeE1PhaseToken(currentPhase);
         String h1PhaseToken = normalizeE1PhaseToken(rhythm.currentPhase());
         phaseComparison.put("same", java.util.Objects.equals(e1PhaseToken, h1PhaseToken));

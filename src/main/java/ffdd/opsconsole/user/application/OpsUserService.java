@@ -777,9 +777,11 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         int loginFailCount = status == null ? 0 : status.loginFailCount();
         boolean passwordResetRequired = status != null && status.passwordResetRequired();
         boolean locked = status != null && status.locked();
-        String lockKind = locked ? "UNKNOWN" : "NONE";
-        String lockLabel = locked ? "已锁定（类型未确认）" : "未锁定";
-        String lockReason = locked ? "仅可核对有效锁定截止，不能按当前阈值推断原锁类型" : "当前无锁定";
+        String storedLockKind = !locked || status.lockKind() == null ? "" : status.lockKind().trim().toUpperCase(Locale.ROOT);
+        String lockKind = locked ? ("SHORT".equals(storedLockKind) ? "SHORT" : "LONG") : "NONE";
+        boolean legacyUnknownKind = locked && !"SHORT".equals(storedLockKind) && !"LONG".equals(storedLockKind);
+        String lockLabel = locked ? ("SHORT".equals(lockKind) ? "已锁定（短锁）" : "已锁定（长锁）") : "未锁定";
+        String lockReason = !locked ? "当前无锁定" : legacyUnknownKind ? "历史锁未记录类型，按长锁处理" : "按触发时的锁类型处理";
         // This fallback read knows the configured duration, not the remaining time of a particular lock.
         String lockLeft = !locked ? "—" : status.lockedUntil() == null ? "解除时间未提供"
                 : "锁定至 " + status.lockedUntil().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
@@ -1630,8 +1632,9 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return c5Rejected(userId, idempotencyKey, request, "C5_USER_UNLOCK_REJECTED", 409,
                     "C5_ACTION_STATE_CHANGED");
         }
-        int longThreshold = configInt("auth.risk.login_long_lock_threshold", 10);
-        String serverLockKind = before.loginFailCount() >= longThreshold ? "LONG" : "SHORT";
+        // 按触发时存下的锁类型判断；历史未存类型按长锁处理。
+        String storedLockKind = before.lockKind() == null ? "" : before.lockKind().trim().toUpperCase(Locale.ROOT);
+        String serverLockKind = "SHORT".equals(storedLockKind) ? "SHORT" : "LONG";
         String requestedLockKind = StringUtils.hasText(request.lockKind())
                 ? request.lockKind().trim().toUpperCase(Locale.ROOT) : "";
         if (!serverLockKind.equals(requestedLockKind)) {
@@ -3171,7 +3174,8 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                             raw.passwordResetRequired(),
                             lockThreshold,
                             lockDurationMinutes,
-                            raw.lockedUntil());
+                            raw.lockedUntil(),
+                            raw.lockKind());
                 })
                 .orElse(null);
     }

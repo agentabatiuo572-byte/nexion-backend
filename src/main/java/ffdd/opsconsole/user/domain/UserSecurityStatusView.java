@@ -8,12 +8,13 @@ public record UserSecurityStatusView(
         boolean passwordResetRequired,
         int lockThreshold,
         int lockDurationMinutes,
-        java.time.LocalDateTime lockedUntil) {
+        java.time.LocalDateTime lockedUntil,
+        String lockKind) {
     @org.apache.ibatis.annotations.AutomapConstructor
     public UserSecurityStatusView { }
 
     public UserSecurityStatusView(Long userId, boolean twoFactorEnabled, int loginFailCount, boolean locked,
             boolean passwordResetRequired, int lockThreshold, int lockDurationMinutes) {
-        this(userId, twoFactorEnabled, loginFailCount, locked, passwordResetRequired, lockThreshold, lockDurationMinutes, null);
+        this(userId, twoFactorEnabled, loginFailCount, locked, passwordResetRequired, lockThreshold, lockDurationMinutes, null, null);
     }
 }
