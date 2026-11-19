@@ -78,7 +78,6 @@ public class AppTradeinService {
         this(paymentAuthorization,paymentAttribution,mapper,idempotencyService,outboxService,auditLogService,
                 productReleasePolicy,fundsSandboxProfileGuard,deviceLifecycle,testCloudAdmission,null);
     }
-    private static final Pattern LEVEL_GATE = Pattern.compile("^L([2-6])\\+\\s*持有者$");
     private static final Set<String> REQUIRED_CONFIG = Set.of(
             "tradeinEnabled", "eligibility",
             "tradeinLadderCut1", "tradeinLadderCut2", "tradeinLadderCut3", "tradeinLadderCut4",
@@ -823,8 +822,9 @@ public class AppTradeinService {
         if (!EARLY_ACCESS_LEAD_DAY_OPTIONS.contains(earlyAccessLeadDays)) {
             throw new BizException(503, "E3_EARLY_ACCESS_LEAD_DAYS_INVALID");
         }
-        String eligibility = values.get("eligibility");
-        if (!("全部用户".equals(eligibility) || LEVEL_GATE.matcher(eligibility).matches())) {
+        // BUG-522: 资格档位按稳定代码读取；历史存量中文值映射到同一代码，未知值仍按原口径拒绝。
+        String eligibility = ffdd.opsconsole.device.domain.TradeinEligibility.codeOf(values.get("eligibility"));
+        if (eligibility == null) {
             throw new BizException(503, "E3_TRADEIN_ELIGIBILITY_INVALID");
         }
         return new TradeinPolicy(
@@ -850,11 +850,12 @@ public class AppTradeinService {
     }
 
     private boolean isEligible(String userLevel, String eligibility) {
-        if ("全部用户".equals(eligibility)) return true;
-        Matcher gate = LEVEL_GATE.matcher(eligibility);
+        String code = ffdd.opsconsole.device.domain.TradeinEligibility.codeOf(eligibility);
+        // 全部用户：任何用户都通过（保持原语义，不看等级是否可解析）。
+        if (ffdd.opsconsole.device.domain.TradeinEligibility.ALL.equals(code)) return true;
+        Integer minLevel = ffdd.opsconsole.device.domain.TradeinEligibility.minLevelOf(code);
         Matcher actual = Pattern.compile("^L([1-9][0-9]*)$").matcher(StringUtils.hasText(userLevel) ? userLevel.trim() : "");
-        return gate.matches() && actual.matches()
-                && Integer.parseInt(actual.group(1)) >= Integer.parseInt(gate.group(1));
+        return minLevel != null && actual.matches() && Integer.parseInt(actual.group(1)) >= minLevel;
     }
 
     private String requireEligibilityTargetNo(String targetProductNo) {
