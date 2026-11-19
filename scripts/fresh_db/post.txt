@@ -5,7 +5,6 @@ fresh_db/07_d5_withdrawal_config.sql
 fresh_db/08_h9_home_display_config.sql
 fresh_db/ddl-20260720_d1_finance_closure.sql
 fresh_db/ddl-20260722_f1_vrank_promotion_engine.sql
-fresh_db/ddl-20260722_g2_g3_closure.sql
 fresh_db/ddl-20260722_g7_repurchase_closure.sql
 # Raffle ticket backfill requires the G7 ticket table above, including on an empty database.
 migrations/20261025_genesis_raffle.sql

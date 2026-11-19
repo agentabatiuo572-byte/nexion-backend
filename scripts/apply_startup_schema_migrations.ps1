@@ -17,6 +17,7 @@ $migrations = @(
   # H1 is a runtime dependency of H8 reward projection and several finance
   # gates.  Fresh schemas must receive the canonical rhythm keys before any
   # acceptance endpoint is opened; H8 also owns its permission/menu contract.
+  (Join-Path $root "scripts\migrations\20261120_lc_h1_rhythm.sql"),
   (Join-Path $root "scripts\migrations\20260711_rhythm_configurable.sql"),
   (Join-Path $root "scripts\migrations\20260722_h_domain_closure.sql"),
   (Join-Path $root "scripts\migrations\20260909_h5_legacy_milestone_reward.sql"),
@@ -44,6 +45,7 @@ $migrations = @(
   # Apply the authoritative D3 closure immediately afterwards so those retired
   # capabilities cannot be resurrected in a fresh acceptance database.
   (Join-Path $root "scripts\migrations\20260720_d3_treasury_closure.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_d3_void_legacy_opening.sql"),
   (Join-Path $root "scripts\migrations\20260807_nexion_hard_blockers.sql"),
   (Join-Path $root "scripts\migrations\20261108_earnings_release_source_ref_index.sql"),
   (Join-Path $root "scripts\migrations\20260807_k6_evidence_hardening.sql"),
@@ -164,7 +166,7 @@ $migrations = @(
   # Exchange/referral thresholds are prospective server-derived H3 facts; their binding rows are idempotent.
   (Join-Path $root "scripts\migrations\20260907_h3_weekly_exchange_referral.sql"),
   # Only the currently active H3 mission set may consume new canonical facts.
-  (Join-Path $root "scripts\migrations\20260902_h3_active_mission_event_alignment.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_h3_mission_alignment.sql"),
   # New registrations freeze their H3 Day-One member, binding, reward, and deadline snapshot.
   # This is create-only: legacy rows remain explicitly unverifiable.
   (Join-Path $root "scripts\migrations\20260909_h3_day_one_instance_snapshot.sql"),
@@ -241,6 +243,7 @@ $migrations = @(
   # all three languages, so real pushes kept showing it. Rewrite only rows that
   # still match the whole token; the Java RetiredBrandGate now blocks new
   # publishes of the same defect.
+  (Join-Path $root "scripts\migrations\20261120_lc_i2_channels.sql"),
   (Join-Path $root "scripts\migrations\20260920_i2_nova_brand_retire.sql"),
   # E6's stored English download guide still led with test punctuation ("！！！Download
   # ..."). The page already refused to ship it, but the dirty value stayed in the
@@ -382,6 +385,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261029_h4_retire_legacy_events.sql")
   (Join-Path $root "scripts\migrations\20261029_trust_documents.sql")
   (Join-Path $root "scripts\migrations\20261029_l6_trust_document_routes.sql")
+  (Join-Path $root "scripts\migrations\20261120_lc_i4_trust_sections.sql"),
   (Join-Path $root "scripts\migrations\20261029_i4_trust_centre_initial_copy.sql")
   # First-batch business facts and native push receipts remain separate from inbox delivery.
   (Join-Path $root "scripts\migrations\20261029_business_notifications.sql")
@@ -472,6 +476,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261106_e4_refunded_device_tasks.sql"),
   (Join-Path $root "scripts\migrations\20261106_k1_last_success.sql"),
   (Join-Path $root "scripts\migrations\20261106_k1_retired_release_params.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_risk_defaults.sql"),
   (Join-Path $root "scripts\migrations\20261107_c2_impersonation_active_deadline.sql")
   (Join-Path $root "scripts\migrations\20261107_b35_withdrawal_review_route.sql")
   (Join-Path $root "scripts\migrations\20261107_be27_ambassador_materials.sql")
@@ -528,6 +533,7 @@ $migrations = @(
   # I5-BE-03: register exchange in the I5 disclosure-gate action catalog.
   (Join-Path $root "scripts\migrations\20261119_i5_be03_disclosure_gate_exchange.sql"),
   (Join-Path $root "scripts\migrations\20261120_b54_binary_platform_settlement.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_market_team_payment.sql"),
   # BUG-521: rename the legacy default phone comparison label to English (one-shot).
   (Join-Path $root "scripts\migrations\20261120_e6_bug521_phone_label_english.sql")
 )
