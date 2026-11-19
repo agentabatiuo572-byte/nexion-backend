@@ -474,6 +474,109 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                                                     @Param("limit") int limit,
                                                     @Param("onlyInvitedUserId") Long onlyInvitedUserId);
 
+    /**
+     * Exact definitive K2 blocks for one H8 newcomer reward. Exact means a delimited
+     * cell token or an exact JSON_SEARCH node, never a substring LIKE. Review-only
+     * holds are excluded; multiple clusters stay separate for the caller to classify.
+     */
+    @Select("""
+            SELECT hits.clusterId AS clusterId,
+                   hits.hitSource AS hitSource,
+                   hits.riskRowId AS riskRowId,
+                   hits.disposition AS disposition
+              FROM (
+                SELECT risk.cluster_id AS clusterId,
+                       CASE WHEN (
+                         CONCAT('|', CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6), '|')
+                           LIKE CONCAT('%|', target.invitedNo, '|%')
+                         OR CONCAT('|', CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6), '|')
+                           LIKE CONCAT('%|', target.inviterNo, '|%')
+                       ) THEN 'RISK_ROW_CELL' ELSE 'RISK_ROW_CLUSTER_NODE' END AS hitSource,
+                       risk.row_id AS riskRowId,
+                       risk.disposition AS disposition,
+                       1 AS priority
+                  FROM nx_admin_risk_arbitrage_row risk
+                  JOIN nx_admin_risk_multi_account_cluster cluster
+                    ON cluster.cluster_id = risk.cluster_id AND cluster.is_deleted = 0
+                  CROSS JOIN (
+                    SELECT CONCAT('U', LPAD(#{invitedUserId}, GREATEST(8, CHAR_LENGTH(CAST(#{invitedUserId} AS CHAR))), '0')) AS invitedNo,
+                           CASE WHEN #{inviterUserId} IS NULL THEN NULL
+                                ELSE CONCAT('U', LPAD(#{inviterUserId}, GREATEST(8, CHAR_LENGTH(CAST(#{inviterUserId} AS CHAR))), '0')) END AS inviterNo
+                  ) target
+                 WHERE risk.is_deleted = 0
+                   AND risk.cluster_id IS NOT NULL
+                   AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
+                   AND (
+                     CONCAT('|', CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6), '|')
+                       LIKE CONCAT('%|', target.invitedNo, '|%')
+                     OR CONCAT('|', CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6), '|')
+                       LIKE CONCAT('%|', target.inviterNo, '|%')
+                     OR (cluster.nodes_json IS NOT NULL AND JSON_VALID(cluster.nodes_json) = 1
+                         AND (JSON_SEARCH(cluster.nodes_json, 'one', target.invitedNo) IS NOT NULL
+                           OR JSON_SEARCH(cluster.nodes_json, 'one', target.inviterNo) IS NOT NULL))
+                   )
+                UNION ALL
+                SELECT cluster.cluster_id AS clusterId,
+                       'CLUSTER_STATUS' AS hitSource,
+                       NULL AS riskRowId,
+                       NULL AS disposition,
+                       2 AS priority
+                  FROM nx_admin_risk_multi_account_cluster cluster
+                  CROSS JOIN (
+                    SELECT CONCAT('U', LPAD(#{invitedUserId}, GREATEST(8, CHAR_LENGTH(CAST(#{invitedUserId} AS CHAR))), '0')) AS invitedNo,
+                           CASE WHEN #{inviterUserId} IS NULL THEN NULL
+                                ELSE CONCAT('U', LPAD(#{inviterUserId}, GREATEST(8, CHAR_LENGTH(CAST(#{inviterUserId} AS CHAR))), '0')) END AS inviterNo
+                  ) target
+                 WHERE cluster.is_deleted = 0
+                   AND cluster.status IN ('detected','flagged','frozen')
+                   AND cluster.nodes_json IS NOT NULL AND JSON_VALID(cluster.nodes_json) = 1
+                   AND (JSON_SEARCH(cluster.nodes_json, 'one', target.invitedNo) IS NOT NULL
+                     OR JSON_SEARCH(cluster.nodes_json, 'one', target.inviterNo) IS NOT NULL)
+              ) hits
+             ORDER BY hits.priority,
+                      FIELD(hits.disposition, 'gift_blocked', 'cluster_frozen', 'account_flagged'),
+                      hits.riskRowId
+            """)
+    List<K2GiftBlock> findK2GiftBlocks(@Param("invitedUserId") Long invitedUserId,
+                                       @Param("inviterUserId") Long inviterUserId);
+
+    /** Fuzzy text-only matches, used solely to state that exact cluster attribution is unavailable. */
+    @Select("""
+            SELECT DISTINCT risk.cluster_id AS clusterId,
+                   'RISK_ROW_CELL_FUZZY' AS hitSource,
+                   risk.row_id AS riskRowId,
+                   risk.disposition AS disposition
+              FROM nx_admin_risk_arbitrage_row risk
+              JOIN nx_admin_risk_multi_account_cluster cluster
+                ON cluster.cluster_id = risk.cluster_id AND cluster.is_deleted = 0
+              CROSS JOIN (
+                SELECT CONCAT('U', LPAD(#{invitedUserId}, GREATEST(8, CHAR_LENGTH(CAST(#{invitedUserId} AS CHAR))), '0')) AS invitedNo,
+                       CASE WHEN #{inviterUserId} IS NULL THEN NULL
+                            ELSE CONCAT('U', LPAD(#{inviterUserId}, GREATEST(8, CHAR_LENGTH(CAST(#{inviterUserId} AS CHAR))), '0')) END AS inviterNo
+              ) target
+             WHERE risk.is_deleted = 0
+               AND risk.cluster_id IS NOT NULL
+               AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
+               AND (
+                 CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
+                   LIKE CONCAT('%', target.invitedNo, '%')
+                 OR CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
+                   LIKE CONCAT('%', target.inviterNo, '%')
+               )
+               AND NOT COALESCE(
+                 CONCAT('|', CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6), '|')
+                   LIKE CONCAT('%|', target.invitedNo, '|%')
+                 OR CONCAT('|', CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6), '|')
+                   LIKE CONCAT('%|', target.inviterNo, '|%')
+                 OR (cluster.nodes_json IS NOT NULL AND JSON_VALID(cluster.nodes_json) = 1
+                     AND (JSON_SEARCH(cluster.nodes_json, 'one', target.invitedNo) IS NOT NULL
+                       OR JSON_SEARCH(cluster.nodes_json, 'one', target.inviterNo) IS NOT NULL)),
+                 FALSE
+               )
+             ORDER BY risk.cluster_id, risk.row_id
+            """)
+    List<K2GiftBlock> findK2FuzzyGiftBlocks(@Param("invitedUserId") Long invitedUserId,
+                                            @Param("inviterUserId") Long inviterUserId);
     @Select("""
             SELECT u.id AS invitedUserId, inviter.id AS inviterUserId
               FROM nx_user u
@@ -842,6 +945,7 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                                Integer isDeleted, Boolean walletPresent, Boolean settled, Boolean freezeGift) { }
 
     record ReferralRow(Long invitedUserId, Long inviterUserId) {}
+    record K2GiftBlock(String clusterId, String hitSource, String riskRowId, String disposition) {}
     record AppReferralAccount(String referralCode, Integer sandbox, BigDecimal walletNexAvailable) {}
     record AppReferralLedgerSummary(Long settledCount, BigDecimal lifetimeInviterNex) {}
     record AppReferralLedgerRow(String settlementNo, BigDecimal amountNex, String ledgerStatus,

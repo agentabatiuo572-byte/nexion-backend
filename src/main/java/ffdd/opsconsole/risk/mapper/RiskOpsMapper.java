@@ -19,6 +19,34 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
+    /**
+     * Exact, unique-cluster H8 denial evidence from the same hot+cold audit pair used by
+     * AuditLogMapper. The retired hot row and its archive copy still count one reward.
+     */
+    String K2_DENIAL_EVIDENCE_SQL = """
+            SELECT JSON_UNQUOTE(JSON_EXTRACT(a.detail_json, '$.rewardIdentity')) AS rewardIdentity,
+                   JSON_UNQUOTE(JSON_EXTRACT(a.detail_json, '$.clusterId')) AS clusterId
+              FROM nx_audit_log a
+             WHERE a.is_deleted = 0
+               AND a.action = 'REFERRAL_REWARD_SETTLEMENT_RUN_REJECTED'
+               AND a.resource_type = 'REFERRAL_REWARD'
+               AND a.result = 'REJECTED'
+               AND JSON_UNQUOTE(JSON_EXTRACT(a.detail_json, '$.riskBlocked')) = 'true'
+               AND JSON_UNQUOTE(JSON_EXTRACT(a.detail_json, '$.rewardType')) = 'NEWCOMER_WELCOME_GIFT'
+               AND JSON_UNQUOTE(JSON_EXTRACT(a.detail_json, '$.attribution')) = 'UNIQUE_CLUSTER'
+            UNION ALL
+            SELECT JSON_UNQUOTE(JSON_EXTRACT(a.cold_payload, '$.detail.rewardIdentity')) AS rewardIdentity,
+                   JSON_UNQUOTE(JSON_EXTRACT(a.cold_payload, '$.detail.clusterId')) AS clusterId
+              FROM nx_audit_log_archive a
+             WHERE a.content_sha256 IS NOT NULL
+               AND JSON_UNQUOTE(JSON_EXTRACT(a.cold_payload, '$.action')) = 'REFERRAL_REWARD_SETTLEMENT_RUN_REJECTED'
+               AND JSON_UNQUOTE(JSON_EXTRACT(a.cold_payload, '$.resourceType')) = 'REFERRAL_REWARD'
+               AND JSON_UNQUOTE(JSON_EXTRACT(a.cold_payload, '$.result')) = 'REJECTED'
+               AND JSON_UNQUOTE(JSON_EXTRACT(a.cold_payload, '$.detail.riskBlocked')) = 'true'
+               AND JSON_UNQUOTE(JSON_EXTRACT(a.cold_payload, '$.detail.rewardType')) = 'NEWCOMER_WELCOME_GIFT'
+               AND JSON_UNQUOTE(JSON_EXTRACT(a.cold_payload, '$.detail.attribution')) = 'UNIQUE_CLUSTER'
+            """;
+
     @Select("SELECT DATE_FORMAT(last_success_at, '%Y-%m-%dT%H:%i:%s.%fZ') FROM nx_admin_risk_multi_account_check WHERE id = 1")
     String lastSuccessfulMultiAccountCheckAt();
 
@@ -1544,14 +1572,17 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     List<RiskArbitrageRowRecord> arbitrageRows();
 
-    /** Raw welcome-gift amounts behind a K2 gift row; disposition-only rows still get the structured unavailable blocked count. */
+    /** Raw welcome-gift amounts behind a K2 gift row; evidence-only gift rows are included and disposition-only rows keep the structured unavailable count. */
     @Select("""
             SELECT CONCAT('K2-GIFT-C', LEFT(SHA2(cluster.cluster_id, 256), 40)) AS rowId,
                    SUM(settlement.newcomer_usdt) AS usdtRaw,
                    SUM(settlement.newcomer_nex) AS nexRaw,
                    COUNT(DISTINCT settlement.id) AS settledCount,
-                   -- No persisted per-gift denial fact exists. A disposition marker is not a denied-gift count.
-                   CAST(NULL AS SIGNED) AS blockedCount
+                   (SELECT NULLIF(COUNT(DISTINCT e.rewardIdentity), 0)
+                      FROM (""" + K2_DENIAL_EVIDENCE_SQL + """
+                      ) e
+                     WHERE e.clusterId = cluster.cluster_id
+                   ) AS blockedCount
               FROM nx_admin_risk_multi_account_cluster cluster
               JOIN nx_referral_reward_settlement settlement
                 ON settlement.is_deleted = 0
@@ -1572,11 +1603,18 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                    0 AS usdtRaw,
                    0 AS nexRaw,
                    0 AS settledCount,
-                   CAST(NULL AS SIGNED) AS blockedCount
+                   (SELECT NULLIF(COUNT(DISTINCT e.rewardIdentity), 0)
+                      FROM (""" + K2_DENIAL_EVIDENCE_SQL + """
+                      ) e
+                     WHERE e.clusterId = risk.cluster_id
+                   ) AS blockedCount
               FROM nx_admin_risk_arbitrage_row risk
              WHERE risk.is_deleted = 0
                AND risk.view_key = 'gift'
-               AND risk.disposition IS NOT NULL
+               AND (risk.disposition IS NOT NULL OR EXISTS (
+                   SELECT 1 FROM (""" + K2_DENIAL_EVIDENCE_SQL + """
+                   ) e WHERE e.clusterId = risk.cluster_id AND e.rewardIdentity IS NOT NULL
+               ))
                AND NOT EXISTS (
                    SELECT 1
                      FROM nx_admin_risk_multi_account_cluster cluster
@@ -1596,6 +1634,36 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                )
             """)
     List<Map<String, Object>> arbitrageGiftAmounts();
+
+    /**
+     * Read-only facts for canonical gift rows retired by the projection refresh. The row is
+     * intentionally not re-created; callers expose these beside active rows only when the
+     * cluster is still readable and exact unique-cluster H8 evidence exists.
+     */
+    @Select("""
+            SELECT risk.row_id AS rowId,
+                   risk.cluster_id AS clusterId,
+                   (SELECT NULLIF(COUNT(DISTINCT e.rewardIdentity), 0)
+                      FROM (""" + K2_DENIAL_EVIDENCE_SQL + """
+                      ) e
+                     WHERE e.clusterId = risk.cluster_id
+                   ) AS blockedCount
+              FROM nx_admin_risk_arbitrage_row risk
+              JOIN nx_admin_risk_multi_account_cluster cluster
+                ON cluster.cluster_id = risk.cluster_id AND cluster.is_deleted = 0
+             WHERE risk.is_deleted = 1
+               AND risk.view_key = 'gift'
+               AND risk.row_id LIKE 'K2-GIFT-C%'
+               AND risk.disposition IS NULL
+               AND risk.cluster_id IS NOT NULL
+               AND cluster.nodes_json IS NOT NULL
+               AND EXISTS (
+                   SELECT 1 FROM (""" + K2_DENIAL_EVIDENCE_SQL + """
+                   ) e WHERE e.clusterId = risk.cluster_id AND e.rewardIdentity IS NOT NULL
+               )
+             ORDER BY risk.updated_at DESC, risk.row_id ASC
+            """)
+    List<Map<String, Object>> retiredGiftDenialFacts();
 
     /** Raw current-week USDT behind a K2 board row, read from the same snapshot projection. */
     @Select("""

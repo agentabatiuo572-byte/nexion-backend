@@ -551,9 +551,11 @@ public class OpsReferralRewardService {
                     () -> settle(limit, reason, actor(request.operator()), idempotencyKey, snapshot,
                             accountSandbox, onlyInvitedUserId));
         } catch (RuntimeException ex) {
+            Map<String, Object> riskEvidence = ex instanceof RiskBlockedReferralException blocked
+                    ? blocked.evidence() : Map.of();
             rejectedAudit("REFERRAL_REWARD_SETTLEMENT_RUN_REJECTED", "batch",
                     request == null ? null : request.operator(), idempotencyKey,
-                    request == null ? null : request.reason(), ex);
+                    request == null ? null : request.reason(), ex, riskEvidence);
             throw ex;
         }
     }
@@ -698,6 +700,9 @@ public class OpsReferralRewardService {
                 int released = releasePurchasedGifts(onlyInvitedUserId);
                 if (released > 0) return Map.of("settled", 0, "skipped", 0, "released", released, "limit", limit);
             }
+            Map<String, Object> riskEvidence = riskBlockedEvidence(
+                    onlyInvitedUserId, effectiveAt, effectiveRewards, priorPolicies, accountSandbox);
+            if (riskEvidence != null) throw new RiskBlockedReferralException(riskEvidence);
             throw new BizException(409, "REFERRAL_REWARD_USER_NOT_ELIGIBLE_OR_SETTLED");
         }
         String configSnapshot = snapshotText(effectiveRewards, lockMode);
@@ -1173,6 +1178,99 @@ public class OpsReferralRewardService {
         }
     }
 
+    /**
+     * Explains a single-user settlement rejection only when the reward exists outside the
+     * risk filter and a definitive K2 disposition/cluster hit proves the denial. Review
+     * holds and preflight reads never produce this evidence.
+     */
+    private Map<String, Object> riskBlockedEvidence(
+            Long invitedUserId,
+            LocalDateTime effectiveAt,
+            EffectiveRewards currentRewards,
+            List<PriorPolicy> priorPolicies,
+            int accountSandbox) {
+        ReferralRewardMapper.ReferralRow candidate = null;
+        EffectiveRewards reward = null;
+        if (hasNewcomerReward(currentRewards)) {
+            List<ReferralRewardMapper.ReferralRow> rows = mapper.findSettlementScopeCandidates(
+                    effectiveAt, null, SETTLEMENT_ENVIRONMENT, accountSandbox, 1, invitedUserId);
+            if (!rows.isEmpty()) {
+                candidate = rows.get(0);
+                reward = currentRewards;
+            }
+        }
+        if (candidate == null) {
+            for (PriorPolicy prior : priorPolicies) {
+                if (!hasNewcomerReward(prior.rewards())) continue;
+                List<ReferralRewardMapper.ReferralRow> rows = mapper.findSettlementScopeCandidates(
+                        prior.effectiveAt(), prior.effectiveUntil(), SETTLEMENT_ENVIRONMENT,
+                        accountSandbox, 1, invitedUserId);
+                if (rows.isEmpty()) continue;
+                candidate = rows.get(0);
+                reward = prior.rewards();
+                break;
+            }
+        }
+        if (candidate == null) return null;
+        Map<String, Object> evidence = new LinkedHashMap<>();
+        String rewardIdentity = "H8_NEWCOMER_GIFT:" + candidate.invitedUserId();
+        evidence.put("rewardIdentity", rewardIdentity);
+        evidence.put("rewardType", "NEWCOMER_WELCOME_GIFT");
+        evidence.put("invitedUserId", candidate.invitedUserId());
+        if (candidate.inviterUserId() != null) evidence.put("inviterUserId", candidate.inviterUserId());
+        evidence.put("newcomerUsdt", reward.newcomerUsdt());
+        evidence.put("newcomerNex", reward.newcomerNex());
+        List<ReferralRewardMapper.K2GiftBlock> hits = mapper.findK2GiftBlocks(
+                candidate.invitedUserId(), candidate.inviterUserId());
+        List<String> clusters = hits.stream().map(ReferralRewardMapper.K2GiftBlock::clusterId)
+                .filter(StringUtils::hasText).distinct().sorted().toList();
+        if (clusters.size() == 1) {
+            String clusterId = clusters.get(0);
+            ReferralRewardMapper.K2GiftBlock hit = hits.stream()
+                    .filter(candidateHit -> clusterId.equals(candidateHit.clusterId()))
+                    .findFirst().orElseThrow();
+            evidence.put("attribution", "UNIQUE_CLUSTER");
+            evidence.put("clusterId", hit.clusterId());
+            evidence.put("hitSource", hit.hitSource());
+            if (StringUtils.hasText(hit.riskRowId())) evidence.put("riskRowId", hit.riskRowId());
+            if (StringUtils.hasText(hit.disposition())) evidence.put("disposition", hit.disposition());
+        } else if (clusters.size() > 1) {
+            // Both the invited user and the inviter may match different hard blocks.
+            // Keep the real rejection reason, but never attribute the reward to one cluster.
+            evidence.put("attribution", "MULTI_CLUSTER");
+            evidence.put("clusterIds", clusters);
+            evidence.put("hitSources", hits.stream().map(ReferralRewardMapper.K2GiftBlock::hitSource)
+                    .filter(StringUtils::hasText).distinct().sorted().toList());
+        } else {
+            List<ReferralRewardMapper.K2GiftBlock> fuzzy = mapper.findK2FuzzyGiftBlocks(
+                    candidate.invitedUserId(), candidate.inviterUserId());
+            if (fuzzy.isEmpty()) return null;
+            // A substring LIKE match cannot prove which cluster owns the denial.
+            evidence.put("attribution", "FUZZY_TEXT_ONLY");
+            evidence.put("fuzzyClusterIds", fuzzy.stream().map(ReferralRewardMapper.K2GiftBlock::clusterId)
+                    .filter(StringUtils::hasText).distinct().sorted().toList());
+        }
+        evidence.put("riskBlocked", true);
+        return evidence;
+    }
+
+    private boolean hasNewcomerReward(EffectiveRewards rewards) {
+        return rewards.newcomerUsdt().signum() > 0 || rewards.newcomerNex().signum() > 0;
+    }
+
+    private static final class RiskBlockedReferralException extends BizException {
+        private final Map<String, Object> evidence;
+
+        private RiskBlockedReferralException(Map<String, Object> evidence) {
+            super(409, "REFERRAL_REWARD_USER_NOT_ELIGIBLE_OR_SETTLED");
+            this.evidence = evidence;
+        }
+
+        private Map<String, Object> evidence() {
+            return evidence;
+        }
+    }
+
     private void rejectedAudit(
             String action,
             String resourceId,
@@ -1180,12 +1278,24 @@ public class OpsReferralRewardService {
             String idempotencyKey,
             String reason,
             RuntimeException error) {
+        rejectedAudit(action, resourceId, operator, idempotencyKey, reason, error, Map.of());
+    }
+
+    private void rejectedAudit(
+            String action,
+            String resourceId,
+            String operator,
+            String idempotencyKey,
+            String reason,
+            RuntimeException error,
+            Map<String, Object> evidence) {
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("reason", StringUtils.hasText(reason) ? reason.trim() : "");
         detail.put("idempotencyKey", StringUtils.hasText(idempotencyKey) ? idempotencyKey.trim() : "");
         detail.put("error", StringUtils.hasText(error.getMessage())
                 ? error.getMessage()
                 : error.getClass().getSimpleName());
+        if (!evidence.isEmpty()) detail.putAll(evidence);
         audit.recordRequiredInNewTransaction(AuditLogWriteRequest.builder()
                 .action(action)
                 .resourceType("REFERRAL_REWARD")
