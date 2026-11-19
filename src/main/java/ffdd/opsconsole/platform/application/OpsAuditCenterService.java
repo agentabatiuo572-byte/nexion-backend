@@ -182,7 +182,7 @@ public class OpsAuditCenterService {
         long actorId;
         boolean pageOnly = false;
         try {
-            actorId = accessPolicy.requireProposalReader();
+            actorId = accessPolicy.requireOriginalKeyProposalReader();
         } catch (BizException ex) {
             if (ex.getCode() != 403) throw ex;
             actorId = accessPolicy.requirePageProposalReader();

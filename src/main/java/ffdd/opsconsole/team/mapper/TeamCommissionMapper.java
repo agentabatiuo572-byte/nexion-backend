@@ -1,5 +1,6 @@
 package ffdd.opsconsole.team.mapper;
 
+import ffdd.opsconsole.shared.canonical.StorefrontProductPublishGate;
 import ffdd.opsconsole.shared.config.VietnamBusinessPeriodSql;
 import ffdd.opsconsole.shared.config.HardwareQuotaPeriod;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
@@ -515,16 +516,24 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             """)
     List<Map<String, Object>> quotaRows();
 
-    record QuotaProduct(String productNo, String unlockPhaseId, boolean sellable) { }
+    record QuotaProduct(String productNo, String unlockPhaseId, boolean sellable,
+                        String tier, String productType, String gpu, Integer vramGb, String power) { }
 
     @Select("""
             <script>
-            SELECT product_no AS productNo, unlock_phase AS unlockPhaseId,
-                   (is_deleted = 0 AND COALESCE(store_visible, 1) = 1
-                       AND UPPER(status) IN ('ACTIVE', 'ON_SALE') AND price_usdt > 0
-                       AND (inventory_mode = 'UNLIMITED' OR stock >= 1)) AS sellable
-              FROM nx_product
-             WHERE product_no = #{productNo}
+            SELECT p.product_no AS productNo, p.unlock_phase AS unlockPhaseId,
+                   (p.is_deleted = 0 AND p.store_visible = 1
+                       AND UPPER(p.status) IN ('ACTIVE', 'ON_SALE') AND p.price_usdt > 0
+                       AND (p.inventory_mode = 'FINITE' AND p.stock >= 1
+                            OR p.inventory_mode = 'UNLIMITED' AND UPPER(p.product_type) = 'SHARE')
+                       AND
+            """ + StorefrontProductPublishGate.PUBLISHABLE_SQL + """
+                   ) AS sellable,
+                   p.tier, p.product_type AS productType, p.gpu_model AS gpu, p.vram_total_gb AS vramGb,
+                   s.power_text AS power
+              FROM nx_product p
+              LEFT JOIN nx_admin_device_sku s ON s.sku_id = p.product_no AND s.is_deleted = 0
+             WHERE p.product_no = #{productNo}
              <if test="lock">FOR UPDATE</if>
             </script>
             """)

@@ -78,6 +78,14 @@ public class A2AccessPolicy {
 
     /** Rechecks current DB authority even when invoked outside the HTTP filter. */
     public long requireProposalReader() {
+        return requireProposalReader(true);
+    }
+
+    long requireOriginalKeyProposalReader() {
+        return requireProposalReader(false);
+    }
+
+    private long requireProposalReader(boolean includeQuotaAuthority) {
         var auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth == null || !auth.isAuthenticated() || !(auth.getDetails() instanceof Map<?, ?> details)
                 || !"ADMIN".equals(details.get("subjectType")))
@@ -110,7 +118,7 @@ public class A2AccessPolicy {
                         || (grants.contains(K2OtpInitialApproval.MAKER_AUTHORITY)
                             && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write")))
                         || grants.contains("network_f1_write") || grants.contains("network_f3_write") || grants.contains("network_f4_pool_fund")
-                        || grants.contains(HardwareQuotaApproval.AUTHORITY)
+                        || (includeQuotaAuthority && grants.contains(HardwareQuotaApproval.AUTHORITY))
                         || grants.contains("finprod_g3_curve_target_price_write") || grants.contains("finprod_g3_curve_pump_prob_write")
                         || grants.contains("finprod_g3_override_price_write") || grants.contains("finprod_g3_write")
                         || grants.contains("finprod_g4_dividend_rate_write") || grants.contains("finprod_g4_write")
@@ -124,8 +132,8 @@ public class A2AccessPolicy {
     }
 
     /**
-     * Page-read fallback for the original-key lookup only. The caller must still
-     * verify the ticket maker and match its command to the corresponding current page-read grant.
+     * Command-specific fallback for the original-key lookup. The caller must
+     * verify the ticket maker and match its command to the current grant.
      */
     public long requirePageProposalReader() {
         var auth = SecurityContextHolder.getContext().getAuthentication();
@@ -136,7 +144,8 @@ public class A2AccessPolicy {
             long id = Long.parseLong(auth.getName());
             if (roleResolver.isActiveAdministrator(id)) {
                 Set<String> grants = permissions.getPermissionCodes(id);
-                if (grants.contains("growth_h4_read") || grants.contains("platform_a4_read")) return id;
+                if (grants.contains("growth_h4_read") || grants.contains("platform_a4_read")
+                        || grants.contains(HardwareQuotaApproval.AUTHORITY)) return id;
             }
         } catch (NumberFormatException ignored) { }
         throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");
@@ -146,7 +155,8 @@ public class A2AccessPolicy {
     boolean canReadPageProposal(AuditReplayCommand command, long actorId) {
         Set<String> grants = permissions.getPermissionCodes(actorId);
         return H4GrowthApproval.supports(command) && grants.contains("growth_h4_read")
-                || A4RegistryApproval.supports(command) && grants.contains("platform_a4_read");
+                || A4RegistryApproval.supports(command) && grants.contains("platform_a4_read")
+                || HardwareQuotaApproval.supports(command) && grants.contains(HardwareQuotaApproval.AUTHORITY);
     }
 
     boolean canDecide(Long actorId) {

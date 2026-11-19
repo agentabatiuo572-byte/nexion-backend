@@ -1,5 +1,6 @@
 package ffdd.opsconsole.team.application;
 
+import ffdd.opsconsole.device.domain.DeviceSkuSpecifications;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
@@ -93,7 +94,11 @@ public class HardwareQuotaApproval {
         if (mapper.hardwareQuotaTierForCode(quotaCode) != null) {
             throw new BizException(409, "F4_QUOTA_CODE_EXISTS");
         }
-        if (!product.sellable() || !releasePolicy.evaluate(product.productNo(), product.unlockPhaseId()).available()) {
+        boolean share = "Share".equals(product.tier()) && "SHARE".equalsIgnoreCase(product.productType());
+        if (!product.sellable()
+                || (!share && !DeviceSkuSpecifications.hasPurchaseSpecifications(
+                        product.gpu(), product.vramGb(), product.power()))
+                || !releasePolicy.evaluate(product.productNo(), product.unlockPhaseId()).available()) {
             throw new BizException(422, "F4_QUOTA_SKU_NOT_SELLABLE");
         }
     }
@@ -115,7 +120,10 @@ public class HardwareQuotaApproval {
         values.put("monthComputePoints", number(raw.get("monthComputePoints"), 9_007_199_254_740_991L));
         values.put("monthlyQuota", (int) number(raw.get("monthlyQuota"), 1_000_000));
         values.put("unlockMode", mode);
-        values.put("status", (int) number(raw.get("status"), 1));
+        if (number(raw.get("status"), 1) == 0) {
+            throw new BizException(422, "F4_QUOTA_TIER_MUST_BE_ENABLED");
+        }
+        values.put("status", 1);
         values.put("sortOrder", (int) number(raw.get("sortOrder"), Integer.MAX_VALUE));
         return values;
     }
