@@ -672,9 +672,16 @@ public class AppTrialLifecycleService {
                 ? null : mapper.catalogProduct(configuredProductCode);
         AppTrialLifecycleMapper.ConversionProduct startProduct = configuredProductCode == null
                 ? null : mapper.conversionProduct(configuredProductCode);
+        BigDecimal catalogDailyUsdt = productDailyUsdt(catalogProduct);
+        BigDecimal catalogDailyNex = catalogProduct == null ? null : catalogProduct.dailyNex();
+        boolean validCatalogYield = positiveOrNull(catalogDailyUsdt) != null
+                && positiveOrNull(catalogDailyNex) != null;
         boolean productAvailable = availablePhysicalTrialProduct(startProduct) && productReleased(startProduct)
-                && positiveOrNull(productDailyUsdt(catalogProduct)) != null
-                && positiveOrNull(catalogProduct.dailyNex()) != null;
+                && validCatalogYield;
+        if (!validCatalogYield) {
+            catalogDailyUsdt = null;
+            catalogDailyNex = null;
+        }
         boolean quotaAvailable = nonNegativeInt(policy, "seatsLeftToday", 0) > 0;
         boolean capacityAvailable = row != null && !restartable(normalize(row.status()))
                 || withinPhysicalSlotCapacity(userId, startProduct, lockCapacity);
@@ -700,9 +707,7 @@ public class AppTrialLifecycleService {
             result.put("config", safePolicy(policy, configuredProductCode,
                     catalogProduct == null ? mapper.configuredProductName(configuredProductCode) : catalogProduct.name(),
                     catalogProduct == null ? null : catalogProduct.priceUsdt(),
-                    productDailyUsdt(catalogProduct),
-                    catalogProduct == null ? null : catalogProduct.dailyNex(),
-                    catalogProduct!=null && catalogProduct.monthlyTargetUsdt()!=null));
+                    catalogDailyUsdt, catalogDailyNex));
             return result;
         }
         String effectiveState = effectiveState(row, now);
@@ -767,9 +772,8 @@ public class AppTrialLifecycleService {
         Map<String, Object> config = safePolicy(policy, configuredProductCode,
                 frozenProduct ? row.deviceName() : catalogProduct == null ? mapper.configuredProductName(configuredProductCode) : catalogProduct.name(),
                 frozenProduct ? row.priceUsdt() : catalogProduct == null ? null : catalogProduct.priceUsdt(),
-                frozenProduct ? row.dailyUsdt() : productDailyUsdt(catalogProduct),
-                frozenProduct ? row.dailyNex() : catalogProduct == null ? null : catalogProduct.dailyNex(),
-                frozenProduct || catalogProduct!=null && catalogProduct.monthlyTargetUsdt()!=null);
+                frozenProduct ? row.dailyUsdt() : catalogDailyUsdt,
+                frozenProduct ? row.dailyNex() : catalogDailyNex);
         if (frozenProduct) {
             config.put("trialDays", Integer.toString(Math.max(1, row.durationDays() == null ? 1 : row.durationDays())));
             config.put("graceDays", Integer.toString(row.graceDaysSnapshot()));
@@ -836,18 +840,14 @@ public class AppTrialLifecycleService {
 
     private Map<String, Object> safePolicy(
             Map<String, String> policy, String productCode, String productName, BigDecimal productPrice,
-            BigDecimal productDailyUsdt, BigDecimal productDailyNex, boolean frozenOrTargetUsdt) {
+            BigDecimal dailyUsdt, BigDecimal dailyNex) {
         Map<String, Object> result = new LinkedHashMap<>();
         Map<String, String> defaults = linkedString(
                 "trialDays", "3", "graceDays", "7", "extensionDays", "3",
                 "discountCapUSD", "20",
                 "autoChargeAtEnd", "false", "highQualityThresholdUSD", "100",
                 "trialPriceUSD", "1299",
-                // 🔴 试用收益口径的兜底值不再是「像真数字」的 38.52/65(zentao #78):
-                //   真正的日收益来自该商品的 estimated_daily_usdt / daily_nex,这两个键只在
-                //   商品未配收益时兜底。给它们一个显式 0 而不是一个可观金额,运营看到
-                //   「0 + 提示」才会去查商品配置,而不是误以为 38.52 是权威值。
-                "shadowDailyUSD", "0", "shadowDailyNEX", "0", "cooldownDays", "30",
+                "cooldownDays", "30",
                 "phaseOpen", "true", "autoPushEnabled", "true", "autoPushDelayMs", "1500",
                 "autoPushCooldownHours", "24", "autoPushMaxPerSession", "1",
                 "seatsLeftToday", "0", EARLY_DISCOUNT_KEY, "0");
@@ -874,18 +874,8 @@ public class AppTrialLifecycleService {
         if (productPrice != null && productPrice.signum() > 0) {
             result.put("trialPriceUSD", productPrice.stripTrailingZeros().toPlainString());
         }
-        // 🔴 试用日收益必须与商品卡同一个数(zentao #78)。上面两个 shadow* 键只在商品未配收益时
-        //   兜底,但此前**没有任何地方**用商品值覆盖它们 —— safePolicy 只覆盖了商品名与价格,
-        //   于是 App 读到的是库里存的运营旧值(种子行 38.52),试用 hero 算出 3 × 38.52 封顶 $50,
-        //   而 S1 商品卡写的是 $1.00/天(3 天 ≈ $3)。同一次试用、两个页面、两个数,且按构造必然
-        //   对不上。claim 时的结算早已改读商品值(AppTrialLifecycleService:137-142),这里把**展示
-        //   侧**也对齐到同一权威来源,商品没配收益时才回落到 policy。
-        if (productDailyUsdt != null && (frozenOrTargetUsdt || productDailyUsdt.signum() > 0)) {
-            result.put("shadowDailyUSD", productDailyUsdt.stripTrailingZeros().toPlainString());
-        }
-        if (productDailyNex != null && productDailyNex.signum() > 0) {
-            result.put("shadowDailyNEX", productDailyNex.stripTrailingZeros().toPlainString());
-        }
+        result.put("shadowDailyUSD", dailyUsdt == null ? null : dailyUsdt.stripTrailingZeros().toPlainString());
+        result.put("shadowDailyNEX", dailyNex == null ? null : dailyNex.stripTrailingZeros().toPlainString());
         return result;
     }
 

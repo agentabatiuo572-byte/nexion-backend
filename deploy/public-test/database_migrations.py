@@ -37,16 +37,13 @@ MAX_SQL = 8 * 1024**2
 RETIRED_H4_FILE = '20261025_h4_event_rules.sql'
 RETIRED_H4_SHA256 = '921d9f1e3567dfbd049da78ba878ab2187f9c6b15ed449a748be3e2118688d5d'
 RETIRED_H4_NOTE = 'RETIRED_H4_TRIGGER_SKIPPED'
-# Keep retired files in the archive so recorded history still validates.
-# A retired file that was never recorded must match its pin before it is skipped.
+# A7-BE-09: forward migrations retired before any target could apply them stay in the
+# archive so recorded history still validates (a removed or rewritten entry fails
+# pending_scripts), but they must never run. Their damage-proven successor owns the
+# repair: 20261119_a7_be09_restore_i4_i5_damage_proven.sql for the broad A7-BE-07
+# I4/I5 grant restore, which could not tell migration collateral from a legitimate
+# A6 revocation. Source is pinned: changing the file is still a hard failure.
 RETIRED_FORWARD_SQL = {
-    # Superseded by validation of the configured H2 product at trial start.
-    # The historical correction asserts S1 exists and writes 1/1.
-    '20260921_h2_trial_product_daily_yield.sql': (
-        '77e4b13684dd41f7aefed6213400cd2e7697c7d110f7e84b70fe3aef1a549ec7',
-        'RETIRED_H2_FIXED_S1_YIELD'),
-    # A7-BE-09 replaces the broad A7-BE-07 restore with a damage-proven repair
-    # that preserves legitimate A6 revocations.
     '20261119_a7_be07_restore_i4_i5_permissions.sql': (
         '7d97e929c160cec5760a50df3f0cef47eaff7a95a885183a0ed4b3922434ceb5',
         'RETIRED_A7_BE07_SUPERSEDED_BY_A7_BE09'),
@@ -200,7 +197,7 @@ def pending_scripts(state, scripts):
 
 
 def retired_forward(name, data):
-    """A retired migration remains pinned and is skipped when still pending."""
+    """A forward migration retired before any target applied it: pinned, never executed."""
     pin = RETIRED_FORWARD_SQL.get(name)
     if pin is None:
         return False
