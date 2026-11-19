@@ -22,6 +22,11 @@ INSERT INTO lc_h3_expected VALUES
  ('DAY_ONE_PROFILE_SAVED','SYSTEM','H3_DAY_ONE_PROFILE_SAVED','setup_profile','user_id'),
  ('REFERRAL_SETTLED','REFERRAL','H8_REFERRAL_REWARD_SETTLED','invite_friend','inviter_user_id');
 
+CREATE TEMPORARY TABLE lc_h3_registration_assert (
+  valid TINYINT NOT NULL,
+  CONSTRAINT h3_day_one_active_binding_required CHECK (valid = 1)
+);
+
 START TRANSACTION;
 
 INSERT IGNORE INTO nx_admin_operation_mutex (lock_key, updated_at) VALUES ('H3_CONFIG', NOW());
@@ -42,6 +47,26 @@ WHERE NOT EXISTS (
          AND b.status = 1 AND b.is_deleted = 0)
 );
 
+-- Registration needs a complete active binding for every enabled Day One mission.
+SELECT GROUP_CONCAT(m.mission_code ORDER BY m.mission_code SEPARATOR ', ')
+INTO @lc_h3_unbound_day_one
+FROM nx_mission m
+WHERE m.mission_type = 'DAY_ONE' AND m.status = 1 AND m.is_deleted = 0
+  AND NOT EXISTS (
+    SELECT 1 FROM nx_growth_quest_event_binding b
+    WHERE b.quest_code = m.mission_code AND b.status = 1 AND b.is_deleted = 0
+      AND TRIM(b.binding_code) <> '' AND TRIM(b.producer) <> ''
+      AND TRIM(b.event_type) <> '' AND TRIM(b.user_id_field) <> ''
+  );
+
+SELECT CONCAT('H3 Day One missions require an active, complete binding. Repair before retrying: ',
+              @lc_h3_unbound_day_one) AS startup_error
+WHERE @lc_h3_unbound_day_one IS NOT NULL;
+
+INSERT INTO lc_h3_registration_assert
+SELECT 0 WHERE @lc_h3_unbound_day_one IS NOT NULL;
+
 COMMIT;
 
+DROP TEMPORARY TABLE lc_h3_registration_assert;
 DROP TEMPORARY TABLE lc_h3_expected;
