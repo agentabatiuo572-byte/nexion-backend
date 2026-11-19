@@ -234,7 +234,16 @@ public class AppSupportService {
                 throw failure;
             }
             if (!conversationRepository.replyAsUser(conversation, userId, SupportHumanMessageService.text(request.body()), LocalDateTime.now(clock))) {
-                if (claimed) throw new BizException(409, "CONVERSATION_CONFLICT");
+                // The CAS returned 0 before the message insert. When this request claimed the peer, keep
+                // the rejection receipt while throwing to roll that claim back.
+                if (claimed) {
+                    if (replyReceiptEligible(idempotencyKey, request.clientMessageId(), conversationNo)) {
+                        throw new AdminCommandBusinessRejection(409, "CONVERSATION_CONFLICT",
+                                replyRejectionResponse(409, "CONVERSATION_CONFLICT", userId, conversationNo,
+                                        idempotencyKey, requestHash, request.clientMessageId()));
+                    }
+                    throw new BizException(409, "CONVERSATION_CONFLICT");
+                }
                 return replyRejection(409, "CONVERSATION_CONFLICT", userId, conversationNo, idempotencyKey, requestHash, request);
             }
             humanMessages.committed(prepared,humanMessages.latest(conversationNo),idempotencyKey);
