@@ -429,7 +429,7 @@ public class AuditReplayBusinessPermissionGuard {
         if("promotion_reward_correction".equals(operation)
                 &&(!"H".equals(command.domain())||!promotionCorrectionValid(command.params())))
             return ApiResult.fail(422,"PROMOTION_CORRECTION_FIELDS_INVALID");
-        ApiResult<Void> ordinaryPermission = validateOrdinaryProposalPermission(command, operation);
+        ApiResult<Void> ordinaryPermission = validateOrdinaryProposalPermission(command, operation, false);
         if (ordinaryPermission.getCode() != 0) return ordinaryPermission;
         if ("A".equalsIgnoreCase(command.domain()) && "a6_role_grants_update".equals(operation)) {
             ApiResult<Void> snapshot = platformRoles.getObject().validateRoleGrantsProposal(command.params());
@@ -471,7 +471,10 @@ public class AuditReplayBusinessPermissionGuard {
                     && command.params().get("changes") instanceof List<?> changes) {
                 for (Object item : changes) {
                     if (item instanceof Map<?, ?> change) {
-                        OpsTeamService.validateUnilevelRatePrecision(value(change, "key"), value(change, "value"));
+                        String key = value(change, "key");
+                        String next = value(change, "value");
+                        OpsTeamService.validateUnilevelRatePrecision(key, next);
+                        if (OpsTeamService.isBinaryPayoutControlKey(key)) OpsTeamService.validateBinaryUiConfig(key, next);
                     }
                 }
             }
@@ -589,10 +592,10 @@ public class AuditReplayBusinessPermissionGuard {
         if (e2TaskPricingApproval.shouldBindLifecycle(command)) {
             return ApiResult.ok(e2TaskPricingApproval.bindLifecycle(request, A2ReplayContext.authenticatedAdminId()));
         }
-        if (isF4StoredUiConfigProposal(command)) {
+        if (isVersionedFUiConfigProposal(command)) {
             ApiResult<AuditReplayCommand> canonical = canonicalizeProposalCommand(command);
             return canonical.getCode() == 0
-                    ? ApiResult.ok(bindF4ProposalSnapshot(canonical.getData()))
+                    ? ApiResult.ok(bindFUiConfigProposalSnapshot(canonical.getData()))
                     : canonical;
         }
         if (!LearningCourseActivationApproval.isOperation(command)) return canonicalizeProposalCommand(command);
@@ -602,12 +605,12 @@ public class AuditReplayBusinessPermissionGuard {
         return ApiResult.ok(learningCourseActivationApproval.prepare(request, A2ReplayContext.authenticatedAdminId()));
     }
 
-    private boolean isF4StoredUiConfigProposal(AuditReplayCommand command) {
+    private boolean isVersionedFUiConfigProposal(AuditReplayCommand command) {
         if (command == null || !"F".equalsIgnoreCase(command.domain())) {
             return false;
         }
         if ("f_ui_config".equalsIgnoreCase(command.op())) {
-            return OpsTeamService.isF4StoredUiConfigKey(value(command.params(), "key"));
+            return isVersionedFUiConfigKey(value(command.params(), "key"));
         }
         if (!"f_config_batch".equalsIgnoreCase(command.op())
                 || command.params() == null
@@ -615,16 +618,15 @@ public class AuditReplayBusinessPermissionGuard {
             return false;
         }
         return changes.stream().anyMatch(item -> item instanceof Map<?, ?> change
-                && OpsTeamService.isF4StoredUiConfigKey(value(change, "key")));
+                && isVersionedFUiConfigKey(value(change, "key")));
     }
 
-    /**
-     * Binds the authoritative F4 stored value at proposal time. The command snapshot is what
-     * the replay compares against; the human-readable ticket beforeValue is still produced by
-     * delegatedFDescriptor from the same source. Historical/in-flight tickets without this
-     * parameter keep the legacy path and are not invalidated.
-     */
-    private AuditReplayCommand bindF4ProposalSnapshot(AuditReplayCommand command) {
+    private boolean isVersionedFUiConfigKey(String key) {
+        return OpsTeamService.isF4StoredUiConfigKey(key) || OpsTeamService.isBinaryPayoutControlKey(key);
+    }
+
+    /** Binds the server's prior value so replay cannot apply an approval to a different change. */
+    private AuditReplayCommand bindFUiConfigProposalSnapshot(AuditReplayCommand command) {
         Map<String, Object> params = new LinkedHashMap<>(command.params() == null ? Map.of() : command.params());
         if ("f_config_batch".equalsIgnoreCase(command.op())
                 && params.get("changes") instanceof List<?> changes) {
@@ -635,7 +637,7 @@ public class AuditReplayBusinessPermissionGuard {
                     raw.forEach((key, value) -> change.put(String.valueOf(key), value));
                 }
                 String key = value(change, "key");
-                if (OpsTeamService.isF4StoredUiConfigKey(key)) {
+                if (isVersionedFUiConfigKey(key)) {
                     change.put("expectedValue", OpsTeamService.proposalUiConfigValue(configFacade, key));
                 }
                 bound.add(change);
@@ -773,7 +775,7 @@ public class AuditReplayBusinessPermissionGuard {
                 return ApiResult.fail(403, "C5_SESSION_REVOKE_APPROVAL_FORBIDDEN");
             }
         }
-        var permission = validateOrdinaryProposalPermission(command, operation);
+        var permission = validateOrdinaryProposalPermission(command, operation, approving);
         if (permission.getCode() != 0) return permission;
         return "H".equalsIgnoreCase(command.domain()) && "h2_trial_charge".equals(operation)
                 ? ApiResult.fail(410, "TRIAL_EXPLICIT_PURCHASE_REQUIRED") : ApiResult.ok();
@@ -811,10 +813,11 @@ public class AuditReplayBusinessPermissionGuard {
         return validateProposal(command);
     }
 
-    private ApiResult<Void> validateOrdinaryProposalPermission(AuditReplayCommand command, String operation) {
+    private ApiResult<Void> validateOrdinaryProposalPermission(AuditReplayCommand command, String operation,
+            boolean approving) {
         if ("F".equalsIgnoreCase(command.domain()) && "f_config_batch".equals(operation)) {
             for (AuditReplayCommand item : fConfigBatchCommands(command.params())) {
-                ApiResult<Void> permission = validateOrdinaryProposalPermission(item, item.op());
+                ApiResult<Void> permission = validateOrdinaryProposalPermission(item, item.op(), approving);
                 if (permission.getCode() != 0) return permission;
             }
             return ApiResult.ok();
@@ -828,6 +831,16 @@ public class AuditReplayBusinessPermissionGuard {
                 && !(isUserSessionRevocation(command) && hasAuthority("user_c5_session_revoke_all"))
                 && !scopedMakerMayPropose(command, operation))
             return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:" + authority);
+        if (approving && "F".equalsIgnoreCase(command.domain()) && "f_ui_config".equals(operation)) {
+            String key = value(command.params(), "key");
+            if (OpsTeamService.isBinaryPayoutControlKey(key)
+                    && OpsTeamService.binaryPayoutControlAmplifies(key,
+                            value(command.params(), "expectedValue"), value(command.params(), "value"))
+                    && (!hasAuthority("platform_a2_operation_approve")
+                        || !superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication()))) {
+                return ApiResult.fail(403, "F3_SUPER_ADMIN_APPROVAL_REQUIRED");
+            }
+        }
         return ApiResult.ok();
     }
 
@@ -1086,6 +1099,9 @@ public class AuditReplayBusinessPermissionGuard {
         if (H4GrowthApproval.isRaffleOpen(boundCommand)) {
             return describeH4Proposal(request, boundCommand);
         }
+        if (isVersionedFUiConfigProposal(boundCommand)) {
+            return validateRequestContext(request, boundCommand);
+        }
         return validateProposalContext(request);
     }
 
@@ -1118,8 +1134,12 @@ public class AuditReplayBusinessPermissionGuard {
 
     public ApiResult<DelegatedProposalDescriptor> validateProposalContext(
             AuditOperationProposalRequest request) {
+        return validateRequestContext(request, request == null ? null : request.command());
+    }
+
+    private ApiResult<DelegatedProposalDescriptor> validateRequestContext(
+            AuditOperationProposalRequest request, AuditReplayCommand command) {
         boolean delegated = delegatedProposal();
-        AuditReplayCommand command = request == null ? null : request.command();
         if(command!=null && "E".equals(command.domain()) && Set.of("e1_sku_create","e1_sku_update").contains(command.op()))
             return ApiResult.ok(delegatedDescriptor(command)); // E1 derives its lock target from the typed SKU, including generated create ids.
 
@@ -1726,10 +1746,13 @@ public class AuditReplayBusinessPermissionGuard {
         if (targetId.isBlank()) {
             return null;
         }
-        boolean amplifies = "f_config".equals(operation)
-                || OpsTeamService.uiConfigAmplifies(configFacade, teamCommissionRepository, key, nextValue);
-        String beforeValue = OpsTeamService.proposalCurrentValue(
-                configFacade, teamCommissionRepository, operation, key);
+        boolean boundBinaryControl = "f_ui_config".equals(operation) && OpsTeamService.isBinaryPayoutControlKey(key)
+                && params.get("expectedValue") instanceof String;
+        String beforeValue = boundBinaryControl ? (String) params.get("expectedValue")
+                : OpsTeamService.proposalCurrentValue(configFacade, teamCommissionRepository, operation, key);
+        boolean amplifies = boundBinaryControl ? OpsTeamService.binaryPayoutControlAmplifies(key, beforeValue, nextValue)
+                : "f_config".equals(operation)
+                    || OpsTeamService.uiConfigAmplifies(configFacade, teamCommissionRepository, key, nextValue);
         return new DelegatedProposalDescriptor(
                 "F 域配置调整 · " + key,
                 key,
@@ -2402,7 +2425,7 @@ public class AuditReplayBusinessPermissionGuard {
                 || key.matches("^F\\.unilevel\\.L[1-7]\\.paused$")) {
             return "network_f2_policy_amplify";
         }
-        if ("F.binary.paused".equals(key)) {
+        if (Set.of("F.binary.paused", "F.binary.autoSettle").contains(key)) {
             return "network_f3_engine_pause";
         }
         if (key.startsWith("F.binary.")) {

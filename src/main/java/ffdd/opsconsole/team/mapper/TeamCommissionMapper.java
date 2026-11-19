@@ -802,6 +802,18 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    s.matched_volume AS matchAmountRaw,
                    CAST(ROUND(s.amount_usdt, 0) AS SIGNED) AS todayPaid,
                    s.amount_usdt AS todayPaidRaw,
+                   a.settlement_mode AS settlementMode,
+                   CASE WHEN a.settlement_mode IS NOT NULL THEN
+                     TRUNCATE(100*(a.settled_raw_amount_usdt-s.amount_usdt)/NULLIF(a.settled_raw_amount_usdt,0),6)
+                   END AS platformReductionPct,
+                   p.cap_amount_usdt AS platformCapUsdt,
+                   CASE WHEN p.settlement_date IS NOT NULL THEN (
+                     SELECT COALESCE(SUM(z.amount_usdt),0) FROM nx_binary_commission_settlement z
+                      WHERE z.settlement_date=p.settlement_date AND z.is_deleted=0 AND EXISTS (
+                        SELECT 1 FROM nx_binary_platform_allocation x
+                         WHERE x.settlement_date=z.settlement_date AND x.user_id=z.user_id AND x.settlement_mode IS NOT NULL
+                      )
+                   ) END AS platformUsedUsdt,
                    CASE
                      WHEN UPPER(s.status) IN ('PAID', 'SETTLED', 'UNLOCKED') THEN 'paid'
                      WHEN UPPER(s.status) IN ('BLOCKED', 'REJECTED', 'FAILED', 'FROZEN') THEN 'blocked'
@@ -816,6 +828,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    'nx_binary_commission_settlement' AS source
               FROM nx_binary_commission_settlement s
               LEFT JOIN nx_user u ON u.id=s.user_id AND u.is_deleted=0
+              LEFT JOIN nx_binary_platform_allocation a ON a.settlement_date=s.settlement_date AND a.user_id=s.user_id
+              LEFT JOIN nx_binary_platform_period p ON p.settlement_date=a.settlement_date
              WHERE s.is_deleted = 0
              ORDER BY s.settlement_date DESC, s.id DESC
              LIMIT #{limit}

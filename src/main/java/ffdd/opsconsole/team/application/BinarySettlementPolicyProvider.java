@@ -19,6 +19,10 @@ public class BinarySettlementPolicyProvider {
     static final String THRESHOLD_KEY = "team.ui.F.binary.threshold";
     static final String MATCH_RATE_KEY = "team.ui.F.binary.matchRate";
     static final String PAUSED_KEY = "team.ui.F.binary.paused";
+    static final String AUTO_SETTLE_KEY = "team.ui.F.binary.autoSettle";
+    static final String AUTO_ENABLED_AT_UTC_KEY = "team.binary.autoEnabledAtUtc";
+    static final String PLATFORM_CAP_PCT_KEY = "team.ui.F.binary.platformCapPct";
+    static final String DEFAULT_PLATFORM_CAP_PCT = "2%";
     static final String SPILLOVER_KEY = "team.ui.F.binary.spillover";
     static final String SETTLE_PERIOD_KEY = "team.ui.F.binary.settlePeriod";
     static final String RESIDUAL_POLICY_KEY = "team.ui.F.binary.residualPolicy";
@@ -78,19 +82,35 @@ public class BinarySettlementPolicyProvider {
         TreasuryCoverageSnapshot coverage = null;
         if (checkCurrentCoverage) {
             coverage = coverageFacade.snapshot();
-            if (coverage == null || !coverage.reliable()
-                    || coverage.coverageRatio() == null || coverage.redlinePct() == null) {
-                throw new PolicyBlocked("B1_COVERAGE_UNRELIABLE");
-            }
-            if (coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
-                throw new PolicyBlocked("COVERAGE_BELOW_REDLINE");
-            }
+            String block = currentCoverageBlock(coverage);
+            if (block != null) throw new PolicyBlocked(block);
         }
         return new BinarySettlementPolicy(
                 threshold, matchRate, rhythm.binaryDailyCap(), paused,
                 spilloverEnabled, settlePeriod, residualPolicy, gvResetCron,
                 coverage == null ? null : coverage.coverageRatio(),
                 coverage == null ? null : coverage.redlinePct());
+    }
+
+    BigDecimal platformCapPctForUpdate() {
+        BigDecimal cap = parsePlatformCapPct(configFacade.activeValueForUpdate(PLATFORM_CAP_PCT_KEY)
+                .orElse(DEFAULT_PLATFORM_CAP_PCT));
+        if (cap == null) throw new PolicyBlocked("F3_PLATFORM_CAP_PCT_INVALID");
+        return cap;
+    }
+
+    String currentCoverageBlock() {
+        return currentCoverageBlock(coverageFacade.snapshot());
+    }
+
+    static String currentCoverageBlock(TreasuryCoverageSnapshot coverage) {
+        if (coverage == null || !coverage.reliable()
+                || coverage.coverageRatio() == null || coverage.redlinePct() == null
+                || coverage.redlinePct().signum() <= 0) {
+            return "B1_COVERAGE_UNRELIABLE";
+        }
+        return coverage.redlineBreached() || coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0
+                ? "COVERAGE_BELOW_REDLINE" : null;
     }
 
     String projectedCoverageBlock(BigDecimal amountUsdt) {
@@ -157,6 +177,20 @@ public class BinarySettlementPolicyProvider {
             return percent.movePointLeft(2).stripTrailingZeros();
         } catch (NumberFormatException ex) {
             throw new IllegalArgumentException("F3_MATCH_RATE_INVALID");
+        }
+    }
+
+    static BigDecimal parsePlatformCapPct(String raw) {
+        if (!StringUtils.hasText(raw)) return null;
+        String value = raw.trim();
+        if (value.endsWith("%")) value = value.substring(0, value.length() - 1).trim();
+        try {
+            BigDecimal percent = new BigDecimal(value);
+            if (percent.signum() < 0 || percent.compareTo(BigDecimal.valueOf(100)) > 0) return null;
+            BigDecimal exactPercent = percent.stripTrailingZeros();
+            return exactPercent.scale() <= 10 ? exactPercent : null;
+        } catch (NumberFormatException ex) {
+            return null;
         }
     }
 

@@ -429,7 +429,10 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
             @Param("ownerUserId") Long ownerUserId,
             @Param("settlementDate") LocalDate settlementDate);
 
-    @Select(SETTLEMENT_BY_OWNER_DATE + " AND status<>'BLOCKED' AND amount_usdt>0 AND commission_event_id>0")
+    @Select(SETTLEMENT_BY_OWNER_DATE + """
+             AND ((status<>'BLOCKED' AND amount_usdt>0 AND commission_event_id>0)
+               OR (status='CAPPED' AND amount_usdt=0 AND commission_event_id IS NULL))
+            """)
     BinarySettlementRow findSettlementReceipt(
             @Param("ownerUserId") Long ownerUserId,
             @Param("settlementDate") LocalDate settlementDate);

@@ -525,6 +525,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261119_e5_be19_ops_pause_state.sql"),
   # I5-BE-03: register exchange in the I5 disclosure-gate action catalog.
   (Join-Path $root "scripts\migrations\20261119_i5_be03_disclosure_gate_exchange.sql"),
+  (Join-Path $root "scripts\migrations\20261120_b54_binary_platform_settlement.sql"),
   # BUG-521: rename the legacy default phone comparison label to English (one-shot).
   (Join-Path $root "scripts\migrations\20261120_e6_bug521_phone_label_english.sql")
 )

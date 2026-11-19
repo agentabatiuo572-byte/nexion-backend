@@ -11,6 +11,8 @@ import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.team.application.BinarySettlementPolicyProvider.BinarySettlementPolicy;
 import ffdd.opsconsole.team.application.BinarySettlementPolicyProvider.PolicyBlocked;
 import ffdd.opsconsole.team.mapper.BinaryCommissionSettlementMapper;
+import ffdd.opsconsole.team.mapper.BinaryPlatformSettlementMapper;
+import ffdd.opsconsole.team.mapper.BinaryPlatformSettlementMapper.Allocation;
 import ffdd.opsconsole.team.mapper.BinaryCommissionSettlementMapper.BinaryCommissionEventRow;
 import ffdd.opsconsole.team.mapper.BinaryCommissionSettlementMapper.BinaryLegAssignmentRow;
 import ffdd.opsconsole.team.mapper.BinaryCommissionSettlementMapper.BinarySettlementRow;
@@ -32,6 +34,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Propagation;
@@ -43,6 +47,7 @@ import org.springframework.util.StringUtils;
  */
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class BinaryCommissionSettlementService {
     private static final BigDecimal ZERO = BigDecimal.ZERO.setScale(6);
     private static final DateTimeFormatter DAY_KEY = DateTimeFormatter.BASIC_ISO_DATE;
@@ -56,7 +61,16 @@ public class BinaryCommissionSettlementService {
     private final AuditLogService auditLogService;
     private final PlatformConfigFacade configFacade;
     private final EventOutboxService eventOutboxService;
+
     private final AdminIdempotencyService idempotencyService;
+    private BinaryPlatformSettlementPlan platformPlan;
+    private BinaryPlatformSettlementMapper platformPeriods;
+
+    @Autowired
+    void configurePlatformCap(BinaryPlatformSettlementPlan platformPlan, BinaryPlatformSettlementMapper platformPeriods) {
+        this.platformPlan = platformPlan;
+        this.platformPeriods = platformPeriods;
+    }
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public AssignmentPage assignments(Long ownerUserId, Long memberUserId, String status, int page, int pageSize) {
@@ -115,8 +129,26 @@ public class BinaryCommissionSettlementService {
     @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
     public SettlementResult settle(Long ownerUserId, LocalDate settlementDate) {
         SettlementResult result = settleTrusted(ownerUserId, settlementDate, null, "SYSTEM", "SYSTEM", "系统周期结算", null);
-        if ("BLOCKED".equals(result.status())) recordBlockedDecision(result, null, null, "SYSTEM");
+        if ("BLOCKED".equals(result.status()) && !isBatchBlock(result.reason())) {
+            recordBlockedDecision(result, null, null, "SYSTEM");
+        }
         return result;
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
+    public String automaticBatchBlock(LocalDate date) {
+        if (platformPeriods.period(date) != null) {
+            return policyProvider.projectedCoverageBlock(platformPeriods.remaining(date));
+        }
+        return policyProvider.currentCoverageBlock();
+    }
+
+    static boolean isBatchBlock(String code) {
+        return switch (code) {
+            case "B1_COVERAGE_UNRELIABLE", "COVERAGE_BELOW_REDLINE",
+                    "F3_BINARY_PAUSED", "F3_AUTO_SETTLEMENT_DISABLED", "F3_PLATFORM_QUOTE_UNAVAILABLE" -> true;
+            default -> false;
+        };
     }
 
     /** Legacy clients can recover a committed receipt without claiming another write. */
@@ -137,7 +169,7 @@ public class BinaryCommissionSettlementService {
         BinarySettlementRow existing = mapper.findSettlementReceipt(ownerUserId, settlementDate);
         if (existing == null) throw new BizException(409, "A2_CONFIRMATION_REQUIRED");
         SettlementResult replay = recovery.response();
-        return replay != null && existing.commissionEventId().equals(replay.commissionEventId())
+        return replay != null && Objects.equals(existing.commissionEventId(), replay.commissionEventId())
                 ? replay : fromExisting(existing);
     }
 
@@ -180,12 +212,14 @@ public class BinaryCommissionSettlementService {
         }
         // A2 converts BLOCKED to a failed decision and rolls the money transaction back.
         // Keep only the decision fact in the existing independent audit transaction.
-        auditLogService.recordRequiredInNewTransaction(AuditLogWriteRequest.builder()
+        var write = AuditLogWriteRequest.builder()
                 .action("F3_BINARY_SETTLED").resourceType("BINARY_SETTLEMENT")
                 .resourceId(settlementNo(result.ownerUserId(), result.settlementDate()))
                 .userId(result.ownerUserId()).actorId(checkerId)
                 .actorType(approval == null ? "SYSTEM" : "ADMIN").actorUsername(checkerUsername)
-                .result("BLOCKED").riskLevel("HIGH").detail(detail).build());
+                .result("BLOCKED").riskLevel("HIGH").detail(detail).build();
+        if (approval == null) auditLogService.recordRequired(write);
+        else auditLogService.recordRequiredInNewTransaction(write);
     }
 
     private void requireClosedSettlementDate(LocalDate settlementDate) {
@@ -211,7 +245,13 @@ public class BinaryCommissionSettlementService {
             Long ownerUserId, LocalDate settlementDate, Long actorId, String actorUsername,
             String actorType, String reason, ManualApproval approval) {
         requirePositive(ownerUserId, "BINARY_OWNER_REQUIRED");
-        if (settlementDate == null) throw new IllegalArgumentException("BINARY_SETTLEMENT_DATE_REQUIRED");
+        requireClosedSettlementDate(settlementDate);
+        // This configuration row is also the shared lock for plan creation, payouts and switch changes.
+        String autoSettle = configFacade.activeValueForUpdate(BinarySettlementPolicyProvider.AUTO_SETTLE_KEY)
+                .orElseThrow(() -> new BizException(503, "F3_AUTO_SETTLEMENT_CONFIG_UNAVAILABLE"));
+        if (approval == null && !Boolean.TRUE.equals(BinarySettlementPolicyProvider.parsePaused(autoSettle))) {
+            return blockedWithoutRow(ownerUserId, settlementDate, "F3_AUTO_SETTLEMENT_DISABLED");
+        }
         mapper.ensureSettlementMutex(ownerUserId, settlementDate);
         if (mapper.lockSettlementMutex(ownerUserId, settlementDate) == null) {
             throw new IllegalStateException("BINARY_SETTLEMENT_MUTEX_UNAVAILABLE");
@@ -222,6 +262,10 @@ public class BinaryCommissionSettlementService {
         }
         if (mapper.lockActiveOwner(ownerUserId) == null) {
             return blockedWithoutRow(ownerUserId, settlementDate, "BINARY_OWNER_NOT_ACTIVE");
+        }
+        boolean productionAccount = Integer.valueOf(0).equals(mapper.userSandbox(ownerUserId));
+        if (approval == null && !productionAccount) {
+            return blockedWithoutRow(ownerUserId, settlementDate, "F3_AUTOMATIC_OWNER_SCOPE_INVALID");
         }
         reconcileRefundedVolumes(ownerUserId);
         if (mapper.countReversalRequiredVolumes(ownerUserId) > 0) {
@@ -240,84 +284,79 @@ public class BinaryCommissionSettlementService {
         try {
             policy = approval == null ? policyProvider.lockPolicy() : policyProvider.lockPolicyForApproval();
         } catch (PolicyBlocked ex) {
+            if (approval == null) throw ex;
             return blockedWithoutRow(ownerUserId, settlementDate, ex.getMessage());
         }
-        List<BinaryLegAssignmentRow> assignments = mapper.listAssignmentsForUpdate(ownerUserId);
-        int directMembers = mapper.countDirectMembers(ownerUserId);
-        if (policy.spilloverEnabled() && directMembers >= 2
-                && (assignments == null || assignments.size() != directMembers)) {
-            autoPlaceMissing(ownerUserId, assignments, actorId, actorUsername, actorType);
-            assignments = mapper.listAssignmentsForUpdate(ownerUserId);
-        }
-        if (directMembers < 2 || assignments == null || assignments.size() != directMembers) {
-            return blockedWithoutRow(ownerUserId, settlementDate, "BINARY_LEG_ASSIGNMENT_INCOMPLETE");
-        }
-        Long leftRoot = anchor(assignments, "A");
-        Long rightRoot = anchor(assignments, "B");
-        if (leftRoot == null || rightRoot == null) {
-            return blockedWithoutRow(ownerUserId, settlementDate, "BINARY_BOTH_LEGS_REQUIRED");
-        }
 
-        LocalDate month = settlementDate.withDayOfMonth(1);
-        LocalDateTime monthStart = VietnamBusinessPeriod.storageBoundary(month);
-        LocalDateTime settlementWindowEnd = VietnamBusinessPeriod.storageBoundary(settlementDate.plusDays(1));
-        try {
-            capturePaidOrders(ownerUserId, monthStart, settlementWindowEnd);
-        } catch (SettlementBlocked ex) {
-            return blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
-                    ZERO, ZERO, ZERO, ex.getMessage());
-        }
-        VolumeWindow volumeWindow = volumeWindow(
-                ownerUserId, policy.residualPolicy(), monthStart, settlementWindowEnd, settlementDate);
-        BigDecimal consumedBefore = volumeWindow.consumedBefore();
-        BigDecimal left = volumeWindow.left();
-        BigDecimal right = volumeWindow.right();
-
-        if (policy.paused()) {
-            return blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
-                    left, right, policy.dailyCap(), "F3_BINARY_PAUSED");
-        }
-        if (!isSettlementDue(settlementDate, policy.settlePeriod())) {
-            return blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
-                    left, right, policy.dailyCap(), "F3_SETTLEMENT_NOT_DUE");
-        }
-        if (left.compareTo(policy.threshold()) < 0 || right.compareTo(policy.threshold()) < 0) {
-            return blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
-                    left, right, policy.dailyCap(), "BINARY_THRESHOLD_NOT_MET");
-        }
-
-        BigDecimal rawMatched = left.min(right);
-        BigDecimal availableMatched = rawMatched.subtract(consumedBefore).max(BigDecimal.ZERO);
-        if (availableMatched.signum() <= 0) {
-            return blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
-                    left, right, policy.dailyCap(), "BINARY_NO_AVAILABLE_MATCHED_VOLUME");
-        }
-        BigDecimal settlementCap = policy.dailyCap()
-                .multiply(BigDecimal.valueOf(periodDays(settlementDate, policy.settlePeriod())))
-                .setScale(6, RoundingMode.DOWN);
-        BigDecimal settledToday = money(mapper.settledAmountOnDate(ownerUserId, settlementDate));
-        BigDecimal capRemaining = settlementCap.subtract(settledToday).max(BigDecimal.ZERO);
-        if (capRemaining.signum() <= 0) {
-            return blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
-                    left, right, settlementCap, "H1_BINARY_DAILY_CAP_EXHAUSTED");
-        }
-        BigDecimal capMatched = capRemaining.divide(policy.matchRate(), 6, RoundingMode.DOWN);
-        BigDecimal consumedMatched = availableMatched.min(capMatched).setScale(6, RoundingMode.DOWN);
-        BigDecimal amount = consumedMatched.multiply(policy.matchRate()).setScale(6, RoundingMode.DOWN);
-        if (consumedMatched.signum() <= 0 || amount.signum() <= 0) {
-            return blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
-                    left, right, settlementCap, "BINARY_PAYABLE_AMOUNT_ZERO");
-        }
-        if (approval != null) {
-            String coverageBlock = policyProvider.projectedCoverageBlock(amount);
-            if (coverageBlock != null) {
-                return blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
-                        left, right, settlementCap, coverageBlock);
+        var period = productionAccount ? platformPeriods.period(settlementDate) : null;
+        int days = period != null ? period.periodDays()
+                : isSettlementDue(settlementDate, policy.settlePeriod()) ? periodDays(settlementDate, policy.settlePeriod()) : 0;
+        Preparation preparation = prepare(ownerUserId, settlementDate, policy, days, actorId, actorUsername, actorType, false);
+        if (preparation.blocked() != null) return preparation.blocked();
+        Quote quote = preparation.quote();
+        BigDecimal rawAmount = quote.rawAmount();
+        BigDecimal amount = rawAmount;
+        String mode = approval == null ? "AUTOMATIC" : "MANUAL";
+        Allocation allocation = null;
+        BinaryPlatformSettlementPlan.ProposedPlan proposed = null;
+        if (productionAccount) {
+            if (period == null) {
+                if (platformPeriods.hasEarlierSettlement(settlementDate)) {
+                    return blockedWithoutRow(ownerUserId, settlementDate, "F3_LEGACY_PERIOD_NO_PLATFORM_CAP");
+                }
+                if (platformPeriods.includedInLaterPeriod(settlementDate)) {
+                    return blockedWithoutRow(ownerUserId, settlementDate, "F3_DATE_INCLUDED_IN_LATER_PLATFORM_PERIOD");
+                }
+                BigDecimal capPct;
+                try {
+                    capPct = policyProvider.platformCapPctForUpdate();
+                } catch (PolicyBlocked ex) {
+                    if (approval == null) throw ex;
+                    return blockedWithoutRow(ownerUserId, settlementDate, ex.getMessage());
+                }
+                try {
+                    proposed = platformPlan.quote(settlementDate, days, capPct,
+                            ownerUserId, rawAmount, owner -> quoteOwner(owner, settlementDate, policy, days));
+                } catch (RuntimeException failure) {
+                    log.warn("F3 platform settlement quote unavailable date={}", settlementDate, failure);
+                    return blockedWithoutRow(ownerUserId, settlementDate, "F3_PLATFORM_QUOTE_UNAVAILABLE");
+                }
+                period = proposed.period();
+                allocation = proposed.forOwner(ownerUserId);
+            } else {
+                allocation = platformPeriods.allocation(settlementDate, ownerUserId);
+                if (allocation == null) {
+                    return blockedWithoutRow(ownerUserId, settlementDate, "F3_PLATFORM_ALLOCATION_NOT_FROZEN");
+                }
             }
         }
+        if (allocation != null) {
+            // An existing share can only decrease when live eligibility is rechecked.
+            amount = allocation.allocated().multiply(rawAmount.min(allocation.rawAmount()))
+                    .divide(allocation.rawAmount(), 6, RoundingMode.DOWN);
+        }
+        BigDecimal coverageImplication = approval == null
+                ? proposed != null ? proposed.budget() : period != null ? platformPeriods.remaining(settlementDate) : amount
+                : amount;
+        if (coverageImplication.signum() > 0) {
+            String coverageBlock = policyProvider.projectedCoverageBlock(coverageImplication);
+            if (coverageBlock != null) return blockedWithoutRow(ownerUserId, settlementDate, coverageBlock);
+        }
+        if (proposed != null) platformPlan.freeze(proposed);
+
+        Long leftRoot = quote.leftRoot();
+        Long rightRoot = quote.rightRoot();
+        BigDecimal left = quote.left();
+        BigDecimal right = quote.right();
+        BigDecimal rawMatched = quote.rawMatched();
+        BigDecimal consumedMatched = quote.consumedMatched();
+        BigDecimal settlementCap = quote.settlementCap();
+        VolumeWindow volumeWindow = quote.volumeWindow();
+        BigDecimal consumedBefore = volumeWindow.consumedBefore();
+        String status = amount.signum() == 0 ? "CAPPED" : "PENDING";
         BinarySettlementRow pending = new BinarySettlementRow(
                 null, ownerUserId, settlementDate, leftRoot, rightRoot,
-                left, right, consumedMatched, amount, settlementCap, null, "PENDING");
+                left, right, consumedMatched, amount, settlementCap, null, status);
         if (mapper.insertSettlement(pending) != 1) throw new IllegalStateException("BINARY_SETTLEMENT_INSERT_FAILED");
         if (volumeWindow.pairReset()
                 && mapper.insertPairResetCursorCas(
@@ -328,22 +367,25 @@ public class BinaryCommissionSettlementService {
         }
 
         String settlementNo = settlementNo(ownerUserId, settlementDate);
-        String remark = "F3 binary settlement | rawMatched=" + rawMatched.toPlainString()
-                + " | consumedBefore=" + consumedBefore.toPlainString()
-                + " | rate=" + policy.matchRate().toPlainString();
-        if (mapper.insertBinaryCommissionEvent(new BinaryCommissionEventRow(
-                ownerUserId, settlementNo, consumedMatched, amount, remark, resolveCoolingDays())) != 1) {
-            throw new IllegalStateException("BINARY_COMMISSION_EVENT_INSERT_FAILED");
-        }
-        Long eventId = mapper.selectLastInsertId();
-        if (eventId == null || eventId <= 0
-                || mapper.linkSettlementEvent(ownerUserId, settlementDate, eventId) != 1) {
-            throw new IllegalStateException("BINARY_SETTLEMENT_EVENT_LINK_FAILED");
-        }
         String billId = billId(ownerUserId, settlementDate);
-        ledgerFacade.postLedgerEntry(
-                billId, ownerUserId, "TEAM_COMMISSION", "USDT", "IN", amount,
-                "PENDING", "F3 binary commission cooling payout");
+        Long eventId = null;
+        if (amount.signum() > 0) {
+            String remark = "F3 binary settlement | rawMatched=" + rawMatched.toPlainString()
+                    + " | consumedBefore=" + consumedBefore.toPlainString()
+                    + " | rate=" + policy.matchRate().toPlainString();
+            if (mapper.insertBinaryCommissionEvent(new BinaryCommissionEventRow(
+                    ownerUserId, settlementNo, consumedMatched, amount, remark, resolveCoolingDays())) != 1) {
+                throw new IllegalStateException("BINARY_COMMISSION_EVENT_INSERT_FAILED");
+            }
+            eventId = mapper.selectLastInsertId();
+            if (eventId == null || eventId <= 0
+                    || mapper.linkSettlementEvent(ownerUserId, settlementDate, eventId) != 1) {
+                throw new IllegalStateException("BINARY_SETTLEMENT_EVENT_LINK_FAILED");
+            }
+            ledgerFacade.postLedgerEntry(
+                    billId, ownerUserId, "TEAM_COMMISSION", "USDT", "IN", amount,
+                    "PENDING", "F3 binary commission cooling payout");
+        }
         Map<String, Object> auditDetail = linked(
                 "leftVolume", left, "rightVolume", right,
                 "rawMatched", rawMatched, "consumedBefore", consumedBefore,
@@ -358,7 +400,18 @@ public class BinaryCommissionSettlementService {
         auditDetail.put("residualTrackARaw", residual.left());
         auditDetail.put("residualTrackBRaw", residual.right());
         auditDetail.put("residualAmountUsdt", residual.amount());
-        auditDetail.put("settlementMode", approval == null ? "AUTOMATIC" : "MANUAL");
+        auditDetail.put("settlementMode", mode);
+        if (allocation != null) {
+            if (platformPeriods.markSettled(settlementDate, ownerUserId, mode, rawAmount) != 1) {
+                throw new IllegalStateException("F3_PLATFORM_ALLOCATION_ALREADY_SETTLED");
+            }
+            auditDetail.put("platformCapPct", period.platformCapPct());
+            auditDetail.put("platformCapUsdt", period.capAmount());
+            auditDetail.put("rawAmountUsdt", rawAmount);
+            auditDetail.put("platformAllocatedUsdt", allocation.allocated());
+            auditDetail.put("platformReductionPct", rawAmount.subtract(amount).multiply(BigDecimal.valueOf(100))
+                    .divide(rawAmount, 6, RoundingMode.DOWN));
+        }
         if (approval != null) {
             auditDetail.put("a2OperationId", approval.operationId());
             auditDetail.put("idempotencyKey", approval.decisionKey());
@@ -372,22 +425,116 @@ public class BinaryCommissionSettlementService {
                 .result("SUCCESS").riskLevel("HIGH")
                 .detail(auditDetail)
                 .build());
-        eventOutboxService.publish(
-                "BINARY_COMMISSION",
-                settlementNo,
-                "commission.paid",
-                linked(
-                        "userId", ownerUserId,
-                        "kind", "binary",
-                        "currency", "USDT",
-                        "amount", amount,
-                        "smallerTrackGv", rawMatched,
-                        "matchRate", policy.matchRate(),
-                        "dailyCapApplied", amount.compareTo(settlementCap) >= 0,
-                        "commissionEventId", eventId));
+        if (eventId != null) {
+            eventOutboxService.publish(
+                    "BINARY_COMMISSION",
+                    settlementNo,
+                    "commission.paid",
+                    linked(
+                            "userId", ownerUserId,
+                            "kind", "binary",
+                            "currency", "USDT",
+                            "amount", amount,
+                            "smallerTrackGv", rawMatched,
+                            "matchRate", policy.matchRate(),
+                            "dailyCapApplied", rawAmount.compareTo(settlementCap) >= 0,
+                            "commissionEventId", eventId));
+        }
         return new SettlementResult(
-                ownerUserId, settlementDate, "PENDING", "", left, right,
+                ownerUserId, settlementDate, status, amount.signum() == 0 ? "F3_PLATFORM_CAP_ZERO" : "", left, right,
                 consumedMatched, amount, settlementCap, eventId, false);
+    }
+
+
+    private BigDecimal quoteOwner(long owner, LocalDate date, BinarySettlementPolicy policy, int days) {
+        if (mapper.lockActiveOwner(owner) == null) return ZERO;
+        BinarySettlementRow settled = mapper.findSettlementForUpdate(owner, date);
+        if (settled != null && !"BLOCKED".equals(settled.status())) return ZERO;
+        reconcileRefundedVolumes(owner);
+        if (mapper.countReversalRequiredVolumes(owner) > 0) return ZERO;
+        Preparation prepared = prepare(owner, date, policy, days, null, "SYSTEM", "SYSTEM", true);
+        return prepared.quote() == null ? ZERO : prepared.quote().rawAmount();
+    }
+
+    private Preparation prepare(Long ownerUserId, LocalDate settlementDate, BinarySettlementPolicy policy, int days,
+                                Long actorId, String actorUsername, String actorType, boolean planning) {
+        List<BinaryLegAssignmentRow> assignments = mapper.listAssignmentsForUpdate(ownerUserId);
+        int directMembers = mapper.countDirectMembers(ownerUserId);
+        if (policy.spilloverEnabled() && directMembers >= 2
+                && (assignments == null || assignments.size() != directMembers)) {
+            autoPlaceMissing(ownerUserId, assignments, actorId, actorUsername, actorType, planning);
+            assignments = mapper.listAssignmentsForUpdate(ownerUserId);
+        }
+        if (directMembers < 2 || assignments == null || assignments.size() != directMembers) {
+            return new Preparation(blockedWithoutRow(ownerUserId, settlementDate, "BINARY_LEG_ASSIGNMENT_INCOMPLETE"));
+        }
+        Long leftRoot = anchor(assignments, "A");
+        Long rightRoot = anchor(assignments, "B");
+        if (leftRoot == null || rightRoot == null) {
+            return new Preparation(blockedWithoutRow(ownerUserId, settlementDate, "BINARY_BOTH_LEGS_REQUIRED"));
+        }
+
+        LocalDate month = settlementDate.withDayOfMonth(1);
+        LocalDateTime monthStart = VietnamBusinessPeriod.storageBoundary(month);
+        LocalDateTime settlementWindowEnd = VietnamBusinessPeriod.storageBoundary(settlementDate.plusDays(1));
+        try {
+            capturePaidOrders(ownerUserId, monthStart, settlementWindowEnd);
+        } catch (SettlementBlocked ex) {
+            return new Preparation(blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
+                    ZERO, ZERO, ZERO, ex.getMessage()));
+        }
+        VolumeWindow volumeWindow = volumeWindow(
+                ownerUserId, policy.residualPolicy(), monthStart, settlementWindowEnd, settlementDate);
+        BigDecimal consumedBefore = volumeWindow.consumedBefore();
+        BigDecimal left = volumeWindow.left();
+        BigDecimal right = volumeWindow.right();
+
+        if (policy.paused()) {
+            return new Preparation(blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
+                    left, right, policy.dailyCap(), "F3_BINARY_PAUSED"));
+        }
+        if (days == 0) {
+            return new Preparation(blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
+                    left, right, policy.dailyCap(), "F3_SETTLEMENT_NOT_DUE"));
+        }
+        if (left.compareTo(policy.threshold()) < 0 || right.compareTo(policy.threshold()) < 0) {
+            return new Preparation(blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
+                    left, right, policy.dailyCap(), "BINARY_THRESHOLD_NOT_MET"));
+        }
+
+        BigDecimal rawMatched = left.min(right);
+        BigDecimal availableMatched = rawMatched.subtract(consumedBefore).max(BigDecimal.ZERO);
+        if (availableMatched.signum() <= 0) {
+            return new Preparation(blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
+                    left, right, policy.dailyCap(), "BINARY_NO_AVAILABLE_MATCHED_VOLUME"));
+        }
+        BigDecimal settlementCap = policy.dailyCap()
+                .multiply(BigDecimal.valueOf(days))
+                .setScale(6, RoundingMode.DOWN);
+        BigDecimal settledToday = money(mapper.settledAmountOnDate(ownerUserId, settlementDate));
+        BigDecimal capRemaining = settlementCap.subtract(settledToday).max(BigDecimal.ZERO);
+        if (capRemaining.signum() <= 0) {
+            return new Preparation(blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
+                    left, right, settlementCap, "H1_BINARY_DAILY_CAP_EXHAUSTED"));
+        }
+        BigDecimal capMatched = capRemaining.divide(policy.matchRate(), 6, RoundingMode.DOWN);
+        BigDecimal consumedMatched = availableMatched.min(capMatched).setScale(6, RoundingMode.DOWN);
+        BigDecimal amount = consumedMatched.multiply(policy.matchRate()).setScale(6, RoundingMode.DOWN);
+        if (consumedMatched.signum() <= 0 || amount.signum() <= 0) {
+            return new Preparation(blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
+                    left, right, settlementCap, "BINARY_PAYABLE_AMOUNT_ZERO"));
+        }
+        return new Preparation(new Quote(leftRoot, rightRoot, left, right, rawMatched, consumedMatched,
+                amount, settlementCap, volumeWindow));
+    }
+
+    private record Quote(Long leftRoot, Long rightRoot, BigDecimal left, BigDecimal right,
+                         BigDecimal rawMatched, BigDecimal consumedMatched, BigDecimal rawAmount,
+                         BigDecimal settlementCap, VolumeWindow volumeWindow) { }
+
+    private record Preparation(Quote quote, SettlementResult blocked) {
+        Preparation(Quote quote) { this(quote, null); }
+        Preparation(SettlementResult blocked) { this(null, blocked); }
     }
 
     private VolumeWindow volumeWindow(
@@ -499,7 +646,8 @@ public class BinaryCommissionSettlementService {
             List<BinaryLegAssignmentRow> current,
             Long actorId,
             String actorUsername,
-            String actorType) {
+            String actorType,
+            boolean planning) {
         List<BinaryLegAssignmentRow> safeCurrent = current == null ? List.of() : current;
         int aCount = (int) safeCurrent.stream().filter(row -> "A".equals(row.leg())).count();
         int bCount = (int) safeCurrent.stream().filter(row -> "B".equals(row.leg())).count();
@@ -514,7 +662,7 @@ public class BinaryCommissionSettlementService {
                 if (replay == null || !leg.equals(replay.leg())) {
                     throw new BizException(409, "BINARY_AUTO_PLACEMENT_CONFLICT");
                 }
-            } else {
+            } else if (!planning) {
                 auditLogService.recordRequired(AuditLogWriteRequest.builder()
                         .action("F3_BINARY_AUTO_PLACED").resourceType("BINARY_LEG_ASSIGNMENT")
                         .resourceId(ownerUserId + ":" + memberUserId)

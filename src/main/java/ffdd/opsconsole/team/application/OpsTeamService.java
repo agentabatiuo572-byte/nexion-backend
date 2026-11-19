@@ -91,6 +91,8 @@ public class OpsTeamService implements AuditReplayable {
             "minPayoutUsdt",
             "rankWindowDays",
             "hardwareQuotaPerRank");
+    private static final String AUTO_SETTLE_UI_KEY = "F.binary.autoSettle";
+    private static final String PLATFORM_CAP_PCT_UI_KEY = "F.binary.platformCapPct";
     /**
      * updateConfig/updateUiConfig key→权限码(service 层二次精确校验,防跨域越权)。
      * 涵盖 ACTIVE_KEYS(数值政策) + UI keys(F.* 配置面、动态 key 由 {@link #resolvePermissionCode} 前缀兜底)。
@@ -143,6 +145,8 @@ public class OpsTeamService implements AuditReplayable {
             Map.entry("F.binary.matchRate", "network_f3_match_rate"),
             Map.entry("F.binary.threshold", "network_f3_match_rate"),
             Map.entry("F.binary.paused", "network_f3_engine_pause"),
+            Map.entry(AUTO_SETTLE_UI_KEY, "network_f3_engine_pause"),
+            Map.entry(PLATFORM_CAP_PCT_UI_KEY, "network_f3_match_rate"),
             // F4 领导池资金类 → pool_fund(HIGH)。
             Map.entry("F.pool.ratio", "network_f4_pool_fund"),
             Map.entry("F.pool.top1MaxPct", "network_f4_pool_fund"),
@@ -1557,7 +1561,9 @@ public class OpsTeamService implements AuditReplayable {
         if (!UI_CONFIG_KEYS.contains(key)) {
             throw new IllegalArgumentException("Unsupported F team UI config key");
         }
-        if (!A2ReplayContext.isReplaying()
+        boolean binaryPayoutControl = isBinaryPayoutControlKey(key);
+        // F3 risk reductions remain available during pending approval. Replay rechecks the bound original value.
+        if (!binaryPayoutControl && !A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("F", "ui_config", key) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
@@ -1574,8 +1580,21 @@ public class OpsTeamService implements AuditReplayable {
         }
         // F.cooldown 使用引擎消费者读取的单一权威键，避免 UI 镜像键与业务键双写分叉。
         String configKey = uiConfigStorageKey(key);
-        String oldValue = ("F.leaderboard.paused".equals(key)
-                ? configFacade.activeValueForUpdate(configKey) : configFacade.activeValue(configKey)).orElse("");
+        String oldValue = (binaryPayoutControl || "F.leaderboard.paused".equals(key)
+                ? configFacade.activeValueForUpdate(configKey) : configFacade.activeValue(configKey))
+                .orElseGet(() -> uiConfigDefault(key));
+        int binaryControlChange = binaryPayoutControl ? compareBinaryPayoutControl(key, oldValue, value) : 0;
+        if (binaryPayoutControl && A2ReplayContext.isReplaying()
+                && !oldValue.equals(request.expectedValue())) {
+            return ApiResult.fail(409, "F3_CONFIG_STALE");
+        }
+        if (binaryControlChange > 0) {
+            if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(A2ReplayContext.operationId())) {
+                return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+            }
+            String block = BinarySettlementPolicyProvider.currentCoverageBlock(coverageFacade.snapshot());
+            if (block != null) return ApiResult.fail(422, block);
+        }
         // A2 F4 提案在服务端绑定发起时原值；回放时只对本类 F4 配置键比对，
         // 不一致保持 pending 且不写业务值。历史/在途票没有 expectedValue 时维持原行为。
         if (A2ReplayContext.isReplaying() && isF4StoredUiConfigKey(key) && request.expectedValue() != null
@@ -1612,13 +1631,22 @@ public class OpsTeamService implements AuditReplayable {
             persistedValue = BinarySettlementPolicyProvider.normalizeMatchRate(value).movePointRight(2).toPlainString() + "%";
         } else if ("F.binary.threshold".equals(key)) {
             persistedValue = BinarySettlementPolicyProvider.normalizeThreshold(value).toPlainString();
-        } else if ("F.binary.paused".equals(key)) {
+        } else if ("F.binary.paused".equals(key) || AUTO_SETTLE_UI_KEY.equals(key)) {
             persistedValue = Boolean.TRUE.equals(BinarySettlementPolicyProvider.parsePaused(value)) ? "on" : "off";
+        } else if (PLATFORM_CAP_PCT_UI_KEY.equals(key)) {
+            persistedValue = BinarySettlementPolicyProvider.parsePlatformCapPct(value).toPlainString() + "%";
         } else {
             persistedValue = value;
         }
-        String effectiveValue = "F.binary.paused".equals(key) ? persistedValue : value;
-        configFacade.upsertAdminValue(configKey, persistedValue, "TEXT", "team", "F domain authoritative policy state");
+        String effectiveValue = binaryPayoutControl || "F.binary.paused".equals(key) ? persistedValue : value;
+        boolean changed = !binaryPayoutControl || binaryControlChange != 0;
+        if (changed) {
+            configFacade.upsertAdminValue(configKey, persistedValue, "TEXT", "team", "F domain authoritative policy state");
+            if (AUTO_SETTLE_UI_KEY.equals(key) && "on".equals(persistedValue)) {
+                configFacade.upsertAdminValue(BinarySettlementPolicyProvider.AUTO_ENABLED_AT_UTC_KEY,
+                        java.time.Instant.now().toString(), "TEXT", "team", "F3 automatic settlement activation instant");
+            }
+        }
         if(affectsSeven&&sevenPolicy!=null)sevenPolicy.bumpSevenLayerRevision();
         // F4 发布即校验(简报 #48):F.pool.* 的 configVersion 是 LeadershipPoolConfigGuard 的
         // 生效信号,必须整组通过权威预检才允许推进。此前任一次 F.pool.* 写入都会 bump 版本,
@@ -1645,8 +1673,10 @@ public class OpsTeamService implements AuditReplayable {
             auditDetail.put("pauseCapturedAt", pauseChange.capturedAt());
             auditDetail.put("pauseSnapshotState", pauseChange.mode());
         }
-        audit("F_TEAM_UI_CONFIG_CHANGED", configKey, actor(request.operator()), auditDetail, pauseChange != null);
-        publishApprovedUiConfigOutbox(key, oldValue, effectiveValue, request, pauseChange);
+        if (changed) {
+            audit("F_TEAM_UI_CONFIG_CHANGED", configKey, actor(request.operator()), auditDetail, pauseChange != null);
+            publishApprovedUiConfigOutbox(key, oldValue, effectiveValue, request, pauseChange);
+        }
         Map<String, Object> response = overview().getData();
         Map<String, Object> updated = new LinkedHashMap<>();
         updated.put("key", key);
@@ -2162,8 +2192,31 @@ public class OpsTeamService implements AuditReplayable {
             String key, String proposedValue) {
         String currentValue = isUnilevelRuleKey(key) && rules != null
                 ? unilevelComparisonValue(key, unilevelRuleValue(rules, key))
-                : configs.activeValue(uiConfigStorageKey(key)).orElse("");
+                : proposalUiConfigValue(configs, key);
+        if (isBinaryPayoutControlKey(key)) return binaryPayoutControlAmplifies(key, currentValue, proposedValue);
         return loosensPayoutControlUiKey(configs, key, currentValue, proposedValue);
+    }
+
+    public static boolean isBinaryPayoutControlKey(String key) {
+        return AUTO_SETTLE_UI_KEY.equals(key) || PLATFORM_CAP_PCT_UI_KEY.equals(key);
+    }
+
+    public static boolean binaryPayoutControlAmplifies(String key, String currentValue, String nextValue) {
+        return compareBinaryPayoutControl(key, currentValue, nextValue) > 0;
+    }
+
+    private static int compareBinaryPayoutControl(String key, String currentValue, String nextValue) {
+        if (AUTO_SETTLE_UI_KEY.equals(key)) {
+            Boolean current = BinarySettlementPolicyProvider.parsePaused(currentValue);
+            Boolean next = BinarySettlementPolicyProvider.parsePaused(nextValue);
+            if (next == null) return 0;
+            return current == null ? (next ? 1 : -1) : next.compareTo(current);
+        }
+        BigDecimal current = BinarySettlementPolicyProvider.parsePlatformCapPct(currentValue);
+        BigDecimal next = BinarySettlementPolicyProvider.parsePlatformCapPct(nextValue);
+        if (next == null) return 0;
+        // A positive repair of an invalid cap restores payout capacity.
+        return current == null ? (next.signum() > 0 ? 1 : -1) : next.compareTo(current);
     }
 
     /**
@@ -2697,6 +2750,9 @@ public class OpsTeamService implements AuditReplayable {
         config.put("settlePeriod", configText("F.binary.settlePeriod", ""));
         config.put("residualPolicy", configText("F.binary.residualPolicy", ""));
         config.put("paused", BinarySettlementPolicyProvider.parsePaused(configText("F.binary.paused", "")));
+        config.put("autoSettle", BinarySettlementPolicyProvider.parsePaused(proposalUiConfigValue(configFacade, AUTO_SETTLE_UI_KEY)));
+        config.put("platformCapPct", BinarySettlementPolicyProvider.parsePlatformCapPct(
+                proposalUiConfigValue(configFacade, PLATFORM_CAP_PCT_UI_KEY)));
         config.put("residualPool", f3ResidualPool(summary));
         config.put("residualSub", "未匹配体量按当前沉淀策略处理");
         return config;
@@ -2784,9 +2840,10 @@ public class OpsTeamService implements AuditReplayable {
             row.put("settlementNo", settlementNo);
             var review = reviews.getOrDefault(settlementNo, Map.of());
             for (String key : List.of("residualTrackARaw", "residualTrackBRaw", "residualAmountUsdt",
-                    "residualPolicy", "settlementMode", "proposerName", "approverName", "a2OperationId")) {
+                    "residualPolicy", "proposerName", "approverName", "a2OperationId")) {
                 row.put(key, review.get(key));
             }
+            if (!row.containsKey("settlementMode")) row.put("settlementMode", review.get("settlementMode"));
             return row;
         }).toList();
     }
@@ -2816,6 +2873,10 @@ public class OpsTeamService implements AuditReplayable {
         row.put("matchAmountRaw", decimalValue(raw.get("matchAmountRaw"), null));
         row.put("todayPaid", intValue(raw.get("todayPaid"), 0));
         row.put("todayPaidRaw", decimalValue(raw.get("todayPaidRaw"), null));
+        if (raw.containsKey("settlementMode")) row.put("settlementMode", raw.get("settlementMode"));
+        for (String key : List.of("platformReductionPct", "platformCapUsdt", "platformUsedUsdt")) {
+            if (raw.containsKey(key)) row.put(key, decimalValue(raw.get(key), null));
+        }
         row.put("state", String.valueOf(raw.getOrDefault("state", "")));
         row.put("tone", String.valueOf(raw.getOrDefault("tone", "")));
         return row;
@@ -3524,9 +3585,14 @@ public class OpsTeamService implements AuditReplayable {
                 && UI_CONFIG_KEYS.contains(key);
     }
 
-    /** Raw value of an F4 stored UI key, read from the same source as the write path. */
+    /** Raw value of a stored UI key, read from the same source as the write path. */
     public static String proposalUiConfigValue(PlatformConfigFacade configs, String key) {
-        return configs.activeValue(uiConfigStorageKey(key)).orElse("");
+        return configs.activeValue(uiConfigStorageKey(key)).orElseGet(() -> uiConfigDefault(key));
+    }
+
+    private static String uiConfigDefault(String key) {
+        if (AUTO_SETTLE_UI_KEY.equals(key)) return "on";
+        return PLATFORM_CAP_PCT_UI_KEY.equals(key) ? BinarySettlementPolicyProvider.DEFAULT_PLATFORM_CAP_PCT : "";
     }
 
     public static String proposalCurrentValue(
@@ -3618,9 +3684,14 @@ public class OpsTeamService implements AuditReplayable {
         switch (key) {
             case "F.binary.threshold" -> BinarySettlementPolicyProvider.normalizeThreshold(value);
             case "F.binary.matchRate" -> BinarySettlementPolicyProvider.normalizeMatchRate(value);
-            case "F.binary.paused" -> {
+            case "F.binary.paused", AUTO_SETTLE_UI_KEY -> {
                 if (BinarySettlementPolicyProvider.parsePaused(value) == null) {
                     throw new IllegalArgumentException("F_TEAM_TOGGLE_INVALID");
+                }
+            }
+            case PLATFORM_CAP_PCT_UI_KEY -> {
+                if (BinarySettlementPolicyProvider.parsePlatformCapPct(value) == null) {
+                    throw new IllegalArgumentException("F3_PLATFORM_CAP_PCT_INVALID");
                 }
             }
             default -> { }
@@ -4078,6 +4149,8 @@ public class OpsTeamService implements AuditReplayable {
                 "F.sunset.exclusions",
                 "F.binary.threshold",
                 "F.binary.matchRate",
+                AUTO_SETTLE_UI_KEY,
+                PLATFORM_CAP_PCT_UI_KEY,
                 "F.binary.spillover",
                 "F.binary.gvResetCron",
                 "F.binary.settlePeriod",
@@ -5114,6 +5187,11 @@ public class OpsTeamService implements AuditReplayable {
                 Object rawChanges = p.get("changes");
                 if (!(rawChanges instanceof List<?> changes) || changes.isEmpty() || changes.size() > 32) {
                     return ApiResult.fail(422, "F_CONFIG_BATCH_INVALID");
+                }
+                if (changes.stream().anyMatch(item -> item instanceof Map<?, ?> row
+                        && row.get("key") instanceof String key && key.trim().startsWith("F.binary."))) {
+                    // Settlement takes the automatic-switch row before any other F3 configuration row.
+                    configFacade.activeValueForUpdate(BinarySettlementPolicyProvider.AUTO_SETTLE_KEY);
                 }
                 List<Map<String, Object>> applied = new ArrayList<>();
                 for (Object item : changes) {
