@@ -512,8 +512,11 @@ $migrations = @(
   # F1 voucher clawback column + wallet negative-balance constraint (BUG-515/F1-BE-10).
   (Join-Path $root "scripts\migrations\20261119_f1_be04_voucher_redeemed_amount.sql"),
   (Join-Path $root "scripts\migrations\20261119_f1_be06_wallet_negative_clawback.sql"),
-  # Restore only the 8 current I4/I5 permissions after legacy menu removal (A7-BE-08).
-  (Join-Path $root "scripts\migrations\20261119_a7_be07_restore_i4_i5_permissions.sql"),
+  # Restore only the I4/I5 grants the legacy-menu run deleted, proven by catalog
+  # damage plus the same-run timestamp and no later A6 save (A7-BE-09). Runs once.
+  # Supersedes the broad A7-BE-07 repair, which stays in source control as
+  # delivered history and must not re-apply on every normal start.
+  (Join-Path $root "scripts\migrations\20261119_a7_be09_restore_i4_i5_damage_proven.sql"),
   # E5 operator pause gets its own runtime state columns (E5-BE-19).
   (Join-Path $root "scripts\migrations\20261119_e5_be19_ops_pause_state.sql"),
   # I5-BE-03: register exchange in the I5 disclosure-gate action catalog.

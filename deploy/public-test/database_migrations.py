@@ -37,6 +37,17 @@ MAX_SQL = 8 * 1024**2
 RETIRED_H4_FILE = '20261025_h4_event_rules.sql'
 RETIRED_H4_SHA256 = '921d9f1e3567dfbd049da78ba878ab2187f9c6b15ed449a748be3e2118688d5d'
 RETIRED_H4_NOTE = 'RETIRED_H4_TRIGGER_SKIPPED'
+# A7-BE-09: forward migrations retired before any target could apply them stay in the
+# archive so recorded history still validates (a removed or rewritten entry fails
+# pending_scripts), but they must never run. Their damage-proven successor owns the
+# repair: 20261119_a7_be09_restore_i4_i5_damage_proven.sql for the broad A7-BE-07
+# I4/I5 grant restore, which could not tell migration collateral from a legitimate
+# A6 revocation. Source is pinned: changing the file is still a hard failure.
+RETIRED_FORWARD_SQL = {
+    '20261119_a7_be07_restore_i4_i5_permissions.sql': (
+        '7d97e929c160cec5760a50df3f0cef47eaff7a95a885183a0ed4b3922434ceb5',
+        'RETIRED_A7_BE07_SUPERSEDED_BY_A7_BE09'),
+}
 EARNINGS_FILE = '20261007_earnings_source_recovery.sql'
 EARNINGS_SHA256 = 'f443722d71d6a9da77759e55142ddd12e15b71c8af356a5dc9cd73dd03a410e9'
 NICKNAME_FILE = '20261117_user_nickname_unique.sql'
@@ -170,7 +181,25 @@ def pending_scripts(state, scripts):
         require(previous['sha256'] == digest(scripts[name]),
                 'MIGRATION_HISTORY_CHANGED_ADD_NEW_FILE: ' + name)
         require(previous['status'] in ('BASELINE_NOT_REPLAYED', 'APPLIED'), 'MIGRATION_STATUS_REJECTED')
-    return [(name, data) for name, data in sorted(scripts.items()) if name not in state['scripts']]
+    pending = []
+    for name, data in sorted(scripts.items()):
+        if name in state['scripts']:
+            continue
+        if retired_forward(name, data):
+            print(json.dumps({'event': 'DB_MIGRATION_RETIRED_SKIPPED', 'file': name,
+                              'note': RETIRED_FORWARD_SQL[name][1]}), flush=True)
+            continue
+        pending.append((name, data))
+    return pending
+
+
+def retired_forward(name, data):
+    """A forward migration retired before any target applied it: pinned, never executed."""
+    pin = RETIRED_FORWARD_SQL.get(name)
+    if pin is None:
+        return False
+    require(digest(data) == pin[0], 'MIGRATION_RETIRED_SOURCE_CHANGED: ' + name)
+    return True
 
 
 def validate_sql(data):
