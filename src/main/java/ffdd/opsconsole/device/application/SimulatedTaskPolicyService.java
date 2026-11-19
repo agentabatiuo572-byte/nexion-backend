@@ -48,6 +48,38 @@ public class SimulatedTaskPolicyService {
         var snapshot=historyAtCallerEpoch();
         return snapshot==null?policyAtDatabase(productKey,at):policyAt(snapshot,productKey,at);
     }
+    /**
+     * BUG-526: 派单读取当前策略。手机任务池还没有任何可发布的 PHONE 任务类型时（该时点 phone 商品策略
+     * 已发布、但没有 E3 版本且 PHONE 池里没有任何任务类型版本），这属于「等待运营配置」的预期状态，
+     * 在本事务边界内正常返回 null(=空池)，让调用方落 WAITING_CONFIG；不抛异常，避免 participating
+     * 事务被标记 rollback-only。
+     * 判据只对 phone 生效，且先确认商品策略已发布：商品策略缺失仍报 SIMULATED_PRODUCT_POLICY_HISTORY_MISSING，
+     * 「有 PHONE 类型却没有 E3」的损坏仍报 SIMULATED_E3_POLICY_HISTORY_MISSING，其它产品缺行也不受影响，
+     * 不会把 DEVICE 的历史缺行当成等待配置。
+     */
+    @org.springframework.lang.Nullable
+    @Transactional(readOnly=true)
+    public PolicyVersion dispatchPolicyAt(String productKey,LocalDateTime at) {
+        if("phone".equals(productKey)) {
+            var snapshot=historyAtCallerEpoch();
+            // 先沿原路径确认 phone 商品策略在该时点已发布：商品策略缺失仍走 policyAt 的原拒绝，
+            // 不能被空池判定吞掉（同一时点商品策略、E3、类型都缺时必须报商品策略缺失）。
+            if(productPolicyPublished(snapshot,productKey,at) && phonePoolUnpublished(snapshot,at))return null;
+        }
+        return policyAt(productKey,at);
+    }
+    private boolean productPolicyPublished(SimulatedTaskPolicyHistory.History h,String key,LocalDateTime at) {
+        if(h==null)return mapper.productAt(key,at)!=null;
+        for(var p:h.products())if(p.productKey().equals(key)&&!p.effectiveAt().isAfter(at))return true;
+        return false;
+    }
+    private boolean phonePoolUnpublished(SimulatedTaskPolicyHistory.History h,LocalDateTime at) {
+        if(h==null)return mapper.e3At(at)==null && typesInPools(List.of("PHONE"),at).isEmpty();
+        for(var e:h.e3())if(!e.effectiveAt().isAfter(at))return false;
+        for(var type:h.types())if("PHONE".equals(type.poolCode())&&!type.effectiveAt().isAfter(at))return false;
+        return true;
+    }
+
     private SimulatedTaskPolicyHistory.History historyAtCallerEpoch() {
         long epoch=mapper.epoch();
         var snapshot=history.get();

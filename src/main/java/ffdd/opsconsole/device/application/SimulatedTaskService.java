@@ -399,7 +399,9 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                             device.deviceId(),runtime.nextStartAt(),observed,abandonBefore);
                     runtime=save(runtime,observed,null,observed,"RUNNING",null);
                 }
-                var policy=policies.policyAt(runtime.productCode(),runtime.nextStartAt());
+                // BUG-526: 手机任务池还没有可发布的 PHONE 任务类型时，策略层正常返回空池(=null)，
+                // 由下面既有分支落 WAITING_CONFIG；这里不捕异常(跨 bean 事务代理会把外层标记 rollback-only)。
+                var policy=policies.dispatchPolicyAt(runtime.productCode(),runtime.nextStartAt());
                 var pool=policy==null?List.<SimulatedTaskPolicyService.TaskTypeSnapshot>of()
                         :policy.taskTypes().stream().filter(SimulatedTaskPolicyService.TaskTypeSnapshot::enabled).toList();
                 int policySteps=0;
