@@ -116,7 +116,7 @@ public class AdminCommandInvestigationService {
             return new ReceiptStatus("NOT_FOUND");
         }
         if (!receiptOwner(original, family, actor)) return new ReceiptStatus("UNKNOWN");
-        return statusOf(original);
+        return statusOf(original, actor);
     }
 
     /** Family-less scopes still answer as long as the command is wired and the caller holds its read right. */
@@ -138,7 +138,7 @@ public class AdminCommandInvestigationService {
         if (original.getOriginAdminId() == null || !Long.valueOf(actor).equals(original.getOriginAdminId())) {
             return new ReceiptStatus("UNKNOWN");
         }
-        return statusOf(original);
+        return statusOf(original, actor);
     }
 
     /** Records evidence and fences the old command. Never invokes a business writer or accepts a result payload. */
@@ -264,6 +264,70 @@ public class AdminCommandInvestigationService {
         } catch (JsonProcessingException invalid) {
             return false;
         }
+    }
+
+    /**
+     * A successful A2 decision stores the ticket body without a top-level business code.
+     * Prove the original decision action and its bound ticket before calling it a decision
+     * success; proposal records and old rows without origin targets stay unproven.
+     */
+    private boolean a2DecisionReceipt(AdminIdempotencyRecordEntity original, long actor) {
+        if (!"A2_COMMAND".equals(original.getScope())) {
+            return false;
+        }
+        if (!StringUtils.hasText(original.getOriginTargets())) {
+            return a2DecisionAudit(original, actor);
+        }
+        String action = null;
+        String boundTicketId = "";
+        String receiptTicketId = "";
+        try {
+            for (var target : json.readTree(original.getOriginTargets())) {
+                if (!"A2".equals(target.path("domain").asText())
+                        || !"operation".equals(target.path("type").asText())) continue;
+                String candidate = target.path("action").asText("");
+                if (Set.of("A2_APPROVE", "A2_REJECT", "A2_WITHDRAW", "A2_EXECUTED").contains(candidate)) {
+                    action = candidate;
+                    boundTicketId = target.path("id").asText("");
+                    break;
+                }
+            }
+            if (StringUtils.hasText(original.getResponseJson())) {
+                receiptTicketId = json.readTree(original.getResponseJson()).path("id").asText("");
+            }
+        } catch (JsonProcessingException invalid) {
+            return false;
+        }
+        if (action == null) return false;
+        if (StringUtils.hasText(boundTicketId) && StringUtils.hasText(receiptTicketId)
+                && !boundTicketId.equals(receiptTicketId)) return false;
+        String ticketId = StringUtils.hasText(boundTicketId) ? boundTicketId : receiptTicketId;
+        if (!StringUtils.hasText(ticketId)) return false;
+        var ticket = tickets.selectActiveByOperationId(ticketId);
+        if (ticket == null) return false;
+        String expectedStatus = switch (action) {
+            case "A2_REJECT" -> "rejected";
+            case "A2_WITHDRAW" -> "withdrawn";
+            default -> "approved";
+        };
+        return expectedStatus.equalsIgnoreCase(String.valueOf(ticket.getStatus()).trim());
+    }
+
+    /** Legacy A2 successes have no origin targets; prove the same receipt key, decision audit and ticket id. */
+    private boolean a2DecisionAudit(AdminIdempotencyRecordEntity original, long actor) {
+        String ticketId;
+        try {
+            if (!StringUtils.hasText(original.getResponseJson())) return false;
+            ticketId = json.readTree(original.getResponseJson()).path("id").asText("");
+        } catch (JsonProcessingException invalid) {
+            return false;
+        }
+        if (!StringUtils.hasText(ticketId)) return false;
+        for (String action : List.of("A2_OPERATION_APPROVED", "A2_OPERATION_REJECTED", "A2_OPERATION_WITHDRAWN")) {
+            var decisionAudit = audit.findA2CommandAudit(actor, original.getIdempotencyKey(), action, null);
+            if (decisionAudit != null && ticketId.equals(decisionAudit.operationId())) return true;
+        }
+        return false;
     }
 
     private String receiptTicketId(AdminIdempotencyRecordEntity original) {
@@ -780,7 +844,13 @@ public class AdminCommandInvestigationService {
         };
     }
 
-    private ReceiptStatus statusOf(AdminIdempotencyRecordEntity original) {
+    private ReceiptStatus statusOf(AdminIdempotencyRecordEntity original, long actor) {
+        if ("A2_COMMAND".equals(original.getScope())
+                && ("SUCCEEDED".equals(original.getStatus()) || "CONFIRMED_SUCCEEDED".equals(original.getStatus()))
+                && businessCode(original.getResponseJson()) == null
+                && !a2DecisionReceipt(original, actor)) {
+            return new ReceiptStatus("UNKNOWN");
+        }
         String state = receiptState(original);
         if ("REJECTED".equals(state)) {
             return new ReceiptStatus(state, businessCode(original.getResponseJson()),
