@@ -72,6 +72,9 @@ public class G3MarketApproval {
         }
         values.put("value", request.value());
         values.put("expectedRevision", request.expectedRevision());
+        if ("pin".equals(request.action()) || "resume".equals(request.action())) {
+            values.putAll(market.bindMarketPolicyDependencies(request.action(), request.value()));
+        }
         return new AuditReplayCommand("G", OP, Map.of("values", Map.copyOf(values), "makerAdminId", adminId));
     }
 
@@ -138,10 +141,40 @@ public class G3MarketApproval {
             return new G3MarketPolicyChangeRequest(action, day, field, value.trim(), revision);
         }
         if (!Set.of("current-price", "initial-schedule", "pin", "resume").contains(action)
-                || !values.keySet().equals(Set.of("action", "value", "expectedRevision"))) {
+                || !values.keySet().containsAll(Set.of("action", "value", "expectedRevision"))) {
             throw new BizException(422, "G3_POLICY_PROPOSAL_INVALID");
         }
-        return new G3MarketPolicyChangeRequest(action, null, null, value.trim(), revision);
+        Set<String> extra = new java.util.HashSet<String>();
+        for (Object key : values.keySet()) {
+            extra.add(String.valueOf(key));
+        }
+        extra.removeAll(Set.of("action", "value", "expectedRevision"));
+        if (extra.isEmpty()) {
+            return new G3MarketPolicyChangeRequest(action, null, null, value.trim(), revision);
+        }
+        if (!Set.of("pin", "resume").contains(action)) {
+            throw new BizException(422, "G3_POLICY_PROPOSAL_INVALID");
+        }
+        Integer day = null;
+        String field = null;
+        if (extra.contains("dayIndex")) {
+            if (!(values.get("dayIndex") instanceof Integer d) || d < 0 || d > 6) {
+                throw new BizException(422, "G3_POLICY_PROPOSAL_INVALID");
+            }
+            day = d;
+            extra.remove("dayIndex");
+        }
+        if (extra.contains("field")) {
+            if (!(values.get("field") instanceof String f) || f.isBlank()) {
+                throw new BizException(422, "G3_POLICY_PROPOSAL_INVALID");
+            }
+            field = f.trim();
+            extra.remove("field");
+        }
+        if (!extra.isEmpty()) {
+            throw new BizException(422, "G3_POLICY_PROPOSAL_INVALID");
+        }
+        return new G3MarketPolicyChangeRequest(action, day, field, value.trim(), revision);
     }
 
     private static boolean hasAuthority(Authentication authentication, String authority) {

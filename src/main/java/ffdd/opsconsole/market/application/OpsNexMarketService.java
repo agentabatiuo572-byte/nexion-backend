@@ -1412,9 +1412,17 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
             }
             String value = normalizeControlValue("pin", request.value());
+            BigDecimal current = currentPrice();
+            if (current.signum() <= 0) throw new BizException(422, "G3_POLICY_APPROVAL_NOT_REQUIRED");
             NexMarketCurveFrame pinned = resolvePinnedFrame(pinCurve, value);
-            if (pinned == null || pinned.targetPrice().compareTo(currentPrice()) <= 0) {
+            if (pinned == null || pinned.targetPrice().compareTo(current) <= 0) {
                 throw new BizException(422, "G3_POLICY_APPROVAL_NOT_REQUIRED");
+            }
+            if (request.dayIndex() != null && request.dayIndex() != pinned.dayIndex()) {
+                throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
+            }
+            if (request.field() != null && !request.field().equals(pinned.targetPrice().stripTrailingZeros().toPlainString())) {
+                throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
             }
             ApiResult<Map<String, Object>> redline = coverageRedlineFailure(
                     coverageFacade.snapshotAtNexPrice(pinned.targetPrice()));
@@ -1446,8 +1454,15 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             if (resumeCurve.size() != 7) throw new BizException(503, "G3_WEEKLY_CURVE_INVALID");
             int nextDayIndex = pinnedDayIndex().orElseGet(this::nextAdvanceDayIndex);
             NexMarketCurveFrame activeFrame = frameFor(resumeCurve, nextDayIndex);
-            if (activeFrame.targetPrice().compareTo(currentPrice()) <= 0) {
+            BigDecimal current = currentPrice();
+            if (current.signum() <= 0 || activeFrame.targetPrice().compareTo(current) <= 0) {
                 throw new BizException(422, "G3_POLICY_APPROVAL_NOT_REQUIRED");
+            }
+            if (request.dayIndex() != null && request.dayIndex() != activeFrame.dayIndex()) {
+                throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
+            }
+            if (request.field() != null && !request.field().equals(activeFrame.targetPrice().stripTrailingZeros().toPlainString())) {
+                throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
             }
             ApiResult<Map<String, Object>> redline = coverageRedlineFailure(
                     coverageFacade.snapshotAtNexPrice(activeFrame.targetPrice()));
@@ -1703,6 +1718,30 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             eventPublisher.publishEvent(new NexMarketSchedule.Changed());
         }
         return result;
+    }
+
+    /** Resolves the frame a valid pin value freezes on; {@code null} when the value is not a day pin. */
+    /** Binds the frame and target price a pin/resume approval will execute so approval can reject drift. */
+    java.util.Map<String, Object> bindMarketPolicyDependencies(String action, String value) {
+        java.util.Map<String, Object> dependencies = new java.util.LinkedHashMap<>();
+        List<NexMarketCurveFrame> curve = configFacade.activeValue(WEEKLY_CURVE_KEY)
+                .filter(StringUtils::hasText).map(this::readCurve).orElse(List.of());
+        if (curve.size() != 7) return dependencies;
+        if ("pin".equals(action)) {
+            NexMarketCurveFrame pinned = resolvePinnedFrame(curve, value);
+            if (pinned != null) {
+                dependencies.put("dayIndex", pinned.dayIndex());
+                dependencies.put("field", pinned.targetPrice().stripTrailingZeros().toPlainString());
+            }
+        } else if ("resume".equals(action)) {
+            int nextDayIndex = pinnedDayIndex().orElseGet(this::nextAdvanceDayIndex);
+            NexMarketCurveFrame activeFrame = frameFor(curve, nextDayIndex);
+            if (activeFrame != null) {
+                dependencies.put("dayIndex", activeFrame.dayIndex());
+                dependencies.put("field", activeFrame.targetPrice().stripTrailingZeros().toPlainString());
+            }
+        }
+        return dependencies;
     }
 
     /** Resolves the frame a valid pin value freezes on; {@code null} when the value is not a day pin. */

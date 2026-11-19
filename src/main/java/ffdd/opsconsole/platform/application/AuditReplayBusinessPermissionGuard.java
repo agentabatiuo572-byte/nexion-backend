@@ -2564,7 +2564,9 @@ public class AuditReplayBusinessPermissionGuard {
                                             "en", chapter.en() == null ? "" : chapter.en(),
                                             "zhBody", chapter.zhBody() == null ? "" : chapter.zhBody(),
                                             "viBody", chapter.viBody() == null ? "" : chapter.viBody(),
-                                            "enBody", chapter.enBody() == null ? "" : chapter.enBody()))
+                                            "enBody", chapter.enBody() == null ? "" : chapter.enBody(),
+                                            "titleTranslations", chapter.titleTranslations() == null ? java.util.Map.of() : chapter.titleTranslations(),
+                                            "bodyTranslations", chapter.bodyTranslations() == null ? java.util.Map.of() : chapter.bodyTranslations()))
                                     .toList();
                     java.util.Map<String, Object> summary = new java.util.LinkedHashMap<>();
                     summary.put("version", item.version());

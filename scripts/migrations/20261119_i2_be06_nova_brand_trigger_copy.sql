@@ -7,33 +7,36 @@
 -- Nexion/NexGrid titles and moved DDL/seed out of the read path, but this visible
 -- copy remained.
 --
--- Only canonical stock rows are rewritten; operator-edited copy is preserved.
--- Updates are idempotent: a second startup has no matching rows. A postcondition
--- raises SQLSTATE 45000 so backend startup stops rather than presenting a
--- half-applied cleanup as success.
+-- I2-BE-16: only canonical preloaded rows (operator='system:migration') are
+-- rewritten; operator-created templates that happen to contain the same tokens
+-- are preserved. Plain REPLACE() rewrites every occurrence, including adjacent
+-- ones ("NEX NEX"), and is idempotent. The postcondition raises SQLSTATE 45000
+-- so backend startup stops rather than presenting a half-applied cleanup as
+-- success.
 
 UPDATE nx_nova_template
-   SET body_zh = REGEXP_REPLACE(body_zh, '(^|[^[:alnum:]])NEX([^[:alnum:]]|$)', '$1UVT$2', 1, 0, 'i'),
-       body_vi = REGEXP_REPLACE(body_vi, '(^|[^[:alnum:]])NEX([^[:alnum:]]|$)', '$1UVT$2', 1, 0, 'i'),
-       body_en = REGEXP_REPLACE(body_en, '(^|[^[:alnum:]])NEX([^[:alnum:]]|$)', '$1UVT$2', 1, 0, 'i'),
-       title_zh = REGEXP_REPLACE(title_zh, '(^|[^[:alnum:]])NexGrid([^[:alnum:]]|$)', '$1UVEL$2', 1, 0, 'i'),
-       title_vi = REGEXP_REPLACE(title_vi, '(^|[^[:alnum:]])NexGrid([^[:alnum:]]|$)', '$1UVEL$2', 1, 0, 'i'),
-       title_en = REGEXP_REPLACE(title_en, '(^|[^[:alnum:]])NexGrid([^[:alnum:]]|$)', '$1UVEL$2', 1, 0, 'i'),
-       body_zh = REGEXP_REPLACE(body_zh, '(^|[^[:alnum:]])NexGrid([^[:alnum:]]|$)', '$1UVEL$2', 1, 0, 'i'),
-       body_vi = REGEXP_REPLACE(body_vi, '(^|[^[:alnum:]])NexGrid([^[:alnum:]]|$)', '$1UVEL$2', 1, 0, 'i'),
-       body_en = REGEXP_REPLACE(body_en, '(^|[^[:alnum:]])NexGrid([^[:alnum:]]|$)', '$1UVEL$2', 1, 0, 'i'),
+   SET body_zh = REPLACE(body_zh, 'NEX', 'UVT'),
+       body_vi = REPLACE(body_vi, 'NEX', 'UVT'),
+       body_en = REPLACE(body_en, 'NEX', 'UVT'),
+       title_zh = REPLACE(title_zh, 'NexGrid', 'UVEL'),
+       title_vi = REPLACE(title_vi, 'NexGrid', 'UVEL'),
+       title_en = REPLACE(title_en, 'NexGrid', 'UVEL'),
+       body_zh = REPLACE(body_zh, 'NexGrid', 'UVEL'),
+       body_vi = REPLACE(body_vi, 'NexGrid', 'UVEL'),
+       body_en = REPLACE(body_en, 'NexGrid', 'UVEL'),
        updated_at = NOW(),
        reason = CONCAT(COALESCE(reason, ''), ' | I2 retire legacy brand copy')
  WHERE is_deleted = 0
-   AND (body_zh REGEXP '(^|[^[:alnum:]])NEX([^[:alnum:]]|$)'
-     OR body_vi REGEXP '(^|[^[:alnum:]])NEX([^[:alnum:]]|$)'
-     OR body_en REGEXP '(^|[^[:alnum:]])NEX([^[:alnum:]]|$)'
-     OR title_zh REGEXP '(^|[^[:alnum:]])[Nn]exGrid([^[:alnum:]]|$)'
-     OR title_vi REGEXP '(^|[^[:alnum:]])[Nn]exGrid([^[:alnum:]]|$)'
-     OR title_en REGEXP '(^|[^[:alnum:]])[Nn]exGrid([^[:alnum:]]|$)'
-     OR body_zh REGEXP '(^|[^[:alnum:]])[Nn]exGrid([^[:alnum:]]|$)'
-     OR body_vi REGEXP '(^|[^[:alnum:]])[Nn]exGrid([^[:alnum:]]|$)'
-     OR body_en REGEXP '(^|[^[:alnum:]])[Nn]exGrid([^[:alnum:]]|$)');
+   AND operator = 'system:migration'
+   AND (body_zh LIKE '%NEX%'
+     OR body_vi LIKE '%NEX%'
+     OR body_en LIKE '%NEX%'
+     OR title_zh LIKE '%NexGrid%'
+     OR title_vi LIKE '%NexGrid%'
+     OR title_en LIKE '%NexGrid%'
+     OR body_zh LIKE '%NexGrid%'
+     OR body_vi LIKE '%NexGrid%'
+     OR body_en LIKE '%NexGrid%');
 
 UPDATE nx_nova_channel
    SET trigger_rule = CASE
@@ -47,6 +50,7 @@ UPDATE nx_nova_channel
        updated_at = NOW(),
        reason = CONCAT(COALESCE(reason, ''), ' | I2 trigger copy de-paged/branded')
  WHERE is_deleted = 0
+   AND operator = 'system:migration'
    AND channel_key IN ('market', 'tradein', 'eventClaim', 'taskLockMonthly', 'quest')
    AND BINARY trigger_rule IN (
        '全网算力或 NEX 行情满足播报条件',
@@ -60,12 +64,14 @@ SET @i2_nova_copy_clean = (
     FROM (
       SELECT id FROM nx_nova_template
        WHERE is_deleted = 0
-         AND (body_zh REGEXP '(^|[^[:alnum:]])NEX([^[:alnum:]]|$)'
-           OR body_vi REGEXP '(^|[^[:alnum:]])NEX([^[:alnum:]]|$)'
-           OR body_en REGEXP '(^|[^[:alnum:]])NEX([^[:alnum:]]|$)')
+         AND operator = 'system:migration'
+         AND (body_zh LIKE '%NEX%'
+           OR body_vi LIKE '%NEX%'
+           OR body_en LIKE '%NEX%')
       UNION ALL
       SELECT id FROM nx_nova_channel
        WHERE is_deleted = 0
+         AND operator = 'system:migration'
          AND channel_key IN ('market', 'tradein', 'eventClaim', 'taskLockMonthly', 'quest')
          AND BINARY trigger_rule IN (
              '全网算力或 NEX 行情满足播报条件',

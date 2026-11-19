@@ -599,6 +599,65 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
                 trim(remark));
     }
 
+    /**
+     * F1 已用券扣回:余额后使用调用方在同一事务内锁定并扣减后的真实钱包余额,允许为负数。
+     * 幂等互斥与既有指纹校验保持一致,不做余额推算。
+     */
+    @Override
+    @Transactional
+    public void postLedgerEntryWithBalanceAfter(String bizNo, Long userId, String bizType, String asset, String direction,
+                                                BigDecimal amount, BigDecimal balanceAfter, String status, String remark) {
+        if (userId == null || userId <= 0) {
+            throw new IllegalArgumentException("D4_LEDGER_USER_REQUIRED");
+        }
+        if (balanceAfter == null) {
+            throw new IllegalArgumentException("D4_LEDGER_BALANCE_AFTER_REQUIRED");
+        }
+        String normalizedBizNo = requiredUpperOrOriginal(bizNo, "D4_LEDGER_BIZ_NO_REQUIRED", false);
+        String normalizedBizType = requiredUpperOrOriginal(bizType, "D4_LEDGER_BIZ_TYPE_REQUIRED", true);
+        String normalizedAsset = requiredUpperOrOriginal(asset, "D4_LEDGER_ASSET_REQUIRED", true);
+        String normalizedDirection = requiredUpperOrOriginal(direction, "D4_LEDGER_DIRECTION_REQUIRED", true);
+        String normalizedStatus = requiredUpperOrOriginal(status, "D4_LEDGER_STATUS_REQUIRED", true);
+        if (!java.util.Set.of("USDT", "UVT").contains(normalizedAsset)) {
+            throw new IllegalArgumentException("D4_LEDGER_ASSET_INVALID");
+        }
+        if (!java.util.Set.of("IN", "OUT").contains(normalizedDirection)) {
+            throw new IllegalArgumentException("D4_LEDGER_DIRECTION_INVALID");
+        }
+        if (!java.util.Set.of("PENDING", "SUCCESS", "POSTED", "COMPLETED", "CONFIRMED",
+                "FAILED", "REJECTED", "CANCELLED").contains(normalizedStatus)) {
+            throw new IllegalArgumentException("D4_LEDGER_STATUS_INVALID");
+        }
+        if (amount == null || amount.signum() <= 0) {
+            throw new IllegalArgumentException("D4_LEDGER_AMOUNT_MUST_BE_POSITIVE");
+        }
+        if (amount.stripTrailingZeros().scale() > 6 || amount.precision() - amount.scale() > 12) {
+            throw new IllegalArgumentException("D4_LEDGER_AMOUNT_PRECISION_OR_OVERFLOW");
+        }
+        String uniqueKey = "D4_BIZ_" + UUID.nameUUIDFromBytes(
+                (normalizedBizNo + "|" + normalizedAsset + "|" + normalizedDirection)
+                        .getBytes(StandardCharsets.UTF_8));
+        mapper.ensureLedgerMutex(uniqueKey);
+        if (!uniqueKey.equals(mapper.lockLedgerMutex(uniqueKey))) {
+            throw new IllegalStateException("D4_LEDGER_IDEMPOTENCY_MUTEX_UNAVAILABLE");
+        }
+        String lockKey = "D4_LEDGER_" + userId + "_" + normalizedAsset;
+        mapper.ensureLedgerMutex(lockKey);
+        if (!lockKey.equals(mapper.lockLedgerMutex(lockKey))) {
+            throw new IllegalStateException("D4_LEDGER_MUTEX_UNAVAILABLE");
+        }
+        insertImmutableLedgerEntry(
+                normalizedBizNo,
+                userId,
+                normalizedBizType,
+                normalizedAsset,
+                normalizedDirection,
+                amount.abs(),
+                balanceAfter,
+                normalizedStatus,
+                trim(remark));
+    }
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void releaseCommissionFunds(Long eventId) {

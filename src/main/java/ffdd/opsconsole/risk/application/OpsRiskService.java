@@ -1070,9 +1070,11 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             amounts.add(k2Amount("UVT", k2Decimal(raw.get("nexRaw"))));
             fact.put("amounts", amounts);
             fact.put("settledCount", k2Integer(raw.get("settledCount")));
-            fact.put("blockedCount", k2Integer(raw.get("blockedCount")));
-            fact.put("blockedCountAvailable", true);
-            fact.put("blockedCountBasis", "nx_admin_risk_arbitrage_row.disposition=gift_blocked");
+            Integer blockedCount = k2Integer(raw.get("blockedCount"));
+            fact.put("blockedCount", blockedCount == null ? null : blockedCount);
+            fact.put("blockedCountAvailable", blockedCount != null);
+            fact.put("blockedCountBasis", blockedCount == null
+                    ? "无逐笔拒发事实" : "nx_admin_risk_arbitrage_row.blocked_count");
             fact.put("amountBasis", "nx_referral_reward_settlement.newcomer_usdt/newcomer_nex; SETTLED rows; same cluster membership as gift projection");
             fact.put("cellMeaning", "SETTLED_GIFTS_WITH_LEGACY_BLOCKED_CELL");
             facts.put(rowId, fact);

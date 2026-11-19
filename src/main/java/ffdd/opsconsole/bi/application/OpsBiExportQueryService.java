@@ -8,6 +8,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.Comparator;
@@ -25,11 +26,22 @@ public class OpsBiExportQueryService {
 
     private final BiReportRepository reportRepository;
     private final AuditLogService auditLogService;
+    private final AdminPermissionCache permissionCache;
 
     public ApiResult<BiReportView> exportTask(String exportId) {
         if (!StringUtils.hasText(exportId)) return ApiResult.fail(400, "REPORT_ID_REQUIRED");
         BiReportView report = reportRepository.findReport(exportId.trim()).orElse(null);
-        return report == null ? ApiResult.fail(404, "BI_REPORT_NOT_FOUND") : ApiResult.ok(report);
+        if (report == null) return ApiResult.fail(404, "BI_REPORT_NOT_FOUND");
+        // L4-BE-11: 申请人没有 bi_l5_read 时,仍可读取自己创建的报表状态。
+        Long adminId = parseAdminIdFromContext();
+        boolean canReadAll = adminId != null && permissionCache.getPermissionCodes(adminId).contains("bi_l5_read");
+        if (!canReadAll) {
+            Long makerId = auditLogService.findBiReportMakers(List.of(exportId.trim())).get(exportId.trim());
+            if (adminId == null || makerId == null || !makerId.equals(adminId)) {
+                return ApiResult.fail(403, "PERMISSION_DENIED");
+            }
+        }
+        return ApiResult.ok(report);
     }
 
     public ApiResult<List<Map<String, Object>>> exportAudits(
@@ -137,5 +149,15 @@ public class OpsBiExportQueryService {
         Map<String, Object> result = new LinkedHashMap<>();
         for (int index = 0; index < pairs.length; index += 2) result.put(String.valueOf(pairs[index]), pairs[index + 1]);
         return result;
+    }
+
+    private Long parseAdminIdFromContext() {
+        var authentication = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || authentication.getPrincipal() == null) return null;
+        try {
+            return Long.valueOf(String.valueOf(authentication.getPrincipal()));
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 }

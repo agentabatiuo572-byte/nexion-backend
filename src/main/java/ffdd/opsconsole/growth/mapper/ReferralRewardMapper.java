@@ -444,10 +444,11 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
      * used only to explain whether ELIGIBLE_RISK is the sole blocker. No release helper.
      */
     @Select("""
+            <script>
             SELECT u.id AS invitedUserId, inviter.id AS inviterUserId
               FROM nx_user u
               LEFT JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
-               AND inviter.id<>u.id AND inviter.sandbox=u.sandbox
+               AND inviter.id&lt;&gt;u.id AND inviter.sandbox=u.sandbox
                AND EXISTS (SELECT 1 FROM nx_user_wallet w WHERE w.user_id=inviter.id AND w.is_deleted=0 AND w.sandbox=u.sandbox)
               JOIN nx_user_wallet invited_wallet ON invited_wallet.user_id = u.id
                 AND invited_wallet.is_deleted = 0
@@ -458,13 +459,16 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
              WHERE u.is_deleted = 0 AND u.status = 'ACTIVE'
                AND #{sourceEnvironment} = 'PRODUCTION'
                AND COALESCE(u.sandbox, 0) = #{accountSandbox}
-               AND u.created_at >= #{effectiveAt}
+               AND u.created_at &gt;= #{effectiveAt}
+               <if test="effectiveUntil != null"> AND u.created_at &lt; #{effectiveUntil}</if>
                AND s.id IS NULL
                AND (#{onlyInvitedUserId} IS NULL OR u.id = #{onlyInvitedUserId})
              ORDER BY u.created_at ASC, u.id ASC
              LIMIT #{limit}
+            </script>
             """)
     List<ReferralRow> findSettlementScopeCandidates(@Param("effectiveAt") LocalDateTime effectiveAt,
+                                                    @Param("effectiveUntil") LocalDateTime effectiveUntil,
                                                     @Param("sourceEnvironment") String sourceEnvironment,
                                                     @Param("accountSandbox") int accountSandbox,
                                                     @Param("limit") int limit,
@@ -655,6 +659,7 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                       @Param("holdRisky") boolean holdRisky);
 
     @Select("""
+            <script>
             SELECT COUNT(*) FROM nx_user u
               LEFT JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
                AND inviter.id<>u.id AND inviter.sandbox=u.sandbox
@@ -664,6 +669,7 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
              WHERE u.is_deleted = 0 AND u.status = 'ACTIVE'
                AND COALESCE(u.sandbox, 0) = #{accountSandbox}
                AND u.created_at >= #{effectiveAt}
+                <if test="effectiveUntil != null"> AND u.created_at &lt; #{effectiveUntil}</if>
                AND s.id IS NULL
                AND (EXISTS (
                  SELECT 1 FROM nx_admin_risk_arbitrage_row risk
@@ -707,11 +713,12 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                         OR JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
                  )
                )))
+            </script>
             """)
     long totalBlockedByK2(@Param("effectiveAt") LocalDateTime effectiveAt,
+                          @Param("effectiveUntil") LocalDateTime effectiveUntil,
                           @Param("accountSandbox") int accountSandbox,
                           @Param("holdRisky") boolean holdRisky);
-
     @Select("""
             SELECT s.settlement_no AS settlementNo, s.invited_user_id AS invitedUserId,
                    s.inviter_user_id AS inviterUserId, s.newcomer_usdt AS newcomerUsdt,

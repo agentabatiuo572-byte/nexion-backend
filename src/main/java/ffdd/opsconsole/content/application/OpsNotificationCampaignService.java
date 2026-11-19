@@ -63,13 +63,13 @@ public class OpsNotificationCampaignService {
     private static final Set<String> KINDS = Set.of("system", "commission", "team", "staking", "market", "genesis");
     private static final List<NotificationAudienceOption> CTA_ROUTES = List.of(
             new NotificationAudienceOption("", "无跳转"),
-            new NotificationAudienceOption("/pages/me/wallet-repurchase", "我的 · 锁定计划"),
+            new NotificationAudienceOption("/pages/me/wallet", "我的 · 钱包"),
             new NotificationAudienceOption("/pages/team/team", "赚取 · 团队"),
             new NotificationAudienceOption("/pages/market/market", "商城 · 市场"),
             new NotificationAudienceOption("/pages/genesis/marketplace", "商城 · Genesis"));
     private static final List<NotificationSwipeRouteView> SWIPE_ROUTES = List.of(
             new NotificationSwipeRouteView("", "system", "system 或未配置路由：左滑不跳转"),
-            new NotificationSwipeRouteView(AppNotificationService.SWIPE_ROUTE_BY_KIND.get("commission"), "commission", "奖励到账 -> 锁定计划"),
+            new NotificationSwipeRouteView(AppNotificationService.SWIPE_ROUTE_BY_KIND.get("commission"), "commission", "奖励到账 -> 钱包"),
             new NotificationSwipeRouteView(AppNotificationService.SWIPE_ROUTE_BY_KIND.get("team"), "team", "团队 -> 赚取 · 团队"),
             new NotificationSwipeRouteView(AppNotificationService.SWIPE_ROUTE_BY_KIND.get("market"), "market", "市场 -> 商城 · 市场"),
             new NotificationSwipeRouteView(AppNotificationService.SWIPE_ROUTE_BY_KIND.get("genesis"), "genesis", "Genesis -> 商城 · Genesis"));

@@ -818,7 +818,11 @@ public class AdminCommandInvestigationService {
         if ("CONFIRMED_REJECTED".equals(status)) return "REJECTED";
         if ("SUCCEEDED".equals(status) || "CONFIRMED_SUCCEEDED".equals(status)) {
             Integer code = businessCode(original.getResponseJson());
-            if (code == null) return "UNKNOWN";
+            if (code == null) {
+                // A2 decisions store the ticket body without a top-level code; a successful A2_COMMAND
+                // record already proves its own decision and must report success instead of UNKNOWN.
+                return "A2_COMMAND".equals(original.getScope()) ? "SUCCEEDED" : "UNKNOWN";
+            }
             return code == 0 ? "SUCCEEDED" : "REJECTED";
         }
         return "UNKNOWN";

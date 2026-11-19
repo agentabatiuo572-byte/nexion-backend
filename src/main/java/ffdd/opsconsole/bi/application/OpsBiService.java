@@ -561,11 +561,15 @@ public class OpsBiService implements AuditReplayable {
         Map<String, ApprovalEligibility> eligibility = new LinkedHashMap<>();
         Map<String, String> requesterDisplayNames = new LinkedHashMap<>();
         Long adminId = parseAdminIdFromContext();
-        if (adminId != null && permissionCache.getPermissionCodes(adminId).contains("bi_l5_task_approve")) {
-            List<String> pendingIds = page.getRecords().stream()
-                    .filter(report -> nextStatus(report, "APPROVE") != null)
-                    .map(BiReportView::reportId)
-                    .toList();
+        java.util.Set<String> callerPermissions = adminId == null
+                ? java.util.Set.of() : permissionCache.getPermissionCodes(adminId);
+        // L4-BE-11: 申请人资格按报表真实放行权限返回;网络树看 bi_l4_export_tree,其余看 bi_l5_task_approve。
+        List<String> pendingIds = page.getRecords().stream()
+                .filter(report -> nextStatus(report, "APPROVE") != null)
+                .filter(report -> callerPermissions.contains(reportApprovePermission(report)))
+                .map(BiReportView::reportId)
+                .toList();
+        if (adminId != null && !pendingIds.isEmpty()) {
             Map<String, AuditLogService.BiReportMakerIdentity> makers =
                     auditLogService.findBiReportMakerIdentities(pendingIds);
             pendingIds.forEach(id -> {
@@ -861,7 +865,7 @@ public class OpsBiService implements AuditReplayable {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "REPORT_SNAPSHOT_NOT_AVAILABLE");
         }
         String requiredCode = "APPROVE".equals(normalizedAction)
-                ? ("NETWORK_TREE".equals(normalizeText(report.type())) ? "bi_l4_export_tree" : "bi_l5_task_approve")
+                ? reportApprovePermission(report)
                 : reportAccessPermission(report);
         var permission = reportActionPermission(adminId, requiredCode);
         if (permission.getCode() != 0) return ApiResult.fail(permission.getCode(), permission.getMessage());
@@ -2407,6 +2411,11 @@ public class OpsBiService implements AuditReplayable {
         return "L";
     }
 
+    private String reportApprovePermission(BiReportView report) {
+        return "NETWORK_TREE".equals(normalizeText(report == null ? null : report.type()))
+                ? "bi_l4_export_tree" : "bi_l5_task_approve";
+    }
+
     private ApiResult<Void> reportActionPermission(Long adminId, String requiredCode) {
         if (adminId == null) return ApiResult.fail(401, "ADMIN_AUTH_REQUIRED");
         return permissionCache.getPermissionCodes(adminId).contains(requiredCode)
@@ -2428,7 +2437,7 @@ public class OpsBiService implements AuditReplayable {
         BiReportView report = reportRepository.findReport(reportId.trim()).orElse(null);
         if (report == null) return ApiResult.fail(404, "BI_REPORT_NOT_FOUND");
         Long actor = parseAdminIdFromContext();
-        var permission = reportActionPermission(actor, "bi_l5_task_approve");
+        var permission = reportActionPermission(actor, reportApprovePermission(report));
         return permission.getCode() != 0 ? permission : reportApprovalIdentity(report.reportId(), actor);
     }
 

@@ -28,7 +28,7 @@ public class AppNotificationService {
     private static final Set<String> ACTIONS = Set.of("cta", "swipe_conversion");
     /** 产品 2026-11-19 跳转清单:kind→规范左滑路由;未配置返回空(不跳)。 */
     static final Map<String, String> SWIPE_ROUTE_BY_KIND = Map.of(
-            "commission", "/pages/me/wallet-repurchase",
+            "commission", "/pages/me/wallet",
             "team", "/pages/team/team",
             "market", "/pages/market/market",
             "genesis", "/pages/genesis/marketplace");

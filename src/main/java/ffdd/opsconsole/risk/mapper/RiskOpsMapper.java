@@ -1550,7 +1550,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                    SUM(settlement.newcomer_usdt) AS usdtRaw,
                    SUM(settlement.newcomer_nex) AS nexRaw,
                    COUNT(DISTINCT settlement.id) AS settledCount,
-                   COALESCE(MAX(CASE WHEN risk.disposition = 'gift_blocked' THEN 1 ELSE 0 END), 0) AS blockedCount
+                   CASE WHEN MAX(risk.blocked_count) > 0 THEN MAX(risk.blocked_count) ELSE NULL END AS blockedCount
               FROM nx_admin_risk_multi_account_cluster cluster
               JOIN nx_referral_reward_settlement settlement
                 ON settlement.is_deleted = 0
@@ -1623,7 +1623,9 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
 
     @Update("""
             UPDATE nx_admin_risk_arbitrage_row
-               SET disposition = #{disposition}, version = version + 1, updated_at = NOW()
+               SET disposition = #{disposition},
+                   blocked_count = blocked_count + CASE WHEN #{disposition} = 'gift_blocked' THEN 1 ELSE 0 END,
+                   version = version + 1, updated_at = NOW()
              WHERE row_id = #{rowId} AND version = #{expectedVersion}
                AND disposition IS NULL AND is_deleted = 0
             """)

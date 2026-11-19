@@ -264,11 +264,15 @@ public final class L4OperationsAnalytics {
         // quest.dispatched 当前没有生产方，若以 join 结果作完成量，汇总会恒为 0，
         // 而同一窗口的趋势表仍显示真实完成数，形成两个互相矛盾的权威值。
         boolean orderedJoin = actorComplete && keysComplete && dispatchedCount > 0;
+        // L4-BE-09: 承接率分子只统计与派发实例(actor+任务)匹配的完成,分子分母同一批任务实例;
+        // 无派发事实时承接率不可用。完成量/趋势仍读全部 quest.completed。
+        long matchedCompletions = orderedJoin
+                ? completed.stream().filter(item -> dispatchTimes.containsKey(taskKey(item))).count() : 0;
         return linked(
                 "summary", linked(
                         "dispatched", dispatchedCount,
                         "completed", completionVolume,
-                        "acceptanceRate", orderedJoin ? pct(completionVolume, dispatchedCount) : null,
+                        "acceptanceRate", orderedJoin ? pct(matchedCompletions, dispatchedCount) : null,
                         "queueSaturation", saturation(rows),
                         "checkinActive", distinctActors(events(rows, "daily.checkin")),
                         "orderedTaskJoin", orderedJoin),

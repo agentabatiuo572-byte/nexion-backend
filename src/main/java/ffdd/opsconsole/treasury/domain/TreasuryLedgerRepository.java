@@ -214,4 +214,11 @@ public interface TreasuryLedgerRepository {
 
     void postLedgerEntry(String bizNo, Long userId, String bizType, String asset, String direction,
                          BigDecimal amount, String status, String remark);
+
+    /**
+     * F1 已用券扣回等场景:余额后由调用方在同一事务内锁定真实钱包后计算,允许为负数。
+     * 幂等与指纹校验同 postLedgerEntry,但不再用最后一条账单推算余额。
+     */
+    void postLedgerEntryWithBalanceAfter(String bizNo, Long userId, String bizType, String asset, String direction,
+                                         BigDecimal amount, BigDecimal balanceAfter, String status, String remark);
 }

@@ -75,7 +75,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
               WHEN d.pending_deactivate = 1 THEN 'CLOSING'
               WHEN d.deactivated_at IS NOT NULL OR d.status IN ('DEACTIVATED','RECYCLED','RETIRED') THEN 'STOPPED'
               WHEN d.activated_at IS NULL THEN 'WAITING_ACTIVATION'
-              WHEN NULLIF(TRIM(r.paused_reason),'') IS NOT NULL OR d.status = 'SUSPENDED' THEN 'PAUSED'
+              WHEN NULLIF(TRIM(r.paused_reason),'') IS NOT NULL OR COALESCE(r.ops_paused,0)=1 OR d.status = 'SUSPENDED' THEN 'PAUSED'
               WHEN sim.state = 'ERROR' THEN 'ERROR'
               WHEN sim.state IN ('STOPPED','EXPIRED') AND (d.activated_at > sim.interval_started_at
                    OR (sim.state = 'STOPPED' AND sim.last_error = 'DEVICE_PAUSED')) THEN 'WAITING_INIT'
@@ -381,9 +381,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
 
     String USER_PAUSE_CANDIDATE = " " + """
             d.status IN ('ONLINE','BUSY','RUNNING','OFFLINE','ACTIVE')
-            AND (r.id IS NULL OR r.is_deleted = 1 OR r.paused_reason IS NULL
-                 OR (#{simEnabled} = 1 AND UPPER(d.device_type) IN ('MOBILE','PHONE')
-                     AND r.paused_reason IN ('PHONE_LOW_BATTERY','PHONE_OFFLINE')))
+            AND (r.id IS NULL OR r.is_deleted = 1 OR COALESCE(r.ops_paused,0)=0)
             """;
 
     // System pauses are written by other flows with these fixed values. An operator pause
@@ -396,10 +394,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     // unbind/deactivate (deactivateE5Device), replace/recycle/deactivate (trade-in actions).
     String RESUMABLE_OPERATIONAL_PAUSE = E5_OCCUPIED_SLOT + """
             AND r.id IS NOT NULL AND r.is_deleted = 0
-            AND NULLIF(TRIM(r.paused_reason), '') IS NOT NULL
-            AND UPPER(TRIM(r.paused_reason)) NOT IN (
-                'ORDER_REFUND','USER_DEACTIVATED','PHONE_REPLACED','PHONE_OFFLINE',
-                'PHONE_LOW_BATTERY','UNBIND','DEACTIVATE','REPLACE','RECYCLE')
+            AND COALESCE(r.ops_paused,0)=1
             """;
 
     @Select("""
@@ -423,14 +418,15 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                                        @Param("limit") int limit, @Param("simEnabled") boolean simEnabled);
 
     @Insert("""
-            INSERT INTO nx_user_device_runtime(user_device_id, online_status, region, paused_reason, heartbeat_at)
-            SELECT d.id, 'UNKNOWN', COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED'), #{reason}, COALESCE(d.last_seen_at, #{now})
+            INSERT INTO nx_user_device_runtime(user_device_id, online_status, region, ops_paused, ops_pause_reason, heartbeat_at)
+            SELECT d.id, 'UNKNOWN', COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED'), 1, #{reason}, COALESCE(d.last_seen_at, #{now})
               FROM nx_user_device d
               LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id
              WHERE d.user_id = #{userId} AND d.is_deleted = 0
                AND """ + USER_PAUSE_CANDIDATE + """
             ON DUPLICATE KEY UPDATE is_deleted = 0,
-                paused_reason = VALUES(paused_reason),
+                ops_paused = 1,
+                ops_pause_reason = VALUES(ops_pause_reason),
                 updated_at = NOW()
             """)
     int pauseDevicesByUser(@Param("userId") Long userId, @Param("reason") String reason,
@@ -456,7 +452,15 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             <script>
             UPDATE nx_user_device_runtime r
               JOIN nx_user_device d ON d.id = r.user_device_id
-               SET r.paused_reason = NULL, r.updated_at = NOW()
+               SET r.ops_paused = 0,
+                   r.ops_pause_reason = NULL,
+                   r.paused_reason = CASE
+                     WHEN UPPER(d.device_type) IN ('MOBILE','PHONE') AND r.heartbeat_at IS NOT NULL THEN
+                       CASE WHEN COALESCE(r.network_reachable, 0) = 0 THEN 'PHONE_OFFLINE'
+                            WHEN r.battery_level IS NULL OR r.battery_level &lt; 20 THEN 'PHONE_LOW_BATTERY'
+                            ELSE NULL END
+                     ELSE r.paused_reason END,
+                   r.updated_at = NOW()
              WHERE d.user_id = #{userId} AND d.is_deleted = 0
                AND d.id IN
                  <foreach collection='deviceIds' item='id' open='(' separator=',' close=')'>#{id}</foreach>

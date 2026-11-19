@@ -2075,6 +2075,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 && phaseOrder.stream().map(OpsDeviceService::normalizeE1PhaseToken).anyMatch(h1PhaseToken::equals);
         phaseComparison.put("mappingStatus", mapped ? "EXACT_ID_PRESENT" : "UNMAPPED");
         phaseComparison.put("mappedH1Phase", mapped ? rhythm.currentPhase() : null);
+        // E1-BE-07: 写入校验实际使用的阶段与权威口径,PC 可直接对目录显示。
+        phaseComparison.put("writePhaseSource", mapped ? "H1_GROWTH_RHYTHM" : "MONTH_PROPORTIONAL_FALLBACK");
+        phaseComparison.put("phaseGateAuthority", "phaseCurrent");
+        phaseComparison.put("archiveGuardAuthority", "phaseCurrent");
+        phaseComparison.put("phaseReachedAuthority", "phaseCurrent");
         response.put("phaseComparison", phaseComparison);
         response.put("releases", e1GenerationReleases(gates));
         response.put("configValues", configValues);
@@ -4270,6 +4275,16 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     private String currentE1PhaseId(int platformMonth, List<DevicePhaseView> phases) {
+        // E1-BE-07: 商品门/归档保护/已达阶段等写入校验与读取回包统一使用 H1 运营阶段;
+        // H1 不可靠或未映射到目录时才回退到月份等分。
+        GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy);
+        String h1Token = normalizeE1PhaseToken(rhythm.currentPhase());
+        if (rhythm.reliable() && h1Token != null && !h1Token.isEmpty()
+                && phases.stream().map(p -> normalizeE1PhaseToken(p.p())).anyMatch(h1Token::equals)) {
+            return phases.stream()
+                    .filter(p -> normalizeE1PhaseToken(p.p()).equals(h1Token))
+                    .findFirst().orElseThrow().p();
+        }
         return phaseForMonth(platformMonth, phases);
     }
 

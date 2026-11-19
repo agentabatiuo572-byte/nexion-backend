@@ -8,6 +8,14 @@ public interface TreasuryLedgerPostingFacade extends DomainFacade {
     void postLedgerEntry(String bizNo, Long userId, String bizType, String asset, String direction,
                          BigDecimal amount, String status, String remark);
 
+    /**
+     * 余额后由调用方在同一事务内锁定真实钱包后计算,允许为负数(F1 已用券扣回)。
+     */
+    default void postLedgerEntryWithBalanceAfter(String bizNo, Long userId, String bizType, String asset, String direction,
+                                                 BigDecimal amount, BigDecimal balanceAfter, String status, String remark) {
+        throw new UnsupportedOperationException("LEDGER_BALANCE_AFTER_NOT_IMPLEMENTED");
+    }
+
     default void releaseCommissionFunds(Long eventId) {
         throw new UnsupportedOperationException("COMMISSION_FUNDS_RELEASE_NOT_IMPLEMENTED");
     }

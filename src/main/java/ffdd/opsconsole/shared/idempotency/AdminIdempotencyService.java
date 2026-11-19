@@ -72,6 +72,15 @@ public class AdminIdempotencyService {
         return execute(scope, key, requestHash, responseType, action, true, false, origin, false);
     }
 
+    /** A2 decision commands keep their trusted origin read authority and targets when the proposal provenance is known. */
+    public <T> T executeOwned(String scope, String key, String requestHash, Class<T> responseType,
+                              long actorId, String readAuthority, java.util.List<AdminCommandOrigin.Target> targets,
+                              Supplier<T> action) {
+        AdminCommandOrigin origin = new AdminCommandOrigin(actorId, null, null, null, readAuthority, targets);
+        return execute(scope, key, requestHash, responseType, action, true, false, origin, false);
+    }
+
+
     /** Read-only recovery information. Callers must derive the scope from the authenticated actor. */
     public RecoveryStatus recoveryStatus(String scope, String idempotencyKey, String requestHash) {
         return transactionExecutor.recoveryStatus(normalizeScope(scope), normalizeIdempotencyKey(idempotencyKey),

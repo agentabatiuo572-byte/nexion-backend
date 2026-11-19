@@ -296,6 +296,13 @@ public class AdminIdempotencyTransactionExecutor {
             // An M3 conversation send that was rejected before any message write must never execute again under the same key.
             return Claim.replayed(readJson(record.getResponseJson(), responseType));
         }
+        if ("A2_COMMAND".equals(record.getScope()) && STATUS_FAILED.equals(record.getStatus())
+                && StringUtils.hasText(record.getResponseJson())) {
+            if (!requestHash.equals(record.getRequestHash())) throw conflict("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+            // A2 decisions are final on explicit business rejection: the same submitter, key and body
+            // replay the captured rejection instead of re-executing (PC rule: explicit rejection closes the case).
+            replayA2Rejection(record.getResponseJson());
+        }
         if (!STATUS_FAILED.equals(record.getStatus())) {
             return Claim.replayed(replay(record, requestHash, responseType));
         }
@@ -384,6 +391,24 @@ public class AdminIdempotencyTransactionExecutor {
     private static boolean m3ConversationSendScope(String scope) {
         return scope != null && (scope.startsWith("M3_CONVERSATION_REPLY:")
                 || scope.startsWith("M3_CONVERSATION_INITIATE:"));
+    }
+
+
+    /** Replays the captured A2 business rejection as an exception so the caller surfaces the original code/message. */
+    private void replayA2Rejection(String responseJson) {
+        Integer code = null;
+        String message = null;
+        try {
+            var value = objectMapper.readTree(responseJson);
+            if (value != null && value.has("code") && value.get("code").canConvertToInt()) code = value.get("code").asInt();
+            if (value != null && value.has("message") && value.get("message").isTextual()) message = value.get("message").asText();
+        } catch (JsonProcessingException invalid) {
+            // No trusted code/message to surface; fall back to a generic failed-previous-request conflict.
+        }
+        if (code == null || code == 0) {
+            throw conflict("IDEMPOTENCY_PREVIOUS_REQUEST_FAILED");
+        }
+        throw new BizException(code, message == null ? "A2_COMMAND_REJECTED" : message);
     }
 
     private String writeJson(Object value) {

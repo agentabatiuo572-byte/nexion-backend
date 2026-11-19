@@ -1835,7 +1835,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
 
     /** 冲正定位本轮发放:锁定该用户该券下最新的 VRANK_REWARD 发放记录(原始或补发)。 */
     @Select("""
-            SELECT g.status, g.source_id AS sourceId, g.redeemed_amount_usdt AS redeemedAmountUsd
+            SELECT g.id AS grantId, g.status, g.source_id AS sourceId, g.redeemed_amount_usdt AS redeemedAmountUsd
               FROM nx_growth_voucher_grant g
              WHERE g.user_id = #{userId}
                AND g.voucher_id = #{voucherId}

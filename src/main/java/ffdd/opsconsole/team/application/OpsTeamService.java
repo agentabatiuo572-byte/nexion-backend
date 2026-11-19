@@ -4784,7 +4784,7 @@ public class OpsTeamService implements AuditReplayable {
             VoucherGrantFacade.VoucherGrantResult grantResult = vRankRewardDispatcher.reissueVoucherReward(userId, rankCode,
                     textValue(original, "voucherId", ""), payoutId.trim(), idempotencyKey.trim(), operator);
             if (grantResult == null || !"AVAILABLE".equalsIgnoreCase(String.valueOf(grantResult.status()))) {
-                throw new IllegalStateException("VOUCHER_REISSUE_GRANT_NOT_AVAILABLE: status="
+                throw new BizException(409, "VOUCHER_REISSUE_GRANT_NOT_AVAILABLE: status="
                         + (grantResult == null ? "none" : grantResult.status()));
             }
         }
@@ -4891,9 +4891,10 @@ public class OpsTeamService implements AuditReplayable {
             skuFulfillmentService.reverseSkuReward(userId, rankCode, textValue(original, "skuId", ""),
                     currentStatus, operator, reason);
         }
+        Map<String, Object> voucherClawbackResult = new LinkedHashMap<>();
         if ("voucher".equals(rewardType) && userId != null
                 && StringUtils.hasText(textValue(original, "voucherId", ""))) {
-            reverseVoucherReward(userId, rankCode, textValue(original, "voucherId", ""),
+            voucherClawbackResult = reverseVoucherReward(userId, rankCode, textValue(original, "voucherId", ""),
                     payoutId.trim(), usedVoucherClawback);
         }
         boolean updated = commissionRepository.updateRewardPayoutStatus(
@@ -4911,6 +4912,7 @@ public class OpsTeamService implements AuditReplayable {
         reverseAudit.put("reason", reason);
         reverseAudit.put("usedVoucherClawback", usedVoucherClawback == null ? "" : usedVoucherClawback);
         reverseAudit.put("idempotencyKey", idempotencyKey.trim());
+        reverseAudit.putAll(voucherClawbackResult);
         audit("F_TEAM_REWARD_REVERSED", "nx_v_rank_reward_payout:" + payoutId, operator, reverseAudit);
         eventOutboxService.publish(
                 "VRANK_REWARD_PAYOUT",
@@ -4935,6 +4937,7 @@ public class OpsTeamService implements AuditReplayable {
         response.put("source", "sku".equals(rewardType)
                 ? "nx_v_rank_reward_payout + nx_user_sku_entitlement + nx_v_rank_reward_fulfillment"
                 : "nx_v_rank_reward_payout + nx_commission_event (reverse)");
+        response.putAll(voucherClawbackResult);
         return ApiResult.ok(response);
     }
 
@@ -4943,36 +4946,57 @@ public class OpsTeamService implements AuditReplayable {
      * 未使用的券直接作废;已使用的券按 usedVoucherClawback 决定是否把券面额从用户 USDT 可用余额扣回,
      * 扣回时余额不够允许扣成负数;缺省(null,旧单)按扣回处理。历史流水没有对应 H7 记录时只改 payout 状态,不阻断冲正。
      */
-    private void reverseVoucherReward(Long userId, String rankCode, String voucherId, String payoutId,
-                                      Boolean usedVoucherClawback) {
+    private Map<String, Object> reverseVoucherReward(Long userId, String rankCode, String voucherId, String payoutId,
+                                                     Boolean usedVoucherClawback) {
+        Map<String, Object> result = new LinkedHashMap<>();
         String sourcePrefix = userId + ":" + rankCode + ":voucher";
         Map<String, Object> grant = commissionRepository.lockLatestVrankVoucherGrant(userId, voucherId, sourcePrefix);
         if (grant == null || grant.isEmpty()) {
-            return;
+            result.put("voucherClawback", "NO_GRANT_RECORD");
+            return result;
         }
+        String grantId = String.valueOf(grant.getOrDefault("grantId", ""));
         String sourceId = String.valueOf(grant.getOrDefault("sourceId", ""));
         String status = String.valueOf(grant.getOrDefault("status", "")).toUpperCase(Locale.ROOT);
         if ("AVAILABLE".equals(status)) {
             commissionRepository.revokeVrankAvailableGrant(userId, voucherId, sourceId);
-            return;
+            result.put("voucherClawback", "AVAILABLE_REVOKED");
+            return result;
         }
         if ("USED".equals(status)) {
             if (usedVoucherClawback != null && !usedVoucherClawback) {
-                return;
+                result.put("voucherClawback", "SKIPPED_BY_OPERATOR");
+                return result;
             }
-            BigDecimal amountUsd = decimalValue(grant.get("redeemedAmountUsd"), BigDecimal.ZERO);
-            if (amountUsd.compareTo(BigDecimal.ZERO) > 0) {
-                if (commissionRepository.lockVrankWalletUsdt(userId) == null) {
-                    throw new IllegalStateException("VRANK_WALLET_NOT_FOUND");
-                }
-                if (commissionRepository.debitVrankWalletUsdt(userId, amountUsd) != 1) {
-                    throw new IllegalStateException("VRANK_WALLET_DEBIT_CONFLICT");
-                }
-                ledgerPostingFacade.postLedgerEntry("F1-VRANKREWARD-REVERSE-" + payoutId.trim(), userId,
-                        "VRANK_REWARD_PAYOUT_REVERSED", "USDT", "OUT", amountUsd, "SUCCESS",
-                        "F1 V-Rank voucher clawback | rank=" + rankCode);
+            Object redeemedRaw = grant.get("redeemedAmountUsd");
+            BigDecimal amountUsd = decimalValue(redeemedRaw, BigDecimal.ZERO);
+            if (amountUsd.compareTo(BigDecimal.ZERO) <= 0) {
+                result.put("voucherClawback", "SKIPPED");
+                result.put("clawbackSkippedReason",
+                        redeemedRaw == null ? "REDEEMED_AMOUNT_UNKNOWN" : "REDEEMED_AMOUNT_ZERO");
+                return result;
             }
+            BigDecimal lockedBalance = commissionRepository.lockVrankWalletUsdt(userId);
+            if (lockedBalance == null) {
+                throw new BizException(409, "VRANK_WALLET_NOT_FOUND");
+            }
+            if (commissionRepository.debitVrankWalletUsdt(userId, amountUsd) != 1) {
+                throw new BizException(409, "VRANK_WALLET_DEBIT_CONFLICT");
+            }
+            BigDecimal balanceAfter = lockedBalance.subtract(amountUsd);
+            String billId = "F1-VRANKREWARD-REVERSE-" + payoutId.trim()
+                    + (StringUtils.hasText(grantId) ? "-" + grantId : "");
+            ledgerPostingFacade.postLedgerEntryWithBalanceAfter(billId, userId,
+                    "VRANK_REWARD_PAYOUT_REVERSED", "USDT", "OUT", amountUsd, balanceAfter, "SUCCESS",
+                    "F1 V-Rank voucher clawback | rank=" + rankCode);
+            result.put("voucherClawback", "CLAWED_BACK");
+            result.put("clawbackAmountUsdt", amountUsd);
+            result.put("balanceAfterUsdt", balanceAfter);
+            result.put("clawbackBillId", billId);
+            return result;
         }
+        result.put("voucherClawback", "GRANT_STATUS_" + status);
+        return result;
     }
 
     /** normalize payout row:字段补全 + status 大写。 */

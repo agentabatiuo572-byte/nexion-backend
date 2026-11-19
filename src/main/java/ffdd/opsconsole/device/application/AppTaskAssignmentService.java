@@ -968,6 +968,9 @@ public class AppTaskAssignmentService {
                 && !(phone(device) && Set.of("PHONE_LOW_BATTERY", "PHONE_OFFLINE").contains(device.pausedReason()))) {
             throw new BizException(409, "TASK_ASSIGNMENT_DEVICE_PAUSED");
         }
+        if (device.opsPaused() != null && device.opsPaused() == 1) {
+            throw new BizException(409, "TASK_ASSIGNMENT_DEVICE_PAUSED");
+        }
         if (!phone(device) && StringUtils.hasText(device.onlineStatus())
                 && !"ONLINE".equalsIgnoreCase(device.onlineStatus())) {
             throw new BizException(409, "TASK_ASSIGNMENT_DEVICE_OFFLINE");

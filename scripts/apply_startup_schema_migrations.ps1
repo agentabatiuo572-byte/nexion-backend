@@ -508,7 +508,14 @@ $migrations = @(
   # Align nx_admin_menu stock display names with current navigation names.
   (Join-Path $root "scripts\migrations\20261119_a7_be02_menu_display_names.sql"),
   # Remove legacy admin menu nodes that never appear in the PC left navigation.
-  (Join-Path $root "scripts\migrations\20261119_a7_be01_legacy_menu_removal.sql")
+  (Join-Path $root "scripts\migrations\20261119_a7_be01_legacy_menu_removal.sql"),
+  # F1 voucher clawback column + wallet negative-balance constraint (BUG-515/F1-BE-10).
+  (Join-Path $root "scripts\migrations\20261119_f1_be04_voucher_redeemed_amount.sql"),
+  (Join-Path $root "scripts\migrations\20261119_f1_be06_wallet_negative_clawback.sql"),
+  # Restore only the 8 current I4/I5 permissions after legacy menu removal (A7-BE-08).
+  (Join-Path $root "scripts\migrations\20261119_a7_be07_restore_i4_i5_permissions.sql"),
+  # E5 operator pause gets its own runtime state columns (E5-BE-19).
+  (Join-Path $root "scripts\migrations\20261119_e5_be19_ops_pause_state.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

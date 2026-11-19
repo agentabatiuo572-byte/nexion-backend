@@ -939,7 +939,7 @@ public class OpsAuditCenterService {
                     ? idempotencyService.executeBoundTargets(A2_COMMAND, idempotencyKey, requestHash,
                             AuditOperationTicket.class, originAuthority, originTargets, () -> requireSuccess(action.get()))
                     : idempotencyService.executeOwned(A2_COMMAND, idempotencyKey, requestHash,
-                            AuditOperationTicket.class, actorId, List.of(), () -> requireSuccess(action.get()));
+                            AuditOperationTicket.class, actorId, originAuthority, originTargets, () -> requireSuccess(action.get()));
             if (catalogProposal) {
                 return proposalByIdempotencyKey(idempotencyKey);
             }
@@ -1866,6 +1866,9 @@ public class OpsAuditCenterService {
         if (command == null) return false;
         if ("H".equals(command.domain()) && "h2_trial_charge".equals(command.op())) return true;
         if ("E".equals(command.domain()) && "e2_task_delete".equals(command.op())) return true;
+        if ("E".equals(command.domain()) && "e2_task_lifecycle_change".equals(command.op())
+                && command.params().get("values") instanceof Map<?, ?> values
+                && "delete".equalsIgnoreCase(Objects.toString(values.get("action"), ""))) return true;
         if (!"E".equals(command.domain()) || command.params() == null) return false;
         if ("e6_compute_config".equals(command.op())) {
             return ffdd.opsconsole.device.domain.ComputeConfigRegistry.isCoefficientParamKey(
