@@ -71,8 +71,14 @@ public interface DisclosureAckStatusMapper extends BaseMapper<DisclosureAckStatu
                                   @Param("version") String version,
                                   @Param("countryCodes") java.util.List<String> countryCodes);
 
-    @Select("SELECT UPPER(country_code) FROM nx_user WHERE id = #{userId} AND is_deleted = 0 LIMIT 1")
-    String findUserCountryCode(@Param("userId") Long userId);
+    @Select("""
+            SELECT country_code AS countryCode, region AS profileCountry
+              FROM nx_user WHERE id = #{userId} AND is_deleted = 0 LIMIT 1
+            """)
+    UserCountries findUserCountries(@Param("userId") Long userId);
+
+    record UserCountries(String countryCode, String profileCountry) {
+    }
 
     @Select("SELECT sandbox FROM nx_user WHERE id = #{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
     Integer isSandboxUser(@Param("userId") Long userId);
