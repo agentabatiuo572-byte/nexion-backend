@@ -4866,6 +4866,10 @@ public class OpsTeamService implements AuditReplayable {
         String rankCode = String.valueOf(original.getOrDefault("rankCode", ""));
         String operator = resolveOperator("MANUAL", request == null ? null : actor(request.operator()));
         String reason = request.reason().trim();
+        Boolean usedVoucherClawback = request == null ? null : request.usedVoucherClawback();
+        if (usedVoucherClawback != null && !"voucher".equals(rewardType)) {
+            return ApiResult.fail(422, "F1_CLAWBACK_VOUCHER_ONLY");
+        }
 
         // 资金类 D4 红冲:UPDATE nx_commission_event.status='REVERSED' + ledgerPostingFacade 反向 OUT 条目
         // 权益类(voucher/sku/custom)无 commission_event_id,跳过 D4
@@ -4884,22 +4888,24 @@ public class OpsTeamService implements AuditReplayable {
         if ("voucher".equals(rewardType) && userId != null
                 && StringUtils.hasText(textValue(original, "voucherId", ""))) {
             reverseVoucherReward(userId, rankCode, textValue(original, "voucherId", ""),
-                    payoutId.trim());
+                    payoutId.trim(), usedVoucherClawback);
         }
         boolean updated = commissionRepository.updateRewardPayoutStatus(
                 payoutId.trim(), "REVERSED", operator, "[REVERSE] " + reason);
         if (!updated) {
             throw new IllegalStateException("PAYOUT_UPDATE_FAILED");
         }
-        audit("F_TEAM_REWARD_REVERSED", "nx_v_rank_reward_payout:" + payoutId, operator, Map.of(
-                "payoutId", payoutId,
-                "userId", userId,
-                "rankCode", rankCode,
-                "rewardType", rewardType,
-                "amount", amount,
-                "commissionEventId", commissionEventId == null ? "" : commissionEventId,
-                "reason", reason,
-                "idempotencyKey", idempotencyKey.trim()));
+        Map<String, Object> reverseAudit = new LinkedHashMap<>();
+        reverseAudit.put("payoutId", payoutId);
+        reverseAudit.put("userId", userId);
+        reverseAudit.put("rankCode", rankCode);
+        reverseAudit.put("rewardType", rewardType);
+        reverseAudit.put("amount", amount);
+        reverseAudit.put("commissionEventId", commissionEventId == null ? "" : commissionEventId);
+        reverseAudit.put("reason", reason);
+        reverseAudit.put("usedVoucherClawback", usedVoucherClawback == null ? "" : usedVoucherClawback);
+        reverseAudit.put("idempotencyKey", idempotencyKey.trim());
+        audit("F_TEAM_REWARD_REVERSED", "nx_v_rank_reward_payout:" + payoutId, operator, reverseAudit);
         eventOutboxService.publish(
                 "VRANK_REWARD_PAYOUT",
                 payoutId.trim(),
@@ -4928,10 +4934,11 @@ public class OpsTeamService implements AuditReplayable {
 
     /**
      * F1 券冲正:真实收回 H7 发放记录。
-     * 未使用的券直接作废;已使用的券不撤销权益,改为把券面额从用户 USDT 可用余额扣回,
-     * 余额不够时允许扣成负数。历史流水没有对应 H7 记录时只改 payout 状态,不阻断冲正。
+     * 未使用的券直接作废;已使用的券按 usedVoucherClawback 决定是否把券面额从用户 USDT 可用余额扣回,
+     * 扣回时余额不够允许扣成负数;缺省(null,旧单)按扣回处理。历史流水没有对应 H7 记录时只改 payout 状态,不阻断冲正。
      */
-    private void reverseVoucherReward(Long userId, String rankCode, String voucherId, String payoutId) {
+    private void reverseVoucherReward(Long userId, String rankCode, String voucherId, String payoutId,
+                                      Boolean usedVoucherClawback) {
         String originalSourceId = userId + ":" + rankCode + ":voucher";
         String reissueSourceId = userId + ":" + rankCode + ":voucher:reissue:" + payoutId;
         Map<String, Object> grant = null;
@@ -4953,6 +4960,9 @@ public class OpsTeamService implements AuditReplayable {
             return;
         }
         if ("USED".equals(status)) {
+            if (usedVoucherClawback != null && !usedVoucherClawback) {
+                return;
+            }
             BigDecimal amountUsd = decimalValue(grant.get("amountUsd"), BigDecimal.ZERO);
             if (amountUsd.compareTo(BigDecimal.ZERO) > 0) {
                 commissionRepository.lockVrankWalletUsdt(userId);
@@ -5132,8 +5142,12 @@ public class OpsTeamService implements AuditReplayable {
             case "f_reward_payout_action" -> {
                 String payoutId = str(p, "payoutId");
                 String action = str(p, "action");
+                Boolean usedVoucherClawback = boolVal(p, "usedVoucherClawback");
+                if ("reissue".equalsIgnoreCase(action) && usedVoucherClawback != null) {
+                    return ApiResult.fail(422, "F1_CLAWBACK_REVERSE_ONLY");
+                }
                 VRankRewardPayoutActionRequest request =
-                        new VRankRewardPayoutActionRequest(reason, operator);
+                        new VRankRewardPayoutActionRequest(reason, operator, usedVoucherClawback);
                 if ("reissue".equalsIgnoreCase(action)) {
                     return reissueRewardPayout(payoutId, idem, request);
                 }
