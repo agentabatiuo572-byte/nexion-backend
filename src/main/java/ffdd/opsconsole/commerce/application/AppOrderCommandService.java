@@ -349,11 +349,14 @@ public class AppOrderCommandService {
             wallet = mapper.lockDevelopmentWallet(userId);
             if (!validWallet(wallet)) return ApiResult.fail(409, "ORDER_WALLET_UNAVAILABLE");
         }
-        if (!fullyDiscounted && !external && wallet.usdtAvailable().compareTo(order.amountUsdt()) < 0) {
-            // Insufficient balance is recoverable by topping up. Throw so the
-            // idempotency record becomes FAILED and the same payment intent can
-            // be reclaimed safely after the wallet balance changes.
-            throw new BizException(409, "ORDER_WALLET_INSUFFICIENT");
+        if (!fullyDiscounted && !external) {
+            BigDecimal shortfall = order.amountUsdt().subtract(wallet.usdtAvailable());
+            if (shortfall.signum() > 0) {
+                // Insufficient balance is recoverable by topping up. Throw so the
+                // idempotency record becomes FAILED and the same payment intent can
+                // be reclaimed safely after the wallet balance changes.
+                throw new BizException(409, "ORDER_WALLET_INSUFFICIENT");
+            }
         }
         testCloudAdmission.requireCapacity(order.quantity());
         if (consumeInventory) consumePaymentInventory(userId, orderNo, order.quantity());
@@ -469,7 +472,10 @@ public class AppOrderCommandService {
     }
 
     private boolean validWallet(AppOrderCommandMapper.DevelopmentWallet wallet) {
-        return wallet != null && wallet.usdtAvailable() != null && wallet.usdtAvailable().signum() >= 0
+        // F1 permits a negative USDT available balance for legitimate debt. A
+        // negative balance is a payment shortfall, not a missing/invalid wallet;
+        // only structural faults remain unavailable here.
+        return wallet != null && wallet.usdtAvailable() != null
                 && wallet.version() != null && wallet.version() >= 0;
     }
 
