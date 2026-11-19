@@ -121,6 +121,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private static final String STAKING_PREFIX = "G.staking.";
     private static final String STAKING_KILLSWITCH_KEY = "killswitch.staking";
     private static final String STAKING_LEGACY_KILLSWITCH_KEY = "J.killswitch.staking";
+    /** 质押退役后 G1 管理读取给出的对客不可售原因;复用退役写入口的既有码,不新造原因文案。 */
+    private static final String STAKING_RETIRED_BLOCKED_BY = "G1_STAKING_VISIBILITY_RETIRED";
     private static final Set<String> RETIRED_STAKING_REPLAY_OPERATIONS = Set.of(
             "g1_staking_pool_param", "g1_staking_pool_sale_status", "g1_staking_pool_kill_status");
     private static final String SUNSET_EXCLUSIONS_KEY = "G.sunset.exclusions";
@@ -2727,9 +2729,14 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         // 停售 —— 同一条产品两个状态。enabled/killed/status/statusLabel 保留为档位自身
         // 配置状态,运营才能区分"产品配置启用"与"对客实际可售"。
         boolean globalGateOn = stakingGateOn();
-        boolean sellable = enabled && !killed && globalGateOn;
+        // 质押已退役(STK-BE-01):AppStakingService.policy 的 visible 恒为 false,开仓一律 409 停售,
+        // 所以档位配置启用只反映配置,对客实际可售在退役后恒为否 —— 无论配置启用、档位熔断还是
+        // 整池总闸怎么组合都一样。enabled/killed 仍如实反映持久配置,运营才分得清
+        // "产品配置启用"与"对客实际可售";原因优先复用既有退役码,熔断/停用/总闸按既有优先级
+        // 给出各自的既有原因,便于运营定位是哪一层配置挡着。
+        boolean sellable = false;
         String blockedBy = globalGateOn
-                ? (killed ? "TIER_KILLED" : enabled ? null : "TIER_DISABLED") : "GLOBAL_GATE";
+                ? (killed ? "TIER_KILLED" : enabled ? STAKING_RETIRED_BLOCKED_BY : "TIER_DISABLED") : "GLOBAL_GATE";
         return map(
                 "product", pool.product(),
                 "tierKey", pool.tierKey(),
