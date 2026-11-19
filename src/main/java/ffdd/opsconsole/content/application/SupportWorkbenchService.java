@@ -90,7 +90,9 @@ public class SupportWorkbenchService {
             var rows=mapper.customers(q);
             if(rows.isEmpty()) throw new BizException(404,"SUPPORT_CUSTOMER_NOT_FOUND");
             var result=metadata(scopedAgent,rules,coverage);
-            result.put("customer",customerView(rows.get(0),rules));
+            var customerDetail=customerView(rows.get(0),rules);
+            customerDetail.put("effectiveLanguage",profiles.effectiveLanguage(customer));
+            result.put("customer",customerDetail);
             result.put("profile",profiles.profile(customer));
             return wire(result);
         });

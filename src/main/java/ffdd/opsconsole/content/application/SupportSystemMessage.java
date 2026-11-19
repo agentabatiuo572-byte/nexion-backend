@@ -51,6 +51,20 @@ final class SupportSystemMessage {
         }
     }
 
+    static String effectiveLanguageTag(String rawLanguage, Supplier<List<String>> enabledLanguages) {
+        return switch (effectiveLanguage(rawLanguage, enabledLanguages)) {
+            case "zh" -> "zh-CN";
+            case "vi" -> "vi-VN";
+            case "id" -> "id-ID";
+            case "ms" -> "ms-MY";
+            case "fil" -> "fil-PH";
+            case "ru" -> "ru-RU";
+            case "kk" -> "kk-KZ";
+            case "uz" -> "uz-UZ";
+            default -> "en-US";
+        };
+    }
+
     /**
      * 未分配客服的回执正文：先读该语言的配置，没有就回退英文配置，再没有才用内置文案
      * （中文用存量单条配置或内置中文，越南语用内置越南语，其余语言用内置英文）。

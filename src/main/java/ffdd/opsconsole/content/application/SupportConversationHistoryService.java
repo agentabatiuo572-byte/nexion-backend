@@ -35,9 +35,9 @@ public class SupportConversationHistoryService {
         if(beforeMessageId!=null && (cursor==null || cursor.createdAt()==null))throw new BizException(404,"CONVERSATION_CURSOR_NOT_FOUND");
         var customerRow=mapper.identity(customer);
         if(customerRow==null || customerRow.customerId()!=customer)throw new BizException(404,"SUPPORT_CUSTOMER_NOT_FOUND");
-        String language=SupportSystemMessage.effectiveLanguage(customerRow.language(),experience::interfaceLanguages);
+        String language=SupportSystemMessage.effectiveLanguageTag(customerRow.language(),experience::interfaceLanguages);
         var identity=new CustomerIdentity(customerRow.customerId(),customerRow.userNo(),customerRow.nickname(),
-                customerRow.phoneMasked(),languageTag(language));
+                customerRow.phoneMasked(),language);
         var newest=Objects.requireNonNull(mapper.page(customer,cursor==null?null:cursor.createdAt(),beforeMessageId));
         if(newest.size()>11)throw new IllegalStateException("CONVERSATION_PAGE_LIMIT_INVALID");
         boolean more=newest.size()>10;
@@ -56,19 +56,5 @@ public class SupportConversationHistoryService {
         }
         ownership.readConversation(no);
         return new ContentConversationMessagePage(conversation,messages,more,more?messages.get(0).id():null,identity,reply,readContexts);
-    }
-
-    private static String languageTag(String language) {
-        return switch (language) {
-            case "zh" -> "zh-CN";
-            case "vi" -> "vi-VN";
-            case "id" -> "id-ID";
-            case "ms" -> "ms-MY";
-            case "fil" -> "fil-PH";
-            case "ru" -> "ru-RU";
-            case "kk" -> "kk-KZ";
-            case "uz" -> "uz-UZ";
-            default -> "en-US";
-        };
     }
 }
