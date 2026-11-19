@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS nx_cregis_funds_preparation_plan (
   plan_no VARCHAR(48) NOT NULL,
   project_id BIGINT NOT NULL,
   kind VARCHAR(24) NOT NULL,
+  network VARCHAR(10) NOT NULL DEFAULT 'BEP20',
   source_address VARCHAR(42) NOT NULL,
   target_address VARCHAR(42) NOT NULL,
   amount_usdt DECIMAL(18,6) NOT NULL,
@@ -28,8 +29,9 @@ CREATE TABLE IF NOT EXISTS nx_cregis_funds_preparation_plan (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uk_cregis_preparation_no(plan_no),
   UNIQUE KEY uk_cregis_preparation_reference(project_id,kind,business_reference),
-  KEY ix_cregis_preparation_page(project_id,id),
+  KEY ix_cregis_preparation_page(project_id,network,id),
   CONSTRAINT ck_cregis_preparation_state CHECK (state IN ('DRAFT','REVIEWED','CANCELLED')),
   CONSTRAINT ck_cregis_preparation_kind CHECK (kind IN ('COLLECTION','SUPPLIER_PAYMENT')),
+  CONSTRAINT ck_cregis_preparation_network CHECK (network IN ('BEP20','ERC20')),
   CONSTRAINT ck_cregis_preparation_amount CHECK (amount_usdt > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
