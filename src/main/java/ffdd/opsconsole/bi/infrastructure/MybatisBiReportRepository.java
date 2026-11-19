@@ -189,21 +189,21 @@ public class MybatisBiReportRepository implements BiReportRepository {
     public Map<String, Object> kpiDashboard(
             String window, String cohort, String phase, String locale, String ref) {
         return L1KpiAnalytics.calculate(mapper.selectL1EventFacts(), window, cohort, phase, locale, ref,
-                a4RuntimePolicyService.day0Seconds());
+                a4RuntimePolicyService.day0Seconds(), firstFullDauDay());
     }
 
     @Override
     public Map<String, Object> kpiDrilldown(
             int kpiId, String window, String cohort, String phase, String locale, String ref) {
         return L1KpiAnalytics.drilldown(mapper.selectL1EventFacts(), kpiId, window, cohort, phase, locale, ref,
-                a4RuntimePolicyService.day0Seconds());
+                a4RuntimePolicyService.day0Seconds(), firstFullDauDay());
     }
 
     @Override
     public Map<String, Object> kpiTrend(
             int kpiId, String window, String cohort, String phase, String locale, String ref) {
         return L1KpiAnalytics.trend(mapper.selectL1EventFacts(), kpiId, window, cohort, phase, locale, ref,
-                a4RuntimePolicyService.day0Seconds());
+                a4RuntimePolicyService.day0Seconds(), firstFullDauDay());
     }
 
     @Override
@@ -211,7 +211,7 @@ public class MybatisBiReportRepository implements BiReportRepository {
     public Map<String, Object> registrationKpis(L1RegistrationCohortQuery query) {
         if (query.buckets().isEmpty()) {
             return L1KpiAnalytics.calculateRegistrationCohorts(
-                    List.of(), List.of(), query, a4RuntimePolicyService.day0Seconds());
+                    List.of(), List.of(), query, a4RuntimePolicyService.day0Seconds(), firstFullDauDay());
         }
         LocalDateTime from = LocalDateTime.ofInstant(query.selectedFrom(), BusinessCalendar.STORAGE_ZONE);
         LocalDateTime to = LocalDateTime.ofInstant(query.selectedToExclusive(), BusinessCalendar.STORAGE_ZONE);
@@ -221,9 +221,12 @@ public class MybatisBiReportRepository implements BiReportRepository {
         var facts = registrations.isEmpty() ? List.<Map<String, Object>>of()
                 : mapper.selectL1RegistrationEventFacts(from.truncatedTo(ChronoUnit.MICROS),
                         lastRegistrationExclusive, query.observationEnd().truncatedTo(ChronoUnit.MICROS));
-        LocalDateTime firstDauAt = mapper.selectFirstDauEventAt();
         return L1KpiAnalytics.calculateRegistrationCohorts(facts, registrations, query,
-                a4RuntimePolicyService.day0Seconds(), firstDauAt == null ? null : BusinessCalendar.legacy().dateAtStorage(firstDauAt));
+                a4RuntimePolicyService.day0Seconds(), firstFullDauDay());
+    }
+
+    private java.time.LocalDate firstFullDauDay() {
+        return L1KpiAnalytics.firstFullDauDay(mapper.selectFirstDauEventAt());
     }
 
     private static LocalDateTime registrationEdge(LocalDateTime value) {
@@ -253,8 +256,10 @@ public class MybatisBiReportRepository implements BiReportRepository {
                          protectedL2Stage("ordered", "checkout.started"),
                          protectedL2Stage("walletActivity", "wallet.topup_confirmed")));
         }
+        var collectionFrom = firstFullDauDay();
+        dashboard.put("retentionCollectionFrom", collectionFrom == null ? null : collectionFrom.toString());
         Map<String, Object> analytics = L2FunnelAnalytics.calculate(
-                mapper.selectL2EventFacts(), cohort, phase, locale, ref);
+                mapper.selectL2EventFacts(), cohort, phase, locale, ref, collectionFrom);
         dashboard.put("capabilities", linked(
                 "sameUserFunnel", Boolean.TRUE.equals(analytics.get("available")),
                 "cohortRetention", Boolean.TRUE.equals(analytics.get("available")),

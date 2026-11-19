@@ -69,8 +69,10 @@ public final class L4OperationsAnalytics {
             }
         }
         all.sort(Comparator.comparing(Fact::ts));
-        List<Fact> selected = all.stream()
+        List<Fact> currentRows = all.stream()
                 .filter(item -> !item.ts().isBefore(range.from()) && !item.ts().isAfter(range.to()))
+                .toList();
+        List<Fact> selected = currentRows.stream()
                 .filter(item -> "ALL".equals(normalizedPhase) || normalizedPhase.equals(item.phase()))
                 .toList();
         Range previousRange = range.previous();
@@ -116,7 +118,7 @@ public final class L4OperationsAnalytics {
                 "device", device(selected),
                 "tasks", tasks(selected, actorComplete, completionVolume, normalizedPeriod),
                 "network", network(selected, actorComplete),
-                "phaseEffect", phaseEffect(selected, actorComplete, normalizedPhase),
+                "phaseEffect", phaseEffect(selected, events(currentRows, "app.dau"), actorComplete, normalizedPhase),
                 "history", history,
                 "comparison", comparison(previousSelected, previousRange, comparisonAvailable, comparisonReason, normalizedPeriod),
                 "quality", linked(
@@ -376,7 +378,8 @@ public final class L4OperationsAnalytics {
     }
 
     private static List<Map<String, Object>> phaseEffect(
-            List<Fact> rows, boolean actorComplete, String phaseFilter) {
+            List<Fact> rows, List<Fact> activity, boolean actorComplete, String phaseFilter) {
+        boolean retentionActorsComplete = actorComplete && activity.stream().allMatch(fact -> hasText(fact.actor()));
         List<Map<String, Object>> result = new ArrayList<>();
         Double previousConversion = null;
         List<String> phases = "ALL".equals(phaseFilter) ? PHASES : List.of(phaseFilter);
@@ -387,11 +390,11 @@ public final class L4OperationsAnalytics {
             List<Fact> storeFacts = events(phaseRows, "store.viewed");
             List<Fact> buyerFacts = events(phaseRows, "checkout.completed");
             long registered = distinctActors(registrations);
-            long active = distinctActors(events(phaseRows, "app.dau"));
+            long active = distinctActors(activeFacts);
             long store = distinctActors(storeFacts);
-            long retained = orderedActors(registrations, activeFacts).size();
+            long retained = orderedActors(registrations, activity).size();
             long converted = orderedActors(storeFacts, buyerFacts).size();
-            Double retention = actorComplete && registered > 0 ? pct(retained, registered) : null;
+            Double retention = retentionActorsComplete && registered > 0 ? pct(retained, registered) : null;
             Double conversion = actorComplete && store > 0 ? pct(converted, store) : null;
             Double step = conversion == null || previousConversion == null ? null : round(conversion - previousConversion);
             result.add(linked(

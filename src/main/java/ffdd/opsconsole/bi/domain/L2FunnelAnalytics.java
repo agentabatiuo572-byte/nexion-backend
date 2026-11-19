@@ -51,6 +51,16 @@ public final class L2FunnelAnalytics {
             String phase,
             String locale,
             String ref) {
+        LocalDate collectionFrom = rawRows == null ? null : rawRows.stream()
+                .filter(row -> "app.dau".equals(text(row, "eventName", "event_name")))
+                .map(L2FunnelAnalytics::eventFact).filter(Objects::nonNull).map(EventFact::at)
+                .min(LocalDateTime::compareTo).map(L1KpiAnalytics::firstFullDauDay).orElse(null);
+        return calculate(rawRows, cohort, phase, locale, ref, collectionFrom);
+    }
+
+    public static Map<String, Object> calculate(
+            List<Map<String, Object>> rawRows, String cohort, String phase, String locale, String ref,
+            LocalDate collectionFrom) {
         long totalRelevant = rawRows == null ? 0 : rawRows.stream()
                 .filter(row -> MAIN_EVENTS.contains(text(row, "eventName", "event_name")))
                 .count();
@@ -139,8 +149,6 @@ public final class L2FunnelAnalytics {
             funnelExt.add(detail);
         }
 
-        LocalDate collectionFrom = events.stream().filter(event -> event.name().equals("app.dau"))
-                .map(event -> businessDay(event.at())).min(LocalDate::compareTo).orElse(null);
         Map<String, Set<LocalDate>> activeDays = selectedEvents.stream().filter(event -> event.name().equals("app.dau"))
                 .collect(Collectors.groupingBy(EventFact::actor,
                         Collectors.mapping(event -> businessDay(event.at()), Collectors.toSet())));
@@ -181,7 +189,6 @@ public final class L2FunnelAnalytics {
                 "stageEvents", stageEvents,
                 "filters", filterMap(cohort, phase, locale, ref),
                 "day7Kpi", day7Kpi,
-                "retentionCollectionFrom", collectionFrom == null ? null : collectionFrom.toString(),
                 "quality", linked(
                         "sameUserJoin", true,
                         "stageOrderEnforced", true,

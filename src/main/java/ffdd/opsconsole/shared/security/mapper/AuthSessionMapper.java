@@ -17,6 +17,12 @@ import org.springframework.transaction.interceptor.TransactionAspectSupport;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
+    @Select("""
+            SELECT dau_recorded FROM nx_user_daily_active
+             WHERE biz_date = #{date} AND user_id = #{userId}
+            """)
+    Boolean dailyActivityRecorded(@Param("date") LocalDate date, @Param("userId") Long userId);
+
     @Insert("""
             INSERT IGNORE INTO nx_user_daily_active (biz_date, user_id, first_seen_at, dau_recorded)
             VALUES (#{date}, #{userId}, #{seenAt}, 1)

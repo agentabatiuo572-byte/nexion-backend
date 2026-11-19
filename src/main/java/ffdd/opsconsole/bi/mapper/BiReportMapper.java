@@ -266,6 +266,15 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
             @Param("registrationToExclusive") LocalDateTime registrationToExclusive,
             @Param("observationEnd") LocalDateTime observationEnd);
 
+    String EVENT_PHASE_WITH_REGISTRATION_SNAPSHOT = """
+            CASE
+              WHEN event_name='auth.register_completed'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.registration_phase')) REGEXP '^P[1-6]$'
+              THEN JSON_UNQUOTE(JSON_EXTRACT(payload, '$.registration_phase'))
+              ELSE COALESCE(NULLIF(phase, ''), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.phase')))
+            END
+            """;
+
     @Select("""
             SELECT event_name AS eventName,
                    event_ts AS eventTs,
@@ -273,7 +282,8 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                    aggregate_type AS trialAggregateType,
                    aggregate_id AS trialId,
                    COALESCE(NULLIF(cohort, ''), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.cohort'))) AS cohort,
-                   COALESCE(NULLIF(phase, ''), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.phase'))) AS phase,
+                   """ + EVENT_PHASE_WITH_REGISTRATION_SNAPSHOT + """
+                   AS phase,
                    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.locale')), 'und') AS locale,
                    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.ref')), 'direct') AS refCode
               FROM nx_event_outbox
@@ -337,7 +347,8 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                      NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.source_user_id')), ''),
                      NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.sourceUserId')), '')
                    ) AS sourceActorId,
-                   COALESCE(NULLIF(phase, ''), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.phase'))) AS phase,
+                   """ + EVENT_PHASE_WITH_REGISTRATION_SNAPSHOT + """
+                   AS phase,
                    COALESCE(NULLIF(cohort, ''), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.cohort'))) AS cohort,
                    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.locale')), 'und') AS locale,
                    COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.ref')), ''),

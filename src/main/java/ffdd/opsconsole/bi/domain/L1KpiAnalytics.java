@@ -64,6 +64,13 @@ public final class L1KpiAnalytics {
             String locale,
             String ref,
             int day0WindowSeconds) {
+        LocalDate collectionFrom = firstFullCollectionDay(facts(rawRows));
+        return calculate(rawRows, window, cohort, phase, locale, ref, day0WindowSeconds, collectionFrom);
+    }
+
+    public static Map<String, Object> calculate(
+            List<Map<String, Object>> rawRows, String window, String cohort, String phase, String locale, String ref,
+            int day0WindowSeconds, LocalDate collectionFrom) {
         if (day0WindowSeconds < 30 || day0WindowSeconds > 600) {
             throw new IllegalArgumentException("A4_DAY0_POLICY_INVALID");
         }
@@ -77,8 +84,6 @@ public final class L1KpiAnalytics {
         long windowSeconds = Math.max(1, ChronoUnit.SECONDS.between(from, end));
         LocalDateTime previousFrom = from.minusSeconds(windowSeconds);
 
-        LocalDate collectionFrom = all.stream().filter(named("app.dau"))
-                .map(event -> businessDay(event.at())).min(LocalDate::compareTo).orElse(null);
         List<KpiSpec> specs = specs(day0WindowSeconds);
         List<Map<String, Object>> kpis = new ArrayList<>();
         Map<String, Object> plain = new LinkedHashMap<>();
@@ -131,8 +136,7 @@ public final class L1KpiAnalytics {
 
     public static Map<String, Object> calculateRegistrationCohorts(List<Map<String, Object>> rawEventRows,
             List<Map<String, Object>> registrationRows, L1RegistrationCohortQuery query, int day0WindowSeconds) {
-        LocalDate collectionFrom = registrationCohortFacts(rawEventRows).stream().filter(named("app.dau"))
-                .map(event -> businessDay(event.at())).min(LocalDate::compareTo).orElse(null);
+        LocalDate collectionFrom = firstFullCollectionDay(registrationCohortFacts(rawEventRows));
         return calculateRegistrationCohorts(rawEventRows, registrationRows, query, day0WindowSeconds, collectionFrom);
     }
 
@@ -357,7 +361,13 @@ public final class L1KpiAnalytics {
     public static Map<String, Object> drilldown(
             List<Map<String, Object>> rows, int kpiId, String window,
             String cohort, String phase, String locale, String ref, int day0WindowSeconds) {
-        Map<String, Object> dashboard = calculate(rows, window, cohort, phase, locale, ref, day0WindowSeconds);
+        return drilldown(rows, kpiId, window, cohort, phase, locale, ref, day0WindowSeconds, firstFullCollectionDay(facts(rows)));
+    }
+
+    public static Map<String, Object> drilldown(
+            List<Map<String, Object>> rows, int kpiId, String window,
+            String cohort, String phase, String locale, String ref, int day0WindowSeconds, LocalDate collectionFrom) {
+        Map<String, Object> dashboard = calculate(rows, window, cohort, phase, locale, ref, day0WindowSeconds, collectionFrom);
         Object selected = ((List<?>) dashboard.get("kpis")).stream()
                 .filter(row -> row instanceof Map<?, ?> map && Objects.equals(map.get("n"), kpiId))
                 .findFirst().orElse(null);
@@ -375,7 +385,13 @@ public final class L1KpiAnalytics {
     public static Map<String, Object> trend(
             List<Map<String, Object>> rows, int kpiId, String window,
             String cohort, String phase, String locale, String ref, int day0WindowSeconds) {
-        Map<String, Object> dashboard = calculate(rows, window, cohort, phase, locale, ref, day0WindowSeconds);
+        return trend(rows, kpiId, window, cohort, phase, locale, ref, day0WindowSeconds, firstFullCollectionDay(facts(rows)));
+    }
+
+    public static Map<String, Object> trend(
+            List<Map<String, Object>> rows, int kpiId, String window,
+            String cohort, String phase, String locale, String ref, int day0WindowSeconds, LocalDate collectionFrom) {
+        Map<String, Object> dashboard = calculate(rows, window, cohort, phase, locale, ref, day0WindowSeconds, collectionFrom);
         Object selected = ((List<?>) dashboard.get("kpis")).stream()
                 .filter(row -> row instanceof Map<?, ?> map && Objects.equals(map.get("n"), kpiId))
                 .findFirst().orElse(null);
@@ -451,6 +467,15 @@ public final class L1KpiAnalytics {
             }
         }
         return ratio(active, registrations.keySet(), "NO_MATURE_DAY7_COHORT");
+    }
+
+    private static LocalDate firstFullCollectionDay(List<EventFact> events) {
+        return events.stream().filter(named("app.dau")).map(EventFact::at).min(LocalDateTime::compareTo)
+                .map(L1KpiAnalytics::firstFullDauDay).orElse(null);
+    }
+
+    public static LocalDate firstFullDauDay(LocalDateTime firstDauAt) {
+        return firstDauAt == null ? null : businessDay(firstDauAt).plusDays(1);
     }
 
     private static boolean dauCovered(LocalDate collectionFrom, LocalDate activityDay) {
