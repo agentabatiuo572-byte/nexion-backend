@@ -101,7 +101,11 @@ public class PromotionRewardService {
         else{
             BigDecimal amount=PromotionQuoteService.rewardAmount(spec);
             entry=earnings.creditReward(number(reward.get("beneficiary_id")),"PROMOTION_REWARD",obligationId,asset,amount,"PRODUCTION","PROMOTION:"+obligationId);
-            ledger.postLedgerEntry(posting,number(reward.get("beneficiary_id")),"PROMOTION_REWARD",asset,"IN",amount,"SUCCESS","Approved promotion reward "+obligationId);
+            if ("USDT".equals(asset)) {
+                ledger.postLedgerEntryWithActualBalance(posting,number(reward.get("beneficiary_id")),"PROMOTION_REWARD",asset,"IN",amount,"SUCCESS","Approved promotion reward "+obligationId);
+            } else {
+                ledger.postLedgerEntry(posting,number(reward.get("beneficiary_id")),"PROMOTION_REWARD",asset,"IN",amount,"SUCCESS","Approved promotion reward "+obligationId);
+            }
         }
         changed(db.write("UPDATE nx_promotion_budget SET committed=committed-?,issued=issued+?,revision=revision+1 WHERE activity_id=? AND asset=? AND product_no=? AND committed>=?",
             reserved.get("amount"),reserved.get("amount"),reserved.get("activity_id"),reserved.get("asset"),reserved.get("product_no"),reserved.get("amount")));

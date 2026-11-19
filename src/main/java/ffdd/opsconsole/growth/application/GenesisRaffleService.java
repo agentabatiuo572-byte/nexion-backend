@@ -350,7 +350,11 @@ public class GenesisRaffleService {
         }else{
             BigDecimal amount=number(receipt.get("amount"));
             earnings.creditReward(userId,"EVENT_REWARD",reference,asset,amount,reference);
-            ledger.postLedgerEntry(reference,userId,"EVENT_REWARD",asset,"IN",amount,"SUCCESS","Genesis raffle reward");
+            if ("USDT".equals(asset)) {
+                ledger.postLedgerEntryWithActualBalance(reference,userId,"EVENT_REWARD",asset,"IN",amount,"SUCCESS","Genesis raffle reward");
+            } else {
+                ledger.postLedgerEntry(reference,userId,"EVENT_REWARD",asset,"IN",amount,"SUCCESS","Genesis raffle reward");
+            }
         }
         db.write("UPDATE nx_genesis_raffle_result SET status='PAID',receipt_json=? WHERE draw_id=? AND prize_id=? AND award_index=?",encode(receipt),drawId,prizeId,index);
         if(db.row("SELECT 1 FROM nx_genesis_raffle_result WHERE draw_id=? AND status='PENDING' LIMIT 1",drawId)==null)

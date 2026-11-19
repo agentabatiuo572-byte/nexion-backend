@@ -1029,7 +1029,11 @@ public class OpsReferralRewardService {
     }
 
     private void postAsset(String bizNo, Long userId, String asset, BigDecimal amount, String remark) {
-        ledger.postLedgerEntry(bizNo, userId, "REFERRAL_REWARD", asset, "IN", amount, "SUCCESS", remark);
+        if ("USDT".equals(asset)) {
+            ledger.postLedgerEntryWithActualBalance(bizNo, userId, "REFERRAL_REWARD", asset, "IN", amount, "SUCCESS", remark);
+        } else {
+            ledger.postLedgerEntry(bizNo, userId, "REFERRAL_REWARD", asset, "IN", amount, "SUCCESS", remark);
+        }
     }
 
     private BigDecimal amount(String key) {

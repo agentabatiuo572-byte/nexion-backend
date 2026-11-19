@@ -141,7 +141,8 @@ public interface AppExchangeMapper {
              WHERE user_id=#{userId} AND is_deleted=0 AND COALESCE(nx_user_wallet.sandbox,0)=0
                AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=nx_user_wallet.user_id
                            AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0)
-               AND usdt_available+#{usdtDelta}>=0 AND nex_available+#{nexDelta}>=0
+               AND (#{usdtDelta}>=0 OR usdt_available+#{usdtDelta}>=0)
+               AND nex_available+#{nexDelta}>=0
             """)
     int applyWalletDelta(@Param("userId") Long userId,@Param("usdtDelta") BigDecimal usdtDelta,
                          @Param("nexDelta") BigDecimal nexDelta);

@@ -356,7 +356,7 @@ public class SupportFundJournalBindingService implements SupportFundJournalFacad
         long version = number(row, field(prefix, "version"));
         if (version < 0) throw failure("INVALID_FUND_ROW:" + field(prefix, "version"));
         return new Tuple(positive(row, field(prefix, "id")), positive(row, field(prefix, "userId")),
-            decimal(row, field(prefix, "usdtAvailable")), decimal(row, field(prefix, "nexAvailable")),
+            decimal(row, field(prefix, "usdtAvailable"), true), decimal(row, field(prefix, "nexAvailable")),
             decimal(row, field(prefix, "pendingWithdraw")), decimal(row, field(prefix, "cregisRiskHeld")),
             version, flag(row, field(prefix, "sandbox")),
             flag(row, field(prefix, "isDeleted")), time(row, field(prefix, "createdAt")));
@@ -386,8 +386,12 @@ public class SupportFundJournalBindingService implements SupportFundJournalFacad
         return flag;
     }
     private static BigDecimal decimal(Map<String,Object> row, String key) {
+        return decimal(row, key, false);
+    }
+    private static BigDecimal decimal(Map<String,Object> row, String key, boolean allowNegative) {
         Object value = row == null ? null : row.get(key);
-        if (!(value instanceof BigDecimal amount) || amount.signum() < 0 || amount.precision() - amount.scale() > 12)
+        if (!(value instanceof BigDecimal amount) || (!allowNegative && amount.signum() < 0)
+                || amount.precision() - amount.scale() > 12)
             throw failure("INVALID_FUND_ROW:" + key);
         try { return amount.setScale(6, RoundingMode.UNNECESSARY); }
         catch (ArithmeticException ex) { throw failure("INVALID_FUND_ROW:" + key); }

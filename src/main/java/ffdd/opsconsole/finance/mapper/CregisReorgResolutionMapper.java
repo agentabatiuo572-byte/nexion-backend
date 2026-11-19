@@ -31,7 +31,10 @@ public interface CregisReorgResolutionMapper extends BaseMapper<Object> {
     Map<String,Object> wallet(long id);
     @Update("UPDATE nx_user_wallet SET usdt_available=usdt_available+#{available},cregis_risk_held=cregis_risk_held+#{risk},"
         +"cumulative_deposit_usdt=cumulative_deposit_usdt+#{cumulative},version=version+1 WHERE user_id=#{user} AND is_deleted=0 "
-        +"AND version=#{version} AND usdt_available+#{available}>=0 AND cregis_risk_held+#{risk}>=0 AND cumulative_deposit_usdt+#{cumulative}>=0")
+        +"AND version=#{version} "
+        +"AND (#{available}>=0 OR usdt_available+#{available}>=0) "
+        +"AND cregis_risk_held+#{risk}>=0 "
+        +"AND cumulative_deposit_usdt+#{cumulative}>=0")
     int walletChange(@Param("user") long user,@Param("version") long version,@Param("available") BigDecimal available,
         @Param("risk") BigDecimal risk,@Param("cumulative") BigDecimal cumulative);
     @Update("UPDATE nx_cregis_reorg_resolution SET status=#{status},held_amount=#{held},recovered_amount=#{recovered},"

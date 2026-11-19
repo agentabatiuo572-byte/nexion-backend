@@ -188,8 +188,10 @@ public class CregisReorgResolutionService {
         }
         if(availableDelta.signum()!=0 || riskDelta.signum()!=0 || cumulativeDelta.signum()!=0) {
             if(db.walletChange(user,id(wallet,"version"),availableDelta,riskDelta,cumulativeDelta)!=1)throw conflict("WALLET_CONFLICT");
-            if(availableDelta.signum()!=0)treasury.postLedgerEntry(no+":AVAILABLE",user,"CREGIS_REORG_"+action,"USDT",
-                    availableDelta.signum()>0?"IN":"OUT",availableDelta.abs(),"SUCCESS","Cregis incident "+incident+" "+action);
+            if(availableDelta.signum()>0)treasury.postLedgerEntryWithActualBalance(no+":AVAILABLE",user,"CREGIS_REORG_"+action,"USDT",
+                    "IN",availableDelta.abs(),"SUCCESS","Cregis incident "+incident+" "+action);
+            else if(availableDelta.signum()<0)treasury.postLedgerEntry(no+":AVAILABLE",user,"CREGIS_REORG_"+action,"USDT",
+                    "OUT",availableDelta.abs(),"SUCCESS","Cregis incident "+incident+" "+action);
         }
         if(db.update(incident,version,state,held,recovered,debt)!=1)throw conflict("VERSION_CHANGED");
         var after=required(db.incident(config.getProjectId(),incident));

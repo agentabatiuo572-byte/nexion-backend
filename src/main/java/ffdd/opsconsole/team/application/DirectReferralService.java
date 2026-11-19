@@ -137,7 +137,11 @@ public class DirectReferralService {
             if(amount.signum()<=0||money(row,"cancelled_"+suffix).compareTo(amount)>=0||assetCredited(row,suffix))continue;
             if(!Set.of("COOLING","PENDING","UNLOCKED").contains(text(event,"status")))throw new BizException(409,"DIRECT_REFERRAL_GROUP_STATE_CONFLICT");
             earnings.creditReward(id,type,no+":"+("USDT".equals(asset)?"USDT":"NEX"),asset,amount,text(row,"source_environment"),no+":"+("USDT".equals(asset)?"USDT":"NEX"));
-            ledger.postLedgerEntry(no+"-RELEASE",id,"TEAM_COMMISSION",asset,"IN",amount,"SUCCESS","Direct referral wallet release | "+no);
+            if ("USDT".equals(asset)) {
+                ledger.postLedgerEntryWithActualBalance(no+"-RELEASE",id,"TEAM_COMMISSION",asset,"IN",amount,"SUCCESS","Direct referral wallet release | "+no);
+            } else {
+                ledger.postLedgerEntry(no+"-RELEASE",id,"TEAM_COMMISSION",asset,"IN",amount,"SUCCESS","Direct referral wallet release | "+no);
+            }
             mapper.creditedAsset(no,asset);mapper.recoveredEventStatus(number(event,"id"),"UNLOCKED");changed=true;if("USDT".equals(asset))newUsdt=true;
         }
         var after=mapper.group(no);int credited=0;boolean all=true;

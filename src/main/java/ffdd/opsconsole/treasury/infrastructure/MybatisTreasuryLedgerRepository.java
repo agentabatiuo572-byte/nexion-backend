@@ -732,7 +732,10 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
         if (before == null) throw new IllegalStateException("COMMISSION_WALLET_UNAVAILABLE");
         BigDecimal delta = reverse ? event.amount().negate() : event.amount();
         BigDecimal after = before.add(delta);
-        if (after.signum() < 0) throw new IllegalStateException("COMMISSION_WALLET_INSUFFICIENT_BALANCE");
+        // A USDT commission release is a credit and may only partially repay a
+        // negative wallet balance. Debits and UVT keep the non-negative guard.
+        if (after.signum() < 0 && (reverse || !"USDT".equals(event.asset())))
+            throw new IllegalStateException("COMMISSION_WALLET_INSUFFICIENT_BALANCE");
         var fundBefore=commissionCapture.begin(event.userId(),eventId,reverse?"REVERSE":"RELEASE");
         if (mapper.adjustCommissionWallet(event.userId(), event.asset(), delta) != 1) {
             throw new IllegalStateException("COMMISSION_WALLET_WRITE_CONFLICT");
