@@ -60,8 +60,9 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
             Map.entry("tradeinLadderCut3", "75"), Map.entry("tradeinLadderCut4", "100"),
             Map.entry("tradeinLadderCredit1", "75"), Map.entry("tradeinLadderCredit2", "60"), Map.entry("tradeinLadderCredit3", "45"),
             Map.entry("tradeinLadderCredit4", "30"), Map.entry("tradeinLadderCredit5", "15"),
-            Map.entry("tradeinRequireHigherPrice", "true"), Map.entry("tradeinMaxDevicesPerOrder", "3"),
-            Map.entry("eligibility", "L4+ 持有者"), Map.entry("promoMult", "1.5"),
+            Map.entry("tradeinRequireHigherPrice", "true"), Map.entry("tradeinMaxDevicesPerOrder", "1"),
+            // BUG-522: 存储用稳定代码，后台展示/输入仍按六档中文名映射。
+            Map.entry("eligibility", ffdd.opsconsole.device.domain.TradeinEligibility.L4_PLUS), Map.entry("promoMult", "1.5"),
             Map.entry("promoCooldownDays", "14"), Map.entry("promoMaxPerSession", "3"),
             Map.entry("promoDelaySeconds", "6"), Map.entry("promoMinAgeDays", "30"),
             Map.entry("promoRoutes", "/me/devices"), Map.entry("inventorySoftMax", "0"),

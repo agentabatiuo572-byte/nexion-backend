@@ -29,6 +29,8 @@ public record DeviceOpsView(
         BigDecimal gpuTempC,
         BigDecimal gpuPowerW,
         String pausedReason,
+        Integer opsPaused,
+        String opsPauseReason,
         String activeTaskNo,
         LocalDateTime heartbeatAt,
         Integer batteryLevel,
@@ -82,7 +84,7 @@ public record DeviceOpsView(
         Long activeDevicesForUser,
         Long userDeviceSlotNo,
         BigDecimal heartbeatAgeSeconds) {
-        this(id,userId,userNo,nickname,instanceNo,name,productTier,productCode,status,dcLocation,hashrate,dailyUsdt,dailyNex,lastSeenAt,purchasedAt,activatedAt,deactivatedAt,baseRate,currentEfficiency,pendingDeactivate,runtimeStatus,gpuUsage,gpuTempC,gpuPowerW,pausedReason,activeTaskNo,heartbeatAt,batteryLevel,isCharging,networkReachable,thermalState,activeDevicesForUser,userDeviceSlotNo,heartbeatAgeSeconds,null,null,null,null,null,null,null,null,null,null,null);
+        this(id,userId,userNo,nickname,instanceNo,name,productTier,productCode,status,dcLocation,hashrate,dailyUsdt,dailyNex,lastSeenAt,purchasedAt,activatedAt,deactivatedAt,baseRate,currentEfficiency,pendingDeactivate,runtimeStatus,gpuUsage,gpuTempC,gpuPowerW,pausedReason,0,null,activeTaskNo,heartbeatAt,batteryLevel,isCharging,networkReachable,thermalState,activeDevicesForUser,userDeviceSlotNo,heartbeatAgeSeconds,null,null,null,null,null,null,null,null,null,null,null);
     }
 
 
@@ -153,7 +155,7 @@ public record DeviceOpsView(
         BigDecimal heartbeatAgeSeconds, String sourceChannel, String simState, String simLastError, LocalDateTime simNextActionAt,
         String simTaskNo, String simTaskName, String simTaskClass,
         LocalDateTime simTaskStartedAt, LocalDateTime simTaskDueAt, String ownershipStatus) {
-        this(id,userId,userNo,nickname,instanceNo,name,productTier,productCode,status,dcLocation,hashrate,dailyUsdt,dailyNex,lastSeenAt,purchasedAt,activatedAt,deactivatedAt,baseRate,currentEfficiency,pendingDeactivate,runtimeStatus,gpuUsage,gpuTempC,gpuPowerW,pausedReason,activeTaskNo,heartbeatAt,batteryLevel,isCharging,networkReachable,thermalState,activeDevicesForUser,userDeviceSlotNo,heartbeatAgeSeconds,sourceChannel,simState,simLastError,simNextActionAt,simTaskNo,simTaskName,simTaskClass,simTaskStartedAt,simTaskDueAt,null,ownershipStatus);
+        this(id,userId,userNo,nickname,instanceNo,name,productTier,productCode,status,dcLocation,hashrate,dailyUsdt,dailyNex,lastSeenAt,purchasedAt,activatedAt,deactivatedAt,baseRate,currentEfficiency,pendingDeactivate,runtimeStatus,gpuUsage,gpuTempC,gpuPowerW,pausedReason,null,null,activeTaskNo,heartbeatAt,batteryLevel,isCharging,networkReachable,thermalState,activeDevicesForUser,userDeviceSlotNo,heartbeatAgeSeconds,sourceChannel,simState,simLastError,simNextActionAt,simTaskNo,simTaskName,simTaskClass,simTaskStartedAt,simTaskDueAt,null,ownershipStatus);
     }
 
     public record MonthlyTarget(int cycleIndex,
@@ -162,6 +164,6 @@ public record DeviceOpsView(
             BigDecimal creditedUsdt, BigDecimal rangeLowUsdt, BigDecimal rangeHighUsdt, BigDecimal capacityPct,
             boolean targetActive, boolean configChangedInCycle) { }
     public DeviceOpsView withMonthlyTarget(MonthlyTarget value,BigDecimal daily,String rate) {
-        return new DeviceOpsView(id,userId,userNo,nickname,instanceNo,name,productTier,productCode,status,dcLocation,hashrate,daily,dailyNex,lastSeenAt,purchasedAt,activatedAt,deactivatedAt,rate,currentEfficiency,pendingDeactivate,runtimeStatus,gpuUsage,gpuTempC,gpuPowerW,pausedReason,activeTaskNo,heartbeatAt,batteryLevel,isCharging,networkReachable,thermalState,activeDevicesForUser,userDeviceSlotNo,heartbeatAgeSeconds,sourceChannel,simState,simLastError,simNextActionAt,simTaskNo,simTaskName,simTaskClass,simTaskStartedAt,simTaskDueAt,value,ownershipStatus);
+        return new DeviceOpsView(id,userId,userNo,nickname,instanceNo,name,productTier,productCode,status,dcLocation,hashrate,daily,dailyNex,lastSeenAt,purchasedAt,activatedAt,deactivatedAt,rate,currentEfficiency,pendingDeactivate,runtimeStatus,gpuUsage,gpuTempC,gpuPowerW,pausedReason,opsPaused,opsPauseReason,activeTaskNo,heartbeatAt,batteryLevel,isCharging,networkReachable,thermalState,activeDevicesForUser,userDeviceSlotNo,heartbeatAgeSeconds,sourceChannel,simState,simLastError,simNextActionAt,simTaskNo,simTaskName,simTaskClass,simTaskStartedAt,simTaskDueAt,value,ownershipStatus);
     }
 }

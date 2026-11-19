@@ -4,9 +4,11 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper;
 import java.time.LocalDateTime;
+import java.util.Set;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DuplicateKeyException;
@@ -296,12 +298,21 @@ public class AdminIdempotencyTransactionExecutor {
             // A conversation send that was rejected before any message write must never execute again under the same key.
             return Claim.replayed(readJson(record.getResponseJson(), responseType));
         }
-        if ("A2_COMMAND".equals(record.getScope()) && STATUS_FAILED.equals(record.getStatus())
-                && StringUtils.hasText(record.getResponseJson())) {
+        if ("A2_COMMAND".equals(record.getScope()) && STATUS_FAILED.equals(record.getStatus())) {
             if (!requestHash.equals(record.getRequestHash())) throw conflict("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
-            // A2 decisions are final on explicit business rejection: the same submitter, key and body
-            // replay the captured rejection instead of re-executing (PC rule: explicit rejection closes the case).
-            replayA2Rejection(record.getResponseJson());
+            if (a2TicketCommand(record)) {
+                if (!StringUtils.hasText(record.getResponseJson())) {
+                    // A ticket command without a trusted rejection cannot prove that retrying is safe.
+                    throw conflict("IDEMPOTENCY_PREVIOUS_REQUEST_FAILED");
+                }
+                // A2 proposals and decisions replay their captured business rejection instead of
+                // re-executing. The trusted origin action/ticket must still identify the same command.
+                replayA2Rejection(record, origin, record.getResponseJson());
+            } else if (StringUtils.hasText(record.getResponseJson())) {
+                // Non-ticket A2 direct writes keep their original explicit-rejection replay;
+                // without a response the legacy failed-retry path remains available below.
+                replayA2Rejection(record, null, record.getResponseJson());
+            }
         }
         if (!STATUS_FAILED.equals(record.getStatus())) {
             return Claim.replayed(replay(record, requestHash, responseType));
@@ -395,21 +406,61 @@ public class AdminIdempotencyTransactionExecutor {
     }
 
 
-    /** Replays the captured A2 business rejection as an exception so the caller surfaces the original code/message. */
-    private void replayA2Rejection(String responseJson) {
+    /** Replays the captured A2 business rejection, including any structured result. */
+    private void replayA2Rejection(AdminIdempotencyRecordEntity record, AdminCommandOrigin origin, String responseJson) {
         Integer code = null;
         String message = null;
+        ApiResult<?> response = null;
         try {
             var value = objectMapper.readTree(responseJson);
             if (value != null && value.has("code") && value.get("code").canConvertToInt()) code = value.get("code").asInt();
             if (value != null && value.has("message") && value.get("message").isTextual()) message = value.get("message").asText();
+            if (value != null && value.isObject()) response = objectMapper.treeToValue(value, ApiResult.class);
         } catch (JsonProcessingException invalid) {
             // No trusted code/message to surface; fall back to a generic failed-previous-request conflict.
         }
         if (code == null || code == 0) {
             throw conflict("IDEMPOTENCY_PREVIOUS_REQUEST_FAILED");
         }
-        throw new BizException(code, message == null ? "A2_COMMAND_REJECTED" : message);
+        if (origin != null && !a2RejectionIdentity(record, origin)) {
+            throw conflict("IDEMPOTENCY_PREVIOUS_REQUEST_FAILED");
+        }
+        throw new AdminCommandBusinessRejection(code, message == null ? "A2_COMMAND_REJECTED" : message, response);
+    }
+
+    /** Ticket commands are proposals/decisions; other A2_COMMAND writers are direct parameter commands. */
+    private boolean a2TicketCommand(AdminIdempotencyRecordEntity record) {
+        if (!StringUtils.hasText(record.getOriginTargets())) return false;
+        try {
+            for (var target : objectMapper.readTree(record.getOriginTargets())) {
+                String action = target.path("action").asText("");
+                if (action.startsWith("A2_PROPOSE")
+                        || Set.of("A2_APPROVE", "A2_REJECT", "A2_WITHDRAW").contains(action)) return true;
+            }
+        } catch (JsonProcessingException invalid) {
+            return false;
+        }
+        return false;
+    }
+
+    /** The persisted A2 origin action (proposal or exact decision ticket) must identify this request. */
+    private boolean a2RejectionIdentity(AdminIdempotencyRecordEntity record, AdminCommandOrigin origin) {
+        if (!StringUtils.hasText(record.getOriginTargets())) return false;
+        try {
+            for (var target : objectMapper.readTree(record.getOriginTargets())) {
+                String action = target.path("action").asText("");
+                if (action.startsWith("A2_PROPOSE")) return true;
+                if (Set.of("A2_APPROVE", "A2_REJECT", "A2_WITHDRAW").contains(action)) {
+                    String ticketId = target.path("id").asText("");
+                    if (!StringUtils.hasText(ticketId)) return false;
+                    return origin.targets().stream()
+                            .anyMatch(current -> action.equals(current.action()) && ticketId.equals(current.id()));
+                }
+            }
+        } catch (JsonProcessingException invalid) {
+            return false;
+        }
+        return false;
     }
 
     private String writeJson(Object value) {

@@ -50,6 +50,7 @@ import ffdd.opsconsole.shared.audit.A2AuditAggregate;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.idempotency.AdminCommandBusinessRejection;
 import ffdd.opsconsole.shared.exception.AppTextChineseNotAllowedException;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.device.application.MonthlyTargetPoolException;
@@ -963,9 +964,19 @@ public class OpsAuditCenterService {
         } catch (ffdd.opsconsole.shared.exception.PhoneReplacementException ex) {
             // Preserve the phone command conflict contract through A2 and roll back its approval transaction.
             throw ex;
+        } catch (AdminCommandBusinessRejection ex) {
+            if (ex.response() instanceof ApiResult<?> result) {
+                return rejectionResult(result);
+            }
+            return ApiResult.fail(ex.getCode(), ex.getMessage());
         } catch (BizException ex) {
             return ApiResult.fail(ex.getCode(), ex.getMessage());
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private ApiResult<AuditOperationTicket> rejectionResult(ApiResult<?> result) {
+        return (ApiResult<AuditOperationTicket>) result;
     }
 
     private ApiResult<AuditOperationTicket> legacyTicketReceipt(String key, String operation, String verb,

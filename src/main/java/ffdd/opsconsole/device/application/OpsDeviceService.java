@@ -3027,6 +3027,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         Map<String, Object> response = new LinkedHashMap<>();
         Map<String, String> visibleConfig = new LinkedHashMap<>(deviceRepository.e3Config());
         visibleConfig.keySet().removeAll(E3_RETIRED_CONFIG_KEYS);
+        // BUG-522: 存储是稳定代码，后台沿用既有六档中文名（PC 下拉与展示不变）。
+        visibleConfig.computeIfPresent("eligibility",
+                (key, value) -> ffdd.opsconsole.device.domain.TradeinEligibility.labelOf(value));
         response.put("domain", "E3");
         response.put("config", visibleConfig);
         response.put("restoreEndpoint", "POST /api/admin/devices/{id}/restore");
@@ -4950,11 +4953,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     private E3ConfigValue normalizeE3Value(String key, String raw) {
         if ("eligibility".equals(key)) {
-            String value = normalizeText(raw);
-            if (!Set.of("全部用户", "L2+ 持有者", "L3+ 持有者", "L4+ 持有者", "L5+ 持有者", "L6+ 持有者").contains(value)) {
+            // BUG-522: 统一存稳定代码；PC 既有的六档中文值照旧接受，映射到同一代码。
+            String code = ffdd.opsconsole.device.domain.TradeinEligibility.codeOf(normalizeText(raw));
+            if (code == null) {
                 throw new IllegalArgumentException("eligibility config is invalid");
             }
-            return new E3ConfigValue(value, "STRING");
+            return new E3ConfigValue(code, "STRING");
         }
         if ("promoRoutes".equals(key)) {
             String value = normalizeText(raw);
@@ -5463,16 +5467,20 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return e3Decimal(config, "tradeinLadderCredit5", "15");
     }
 
+    /** BUG-522: 资格档位排序；稳定代码与历史中文值同一口径，全部用户=0（任何用户都够资格）。 */
     private int e3EligibilityRank(String value) {
-        if (!StringUtils.hasText(value) || "全部用户".equals(value)) {
-            return 0;
-        }
-        for (int level = 2; level <= 6; level++) {
-            if (value.startsWith("L" + level + "+")) {
-                return level;
-            }
-        }
-        return 0;
+        String code = ffdd.opsconsole.device.domain.TradeinEligibility.codeOf(value);
+        if (code == null) return 0;
+        if (ffdd.opsconsole.device.domain.TradeinEligibility.ALL.equals(code)) return 0;
+        return ffdd.opsconsole.device.domain.TradeinEligibility.minLevelOf(code);
+    }
+
+    /** BUG-522: 资格档位在审计/事件里回显既有中文名；其它键原样。 */
+    private static Map<String, String> displayE3Values(Map<String, String> values) {
+        Map<String, String> display = new LinkedHashMap<>(values);
+        display.computeIfPresent("eligibility",
+                (key, value) -> ffdd.opsconsole.device.domain.TradeinEligibility.labelOf(value));
+        return display;
     }
 
     private void recordE3ConfigChange(
@@ -5484,10 +5492,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             String idempotencyKey,
             String source) {
         LocalDateTime effectiveAt = LocalDateTime.now(clock);
+        // BUG-522: 审计与事件里沿用既有中文档位名，运营核对不受存储代码影响。
+        Map<String, String> beforeDisplay = displayE3Values(before);
+        Map<String, String> afterDisplay = displayE3Values(after);
         Map<String, Object> payload = detail(
                 "keys", List.copyOf(after.keySet()),
-                "before", new LinkedHashMap<>(before),
-                "after", new LinkedHashMap<>(after),
+                "before", beforeDisplay,
+                "after", afterDisplay,
                 "effective_at", effectiveAt.toString(),
                 "operator", trustedOperator,
                 "reason", reason,
@@ -5495,8 +5506,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 "ts", clock.millis());
         outboxService.publish("E3_CONFIG", aggregateId, "admin.tradein_config_changed", payload);
         auditRequired("admin.tradein_config_changed", "DEVICE_E3_CONFIG", aggregateId, trustedOperator,
-                detail("keys", List.copyOf(after.keySet()), "before", new LinkedHashMap<>(before),
-                        "after", new LinkedHashMap<>(after), "effectiveAt", effectiveAt,
+                detail("keys", List.copyOf(after.keySet()), "before", beforeDisplay,
+                        "after", afterDisplay, "effectiveAt", effectiveAt,
                         "reason", reason, "source", source, "idempotencyKey", idempotencyKey.trim()));
     }
 

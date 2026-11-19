@@ -845,18 +845,63 @@ public class AdminCommandInvestigationService {
     }
 
     private ReceiptStatus statusOf(AdminIdempotencyRecordEntity original, long actor) {
-        if ("A2_COMMAND".equals(original.getScope())
-                && ("SUCCEEDED".equals(original.getStatus()) || "CONFIRMED_SUCCEEDED".equals(original.getStatus()))
-                && businessCode(original.getResponseJson()) == null
-                && !a2DecisionReceipt(original, actor)) {
-            return new ReceiptStatus("UNKNOWN");
+        String state;
+        if ("A2_COMMAND".equals(original.getScope())) {
+            state = receiptState(original);
+            String action = a2OriginAction(original);
+            if ("FAILED".equals(state) && a2TicketCommand(original)) {
+                // A rolled-back ticket command without a captured rejection has no reliable decision result.
+                return new ReceiptStatus("UNKNOWN");
+            }
+            if ("REJECTED".equals(state) && !Set.of("A2_APPROVE", "A2_REJECT", "A2_WITHDRAW").contains(action)) {
+                // A rejected proposal is not a rejected decision. Unknown/old A2 origins are not
+                // promoted to a decision outcome either; only an exact decision action may be REJECTED.
+                return new ReceiptStatus("UNKNOWN");
+            }
+            if (("SUCCEEDED".equals(original.getStatus()) || "CONFIRMED_SUCCEEDED".equals(original.getStatus()))
+                    && businessCode(original.getResponseJson()) == null
+                    && !a2DecisionReceipt(original, actor)) {
+                return new ReceiptStatus("UNKNOWN");
+            }
+        } else {
+            state = receiptState(original);
         }
-        String state = receiptState(original);
         if ("REJECTED".equals(state)) {
             return new ReceiptStatus(state, businessCode(original.getResponseJson()),
                     businessMessage(original.getResponseJson()));
         }
         return new ReceiptStatus(state);
+    }
+
+    /** A ticket command carries a proposal or decision origin target; non-ticket A2 writes do not. */
+    private boolean a2TicketCommand(AdminIdempotencyRecordEntity original) {
+        if (!"A2_COMMAND".equals(original.getScope()) || !StringUtils.hasText(original.getOriginTargets())) return false;
+        try {
+            for (var target : json.readTree(original.getOriginTargets())) {
+                String action = target.path("action").asText("");
+                if (action.startsWith("A2_PROPOSE")
+                        || Set.of("A2_APPROVE", "A2_REJECT", "A2_WITHDRAW", "A2_EXECUTED").contains(action)) {
+                    return true;
+                }
+            }
+        } catch (JsonProcessingException invalid) {
+            return false;
+        }
+        return false;
+    }
+
+    /** First persisted A2 origin target action; empty when legacy rows have no reliable origin. */
+    private String a2OriginAction(AdminIdempotencyRecordEntity original) {
+        if (!StringUtils.hasText(original.getOriginTargets())) return "";
+        try {
+            for (var target : json.readTree(original.getOriginTargets())) {
+                String action = target.path("action").asText("");
+                if (action.startsWith("A2_")) return action;
+            }
+        } catch (JsonProcessingException invalid) {
+            return "";
+        }
+        return "";
     }
 
     private String businessMessage(String responseJson) {

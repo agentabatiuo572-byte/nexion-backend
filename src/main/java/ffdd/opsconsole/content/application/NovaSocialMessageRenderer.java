@@ -14,8 +14,11 @@ import org.springframework.util.StringUtils;
 final class NovaSocialMessageRenderer {
     static final Set<String> SUPPORTED_PLACEHOLDERS = Set.of(
             "{actor}", "{name}", "{city}", "{amount}", "{eventType}");
-    /** BUG-520: 非中文模板/渲染结果不得含汉字，避免默认中文素材漏进英文、越南语通知。 */
-    private static final Pattern HAN = Pattern.compile("\\p{IsHan}");
+    // CJK 表意文字区块也覆盖 Java 17 的 Unicode 数据尚未收录的汉字。
+    private static final Pattern HAN = Pattern.compile(
+            "[\\p{IsHan}\\x{3400}-\\x{4DBF}\\x{4E00}-\\x{9FFF}\\x{F900}-\\x{FAFF}"
+                    + "\\x{20000}-\\x{2A6DF}\\x{2A700}-\\x{2EE5F}\\x{2F800}-\\x{2FA1F}"
+                    + "\\x{30000}-\\x{3347F}]");
     private static final String USERS_UNIT_CODE = " USERS";
     /** NovaMapper.newUserSourceEvents 生成的固定小时批号：newUsers:yyyyMMddHH。 */
     private static final Pattern HOURLY_REGISTRATION_BATCH = Pattern.compile("newUsers:\\d{10}");

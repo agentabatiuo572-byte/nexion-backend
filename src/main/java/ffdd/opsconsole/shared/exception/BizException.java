@@ -15,5 +15,10 @@ public class BizException extends RuntimeException {
     public int getCode() {
         return code;
     }
+
+    /** Structured rejection payload already exposed by the exception-specific handlers. */
+    public Object errorData() {
+        return null;
+    }
 }
 

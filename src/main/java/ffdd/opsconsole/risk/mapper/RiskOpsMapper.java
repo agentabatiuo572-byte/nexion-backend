@@ -1544,13 +1544,14 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     List<RiskArbitrageRowRecord> arbitrageRows();
 
-    /** Raw welcome-gift amounts behind a K2 gift row; no ROUND and no blocked-gift fabrication. */
+    /** Raw welcome-gift amounts behind a K2 gift row; disposition-only rows still get the structured unavailable blocked count. */
     @Select("""
             SELECT CONCAT('K2-GIFT-C', LEFT(SHA2(cluster.cluster_id, 256), 40)) AS rowId,
                    SUM(settlement.newcomer_usdt) AS usdtRaw,
                    SUM(settlement.newcomer_nex) AS nexRaw,
                    COUNT(DISTINCT settlement.id) AS settledCount,
-                   CASE WHEN MAX(risk.blocked_count) > 0 THEN MAX(risk.blocked_count) ELSE NULL END AS blockedCount
+                   -- No persisted per-gift denial fact exists. A disposition marker is not a denied-gift count.
+                   CAST(NULL AS SIGNED) AS blockedCount
               FROM nx_admin_risk_multi_account_cluster cluster
               JOIN nx_referral_reward_settlement settlement
                 ON settlement.is_deleted = 0
@@ -1562,12 +1563,37 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                AND JSON_SEARCH(cluster.nodes_json, 'one',
                        CONCAT('U', LPAD(invited.id,
                            GREATEST(8, CHAR_LENGTH(CAST(invited.id AS CHAR))), '0'))) IS NOT NULL
-              LEFT JOIN nx_admin_risk_arbitrage_row risk
-                ON risk.row_id = CONCAT('K2-GIFT-C', LEFT(SHA2(cluster.cluster_id, 256), 40))
-               AND risk.is_deleted = 0
              WHERE cluster.is_deleted = 0
                AND cluster.nodes_json IS NOT NULL
              GROUP BY cluster.cluster_id
+            UNION ALL
+            -- Keep disposition-only gift rows visible without a countable SETTLED settlement.
+            SELECT risk.row_id AS rowId,
+                   0 AS usdtRaw,
+                   0 AS nexRaw,
+                   0 AS settledCount,
+                   CAST(NULL AS SIGNED) AS blockedCount
+              FROM nx_admin_risk_arbitrage_row risk
+             WHERE risk.is_deleted = 0
+               AND risk.view_key = 'gift'
+               AND risk.disposition IS NOT NULL
+               AND NOT EXISTS (
+                   SELECT 1
+                     FROM nx_admin_risk_multi_account_cluster cluster
+                     JOIN nx_referral_reward_settlement settlement
+                       ON settlement.is_deleted = 0
+                      AND UPPER(settlement.status) = 'SETTLED'
+                     JOIN nx_user invited
+                       ON invited.id = settlement.invited_user_id
+                      AND invited.is_deleted = 0
+                      AND JSON_VALID(cluster.nodes_json) = 1
+                      AND JSON_SEARCH(cluster.nodes_json, 'one',
+                              CONCAT('U', LPAD(invited.id,
+                                  GREATEST(8, CHAR_LENGTH(CAST(invited.id AS CHAR))), '0'))) IS NOT NULL
+                    WHERE cluster.cluster_id = risk.cluster_id
+                      AND cluster.is_deleted = 0
+                      AND cluster.nodes_json IS NOT NULL
+               )
             """)
     List<Map<String, Object>> arbitrageGiftAmounts();
 
@@ -1624,7 +1650,6 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Update("""
             UPDATE nx_admin_risk_arbitrage_row
                SET disposition = #{disposition},
-                   blocked_count = blocked_count + CASE WHEN #{disposition} = 'gift_blocked' THEN 1 ELSE 0 END,
                    version = version + 1, updated_at = NOW()
              WHERE row_id = #{rowId} AND version = #{expectedVersion}
                AND disposition IS NULL AND is_deleted = 0

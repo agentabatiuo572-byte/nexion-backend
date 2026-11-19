@@ -537,7 +537,9 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261120_b54_binary_platform_settlement_owner_index.sql"),
   (Join-Path $root "scripts\migrations\20261120_lc_market_team_payment.sql"),
   # BUG-521: rename the legacy default phone comparison label to English (one-shot).
-  (Join-Path $root "scripts\migrations\20261120_e6_bug521_phone_label_english.sql")
+  (Join-Path $root "scripts\migrations\20261120_e6_bug521_phone_label_english.sql"),
+  # BUG-522: store E3 trade-in eligibility as stable codes (known legacy values only, one-shot).
+  (Join-Path $root "scripts\migrations\20261120_e6_bug522_tradein_eligibility_codes.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

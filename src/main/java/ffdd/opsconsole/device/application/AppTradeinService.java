@@ -78,14 +78,14 @@ public class AppTradeinService {
         this(paymentAuthorization,paymentAttribution,mapper,idempotencyService,outboxService,auditLogService,
                 productReleasePolicy,fundsSandboxProfileGuard,deviceLifecycle,testCloudAdmission,null);
     }
-    private static final Pattern LEVEL_GATE = Pattern.compile("^L([2-6])\\+\\s*持有者$");
     private static final Set<String> REQUIRED_CONFIG = Set.of(
             "tradeinEnabled", "eligibility",
             "tradeinLadderCut1", "tradeinLadderCut2", "tradeinLadderCut3", "tradeinLadderCut4",
             "tradeinLadderCredit1", "tradeinLadderCredit2", "tradeinLadderCredit3",
             "tradeinLadderCredit4", "tradeinLadderCredit5",
-            "tradeinRequireHigherPrice", "tradeinMaxDevicesPerOrder",
+            "tradeinRequireHigherPrice",
             "earlyAccessEnabled", "earlyAccessLeadDays");
+    private static final int MAX_DEVICES_PER_ORDER = 1;
     private static final Set<Integer> EARLY_ACCESS_LEAD_DAY_OPTIONS = Set.of(7, 14, 30, 60, 90);
 
     @lombok.NonNull
@@ -111,7 +111,7 @@ public class AppTradeinService {
         TradeinPolicy policy = policy();
         return ApiResult.ok(new AppTradeinConfigResponse(
                 policy.enabled(), policy.eligibility(), policy.cuts(), policy.credits(),
-                policy.requireHigherPrice(), policy.maxDevicesPerOrder(),
+                policy.requireHigherPrice(), MAX_DEVICES_PER_ORDER,
                 policy.earlyAccessEnabled(), policy.earlyAccessLeadDays(), "nx_compute_e3_config"));
     }
 
@@ -686,7 +686,6 @@ public class AppTradeinService {
             Long userId, Long sourceDeviceId, Long targetProductId, String targetProductNo, boolean locked) {
         TradeinPolicy policy = policy();
         if (!policy.enabled()) throw new BizException(409, "TRADEIN_DISABLED");
-        if (policy.maxDevicesPerOrder() < 1) throw new BizException(409, "TRADEIN_DEVICE_COUNT_EXCEEDED");
         requireEligibility(mapper.userLevel(userId), policy.eligibility());
 
         AppTradeinMapper.SourceDevice source = locked
@@ -812,10 +811,8 @@ public class AppTradeinService {
                 || credits.stream().anyMatch(value -> value.signum() < 0 || value.compareTo(BigDecimal.valueOf(100)) > 0)) {
             throw new BizException(503, "E3_TRADEIN_LADDER_INVALID");
         }
-        int maxDevices;
         int earlyAccessLeadDays;
         try {
-            maxDevices = Integer.parseInt(values.get("tradeinMaxDevicesPerOrder"));
             earlyAccessLeadDays = Integer.parseInt(values.get("earlyAccessLeadDays"));
         } catch (RuntimeException ex) {
             throw new BizException(503, "E3_TRADEIN_MAX_DEVICES_INVALID");
@@ -823,14 +820,15 @@ public class AppTradeinService {
         if (!EARLY_ACCESS_LEAD_DAY_OPTIONS.contains(earlyAccessLeadDays)) {
             throw new BizException(503, "E3_EARLY_ACCESS_LEAD_DAYS_INVALID");
         }
-        String eligibility = values.get("eligibility");
-        if (!("全部用户".equals(eligibility) || LEVEL_GATE.matcher(eligibility).matches())) {
+        // BUG-522: 资格档位按稳定代码读取；历史存量中文值映射到同一代码，未知值仍按原口径拒绝。
+        String eligibility = ffdd.opsconsole.device.domain.TradeinEligibility.codeOf(values.get("eligibility"));
+        if (eligibility == null) {
             throw new BizException(503, "E3_TRADEIN_ELIGIBILITY_INVALID");
         }
         return new TradeinPolicy(
                 bool(values.get("tradeinEnabled"), "E3_TRADEIN_ENABLED_INVALID"), eligibility,
                 cuts, credits, bool(values.get("tradeinRequireHigherPrice"), "E3_TRADEIN_PRICE_GATE_INVALID"),
-                maxDevices, bool(values.get("earlyAccessEnabled"), "E3_EARLY_ACCESS_ENABLED_INVALID"),
+                bool(values.get("earlyAccessEnabled"), "E3_EARLY_ACCESS_ENABLED_INVALID"),
                 earlyAccessLeadDays);
     }
 
@@ -850,11 +848,12 @@ public class AppTradeinService {
     }
 
     private boolean isEligible(String userLevel, String eligibility) {
-        if ("全部用户".equals(eligibility)) return true;
-        Matcher gate = LEVEL_GATE.matcher(eligibility);
+        String code = ffdd.opsconsole.device.domain.TradeinEligibility.codeOf(eligibility);
+        // 全部用户：任何用户都通过（保持原语义，不看等级是否可解析）。
+        if (ffdd.opsconsole.device.domain.TradeinEligibility.ALL.equals(code)) return true;
+        Integer minLevel = ffdd.opsconsole.device.domain.TradeinEligibility.minLevelOf(code);
         Matcher actual = Pattern.compile("^L([1-9][0-9]*)$").matcher(StringUtils.hasText(userLevel) ? userLevel.trim() : "");
-        return gate.matches() && actual.matches()
-                && Integer.parseInt(actual.group(1)) >= Integer.parseInt(gate.group(1));
+        return minLevel != null && actual.matches() && Integer.parseInt(actual.group(1)) >= minLevel;
     }
 
     private String requireEligibilityTargetNo(String targetProductNo) {
@@ -878,7 +877,7 @@ public class AppTradeinService {
                 target == null ? targetProductNo : target.productNo(),
                 target == null ? null : target.name(),
                 target == null ? null : money(target.priceUsdt()),
-                policy.requireHigherPrice(), policy.maxDevicesPerOrder(), sources, "server");
+                policy.requireHigherPrice(), MAX_DEVICES_PER_ORDER, sources, "server");
     }
 
     private AppTradeinEligibilityResponse.Source eligibilitySource(
@@ -1051,7 +1050,7 @@ public class AppTradeinService {
 
     private record TradeinPolicy(
             boolean enabled, String eligibility, List<BigDecimal> cuts, List<BigDecimal> credits,
-            boolean requireHigherPrice, int maxDevicesPerOrder,
+            boolean requireHigherPrice,
             boolean earlyAccessEnabled, int earlyAccessLeadDays) {
     }
 

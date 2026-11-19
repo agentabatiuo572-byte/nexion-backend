@@ -434,13 +434,12 @@ public class AppCanonicalBoundaryService {
         if ((rawDevices == null || !rawDevices.isEmpty()) && !validE3CapacityConfig(capacityConfig)) {
             return ApiResult.fail(409, "E3_CAPACITY_CONFIG_INCOMPLETE");
         }
-        if (rawDevices != null) {
-            for (CanonicalStateMapper.OwnedDevice device : rawDevices) {
-                try {
-                    validateDeviceSpec(device);
-                } catch (BizException invalid) {
-                    return ApiResult.fail(invalid.getCode(), invalid.getMessage());
-                }
+        if (rawDevices == null) rawDevices = List.of();
+        for (CanonicalStateMapper.OwnedDevice device : rawDevices) {
+            try {
+                validateDeviceSpec(device);
+            } catch (BizException invalid) {
+                return ApiResult.fail(invalid.getCode(), invalid.getMessage());
             }
         }
         LocalDateTime capacityNow = LocalDateTime.now(SERVER_ZONE);
@@ -462,18 +461,19 @@ public class AppCanonicalBoundaryService {
                 return ApiResult.fail(503, "E3_REALIZED_EARNINGS_INVALID");
             }
         }
-        List<Map<String, Object>> devices = (rawDevices == null ? List.<CanonicalStateMapper.OwnedDevice>of() : rawDevices)
-                .stream().map(device -> {
-                    Map<String, Object> projection = projectE3Capacity(device, capacityConfig, capacityNow);
-                    CanonicalStateMapper.DeviceRealizedToday realized = realizedByDevice.get(device.id());
-                    projection.put("todayEarningsUsdt", realized == null
-                            ? BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP)
-                            : realized.todayEarningsUsdt().setScale(6, RoundingMode.HALF_UP));
-                    projection.put("todayEarningsNex", realized == null
-                            ? BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP)
-                            : realized.todayEarningsNex().setScale(6, RoundingMode.HALF_UP));
-                    return projection;
-                }).toList();
+        List<Map<String, Object>> devices = new ArrayList<>();
+        for (CanonicalStateMapper.OwnedDevice device : rawDevices) {
+            Map<String, Object> projection = projectE3Capacity(device, capacityConfig, capacityNow);
+            if (projection == null) continue;
+            CanonicalStateMapper.DeviceRealizedToday realized = realizedByDevice.get(device.id());
+            projection.put("todayEarningsUsdt", realized == null
+                    ? BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP)
+                    : realized.todayEarningsUsdt().setScale(6, RoundingMode.HALF_UP));
+            projection.put("todayEarningsNex", realized == null
+                    ? BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP)
+                    : realized.todayEarningsNex().setScale(6, RoundingMode.HALF_UP));
+            devices.add(projection);
+        }
         BigDecimal realizedTodayUsdt = devices.stream()
                 .map(device -> (BigDecimal) device.get("todayEarningsUsdt"))
                 .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(6, RoundingMode.HALF_UP);
@@ -490,8 +490,8 @@ public class AppCanonicalBoundaryService {
                 .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(6, RoundingMode.HALF_UP);
         int reservedSlots = sandboxRuntime ? 0 : Math.max(0, mapper.reservedDeviceOrderCount(userId));
         int trialSlots = sandboxRuntime ? 0 : mapper.reservedTrialSlotCount(userId);
-        long activeSlots = sandboxRuntime ? devices.stream()
-                .filter(device -> isSlotOccupyingActiveState(String.valueOf(device.get("status")))).count()
+        long activeSlots = sandboxRuntime ? rawDevices.stream()
+                .filter(device -> isSlotOccupyingActiveState(device.status())).count()
                 : Math.max(0, mapper.activeDeviceCount(userId));
         return ApiResult.ok(linked(
                 "dailyUsdt", usdt,
@@ -562,13 +562,14 @@ public class AppCanonicalBoundaryService {
             CanonicalStateMapper.OwnedDevice device,
             Map<String, String> config,
             LocalDateTime now) {
-        validateDeviceSpec(device);
         E3DeviceCapacityPolicy.Projection capacity;
         try {
             capacity = E3DeviceCapacityPolicy.project(
                     device.seriesCode(), device.deviceType(), device.purchasedAt(),
                     device.activatedAt(), now, config);
         } catch (IllegalArgumentException invalid) {
+            if (!StringUtils.hasText(device.seriesCode())
+                    && "E3_DEVICE_CAPACITY_CLASSIFICATION_MISSING".equals(invalid.getMessage())) return null;
             throw new BizException(409, invalid.getMessage());
         }
         // Untargeted Share keeps its annual-reference branch; targeted Share uses the same T/30 projection.
