@@ -72,6 +72,18 @@ public interface BinaryPlatformSettlementMapper {
             """)
     BigDecimal remaining(LocalDate date);
 
+    @Select("""
+            SELECT COALESCE(SUM(s.amount_usdt),0) settledPayoutUsdt,
+                   COALESCE(SUM(CASE WHEN a.settlement_mode='AUTOMATIC' THEN s.amount_usdt ELSE 0 END),0) automaticSettledUsdt,
+                   COALESCE(SUM(CASE WHEN a.settlement_mode='MANUAL' THEN s.amount_usdt ELSE 0 END),0) manualSettledUsdt,
+                   COUNT(DISTINCT s.id) settledSettlementCount
+              FROM nx_binary_commission_settlement s
+              JOIN nx_binary_platform_allocation a
+                ON a.settlement_date=s.settlement_date AND a.user_id=s.user_id AND a.settlement_mode IS NOT NULL
+             WHERE s.settlement_date=#{date} AND s.is_deleted=0
+            """)
+    SettledTotals settledTotals(LocalDate date);
+
     @Insert("""
             INSERT INTO nx_binary_platform_period
               (settlement_date,period_start,period_days,platform_cap_pct,paid_sales_usdt,cap_amount_usdt,raw_total_usdt)
@@ -98,6 +110,9 @@ public interface BinaryPlatformSettlementMapper {
 
     record Period(LocalDate settlementDate, LocalDate periodStart, int periodDays, BigDecimal platformCapPct,
                   BigDecimal paidSales, BigDecimal capAmount, BigDecimal rawTotal) { }
+
+    record SettledTotals(BigDecimal settledPayoutUsdt, BigDecimal automaticSettledUsdt,
+                         BigDecimal manualSettledUsdt, long settledSettlementCount) { }
 
     record Allocation(long userId, BigDecimal rawAmount, BigDecimal allocated) { }
 
