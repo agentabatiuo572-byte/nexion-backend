@@ -423,6 +423,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261102_simulated_task_policy_uvt_asset.sql")
   (Join-Path $root "scripts\migrations\20261102_simulated_task_runtime.sql"),
   (Join-Path $root "scripts\migrations\20261102_simulated_task_runtime_recent_read_index.sql")
+  (Join-Path $root "scripts\migrations\20261116_simulated_task_home_live_index.sql")
   (Join-Path $root "scripts\migrations\20261103_english_rule_task_catalog.sql")
   # Seed missing E2 classes only, after the catalog tables exist on fresh installs.
   (Join-Path $root "scripts\seed_e2_task_pricing.sql")
@@ -464,6 +465,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261106_g2_queue_batch_event_fields.sql"),
   (Join-Path $root "scripts\migrations\20261106_g2_restore_queue_batch_event_fields.sql"),
   (Join-Path $root "scripts\migrations\20261106_zy_b31_menu_names_order.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_rbac_missing_codes.sql"),
   (Join-Path $root "scripts\migrations\20261106_zz_b30_role_scope.sql"),
   (Join-Path $root "scripts\migrations\20261106_zz_h5_tick_permission.sql"),
   (Join-Path $root "scripts\migrations\20261106_zzz_f5_export_permission.sql"),
