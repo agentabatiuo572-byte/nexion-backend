@@ -147,21 +147,13 @@ public class BinaryCurrentPeriodService {
             period.put("platformRemainingUsdt", null);
         }
 
-        Map<String, Object> availability = new LinkedHashMap<>();
-        availability.put("dates", period.containsKey("settlementDate"));
-        availability.put("paidSales", period.get("paidSalesUsdt") != null);
-        availability.put("platformCap", period.get("platformCapUsdt") != null);
-        availability.put("platformUsed", period.get("platformUsedUsdt") != null);
-        period.put("availability", availability);
-        period.put("available", Boolean.TRUE.equals(availability.get("dates"))
-                && Boolean.TRUE.equals(availability.get("paidSales"))
-                && Boolean.TRUE.equals(availability.get("platformCap"))
-                && Boolean.TRUE.equals(availability.get("platformUsed")));
+        putAvailability(period);
         period.put("unavailableReasons", List.copyOf(unavailable));
         period.put("basis", basis());
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "F3");
         response.put("currentPeriod", period);
+        response.put("latestFrozenPeriod", latestFrozenPeriod(now, today));
         response.put("sources", List.of(
                 "nx_binary_platform_period",
                 "nx_binary_platform_allocation",
@@ -170,6 +162,99 @@ public class BinaryCurrentPeriodService {
                 "nx_config_item:team.ui.F.binary.settlePeriod",
                 "nx_config_item:team.ui.F.binary.platformCapPct"));
         return response;
+    }
+
+    /**
+     * The current open cycle cannot be frozen before its closed date, so the latest frozen
+     * cycle is read independently from the latest platform period before today.
+     */
+    private Map<String, Object> latestFrozenPeriod(Instant now, LocalDate today) {
+        Map<String, Object> latest = new LinkedHashMap<>();
+        latest.put("asOfUtc", now.toString());
+        Set<String> unavailable = new LinkedHashSet<>();
+        if (today == null) {
+            unavailable.add("F3_BUSINESS_PERIOD_UNAVAILABLE");
+            return unavailableLatest(latest, null, "UNKNOWN", unavailable);
+        }
+        LocalDate settlementDate = periods.previousEnd(today);
+        if (settlementDate == null) {
+            unavailable.add("F3_PLATFORM_PERIOD_NOT_FROZEN");
+            return unavailableLatest(latest, false, "NOT_FROZEN", unavailable);
+        }
+        var frozen = periods.period(settlementDate);
+        if (frozen == null) {
+            unavailable.add("F3_PLATFORM_PERIOD_UNAVAILABLE");
+            return unavailableLatest(latest, null, "UNKNOWN", unavailable);
+        }
+
+        latest.put("settlementDate", frozen.settlementDate().toString());
+        latest.put("periodStart", frozen.periodStart().toString());
+        latest.put("periodEnd", frozen.settlementDate().toString());
+        latest.put("periodDays", frozen.periodDays());
+        latest.put("businessZone", VietnamBusinessPeriod.ZONE.getId());
+        latest.put("storageZone", VietnamBusinessPeriod.STORAGE_ZONE.getId());
+        putUtcBoundaries(latest, frozen.periodStart(), frozen.settlementDate(), unavailable);
+        latest.put("frozen", true);
+        latest.put("freezeStatus", "FROZEN");
+        latest.put("paidSalesUsdt", frozen.paidSales());
+        latest.put("paidSalesAsOfUtc", null);
+        latest.put("paidSalesComplete", true);
+        latest.put("paidSalesBasis", "FROZEN_PERIOD");
+        latest.put("platformCapPct", frozen.platformCapPct());
+        latest.put("platformCapPctUnit", "PERCENT");
+        latest.put("platformCapPctBasis", "FROZEN_PERIOD");
+        latest.put("platformCapUsdt", frozen.capAmount());
+        latest.put("plannedRawTotalUsdt", frozen.rawTotal());
+        latest.put("plannedRawTotalBasis", "FROZEN_PERIOD_RAW_TOTAL_NOT_PAID");
+        var totals = periods.settledTotals(settlementDate);
+        latest.put("platformUsedUsdt", totals.settledPayoutUsdt());
+        latest.put("settledPayoutUsdt", totals.settledPayoutUsdt());
+        latest.put("automaticSettledUsdt", totals.automaticSettledUsdt());
+        latest.put("manualSettledUsdt", totals.manualSettledUsdt());
+        latest.put("settledSettlementCount", totals.settledSettlementCount());
+        latest.put("platformRemainingUsdt", frozen.capAmount().subtract(totals.settledPayoutUsdt()));
+        putAvailability(latest);
+        latest.put("unavailableReasons", List.copyOf(unavailable));
+        latest.put("basis", basis());
+        return latest;
+    }
+
+    private static Map<String, Object> unavailableLatest(Map<String, Object> latest, Boolean frozen,
+                                                         String freezeStatus, Set<String> unavailable) {
+        latest.put("frozen", frozen);
+        latest.put("freezeStatus", freezeStatus);
+        latest.put("paidSalesUsdt", null);
+        latest.put("paidSalesAsOfUtc", null);
+        latest.put("paidSalesComplete", false);
+        latest.put("platformCapPct", null);
+        latest.put("platformCapPctUnit", "PERCENT");
+        latest.put("platformCapUsdt", null);
+        latest.put("platformUsedUsdt", null);
+        latest.put("settledPayoutUsdt", null);
+        latest.put("automaticSettledUsdt", null);
+        latest.put("manualSettledUsdt", null);
+        latest.put("settledSettlementCount", null);
+        latest.put("plannedRawTotalUsdt", null);
+        latest.put("platformRemainingUsdt", null);
+        putAvailability(latest);
+        latest.put("unavailableReasons", List.copyOf(unavailable));
+        latest.put("basis", basis());
+        return latest;
+    }
+
+    private static void putAvailability(Map<String, Object> view) {
+        Map<String, Object> availability = new LinkedHashMap<>();
+        availability.put("dates", view.containsKey("settlementDate"));
+        availability.put("utc", view.get("periodStartAtUtc") != null && view.get("periodEndExclusiveAtUtc") != null);
+        availability.put("paidSales", view.get("paidSalesUsdt") != null);
+        availability.put("platformCap", view.get("platformCapUsdt") != null);
+        availability.put("platformUsed", view.get("platformUsedUsdt") != null);
+        view.put("availability", availability);
+        view.put("available", Boolean.TRUE.equals(availability.get("dates"))
+                && Boolean.TRUE.equals(availability.get("utc"))
+                && Boolean.TRUE.equals(availability.get("paidSales"))
+                && Boolean.TRUE.equals(availability.get("platformCap"))
+                && Boolean.TRUE.equals(availability.get("platformUsed")));
     }
 
     private static LocalDate settlementDate(LocalDate today, String cadence) {
