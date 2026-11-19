@@ -183,6 +183,20 @@ public interface AppUserSecurityMapper extends BaseMapper<AppUserSecurityEntity>
             """)
     int hasUnsettledFundsOrOrders(@Param("userId") Long userId);
 
+    /**
+     * 注销结案的钱包结清判据(App 主 PRD v3.7：USDT、NEX 可用余额都等于 0)。
+     * 与上面的汇总判据不同，这里只比「是否等于零」：正余额与负余额(USDT 可为负)都算未结清，
+     * 不把负数当成已结清。待提现等其它约束仍在 hasUnsettledFundsOrOrders 里。
+     */
+    @Select("""
+            SELECT CASE WHEN EXISTS(
+                SELECT 1 FROM nx_user_wallet w
+                 WHERE w.user_id=#{userId} AND w.is_deleted=0
+                   AND (w.usdt_available <> 0 OR w.nex_available <> 0)
+            ) THEN 1 ELSE 0 END
+            """)
+    int hasUnclearedUsableBalance(@Param("userId") Long userId);
+
     @Update("""
             UPDATE nx_user
                SET status='DISABLED',nickname=CONCAT('Deleted user ',id),
