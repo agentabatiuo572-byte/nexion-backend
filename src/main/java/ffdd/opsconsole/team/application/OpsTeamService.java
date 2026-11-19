@@ -4777,6 +4777,11 @@ public class OpsTeamService implements AuditReplayable {
         if ("sku".equals(rewardType)) {
             skuFulfillmentService.reissueSkuReward(userId, rankCode, textValue(original, "skuId", ""), operator);
         }
+        if ("voucher".equals(rewardType) && userId != null
+                && StringUtils.hasText(textValue(original, "voucherId", ""))) {
+            vRankRewardDispatcher.reissueVoucherReward(userId, rankCode,
+                    textValue(original, "voucherId", ""), payoutId.trim(), operator);
+        }
         boolean updated = commissionRepository.updateRewardPayoutStatus(
                 payoutId.trim(), "REISSUED", operator, "[REISSUE] " + reason);
         if (!updated) {
@@ -4876,6 +4881,11 @@ public class OpsTeamService implements AuditReplayable {
             skuFulfillmentService.reverseSkuReward(userId, rankCode, textValue(original, "skuId", ""),
                     currentStatus, operator, reason);
         }
+        if ("voucher".equals(rewardType) && userId != null
+                && StringUtils.hasText(textValue(original, "voucherId", ""))) {
+            reverseVoucherReward(userId, rankCode, textValue(original, "voucherId", ""),
+                    payoutId.trim());
+        }
         boolean updated = commissionRepository.updateRewardPayoutStatus(
                 payoutId.trim(), "REVERSED", operator, "[REVERSE] " + reason);
         if (!updated) {
@@ -4914,6 +4924,41 @@ public class OpsTeamService implements AuditReplayable {
                 ? "nx_v_rank_reward_payout + nx_user_sku_entitlement + nx_v_rank_reward_fulfillment"
                 : "nx_v_rank_reward_payout + nx_commission_event (reverse)");
         return ApiResult.ok(response);
+    }
+
+    /**
+     * F1 券冲正:真实收回 H7 发放记录。
+     * 未使用的券直接作废;已使用的券不撤销权益,改为把券面额从用户 USDT 可用余额扣回,
+     * 余额不够时允许扣成负数。历史流水没有对应 H7 记录时只改 payout 状态,不阻断冲正。
+     */
+    private void reverseVoucherReward(Long userId, String rankCode, String voucherId, String payoutId) {
+        String originalSourceId = userId + ":" + rankCode + ":voucher";
+        String reissueSourceId = userId + ":" + rankCode + ":voucher:reissue:" + payoutId;
+        Map<String, Object> grant = null;
+        String sourceId = null;
+        for (String candidate : List.of(reissueSourceId, originalSourceId)) {
+            Map<String, Object> row = commissionRepository.lockVrankVoucherGrant(userId, voucherId, candidate);
+            if (row != null && !row.isEmpty()) {
+                grant = row;
+                sourceId = candidate;
+                break;
+            }
+        }
+        if (grant == null || grant.isEmpty()) {
+            return;
+        }
+        String status = String.valueOf(grant.getOrDefault("status", "")).toUpperCase(Locale.ROOT);
+        if ("AVAILABLE".equals(status)) {
+            commissionRepository.revokeVrankAvailableGrant(userId, voucherId, sourceId);
+            return;
+        }
+        if ("USED".equals(status)) {
+            BigDecimal amountUsd = decimalValue(grant.get("amountUsd"), BigDecimal.ZERO);
+            if (amountUsd.compareTo(BigDecimal.ZERO) > 0) {
+                commissionRepository.lockVrankWalletUsdt(userId);
+                commissionRepository.debitVrankWalletUsdt(userId, amountUsd);
+            }
+        }
     }
 
     /** normalize payout row:字段补全 + status 大写。 */

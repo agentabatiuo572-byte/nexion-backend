@@ -380,6 +380,21 @@ public class VRankRewardDispatcher {
                 userId, rankCode, voucherId, grant.grantId(), grant.replayed());
     }
 
+    /**
+     * F1 券补发:按 payoutId 生成新的 H7 发放来源与幂等键,真实发券。
+     * 首次发放的 source_id=userId:rankCode:voucher 已在冲正时作废;补发使用 payoutId 后缀
+     * 避免唯一键冲突,同时保持 source_type='VRANK_REWARD' 便于再次冲正时定位。
+     */
+    public VoucherGrantResult reissueVoucherReward(Long userId, String rankCode, String voucherId,
+                                                   String payoutId, String operator) {
+        String suffix = "reissue:" + payoutId;
+        String sourceId = userId + ":" + rankCode + ":voucher:" + suffix;
+        String grantKey = "vrank:" + userId + ":" + rankCode.toLowerCase(Locale.ROOT) + ":" + voucherId + ":" + suffix;
+        return voucherGrantFacade.grant(new VoucherGrantCommand(
+                userId, voucherId, grantKey, "VRANK_REWARD", sourceId, operator,
+                "F1 V-Rank voucher reissue"));
+    }
+
     private void dispatchSku(Long userId,
                              String rankCode,
                              VRankRewardRuleRow rule,

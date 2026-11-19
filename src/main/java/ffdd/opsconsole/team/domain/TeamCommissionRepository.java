@@ -320,6 +320,28 @@ public interface TeamCommissionRepository {
      */
     int reverseCommissionEvent(Long commissionEventId);
 
+    /**
+     * F1 券冲正:按 H7 发放来源定位发放记录并锁定,返回状态与券面额(未实现时返回 null)。
+     */
+    default Map<String, Object> lockVrankVoucherGrant(Long userId, String voucherId, String sourceId) {
+        return null;
+    }
+
+    /** F1 券冲正:未使用的券直接作废,返回受影响行数。 */
+    default int revokeVrankAvailableGrant(Long userId, String voucherId, String sourceId) {
+        return 0;
+    }
+
+    /** F1 券冲正:锁定用户钱包 USDT 可用余额;无钱包返回 null。 */
+    default BigDecimal lockVrankWalletUsdt(Long userId) {
+        return null;
+    }
+
+    /** F1 券冲正:已用券扣回余额,允许扣成负数。 */
+    default int debitVrankWalletUsdt(Long userId, BigDecimal amount) {
+        return 0;
+    }
+
     default boolean linkReissuedRewardCommission(String payoutId, Long eventId, String billId) {
         throw new UnsupportedOperationException("PAYOUT_COMMISSION_LINK_NOT_IMPLEMENTED");
     }

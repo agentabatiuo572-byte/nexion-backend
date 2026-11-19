@@ -566,6 +566,26 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     }
 
     @Override
+    public Map<String, Object> lockVrankVoucherGrant(Long userId, String voucherId, String sourceId) {
+        return mapper.lockVrankVoucherGrant(userId, voucherId, sourceId);
+    }
+
+    @Override
+    public int revokeVrankAvailableGrant(Long userId, String voucherId, String sourceId) {
+        return mapper.revokeVrankAvailableGrant(userId, voucherId, sourceId);
+    }
+
+    @Override
+    public BigDecimal lockVrankWalletUsdt(Long userId) {
+        return mapper.lockVrankWalletUsdt(userId);
+    }
+
+    @Override
+    public int debitVrankWalletUsdt(Long userId, BigDecimal amount) {
+        return mapper.debitVrankWalletUsdt(userId, amount);
+    }
+
+    @Override
     public boolean linkReissuedRewardCommission(String payoutId, Long eventId, String billId) {
         return mapper.linkReissuedRewardCommission(payoutId, eventId, billId) == 1;
     }

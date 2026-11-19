@@ -459,8 +459,8 @@ public class SupportBindingService {
 
     /**
      * Supervisor preview/confirm keeps the original candidate set so a frozen ticket is compared with
-     * the same facts. Only the automatic first-inquiry/fallback path applies the profile pause and
-     * capacity filters.
+     * the same facts. The automatic first-inquiry/fallback path applies the profile pause filter only;
+     * max_concurrent no longer blocks automatic assignment (2026-11-19 product decision).
      */
     private List<Candidate> randomCandidates(Long customer,Long group,boolean automatic) {
         Map<String,Object> pool=mapper.poolAttempt(customer);

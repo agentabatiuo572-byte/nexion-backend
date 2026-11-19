@@ -1813,4 +1813,59 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                AND UPPER(status) IN ('PENDING', 'COOLING', 'UNLOCKED', 'AVAILABLE', 'FROZEN')
             """)
     int reverseCommissionEvent(@Param("commissionEventId") Long commissionEventId);
+
+    /**
+     * F1 券冲正:按 H7 发放来源定位发放记录并锁定,返回状态与券面额。
+     * 幂等/并发安全:该行在本次 payout 事务内 FOR UPDATE,后续补发/再次冲正都以同一行状态为准。
+     */
+    @Select("""
+            SELECT g.status, COALESCE(v.amount_usd, 0) AS amountUsd
+              FROM nx_growth_voucher_grant g
+              JOIN nx_growth_voucher v ON v.voucher_id = g.voucher_id AND v.is_deleted = 0
+             WHERE g.user_id = #{userId}
+               AND g.voucher_id = #{voucherId}
+               AND g.source_type = 'VRANK_REWARD'
+               AND g.source_id = #{sourceId}
+               AND g.is_deleted = 0
+             LIMIT 1
+             FOR UPDATE
+            """)
+    Map<String, Object> lockVrankVoucherGrant(@Param("userId") Long userId,
+                                              @Param("voucherId") String voucherId,
+                                              @Param("sourceId") String sourceId);
+
+    /** 未使用的券直接作废(真实收回);已用券不动状态,由上层扣钱包余额。 */
+    @Update("""
+            UPDATE nx_growth_voucher_grant
+               SET status = 'REVOKED', updated_at = NOW()
+             WHERE user_id = #{userId}
+               AND voucher_id = #{voucherId}
+               AND source_type = 'VRANK_REWARD'
+               AND source_id = #{sourceId}
+               AND status = 'AVAILABLE'
+               AND is_deleted = 0
+            """)
+    int revokeVrankAvailableGrant(@Param("userId") Long userId,
+                                  @Param("voucherId") String voucherId,
+                                  @Param("sourceId") String sourceId);
+
+    /** 冲正已用券:锁定用户钱包 USDT 可用余额。 */
+    @Select("""
+            SELECT usdt_available
+              FROM nx_user_wallet
+             WHERE user_id = #{userId} AND is_deleted = 0 AND sandbox = 0
+             LIMIT 1
+             FOR UPDATE
+            """)
+    BigDecimal lockVrankWalletUsdt(@Param("userId") Long userId);
+
+    /** 已用券扣回:余额不够时允许扣成负数,不设下限。 */
+    @Update("""
+            UPDATE nx_user_wallet
+               SET usdt_available = usdt_available - #{amount},
+                   version = version + 1,
+                   updated_at = NOW()
+             WHERE user_id = #{userId} AND is_deleted = 0 AND sandbox = 0
+            """)
+    int debitVrankWalletUsdt(@Param("userId") Long userId, @Param("amount") BigDecimal amount);
 }
