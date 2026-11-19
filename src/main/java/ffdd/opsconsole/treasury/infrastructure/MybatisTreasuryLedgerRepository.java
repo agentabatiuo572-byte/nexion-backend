@@ -600,6 +600,29 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
     }
 
     /**
+     * F1-BE-18: the caller already credited the real wallet in this transaction (for example
+     * EarningsReleaseService.creditReward), so lock that wallet and post its actual post-credit
+     * balance without adding the amount a second time.
+     */
+    @Override
+    @Transactional
+    public void postLedgerEntryWithActualBalance(String bizNo, Long userId, String bizType, String asset,
+                                                 String direction, BigDecimal amount, String status, String remark) {
+        if (userId == null || userId <= 0) {
+            throw new IllegalArgumentException("D4_LEDGER_USER_REQUIRED");
+        }
+        String normalizedAsset = asset == null ? "" : asset.trim().toUpperCase(Locale.ROOT);
+        if (!java.util.Set.of("USDT", "UVT").contains(normalizedAsset)) {
+            throw new IllegalArgumentException("D4_LEDGER_ASSET_INVALID");
+        }
+        BigDecimal actual = mapper.lockCommissionWallet(userId, normalizedAsset);
+        if (actual == null) {
+            throw new IllegalStateException("D4_LEDGER_WALLET_UNAVAILABLE");
+        }
+        postLedgerEntryWithBalanceAfter(bizNo, userId, bizType, asset, direction, amount, actual, status, remark);
+    }
+
+    /**
      * F1 已用券扣回:余额后使用调用方在同一事务内锁定并扣减后的真实钱包余额,允许为负数。
      * 幂等互斥与既有指纹校验保持一致,不做余额推算。
      */

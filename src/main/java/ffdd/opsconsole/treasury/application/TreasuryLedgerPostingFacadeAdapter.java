@@ -45,6 +45,12 @@ public class TreasuryLedgerPostingFacadeAdapter implements TreasuryLedgerPosting
     }
 
     @Override
+    public void postLedgerEntryWithActualBalance(String bizNo, Long userId, String bizType, String asset,
+                                                 String direction, BigDecimal amount, String status, String remark) {
+        ledgerRepository.postLedgerEntryWithActualBalance(bizNo, userId, bizType, asset, direction, amount, status, remark);
+    }
+
+    @Override
     public void settleBankWithdrawalReserve(String withdrawalNo, BigDecimal amount, long providerId, LocalDateTime now) {
         ledgerRepository.settleBankWithdrawalReserve(withdrawalNo, amount, providerId, now);
     }

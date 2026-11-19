@@ -323,7 +323,9 @@ public class H4EventEngine {
         if(snapshot==null||!snapshot.reliable()||snapshot.coverageRatio()==null||snapshot.redlinePct()==null
                 ||snapshot.coverageRatio().compareTo(snapshot.redlinePct())<0)throw new BizException(409,"COVERAGE_REDLINE");
         earnings.creditReward(id,"EVENT_REWARD",ref,asset,amount,"H4:"+ref+":"+("USDT".equals(asset)?"USDT":"NEX"));
-        ledger.postLedgerEntry("H4:"+ref+":"+("USDT".equals(asset)?"USDT":"NEX"),id,"EVENT_REWARD",asset,"IN",amount,"SUCCESS","Activity reward");
+        String bizNo="H4:"+ref+":"+("USDT".equals(asset)?"USDT":"NEX");
+        if("USDT".equals(asset)) ledger.postLedgerEntryWithActualBalance(bizNo,id,"EVENT_REWARD",asset,"IN",amount,"SUCCESS","Activity reward");
+        else ledger.postLedgerEntry(bizNo,id,"EVENT_REWARD",asset,"IN",amount,"SUCCESS","Activity reward");
     }
     private String country(Map<String,Object> user){return switch(text(user.get("country_code")).replace("+","")){case "84"->"VN";case "86"->"CN";default->text(user.get("country_code")).matches("[A-Z]{2}")?text(user.get("country_code")):"";};}
     private String regionFor(Map<String,Object> user,Map<String,Object> rules){

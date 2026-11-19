@@ -221,4 +221,13 @@ public interface TreasuryLedgerRepository {
      */
     void postLedgerEntryWithBalanceAfter(String bizNo, Long userId, String bizType, String asset, String direction,
                                          BigDecimal amount, BigDecimal balanceAfter, String status, String remark);
+
+    /**
+     * F1-BE-18: the caller already credited the real wallet in this transaction; read that
+     * locked post-credit balance and use it as balanceAfter without adding the amount again.
+     */
+    default void postLedgerEntryWithActualBalance(String bizNo, Long userId, String bizType, String asset,
+                                                  String direction, BigDecimal amount, String status, String remark) {
+        throw new UnsupportedOperationException("LEDGER_ACTUAL_BALANCE_NOT_IMPLEMENTED");
+    }
 }

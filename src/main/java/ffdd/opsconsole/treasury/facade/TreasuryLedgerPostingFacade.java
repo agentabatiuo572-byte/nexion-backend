@@ -16,6 +16,12 @@ public interface TreasuryLedgerPostingFacade extends DomainFacade {
         throw new UnsupportedOperationException("LEDGER_BALANCE_AFTER_NOT_IMPLEMENTED");
     }
 
+    /** The caller already credited the wallet; post the locked actual balance without adding again. */
+    default void postLedgerEntryWithActualBalance(String bizNo, Long userId, String bizType, String asset,
+                                                  String direction, BigDecimal amount, String status, String remark) {
+        throw new UnsupportedOperationException("LEDGER_ACTUAL_BALANCE_NOT_IMPLEMENTED");
+    }
+
     default void releaseCommissionFunds(Long eventId) {
         throw new UnsupportedOperationException("COMMISSION_FUNDS_RELEASE_NOT_IMPLEMENTED");
     }
