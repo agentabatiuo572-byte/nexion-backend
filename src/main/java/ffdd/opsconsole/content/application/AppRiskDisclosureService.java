@@ -237,9 +237,6 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
         if (matches.isEmpty() && userId != null) {
             matches = publishedJurisdictions.stream()
                     .filter(row -> "SBV".equalsIgnoreCase(row.code()))
-                    .filter(row -> repository.findDisclosureVersion(row.code(), row.version())
-                            .filter(version -> "published".equalsIgnoreCase(version.status()))
-                            .isPresent())
                     .toList();
         }
         if (matches.isEmpty()) return JurisdictionResolution.error(404, "RISK_DISCLOSURE_JURISDICTION_NOT_CONFIGURED");
