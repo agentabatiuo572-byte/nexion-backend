@@ -7035,7 +7035,7 @@ CREATE TABLE IF NOT EXISTS nx_onboarding_yield_comparison_config (
 INSERT INTO nx_onboarding_yield_comparison_config
   (config_key,label,daily_usdt,daily_nex,sort_order,revision,active,is_deleted)
 VALUES
-  ('phone','手机',0.060000,10.000000,1,1,1,0),
+  ('phone','Phone',0.060000,10.000000,1,1,1,0),
   ('s1','UVELBox S1',1.200000,65.000000,2,1,1,0),
   ('pro','UVELBox Pro',4.800000,260.000000,3,1,1,0),
   ('rack','UVELRack',18.000000,980.000000,4,1,1,0)
