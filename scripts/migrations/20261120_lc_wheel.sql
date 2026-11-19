@@ -35,9 +35,17 @@ UPDATE nx_growth_wheel_tier
    AND status=1 AND is_deleted=0
    AND NOT EXISTS (
        SELECT 1 FROM nx_audit_operation_ticket t
+        JOIN JSON_TABLE(IF(JSON_VALID(t.command_json), t.command_json, '{}'), '$' COLUMNS (
+            command_domain VARCHAR(8) PATH '$.domain',
+            command_op VARCHAR(48) PATH '$.op',
+            tier_name VARCHAR(128) PATH '$.params.values.tierName',
+            includes_top_tier INT EXISTS PATH '$.params.values.probabilities."usdt-500"'
+        )) c
         WHERE t.source_domain='H' AND t.status='approved' AND t.is_deleted=0
-          AND JSON_CONTAINS(IF(JSON_VALID(t.command_json), t.command_json, '{}'),
-                            '{"domain":"H","op":"h4_wheel_tier_update","params":{"values":{"tierName":"usdt-500"}}}')
+          AND c.command_domain='H'
+          AND ((c.command_op IN ('h4_wheel_tier_create','h4_wheel_tier_update','h4_wheel_tier_delete')
+                AND BINARY c.tier_name='usdt-500')
+               OR (c.command_op='h4_wheel_probabilities_update' AND c.includes_top_tier=1))
    );
 
 -- Match the repaired tier so this note can also be corrected on a later run.
@@ -111,24 +119,10 @@ SELECT d.guard_key,d.guard_label,d.guard_value,d.note,d.sort_order,1,0
    )
  ORDER BY d.sort_order;
 
--- Keep ownership records and operator-defined voucher settings intact.
+-- The fixed wheel voucher is grant-only for every definition with this ID.
 UPDATE nx_growth_voucher
-   SET wheel_only=1, version=version+1
- WHERE BINARY voucher_id='H4-WHEEL-DEVICE-50' AND wheel_only=0
-   AND BINARY voucher_name='Lucky Spin $50 Device Coupon' AND BINARY voucher_type='fixed'
-   AND amount_usd=50 AND percent_value=0 AND min_purchase_usd=50 AND max_discount_usd=50
-   AND JSON_TYPE(applicable_skus)='ARRAY' AND JSON_LENGTH(applicable_skus)=0
-   AND JSON_TYPE(claim_surfaces)='ARRAY' AND JSON_LENGTH(claim_surfaces)=0
-   AND BINARY audience='all' AND start_at=0 AND end_at=0 AND popup_enabled=0
-   AND popup_delay_ms=1300 AND popup_cooldown_hours=24 AND popup_max_per_session=1 AND popup_cadence_enabled=1
-   AND stack_with_trial=0 AND stack_with_others=0 AND splittable=0 AND issuance_limit=0 AND version=1
-   AND BINARY status='active' AND is_deleted=0
-   AND BINARY created_by='migration:h4-wheel' AND BINARY updated_by='migration:h4-wheel'
-   AND NOT EXISTS (
-       SELECT 1 FROM nx_audit_object_lock
-        WHERE target_domain='H' AND target_type='voucher' AND target_id='H4-WHEEL-DEVICE-50'
-          AND is_deleted=0
-   );
+   SET wheel_only=1, updated_at=updated_at
+ WHERE voucher_id='H4-WHEEL-DEVICE-50' AND wheel_only=0;
 
 INSERT INTO nx_growth_voucher
     (voucher_id,voucher_name,voucher_type,amount_usd,percent_value,min_purchase_usd,max_discount_usd,

@@ -8,6 +8,7 @@ import ffdd.opsconsole.growth.dto.GrowthWheelGuardRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelProbabilityBatchRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelTierRequest;
 import ffdd.opsconsole.growth.dto.H4EventRuleRequest;
+import ffdd.opsconsole.growth.mapper.AppGrowthWheelMapper;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
@@ -49,6 +50,7 @@ public class H4GrowthApproval {
     private final H4EventRuleService rules;
     private final GenesisRaffleService raffles;
     private final OpsGrowthService growth;
+    private final AppGrowthWheelMapper wheelMapper;
     private final OpsGrowthCommandBoundary commands;
     private final H4EventRuleRepository db;
     private final ObjectMapper json;
@@ -209,9 +211,8 @@ public class H4GrowthApproval {
             return ApiResult.fail(403, "H4_APPROVAL_FORBIDDEN");
         if (RULE.equals(command.op()) && "evt-spring-spin".equals(target.id())) {
             if (!growth.lockH4Event()) throw new BizException(409, "H4_EVENT_MUTEX_UNAVAILABLE");
-            if (!growth.lockH4WheelProbabilityTotalIsValid()) {
-                return ApiResult.fail(409, "WHEEL_PROBABILITY_TOTAL_MUST_EQUAL_100");
-            }
+            growth.lockH4Wheel();
+            AppGrowthWheelService.validateTiers(wheelMapper.lockActiveTiers());
         }
         if (!state(target, command.op()).equals(command.params().get("expectedState"))) return ApiResult.fail(409, "H4_CONFIG_STALE");
         if (command.params().get("eventCopy") instanceof Map<?, ?> copy

@@ -221,7 +221,7 @@ public class AppGrowthWheelService {
                 "source", "server", "sourceEnvironment", "PRODUCTION"));
     }
 
-    private void validateTiers(List<WheelTier> tiers) {
+    static void validateTiers(List<WheelTier> tiers) {
         if (tiers == null || tiers.size() < 2 || tiers.size() > 12) {
             throw new BizException(409, "WHEEL_TIER_COUNT_INVALID");
         }

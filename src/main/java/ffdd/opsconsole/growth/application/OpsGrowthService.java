@@ -2270,6 +2270,13 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             if (!"points".equalsIgnoreCase(String.valueOf(before.get("kind")))) {
                 return validation("WHEEL_TIER_RETIRE_ONLY_POINTS");
             }
+            if (questEventMapper.get().hasOpenWheelEvent()) {
+                BigDecimal retiringProbability = parseDecimal(String.valueOf(before.get("prob")), BigDecimal.ZERO);
+                BigDecimal nextTotal = questEventMapper.get().activeWheelProbabilitySum().subtract(retiringProbability);
+                if (nextTotal.compareTo(new BigDecimal("100")) != 0) {
+                    return validation("WHEEL_PROBABILITY_TOTAL_MUST_EQUAL_100");
+                }
+            }
             if (questEventMapper.get().retirePointsWheelTier(name) != 1) {
                 return validation("WHEEL_TIER_NOT_FOUND");
             }
@@ -4168,21 +4175,16 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     }
 
     List<Map<String, Object>> lockH4WheelPool() {
-        GrowthQuestEventMapper mapper = questEventMapper.orElseThrow(
-                () -> new BizException(422, "GROWTH_BUSINESS_TABLE_UNAVAILABLE"));
-        if (!"H4_WHEEL".equals(mapper.lockWheelMutation())) {
-            throw new BizException(409, "H4_WHEEL_MUTEX_UNAVAILABLE");
-        }
-        return mapper.wheelTiers();
+        lockH4Wheel();
+        return questEventMapper.get().wheelTiers();
     }
 
-    boolean lockH4WheelProbabilityTotalIsValid() {
+    void lockH4Wheel() {
         GrowthQuestEventMapper mapper = questEventMapper.orElseThrow(
                 () -> new BizException(422, "GROWTH_BUSINESS_TABLE_UNAVAILABLE"));
         if (!"H4_WHEEL".equals(mapper.lockWheelMutation())) {
             throw new BizException(409, "H4_WHEEL_MUTEX_UNAVAILABLE");
         }
-        return mapper.activeWheelProbabilitySum().compareTo(new BigDecimal("100")) == 0;
     }
 
     private boolean wheelSignatureMatches(String expected, List<Map<String, Object>> tiers, boolean approved) {
