@@ -42,6 +42,7 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
             """;
 
     @Insert("""
+            <script>
             INSERT INTO nx_event_outbox (
               event_id, aggregate_type, aggregate_id, event_type,
               event_name, family_key, event_ts, phase, account_age_months, cohort,
@@ -51,8 +52,17 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
               #{eventId}, #{aggregateType}, #{aggregateId}, #{eventType},
               #{eventName}, #{familyKey}, NOW(3), #{phase}, #{accountAgeMonths}, #{cohort},
               #{serverAuthoritative}, #{schemaRevision}, #{schemaRegistered}, #{analyticsEvent}, #{payload},
-              'PENDING', 0, NOW(), NOW(), NOW(), 0
+              <choose>
+                <when test='eventType == "admin.trust_content_published"'>
+                  'RECORDED', 0, NULL
+                </when>
+                <otherwise>
+                  'PENDING', 0, NOW()
+                </otherwise>
+              </choose>,
+              NOW(), NOW(), 0
             )
+            </script>
             """)
     int insertEvent(@Param("eventId") String eventId, @Param("aggregateType") String aggregateType,
                     @Param("aggregateId") String aggregateId, @Param("eventType") String eventType,

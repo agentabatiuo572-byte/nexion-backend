@@ -421,6 +421,7 @@ public class EventOutboxService {
             "admin.tradein_action_executed",
             "admin.tradein_config_changed",
             "admin.trust_content_archived",
+            "admin.trust_content_published",
             "auth.development_passkey_login",
             "auth.oauth_sandbox_account_created",
             "auth.oauth_sandbox_login",
