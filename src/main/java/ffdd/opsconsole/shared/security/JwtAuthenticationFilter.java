@@ -1,6 +1,5 @@
 package ffdd.opsconsole.shared.security;
 
-import ffdd.opsconsole.shared.config.BusinessCalendar;
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
 import ffdd.opsconsole.user.infrastructure.UserEntity;
 import ffdd.opsconsole.user.mapper.UserOpsMapper;
@@ -12,14 +11,13 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
-import org.springframework.dao.DataAccessException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.core.env.Environment;
 import org.springframework.security.authentication.BadCredentialsException;
@@ -46,6 +44,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final PlatformConfigFacade configFacade;
     private final UserAccountBlocklistVerifier blocklist;
     private final UserSessionRevocationService revocations;
+    private UserDailyActivityService dailyActivity;
+
+    @Autowired
+    void setDailyActivity(UserDailyActivityService dailyActivity) {
+        this.dailyActivity = dailyActivity;
+    }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
@@ -273,12 +277,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     }
 
     private void recordDailyActivity(UserEntity user) {
-        if (Integer.valueOf(1).equals(user.getSandbox())) return;
-        LocalDateTime seenAt = LocalDateTime.now(BusinessCalendar.STORAGE_ZONE);
+        if (dailyActivity == null || Integer.valueOf(1).equals(user.getSandbox())) return;
         try {
-            authSessionMapper.recordDailyUserActivity(BusinessCalendar.legacy().dateAtStorage(seenAt),
-                    user.getId(), seenAt);
-        } catch (DataAccessException failure) {
+            dailyActivity.record(user);
+        } catch (RuntimeException failure) {
             logger.warn("Daily App activity write failed: " + failure.getClass().getSimpleName());
         }
     }

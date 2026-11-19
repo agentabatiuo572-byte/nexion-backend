@@ -138,8 +138,7 @@ public class AppUserRegistrationService {
         if (advisorCode(code)==null) createTeamGraphProjection(userId, 0);
         userMapper.resetLoginFailures(userId);
         accountCreator.ensureWallet(birth);
-        String eventId = outboxService.publish("USER_REGISTRATION", String.valueOf(userId),
-                "auth.register_completed", Map.of("userId", userId, "locale", "en"));
+        String eventId = publishRegistrationEvent(userId, "en");
         accountCreator.complete(birth, eventId);
         if (sponsor != null) outboxService.publish("USER_REFERRAL", String.valueOf(userId),
                 "referral.bound", Map.of("userId", userId, "sponsorUserId", sponsor.getId(),
@@ -420,11 +419,7 @@ public class AppUserRegistrationService {
         if (advisorCode(invitationCode)==null) createTeamGraphProjection(user.getId(), sandbox);
         userMapper.resetLoginFailures(user.getId());
         accountCreator.ensureWallet(birth);
-        String registrationEventId = outboxService.publish(
-                "USER_REGISTRATION",
-                String.valueOf(user.getId()),
-                "auth.register_completed",
-                Map.of("userId", user.getId(), "locale", InterfaceLanguages.baseCode(user.getLanguage())));
+        String registrationEventId = publishRegistrationEvent(user.getId(), InterfaceLanguages.baseCode(user.getLanguage()));
         accountCreator.complete(birth, registrationEventId);
         if (sponsor != null) {
             outboxService.publish(
@@ -439,6 +434,12 @@ public class AppUserRegistrationService {
         ApiResult<UserLoginResponse> session = authService.issueRegisteredSession(user, clientAddress, context);
         if (session.getData()==null || session.getCode()!=0) throw new BizException(session.getCode(),session.getMessage());
         return ApiResult.ok(session.getData().withRegistrationReceipt(receipt));
+    }
+
+    private String publishRegistrationEvent(long userId, String locale) {
+        String phase = configFacade.activeValue("growth.phase.current").orElse("P1");
+        return outboxService.publish("USER_REGISTRATION", String.valueOf(userId), "auth.register_completed",
+                Map.of("userId", userId, "locale", locale, "registration_phase", phase));
     }
 
     private String suppliedCode(String raw) {

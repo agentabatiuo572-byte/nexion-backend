@@ -105,7 +105,7 @@ public class OpsEventCenterService {
                     row("app.dau", "日活跃（关键指标 #2）"),
                     row("daily.checkin", "每日签到"),
                     row("quest.completed", "任务完成"),
-                    row("nova.push_sent / push_clicked", "推送发送与点击（关键指标 #6）")),
+                    row("nova.push_sent / push_clicked", "推送发送与点击")),
             familyDef("risk", "⑤ 风控", "系统检测到的风险信号",
                     "risk.multi_account_flagged · risk.score_updated · auth.login_locked",
                     "全部由系统记录",
@@ -143,7 +143,6 @@ public class OpsEventCenterService {
             new EventKpiFormula(3, "逛商城", "看过商城的人 ÷ 注册数"),
             new EventKpiFormula(4, "下单转化", "完成支付的人 ÷ 看过商城的人"),
             new EventKpiFormula(5, "持有者推广", "发过邀请的设备持有者 ÷ 持有者总数"),
-            new EventKpiFormula(6, "站内通知点击率", "发送后有点击的去重用户数 ÷ 发送的去重用户数；按用户匹配，不是系统推送送达率"),
             new EventKpiFormula(7, "奖励触发", "直接邀请的好友下首单并产生奖励的人数 ÷ 直接邀请总人数"),
             new EventKpiFormula(8, "创世节点售罄天数", "从开售到卖完所用的天数"));
 
@@ -1069,7 +1068,7 @@ public class OpsEventCenterService {
 
     private List<String> guardrails() {
         return List.of(
-                "事件中心今日总量不筛权威标记。L1 允许非权威的商城浏览与站内通知点击；B3 允许非权威的商城浏览，其余按各自查询的权威事件规则",
+                "事件中心今日总量不筛权威标记。L1 允许非权威的商城浏览；B3 允许非权威的商城浏览，其余按各自查询的权威事件规则",
                 "事件名和字段要先登记再使用，字段里不能有明文个人敏感信息",
                 "登记工单不控制 BI 启用；新增登记不自动改写或重新归类历史事件",
                 "B3 按注册、购买、复购、提现阶段查看，支持注册周、阶段和推荐来源筛选；不提供绑卡或锁定计划步骤；Premium、积分系统、UVT v2 仅保留历史数据和到期兑付");
