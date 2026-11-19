@@ -2035,14 +2035,14 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     public ApiResult<Map<String, Object>> e1GenerationGates() {
-        int platformMonth = currentPlatformMonth();
+        GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy);
+        int platformMonth = rhythm.currentMonth() >= 1 ? Math.min(rhythm.currentMonth(), 12) : 0;
         List<DeviceGenerationGateView> gates = catalogRepository.listGenerationGates(false);
         Map<String, String> configValues = e1GateConfigValues(gates);
         List<DevicePhaseView> phases = e1PhaseDefs();
-        GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy);
-        // H1 运营阶段为两页统一权威：阶段目录与当前阶段都以运营阶段为准，
-        // E1 前端不再按月份等分重算。
-        String currentPhase = rhythm.currentPhase();
+        // E1-BE-08: 读回复用写入实际使用的目录解析；H1 原阶段与写入阶段分开返回。
+        String h1CurrentPhase = rhythm.currentPhase();
+        String currentPhase = currentE1PhaseId(rhythm, platformMonth, phases);
         Map<String, Object> h1Rhythm = new LinkedHashMap<>(rhythm.summary());
         List<String> phaseOrder = phases.stream().map(DevicePhaseView::p).toList();
         Map<String, Object> response = new LinkedHashMap<>();
@@ -2063,18 +2063,18 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         response.put("h1PhaseSource", rhythm.summary());
         Map<String, Object> phaseComparison = new LinkedHashMap<>();
         phaseComparison.put("e1CurrentPhase", currentPhase);
-        phaseComparison.put("h1CurrentPhase", rhythm.currentPhase());
-        // E1 阶段目录与 currentPhase 已统一为 H1 运营阶段；此处保留比对字段
-        // 供前端契约兼容，e1CurrentPhase 与 h1CurrentPhase 同源恒为一致。
+        phaseComparison.put("h1CurrentPhase", h1CurrentPhase);
+        // E1 目录项与 H1 原阶段分别返回：e1CurrentPhase 是实际写入/读取共用的目录项，
+        // h1CurrentPhase 保留 H1 运营阶段原值；H1 缺目录项时 e1CurrentPhase 为月份回退结果。
         String e1PhaseToken = normalizeE1PhaseToken(currentPhase);
-        String h1PhaseToken = normalizeE1PhaseToken(rhythm.currentPhase());
+        String h1PhaseToken = normalizeE1PhaseToken(h1CurrentPhase);
         phaseComparison.put("same", java.util.Objects.equals(e1PhaseToken, h1PhaseToken));
         phaseComparison.put("gateSource", "E1_CONFIGURED_RELEASE_PHASE");
         phaseComparison.put("h1PhaseCatalog", GrowthRhythmSnapshot.phaseNames());
         boolean mapped = rhythm.reliable() && h1PhaseToken != null
                 && phaseOrder.stream().map(OpsDeviceService::normalizeE1PhaseToken).anyMatch(h1PhaseToken::equals);
         phaseComparison.put("mappingStatus", mapped ? "EXACT_ID_PRESENT" : "UNMAPPED");
-        phaseComparison.put("mappedH1Phase", mapped ? rhythm.currentPhase() : null);
+        phaseComparison.put("mappedH1Phase", mapped ? h1CurrentPhase : null);
         // E1-BE-07: 写入校验实际使用的阶段与权威口径,PC 可直接对目录显示。
         phaseComparison.put("writePhaseSource", mapped ? "H1_GROWTH_RHYTHM" : "MONTH_PROPORTIONAL_FALLBACK");
         phaseComparison.put("phaseGateAuthority", "phaseCurrent");
@@ -4275,9 +4275,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     private String currentE1PhaseId(int platformMonth, List<DevicePhaseView> phases) {
+        return currentE1PhaseId(GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy), platformMonth, phases);
+    }
+
+    private String currentE1PhaseId(GrowthRhythmSnapshot rhythm, int platformMonth, List<DevicePhaseView> phases) {
         // E1-BE-07: 商品门/归档保护/已达阶段等写入校验与读取回包统一使用 H1 运营阶段;
         // H1 不可靠或未映射到目录时才回退到月份等分。
-        GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy);
         String h1Token = normalizeE1PhaseToken(rhythm.currentPhase());
         if (rhythm.reliable() && h1Token != null && !h1Token.isEmpty()
                 && phases.stream().map(p -> normalizeE1PhaseToken(p.p())).anyMatch(h1Token::equals)) {
