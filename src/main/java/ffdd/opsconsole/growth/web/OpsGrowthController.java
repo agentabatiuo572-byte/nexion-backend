@@ -4,13 +4,16 @@ package ffdd.opsconsole.growth.web;
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
+import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.growth.application.OpsGrowthService;
 import ffdd.opsconsole.growth.application.OpsGrowthCommandBoundary;
 import ffdd.opsconsole.growth.application.GrowthPublicStatsService;
+import ffdd.opsconsole.growth.application.H5GrowthApproval;
 import ffdd.opsconsole.growth.application.WheelDailyUsageService;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthPowerUpUpdateRequest;
+import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneCreateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthQuestEventRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionRequest;
@@ -25,6 +28,8 @@ import ffdd.opsconsole.growth.dto.GrowthWheelGuardRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelProbabilityBatchRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import ffdd.opsconsole.growth.dto.GrowthPublicStatsUpdateRequest;
+import ffdd.opsconsole.platform.application.OpsAuditCenterService;
+import ffdd.opsconsole.platform.dto.AuditCenterOverview.AuditOperationTicket;
 import java.util.Map;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -46,6 +51,8 @@ public class OpsGrowthController {
     private final OpsGrowthCommandBoundary commandBoundary;
     private final GrowthPublicStatsService publicStatsService;
     private final WheelDailyUsageService wheelDailyUsageService;
+    private final OpsAuditCenterService auditCenterService;
+    private final AdminOperatorRoleResolver operatorRoleResolver;
 
     @GetMapping("/quest-events/weekly-region-policy")
     @PreAuthorize("hasAuthority('growth_h3_read')")
@@ -531,6 +538,15 @@ public class OpsGrowthController {
             @RequestBody GrowthEarnMilestoneUpdateRequest request) {
         return commandBoundary.execute("H5", "EARN_MILESTONE_UPDATE", milestoneKey, idempotencyKey, request,
                 () -> growthService.updateEarnMilestone(idempotencyKey, milestoneKey, request));
+    }
+
+    @PostMapping("/earn-milestones")
+    @PreAuthorize("hasAuthority('growth_h5_write')")
+    public ApiResult<AuditOperationTicket> createEarnMilestone(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody GrowthEarnMilestoneCreateRequest request) {
+        return auditCenterService.createProposal(idempotencyKey,
+                H5GrowthApproval.earnMilestoneCreateProposal(request, operatorRoleResolver.resolve()));
     }
 
     @GetMapping("/withdraw-gate")

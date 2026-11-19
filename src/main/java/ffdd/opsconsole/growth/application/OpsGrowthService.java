@@ -19,6 +19,7 @@ import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.facade.StreakPerkBusinessAvailabilityFacade;
 import ffdd.opsconsole.growth.dto.GrowthPowerUpUpdateRequest;
+import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneCreateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthQuestEventRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionRequest;
@@ -59,6 +60,7 @@ import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -3181,6 +3183,33 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     }
 
     @Transactional
+    public ApiResult<Map<String, Object>> executeApprovedEarnMilestoneCreate(
+            String idempotencyKey, GrowthEarnMilestoneCreateRequest request, AuditLockTarget target) {
+        String key = request.milestoneKey();
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(A2ReplayContext.operationId())
+                || !new AuditLockTarget("H", "h5_earn_milestone", key).equals(target)) {
+            return ApiResult.fail(403, "H5_APPROVAL_FORBIDDEN");
+        }
+        var guard = requireCommand(idempotencyKey, request.reason());
+        if (guard != null) return guard;
+        if (questEventMapper.isEmpty()
+                || !"H5_MILESTONE".equals(questEventMapper.get().lockGrowthMutation("H5_MILESTONE"))) {
+            return validation("H5_MILESTONE_MUTEX_UNAVAILABLE");
+        }
+        var mapper = questEventMapper.get();
+        validateEarnMilestoneCreation(mapper, request);
+        requireH5Coverage();
+        mapper.insertEarnMilestoneRule(key, request.label(), request.thresholdUsd(), request.rewardNex(),
+                request.sortOrder().intValueExact());
+        audit("H5_EARN_MILESTONE_CREATED", "EARN_MILESTONE", key, null, Map.of(
+                "key", key, "label", request.label(), "sortOrder", request.sortOrder(),
+                "thresholdUsd", request.thresholdUsd(), "rewardNex", request.rewardNex(),
+                "operationId", A2ReplayContext.operationId(), "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return ApiResult.ok(Map.of("key", key, "source", "nx_earning_milestone_rule"));
+    }
+
+    @Transactional
     public ApiResult<Map<String, Object>> updateEarnMilestone(
             String idempotencyKey,
             String milestoneKey,
@@ -3718,6 +3747,19 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     }
 
     public record H5ConfigReview(AuditLockTarget target, String action, String before, String after) {}
+
+    public ApiResult<H5ConfigReview> previewEarnMilestoneCreateApproval(
+            GrowthEarnMilestoneCreateRequest request, AuditLockTarget target) {
+        var guard = requireCommand("H5_PREVIEW", request.reason());
+        if (guard != null) return ApiResult.fail(guard.getCode(), guard.getMessage());
+        var mapper = questEventMapper.orElseThrow(() -> new BizException(422, "H5_MILESTONE_MUTEX_UNAVAILABLE"));
+        validateEarnMilestoneCreation(mapper, request);
+        requireH5Coverage();
+        return ApiResult.ok(new H5ConfigReview(target, H5GrowthApproval.EARN_CREATE_ACTION,
+                H5GrowthApproval.EARN_CREATE_BEFORE, request.label() + " · 排序 " + request.sortOrder().toPlainString()
+                        + " · 累计收益 " + request.thresholdUsd().toPlainString() + " USDT · 奖励 "
+                        + request.rewardNex().toPlainString() + " UVT"));
+    }
 
     @Transactional
     public ApiResult<H5ConfigReview> previewPowerUpApproval(int powerUpId, GrowthPowerUpUpdateRequest request) {
@@ -6947,6 +6989,21 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             previous = threshold;
         }
         return true;
+    }
+
+    // Approval calls this after taking the same mutex as the H5 update command.
+    private void validateEarnMilestoneCreation(GrowthQuestEventMapper mapper, GrowthEarnMilestoneCreateRequest request) {
+        String key = request.milestoneKey();
+        if (mapper.countReservedEarnMilestoneKey(key) > 0) {
+            throw new BizException(409, "EARN_MILESTONE_KEY_ALREADY_EXISTS");
+        }
+        var rows = new ArrayList<>(mapper.earnMilestones());
+        rows.add(Map.of("key", key, "sortOrder", request.sortOrder(), "threshold", request.thresholdUsd()));
+        rows.sort(Comparator.comparingInt((Map<String, Object> row) -> rowDecimal(row, "sortOrder").intValueExact())
+                .thenComparing(this::earnMilestoneThreshold));
+        if (!earnMilestonesRemainOrdered(rows, key, request.thresholdUsd())) {
+            throw new BizException(422, "EARN_MILESTONE_THRESHOLD_ORDER_INVALID");
+        }
     }
 
     private BigDecimal rowDecimal(Map<String, Object> row, String field) {

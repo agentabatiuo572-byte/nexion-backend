@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneCreateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthPowerUpUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
@@ -7,12 +8,14 @@ import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
+import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.SuperAdminAuthorization;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.List;
 import java.util.Map;
 import java.util.LinkedHashMap;
 import java.util.Set;
@@ -27,6 +30,10 @@ public class H5GrowthApproval {
     public static final String MAKER_AUTHORITY = "growth_h5_write";
     private static final String POWER_UP = "h5_power_up_config";
     private static final String EARN = "h5_earn_milestone";
+    private static final String EARN_CREATE = "h5_earn_milestone_create";
+    static final String EARN_CREATE_ACTION = "新增收益里程碑";
+    static final String EARN_CREATE_BEFORE = "不存在";
+    private static final BigDecimal EARN_AMOUNT_MAX = new BigDecimal("100000000");
     private static final String STREAK = "h5_streak_milestone";
     private final OpsGrowthService growth;
     private final OpsGrowthCommandBoundary commands;
@@ -35,7 +42,30 @@ public class H5GrowthApproval {
 
     public static boolean supports(AuditReplayCommand command) {
         return command != null && "H".equals(command.domain())
-                && (POWER_UP.equals(command.op()) || EARN.equals(command.op()) || STREAK.equals(command.op()));
+                && (POWER_UP.equals(command.op()) || EARN.equals(command.op()) || STREAK.equals(command.op())
+                    || EARN_CREATE.equals(command.op()));
+    }
+
+    public static boolean isEarnMilestoneCreate(AuditReplayCommand command) {
+        return command != null && "H".equals(command.domain()) && EARN_CREATE.equals(command.op());
+    }
+
+    public static AuditOperationProposalRequest earnMilestoneCreateProposal(
+            GrowthEarnMilestoneCreateRequest request, String operatorRole) {
+        if (request == null) throw new BizException(422, "H5_PROPOSAL_INVALID");
+        String key = request.milestoneKey();
+        if (key == null || !key.matches("[A-Za-z0-9._:-]{1,64}")) {
+            throw new BizException(422, "EARN_MILESTONE_KEY_INVALID");
+        }
+        String label = earnCreateLabel(request.label());
+        int sortOrder = earnCreateSortOrder(request.sortOrder());
+        var threshold = earnCreateAmount(request.thresholdUsd(), BigDecimal.ONE);
+        var reward = earnCreateAmount(request.rewardNex(), BigDecimal.ZERO);
+        var command = new AuditReplayCommand("H", EARN_CREATE, Map.of("values", Map.of(
+                "milestoneKey", key, "label", label, "sortOrder", sortOrder,
+                "thresholdUsd", threshold.toPlainString(), "rewardNex", reward.toPlainString())));
+        return new AuditOperationProposalRequest(EARN_CREATE_ACTION, key, EARN_CREATE_BEFORE, null,
+                null, operatorRole, "fund", true, false, null, request.reason(), "H5", command, target(command), List.of());
     }
 
     public boolean canPropose(AuditReplayCommand command) {
@@ -82,6 +112,9 @@ public class H5GrowthApproval {
         if (!(key instanceof String text) || text.isBlank() || !text.equals(text.trim()) || text.length() > 64) {
             throw new BizException(422, "EARN_MILESTONE_KEY_INVALID");
         }
+        if (isEarnMilestoneCreate(command) && !text.matches("[A-Za-z0-9._:-]{1,64}")) {
+            throw new BizException(422, "EARN_MILESTONE_KEY_INVALID");
+        }
         return new AuditLockTarget("H", "h5_earn_milestone", text);
     }
 
@@ -91,6 +124,9 @@ public class H5GrowthApproval {
         }
         if (STREAK.equals(command.op())) {
             return growth.previewStreakMilestoneApproval(integer(values(command).get("milestoneId")), streak(command, reason));
+        }
+        if (isEarnMilestoneCreate(command)) {
+            return growth.previewEarnMilestoneCreateApproval(earnCreate(command, reason), target(command));
         }
         Map<?, ?> values = values(command);
         return growth.previewEarnMilestoneApproval(target(command).id(), earn(command, reason),
@@ -128,6 +164,11 @@ public class H5GrowthApproval {
                     () -> growth.executeApprovedStreakMilestone(context.idempotencyKey(),
                             integer(values(command).get("milestoneId")), request, before, target));
         }
+        if (isEarnMilestoneCreate(command)) {
+            var request = earnCreate(command, reason);
+            return commands.execute("H5", "EARN_MILESTONE_CREATE", target.id(), context.idempotencyKey(), request,
+                    () -> growth.executeApprovedEarnMilestoneCreate(context.idempotencyKey(), request, target));
+        }
         Map<?, ?> values = values(command);
         var request = earn(command, reason);
         return commands.execute("H5", "EARN_MILESTONE_UPDATE", target.id(), context.idempotencyKey(), request,
@@ -140,6 +181,7 @@ public class H5GrowthApproval {
                 || !values.keySet().equals(POWER_UP.equals(command.op())
                     ? Set.of("powerUpId", "day", "note", "expectedDay", "expectedNote")
                     : STREAK.equals(command.op()) ? Set.of("milestoneId", "reward", "expectedReward")
+                    : EARN_CREATE.equals(command.op()) ? Set.of("milestoneKey", "label", "sortOrder", "thresholdUsd", "rewardNex")
                     : Set.of("milestoneKey", "thresholdUsd", "rewardNex", "expectedThresholdUsd", "expectedRewardNex"))) {
             throw new BizException(422, "H5_PROPOSAL_INVALID");
         }
@@ -159,6 +201,43 @@ public class H5GrowthApproval {
         Map<?, ?> values = values(command);
         return new GrowthEarnMilestoneUpdateRequest(decimal(values.get("thresholdUsd")),
                 decimal(values.get("rewardNex")), reason, null);
+    }
+
+    private static GrowthEarnMilestoneCreateRequest earnCreate(AuditReplayCommand command, String reason) {
+        var fields = values(command);
+        if (!(fields.get("label") instanceof String label)
+                || !(fields.get("sortOrder") instanceof Integer sortOrder) || sortOrder < 0) {
+            throw new BizException(422, "H5_PROPOSAL_INVALID");
+        }
+        return new GrowthEarnMilestoneCreateRequest((String) fields.get("milestoneKey"), earnCreateLabel(label),
+                earnCreateAmount(decimal(fields.get("thresholdUsd")), BigDecimal.ONE),
+                earnCreateAmount(decimal(fields.get("rewardNex")), BigDecimal.ZERO), BigDecimal.valueOf(sortOrder), reason);
+    }
+
+    private static String earnCreateLabel(String label) {
+        String normalized = label == null ? "" : label.strip();
+        if (normalized.isBlank() || normalized.codePointCount(0, normalized.length()) > 128) {
+            throw new BizException(422, "EARN_MILESTONE_LABEL_INVALID");
+        }
+        return normalized;
+    }
+
+    private static int earnCreateSortOrder(BigDecimal sortOrder) {
+        if (sortOrder == null || sortOrder.signum() < 0 || sortOrder.compareTo(BigDecimal.valueOf(Integer.MAX_VALUE)) > 0
+                || sortOrder.stripTrailingZeros().scale() > 0) {
+            throw new BizException(422, "EARN_MILESTONE_SORT_ORDER_INVALID");
+        }
+        return sortOrder.intValueExact();
+    }
+
+    private static BigDecimal earnCreateAmount(BigDecimal amount, BigDecimal min) {
+        if (amount == null) throw new BizException(422, "EARN_MILESTONE_AMOUNTS_REQUIRED");
+        BigDecimal normalized = amount.stripTrailingZeros();
+        if (normalized.scale() > 6) throw new BizException(422, "EARN_MILESTONE_AMOUNT_PRECISION_INVALID");
+        if (normalized.compareTo(min) < 0 || normalized.compareTo(EARN_AMOUNT_MAX) > 0) {
+            throw new BizException(422, "EARN_MILESTONE_AMOUNT_OUT_OF_RANGE");
+        }
+        return normalized;
     }
 
     private static GrowthConfigUpdateRequest streak(AuditReplayCommand command, String reason) {
