@@ -2595,6 +2595,8 @@ public class AuditReplayBusinessPermissionGuard {
                     summary.put("en", item.en());
                     summary.put("revision", item.revision());
                     summary.put("contentHash", item.contentHash());
+                    // Freeze the previous version's own total-body translations; never derive them from the current release.
+                    summary.put("translations", item.translations() == null ? java.util.Map.of() : item.translations());
                     summary.put("chapters", chapters);
                     return summary;
                 }).orElse(null);
