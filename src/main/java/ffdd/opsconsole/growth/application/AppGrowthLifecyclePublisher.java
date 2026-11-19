@@ -58,7 +58,7 @@ public class AppGrowthLifecyclePublisher {
             String productNo,
             UserAttribution attribution) {
         if (redemption == null || !redemption.applied()) return;
-        if (mapper.markVoucherUsed(redemption.grantId(), userId, orderNo) != 1) {
+        if (mapper.markVoucherUsed(redemption.grantId(), userId, orderNo, redemption.discountUsdt()) != 1) {
             throw new BizException(409, "VOUCHER_REDEMPTION_CONFLICT");
         }
         Map<String, Object> auditDetail = linked(

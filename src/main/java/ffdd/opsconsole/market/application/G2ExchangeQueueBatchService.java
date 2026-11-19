@@ -25,6 +25,7 @@ public class G2ExchangeQueueBatchService {
     private static final String EXCHANGE_KILL = "killswitch.exchange";
     private static final String EXCHANGE_KILL_LEGACY = "emergency.killswitch.exchange";
     private static final String EXCHANGE_EXECUTION_MUTEX = "G2_EXCHANGE_EXECUTION";
+    private static final String EXCHANGE_DISCLOSURE_GATE = "disclosure.gate.exchange";
     private final AppExchangeMapper mapper;
     private final PlatformConfigFacade config;
     private final EventOutboxService outbox;
@@ -42,6 +43,9 @@ public class G2ExchangeQueueBatchService {
         if (!swapEnabled()) {
             throw new BizException(409,"EXCHANGE_SWAP_PAUSED");
         }
+        if (disclosureGateActive()) {
+            throw new BizException(409,"EXCHANGE_DISCLOSURE_GATE_CLOSED");
+        }
         BigDecimal price = mapper.currentPrice();
         if (price == null || price.compareTo(BigDecimal.ZERO) <= 0) throw new BizException(503,"G3_PRICE_UNAVAILABLE");
         BigDecimal platformUsed = nz(mapper.platformTodayUsdt());
@@ -52,6 +56,10 @@ public class G2ExchangeQueueBatchService {
         for (AppExchangeMapper.QueuedRow row : rows) {
             if (!swapEnabled()) {
                 skipped.add(item(row.exchangeNo(),"SKIPPED","QUEUED","EXCHANGE_SWAP_PAUSED","兑换已熔断，本单仍在队列"));
+                continue;
+            }
+            if (disclosureGateActive()) {
+                skipped.add(item(row.exchangeNo(),"SKIPPED","QUEUED","EXCHANGE_DISCLOSURE_GATE_CLOSED","I5 披露闸门关闭，本单仍在队列"));
                 continue;
             }
             if (mapper.lockActiveUserNo(row.userId()) == null) {
@@ -134,6 +142,21 @@ public class G2ExchangeQueueBatchService {
     private BigDecimal nz(BigDecimal v){ return v==null?BigDecimal.ZERO:v; }
     private BigDecimal money(BigDecimal v){ return nz(v).setScale(6,RoundingMode.HALF_UP); }
     private String phase(String v){ String p=v==null?"P1":v.trim().toUpperCase(Locale.ROOT); return p.matches("P[1-6]")?p:"P1"; }
+    private boolean disclosureGateActive() {
+        return config.activeValue(EXCHANGE_DISCLOSURE_GATE)
+                .or(() -> java.util.Optional.ofNullable(mapper.emergencyValue(EXCHANGE_DISCLOSURE_GATE)))
+                .map(this::parseGateActive)
+                .orElse(false);
+    }
+
+    private boolean parseGateActive(String raw) {
+        String value = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
+        return switch (value) {
+            case "enabled", "enable", "on", "true", "1", "blocked", "required" -> true;
+            default -> false;
+        };
+    }
+
     private boolean swapEnabled() {
         return KillSwitchState.enabled(java.util.Optional.ofNullable(mapper.emergencyValue(EXCHANGE_KILL)),
                 java.util.Optional.ofNullable(mapper.emergencyValue(EXCHANGE_KILL_LEGACY)));

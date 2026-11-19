@@ -45,7 +45,7 @@ public interface AppGrowthLifecycleMapper {
 
     @Update("""
             UPDATE nx_growth_voucher_grant
-               SET status = 'USED', used_order_no = #{orderNo}, used_at = NOW(), updated_at = NOW()
+               SET status = 'USED', used_order_no = #{orderNo}, used_at = NOW(), redeemed_amount_usdt = #{discountUsdt}, updated_at = NOW()
              WHERE grant_id = #{grantId}
                AND user_id = #{userId}
                AND status = 'AVAILABLE'
@@ -54,7 +54,8 @@ public interface AppGrowthLifecycleMapper {
     int markVoucherUsed(
             @Param("grantId") String grantId,
             @Param("userId") Long userId,
-            @Param("orderNo") String orderNo);
+            @Param("orderNo") String orderNo,
+            @Param("discountUsdt") java.math.BigDecimal discountUsdt);
 
     record VoucherRedemptionRow(
             String grantId,

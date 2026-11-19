@@ -27,6 +27,7 @@ public interface GrowthVoucherGrantMapper {
                 reason VARCHAR(200) NOT NULL,
                 granted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 used_at DATETIME NULL,
+                redeemed_amount_usdt DECIMAL(18,6) NULL,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 is_deleted TINYINT(1) NOT NULL DEFAULT 0,

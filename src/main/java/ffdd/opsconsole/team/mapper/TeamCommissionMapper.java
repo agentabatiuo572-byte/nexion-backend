@@ -1819,9 +1819,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
      * 幂等/并发安全:该行在本次 payout 事务内 FOR UPDATE,后续补发/再次冲正都以同一行状态为准。
      */
     @Select("""
-            SELECT g.status, COALESCE(v.amount_usd, 0) AS amountUsd
+            SELECT g.status, g.source_id AS sourceId, g.redeemed_amount_usdt AS redeemedAmountUsd
               FROM nx_growth_voucher_grant g
-              JOIN nx_growth_voucher v ON v.voucher_id = g.voucher_id AND v.is_deleted = 0
              WHERE g.user_id = #{userId}
                AND g.voucher_id = #{voucherId}
                AND g.source_type = 'VRANK_REWARD'
@@ -1833,6 +1832,23 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     Map<String, Object> lockVrankVoucherGrant(@Param("userId") Long userId,
                                               @Param("voucherId") String voucherId,
                                               @Param("sourceId") String sourceId);
+
+    /** 冲正定位本轮发放:锁定该用户该券下最新的 VRANK_REWARD 发放记录(原始或补发)。 */
+    @Select("""
+            SELECT g.status, g.source_id AS sourceId, g.redeemed_amount_usdt AS redeemedAmountUsd
+              FROM nx_growth_voucher_grant g
+             WHERE g.user_id = #{userId}
+               AND g.voucher_id = #{voucherId}
+               AND g.source_type = 'VRANK_REWARD'
+               AND g.source_id LIKE CONCAT(#{sourcePrefix}, '%')
+               AND g.is_deleted = 0
+             ORDER BY g.granted_at DESC, g.id DESC
+             LIMIT 1
+             FOR UPDATE
+            """)
+    Map<String, Object> lockLatestVrankVoucherGrant(@Param("userId") Long userId,
+                                                   @Param("voucherId") String voucherId,
+                                                   @Param("sourcePrefix") String sourcePrefix);
 
     /** 未使用的券直接作废(真实收回);已用券不动状态,由上层扣钱包余额。 */
     @Update("""

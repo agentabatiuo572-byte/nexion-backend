@@ -327,6 +327,11 @@ public interface TeamCommissionRepository {
         return null;
     }
 
+    /** F1 券冲正:锁定该用户该券下最新一轮 VRANK_REWARD 发放记录(未实现时返回 null)。 */
+    default Map<String, Object> lockLatestVrankVoucherGrant(Long userId, String voucherId, String sourcePrefix) {
+        return null;
+    }
+
     /** F1 券冲正:未使用的券直接作废,返回受影响行数。 */
     default int revokeVrankAvailableGrant(Long userId, String voucherId, String sourceId) {
         return 0;

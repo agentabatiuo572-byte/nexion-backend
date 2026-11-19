@@ -1,5 +1,7 @@
 package ffdd.opsconsole.team.application;
 
+import ffdd.opsconsole.growth.facade.VoucherGrantFacade;
+
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -4779,8 +4781,12 @@ public class OpsTeamService implements AuditReplayable {
         }
         if ("voucher".equals(rewardType) && userId != null
                 && StringUtils.hasText(textValue(original, "voucherId", ""))) {
-            vRankRewardDispatcher.reissueVoucherReward(userId, rankCode,
-                    textValue(original, "voucherId", ""), payoutId.trim(), operator);
+            VoucherGrantFacade.VoucherGrantResult grantResult = vRankRewardDispatcher.reissueVoucherReward(userId, rankCode,
+                    textValue(original, "voucherId", ""), payoutId.trim(), idempotencyKey.trim(), operator);
+            if (grantResult == null || !"AVAILABLE".equalsIgnoreCase(String.valueOf(grantResult.status()))) {
+                throw new IllegalStateException("VOUCHER_REISSUE_GRANT_NOT_AVAILABLE: status="
+                        + (grantResult == null ? "none" : grantResult.status()));
+            }
         }
         boolean updated = commissionRepository.updateRewardPayoutStatus(
                 payoutId.trim(), "REISSUED", operator, "[REISSUE] " + reason);
@@ -4939,21 +4945,12 @@ public class OpsTeamService implements AuditReplayable {
      */
     private void reverseVoucherReward(Long userId, String rankCode, String voucherId, String payoutId,
                                       Boolean usedVoucherClawback) {
-        String originalSourceId = userId + ":" + rankCode + ":voucher";
-        String reissueSourceId = userId + ":" + rankCode + ":voucher:reissue:" + payoutId;
-        Map<String, Object> grant = null;
-        String sourceId = null;
-        for (String candidate : List.of(reissueSourceId, originalSourceId)) {
-            Map<String, Object> row = commissionRepository.lockVrankVoucherGrant(userId, voucherId, candidate);
-            if (row != null && !row.isEmpty()) {
-                grant = row;
-                sourceId = candidate;
-                break;
-            }
-        }
+        String sourcePrefix = userId + ":" + rankCode + ":voucher";
+        Map<String, Object> grant = commissionRepository.lockLatestVrankVoucherGrant(userId, voucherId, sourcePrefix);
         if (grant == null || grant.isEmpty()) {
             return;
         }
+        String sourceId = String.valueOf(grant.getOrDefault("sourceId", ""));
         String status = String.valueOf(grant.getOrDefault("status", "")).toUpperCase(Locale.ROOT);
         if ("AVAILABLE".equals(status)) {
             commissionRepository.revokeVrankAvailableGrant(userId, voucherId, sourceId);
@@ -4963,10 +4960,17 @@ public class OpsTeamService implements AuditReplayable {
             if (usedVoucherClawback != null && !usedVoucherClawback) {
                 return;
             }
-            BigDecimal amountUsd = decimalValue(grant.get("amountUsd"), BigDecimal.ZERO);
+            BigDecimal amountUsd = decimalValue(grant.get("redeemedAmountUsd"), BigDecimal.ZERO);
             if (amountUsd.compareTo(BigDecimal.ZERO) > 0) {
-                commissionRepository.lockVrankWalletUsdt(userId);
-                commissionRepository.debitVrankWalletUsdt(userId, amountUsd);
+                if (commissionRepository.lockVrankWalletUsdt(userId) == null) {
+                    throw new IllegalStateException("VRANK_WALLET_NOT_FOUND");
+                }
+                if (commissionRepository.debitVrankWalletUsdt(userId, amountUsd) != 1) {
+                    throw new IllegalStateException("VRANK_WALLET_DEBIT_CONFLICT");
+                }
+                ledgerPostingFacade.postLedgerEntry("F1-VRANKREWARD-REVERSE-" + payoutId.trim(), userId,
+                        "VRANK_REWARD_PAYOUT_REVERSED", "USDT", "OUT", amountUsd, "SUCCESS",
+                        "F1 V-Rank voucher clawback | rank=" + rankCode);
             }
         }
     }

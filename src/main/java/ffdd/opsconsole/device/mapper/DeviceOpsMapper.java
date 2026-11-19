@@ -430,8 +430,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
              WHERE d.user_id = #{userId} AND d.is_deleted = 0
                AND """ + USER_PAUSE_CANDIDATE + """
             ON DUPLICATE KEY UPDATE is_deleted = 0,
-                paused_reason = IF(UPPER(TRIM(r.paused_reason)) IN ('PHONE_OFFLINE','PHONE_LOW_BATTERY'),
-                                   r.paused_reason, VALUES(paused_reason)),
+                paused_reason = VALUES(paused_reason),
                 updated_at = NOW()
             """)
     int pauseDevicesByUser(@Param("userId") Long userId, @Param("reason") String reason,

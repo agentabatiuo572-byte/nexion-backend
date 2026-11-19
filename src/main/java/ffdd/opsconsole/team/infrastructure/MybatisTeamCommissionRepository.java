@@ -571,6 +571,11 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     }
 
     @Override
+    public Map<String, Object> lockLatestVrankVoucherGrant(Long userId, String voucherId, String sourcePrefix) {
+        return mapper.lockLatestVrankVoucherGrant(userId, voucherId, sourcePrefix);
+    }
+
+    @Override
     public int revokeVrankAvailableGrant(Long userId, String voucherId, String sourceId) {
         return mapper.revokeVrankAvailableGrant(userId, voucherId, sourceId);
     }
