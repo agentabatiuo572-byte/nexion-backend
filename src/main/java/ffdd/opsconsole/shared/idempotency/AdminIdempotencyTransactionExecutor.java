@@ -290,10 +290,10 @@ public class AdminIdempotencyTransactionExecutor {
                 return Claim.replayed(readJson(record.getResponseJson(), responseType));
             }
         }
-        if (m3ConversationSendScope(record.getScope()) && STATUS_FAILED.equals(record.getStatus())
+        if (conversationSendScope(record.getScope()) && STATUS_FAILED.equals(record.getStatus())
                 && StringUtils.hasText(record.getResponseJson())) {
             if (!requestHash.equals(record.getRequestHash())) throw conflict("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
-            // An M3 conversation send that was rejected before any message write must never execute again under the same key.
+            // A conversation send that was rejected before any message write must never execute again under the same key.
             return Claim.replayed(readJson(record.getResponseJson(), responseType));
         }
         if ("A2_COMMAND".equals(record.getScope()) && STATUS_FAILED.equals(record.getStatus())
@@ -388,9 +388,10 @@ public class AdminIdempotencyTransactionExecutor {
         return !("A1_PERMISSION_REGISTER".equals(scope) || scope.startsWith("A7_MENU_"));
     }
 
-    private static boolean m3ConversationSendScope(String scope) {
+    private static boolean conversationSendScope(String scope) {
         return scope != null && (scope.startsWith("M3_CONVERSATION_REPLY:")
-                || scope.startsWith("M3_CONVERSATION_INITIATE:"));
+                || scope.startsWith("M3_CONVERSATION_INITIATE:")
+                || scope.startsWith("APP_CONVERSATION_REPLY:"));
     }
 
 
