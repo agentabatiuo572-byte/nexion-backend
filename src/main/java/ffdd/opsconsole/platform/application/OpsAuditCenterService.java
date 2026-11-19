@@ -1763,6 +1763,7 @@ public class OpsAuditCenterService {
                 row.getReason(),
                 status(row.getStatus()), phoneCalibrationProposal(command),
                 OpsKillSwitchService.RESTORE_OPERATION.equals(metadata.operationCode()) && isTrue(row.getAmplifies())
+                        || H5GrowthApproval.isEarnMilestoneCreate(command)
                         || command != null && "K".equals(command.domain())
                             && ("k1_cluster_release".equals(command.op()) || "k1_cluster_cleared".equals(command.op()))
                         || ffdd.opsconsole.team.application.AmbassadorMaterialService.isProposal(command)
