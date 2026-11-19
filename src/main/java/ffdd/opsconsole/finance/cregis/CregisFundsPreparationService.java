@@ -21,8 +21,6 @@ import org.springframework.stereotype.Service;
 @Service
 @RequiredArgsConstructor
 public class CregisFundsPreparationService {
-    static final String PLATFORM = "0x0fe784237f21e7b7d74082cb265d7b4e1c91fdad";
-    static final String COUNTERPARTY = "0x43e22c774baae7543b45d365050059d5fcef7e97";
     private final CregisProperties properties;
     private final CregisFundsPreparationMapper db;
     private final CregisExceptionAdminGuard admins;
@@ -185,14 +183,8 @@ public class CregisFundsPreparationService {
     }
 
     private Map<String,Object> configuration(CregisNetwork network) {
-        if (network == CregisNetwork.BEP20) {
-            var row = db.config(project());
-            if (row == null || !PLATFORM.equals(row.get("platformAddress")) || !COUNTERPARTY.equals(row.get("counterpartyAddress"))
-                    || !"BSC".equals(row.get("network")) || !"USDT".equals(row.get("asset")))
-                throw new BizException(503,"CREGIS_PREPARATION_CONFIGURATION_REQUIRED");
-            return row;
-        }
-        if (!properties.autoForwardAddressesConfigured(network))
+        if (!properties.autoForwardAddressesConfigured(network) || network == CregisNetwork.BEP20
+                && !CregisFundsConfiguration.matchesBep20(properties, db.config(project())))
             throw new BizException(503,"CREGIS_PREPARATION_CONFIGURATION_REQUIRED");
         var row = new LinkedHashMap<String,Object>();
         row.put("platformAddress", network.normalizeAddress(properties.autoForwardPlatform(network)));

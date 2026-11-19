@@ -17,6 +17,11 @@ public interface CregisFundsPreparationMapper extends BaseMapper<Object> {
             + "FROM nx_cregis_funds_preparation_config WHERE project_id=#{project}")
     Map<String,Object> config(long project);
 
+    @Insert("INSERT INTO nx_cregis_funds_preparation_config(project_id,platform_address,counterparty_address,network,asset) "
+            + "VALUES(#{project},#{platform},#{counterparty},'BSC','USDT') ON DUPLICATE KEY UPDATE project_id=project_id")
+    void installBep20Config(@Param("project") long project, @Param("platform") String platform,
+                            @Param("counterparty") String counterparty);
+
     @Select("SELECT address,CAST(user_id AS CHAR) userId FROM nx_cregis_deposit_address "
             + "WHERE project_id=#{project} AND chain_id=#{chainId} AND state='READY' AND user_id IS NOT NULL ORDER BY id LIMIT 60")
     List<Map<String,Object>> sources(@Param("project") long project,@Param("chainId") String chainId);
