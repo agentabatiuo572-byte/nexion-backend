@@ -52,6 +52,8 @@ public class PurchasePaymentService {
     private static final Set<String> KINDS=Set.of("ORDER_PAY","TRIAL_CONVERT","TRADE_IN","CAPACITY_REPLACE","CAPACITY_KEEP");
     private Instant now(){return clock.instant();}
     private static final String SELECT="SELECT * FROM nx_purchase_payment_intent WHERE intent_no=?";
+    /** 仍未终结、可能占着本人订单付款的进行中状态;报价/建单/超时与按订单只读找回共用同一谓词。 */
+    private static final String IN_PROGRESS="p.status NOT IN ('DELIVERED','EXPIRED')";
 
     private <T> T tx(java.util.function.Supplier<T> work){
         var tx=new TransactionTemplate(transactions);tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
@@ -150,7 +152,7 @@ public class PurchasePaymentService {
     }
     private List<Map<String,Object>> activeIntents(Object owner,Object kind,String payload,String excluding){
         // Resolve legacy aliases with the actual order column's collation, not JSON/string equality.
-        return db.rows("SELECT p.intent_no,p.kind,p.status,p.reason,p.confirmed_at,p.receipt_json FROM nx_purchase_payment_intent p WHERE p.user_id=? AND p.kind=? AND p.intent_no<>? AND p.status NOT IN ('DELIVERED','EXPIRED') AND ((p.kind='ORDER_PAY' AND EXISTS(SELECT 1 FROM nx_order o WHERE o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) AND o.order_no=?)) OR (p.kind<>'ORDER_PAY' AND p.payload_json=CAST(? AS JSON)))",owner,kind,excluding,text(parse(payload).get("orderNo")),payload);
+        return db.rows("SELECT p.intent_no,p.kind,p.status,p.reason,p.confirmed_at,p.receipt_json FROM nx_purchase_payment_intent p WHERE p.user_id=? AND p.kind=? AND p.intent_no<>? AND "+IN_PROGRESS+" AND ((p.kind='ORDER_PAY' AND EXISTS(SELECT 1 FROM nx_order o WHERE o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) AND o.order_no=?)) OR (p.kind<>'ORDER_PAY' AND p.payload_json=CAST(? AS JSON)))",owner,kind,excluding,text(parse(payload).get("orderNo")),payload);
     }
     private Instant deadline(String kind,Map<String,Object> payload,Instant pricingAt){
         if(!"ORDER_PAY".equals(kind))return pricingAt.plusSeconds(1800);
@@ -289,6 +291,25 @@ public class PurchasePaymentService {
     public Map<String,Object> lookup(long owner,String kind,String key){
         var row=db.one("SELECT * FROM nx_purchase_payment_intent WHERE user_id=? AND kind=? AND command_key=?",owner,kind,key);
         if(row==null)throw new BizException(404,"PURCHASE_PAYMENT_INTENT_NOT_FOUND");return get(owner,text(row.get("intent_no")));
+    }
+    /**
+     * 按本人订单号找回进行中的外部付款单:只读,不改任何付款单/订单状态,也不需要客户端留着原命令键。
+     * 订单归属沿用 ORDER_PAY 报价分支的同一判据(他人订单与不存在的订单一样只有 404);
+     * 进行中沿用 {@link #activeIntents} 的同一谓词 {@link #IN_PROGRESS}。
+     * 回包三态可分:有单回 intentNo + state=IN_PROGRESS;确定没有回 state=NONE 且 intentNo=null;
+     * 读取本身失败(非归属 404 的异常)统一 503 PURCHASE_PAYMENT_LOOKUP_UNAVAILABLE,不与「确定没有」混淆。
+     */
+    public Map<String,Object> activeByOrder(long owner,String orderNo){
+        String no=orderNo==null?"":orderNo.trim();
+        try{
+            if(db.one("SELECT order_no FROM nx_order WHERE order_no=? AND user_id=? AND is_deleted=0",no,owner)==null)
+                throw new BizException(404,"ORDER_NOT_FOUND");
+            var intent=db.one("SELECT p.intent_no FROM nx_purchase_payment_intent p WHERE p.user_id=? AND p.kind='ORDER_PAY' AND "+IN_PROGRESS
+                    +" AND EXISTS(SELECT 1 FROM nx_order o WHERE o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) AND o.order_no=?)"
+                    +" ORDER BY p.created_at DESC,p.intent_no DESC LIMIT 1",owner,no);
+            return values("orderNo",no,"state",intent==null?"NONE":"IN_PROGRESS","intentNo",intent==null?null:intent.get("intent_no"));
+        }catch(BizException refused){throw refused;}
+        catch(RuntimeException unavailable){throw new BizException(503,"PURCHASE_PAYMENT_LOOKUP_UNAVAILABLE");}
     }
     /** Called only after the existing callback verifier accepted the provider signature. */
     public boolean observeHdCallback(HdPayCallbackVerifier.VerifiedCallback callback){
