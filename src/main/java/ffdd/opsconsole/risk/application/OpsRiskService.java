@@ -1026,6 +1026,15 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         OTP_CANONICAL_CONFIG_KEYS.forEach((key, canonicalKey) -> otpInitializationRequired.put(key,
                 !activeOtpSource(riskMapper.otpCanonicalSource(canonicalKey, false))));
         response.put("otpInitializationRequired", otpInitializationRequired);
+        Set<String> activeGiftRowIds = rows.stream()
+                .filter(row -> "gift".equals(row.viewKey()))
+                .map(RiskArbitrageRowView::rowId)
+                .collect(Collectors.toSet());
+        List<Map<String, Object>> giftDenialFacts = riskMapper.retiredGiftDenialFacts().stream()
+                .map(this::k2GiftDenialFact)
+                .filter(fact -> !activeGiftRowIds.contains(String.valueOf(fact.get("rowId"))))
+                .toList();
+        response.put("giftDenialFacts", giftDenialFacts);
         response.put("views", views);
         response.put("sources", List.of(
                 "nx_tradein_application:E3",
@@ -1059,6 +1068,21 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         }).toList();
     }
 
+    private Map<String, Object> k2GiftDenialFact(Map<String, Object> raw) {
+        String rowId = String.valueOf(raw.get("rowId") == null ? "" : raw.get("rowId"));
+        String clusterId = String.valueOf(raw.get("clusterId") == null ? "" : raw.get("clusterId"));
+        Integer blockedCount = k2Integer(raw.get("blockedCount"));
+        Map<String, Object> fact = new LinkedHashMap<>();
+        fact.put("rowId", rowId);
+        fact.put("clusterId", clusterId);
+        fact.put("viewKey", "gift");
+        fact.put("retired", true);
+        fact.put("blockedCount", blockedCount);
+        fact.put("blockedCountAvailable", blockedCount != null);
+        fact.put("blockedCountBasis", "nx_audit_log hot+cold REFERRAL_REWARD_SETTLEMENT_RUN_REJECTED; UNIQUE_CLUSTER detail.rewardIdentity");
+        return fact;
+    }
+
     private Map<String, Map<String, Object>> k2StructuredFacts() {
         Map<String, Map<String, Object>> facts = new LinkedHashMap<>();
         for (Map<String, Object> raw : riskMapper.arbitrageGiftAmounts()) {
@@ -1070,11 +1094,14 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             amounts.add(k2Amount("UVT", k2Decimal(raw.get("nexRaw"))));
             fact.put("amounts", amounts);
             fact.put("settledCount", k2Integer(raw.get("settledCount")));
-            fact.put("blockedCount", null);
-            fact.put("blockedCountAvailable", false);
-            fact.put("blockedCountBasis", "NO_PERSISTED_DENIED_GIFT_FACT");
+            Integer blockedCount = k2Integer(raw.get("blockedCount"));
+            fact.put("blockedCount", blockedCount);
+            fact.put("blockedCountAvailable", blockedCount != null);
+            fact.put("blockedCountBasis", blockedCount == null
+                    ? "NO_PERSISTED_DENIED_GIFT_FACT"
+                    : "nx_audit_log hot+cold REFERRAL_REWARD_SETTLEMENT_RUN_REJECTED; UNIQUE_CLUSTER detail.rewardIdentity");
             fact.put("amountBasis", "nx_referral_reward_settlement.newcomer_usdt/newcomer_nex; SETTLED rows; same cluster membership as gift projection");
-            fact.put("cellMeaning", "SETTLED_GIFTS_WITH_LEGACY_BLOCKED_CELL");
+            fact.put("cellMeaning", "SETTLED_GIFTS_WITH_DENIED_GIFT_EVIDENCE");
             facts.put(rowId, fact);
         }
         for (Map<String, Object> raw : riskMapper.arbitrageBoardAmounts()) {
