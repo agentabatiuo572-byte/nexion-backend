@@ -374,6 +374,9 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         if (read && pathMatcher.match("/api/admin/content/support-workbench/commands/*", path)) {
             return RequiredAuthority.exact("service_m1_read", "service_m3_read", "platform_a1_read");
         }
+        if (HttpMethod.GET.matches(method) && path.equals("/api/admin/config/hosting-centers")) {
+            return RequiredAuthority.exact("device_e1_read");
+        }
         if (HttpMethod.GET.matches(method) && path.equals("/api/admin/config/phone-calibration")) {
             return RequiredAuthority.exact("device_e6_read", "device_e2_read");
         }
