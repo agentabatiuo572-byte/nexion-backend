@@ -118,6 +118,7 @@ public record DeviceOpsView(
                 gpuTempC, gpuPowerW, pausedReason, activeTaskNo, heartbeatAt, null, null, null,
                 null, 0L, userDeviceSlotNo);
     }
+    @org.apache.ibatis.annotations.AutomapConstructor
     public DeviceOpsView(
         Long id,
         Long userId,
@@ -144,6 +145,8 @@ public record DeviceOpsView(
         BigDecimal gpuTempC,
         BigDecimal gpuPowerW,
         String pausedReason,
+        Integer opsPaused,
+        String opsPauseReason,
         String activeTaskNo,
         LocalDateTime heartbeatAt,
         Integer batteryLevel,
@@ -155,7 +158,7 @@ public record DeviceOpsView(
         BigDecimal heartbeatAgeSeconds, String sourceChannel, String simState, String simLastError, LocalDateTime simNextActionAt,
         String simTaskNo, String simTaskName, String simTaskClass,
         LocalDateTime simTaskStartedAt, LocalDateTime simTaskDueAt, String ownershipStatus) {
-        this(id,userId,userNo,nickname,instanceNo,name,productTier,productCode,status,dcLocation,hashrate,dailyUsdt,dailyNex,lastSeenAt,purchasedAt,activatedAt,deactivatedAt,baseRate,currentEfficiency,pendingDeactivate,runtimeStatus,gpuUsage,gpuTempC,gpuPowerW,pausedReason,null,null,activeTaskNo,heartbeatAt,batteryLevel,isCharging,networkReachable,thermalState,activeDevicesForUser,userDeviceSlotNo,heartbeatAgeSeconds,sourceChannel,simState,simLastError,simNextActionAt,simTaskNo,simTaskName,simTaskClass,simTaskStartedAt,simTaskDueAt,null,ownershipStatus);
+        this(id,userId,userNo,nickname,instanceNo,name,productTier,productCode,status,dcLocation,hashrate,dailyUsdt,dailyNex,lastSeenAt,purchasedAt,activatedAt,deactivatedAt,baseRate,currentEfficiency,pendingDeactivate,runtimeStatus,gpuUsage,gpuTempC,gpuPowerW,pausedReason,opsPaused,opsPauseReason,activeTaskNo,heartbeatAt,batteryLevel,isCharging,networkReachable,thermalState,activeDevicesForUser,userDeviceSlotNo,heartbeatAgeSeconds,sourceChannel,simState,simLastError,simNextActionAt,simTaskNo,simTaskName,simTaskClass,simTaskStartedAt,simTaskDueAt,null,ownershipStatus);
     }
 
     public record MonthlyTarget(int cycleIndex,
