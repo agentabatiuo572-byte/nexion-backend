@@ -9,7 +9,7 @@ public record StoreDeviceView(
         String productTier, String productCode, String status, String dcLocation, String hostingLabel,
         String sourceChannel, BigDecimal hashrate, BigDecimal dailyUsdt, BigDecimal dailyNex,
         LocalDateTime purchasedAt, LocalDateTime activatedAt, LocalDateTime deactivatedAt,
-        String baseRate, BigDecimal currentEfficiency, Integer pendingDeactivate, String pausedReason,
+        String baseRate, BigDecimal currentEfficiency, Integer pendingDeactivate, String pausedReason, Integer opsPaused, String opsPauseReason, String runtimeStatus,
         Long activeDevicesForUser, Long userDeviceSlotNo, int maxDevicesPerUser,
         String simState, String simLastError, LocalDateTime simNextActionAt,
         CurrentTask currentTask, DeviceOpsView.MonthlyTarget monthlyTarget, String ownershipStatus) {
@@ -22,7 +22,7 @@ public record StoreDeviceView(
         return new StoreDeviceView(d.id(), d.userId(), d.userNo(), d.nickname(), d.instanceNo(), d.name(),
                 d.productTier(), d.productCode(), d.status(), d.dcLocation(), d.dcLocation(), d.sourceChannel(),
                 d.hashrate(), d.dailyUsdt(), d.dailyNex(), d.purchasedAt(), d.activatedAt(), d.deactivatedAt(),
-                d.baseRate(), d.currentEfficiency(), d.pendingDeactivate(), d.pausedReason(),
+                d.baseRate(), d.currentEfficiency(), d.pendingDeactivate(), d.pausedReason(), d.opsPaused(), d.opsPauseReason(), d.runtimeStatus(),
                 d.activeDevicesForUser(), d.userDeviceSlotNo(), 6,
                 simEnabled ? legacyPending ? "LEGACY_PENDING" : d.simState() : "SIM_OFF",
                 legacyPending ? "SIMULATED_LEGACY_NOT_DRAINED" : d.simLastError(), d.simNextActionAt(), task,

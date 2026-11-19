@@ -156,6 +156,8 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             r.gpu_temp_c AS gpuTempC,
             r.gpu_power_w AS gpuPowerW,
             r.paused_reason AS pausedReason,
+            COALESCE(r.ops_paused, 0) AS opsPaused,
+            r.ops_pause_reason AS opsPauseReason,
             r.active_task_no AS activeTaskNo,
             r.heartbeat_at AS heartbeatAt,
             r.battery_level AS batteryLevel,
