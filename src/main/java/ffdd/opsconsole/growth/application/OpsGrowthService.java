@@ -741,23 +741,18 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         response.put("rewardAsset", "UVT");
         response.put("h3Stats", questStats());
         response.put("h4Stats", eventStats());
-        response.put("dayOneWindow", dayOneWindow());
         response.put("dayOneRewardTierBasis", "CLAIM_TIME");
         response.put("dayOneRewardTierNote", "奖励档位按领取时刻与冻结任务窗口计算；完成任务本身不锁定金额。");
-        response.put("dayOneWindowConfig", Map.of("key", "dayOne.windowMs", "readOnly", true,
-                "retired", true, "valueKind", "DISPLAY_TEXT_ONLY"));
         response.put("dayOneEligibilityHours", questConfig("dayOne.eligibilityHours"));
         response.put("dayOneTriReward", questConfig("dayOne.triReward"));
         response.put("dayOneTasks", dayOneTasks());
         response.put("dayOneStates", dayOneStates());
         response.put("weeklyTier1", weeklyTier1());
         response.put("weeklyTier2", weeklyTier2());
-        response.put("weeklyChampionBonus", questConfig("weekly.champBonus"));
         response.put("weeklyMultipliers", weeklyMultipliers());
         response.put("monthlyMissions", monthlyMissions());
         response.put("taskMonitor", taskMonitor());
         response.put("taskContracts", taskContracts());
-        response.put("promoBanner", promoBanner());
         var localized = localizedContent();
         response.put("contentLocales", localized);
         response.put("phaseMultiplierReadonly", phaseMultiplierReadonly());
@@ -2196,6 +2191,9 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             normalizedKey = normalizeQuestConfigKey(configKey);
         } catch (IllegalArgumentException ex) {
             return validation(ex.getMessage());
+        }
+        if ("weekly.champBonus".equals(normalizedKey)) {
+            return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), OpsErrorCode.RETIRED_FEATURE.name());
         }
         String value;
         try {
@@ -4933,7 +4931,6 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         seedIfMissing(questConfigStorageKey("dayOne.windowMs"), defaultQuestConfigValue("dayOne.windowMs"), "STRING", "growth", "H3 day-one seed");
         seedIfMissing(questConfigStorageKey("dayOne.eligibilityHours"), defaultQuestConfigValue("dayOne.eligibilityHours"), "INTEGER", "growth", "H3 day-one eligibility seed");
         seedIfMissing(questConfigStorageKey("dayOne.triReward"), defaultQuestConfigValue("dayOne.triReward"), "STRING", "growth", "H3 day-one seed");
-        seedIfMissing(questConfigStorageKey("weekly.champBonus"), defaultQuestConfigValue("weekly.champBonus"), "STRING", "growth", "H3 weekly champion seed");
         for (String phase : List.of("P1", "P2", "P3", "P4", "P5", "P6")) {
             String key = "weekly.mult." + phase;
             seedIfMissing(questConfigStorageKey(key), defaultQuestConfigValue(key), "STRING", "growth", "H3 weekly multiplier seed");
