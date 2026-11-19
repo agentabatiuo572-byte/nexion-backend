@@ -1406,6 +1406,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     operator, before.stripTrailingZeros().toPlainString()));
         }
         if ("pin".equals(request.action())) {
+            requireFrozenPolicyBasis(request);
             List<NexMarketCurveFrame> pinCurve = configFacade.activeValueForUpdate(WEEKLY_CURVE_KEY)
                     .filter(StringUtils::hasText).map(this::readCurve).orElse(List.of());
             if (pinCurve.size() != 7) throw new BizException(503, "G3_WEEKLY_CURVE_INVALID");
@@ -1414,17 +1415,21 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
             }
             String value = normalizeControlValue("pin", request.value());
+            NexMarketCurveFrame pinned = resolvePinnedFrame(pinCurve, value);
+            // 先按冻结依据比对(漂移即版本冲突)，再判断这次调整是否还属于提价；否则目标价被改低时
+            // 会先报「不需要批准」，把依据漂移掩盖成 422。
+            if (pinned != null) {
+                if (request.dayIndex() != pinned.dayIndex()) {
+                    throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
+                }
+                if (!request.field().equals(pinned.targetPrice().stripTrailingZeros().toPlainString())) {
+                    throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
+                }
+            }
             BigDecimal current = currentPrice();
             if (current.signum() <= 0) throw new BizException(422, "G3_POLICY_APPROVAL_NOT_REQUIRED");
-            NexMarketCurveFrame pinned = resolvePinnedFrame(pinCurve, value);
             if (pinned == null || pinned.targetPrice().compareTo(current) <= 0) {
                 throw new BizException(422, "G3_POLICY_APPROVAL_NOT_REQUIRED");
-            }
-            if (request.dayIndex() != null && request.dayIndex() != pinned.dayIndex()) {
-                throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
-            }
-            if (request.field() != null && !request.field().equals(pinned.targetPrice().stripTrailingZeros().toPlainString())) {
-                throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
             }
             ApiResult<Map<String, Object>> redline = coverageRedlineFailure(
                     coverageFacade.snapshotAtNexPrice(pinned.targetPrice()));
@@ -1442,6 +1447,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             return new PreparedMarketPolicy(review, null, new NexMarketValueUpdateRequest(value, reason, operator, beforeDisplay));
         }
         if ("resume".equals(request.action())) {
+            requireFrozenPolicyBasis(request);
             configFacade.activeValueForUpdate(PAUSED_KEY);
             String before = readText(PAUSED_KEY, "false");
             if (!request.expectedRevision().equals(marketPolicyRevision("paused", before))) {
@@ -1456,15 +1462,18 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             if (resumeCurve.size() != 7) throw new BizException(503, "G3_WEEKLY_CURVE_INVALID");
             int nextDayIndex = pinnedDayIndex().orElseGet(this::nextAdvanceDayIndex);
             NexMarketCurveFrame activeFrame = frameFor(resumeCurve, nextDayIndex);
+            // 先按冻结依据比对(漂移即版本冲突)，再判断这次恢复是否还属于提价。
+            if (activeFrame != null) {
+                if (request.dayIndex() != activeFrame.dayIndex()) {
+                    throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
+                }
+                if (!request.field().equals(activeFrame.targetPrice().stripTrailingZeros().toPlainString())) {
+                    throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
+                }
+            }
             BigDecimal current = currentPrice();
             if (current.signum() <= 0 || activeFrame.targetPrice().compareTo(current) <= 0) {
                 throw new BizException(422, "G3_POLICY_APPROVAL_NOT_REQUIRED");
-            }
-            if (request.dayIndex() != null && request.dayIndex() != activeFrame.dayIndex()) {
-                throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
-            }
-            if (request.field() != null && !request.field().equals(activeFrame.targetPrice().stripTrailingZeros().toPlainString())) {
-                throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
             }
             ApiResult<Map<String, Object>> redline = coverageRedlineFailure(
                     coverageFacade.snapshotAtNexPrice(activeFrame.targetPrice()));
@@ -1500,6 +1509,17 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "自动按日推进未配置", "首次配置自动按日推进 · 批准后启用",
                 Map.copyOf(beforeFields), Map.copyOf(afterFields), "param", false);
         return new PreparedMarketPolicy(review, null, new NexMarketValueUpdateRequest(value, reason, operator, ""));
+    }
+
+    /**
+     * G3-BE-09: 钉价与恢复的批准只按提案时冻结的依据执行 —— 那一天的日序与当时目标价。
+     * 旧待批票没有这两项冻结依据时，批准会拿批准时的新目标价顶替，所以这里明确拒绝并要求重提；
+     * 有依据时由各分支既有的比对在漂移时返回 G3_POLICY_REVISION_CONFLICT。
+     */
+    private static void requireFrozenPolicyBasis(G3MarketPolicyChangeRequest request) {
+        if (request.dayIndex() == null || !StringUtils.hasText(request.field())) {
+            throw new BizException(422, "G3_POLICY_FROZEN_BASIS_REPROPOSE_REQUIRED");
+        }
     }
 
     private List<Map<String, Object>> marketCurveReview(List<NexMarketCurveFrame> frames) {
