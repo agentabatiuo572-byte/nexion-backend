@@ -1276,6 +1276,10 @@ public class OpsAuditCenterService {
                             "已结算 " + settlement.amountUsdt().stripTrailingZeros().toPlainString() + " USDT")
                             + " · 奖励记录 " + settlement.commissionEventId());
                 }
+                if ("F".equalsIgnoreCase(cmd.domain()) && "f_reward_payout_action".equalsIgnoreCase(cmd.op())) {
+                    String f1After = f1RewardPayoutAfterValue(replayResult.getData());
+                    if (f1After != null) ticket.setAfterValue(f1After);
+                }
             } finally {
                 A2ReplayContext.exitReplay();
             }
@@ -1304,6 +1308,27 @@ public class OpsAuditCenterService {
                 .detail(decisionDetail(ticket, nextStatus, idempotencyKey, request.reason()))
                 .build());
         return ApiResult.ok(toTicket(ticket, makerMatches));
+    }
+
+    /**
+     * F1-BE-19: the F1 replay response already carries the real voucher disposition and the
+     * {@code REDEEMED_AMOUNT_UNKNOWN} reason for legacy used vouchers. Keep that result on the
+     * approved ticket so the decision receipt, ticket detail and same-key replay all expose it.
+     */
+    private String f1RewardPayoutAfterValue(Object result) {
+        if (!(result instanceof Map<?, ?> data)) return null;
+        Object disposition = data.get("voucherClawback");
+        if (disposition == null || !StringUtils.hasText(String.valueOf(disposition))) return null;
+        StringBuilder text = new StringBuilder("已冲正 · 券处置: ").append(disposition);
+        Object reason = data.get("clawbackSkippedReason");
+        if (reason != null && StringUtils.hasText(String.valueOf(reason))) {
+            text.append(" · 未扣回原因: ").append(reason);
+        }
+        Object amount = data.get("clawbackAmountUsdt");
+        if (amount != null && StringUtils.hasText(String.valueOf(amount))) {
+            text.append(" · 已扣回: ").append(amount).append(" USDT");
+        }
+        return text.length() <= 1024 ? text.toString() : text.substring(0, 1024);
     }
 
     private static boolean superAdminProposalCommand(AuditReplayCommand command) {
