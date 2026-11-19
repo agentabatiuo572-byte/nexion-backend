@@ -18,6 +18,11 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  * then tries assignment once the message has committed. System messages are not part of the App history (App
  * queries return user and agent messages only); the App shows its own "留言已收到，分配后由专属客服接续" hint,
  * so this row is the console's record of the acknowledgement. Wording follows the App: 专属客服.
+ *
+ * BUG-519: the acknowledgement text and its SYSTEM sender name follow the customer's effective
+ * interface language (InterfaceLanguages codes). English is the fallback for a missing translation or an
+ * unknown language, so the legacy single Chinese string can no longer leak Chinese into en/vi threads.
+ * The stored conversation message and the live event always carry the same resolved text.
  */
 @Component
 @RequiredArgsConstructor
@@ -29,17 +34,27 @@ public class SupportUnboundReceipt {
     private final Clock clock;
     private final SupportBindingService bindings;
 
-    @Value("${nexion.support.unbound.receipt-text:已收到您的消息，正在为您安排专属客服，请稍候。}")
-    private final String text;
+    /** Legacy single string: Chinese users only, never the fallback for another language (BUG-519). */
+    @Value("${nexion.support.unbound.receipt-text:}")
+    private final String legacyText;
+    private final org.springframework.core.env.Environment environment;
+    private final ffdd.opsconsole.platform.application.PlatformExperienceConfigService experience;
 
     /** Caller holds the customer lock inside the message transaction. System messages never count as replies. */
     public void sendIfUnbound(Long userId, String conversationNo) {
         if (conversationNo == null || agents.findActiveDedicatedAdvisor(userId).isPresent()) return;
+        String language = SupportSystemMessage.effectiveLanguage(mapper.userLanguage(userId),
+                experience::interfaceLanguages);
+        String text = SupportSystemMessage.unboundReceipt(language, legacyText, environment);
+        String senderName = SupportSystemMessage.senderName(language);
         LocalDateTime now = LocalDateTime.now(clock);
-        ConversationMessageEvent event = mapper.insertOnce(conversationNo, text, now) != 1 ? null
+        // The persisted row and the live event carry the same resolved text and sender name.
+        ConversationMessageEvent event = mapper.insertOnce(conversationNo, senderName, text,
+                SupportSystemMessage.RECEIPT_ORIGIN, SupportSystemMessage.RECEIPT_ZH, SupportSystemMessage.RECEIPT_EN,
+                SupportSystemMessage.RECEIPT_VI, legacyText, now) != 1 ? null
                 : ConversationMessageEvent.builder()
                         .conversationNo(conversationNo).eventType(ConversationMessageEvent.EventType.MESSAGE)
-                        .senderType("SYSTEM").senderName("系统").body(text).ts(now).build();
+                        .senderType("SYSTEM").senderName(senderName).body(text).ts(now).build();
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
             afterCommit(userId, event);
             return;
