@@ -994,11 +994,13 @@ public interface NovaMapper extends BaseMapper<Object> {
                    CONCAT('newUsers:', DATE_FORMAT(MIN(u.created_at), '%Y%m%d%H')) AS sourceEventId,
                    'UVEL_CORE' AS sourceSystem,
                    'nx_user' AS sourceTable,
+                   -- BUG-520: 聚合事件没有任何真实地区；素材留空，渲染侧按可信来源身份
+                   -- (newUsers/UVEL_CORE/nx_user) 出「全网」，不再存会被掩码破坏的哨兵。
                    '' AS actorName,
-                   '全网' AS city,
+                   '' AS city,
                    COUNT(1) AS amount,
-                   '人' AS amountUnit,
-                   '完整小时注册用户聚合' AS sourceNote,
+                   'USERS' AS amountUnit,
+                   'HOURLY_REGISTRATION_AGGREGATE' AS sourceNote,
                    STR_TO_DATE(DATE_FORMAT(MIN(u.created_at), '%Y-%m-%d %H:00:00'), '%Y-%m-%d %H:%i:%s') AS occurredAt
               FROM nx_user u
              WHERE u.is_deleted = 0 AND u.created_at >= #{since} AND u.created_at < #{until}

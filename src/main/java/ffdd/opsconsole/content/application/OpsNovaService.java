@@ -310,8 +310,10 @@ public class OpsNovaService {
         if (novaRepository.socialEventSourceExists(source.eventType(), source.sourceSystem(), source.sourceEventId())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_SOCIAL_EVENT_SOURCE_ALREADY_INGESTED");
         }
+        // BUG-520: 素材只存语言无关的值 —— 昵称缺失留空、城市缺失留空（聚合事件由来源给 ALL），
+        // 由 NovaSocialMessageRenderer 按收件人语言出「匿名用户/未知地区」等兜底。
         boolean inserted = novaRepository.tryCreateSocialEvent(
-                source, mask(source.actorName(), "匿名用户"), mask(source.city(), "未知地区"),
+                source, mask(source.actorName(), ""), mask(source.city(), ""),
                 "newUsers".equals(source.eventType()) ? peopleBand(source.amount()) : amountBand(source.amount(), source.amountUnit()),
                 expiresAt, authenticatedOperator, reason.trim());
         Optional<NovaSocialEventView> created = novaRepository.socialEventBySource(
@@ -439,8 +441,9 @@ public class OpsNovaService {
         List<NovaSocialEventView> selectedCandidates = candidates.get(selectedType);
         NovaSocialEventView selected = selectedCandidates.get(ThreadLocalRandom.current().nextInt(selectedCandidates.size()));
         NovaSocialEventView publicEvent = publicEvent(selected);
+        // BUG-520: 用素材原值渲染（publicEvent 只做运营后台的中文投影），预览与真实下发同一口径。
         NovaSocialMessageRenderer.RenderedMessage message =
-                NovaSocialMessageRenderer.render(template, publicEvent, normalizedLanguage);
+                NovaSocialMessageRenderer.render(template, selected, normalizedLanguage);
         return ApiResult.ok(new NovaSocialRenderedEventView(
                 publicEvent.id(), publicEvent.eventType(), publicEvent.sourceEventId(), normalizedLanguage,
                 message.title(), message.body(), publicEvent.expiresAt()));
@@ -911,28 +914,62 @@ public class OpsNovaService {
         return band + (StringUtils.hasText(unit) ? " " + unit.trim().toUpperCase(Locale.ROOT) : "");
     }
 
+    /** BUG-520: 数量区间带语言无关的单位代码(USERS)，渲染时按收件人语言换成「人/users/người dùng」。 */
     private String peopleBand(BigDecimal amount) {
         if (amount == null || amount.compareTo(BigDecimal.TEN) < 0) {
             return "";
         }
         int count = amount.intValue();
-        if (count < 50) return "10–49 人";
-        if (count < 100) return "50–99 人";
-        if (count < 500) return "100–499 人";
-        if (count < 1000) return "500–999 人";
-        return "1000+ 人";
+        String band;
+        if (count < 50) band = "10–49";
+        else if (count < 100) band = "50–99";
+        else if (count < 500) band = "100–499";
+        else if (count < 1000) band = "500–999";
+        else band = "1000+";
+        return band + " USERS";
     }
 
     private List<NovaSocialEventView> publicEvents(List<NovaSocialEventView> events) {
         return events == null ? List.of() : events.stream().map(this::publicEvent).toList();
     }
 
+    /**
+     * 运营后台（I2 页面是中文界面）沿用的展示投影。素材已改存语言无关的值(ALL/USERS/空)，
+     * 这里只做后台投影，绝不参与用户通知渲染（渲染走 NovaSocialMessageRenderer 的本地化取值）。
+     */
     private NovaSocialEventView publicEvent(NovaSocialEventView event) {
         return new NovaSocialEventView(
-                event.id(), event.eventType(), publicReference(event), event.actorDisplay(), event.cityDisplay(),
-                event.amountDisplay(), event.sourceNote(), event.sourceSystem(), event.sourceTable(), event.status(),
+                event.id(), event.eventType(), publicReference(event),
+                adminActorDisplay(event.actorDisplay()), adminCityDisplay(event, event.cityDisplay()),
+                adminAmountDisplay(event.amountDisplay()), adminSourceNote(event, event.sourceNote()),
+                event.sourceSystem(), event.sourceTable(), event.status(),
                 event.occurredAt(), event.expiresAt(), event.verifiedAt(), event.lastDispatchedAt(), event.dispatchCount(),
                 event.createdAt(), event.updatedAt());
+    }
+
+    private String adminActorDisplay(String value) {
+        return StringUtils.hasText(value) ? value : "匿名用户";
+    }
+
+    /** 注册聚合事件没有真实地区（素材里城市留空），后台仍按既有说法显示「全网」。 */
+    private String adminCityDisplay(NovaSocialEventView event, String value) {
+        if (NovaSocialMessageRenderer.registrationAggregate(event)) return "全网";
+        String city = trimToEmpty(value);
+        return StringUtils.hasText(city) ? city : "未知地区";
+    }
+
+    /** 素材里的来源说明已改成代码（如 HOURLY_REGISTRATION_AGGREGATE），后台恢复原备注。 */
+    private String adminSourceNote(NovaSocialEventView event, String value) {
+        String note = trimToEmpty(value);
+        if (NovaSocialMessageRenderer.registrationAggregate(event) && "HOURLY_REGISTRATION_AGGREGATE".equals(note)) {
+            return "完整小时注册用户聚合";
+        }
+        return note;
+    }
+
+    private String adminAmountDisplay(String value) {
+        String amount = trimToEmpty(value);
+        return amount.endsWith(" USERS") ? amount.substring(0, amount.length() - " USERS".length()) + " 人" : amount;
     }
 
     private String publicReference(NovaSocialEventView event) {
@@ -1090,6 +1127,14 @@ public class OpsNovaService {
         if (TEMPLATE_CTA_OPTIONS.stream().noneMatch(option -> option.value().equals(request.cta().trim()))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_CTA_UNSUPPORTED");
         }
+        // BUG-520: 真实动态频道的中文文案只允许出现在中文模板里；英文、越南语模板夹汉字会原样发给用户。
+        boolean socialChannel = NovaSocialRuntimeService.SOCIAL_CHANNEL.equals(normalizeChannelKey(request.channel()));
+        if (socialChannel && (NovaSocialMessageRenderer.containsHan(request.titleEn())
+                || NovaSocialMessageRenderer.containsHan(request.bodyEn())
+                || NovaSocialMessageRenderer.containsHan(request.titleVi())
+                || NovaSocialMessageRenderer.containsHan(request.bodyVi()))) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_LOCALIZATION_INVALID");
+        }
         Set<String> bodyPlaceholders = placeholders(request.bodyEn());
         if (!bodyPlaceholders.equals(placeholders(request.bodyZh())) || !bodyPlaceholders.equals(placeholders(request.bodyVi()))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDERS_MISMATCH");
@@ -1100,6 +1145,8 @@ public class OpsNovaService {
                     || translated.title().length() > 255 || translated.body().length() > 4000
                     || !translated.ctaLabel().isEmpty()
                     || ffdd.opsconsole.shared.canonical.RetiredBrandGate.anyCarriesRetiredBrand(translated.title(), translated.body())
+                    || (socialChannel && (NovaSocialMessageRenderer.containsHan(translated.title())
+                            || NovaSocialMessageRenderer.containsHan(translated.body())))
                     || !translatedPlaceholdersMatch(Map.of(entry.getKey(), translated), request.titleEn(), request.bodyEn())) {
                 return ApiResult.fail(422, "NOVA_TEMPLATE_TRANSLATIONS_INVALID");
             }
