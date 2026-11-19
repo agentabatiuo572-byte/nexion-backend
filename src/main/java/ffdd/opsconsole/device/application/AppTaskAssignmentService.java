@@ -86,6 +86,7 @@ public class AppTaskAssignmentService {
     private final Clock clock;
     private final TestComputeWorkerService testWorker;
     private final SupportDeviceFundAdapter deviceFunds;
+    private final HardwareDailyUvtService hardwareDailyUvt;
     private final ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract phoneSessions;
     private final ffdd.opsconsole.device.mapper.SimulatedTaskMapper simulatedTasks;
 
@@ -834,11 +835,14 @@ public class AppTaskAssignmentService {
         }
         if (grant != null) testWorker.requireCurrent(grant);
         String receiptNo = "CTR-" + taskNo.substring(Math.max(0, taskNo.length() - 32));
+        // Keep the wallet key used by refund and funds evidence for device-day rewards.
         String dailyNexBizNo = "CLOUD_SHARE_DAILY:" + task.deviceId() + ":" + utcDay;
         BigDecimal paidShareDailyNex = mapper.lockPaidCloudShareDailyNex(userId, task.deviceId());
-        BigDecimal rewardNex = paidShareDailyNex != null && paidShareDailyNex.signum() > 0
+        BigDecimal dailyUvt = paidShareDailyNex != null ? paidShareDailyNex
+                : hardwareDailyUvt.amount(userId, task.deviceId(), activeBinding.productCode(), activeBinding.deviceType(), now);
+        BigDecimal rewardNex = dailyUvt.signum() > 0
                 && mapper.lockDailyCloudShareNex(userId, dailyNexBizNo) == null
-                ? paidShareDailyNex : BigDecimal.ZERO;
+                ? dailyUvt : BigDecimal.ZERO;
         if (grant != null) testWorker.requireTask(grant, task, LocalDateTime.now(clock));
         if (mapper.insertReceipt(userId, task.deviceId(), task, receiptNo, proof.proofHash(),
                 rewardNex, "CREDITED", sourceEnvironment, now) != 1) {
@@ -863,7 +867,7 @@ public class AppTaskAssignmentService {
             BigDecimal nexBalanceAfter = mapper.walletNex(userId);
             if (nexBalanceAfter == null
                     || mapper.insertCloudShareNexLedger(userId, task.deviceId(), receiptNo,
-                        dailyNexBizNo, rewardNex, nexBalanceAfter, now) != 1
+                        dailyNexBizNo, rewardNex, nexBalanceAfter, paidShareDailyNex == null, now) != 1
                     || mapper.insertCloudShareNexEvent("EARN-NEX-" + receiptNo, userId, task.deviceId(),
                         receiptNo, rewardNex, now) != 1) {
                 throw new BizException(409, "TASK_ASSIGNMENT_NEX_SETTLEMENT_CONFLICT");

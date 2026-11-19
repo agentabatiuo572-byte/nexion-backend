@@ -233,8 +233,11 @@ public interface SimulatedTaskMapper {
               #{t.completedAt},#{t.postedAt},#{t.cancelReason},#{t.targetCycleStart},#{t.targetSnapshotJson})
             """)
     int insertTask(@Param("t")TaskRow task);
-    @Update("UPDATE nx_simulated_task SET status='COMPLETED',completed_at=due_at,posted_at=#{postedAt} WHERE task_no=#{taskNo} AND status='RUNNING'")
-    int completeTask(@Param("taskNo")String taskNo,@Param("postedAt")LocalDateTime postedAt);
+    @Update("""
+        UPDATE nx_simulated_task SET status='COMPLETED',completed_at=due_at,posted_at=#{postedAt},cloud_daily_nex=#{dailyUvt}
+        WHERE task_no=#{taskNo} AND status='RUNNING'
+        """)
+    int completeTask(@Param("taskNo")String taskNo,@Param("postedAt")LocalDateTime postedAt,@Param("dailyUvt")BigDecimal dailyUvt);
     @Update("UPDATE nx_simulated_task SET status='CANCELLED',cancel_reason=#{reason} WHERE task_no=#{taskNo} AND status='RUNNING'")
     int cancelTask(@Param("taskNo")String taskNo,@Param("reason")String reason);
     @Update("""

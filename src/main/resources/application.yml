@@ -43,6 +43,8 @@ spring:
       password: ${NEXION_REDIS_PASSWORD:}
 
 nexion:
+  hardware-daily-uvt:
+    start-utc: ${NEXION_HARDWARE_DAILY_UVT_START_UTC:}
   simulated-tasks:
     abandon-before: ${NEXION_SIMULATED_TASKS_ABANDON_BEFORE:}
   websocket:

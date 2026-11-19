@@ -20,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class DeviceOrderRefundImpactService {
     private final DeviceOrderRefundImpactMapper mapper;
     private final ComputeV2ReadService compute;
+    private final HardwareDailyUvtService hardwareDailyUvt;
     private final Clock clock;
 
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
@@ -43,9 +44,16 @@ public class DeviceOrderRefundImpactService {
         Long unfinished=null;
         if(runtime!=null) {
             var earned=runtime.completedPending();
+            BigDecimal pendingUvt=totals.pendingUvt().add(BigDecimal.valueOf(earned.pendingNexMicros(),6));
+            for(var task:mapper.pendingDailyUvt(orderNo,userId,asOf)) {
+                BigDecimal daily=hardwareDailyUvt.appliesTo(task.productCode(),task.deviceType())
+                        ? hardwareDailyUvt.previewAmount(userId,task.deviceId(),task.productCode(),task.deviceType(),task.dueAt())
+                        : task.quotedUvt();
+                pendingUvt=pendingUvt.add(daily);
+            }
             pending=new TaskEarnings(Math.addExact(totals.completedPendingCount(),earned.pendingTaskCount()),
                     totals.pendingUsdt().add(BigDecimal.valueOf(earned.pendingUsdtMicros(),6)),
-                    totals.pendingUvt().add(BigDecimal.valueOf(earned.pendingNexMicros(),6)));
+                    pendingUvt);
             unfinished=Math.addExact(totals.unfinishedCount(),runtime.unfinishedTaskCount());
         }
         return new RefundImpact("ORDINARY_PURCHASE",asOf,pending,unfinished,totals.stoppedCount(),

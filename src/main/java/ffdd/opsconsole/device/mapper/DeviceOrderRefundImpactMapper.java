@@ -2,6 +2,7 @@ package ffdd.opsconsole.device.mapper;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -12,7 +13,7 @@ public interface DeviceOrderRefundImpactMapper {
                   long unfinishedCount,long stoppedCount,long creditedCount,BigDecimal creditedUsdt,BigDecimal creditedUvt,
                   long unresolvedSimulatedCount) { }
 
-    @Select("""
+    String SIMULATED_ORDER_TASKS = """
             WITH devices AS (
               SELECT d.* FROM nx_user_device d
               JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id AND o.is_deleted=0
@@ -29,7 +30,25 @@ public interface DeviceOrderRefundImpactMapper {
               WHERE t.status='RUNNING' AND t.completed_at IS NULL AND t.posted_at IS NULL
                 AND NOT EXISTS (SELECT 1 FROM nx_compute_retired_task rt
                   WHERE rt.user_id=t.user_id AND rt.task_no=t.task_no COLLATE utf8mb4_0900_ai_ci)
-            ), unresolved_simulated AS (
+            )
+            """;
+
+    record PendingDailyUvt(long deviceId,String productCode,String deviceType,LocalDateTime dueAt,BigDecimal quotedUvt) { }
+
+    @Select(SIMULATED_ORDER_TASKS + """
+            SELECT t.user_device_id deviceId,t.product_code productCode,t.device_type deviceType,
+                   t.due_at dueAt,t.cloud_daily_nex quotedUvt
+              FROM simulated t WHERE t.due_at<=t.cutoff
+               AND NOT EXISTS (
+                 SELECT 1 FROM nx_wallet_ledger l WHERE l.user_id=t.user_id AND l.asset='UVT' AND l.direction='IN'
+                   AND l.biz_no=CONCAT('CLOUD_SHARE_DAILY:',t.user_device_id,':',DATE(CONVERT_TZ(t.due_at,'+08:00','+00:00')))
+               )
+            """)
+    List<PendingDailyUvt> pendingDailyUvt(@Param("orderNo")String orderNo,@Param("userId")long userId,
+            @Param("asOf")LocalDateTime asOf);
+
+    @Select(SIMULATED_ORDER_TASKS + """
+            , unresolved_simulated AS (
               SELECT t.task_no FROM devices d
               JOIN nx_simulated_task t ON t.user_device_id=d.id AND t.user_id=d.user_id
               WHERE t.status='RUNNING' AND t.completed_at IS NULL AND t.posted_at IS NULL
@@ -51,11 +70,7 @@ public interface DeviceOrderRefundImpactMapper {
                 AND NOT EXISTS (SELECT 1 FROM nx_compute_retired_task rt WHERE rt.task_id=t.id)
               UNION ALL
               SELECT 'PENDING',t.task_no COLLATE utf8mb4_0900_ai_ci,CASE WHEN t.asset='USDT' THEN t.reward_amount ELSE 0 END,
-                (CASE WHEN t.asset='UVT' THEN t.reward_amount ELSE 0 END)
-                + CASE WHEN t.cloud_daily_nex>0 AND NOT EXISTS (
-                    SELECT 1 FROM nx_wallet_ledger l WHERE l.user_id=t.user_id AND l.asset='UVT' AND l.direction='IN'
-                      AND l.biz_no=CONCAT('CLOUD_SHARE_DAILY:',t.user_device_id,':',DATE(CONVERT_TZ(t.due_at,'+08:00','+00:00')))
-                  ) THEN t.cloud_daily_nex ELSE 0 END
+                CASE WHEN t.asset='UVT' THEN t.reward_amount ELSE 0 END
               FROM simulated t WHERE t.due_at<=t.cutoff
               UNION ALL
               SELECT 'UNFINISHED',t.task_no,0,0 FROM devices d

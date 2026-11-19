@@ -90,6 +90,14 @@ public class SimulatedTaskPolicyService {
         // Older RR views and a caller's uncommitted publication resolve in their own DB view.
         return snapshot.epoch()==epoch && snapshot.cacheable()?snapshot:null;
     }
+    Map<String,String> capacityConfigAt(LocalDateTime at) {
+        var snapshot=historyAtCallerEpoch();
+        E3Version version=null;
+        if(snapshot==null) version=mapper.e3At(at);
+        else for(var candidate:snapshot.e3())if(!candidate.effectiveAt().isAfter(at))version=candidate;
+        if(version==null)throw new BizException(422,"SIMULATED_E3_POLICY_HISTORY_MISSING");
+        return decode(version.configJson(),new TypeReference<Map<String,String>>(){});
+    }
     private boolean authorizes(ProductVersion p,TypeVersion t,List<String> scope) {
         if(p.allowedPoolCodesJson()!=null) {
             // A DEVICE weight can never become a per-task price, even for a malformed published policy.

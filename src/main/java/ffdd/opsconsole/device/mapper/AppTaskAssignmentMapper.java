@@ -942,12 +942,47 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     @Select(PAID_CLOUD_SHARE_DAILY_NEX + " FOR UPDATE OF o,d")
     BigDecimal lockPaidCloudShareDailyNex(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
 
-    @Select("""
+    record HardwareDailyUvt(BigDecimal dailyNex, LocalDateTime purchasedAt, LocalDateTime activatedAt) {}
+
+    String PAID_HARDWARE_DAILY_UVT = """
+            SELECT d.daily_nex dailyNex,d.purchased_at purchasedAt,d.activated_at activatedAt
+              FROM nx_user_device d
+              JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id AND o.is_deleted=0
+             WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.product_code=#{productCode}
+               AND d.is_deleted=0 AND d.source_environment='PRODUCTION' AND d.run_id=''
+               AND d.source_channel IN ('ORDER','TRADE_IN') AND d.daily_nex>0
+               AND d.activated_at<=#{completedAt} AND o.paid_at<=#{completedAt}
+               AND (o.product_id=d.product_id OR (o.order_type='BUNDLE' AND EXISTS (
+                   SELECT 1 FROM nx_order_item oi WHERE oi.order_no=o.order_no
+                     AND oi.product_id=d.product_id AND oi.is_deleted=0)))
+               AND ((d.ownership_status='OWNED' AND d.deactivated_at IS NULL
+                     AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+                     AND o.payment_status='PAID' AND o.order_status='COMPLETED'
+                     AND (o.activation_status='ACTIVATED' OR (d.source_channel='TRADE_IN'
+                          AND o.order_type='TRADE_IN' AND o.activation_status='INVENTORY')))
+                 OR (d.ownership_status='REFUNDED' AND d.deactivated_at>=#{completedAt}
+                     AND o.payment_status='REFUNDED' AND o.order_status='REFUNDED'
+                     AND o.order_type<>'TRIAL_CONVERT'))
+            """;
+
+    @Select(PAID_HARDWARE_DAILY_UVT + " FOR UPDATE OF d")
+    HardwareDailyUvt lockPaidHardwareDailyUvt(@Param("userId") long userId, @Param("deviceId") long deviceId,
+            @Param("productCode") String productCode, @Param("completedAt") LocalDateTime completedAt);
+
+    @Select(PAID_HARDWARE_DAILY_UVT)
+    HardwareDailyUvt paidHardwareDailyUvt(@Param("userId") long userId, @Param("deviceId") long deviceId,
+            @Param("productCode") String productCode, @Param("completedAt") LocalDateTime completedAt);
+
+    String DAILY_UVT_LEDGER = """
             SELECT id FROM nx_wallet_ledger
              WHERE user_id=#{userId} AND biz_no=#{bizNo} AND asset='UVT' AND direction='IN'
-             LIMIT 1 FOR UPDATE
-            """)
+             LIMIT 1
+            """;
+    @Select(DAILY_UVT_LEDGER + " FOR UPDATE")
     Long lockDailyCloudShareNex(@Param("userId") Long userId, @Param("bizNo") String bizNo);
+
+    @Select(DAILY_UVT_LEDGER)
+    Long dailyUvtLedgerUnderAccountLock(@Param("userId") long userId, @Param("bizNo") String bizNo);
 
     @Insert("""
             INSERT INTO nx_compute_receipt(user_id, user_device_id, task_no, receipt_no, task_type,
@@ -1081,7 +1116,8 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
             INSERT INTO nx_wallet_ledger(user_id,biz_no,biz_type,asset,direction,amount,
               balance_after,status,remark,created_at,updated_at,is_deleted)
             SELECT #{userId},#{bizNo},'COMPUTE_TASK_REWARD','UVT','IN',#{amount},
-                   #{balanceAfter},'SUCCESS','Cloud Share daily UVT from settled compute receipt',#{now},#{now},0
+                   #{balanceAfter},'SUCCESS',CASE WHEN #{hardware} THEN 'Hardware daily UVT from settled compute receipt'
+                     ELSE 'Cloud Share daily UVT from settled compute receipt' END,#{now},#{now},0
               FROM nx_compute_receipt r
              WHERE r.receipt_no=#{receiptNo} AND r.user_id=#{userId}
                AND r.user_device_id=#{deviceId} AND r.reward_nex=#{amount}
@@ -1091,6 +1127,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                                   @Param("receiptNo") String receiptNo, @Param("bizNo") String bizNo,
                                   @Param("amount") BigDecimal amount,
                                   @Param("balanceAfter") BigDecimal balanceAfter,
+                                  @Param("hardware") boolean hardware,
                                   @Param("now") LocalDateTime now);
 
     @Insert("""
