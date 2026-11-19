@@ -171,10 +171,9 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261016_h3_weekly_definition_snapshot.sql"),
   (Join-Path $root "scripts\migrations\20261018_h3_regional_weekly_period.sql"),
   (Join-Path $root "scripts\migrations\20261106_h3_weekly_phase_multiplier.sql"),
+  # Restore the invite task and its completion binding before validating registration.
+  (Join-Path $root "scripts\migrations\20261119_h3_invite_friend_registration_binding.sql"),
   (Join-Path $root "scripts\migrations\20260911_h3_day_one_registration_bindings.sql"),
-  # invite_friend is still the active Day-One referral target; add its missing
-  # directory row so the active REFERRAL_SETTLED binding has a visible target.
-  (Join-Path $root "scripts\migrations\20261119_h3_be10_invite_friend_mission.sql"),
   # Lifetime purchase quota release must follow the reservation made by the
   # exact order line, never today's mutable SKU policy.
   (Join-Path $root "scripts\migrations\20260902_order_quota_reservation_lineage.sql"),
@@ -407,6 +406,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261108_cregis_trc20_network.sql")
   (Join-Path $root "scripts\migrations\20261022_05_cregis_auto_forward.sql")
   (Join-Path $root "scripts\migrations\20261109_cregis_multinetwork_auto_forward.sql")
+  # Empty databases need the funds-preparation tables before the ERC20 ALTER.
+  (Join-Path $root "scripts\migrations\20261119_cregis_00_funds_preparation_schema.sql")
   (Join-Path $root "scripts\migrations\20261119_cregis_erc20_funds_preparation.sql")
   (Join-Path $root "scripts\migrations\20261031_test_cloud_request_journal.sql")
   (Join-Path $root "scripts\migrations\20261107_test_cloud_request_id_forward.sql")

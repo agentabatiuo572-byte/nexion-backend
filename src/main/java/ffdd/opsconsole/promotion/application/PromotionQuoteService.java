@@ -55,7 +55,8 @@ public class PromotionQuoteService {
                     AND r.status='SUCCEEDED' AND r.is_deleted=0
                     AND JSON_UNQUOTE(JSON_EXTRACT(r.response_json,'$.data.orderNo'))=o.order_no
                     AND JSON_UNQUOTE(JSON_EXTRACT(r.response_json,'$.data.voucherRedemption.grantId'))=g.grant_id
-                 WHERE g.user_id=? AND g.voucher_id=? AND g.status='USED' AND g.is_deleted=0
+                 WHERE g.user_id=? AND g.voucher_id=? AND g.is_deleted=0
+                   AND (g.status='USED' OR (g.source_type='VRANK_REWARD' AND g.status='REVOKED'))
                    AND o.is_deleted=0 AND o.order_status='PENDING_PAYMENT' AND o.payment_status='PENDING'
                    AND o.activation_status='WAITING_PAYMENT' AND o.created_at>NOW()-INTERVAL 24 HOUR AND pr.pay_by>NOW(6)
                    AND o.created_at>TIMESTAMPADD(MINUTE,-?,NOW(6))

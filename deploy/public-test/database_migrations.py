@@ -47,6 +47,9 @@ RETIRED_FORWARD_SQL = {
     '20261119_a7_be07_restore_i4_i5_permissions.sql': (
         '7d97e929c160cec5760a50df3f0cef47eaff7a95a885183a0ed4b3922434ceb5',
         'RETIRED_A7_BE07_SUPERSEDED_BY_A7_BE09'),
+    '20261119_h3_be10_invite_friend_mission.sql': (
+        'ca8524d0c11d6931033ceb17c5c81be1e1dbf06e11ea6cfceddabd294e04de11',
+        'RETIRED_H3_BE10_SUPERSEDED_BY_INVITE_FRIEND_BINDING_REPAIR'),
 }
 EARNINGS_FILE = '20261007_earnings_source_recovery.sql'
 EARNINGS_SHA256 = 'f443722d71d6a9da77759e55142ddd12e15b71c8af356a5dc9cd73dd03a410e9'

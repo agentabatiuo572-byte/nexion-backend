@@ -4941,11 +4941,7 @@ public class OpsTeamService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
-    /**
-     * F1 券冲正:真实收回 H7 发放记录。
-     * 未使用的券直接作废;已使用的券按 usedVoucherClawback 决定是否把券面额从用户 USDT 可用余额扣回,
-     * 扣回时余额不够允许扣成负数;缺省(null,旧单)按扣回处理。历史流水没有对应 H7 记录时只改 payout 状态,不阻断冲正。
-     */
+    /** F1 券冲正按订单付款状态区分已结算抵扣和待付款占用。 */
     private Map<String, Object> reverseVoucherReward(Long userId, String rankCode, String voucherId, String payoutId,
                                                      Boolean usedVoucherClawback) {
         Map<String, Object> result = new LinkedHashMap<>();
@@ -4958,12 +4954,19 @@ public class OpsTeamService implements AuditReplayable {
         String grantId = String.valueOf(grant.getOrDefault("grantId", ""));
         String sourceId = String.valueOf(grant.getOrDefault("sourceId", ""));
         String status = String.valueOf(grant.getOrDefault("status", "")).toUpperCase(Locale.ROOT);
-        if ("AVAILABLE".equals(status)) {
-            commissionRepository.revokeVrankAvailableGrant(userId, voucherId, sourceId);
-            result.put("voucherClawback", "AVAILABLE_REVOKED");
+        String paymentStatus = textValue(grant, "orderPaymentStatus", "");
+        boolean paid = "PAID".equalsIgnoreCase(paymentStatus);
+        boolean available = "AVAILABLE".equals(status);
+        boolean used = "USED".equals(status);
+        if (available || (used && StringUtils.hasText(paymentStatus) && !paid)) {
+            if (commissionRepository.revokeVrankVoucherGrant(userId, voucherId, sourceId, status) != 1) {
+                throw new BizException(409, "VRANK_VOUCHER_REVOKE_CONFLICT");
+            }
+            result.put("voucherClawback", available ? "AVAILABLE_REVOKED" : "ORDER_VOUCHER_REVOKED");
+            if (used) result.put("clawbackSkippedReason", "ORDER_NOT_SETTLED");
             return result;
         }
-        if ("USED".equals(status)) {
+        if (used) {
             if (usedVoucherClawback != null && !usedVoucherClawback) {
                 result.put("voucherClawback", "SKIPPED_BY_OPERATOR");
                 return result;
@@ -4974,6 +4977,11 @@ public class OpsTeamService implements AuditReplayable {
                 result.put("voucherClawback", "SKIPPED");
                 result.put("clawbackSkippedReason",
                         redeemedRaw == null ? "REDEEMED_AMOUNT_UNKNOWN" : "REDEEMED_AMOUNT_ZERO");
+                return result;
+            }
+            if (!paid) {
+                result.put("voucherClawback", "SKIPPED");
+                result.put("clawbackSkippedReason", "ORDER_SETTLEMENT_UNKNOWN");
                 return result;
             }
             BigDecimal lockedBalance = commissionRepository.lockVrankWalletUsdt(userId);

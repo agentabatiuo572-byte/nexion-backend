@@ -332,8 +332,8 @@ public interface TeamCommissionRepository {
         return null;
     }
 
-    /** F1 券冲正:未使用的券直接作废,返回受影响行数。 */
-    default int revokeVrankAvailableGrant(Long userId, String voucherId, String sourceId) {
+    /** F1 券冲正:作废尚未产生已结算抵扣的券，返回受影响行数。 */
+    default int revokeVrankVoucherGrant(Long userId, String voucherId, String sourceId, String expectedStatus) {
         return 0;
     }
 

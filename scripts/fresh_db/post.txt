@@ -17,7 +17,6 @@ fresh_db/ddl-20260727_f4_leadership_pool_closure.sql
 fresh_db/ddl-20260727_g2_exchange_fee_allocation.sql
 fresh_db/ddl-20260727_k2_runtime_detection_closure.sql
 migrations/20260929_support_maintenance_s4.sql
-fresh_db/ddl-20261022_04_cregis_funds_preparation.sql
 fresh_db/ddl-20261022_05_cregis_auto_forward.sql
 fresh_db/ddl-20260713_k6_janus.sql
 fresh_db/ddl-20260717_a1_admin_mfa.sql

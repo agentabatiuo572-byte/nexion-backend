@@ -319,6 +319,17 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
     List<VoucherGrantRow> lockUsedVouchersForOrder(@Param("userId") Long userId,
                                                    @Param("orderNo") String orderNo);
 
+    // A V-Rank revocation cannot change the price already reserved by this order.
+    @Select("""
+            SELECT grant_id grantId
+              FROM nx_growth_voucher_grant
+             WHERE user_id=#{userId} AND used_order_no=#{orderNo}
+               AND source_type='VRANK_REWARD' AND status='REVOKED' AND is_deleted=0
+             ORDER BY grant_id FOR UPDATE
+            """)
+    List<VoucherGrantRow> lockRevokedVrankVouchersForOrder(@Param("userId") Long userId,
+                                                          @Param("orderNo") String orderNo);
+
     @Update("""
             UPDATE nx_growth_voucher_grant
                SET status='AVAILABLE',used_order_no=NULL,used_at=NULL,updated_at=NOW(6)

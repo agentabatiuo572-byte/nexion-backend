@@ -220,6 +220,9 @@ public class AppOrderCommandService {
         if (fullyDiscounted) {
             List<AppOrderCommandMapper.VoucherGrantRow> usedVouchers =
                     mapper.lockUsedVouchersForOrder(userId, orderNo);
+            if (usedVouchers != null && usedVouchers.isEmpty()) {
+                usedVouchers = mapper.lockRevokedVrankVouchersForOrder(userId, orderNo);
+            }
             if (usedVouchers == null || usedVouchers.size() != 1
                     || usedVouchers.get(0) == null
                     || !StringUtils.hasText(usedVouchers.get(0).grantId())) {

@@ -572,12 +572,14 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
 
     @Override
     public Map<String, Object> lockLatestVrankVoucherGrant(Long userId, String voucherId, String sourcePrefix) {
+        // 下单、支付和订单关闭都先锁买家，再读取订单和券。
+        mapper.lockVrankVoucherBuyer(userId);
         return mapper.lockLatestVrankVoucherGrant(userId, voucherId, sourcePrefix);
     }
 
     @Override
-    public int revokeVrankAvailableGrant(Long userId, String voucherId, String sourceId) {
-        return mapper.revokeVrankAvailableGrant(userId, voucherId, sourceId);
+    public int revokeVrankVoucherGrant(Long userId, String voucherId, String sourceId, String expectedStatus) {
+        return mapper.revokeVrankVoucherGrant(userId, voucherId, sourceId, expectedStatus);
     }
 
     @Override

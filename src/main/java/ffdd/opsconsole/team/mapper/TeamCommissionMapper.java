@@ -1833,10 +1833,15 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                                               @Param("voucherId") String voucherId,
                                               @Param("sourceId") String sourceId);
 
-    /** 冲正定位本轮发放:锁定该用户该券下最新的 VRANK_REWARD 发放记录(原始或补发)。 */
+    @Select("SELECT id FROM nx_user WHERE id=#{userId} FOR UPDATE")
+    Long lockVrankVoucherBuyer(@Param("userId") Long userId);
+
+    /** 锁定最新一轮 V-Rank 券及其关联订单，读取当前付款状态。 */
     @Select("""
-            SELECT g.id AS grantId, g.status, g.source_id AS sourceId, g.redeemed_amount_usdt AS redeemedAmountUsd
+            SELECT g.id AS grantId, g.status, g.source_id AS sourceId, g.redeemed_amount_usdt AS redeemedAmountUsd,
+                   o.payment_status AS orderPaymentStatus
               FROM nx_growth_voucher_grant g
+              LEFT JOIN nx_order o ON o.order_no = g.used_order_no AND o.user_id = g.user_id AND o.is_deleted = 0
              WHERE g.user_id = #{userId}
                AND g.voucher_id = #{voucherId}
                AND g.source_type = 'VRANK_REWARD'
@@ -1850,7 +1855,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                                                    @Param("voucherId") String voucherId,
                                                    @Param("sourcePrefix") String sourcePrefix);
 
-    /** 未使用的券直接作废(真实收回);已用券不动状态,由上层扣钱包余额。 */
+    /** 作废尚未产生已结算抵扣的券，保留原订单关联。 */
     @Update("""
             UPDATE nx_growth_voucher_grant
                SET status = 'REVOKED', updated_at = NOW()
@@ -1858,12 +1863,13 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                AND voucher_id = #{voucherId}
                AND source_type = 'VRANK_REWARD'
                AND source_id = #{sourceId}
-               AND status = 'AVAILABLE'
+               AND status = #{expectedStatus}
                AND is_deleted = 0
             """)
-    int revokeVrankAvailableGrant(@Param("userId") Long userId,
-                                  @Param("voucherId") String voucherId,
-                                  @Param("sourceId") String sourceId);
+    int revokeVrankVoucherGrant(@Param("userId") Long userId,
+                                @Param("voucherId") String voucherId,
+                                @Param("sourceId") String sourceId,
+                                @Param("expectedStatus") String expectedStatus);
 
     /** 冲正已用券:锁定用户钱包 USDT 可用余额。 */
     @Select("""
