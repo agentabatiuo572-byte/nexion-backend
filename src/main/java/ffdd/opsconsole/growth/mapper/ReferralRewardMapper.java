@@ -662,7 +662,7 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
             <script>
             SELECT COUNT(*) FROM nx_user u
               LEFT JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
-               AND inviter.id<>u.id AND inviter.sandbox=u.sandbox
+               AND inviter.id &lt;&gt; u.id AND inviter.sandbox=u.sandbox
                AND EXISTS (SELECT 1 FROM nx_user_wallet w WHERE w.user_id=inviter.id AND w.is_deleted=0 AND w.sandbox=u.sandbox)
               LEFT JOIN nx_referral_reward_settlement s
                 ON s.invited_user_id = u.id AND s.is_deleted = 0
