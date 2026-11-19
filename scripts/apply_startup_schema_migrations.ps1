@@ -523,6 +523,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261119_a7_be09_restore_i4_i5_damage_proven.sql"),
   # E5 operator pause gets its own runtime state columns (E5-BE-19).
   (Join-Path $root "scripts\migrations\20261119_e5_be19_ops_pause_state.sql"),
+  # Backfill only audit/event-proven operator pauses into the new state (E5-BE-20).
+  (Join-Path $root "scripts\migrations\20261120_e5_be20_ops_pause_backfill.sql"),
   # I5-BE-03: register exchange in the I5 disclosure-gate action catalog.
   (Join-Path $root "scripts\migrations\20261119_i5_be03_disclosure_gate_exchange.sql"),
   (Join-Path $root "scripts\migrations\20261120_b54_binary_platform_settlement.sql"),
