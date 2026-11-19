@@ -42,6 +42,7 @@ public interface AppGrowthEngagementMapper {
             SELECT voucher_id voucherId,audience
               FROM nx_growth_voucher
              WHERE voucher_id=#{voucherId} AND is_deleted=0 AND LOWER(status)='active'
+               AND wheel_only=0
                AND (start_at=0 OR start_at<=#{nowMillis}) AND (end_at=0 OR end_at>=#{nowMillis})
                AND (claim_surfaces IS NULL OR JSON_LENGTH(claim_surfaces)=0
                     OR JSON_CONTAINS(claim_surfaces,JSON_QUOTE(#{surface})))
@@ -943,6 +944,7 @@ public interface AppGrowthEngagementMapper {
                    COALESCE(ps.last_seen_at,0) popupLastSeenAt,
                    COALESCE(ps.session_count,0) popupSessionCount,
                    v.status definitionStatus,v.is_deleted definitionDeleted,
+                   v.wheel_only wheelOnly,
                    v.issuance_limit issuanceLimit,
                    CASE WHEN v.issuance_limit>0 THEN (
                      SELECT COUNT(1) FROM nx_growth_voucher_grant issued
@@ -1010,7 +1012,7 @@ public interface AppGrowthEngagementMapper {
               FROM nx_growth_voucher v
               LEFT JOIN nx_voucher_popup_sandbox_state ps
                 ON ps.run_id=#{runId} AND ps.user_id=#{userId} AND ps.voucher_id=v.voucher_id
-             WHERE v.is_deleted=0 AND LOWER(v.status)='active'
+             WHERE v.is_deleted=0 AND LOWER(v.status)='active' AND v.wheel_only=0
                AND (v.start_at=0 OR v.start_at<=#{nowMillis})
                AND (v.end_at=0 OR v.end_at>=#{nowMillis})
              ORDER BY v.updated_at DESC,v.id DESC
@@ -1024,6 +1026,7 @@ public interface AppGrowthEngagementMapper {
             SELECT v.voucher_id voucherId,v.audience
               FROM nx_growth_voucher v
              WHERE v.voucher_id=#{voucherId} AND v.is_deleted=0 AND LOWER(v.status)='active'
+               AND v.wheel_only=0
                AND (v.start_at=0 OR v.start_at<=#{nowMillis})
                AND (v.end_at=0 OR v.end_at>=#{nowMillis})
                AND (v.claim_surfaces IS NULL OR JSON_LENGTH(v.claim_surfaces)=0

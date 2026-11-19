@@ -47,7 +47,7 @@ public class GrowthVoucherGrantFacadeAdapter implements VoucherGrantFacade {
         if (mapper.lockActiveUser(request.userId()) == null) {
             throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "H7_VOUCHER_USER_NOT_ACTIVE");
         }
-        if (mapper.lockGrantableVoucher(request.voucherId(), System.currentTimeMillis()) == null) {
+        if (mapper.lockGrantableVoucher(request.voucherId(), request.sourceType(), System.currentTimeMillis()) == null) {
             throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "H7_VOUCHER_NOT_GRANTABLE");
         }
         replay = replayOrConflict(request);

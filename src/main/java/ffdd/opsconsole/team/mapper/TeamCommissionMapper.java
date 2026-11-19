@@ -19,6 +19,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
               FROM nx_growth_voucher v
              WHERE v.is_deleted = 0
                AND v.status = 'active'
+               AND v.wheel_only = 0
                AND (v.start_at = 0 OR v.start_at <= #{nowMillis})
                AND (v.end_at = 0 OR v.end_at >= #{nowMillis})
                AND (COALESCE(v.issuance_limit, 0) <= 0 OR
