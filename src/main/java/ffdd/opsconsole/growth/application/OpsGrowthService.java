@@ -2317,10 +2317,6 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         if (guard != null) {
             return guard;
         }
-        ApiResult<Map<String, Object>> trialGate = requireTrialGateForH4Mutation();
-        if (trialGate != null) {
-            return trialGate;
-        }
         if (questEventMapper.isEmpty()) {
             return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
         }
@@ -2343,9 +2339,16 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             if (oldValue.equalsIgnoreCase(value)) {
                 return validation("WHEEL_GUARD_NO_CHANGE");
             }
-            boolean enablesRealPrize = "kill".equals(key) && !h4RealPrizeEnabled(oldValue) && h4RealPrizeEnabled(value);
-            boolean increasesBudget = "budget".equals(key)
-                    && numericToken(value).compareTo(numericToken(oldValue)) > 0;
+            boolean realPrizeWasEnabled = "kill".equals(key) && h4RealPrizeEnabled(oldValue);
+            boolean realPrizeWillBeEnabled = "kill".equals(key) && h4RealPrizeEnabled(value);
+            boolean enablesRealPrize = !realPrizeWasEnabled && realPrizeWillBeEnabled;
+            boolean disablesRealPrize = realPrizeWasEnabled && !realPrizeWillBeEnabled;
+            int budgetChange = "budget".equals(key) ? numericToken(value).compareTo(numericToken(oldValue)) : 0;
+            boolean increasesBudget = budgetChange > 0;
+            if (!disablesRealPrize && budgetChange >= 0) {
+                var trialGate = requireTrialGateForH4Mutation();
+                if (trialGate != null) return trialGate;
+            }
             var approval = h4ApprovalGate(enablesRealPrize || increasesBudget, approved);
             if (approval != null) return approval;
             if (preview) return ApiResult.ok(Map.of("before", oldValue, "after", value));
@@ -2667,10 +2670,6 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             var guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
             if (guard != null) return guard;
         }
-        ApiResult<Map<String, Object>> trialGate = requireTrialGateForH4Mutation();
-        if (trialGate != null) {
-            return trialGate;
-        }
         if (!lockH4Event()) {
             return validation("H4_EVENT_MUTEX_UNAVAILABLE");
         }
@@ -2704,6 +2703,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             return validation("EVENT_STATUS_TRANSITION_INVALID");
         }
         if ("ongoing".equals(status)) {
+            var trialGate = requireTrialGateForH4Mutation();
+            if (trialGate != null) return trialGate;
             var localized = eventPublicationContent(id, approved && !preview,
                     eventPublicationFields(current.get("targetType"), current.get("rewardType"), current.get("rewardAmount"), rule));
             if (localized != null) return localized;
