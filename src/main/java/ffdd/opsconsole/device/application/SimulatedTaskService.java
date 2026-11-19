@@ -562,6 +562,7 @@ public class SimulatedTaskService implements SchedulingConfigurer {
     private boolean active(DeviceRow d) {
         boolean phonePause=phone(d) && Set.of("PHONE_OFFLINE","PHONE_LOW_BATTERY").contains(Objects.toString(d.pausedReason(),""));
         return d.activatedAt()!=null && d.deactivatedAt()==null && Set.of("ACTIVE","ONLINE","BUSY","RUNNING").contains(d.status().toUpperCase(Locale.ROOT))
+                && !d.opsPaused()
                 && (d.pausedReason()==null || d.pausedReason().isBlank() || phonePause);
     }
     private static boolean phone(DeviceRow d){return Set.of("PHONE","MOBILE").contains(d.deviceType().toUpperCase(Locale.ROOT));}
