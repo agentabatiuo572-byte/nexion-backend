@@ -53,6 +53,20 @@ public interface BinaryPlatformSettlementMapper {
     Allocation allocation(@Param("date") LocalDate date, @Param("userId") long userId);
 
     @Select("""
+            <script>
+            SELECT a.settlement_date settlementDate, p.period_days periodDays
+              FROM nx_binary_platform_allocation a
+              JOIN nx_binary_platform_period p ON p.settlement_date=a.settlement_date
+             WHERE a.user_id=#{userId} AND a.settlement_mode IS NULL
+               AND a.settlement_date &lt; #{date}
+            <if test="fromDate != null">AND a.settlement_date &gt;= #{fromDate}</if>
+             ORDER BY a.settlement_date
+            </script>
+            """)
+    List<PendingPeriod> earlierPendingPeriods(@Param("userId") long userId, @Param("date") LocalDate date,
+                                             @Param("fromDate") LocalDate fromDate);
+
+    @Select("""
             SELECT COALESCE(SUM(allocated_usdt),0) FROM nx_binary_platform_allocation
              WHERE settlement_date=#{date} AND settlement_mode IS NULL
             """)
@@ -86,4 +100,6 @@ public interface BinaryPlatformSettlementMapper {
                   BigDecimal paidSales, BigDecimal capAmount, BigDecimal rawTotal) { }
 
     record Allocation(long userId, BigDecimal rawAmount, BigDecimal allocated) { }
+
+    record PendingPeriod(LocalDate settlementDate, int periodDays) { }
 }

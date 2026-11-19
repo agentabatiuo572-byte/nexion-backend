@@ -9,12 +9,15 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.Locale;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 /** Locks and validates every money-amplifying input used by one F3 settlement. */
 @Component
 @RequiredArgsConstructor
+@Slf4j
 public class BinarySettlementPolicyProvider {
     static final String THRESHOLD_KEY = "team.ui.F.binary.threshold";
     static final String MATCH_RATE_KEY = "team.ui.F.binary.matchRate";
@@ -81,7 +84,7 @@ public class BinarySettlementPolicyProvider {
 
         TreasuryCoverageSnapshot coverage = null;
         if (checkCurrentCoverage) {
-            coverage = coverageFacade.snapshot();
+            coverage = settlementCoverage();
             String block = currentCoverageBlock(coverage);
             if (block != null) throw new PolicyBlocked(block);
         }
@@ -100,7 +103,7 @@ public class BinarySettlementPolicyProvider {
     }
 
     String currentCoverageBlock() {
-        return currentCoverageBlock(coverageFacade.snapshot());
+        return currentCoverageBlock(settlementCoverage());
     }
 
     static String currentCoverageBlock(TreasuryCoverageSnapshot coverage) {
@@ -114,7 +117,7 @@ public class BinarySettlementPolicyProvider {
     }
 
     String projectedCoverageBlock(BigDecimal amountUsdt) {
-        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        TreasuryCoverageSnapshot coverage = settlementCoverage();
         if (coverage == null || !coverage.reliable() || coverage.redlinePct() == null
                 || coverage.redlinePct().signum() <= 0
                 || coverage.ratioReserveUsd() == null || coverage.ratioLiabilitiesUsd() == null) {
@@ -125,6 +128,15 @@ public class BinarySettlementPolicyProvider {
         return coverage.ratioReserveUsd().multiply(BigDecimal.valueOf(100))
                 .compareTo(projectedLiabilities.multiply(coverage.redlinePct())) < 0
                 ? "COVERAGE_BELOW_REDLINE" : null;
+    }
+
+    private TreasuryCoverageSnapshot settlementCoverage() {
+        try {
+            return coverageFacade.snapshot();
+        } catch (DataAccessException failure) {
+            log.debug("F3 could not read treasury coverage", failure);
+            return null;
+        }
     }
 
     private String require(String key, String code) {

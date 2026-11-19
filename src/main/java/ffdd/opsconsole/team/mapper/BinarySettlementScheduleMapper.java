@@ -86,10 +86,17 @@ public interface BinarySettlementScheduleMapper {
     int advanceCursor(@Param("date") LocalDate date, @Param("ownerId") long ownerId);
 
     @Insert("""
-            INSERT IGNORE INTO nx_binary_auto_settlement_retry (settlement_date,owner_user_id)
-            VALUES (#{date},#{ownerId})
+            INSERT INTO nx_binary_auto_settlement_retry (settlement_date,owner_user_id,reason)
+            VALUES (#{date},#{ownerId},#{reason,jdbcType=VARCHAR})
+            ON DUPLICATE KEY UPDATE reason=#{reason,jdbcType=VARCHAR}
             """)
-    void enqueueRetry(@Param("date") LocalDate date, @Param("ownerId") long ownerId);
+    void enqueueRetry(@Param("date") LocalDate date, @Param("ownerId") long ownerId, @Param("reason") String reason);
+
+    @Select("""
+            SELECT EXISTS(SELECT 1 FROM nx_binary_auto_settlement_retry
+             WHERE settlement_date=#{date} AND NOT (reason <=> #{ownerWaitReason}))
+            """)
+    boolean hasBlockingRetries(@Param("date") LocalDate date, @Param("ownerWaitReason") String ownerWaitReason);
 
     @Select("""
             SELECT owner_user_id
