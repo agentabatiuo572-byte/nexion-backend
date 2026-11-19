@@ -5142,7 +5142,14 @@ public class OpsTeamService implements AuditReplayable {
             case "f_reward_payout_action" -> {
                 String payoutId = str(p, "payoutId");
                 String action = str(p, "action");
-                Boolean usedVoucherClawback = boolVal(p, "usedVoucherClawback");
+                Object rawClawback = p.get("usedVoucherClawback");
+                Boolean usedVoucherClawback = null;
+                if (rawClawback != null) {
+                    if (!(rawClawback instanceof Boolean clawback)) {
+                        return ApiResult.fail(422, "F1_CLAWBACK_VALUE_INVALID");
+                    }
+                    usedVoucherClawback = clawback;
+                }
                 if ("reissue".equalsIgnoreCase(action) && usedVoucherClawback != null) {
                     return ApiResult.fail(422, "F1_CLAWBACK_REVERSE_ONLY");
                 }

@@ -446,6 +446,10 @@ public class AuditReplayBusinessPermissionGuard {
             return OpsDeviceService.validateBundleDiscountProposal(command.params());
         }
         if ("F".equalsIgnoreCase(command.domain())) {
+            if ("f_reward_payout_action".equals(operation)) {
+                ApiResult<Void> clawback = validateF1RewardClawbackProposal(command.params());
+                if (clawback.getCode() != 0) return clawback;
+            }
             if ("f_commission_status".equals(operation)
                     && "COOLING".equals(OpsTeamService.canonicalCommissionState(value(command.params(), "value")))) {
                 String key = value(command.params(), "key");
@@ -2469,6 +2473,24 @@ public class AuditReplayBusinessPermissionGuard {
         return "reissue".equalsIgnoreCase(value(params, "action"))
                 ? "network_f1_reward_reissue"
                 : "network_f1_reward_reverse";
+    }
+
+    /** F1-BE-09:提案阶段就校验「已用券扣不扣回」的参数,不让非法参数拖到批准回放才失败。 */
+    private ApiResult<Void> validateF1RewardClawbackProposal(Map<String, Object> params) {
+        Object raw = params == null ? null : params.get("usedVoucherClawback");
+        if (raw == null) return ApiResult.ok();
+        if (!(raw instanceof Boolean)) return ApiResult.fail(422, "F1_CLAWBACK_VALUE_INVALID");
+        if (!"reverse".equalsIgnoreCase(value(params, "action"))) {
+            return ApiResult.fail(422, "F1_CLAWBACK_REVERSE_ONLY");
+        }
+        String payoutId = value(params, "payoutId");
+        if (payoutId.isBlank()) return ApiResult.fail(422, "F1_CLAWBACK_PAYOUT_REQUIRED");
+        Map<String, Object> payout = teamCommissionRepository.findRewardPayoutByPayoutId(payoutId.trim());
+        if (payout == null) return ApiResult.fail(422, "PAYOUT_NOT_FOUND");
+        if (!"voucher".equalsIgnoreCase(String.valueOf(payout.getOrDefault("rewardType", "")))) {
+            return ApiResult.fail(422, "F1_CLAWBACK_VOUCHER_ONLY");
+        }
+        return ApiResult.ok();
     }
 
     private String c5UnlockAuthority(Map<String, Object> params) {
