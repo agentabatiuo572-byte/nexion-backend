@@ -142,7 +142,9 @@ public class CregisReorgResolutionService {
         String no=operationNo(incident,version+1),origin=depositOrigin(row);
         switch(action) {
             case REVERSE -> {
-                BigDecimal extra=money(wallet,"usdtAvailable").min(net.subtract(held));
+                BigDecimal walletAvailable=money(wallet,"usdtAvailable");
+                if(walletAvailable.signum()<0)throw conflict("WALLET_CONFLICT");
+                BigDecimal extra=walletAvailable.min(net.subtract(held));
                 recovered=held.add(extra);debt=net.subtract(recovered);availableDelta=extra.negate();riskDelta=held.negate();cumulativeDelta=net.negate();
                 if(held.signum()>0)events.add(debit(no+":HELD",risk(user,incident),origin,held));
                 if(extra.signum()>0)events.add(debit(no+":AVAILABLE",available(user),origin,extra));
