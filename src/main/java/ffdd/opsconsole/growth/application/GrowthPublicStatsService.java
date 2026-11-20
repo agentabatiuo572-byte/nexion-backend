@@ -166,13 +166,10 @@ public class GrowthPublicStatsService {
         } catch (DataAccessException unavailable) {
             return ApiResult.fail(503, "APP_HOME_OVERVIEW_UNAVAILABLE");
         }
-        double base = values.get("activeJobsBase") == null ? 0 : ((Number) values.get("activeJobsBase")).doubleValue();
-        double jobsWithBase = activeJobsActual == null ? Double.NaN : activeJobsActual.doubleValue() + base;
-        Long activeJobsDisplay = Double.isFinite(jobsWithBase) && Math.rint(jobsWithBase) == jobsWithBase
-                && Math.abs(jobsWithBase) <= MAX_SAFE_INTEGER ? (long) jobsWithBase : null;
+        Long activeJobsDisplay = activeJobsDisplay(activeJobsActual, values);
         GlobeDisplayConfig globe = (GlobeDisplayConfig) values.get("globeDisplay");
         Long onlineDevices = display == null ? null : (Long) display.get("onlineDevices");
-        List<Map<String, Object>> centers = centerNodes(globe, onlineDevices);
+        List<Map<String, Object>> centers = centerCounts(globe, onlineDevices, "onlineNodes");
         List<Map<String, Object>> unavailable = new ArrayList<>();
         if (activeJobsActual == null) {
             unavailable.add(Map.of("field", "activeJobsActual", "reason", scope.sandbox()
@@ -215,8 +212,15 @@ public class GrowthPublicStatsService {
         return ApiResult.ok(response);
     }
 
+    static Long activeJobsDisplay(Long actual, Map<?, ?> values) {
+        double base = values.get("activeJobsBase") == null ? 0 : ((Number) values.get("activeJobsBase")).doubleValue();
+        double total = actual == null ? Double.NaN : actual.doubleValue() + base;
+        return Double.isFinite(total) && Math.rint(total) == total
+                && Math.abs(total) <= MAX_SAFE_INTEGER ? (long) total : null;
+    }
+
     /** Same fixed order, binary64 weights and largest-remainder split as App globeSimulation.onlineNodes. */
-    private List<Map<String, Object>> centerNodes(GlobeDisplayConfig config, Long onlineTotal) {
+    static List<Map<String, Object>> centerCounts(GlobeDisplayConfig config, Long total, String countField) {
         Map<String, GlobeDisplayConfig.Center> byId = new LinkedHashMap<>();
         config.centers().forEach(center -> byId.put(center.id(), center));
         double[] weights = new double[GLOBE_CENTER_ORDER.size()];
@@ -228,30 +232,30 @@ public class GrowthPublicStatsService {
         }
         // The App parser rejects a legacy configuration whose eight node weights are all zero.
         if (sum == 0) return null;
-        long[] nodes = null;
-        if (onlineTotal != null) {
-            nodes = new long[weights.length];
+        long[] counts = null;
+        if (total != null) {
+            counts = new long[weights.length];
             double[] remainder = new double[weights.length];
             Integer[] order = new Integer[weights.length];
             long allocated = 0;
             for (int i = 0; i < weights.length; i++) {
-                double exact = onlineTotal.doubleValue() * weights[i] / sum;
-                nodes[i] = (long) Math.floor(exact);
-                remainder[i] = exact - nodes[i];
-                allocated += nodes[i];
+                double exact = total.doubleValue() * weights[i] / sum;
+                counts[i] = (long) Math.floor(exact);
+                remainder[i] = exact - counts[i];
+                allocated += counts[i];
                 order[i] = i;
             }
             java.util.Arrays.sort(order, (a, b) -> {
                 int compared = Double.compare(remainder[b], remainder[a]);
                 return compared != 0 ? compared : Integer.compare(a, b);
             });
-            for (int i = 0; i < onlineTotal - allocated; i++) nodes[order[i]]++;
+            for (int i = 0; i < total - allocated; i++) counts[order[i]]++;
         }
         List<Map<String, Object>> result = new ArrayList<>();
         for (int i = 0; i < weights.length; i++) {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("id", GLOBE_CENTER_ORDER.get(i));
-            row.put("onlineNodes", nodes == null ? null : nodes[i]);
+            row.put(countField, counts == null ? null : counts[i]);
             result.add(row);
         }
         return result;

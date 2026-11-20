@@ -59,10 +59,19 @@ public class HomeSharedSnapshotCache {
 
     /** The production Home on-grid count, including the same optional rule slots as the App response. */
     public Long productionActiveJobs() {
+        return productionActiveJobs(true);
+    }
+
+    public Long productionActiveJobsFresh() {
+        return productionActiveJobs(false);
+    }
+
+    private Long productionActiveJobs(boolean useCachedRuleSlots) {
         AppHomeOverviewMapper.OnGridSummary grid = mapper.onGrid("PRODUCTION", false);
         Long activeJobs = grid == null ? null : grid.activeJobs();
         return includeRuleSlots(activeJobs)
-                ? activeJobsWithRuleSlots(activeJobs, "PRODUCTION", false, current()) : activeJobs;
+                ? activeJobsWithRuleSlots(activeJobs, "PRODUCTION", false, useCachedRuleSlots ? current() : null)
+                : activeJobs;
     }
 
     /** Sandbox Home displays distinct task-catalog classes, not production running jobs. */
