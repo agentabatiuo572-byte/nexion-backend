@@ -541,6 +541,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261120_lc_e3_capacity_defaults.sql")
   (Join-Path $root "scripts\migrations\20261120_lc_a4_event_registry.sql")
   (Join-Path $root "scripts\migrations\20261120_lc_h9_launch_display.sql")
+  (Join-Path $root "scripts\migrations\20261120_lc_h9_active_jobs_display.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
