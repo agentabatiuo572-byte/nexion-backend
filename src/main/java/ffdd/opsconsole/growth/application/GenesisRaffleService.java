@@ -145,6 +145,12 @@ public class GenesisRaffleService {
     }
     public ApiResult<Map<String,Object>> admin(){return ApiResult.ok(Map.of("draws",db.rows(DRAW_WITH_TRANSLATIONS + "ORDER BY d.created_at DESC LIMIT 50").stream().map(row->view(row,null,null)).toList()));}
 
+    public ApiResult<Map<String,Object>> adminDetail(String id){
+        var draw=db.row(DRAW_WITH_TRANSLATIONS + "WHERE d.draw_id=?",id);
+        if(draw==null)throw new BizException(404,"RAFFLE_NOT_FOUND");
+        return ApiResult.ok(view(draw,null,null));
+    }
+
     GenesisRaffleRequest completeAuthoredCopy(GenesisRaffleRequest request) {
         if(request==null||request.prizes()==null||request.prizes().stream().anyMatch(Objects::isNull))return request;
         var required=experience==null?List.of("en"):experience.operatingLanguages();

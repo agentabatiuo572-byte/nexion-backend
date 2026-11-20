@@ -171,6 +171,12 @@ public class OpsGrowthController {
         return growthService.questEventOverview();
     }
 
+    @GetMapping("/quest-events/events/create-candidates")
+    @PreAuthorize("hasAuthority('growth_h4_read')")
+    public ApiResult<Map<String, Object>> questEventCreateCandidates() {
+        return growthService.questEventCreateCandidates();
+    }
+
     @GetMapping("/quest-events/wheel-daily-usage")
     @PreAuthorize("hasAuthority('growth_h4_read')")
     public ApiResult<Map<String, Object>> wheelDailyUsage() {
