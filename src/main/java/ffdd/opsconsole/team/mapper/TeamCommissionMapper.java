@@ -852,6 +852,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    CAST(ROUND(s.amount_usdt, 0) AS SIGNED) AS todayPaid,
                    s.amount_usdt AS todayPaidRaw,
                    a.settlement_mode AS settlementMode,
+                   CASE WHEN a.settlement_mode IS NOT NULL THEN a.settled_raw_amount_usdt END AS platformRawAmountUsdt,
+                   CASE WHEN a.settlement_mode IS NOT NULL THEN s.amount_usdt END AS platformSettledAmountUsdt,
                    CASE WHEN a.settlement_mode IS NOT NULL THEN
                      TRUNCATE(100*(a.settled_raw_amount_usdt-s.amount_usdt)/NULLIF(a.settled_raw_amount_usdt,0),6)
                    END AS platformReductionPct,

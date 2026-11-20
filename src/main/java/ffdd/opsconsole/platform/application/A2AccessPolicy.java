@@ -78,14 +78,14 @@ public class A2AccessPolicy {
 
     /** Rechecks current DB authority even when invoked outside the HTTP filter. */
     public long requireProposalReader() {
-        return requireProposalReader(true);
-    }
-
-    long requireOriginalKeyProposalReader() {
         return requireProposalReader(false);
     }
 
-    private long requireProposalReader(boolean includeQuotaAuthority) {
+    long requireOriginalKeyProposalReader() {
+        return requireProposalReader(true);
+    }
+
+    private long requireProposalReader(boolean originalKeyLookup) {
         var auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth == null || !auth.isAuthenticated() || !(auth.getDetails() instanceof Map<?, ?> details)
                 || !"ADMIN".equals(details.get("subjectType")))
@@ -95,6 +95,8 @@ public class A2AccessPolicy {
             if (roleResolver.isActiveAdministrator(id)) {
                 Set<String> grants = permissions.getPermissionCodes(id);
                 if (grants.contains("platform_a2_read") || grants.contains("platform_a2_proposal_create")
+                        || (originalKeyLookup && grants.contains("platform_a2_write") && (grants.contains("network_f3_match_rate")
+                            || grants.contains("network_f3_engine_pause")))
                         || (grants.contains("platform_a2_write")
                             && (grants.contains("user_c2_session_revoke_all") || grants.contains("user_c5_session_revoke_all")))
                         || (grants.contains("platform_a2_write") && grants.contains("growth_h1_override_revoke"))
@@ -118,7 +120,7 @@ public class A2AccessPolicy {
                         || (grants.contains(K2OtpInitialApproval.MAKER_AUTHORITY)
                             && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write")))
                         || grants.contains("network_f1_write") || grants.contains("network_f3_write") || grants.contains("network_f4_pool_fund")
-                        || (includeQuotaAuthority && grants.contains(HardwareQuotaApproval.AUTHORITY))
+                        || (!originalKeyLookup && grants.contains(HardwareQuotaApproval.AUTHORITY))
                         || grants.contains("finprod_g3_curve_target_price_write") || grants.contains("finprod_g3_curve_pump_prob_write")
                         || grants.contains("finprod_g3_override_price_write") || grants.contains("finprod_g3_write")
                         || grants.contains("finprod_g4_dividend_rate_write") || grants.contains("finprod_g4_write")
@@ -211,7 +213,8 @@ public class A2AccessPolicy {
         if ("E".equals(domain) && AuditReplayBusinessPermissionGuard.isE4Refund(command)
                 && grants.contains("platform_a2_proposal_create")
                 && grants.contains(AuditReplayBusinessPermissionGuard.E4_REFUND_AUTHORITY)) return true;
-        if ("F".equals(domain) && replayBusinessPermissionGuard.canRecoverF5Proposal(command, grants)) return true;
+        if ("F".equals(domain) && (replayBusinessPermissionGuard.canRecoverF3Proposal(command, grants)
+                || replayBusinessPermissionGuard.canRecoverF5Proposal(command, grants))) return true;
         if (HardwareQuotaApproval.supports(command)) return grants.contains(HardwareQuotaApproval.AUTHORITY);
         if ("K".equals(domain) && K1RiskApproval.supports(command)) {
             return grants.contains(K1RiskApproval.MAKER_AUTHORITY)

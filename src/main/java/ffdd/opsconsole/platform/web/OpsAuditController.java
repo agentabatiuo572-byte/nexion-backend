@@ -190,6 +190,7 @@ public class OpsAuditController {
             + " || @auditReplayBusinessPermissionGuard.hasF5ProposalAuthority() || hasAuthority('network_f4_write')"
             + " || (hasAuthority('platform_a2_write') && hasAnyAuthority('user_c2_session_revoke_all','user_c5_session_revoke_all'))"
             + " || (hasAuthority('platform_a2_write') && hasAuthority('growth_h1_override_revoke'))"
+            + " || (hasAuthority('platform_a2_write') && hasAnyAuthority('network_f3_match_rate','network_f3_engine_pause'))"
             + " || (hasAuthority('platform_a2_write') && hasAuthority('device_e1_read') && hasAuthority('device_e1_write'))"
             + " || (hasAuthority('emergency_j1_gate_resume') && hasAuthority('platform_a2_write'))"
             + " || (hasAuthority('content_i3_cap_adjust') && hasAnyAuthority('platform_a2_write','platform_a2_proposal_create'))")

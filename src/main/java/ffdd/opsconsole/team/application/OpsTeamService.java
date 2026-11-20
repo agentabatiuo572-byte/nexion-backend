@@ -2873,6 +2873,8 @@ public class OpsTeamService implements AuditReplayable {
         row.put("matchAmountRaw", decimalValue(raw.get("matchAmountRaw"), null));
         row.put("todayPaid", intValue(raw.get("todayPaid"), 0));
         row.put("todayPaidRaw", decimalValue(raw.get("todayPaidRaw"), null));
+        row.put("platformRawAmountUsdt", decimalValue(raw.get("platformRawAmountUsdt"), null));
+        row.put("platformSettledAmountUsdt", decimalValue(raw.get("platformSettledAmountUsdt"), null));
         if (raw.containsKey("settlementMode")) row.put("settlementMode", raw.get("settlementMode"));
         for (String key : List.of("platformReductionPct", "platformCapUsdt", "platformUsedUsdt")) {
             if (raw.containsKey(key)) row.put(key, decimalValue(raw.get(key), null));

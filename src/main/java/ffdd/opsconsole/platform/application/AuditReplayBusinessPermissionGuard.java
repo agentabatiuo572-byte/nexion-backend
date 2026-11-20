@@ -303,6 +303,22 @@ public class AuditReplayBusinessPermissionGuard {
         return F5_ACTION_AUTHORITIES.stream().anyMatch(this::hasAuthority);
     }
 
+    boolean canRecoverF3Proposal(AuditReplayCommand command, Set<String> grants) {
+        if (command == null || !"F".equalsIgnoreCase(command.domain())
+                || !(grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write"))) {
+            return false;
+        }
+        if ("f_ui_config".equalsIgnoreCase(command.op())) return canRecoverF3Config(command.params(), grants);
+        return "f_config_batch".equalsIgnoreCase(command.op()) && command.params() != null
+                && command.params().get("changes") instanceof List<?> changes && !changes.isEmpty()
+                && changes.stream().allMatch(item -> item instanceof Map<?, ?> change && canRecoverF3Config(change, grants));
+    }
+
+    private boolean canRecoverF3Config(Map<?, ?> params, Set<String> grants) {
+        String authority = fConfigAuthority("f_ui_config", params);
+        return authority != null && "F3".equals(fSourceDomain("f_ui_config", value(params, "key"))) && grants.contains(authority);
+    }
+
     boolean canRecoverF5Proposal(AuditReplayCommand command, Set<String> grants) {
         String authority = f5ActionAuthority(command);
         return authority != null && grants.contains(authority);
@@ -477,8 +493,12 @@ public class AuditReplayBusinessPermissionGuard {
                     }
                 }
             }
+            if ("f_config".equals(operation) && OpsTeamService.isBinaryPayoutControlKey(value(command.params(), "key"))) {
+                return ApiResult.fail(422, "F3_UI_CONFIG_COMMAND_REQUIRED");
+            }
             if ("f_ui_config".equals(operation)) {
-                OpsTeamService.validateBinaryUiConfig(value(command.params(), "key"), value(command.params(), "value"));
+                ApiResult<Void> direction = validateF3ConfigProposal(command.params());
+                if (direction.getCode() != 0) return direction;
             }
             if ("f_config_batch".equals(operation) && command.params() != null
                     && command.params().get("changes") instanceof List<?> changes) {
@@ -487,7 +507,10 @@ public class AuditReplayBusinessPermissionGuard {
                         String key = value(change, "key");
                         String next = value(change, "value");
                         OpsTeamService.validateUnilevelRatePrecision(key, next);
-                        if (OpsTeamService.isBinaryPayoutControlKey(key)) OpsTeamService.validateBinaryUiConfig(key, next);
+                        if (OpsTeamService.isBinaryPayoutControlKey(key)) {
+                            ApiResult<Void> direction = validateF3ConfigProposal(change);
+                            if (direction.getCode() != 0) return direction;
+                        }
                     }
                 }
             }
@@ -626,6 +649,17 @@ public class AuditReplayBusinessPermissionGuard {
             return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
         }
         return ApiResult.ok(learningCourseActivationApproval.prepare(request, A2ReplayContext.authenticatedAdminId()));
+    }
+
+    private ApiResult<Void> validateF3ConfigProposal(Map<?, ?> params) {
+        String key = value(params, "key");
+        String next = value(params, "value");
+        OpsTeamService.validateBinaryUiConfig(key, next);
+        if (OpsTeamService.isBinaryPayoutControlKey(key)
+                && !OpsTeamService.binaryPayoutControlAmplifies(key, value(params, "expectedValue"), next)) {
+            return ApiResult.fail(409, "F3_DIRECT_EXECUTION_REQUIRED");
+        }
+        return ApiResult.ok();
     }
 
     private boolean isVersionedFUiConfigProposal(AuditReplayCommand command) {
@@ -2434,7 +2468,7 @@ public class AuditReplayBusinessPermissionGuard {
         return List.copyOf(commands);
     }
 
-    private String fConfigAuthority(String operation, Map<String, Object> params) {
+    private String fConfigAuthority(String operation, Map<?, ?> params) {
         String key = value(params, "key");
         if ("f_unilevel_rule".equals(operation)) {
             return key.matches("^F\\.unilevel\\.(?:nex\\.)?L[1-7]$")
