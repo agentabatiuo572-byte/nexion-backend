@@ -1437,7 +1437,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                    GREATEST(c.revision,COALESCE(t.revision,0),
                      COALESCE(CAST(UNIX_TIMESTAMP(p.updated_at)*1000000 AS SIGNED),0)) revision,
                    CASE WHEN c.config_key='phone' THEN t.updated_at ELSE p.updated_at END updatedAt,
-                   c.product_no AS productNo,c.revision AS bindingRevision
+                   c.product_no AS productNo,c.revision AS bindingRevision,
+                   bp.name AS boundProductName
               FROM nx_onboarding_yield_comparison_config c
               LEFT JOIN nx_onboarding_phone_tier_config t
                 ON c.config_key='phone' AND t.tier=3 AND t.active=1 AND t.is_deleted=0
@@ -1450,6 +1451,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                     OR (COALESCE(p.store_status,'')='' AND UPPER(p.status) IN ('ACTIVE','ON_SALE')))
                AND
             """ + StorefrontProductPublishGate.PUBLISHABLE_SQL + """
+              LEFT JOIN nx_product bp
+                ON bp.product_no=c.product_no AND bp.is_deleted=0
 
              WHERE c.active=1 AND c.is_deleted=0
                AND ((c.config_key='phone' AND t.tier IS NOT NULL)
@@ -1459,10 +1462,12 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
     List<OnboardingYieldComparisonView> listOnboardingYieldComparisons();
 
     @Select("""
-            SELECT config_key configKey,label,daily_usdt dailyUsdt,daily_nex dailyNex,
-                   sort_order sortOrder,revision,updated_at updatedAt,product_no productNo,revision bindingRevision
-              FROM nx_onboarding_yield_comparison_config
-             WHERE config_key=#{configKey} AND active=1 AND is_deleted=0 LIMIT 1
+            SELECT c.config_key configKey,c.label,c.daily_usdt dailyUsdt,c.daily_nex dailyNex,
+                   c.sort_order sortOrder,c.revision,c.updated_at updatedAt,c.product_no productNo,
+                   c.revision bindingRevision,bp.name boundProductName
+              FROM nx_onboarding_yield_comparison_config c
+              LEFT JOIN nx_product bp ON bp.product_no=c.product_no AND bp.is_deleted=0
+             WHERE c.config_key=#{configKey} AND c.active=1 AND c.is_deleted=0 LIMIT 1
             """)
     OnboardingYieldComparisonView findOnboardingYieldComparison(@Param("configKey") String configKey);
 

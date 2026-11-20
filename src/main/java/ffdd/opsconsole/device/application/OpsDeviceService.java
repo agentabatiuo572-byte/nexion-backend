@@ -2624,6 +2624,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                             "sortOrder", row.sortOrder(), "revision", row.revision(), "updatedAt", row.updatedAt());
                     if (includeBindingDetails) {
                         fields.put("productNo", row.productNo());
+                        fields.put("boundProductName", row.boundProductName());
                         fields.put("bindingRevision", row.bindingRevision());
                     }
                     return fields;
@@ -2662,7 +2663,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return ApiResult.fail(409, "ONBOARDING_COMPARISON_DERIVED_FROM_SOURCE");
     }
 
-    public record YieldSkuReview(String key, long revision, String previousSku, DeviceSkuView product) {}
+    public record YieldSkuReview(String key, long revision, String previousSku, DeviceSkuView product,
+                                 String beforeValue, String afterValue) {}
 
     public YieldSkuReview reviewOnboardingYieldSku(Map<String, Object> params) {
         String key = str(params,"configKey");
@@ -2681,7 +2683,25 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 .orElseThrow(() -> new BizException(422,"ONBOARDING_COMPARISON_SKU_UNAVAILABLE"));
         if (!catalogRepository.onboardingYieldSkuAvailable(sku))
             throw new BizException(422,"ONBOARDING_COMPARISON_SKU_UNAVAILABLE");
-        return new YieldSkuReview(key,revision,existing.productNo(),product);
+        String previousSku = existing.productNo() == null || existing.productNo().isBlank()
+                ? null : existing.productNo().trim();
+        DeviceSkuView previousProduct = previousSku == null ? null
+                : catalogRepository.findSku(previousSku).orElse(null);
+        boolean previousAvailable = previousProduct != null
+                && catalogRepository.onboardingYieldSkuAvailable(previousSku);
+        String beforeValue = previousSku == null ? "未绑定"
+                : previousProduct == null ? "原绑定记录缺失 · " + previousSku
+                : onboardingYieldSnapshot(previousProduct) + (previousAvailable ? "" : " · 已不可用");
+        return new YieldSkuReview(key,revision,previousSku,product,
+                beforeValue,onboardingYieldSnapshot(product));
+    }
+
+    private String onboardingYieldSnapshot(DeviceSkuView product) {
+        String name = product.name() == null || product.name().isBlank() ? "未提供" : product.name().trim();
+        String sku = product.skuId() == null || product.skuId().isBlank() ? "未提供" : product.skuId().trim();
+        String usdt = product.dailyEarn() == null ? "未提供" : product.dailyEarn().toPlainString();
+        String nex = product.dailyEarnNex() == null ? "未提供" : product.dailyEarnNex().toPlainString();
+        return name + " · " + sku + " · " + usdt + " USDT/天 · " + nex + " UVT/天";
     }
 
     private ApiResult<Map<String, Object>> bindOnboardingYieldSku(Map<String, Object> params,
@@ -2692,7 +2712,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (!catalogRepository.bindOnboardingYieldSku(review.key(),review.product().skuId(),review.revision(),LocalDateTime.now(clock)))
                 return ApiResult.fail(409,"ONBOARDING_COMPARISON_VERSION_CONFLICT");
             auditRequired("E6_ONBOARDING_YIELD_SKU_CHANGED","ONBOARDING_YIELD_COMPARISON",review.key(),operator,
-                    detail("before",review.previousSku(),"after",review.product().skuId(),"reason",reason,"idempotencyKey",idem));
+                    detail("before",review.previousSku(),"after",review.product().skuId(),
+                            "beforeSnapshot",review.beforeValue(),"afterSnapshot",review.afterValue(),
+                            "reason",reason,"idempotencyKey",idem));
             return ApiResult.ok(detail("configKey",review.key(),"productNo",review.product().skuId(),"bindingRevision",review.revision()+1));
         });
     }
