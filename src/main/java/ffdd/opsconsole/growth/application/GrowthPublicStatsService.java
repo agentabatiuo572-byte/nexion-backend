@@ -212,7 +212,7 @@ public class GrowthPublicStatsService {
         return ApiResult.ok(response);
     }
 
-    /** Same fixed order, binary64 weights and largest-remainder split as App globeSimulation.onlineNodes. */
+    /** Matches App src/lib/globe-simulation.ts splitByWeights(total, weights, true) in fixed center order. */
     static List<Map<String, Object>> centerCounts(GlobeDisplayConfig config, Long total, String countField) {
         Map<String, GlobeDisplayConfig.Center> byId = new LinkedHashMap<>();
         config.centers().forEach(center -> byId.put(center.id(), center));
@@ -228,21 +228,21 @@ public class GrowthPublicStatsService {
         long[] counts = null;
         if (total != null) {
             counts = new long[weights.length];
-            double[] remainder = new double[weights.length];
-            Integer[] order = new Integer[weights.length];
-            long allocated = 0;
+            double allocated = 0;
             for (int i = 0; i < weights.length; i++) {
                 double exact = total.doubleValue() * weights[i] / sum;
                 counts[i] = (long) Math.floor(exact);
-                remainder[i] = exact - counts[i];
                 allocated += counts[i];
-                order[i] = i;
             }
-            java.util.Arrays.sort(order, (a, b) -> {
-                int compared = Double.compare(remainder[b], remainder[a]);
-                return compared != 0 ? compared : Integer.compare(a, b);
-            });
-            for (int i = 0; i < total - allocated; i++) counts[order[i]]++;
+            for (double left = total.doubleValue() - allocated; left > 0; left--) {
+                int best = 0;
+                for (int i = 1; i < weights.length; i++) {
+                    if (weights[i] / (counts[i] + 1.0) > weights[best] / (counts[best] + 1.0)) {
+                        best = i;
+                    }
+                }
+                counts[best]++;
+            }
         }
         List<Map<String, Object>> result = new ArrayList<>();
         for (int i = 0; i < weights.length; i++) {
